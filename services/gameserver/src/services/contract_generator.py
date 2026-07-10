@@ -164,6 +164,43 @@ def _hop_distance(
     return None
 
 
+def _all_hop_distances(
+    adjacency: Dict[uuid.UUID, List[uuid.UUID]], origin_pk: uuid.UUID,
+) -> Dict[uuid.UUID, int]:
+    """Every reachable sector's hop distance from origin_pk, in ONE BFS
+    pass — WO-SCHED-LOOP-WEDGE. generate_npc_contracts used to call
+    _hop_distance() once PER CANDIDATE station considered for a given
+    (origin, commodity) pair — redoing an overlapping BFS from the SAME
+    origin sector over and over (up to once per candidate, per commodity,
+    per origin). Since 616d122 (WarpTunnel edges connecting every region
+    through the Nexus), the reachable set from any origin can span the
+    WHOLE galaxy graph, so a single _hop_distance() call to a distant/
+    first-tried candidate can already cost O(sectors + edges) — repeating
+    that per candidate, at real galaxy scale (thousands of origins x
+    thousands of candidate checks), is what wedged the scheduler's main
+    loop (WO-SCHED-LOOP-WEDGE): contract generation never returned, and
+    every sweep sequenced after it in the same iteration never ran.
+
+    One full BFS per DISTINCT origin sector (the caller caches this dict,
+    keyed by origin_sector_pk, so multiple origin STATIONS sharing a
+    sector — and every commodity of the same origin — reuse it) turns
+    every subsequent candidate reachability check into an O(1) dict
+    lookup instead of a fresh traversal."""
+    distances: Dict[uuid.UUID, int] = {origin_pk: 0}
+    frontier = [origin_pk]
+    hop = 0
+    while frontier:
+        hop += 1
+        next_frontier: List[uuid.UUID] = []
+        for node in frontier:
+            for neighbor in adjacency.get(node, ()):
+                if neighbor not in distances:
+                    distances[neighbor] = hop
+                    next_frontier.append(neighbor)
+        frontier = next_frontier
+    return distances
+
+
 def _active_npc_pool_count(db: Session, issuer_station_id: uuid.UUID) -> int:
     """Board size is a property of the ISSUING station (destination_
     station_id for cargo_delivery -- see contract.py's issuer_id
@@ -236,6 +273,11 @@ def generate_npc_contracts(
     # station reached as a destination for multiple commodities in the same
     # tick doesn't re-query and doesn't overshoot the cap.
     pool_counts: Dict[uuid.UUID, int] = {}
+    # WO-SCHED-LOOP-WEDGE: one full BFS per DISTINCT origin sector, cached
+    # here and reused across every commodity of every origin station docked
+    # in that sector -- see _all_hop_distances' own docstring for why a
+    # per-candidate _hop_distance() call became the scaling bottleneck.
+    hop_cache: Dict[uuid.UUID, Dict[uuid.UUID, int]] = {}
     generated = 0
     blocked_by: Dict[str, int] = {"no_buyer": 0, "unreachable": 0, "price": 0, "pool": 0}
 
@@ -262,6 +304,10 @@ def generate_npc_contracts(
                 blocked_by["unreachable"] += 1
                 continue
 
+            if origin_sector_pk not in hop_cache:
+                hop_cache[origin_sector_pk] = _all_hop_distances(adjacency, origin_sector_pk)
+            distances_from_origin = hop_cache[origin_sector_pk]
+
             destination = None
             hops = None
             any_buyer = False
@@ -281,7 +327,7 @@ def generate_npc_contracts(
                 if candidate_sector_pk is None:
                     continue
                 any_buyer_under_cap = True
-                candidate_hops = _hop_distance(adjacency, origin_sector_pk, candidate_sector_pk)
+                candidate_hops = distances_from_origin.get(candidate_sector_pk)
                 if candidate_hops is None:
                     continue
                 destination = candidate

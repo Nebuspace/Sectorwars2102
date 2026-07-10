@@ -6271,6 +6271,47 @@ async def _run_aria_prune_async() -> Dict[str, int]:
             return result
 
 
+async def _contract_generation_loop() -> None:
+    """NPC contract generation (WO-ECON-CONTRACT-1-KERNEL), on its OWN
+    independent task — WO-SCHED-LOOP-WEDGE.
+
+    Used to run inline inside npc_scheduler_loop's main while-True, ahead
+    of expiry/suspect/team-rep/PECO in the same iteration. Generation's
+    reachability search scales with station + contract-table size (see
+    _all_hop_distances / _load_directed_sector_graph in contract_generator.
+    py — WarpTunnel edges connecting every region through the Nexus, added
+    616d122, mean the reachable set from any origin can span the whole
+    galaxy graph); a slow or first-run-at-real-scale pass took long enough
+    that every sweep sequenced after it in that same iteration never ran —
+    npc_scheduler_loop has no per-iteration timeout, so this wedged the
+    ENTIRE scheduler (confirmed live, heimdall, 2026-07-10: ~17min with
+    zero completed main-loop iterations after 0bc6e1f made generation
+    reachable every tick instead of once per elapsed-drifted window).
+
+    Isolating it here means however long one pass takes — even hung — the
+    main loop's other sweeps are structurally unaffected; they simply stop
+    hearing from this task, not from each other. Same durable, wall-clock,
+    restart-safe due-check as before (_sweep_due_and_advance via
+    _run_contract_generation_sync's own _CONTRACT_GENERATION_STATE_KEY /
+    CONTRACT_GENERATION_SWEEP_SECONDS) — decoupling the loop this runs on
+    changes nothing about ITS OWN cadence guarantee, only what it can no
+    longer block. Cancelled alongside npc_scheduler_loop — see that
+    function's own task lifecycle handling."""
+    while True:
+        try:
+            generated = await asyncio.to_thread(_run_contract_generation_sync)
+            if generated:
+                logger.info(
+                    "NPC scheduler: contract generation — posted %d new contract(s)",
+                    generated,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("NPC scheduler: contract generation sweep crashed (loop continues)")
+        await asyncio.sleep(TICK_SECONDS)
+
+
 async def npc_scheduler_loop() -> None:
     """The lifespan-owned host task. Wakes every TICK_SECONDS, runs due
     tick bodies in a worker thread, broadcasts the returned events."""
@@ -6334,6 +6375,32 @@ async def npc_scheduler_loop() -> None:
             logger.info("NPC scheduler: dispersed %d LAW patrol(s)", spread)
     except Exception:
         logger.exception("NPC scheduler: LAW patrol dispersal failed")
+
+    # WO-SCHED-LOOP-WEDGE: contract generation runs on its OWN task
+    # (_contract_generation_loop above), never inline in the while-True
+    # below — see that function's own docstring for why. Tied to this
+    # loop's lifetime: cancelled in the finally below whenever this loop
+    # exits, for any reason, so it's never left orphaned.
+    contract_gen_task = asyncio.create_task(_contract_generation_loop())
+    try:
+        await _npc_scheduler_main_loop()
+    finally:
+        contract_gen_task.cancel()
+        try:
+            await contract_gen_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception(
+                "NPC scheduler: contract-generation task raised during shutdown (ignored)"
+            )
+
+
+async def _npc_scheduler_main_loop() -> None:
+    """The fast-sweep main loop (WO-SCHED-LOOP-WEDGE split out of
+    npc_scheduler_loop) — expiry/suspect/team-rep/PECO and everything else
+    that was already here, UNCHANGED. Only contract generation moved off
+    this loop; nothing about the rest of the dispatch below changed."""
     elapsed = 0
     while True:
         await asyncio.sleep(TICK_SECONDS)
@@ -6913,28 +6980,16 @@ async def npc_scheduler_loop() -> None:
             except Exception:
                 logger.exception("NPC scheduler: presence sweep crashed (loop continues)")
 
-        # NPC contract generation (WO-ECON-CONTRACT-1-KERNEL) — scans every
-        # station as a potential cargo_delivery pickup point and posts new
-        # NPC-issued contracts on stations under their per-destination pool
-        # cap. Own SessionLocal, commit in the wrapper — NOT awaited inline.
-        # WO-SCHED-CADENCE-DRIFT: called EVERY iteration, deliberately no
-        # `elapsed % ... == 0` gate — the durable wall-clock anchor inside
-        # _run_contract_generation_sync (via _sweep_due_and_advance) is the
-        # real cadence guarantee now; an elapsed-based gate here would be
-        # exactly the iteration-counter drift this WO fixes. The not-due
-        # case returns cheaply (one Galaxy-row read) without touching
-        # contract_generator at all.
-        try:
-            generated = await asyncio.to_thread(_run_contract_generation_sync)
-            if generated:
-                logger.info(
-                    "NPC scheduler: contract generation — posted %d new contract(s)",
-                    generated,
-                )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("NPC scheduler: contract generation sweep crashed (loop continues)")
+        # NPC contract generation (WO-ECON-CONTRACT-1-KERNEL) — WO-SCHED-
+        # LOOP-WEDGE: NOT dispatched here anymore. It used to run inline,
+        # sequentially before expiry/suspect/team-rep in this SAME
+        # iteration — a slow/heavy generation pass (whole-galaxy
+        # reachability search, scales with station + contract-table size,
+        # see _all_hop_distances) blocked every sweep sequenced after it,
+        # wedging the whole loop for good (this loop has no per-iteration
+        # timeout). It now runs on its own independent task
+        # (_contract_generation_loop, started/cancelled alongside this
+        # loop below) so it can never starve anything here again.
 
         # NPC contract expiry (WO-ECON-CONTRACT-1-KERNEL) — bulk-expires any
         # posted-but-never-accepted contract strictly past its deadline.

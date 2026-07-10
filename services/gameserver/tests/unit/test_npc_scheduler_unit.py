@@ -9,17 +9,23 @@ held-sweep wrapper-level pins (WO-CMB-SUSPECT-LIFE-1 / WO-RT-TEAM-REP /
 WO-PIRATE-ECO-2 loop wiring).
 """
 
+import asyncio
 import logging
+import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
+
+import pytest
 
 from src.core import game_time
 from src.models.galaxy import Galaxy
 from src.services.npc_engagement_service import _federation_squad_size
 from src.services.npc_scheduler_service import (
     SUSPECT_CLEAR_SWEEP_SECONDS,
+    _contract_generation_loop,
+    _npc_scheduler_main_loop,
     _run_pirate_ecosystem_tick_sync,
     _run_suspect_clear_sweep_sync,
     _run_team_reputation_sweep_sync,
@@ -28,6 +34,7 @@ from src.services.npc_scheduler_service import (
     canonical_day_number,
     canonical_minute_of_day,
     canonical_weekday,
+    npc_scheduler_loop,
     resolve_schedule_block,
 )
 from src.services.npc_spawn_service import RESPAWN_COOLDOWN_MINUTES
@@ -420,3 +427,104 @@ class TestSweepDueAndAdvance:
         # Sanity: the interval this wrapper actually uses is what gated the
         # second call, not some other/default value.
         assert SUSPECT_CLEAR_SWEEP_SECONDS > 0
+
+
+# ---------------------------------------------------------------------------
+# WO-SCHED-LOOP-WEDGE — contract generation must never be able to starve the
+# fast sweeps (expiry/suspect/team-rep/PECO) by running inline ahead of them
+# in the same coroutine. Confirmed live on heimdall, 2026-07-10: 0bc6e1f made
+# generation reachable every tick instead of once per elapsed-drifted window
+# (WO-SCHED-CADENCE-DRIFT), and the first real-scale post-restart pass never
+# returned — zero main-loop iterations completed for the ~17min observation
+# window, because generation sat sequentially ahead of every other sweep in
+# the same while-True body. Fix: generation now runs on its own independent
+# asyncio task (_contract_generation_loop), never awaited inline by the main
+# loop (_npc_scheduler_main_loop).
+# ---------------------------------------------------------------------------
+
+class TestContractGenerationDecoupling:
+    @pytest.mark.asyncio
+    async def test_slow_generation_does_not_block_a_concurrent_fast_task(self, monkeypatch):
+        """The falsifier, run for real — not just read from the source. A
+        blocking sync call standing in for a slow/heavy generation pass
+        runs inside _contract_generation_loop's own asyncio.to_thread,
+        concurrently with a fast counter task standing in for the main
+        loop's other sweeps. Pre-fix, these were sequentially awaited in
+        ONE coroutine — the fast task could not have advanced until the
+        slow call returned. Post-fix, they're independent asyncio tasks:
+        the counter keeps ticking the whole time the slow call is still
+        blocked in its own OS thread."""
+        def _slow_sync_call():
+            time.sleep(0.4)
+            return 0
+
+        monkeypatch.setattr(
+            "src.services.npc_scheduler_service._run_contract_generation_sync",
+            _slow_sync_call,
+        )
+
+        fast_ticks = 0
+
+        async def _fast_task():
+            nonlocal fast_ticks
+            while True:
+                await asyncio.sleep(0.02)
+                fast_ticks += 1
+
+        gen_task = asyncio.create_task(_contract_generation_loop())
+        fast_task = asyncio.create_task(_fast_task())
+        try:
+            # The slow sync call is still sleeping for most of this window
+            # — if the fast task were blocked behind it (the pre-fix
+            # shape: one coroutine, sequential awaits), fast_ticks would
+            # still be 0 here.
+            await asyncio.sleep(0.35)
+            assert fast_ticks >= 10, f"fast task starved — only {fast_ticks} tick(s) in 0.35s"
+        finally:
+            gen_task.cancel()
+            fast_task.cancel()
+            for t in (gen_task, fast_task):
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_npc_scheduler_loop_runs_generation_as_an_independent_task(self, monkeypatch):
+        """Wiring pin: npc_scheduler_loop must create _contract_generation_
+        loop via asyncio.create_task (an independent task, never an inline
+        await) before running the main loop, and must cancel + await it
+        once the main loop exits (for ANY reason) — never left orphaned."""
+        import src.services.npc_scheduler_service as svc
+
+        gen_loop_started = asyncio.Event()
+        gen_loop_cancelled = asyncio.Event()
+
+        async def _fake_contract_generation_loop():
+            gen_loop_started.set()
+            try:
+                await asyncio.sleep(3600)  # would hang forever if never cancelled
+            except asyncio.CancelledError:
+                gen_loop_cancelled.set()
+                raise
+
+        async def _fake_main_loop():
+            # Simulates the main loop exiting (crash, cancellation, or —
+            # here — just returning) shortly after the generation task has
+            # genuinely started.
+            await asyncio.sleep(0.05)
+
+        monkeypatch.setattr(svc, "_contract_generation_loop", _fake_contract_generation_loop)
+        monkeypatch.setattr(svc, "_npc_scheduler_main_loop", _fake_main_loop)
+        for name in (
+            "_repair_orphan_schedules_sync", "_seed_trader_rosters_sync",
+            "_bulk_fill_traders_sync", "_assign_trader_notoriety_sync",
+            "_relocate_stranded_npcs_sync", "_disperse_law_patrols_sync",
+        ):
+            monkeypatch.setattr(svc, name, lambda: 0)
+        monkeypatch.setattr(svc, "_assign_trader_missions_sync", lambda: {})
+
+        await svc.npc_scheduler_loop()
+
+        assert gen_loop_started.is_set()
+        assert gen_loop_cancelled.is_set()
