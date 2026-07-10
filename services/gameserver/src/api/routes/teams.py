@@ -20,6 +20,7 @@ from src.models.message import Message
 from src.services.team_service import TeamService
 from src.services.message_service import MessageService
 from src.services import team_reputation_service
+from src.services.movement_service import share_warp_knowledge_with_team
 
 
 router = APIRouter(prefix="/teams", tags=["teams"])
@@ -1031,3 +1032,31 @@ async def update_team_reputation_method(
     else:
         db.commit()
         return result
+
+
+# --------------------------------------------------------------------------- #
+# Warp knowledge sharing (WO-ARIA-WARP-RESIDUALS) -- aria-companion.md:71.
+# --------------------------------------------------------------------------- #
+
+@router.post("/{team_id}/share-warp-knowledge")
+async def share_warp_knowledge(
+    team_id: UUID,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Deliberate, one-time bulk share of the caller's own known warps
+    (revealed or traversed) with every OTHER current member of this team
+    (WO-ARIA-WARP-RESIDUALS, aria-companion.md:71). Membership-gated only
+    -- sharing your own discoveries needs no special role. Distinct from
+    the automatic per-reveal team fan-out that already fires on every NEW
+    scan/traversal reveal (movement_service._propagate_warp_reveal_to_team,
+    WO-GWQ-WARPSHARE) -- this is the manual catch-up action for knowledge
+    the caller already held before that (or before a teammate joined); no
+    ongoing sync, later joiners get nothing retroactively (aria-
+    companion.md:65)."""
+    if not player.team_id or str(player.team_id) != str(team_id):
+        raise HTTPException(status_code=403, detail="You are not a member of this team")
+
+    result = share_warp_knowledge_with_team(db, player.id, team_id)
+    db.commit()
+    return result

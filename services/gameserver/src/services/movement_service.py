@@ -296,6 +296,106 @@ def _dispatch_warp_corp_share(
         )
 
 
+def share_warp_knowledge_with_team(
+    db: Session, sharer_player_id: uuid.UUID, team_id: uuid.UUID,
+) -> Dict[str, Any]:
+    """Deliberate, one-time bulk share (WO-ARIA-WARP-RESIDUALS;
+    aria-companion.md:71 "A corp-mate shares scan knowledge, propagating
+    rows to current corp members at the moment of the share"): copies
+    EVERY warp the sharer currently knows (``revealed`` OR ``traversed``)
+    to every OTHER CURRENT member of ``team_id``, at
+    ``revealed_via=CORP_SHARE``, evaluated once at the moment of this
+    call. Does NOT commit — caller owns the transaction.
+
+    Distinct from ``_propagate_warp_reveal_to_team``'s automatic, ONGOING,
+    per-reveal fan-out (WO-GWQ-WARPSHARE — fires on every NEW reveal a
+    teammate makes going forward, already live in
+    ``_reveal_warp_to_player``): that mechanism only ever propagates the
+    ONE warp being revealed at that moment, never a bulk retroactive push
+    of everything a player already knew before this feature (or before a
+    teammate joined) existed. This function is the manual "catch-up"
+    action for exactly that gap — canon's "no ongoing sync, later joiners
+    get nothing retroactively" (aria-companion.md:65) holds for BOTH
+    mechanisms: calling this once does not subscribe the sharer to future
+    auto-propagation (that already happens independently via
+    ``_reveal_warp_to_player``), and a player who joins the team AFTER
+    this call gets nothing from it either — they'd need a fresh share.
+
+    NEVER overwrites a teammate's own existing row, in ANY state or
+    provenance — mirrors ``_propagate_warp_reveal_to_team``'s own
+    skip-if-present semantics exactly (same idempotent-upsert-under-
+    SAVEPOINT idiom, generalized from one tunnel to every is_known row the
+    sharer holds): a teammate's own already-``traversed`` (or even just
+    previously-``revealed``) knowledge is never downgraded or re-stamped
+    by someone else's share.
+
+    Returns ``{"shared_warp_count", "recipient_count", "rows_created"}``.
+    """
+    sharer_rows = (
+        db.query(PlayerWarpKnowledge)
+        .filter(
+            PlayerWarpKnowledge.player_id == sharer_player_id,
+            PlayerWarpKnowledge.visibility_state.in_(
+                [WarpVisibilityState.REVEALED, WarpVisibilityState.TRAVERSED]
+            ),
+        )
+        .all()
+    )
+    if not sharer_rows:
+        return {"shared_warp_count": 0, "recipient_count": 0, "rows_created": 0}
+
+    teammate_rows = (
+        db.query(Player.id)
+        .join(TeamMember, TeamMember.player_id == Player.id)
+        .filter(TeamMember.team_id == team_id, Player.id != sharer_player_id)
+        .all()
+    )
+    teammate_ids = [row[0] for row in teammate_rows]
+    if not teammate_ids:
+        return {"shared_warp_count": len(sharer_rows), "recipient_count": 0, "rows_created": 0}
+
+    rows_created = 0
+    for sharer_row in sharer_rows:
+        for teammate_id in teammate_ids:
+            existing = db.query(PlayerWarpKnowledge).filter(
+                PlayerWarpKnowledge.player_id == teammate_id,
+                PlayerWarpKnowledge.warp_layer == sharer_row.warp_layer,
+                PlayerWarpKnowledge.warp_id == sharer_row.warp_id,
+            ).first()
+            if existing is not None:
+                continue
+
+            knowledge = PlayerWarpKnowledge(
+                player_id=teammate_id,
+                warp_layer=sharer_row.warp_layer,
+                warp_id=sharer_row.warp_id,
+                visibility_state=WarpVisibilityState.REVEALED,
+                revealed_via=WarpRevealedVia.CORP_SHARE,
+            )
+            try:
+                with db.begin_nested():
+                    db.add(knowledge)
+                    db.flush()
+            except IntegrityError:
+                # Lost the race to a concurrent share/scan/reveal for the
+                # same (player, warp) — already known now, not a new share
+                # for this call. begin_nested already rolled back to the
+                # savepoint; nothing else lost.
+                logger.info(
+                    "warp-knowledge share: teammate %s already knows %s:%s "
+                    "(race resolved by UNIQUE)",
+                    teammate_id, sharer_row.warp_layer.value, sharer_row.warp_id,
+                )
+                continue
+            rows_created += 1
+
+    return {
+        "shared_warp_count": len(sharer_rows),
+        "recipient_count": len(teammate_ids),
+        "rows_created": rows_created,
+    }
+
+
 def _dispatch_exploration_medals(db: Session, player: Player, context: Dict[str, Any]) -> None:
     """Fire the medals-lane frozen hook
     ``medal_service.check_and_award_exploration_medals(db, player, context)``
@@ -1696,6 +1796,14 @@ class MovementService:
             ).first()
 
         if not tunnel:
+            # WO-ARIA-WARP-RESIDUALS (aria-companion.md:70): before giving up,
+            # check whether the REAL reason no tunnel matched is a genuine
+            # ONE-WAY tunnel running the OTHER way (destination -> current,
+            # is_bidirectional=False) -- the player just tried to go against
+            # a one-way warp, distinct from "nothing connects these sectors
+            # at all". The move still fails identically either way; this
+            # only teaches ARIA the tunnel exists when it's latent.
+            self._handle_reverse_one_way_traversal_attempt(current_sector, destination_sector, ship)
             return False, 0, "No active warp tunnel found"
 
         # WO-WC — lazy-on-read lifetime collapse (async-workers.md § Warp-tunnel
@@ -1789,6 +1897,60 @@ class MovementService:
         turn_cost = max(1, int(turn_cost * self._maintenance_speed_multiplier(ship)))
 
         return True, turn_cost, "Warp tunnel available"
+
+    def _handle_reverse_one_way_traversal_attempt(
+        self, current_sector: Sector, destination_sector: Sector, ship: Optional[Ship],
+    ) -> None:
+        """WO-ARIA-WARP-RESIDUALS (aria-companion.md:70): called from
+        ``_check_warp_tunnel`` right before it gives up (no forward tunnel,
+        no bidirectional reverse tunnel). Checks whether a genuine ONE-WAY
+        tunnel runs the OTHER way (``destination -> current``,
+        ``is_bidirectional=False``) -- the player just attempted reverse
+        traversal of a one-way warp, which is a materially different case
+        from "nothing connects these sectors at all". If that tunnel is
+        latent, the failed attempt itself teaches ARIA it exists
+        (``revealed_via=TRAVERSAL_ATTEMPT``) via the existing idempotent
+        ``_reveal_warp_to_player`` upsert (never downgrades an already-
+        ``traversed`` row).
+
+        Best-effort and side-effect-only: NEVER changes the move's own
+        outcome -- the caller always returns the same "No active warp
+        tunnel found" failure regardless of what happens here, and any
+        error here is caught, logged, and rolled back rather than
+        propagated.
+
+        Commits its own isolated write (mirrors this same method's sibling
+        ``_tunnel_collapse_due`` early-commit precedent a few dozen lines
+        above): the caller's move has already failed and returns with no
+        further mutation or commit anywhere else in this request, so this
+        reveal must persist on its own here or it is silently lost when
+        the request ends.
+        """
+        try:
+            reverse_one_way = self.db.query(WarpTunnel).filter(
+                WarpTunnel.origin_sector_id == destination_sector.id,
+                WarpTunnel.destination_sector_id == current_sector.id,
+                WarpTunnel.is_bidirectional == False,  # noqa: E712
+                WarpTunnel.status == WarpTunnelStatus.ACTIVE,
+            ).first()
+            if reverse_one_way is None:
+                return
+            if not getattr(reverse_one_way, "is_latent", False) or _is_player_gate(reverse_one_way):
+                return  # non-latent, or a player gate (gates are never latent) -- nothing to reveal
+
+            traverser_id = getattr(ship, "owner_id", None) if ship else None
+            if traverser_id is None:
+                return
+
+            _reveal_warp_to_player(
+                self.db, traverser_id, reverse_one_way, revealed_via=WarpRevealedVia.TRAVERSAL_ATTEMPT,
+            )
+            self.db.commit()
+        except Exception as e:
+            logger.error(
+                "Failed to record traversal-attempt warp reveal (non-fatal, move still fails normally): %s", e,
+            )
+            self.db.rollback()
 
     def _maintenance_speed_multiplier(self, ship: Optional[Ship]) -> float:
         """Turn-cost multiplier from the ship's maintenance performance band's
