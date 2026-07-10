@@ -28,6 +28,8 @@ boundary, matching medal_service.py / research_service.py.
 from __future__ import annotations
 
 import logging
+import math
+import random
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 import uuid
@@ -38,7 +40,8 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.pirate_holding import PirateHolding, PirateHoldingTier
 from src.models.pirate_kill_log import PirateKillLog
-from src.models.region import Region
+from src.models.region import Region, RegionStatus
+from src.models.sector import Sector
 from src.models.station import Station
 
 logger = logging.getLogger(__name__)
@@ -391,6 +394,532 @@ def find_eligible_sectors(
     return [sid for sid in candidate_sector_ids if sid not in occupied]
 
 
+# ---------------------------------------------------------------------------
+# Weekly growth tick -- daughter spawning + seed fallback
+# (pirate-ecosystem.md:122-277). WO-PIRATE-ECO-2.
+# ---------------------------------------------------------------------------
+
+# Spawn parent pick weight (:235-241): Stronghold parents are the most
+# likely to spawn a daughter (they have the resources to seed one).
+SPAWN_PARENT_WEIGHT: Dict[PirateHoldingTier, int] = {
+    PirateHoldingTier.CAMP: 1,
+    PirateHoldingTier.OUTPOST: 2,
+    PirateHoldingTier.STRONGHOLD: 4,
+}
+
+# Daughter-tier distribution by parent tier (:227-233). "skip" = propagation
+# fails this attempt (parent doesn't produce a daughter this tick).
+SPAWN_DISTRIBUTION: Dict[PirateHoldingTier, Dict[Any, float]] = {
+    PirateHoldingTier.CAMP: {
+        PirateHoldingTier.CAMP: 0.70,
+        "skip": 0.30,
+    },
+    PirateHoldingTier.OUTPOST: {
+        PirateHoldingTier.CAMP: 0.50,
+        PirateHoldingTier.OUTPOST: 0.30,
+        "skip": 0.20,
+    },
+    PirateHoldingTier.STRONGHOLD: {
+        PirateHoldingTier.CAMP: 0.50,
+        PirateHoldingTier.OUTPOST: 0.30,
+        PirateHoldingTier.STRONGHOLD: 0.20,
+        "skip": 0.0,
+    },
+}
+
+GROWTH_TOLERANCE_BAND = 3  # :138 -- delta < 3 -> no_growth, don't bother spawning
+GROWTH_MAX_SITES_PER_TICK = 5  # :141 -- cap at +5/week/region
+GROWTH_SITES_PER_DELTA_UNIT = 3  # :141 -- sites_to_spawn = ceil(delta / 3)
+
+
+def _week_start(dt: datetime) -> datetime:
+    """The most recent UTC Sunday 00:00 at/before ``dt`` (:32, "Weekly UTC
+    Sunday 00:00"). The idempotence key for run_weekly_tick -- two calls
+    whose ``now`` falls in the SAME week-bucket are the same tick window."""
+    dt = dt.astimezone(timezone.utc)
+    # datetime.weekday(): Monday=0 ... Sunday=6. Days elapsed since the most
+    # recent Sunday:
+    days_since_sunday = (dt.weekday() + 1) % 7
+    day_start = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    return day_start - timedelta(days=days_since_sunday)
+
+
+def _weighted_choice(choices: List[Any], weights: List[float], rng: Any = None) -> Any:
+    """Single weighted pick. ``rng`` is injectable (anything exposing
+    ``.choices(population, weights=..., k=1)``, e.g. a seeded
+    ``random.Random()``) for deterministic tests; defaults to the stdlib
+    ``random`` module, matching the rest of the codebase's random usage
+    (e.g. combat_service)."""
+    picker = rng if rng is not None else random
+    return picker.choices(choices, weights=weights, k=1)[0]
+
+
+def _eligible_region_sectors(db: Session, region_id: uuid.UUID) -> List[int]:
+    """All GLOBAL sector_ids in this region, filtered through
+    find_eligible_sectors (holding/station exclusion). [NO-CANON]: canon's
+    find_eligible_sectors bundles region-wide enumeration with the exclusion
+    filters in one call (see find_eligible_sectors' own docstring); this is
+    the enumeration half this WO's spawn/seed functions need."""
+    candidate_ids = [
+        sid for (sid,) in db.query(Sector.sector_id).filter(Sector.region_id == region_id).all()
+    ]
+    return find_eligible_sectors(db, region_id, candidate_ids)
+
+
+def spawn_daughter_holding(
+    db: Session, region: Region, *, now: Optional[datetime] = None, rng: Any = None
+) -> Optional[PirateHolding]:
+    """Spawn one daughter holding off an existing pirate-controlled parent
+    (pirate-ecosystem.md:151-243). Returns the created row, or None if the
+    attempt fails/is capped/has nowhere to land.
+
+    [NO-CANON, resolved pragmatically]: canon's :158 cap check calls
+    ``would_exceed_max_population(region)`` with NO tier argument, but the
+    function is DEFINED at :406 taking ``(region, tier_being_added)`` -- an
+    internal inconsistency in the doc (you cannot check "would adding X
+    exceed the cap" without first knowing X). Resolved here by checking the
+    cap AFTER the daughter tier is chosen -- the only semantically coherent
+    order -- rather than before.
+
+    [NO-CANON, deferred -- flagged for DECISIONS]: zone-affinity radius
+    weighting (:182-224), the roving_fleet_camp warp-reachability check
+    (:205-209, structurally inapplicable anyway -- PirateHoldingTier has no
+    ROVING_FLEET_CAMP member), and the avoid_starter_cluster /
+    avoid_phase11_anchors / prefer_low_patrol_density site-selection
+    refinements are NOT implemented -- this picks UNIFORMLY at random among
+    find_eligible_sectors' output (holding/station exclusion only).
+    parent_holding_id lineage and the composition roll are also deferred,
+    same as ECO-1's own documented PirateHolding-model omissions (no
+    parent_holding_id/composition columns) -- NPC-roster materialization for
+    a new holding's garrison is Lane B / npc_scheduler territory, explicitly
+    out of this WO's scope per the dispatch brief.
+    """
+    now = _now(now)
+    parents = (
+        db.query(PirateHolding)
+        .filter(
+            PirateHolding.region_id == region.id,
+            PirateHolding.owner_player_id.is_(None),
+        )
+        .all()
+    )
+    if not parents:
+        # Fully cleansed (or never seeded) -- fall back to seed spawning (:169-170).
+        return seed_spawn_camp(db, region, now=now, rng=rng)
+
+    parent = _weighted_choice(
+        parents, [SPAWN_PARENT_WEIGHT[p.tier] for p in parents], rng=rng
+    )
+    distribution = SPAWN_DISTRIBUTION[parent.tier]
+    outcomes = list(distribution.keys())
+    daughter_tier = _weighted_choice(outcomes, [distribution[o] for o in outcomes], rng=rng)
+    if daughter_tier == "skip":
+        return None  # propagation failed this attempt (:180)
+
+    current_score = compute_population_score(db, region.id)
+    if would_exceed_max_population(current_score, daughter_tier, region.total_sectors):
+        logger.info(
+            "pirate.daughter_spawn_capped region=%s tier=%s",
+            region.id, daughter_tier.value,
+        )
+        return None
+
+    eligible = _eligible_region_sectors(db, region.id)
+    if not eligible:
+        return None
+
+    picker = rng if rng is not None else random
+    anchor_sector_id = picker.choice(eligible)
+
+    holding = PirateHolding(
+        region_id=region.id,
+        sector_id=anchor_sector_id,
+        tier=daughter_tier,
+        owner_player_id=None,
+        current_strength=1.0,
+    )
+    db.add(holding)
+    db.flush()
+    return holding
+
+
+def seed_spawn_camp(
+    db: Session, region: Region, *, now: Optional[datetime] = None, rng: Any = None
+) -> Optional[PirateHolding]:
+    """Bootstrap a fresh Camp when a region is fully cleansed / has no
+    parent holdings (pirate-ecosystem.md:245-277). Returns the created row,
+    or None if capped/has nowhere to land.
+
+    [NO-CANON, deferred]: canon restricts seed placement to Frontier-zone
+    sectors (``zone_filter=['frontier']``, :260) -- this WO has no zone
+    integration for pirate site selection (same omission as
+    spawn_daughter_holding), so seeding draws from ALL find_eligible_sectors
+    output in the region, not Frontier-only. composition roll deferred
+    (Lane B, NPC-roster materialization).
+    """
+    now = _now(now)
+    current_score = compute_population_score(db, region.id)
+    if would_exceed_max_population(current_score, PirateHoldingTier.CAMP, region.total_sectors):
+        return None
+
+    eligible = _eligible_region_sectors(db, region.id)
+    if not eligible:
+        return None
+
+    picker = rng if rng is not None else random
+    anchor_sector_id = picker.choice(eligible)
+
+    holding = PirateHolding(
+        region_id=region.id,
+        sector_id=anchor_sector_id,
+        tier=PirateHoldingTier.CAMP,
+        owner_player_id=None,
+        current_strength=1.0,
+    )
+    db.add(holding)
+    db.flush()
+    return holding
+
+
+def run_weekly_tick(
+    db: Session, region: Region, *, now: Optional[datetime] = None, rng: Any = None
+) -> Dict[str, Any]:
+    """The weekly growth tick for ONE region (pirate-ecosystem.md:122-149).
+    Per ADR-0060 X-I1: non-active regions are skipped entirely (no state
+    accrual during lifecycle wind-down); cleanup during termination is a
+    separate orchestrator concern.
+
+    Scope note: this handles GROWTH only. Evolution (:279-341) is a
+    SEPARATE top-level step of the outer weekly service loop per canon's own
+    architecture diagram (:36-42, growth and evolution are sibling steps b/c
+    under the same per-region loop, not nested) -- ``evolution_tick`` is
+    this module's independent sibling function; wiring "for each region,
+    for each holding, call both" is the outer scheduler's job (Lane B,
+    deferred).
+
+    IDEMPOTENT per tick window: a second call with a ``now`` in the SAME
+    UTC week (Sunday 00:00 boundary, :32) as the persisted
+    ``last_growth_tick_at`` is a no-op -- returns
+    ``{"action": "already_ticked_this_window"}`` without touching
+    population/holdings/state.
+    """
+    now = _now(now)
+    if region.status != RegionStatus.ACTIVE.value:
+        return {"action": "skipped", "reason": f"region_status={region.status}"}
+
+    state = get_pirate_ecosystem_state(region)
+    last_tick_at = _parse_iso(state.get("last_growth_tick_at"))
+    if last_tick_at is not None and _week_start(last_tick_at) == _week_start(now):
+        return {
+            "action": "already_ticked_this_window",
+            "last_growth_tick_at": _iso(last_tick_at),
+        }
+
+    current = compute_population_score(db, region.id)
+    target = compute_target_population_for_region(db, region, now=now)
+    delta = target - current
+
+    if delta < GROWTH_TOLERANCE_BAND:
+        result: Dict[str, Any] = {"action": "no_growth", "current": current, "target": target}
+    else:
+        sites_to_spawn = min(
+            GROWTH_MAX_SITES_PER_TICK,
+            math.ceil(delta / GROWTH_SITES_PER_DELTA_UNIT),
+        )
+        spawned: List[str] = []
+        for _ in range(sites_to_spawn):
+            holding = spawn_daughter_holding(db, region, now=now, rng=rng)
+            if holding is not None:
+                spawned.append(str(holding.id))
+        result = {
+            "action": "growth",
+            "spawned": spawned,
+            "current": current,
+            "target": target,
+        }
+
+    state["last_growth_tick_at"] = _iso(now)
+    state["last_growth_action"] = result["action"]
+    region.pirate_ecosystem_state = state
+    flag_modified(region, "pirate_ecosystem_state")
+    db.flush()
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Evolution tick -- tier promotion (pirate-ecosystem.md:279-341). WO-PIRATE-ECO-2.
+# ---------------------------------------------------------------------------
+
+NEXT_TIER: Dict[PirateHoldingTier, PirateHoldingTier] = {
+    PirateHoldingTier.CAMP: PirateHoldingTier.OUTPOST,
+    PirateHoldingTier.OUTPOST: PirateHoldingTier.STRONGHOLD,
+}
+
+EVOLUTION_THRESHOLD_DAYS: Dict[PirateHoldingTier, int] = {
+    PirateHoldingTier.CAMP: 30,
+    PirateHoldingTier.OUTPOST: 60,
+}  # :299
+
+EVOLUTION_CHANCE: Dict[PirateHoldingTier, float] = {
+    PirateHoldingTier.CAMP: 0.20,
+    PirateHoldingTier.OUTPOST: 0.10,
+}  # :316
+
+EVOLUTION_FULL_STRENGTH_THRESHOLD = 0.95  # :289/:292
+
+# Formations that satisfy the Outpost->Stronghold promotion prereq (:307-313).
+_STRONGHOLD_FORMATION_TYPES = {"BUBBLE", "DEAD_END_BUBBLE"}
+
+
+def _stronghold_promotion_formation_ok(db: Session, holding: PirateHolding) -> bool:
+    """True iff holding.sector_id sits inside a Bubble or Dead-End-Bubble
+    SpecialFormation, anchor OR interior (:307-313, the Outpost->Stronghold
+    promotion prereq). PirateHolding.sector_id is the GLOBAL integer
+    convention (see the model's own divergence note); SpecialFormation keys
+    sectors by sectors.id UUID, so this resolves that UUID first."""
+    from src.models.special_formation import SpecialFormation
+
+    sector = db.query(Sector).filter(Sector.sector_id == holding.sector_id).first()
+    if sector is None:
+        return False
+    formations = (
+        db.query(SpecialFormation)
+        .filter(
+            SpecialFormation.region_id == holding.region_id,
+            (SpecialFormation.anchor_sector_id == sector.id)
+            | (SpecialFormation.interior_sector_ids.contains([sector.id])),
+        )
+        .all()
+    )
+    return any(f.type.name in _STRONGHOLD_FORMATION_TYPES for f in formations)
+
+
+def _would_exceed_cap_after_promotion(
+    db: Session, holding: PirateHolding, next_tier: PirateHoldingTier
+) -> bool:
+    """[NO-CANON, resolved pragmatically]: canon's evolution_tick cap check
+    (:304) calls ``would_exceed_max_population(holding.region, holding.tier)``
+    -- passing the holding's CURRENT (pre-promotion) tier as the "tier being
+    added" argument. Applied literally that double-counts the holding (its
+    current weight is already inside current_population_score) and ignores
+    that a promotion only adds the DELTA between the old and new tier
+    weights, not the new tier's full weight. Resolved here with the
+    semantically-correct delta check: does swapping this ONE holding's
+    weight from its current tier to ``next_tier`` push the region over cap?
+    """
+    current_score = compute_population_score(db, holding.region_id)
+    projected = current_score - tier_weight(holding.tier) + tier_weight(next_tier)
+    total_sectors = (
+        db.query(Region.total_sectors).filter(Region.id == holding.region_id).scalar()
+    )
+    return projected > max_population_for_total_sectors(total_sectors or 0)
+
+
+def promote_holding_tier(holding: PirateHolding, *, now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Execute a tier promotion on an already-cleared holding (:321-328).
+    Mutates ``holding`` in place; the caller flushes (mirrors
+    update_cleansed_state's own "mutate the dict, caller persists" contract).
+
+    [NO-CANON, deferred -- Lane B territory]: composition re-roll, NPCRoster
+    additions (Outpost gains enforcers, Stronghold adds a Lord+captains), and
+    the citadel recovery-tick pacing are NOT performed here -- this WO's
+    PirateHolding model carries no composition/roster columns (ECO-1's own
+    documented omission), and NPC materialization is npc_scheduler
+    territory. The `region_cleansed`-style realtime event canon fires on
+    promotion (:328, `pirate.holding_evolved`) is ALSO deferred -- Lane C
+    (websocket telemetry), explicitly out of this WO's scope.
+    """
+    now = _now(now)
+    old_tier = holding.tier
+    new_tier = NEXT_TIER[old_tier]
+    holding.tier = new_tier
+    # :327 -- promotion resets the evolution clock, exactly like a real
+    # damage event does (both use last_damage_at as the clock anchor).
+    holding.last_damage_at = now
+    return {
+        "action": "evolved",
+        "holding_id": str(holding.id),
+        "old_tier": old_tier.value,
+        "new_tier": new_tier.value,
+    }
+
+
+def evolution_tick(
+    db: Session, holding: PirateHolding, *, now: Optional[datetime] = None, rng: Any = None
+) -> Dict[str, Any]:
+    """Evaluate ONE pirate-controlled holding for tier promotion
+    (pirate-ecosystem.md:279-341). Flushes on an actual promotion; a no-op
+    result touches nothing.
+
+    Player-captured holdings are not evaluated -- promotion only applies to
+    pirate-controlled sites (mirrors compute_population_score's own
+    owner_player_id IS NULL gate); callers should not pass a captured
+    holding, but this defends anyway rather than promoting a player's asset.
+    """
+    now = _now(now)
+    if holding.owner_player_id is not None:
+        return {"action": "none", "reason": "player_captured"}
+    if holding.tier == PirateHoldingTier.STRONGHOLD:
+        return {"action": "none", "reason": "max_tier"}
+    if holding.current_strength < EVOLUTION_FULL_STRENGTH_THRESHOLD:
+        return {"action": "none", "reason": "not_full_strength"}
+
+    # :288-296 -- untouched-at-full-strength clock: created_at if NEVER
+    # damaged, else the last damage event (which promote_holding_tier's own
+    # reset, or a real combat hit, both advance).
+    threshold_met_at = holding.last_damage_at or holding.created_at
+    days_untouched = (now - threshold_met_at).days
+    required = EVOLUTION_THRESHOLD_DAYS[holding.tier]
+    if days_untouched < required:
+        return {"action": "none", "reason": "clock_not_met", "days_untouched": days_untouched}
+
+    next_tier = NEXT_TIER[holding.tier]
+    if _would_exceed_cap_after_promotion(db, holding, next_tier):
+        return {"action": "none", "reason": "capped"}
+
+    if holding.tier == PirateHoldingTier.OUTPOST:
+        if not _stronghold_promotion_formation_ok(db, holding):
+            # :309-313 -- no qualifying formation: suppress promotion AND
+            # reset the clock (same as a real damage event).
+            holding.last_damage_at = now
+            db.flush()
+            return {"action": "suppressed", "reason": "no_formation"}
+
+    chance = EVOLUTION_CHANCE[holding.tier]
+    picker = rng if rng is not None else random
+    if picker.random() < chance:
+        result = promote_holding_tier(holding, now=now)
+        db.flush()
+        return result
+
+    return {"action": "none", "reason": "roll_failed"}
+
+
+# ---------------------------------------------------------------------------
+# Cleansed-state side effects -- Pirate Hunter medal + the region_cleansed
+# realtime-event seam (pirate-ecosystem.md:356-377). WO-PIRATE-ECO-2 --
+# captured from ECO-1's own explicit deferral (see update_cleansed_state's
+# docstring above).
+# ---------------------------------------------------------------------------
+
+CLEANSED_MEDAL_TOP_N = 3  # :377 -- "top 3 attackers"
+
+
+def top_attackers_by_kill_weight(
+    db: Session, region_id: uuid.UUID, *, days: int = 30, limit: int = CLEANSED_MEDAL_TOP_N,
+    now: Optional[datetime] = None,
+) -> List[uuid.UUID]:
+    """The top ``limit`` distinct attacker_player_ids by SUMMED kill_weight
+    in the last ``days`` for this region (:361, :377 "top recent
+    attackers"). NULL attacker_player_id rows (a defensive nullability this
+    codebase's PirateKillLog model carries, see its own divergence note) are
+    excluded -- there is no player to credit."""
+    cutoff = _now(now) - timedelta(days=days)
+    rows = (
+        db.query(PirateKillLog.attacker_player_id, func.sum(PirateKillLog.kill_weight).label("w"))
+        .filter(
+            PirateKillLog.region_id == region_id,
+            PirateKillLog.created_at >= cutoff,
+            PirateKillLog.attacker_player_id.isnot(None),
+        )
+        .group_by(PirateKillLog.attacker_player_id)
+        .order_by(func.sum(PirateKillLog.kill_weight).desc())
+        .limit(limit)
+        .all()
+    )
+    return [player_id for player_id, _weight in rows]
+
+
+def _dispatch_pirate_hunter_medals(
+    db: Session, region: Region, attacker_ids: List[uuid.UUID]
+) -> None:
+    """Best-effort medal dispatch, mirroring combat_service._dispatch_bounty_
+    medals' defensive contract EXACTLY: resolved by getattr (never a
+    parse-time import of a symbol that may not exist), any failure logged
+    and swallowed -- a medal hiccup must never break the weekly tick.
+
+    [NO-CANON gap, flagged for DECISIONS -- NOT silently invented]: canon
+    names a PER-REGION medal, `'Pirate Hunter — {region_name}'` (:377), but
+    this codebase's medal catalog (medal_service.MEDAL_CATALOG /
+    medal_catalog.py) is a STATIC dict of fixed medal_ids -- there is no
+    existing 'pirate_hunter' entry and no mechanism for a dynamically
+    region-named medal (every other medal is a fixed catalog id). This
+    dispatcher calls the hook defensively with a STABLE medal_id
+    ("combat.pirate_hunter") on the assumption a future catalog entry lands
+    under that id; until one does, award_medal's own "unknown medal_id"
+    guard makes this a harmless no-op (a logged warning, not a raised
+    exception) rather than a crash. The region-name PARAMETERIZATION is not
+    implemented --
+    that requires a real catalog-shape decision (a template mechanism, or
+    dropping the per-region naming) this dispatcher cannot make silently.
+    """
+    if not attacker_ids:
+        return
+    try:
+        import src.services.medal_service as _medal_module
+
+        award = getattr(_medal_module, "award_medal", None)
+        if not callable(award):
+            return
+        for player_id in attacker_ids:
+            try:
+                award(
+                    db, player_id, "combat.pirate_hunter",
+                    awarded_via="pirate_ecosystem",
+                    context_payload={"region_id": str(region.id), "region_name": region.name},
+                )
+            except Exception as e:  # never let one bad award break the batch
+                logger.error(
+                    "Pirate Hunter medal award failed for player %s region %s: %s",
+                    player_id, region.id, e,
+                )
+    except Exception as e:  # never let a medal hiccup break the weekly tick
+        logger.error("Pirate Hunter medal dispatch hook failed: %s", e)
+
+
+def _emit_region_cleansed_event(region: Region, *, now: Optional[datetime] = None) -> None:
+    """MARKED SEAM for Lane C (websocket telemetry), deferred out of this
+    WO's scope per the dispatch brief ("do NOT touch... websocket_service.py").
+    Canon (:358-362) fires a `region_cleansed` realtime event here with
+    {region_id, cleansed_at, recent_attackers}. Currently a documented
+    no-op -- Lane C wires the actual connection_manager dispatch when it
+    lands; this function exists so that call site is already in the right
+    place and doesn't need a second edit to THIS file later."""
+    logger.info(
+        "pirate.region_cleansed region=%s at=%s (realtime emit deferred to Lane C)",
+        region.id, _iso(_now(now)),
+    )
+
+
+def update_cleansed_state_for_region(
+    db: Session, region: Region, *, now: Optional[datetime] = None
+) -> Dict[str, Any]:
+    """DB-backed wrapper around the pure update_cleansed_state (unchanged,
+    see its own docstring) that ALSO fires the side effects canon's
+    pseudocode bundles into this step (:356-363): the Pirate Hunter medal
+    to the top recent attackers, and the region_cleansed event seam. Fires
+    ONLY on the genuine None->set transition (never re-fires on an
+    already-Cleansed re-run, matching the pure core's own idempotence)."""
+    now = _now(now)
+    state = get_pirate_ecosystem_state(region)
+    was_cleansed = state.get("cleansed_at") is not None
+
+    current_score = compute_population_score(db, region.id)
+    update_cleansed_state(state, current_score, now)
+
+    region.pirate_ecosystem_state = state
+    flag_modified(region, "pirate_ecosystem_state")
+
+    newly_cleansed = (not was_cleansed) and (state.get("cleansed_at") is not None)
+    if newly_cleansed:
+        attackers = top_attackers_by_kill_weight(db, region.id, days=30, now=now)
+        _dispatch_pirate_hunter_medals(db, region, attackers)
+        _emit_region_cleansed_event(region, now=now)
+
+    db.flush()
+    return state
+
+
 __all__ = [
     "TIER_WEIGHT",
     "CAP_MULTIPLIER",
@@ -415,4 +944,22 @@ __all__ = [
     "get_pirate_ecosystem_state",
     "refresh_pirate_ecosystem_snapshot",
     "find_eligible_sectors",
+    # WO-PIRATE-ECO-2
+    "SPAWN_PARENT_WEIGHT",
+    "SPAWN_DISTRIBUTION",
+    "GROWTH_TOLERANCE_BAND",
+    "GROWTH_MAX_SITES_PER_TICK",
+    "GROWTH_SITES_PER_DELTA_UNIT",
+    "spawn_daughter_holding",
+    "seed_spawn_camp",
+    "run_weekly_tick",
+    "NEXT_TIER",
+    "EVOLUTION_THRESHOLD_DAYS",
+    "EVOLUTION_CHANCE",
+    "EVOLUTION_FULL_STRENGTH_THRESHOLD",
+    "promote_holding_tier",
+    "evolution_tick",
+    "CLEANSED_MEDAL_TOP_N",
+    "top_attackers_by_kill_weight",
+    "update_cleansed_state_for_region",
 ]
