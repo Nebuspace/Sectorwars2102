@@ -132,6 +132,32 @@ class CrossSystemRecommendation:
         }
 
 
+def _normalize_security_level(value: Any) -> SecurityLevel:
+    """WO-SWEEP-RECO-STRVALUE: AIComprehensiveAssistant.security_level is a
+    plain String(20) DB column (src/models/enhanced_ai_models.py:80) --
+    NOT a native Postgres enum -- with a Python-side SecurityLevel enum
+    default applied only at construction. A brand-new assistant (this
+    request's own CREATE branch in _validate_and_authenticate, :216-221)
+    still carries that enum instance in memory pre-commit. Any EXISTING
+    assistant loaded via the SELECT at :208-212 -- the common, repeat-
+    visit case -- comes back from SQLAlchemy as the raw column value: a
+    plain str (e.g. "standard"), since the column type has no Enum()
+    coercion to apply on read. Every site that stores assistant.
+    security_level into CrossSystemRecommendation.security_clearance_
+    required (typed SecurityLevel) assumed the enum unconditionally, and
+    to_dict() / both enhanced_ai.py recommendation routes / this file's
+    own get_ai_performance_metrics all later call .value on it --
+    'str' object has no attribute 'value' the instant an EXISTING
+    assistant reaches any of those paths. Normalize once, at every read
+    site, rather than trusting each of the 7 call sites to handle both
+    shapes -- a deliberate boundary fix, not a papered-over guard: the
+    field genuinely IS ambiguously typed at the ORM layer (str vs enum
+    depending on whether this row has been round-tripped through the DB
+    yet), and normalizing to the declared type is the correct closure,
+    not a workaround."""
+    return value if isinstance(value, SecurityLevel) else SecurityLevel(value)
+
+
 @dataclass
 class StrategicInsight:
     """Strategic intelligence insight across systems"""
@@ -458,7 +484,10 @@ class EnhancedAIService:
         # and with expire_on_commit=True the commit expires this ORM object —
         # a later attribute access (security_level below) would then trigger a
         # sync lazy-reload on the async session and raise greenlet_spawn.
-        security_level = assistant.security_level
+        # WO-SWEEP-RECO-STRVALUE: also normalize here -- see
+        # _normalize_security_level's docstring for why assistant.
+        # security_level is sometimes a plain str.
+        security_level = _normalize_security_level(assistant.security_level)
         player_id_str = str(assistant.player_id)
 
         # Leverage existing ARIA trading intelligence
@@ -562,7 +591,7 @@ class EnhancedAIService:
                     },
                     confidence=0.8,
                     expires_at=datetime.utcnow() + timedelta(hours=1),
-                    security_clearance_required=assistant.security_level
+                    security_clearance_required=_normalize_security_level(assistant.security_level)
                 )
                 recommendations.append(rec)
         else:
@@ -587,7 +616,7 @@ class EnhancedAIService:
                     },
                     confidence=0.85,
                     expires_at=datetime.utcnow() + timedelta(days=7),
-                    security_clearance_required=assistant.security_level
+                    security_clearance_required=_normalize_security_level(assistant.security_level)
                 )
                 recommendations.append(rec)
         
@@ -631,7 +660,7 @@ class EnhancedAIService:
                     },
                     confidence=0.9,
                     expires_at=datetime.utcnow() + timedelta(days=30),
-                    security_clearance_required=assistant.security_level
+                    security_clearance_required=_normalize_security_level(assistant.security_level)
                 )
                 recommendations.append(rec)
         
@@ -689,7 +718,7 @@ class EnhancedAIService:
                     },
                     confidence=0.8,
                     expires_at=datetime.utcnow() + timedelta(days=7),
-                    security_clearance_required=assistant.security_level
+                    security_clearance_required=_normalize_security_level(assistant.security_level)
                 )
                 recommendations.append(rec)
         
@@ -729,7 +758,7 @@ class EnhancedAIService:
                 },
                 confidence=0.85,
                 expires_at=datetime.utcnow() + timedelta(days=14),
-                security_clearance_required=assistant.security_level
+                security_clearance_required=_normalize_security_level(assistant.security_level)
             )
             recommendations.append(rec)
         
@@ -1577,7 +1606,7 @@ What would you like help with today?"""
                     "total_patterns": pattern_metrics.total_patterns or 0,
                     "avg_success_rate": float(pattern_metrics.avg_success_rate or 0)
                 },
-                "security_level": assistant.security_level.value,
+                "security_level": _normalize_security_level(assistant.security_level).value,
                 "last_active": assistant.last_active.isoformat()
             }
             
