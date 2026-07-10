@@ -77,6 +77,25 @@ class _FakeFilterFirstQuery:
         return matching[0] if matching else None
 
 
+class _NoOpSavepoint:
+    """Stand-in for the real SQLAlchemy Session.begin_nested() context
+    manager (WO-SWEEP-ARIA-MI-COLUMN) -- this fake has no real transactional
+    backing, so success just falls through; a raised exception inside the
+    `with` block propagates normally (Python's own context-manager protocol
+    handles that without any special-casing here), matching how the SUT's
+    own try/except around each `with db.begin_nested():` block already
+    isolates and logs a per-commodity failure. Savepoint FAILURE-isolation
+    behavior itself (does a real SAVEPOINT actually protect the surrounding
+    transaction) is proven against a real SQLite Session in
+    test_aria_mi_column_savepoint.py, not re-proven with this fake."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False  # never swallow -- let the SUT's own try/except handle it
+
+
 class FakeMarketObsSession:
     """Minimal sync db double: dispatches db.query(Model) by the model
     class itself (every query in this SUT is a whole-row query, never a
@@ -89,6 +108,7 @@ class FakeMarketObsSession:
         self.security_logs = list(security_logs)
         self.queries = 0
         self.added = []
+        self.flushes = 0
 
     def add(self, obj):
         self.added.append(obj)
@@ -107,6 +127,12 @@ class FakeMarketObsSession:
         if model is ARIAMarketIntelligence:
             return _FakeFilterFirstQuery(self.intelligences, self)
         raise AssertionError(f"unexpected query owner {model!r}")
+
+    def begin_nested(self):
+        return _NoOpSavepoint()
+
+    def flush(self):
+        self.flushes += 1
 
 
 # --------------------------------------------------------------------------- #

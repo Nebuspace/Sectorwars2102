@@ -249,6 +249,18 @@ class ARIAPersonalIntelligenceService:
         CALLER owns the commit (folds into the route's single commit).
         Never raises -- an ARIA market-observation hiccup must never break
         docking or the market view.
+
+        WO-SWEEP-ARIA-MI-COLUMN: each commodity's read+write is now its own
+        SAVEPOINT (``db.begin_nested()``) -- a DB-level failure (the
+        phantom-column defect this WO fixed, or any future one) rolls back
+        ONLY that commodity, never poisons the session for the rest of this
+        station visit's payload or the caller's own commit. Mirrors
+        bounty_service.py:774 / combat_service.py:4382 /
+        faction_service.py:212's add+flush-inside-begin_nested idiom, widened
+        to cover the SELECT too: a failed SELECT aborts the current
+        transaction in Postgres exactly like a failed flush does, and here
+        the SELECT (not just the INSERT/UPDATE) is the actual failure point
+        the phantom-column defect hit.
         """
         try:
             if not self._validate_player_at_port_sync(player_id, station_id, db):
@@ -297,69 +309,80 @@ class ARIAPersonalIntelligenceService:
 
                 quantity = entry.get("quantity", 0)
 
-                intelligence = (
-                    db.query(ARIAMarketIntelligence)
-                    .filter(
-                        ARIAMarketIntelligence.player_id == player_id,
-                        ARIAMarketIntelligence.station_id == station_id,
-                        ARIAMarketIntelligence.commodity == commodity,
-                    )
-                    .first()
-                )
-
-                observation = {
-                    "price": price,
-                    "quantity": quantity,
-                    "timestamp": now.isoformat(),
-                }
-
-                if intelligence is not None:
-                    if (
-                        intelligence.last_visit is not None
-                        and scaled_elapsed(intelligence.last_visit, now)
-                        < self.MARKET_OBSERVATION_DEDUP_WINDOW
-                    ):
-                        continue  # within the dedup window -- no-op for this commodity
-
-                    # REASSIGN, never in-place .append() -- price_observations
-                    # is a plain Column(JSON); in-place mutation of the same
-                    # list object bypasses SQLAlchemy's change tracking and
-                    # would be silently lost at flush.
-                    intelligence.price_observations = intelligence.price_observations + [observation]
-                    intelligence.data_points += 1
-                    intelligence.last_visit = now
-
-                    prices = [obs["price"] for obs in intelligence.price_observations[-50:]]
-                    intelligence.average_price = statistics.mean(prices)
-                    intelligence.price_volatility = statistics.stdev(prices) if len(prices) > 1 else 0.0
-
-                    if intelligence.data_points >= self.MIN_DATA_POINTS_FOR_PREDICTION:
-                        intelligence.identified_patterns = self._identify_price_patterns(
-                            intelligence.price_observations
+                try:
+                    with db.begin_nested():
+                        intelligence = (
+                            db.query(ARIAMarketIntelligence)
+                            .filter(
+                                ARIAMarketIntelligence.player_id == player_id,
+                                ARIAMarketIntelligence.station_id == station_id,
+                                ARIAMarketIntelligence.commodity == commodity,
+                            )
+                            .first()
                         )
-                        intelligence.prediction_confidence = min(
-                            intelligence.data_points / 20, 0.95
-                        )
-                else:
-                    intelligence = ARIAMarketIntelligence(
-                        player_id=player_id,
-                        station_id=station_id,
-                        sector_id=station.sector_uuid,
-                        commodity=commodity,
-                        price_observations=[observation],
-                        average_price=price,
-                        price_volatility=0.0,
-                        data_points=1,
-                        last_visit=now,
-                        intelligence_quality=0.1,
-                    )
-                    db.add(intelligence)
 
-                intelligence.intelligence_quality = self._calculate_intelligence_quality(
-                    intelligence.data_points,
-                    intelligence.last_visit,
-                    intelligence.price_volatility,
-                )
+                        observation = {
+                            "price": price,
+                            "quantity": quantity,
+                            "timestamp": now.isoformat(),
+                        }
+
+                        if intelligence is not None:
+                            if (
+                                intelligence.last_visit is not None
+                                and scaled_elapsed(intelligence.last_visit, now)
+                                < self.MARKET_OBSERVATION_DEDUP_WINDOW
+                            ):
+                                continue  # within the dedup window -- no-op for this commodity
+
+                            # REASSIGN, never in-place .append() -- price_observations
+                            # is a plain Column(JSON); in-place mutation of the same
+                            # list object bypasses SQLAlchemy's change tracking and
+                            # would be silently lost at flush.
+                            intelligence.price_observations = intelligence.price_observations + [observation]
+                            intelligence.data_points += 1
+                            intelligence.last_visit = now
+
+                            prices = [obs["price"] for obs in intelligence.price_observations[-50:]]
+                            intelligence.average_price = statistics.mean(prices)
+                            intelligence.price_volatility = statistics.stdev(prices) if len(prices) > 1 else 0.0
+
+                            if intelligence.data_points >= self.MIN_DATA_POINTS_FOR_PREDICTION:
+                                intelligence.identified_patterns = self._identify_price_patterns(
+                                    intelligence.price_observations
+                                )
+                                intelligence.prediction_confidence = min(
+                                    intelligence.data_points / 20, 0.95
+                                )
+                        else:
+                            intelligence = ARIAMarketIntelligence(
+                                player_id=player_id,
+                                station_id=station_id,
+                                sector_id=station.sector_uuid,
+                                commodity=commodity,
+                                price_observations=[observation],
+                                average_price=price,
+                                price_volatility=0.0,
+                                data_points=1,
+                                last_visit=now,
+                                intelligence_quality=0.1,
+                            )
+                            db.add(intelligence)
+
+                        intelligence.intelligence_quality = self._calculate_intelligence_quality(
+                            intelligence.data_points,
+                            intelligence.last_visit,
+                            intelligence.price_volatility,
+                        )
+                        db.flush()
+                except Exception as row_err:
+                    logger.warning(
+                        "record_market_observation_sync: commodity %s at station %s "
+                        "failed (isolated to this commodity, rest of the visit's "
+                        "payload is unaffected): %s",
+                        commodity, station_id, row_err,
+                    )
+                    continue
         except Exception as e:
             logger.warning(
                 "record_market_observation_sync failed for player %s at station %s: %s",
