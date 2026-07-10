@@ -34,7 +34,6 @@ npm-debug.log
 
 # Package lock files - ignore all except root
 package-lock.json
-services/*/package-lock.json
 # Keep root package-lock.json
 !/package-lock.json
 

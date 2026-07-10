@@ -55,12 +55,10 @@ async def _track_player_login(db: Session, user_id) -> Optional[Dict[str, Any]]:
 
         # WO-F4 — returning-player welcome-back turn bonus (retention.md). This
         # is the SINGLE shared login chokepoint for the password/JSON login
-        # routes (every one of those funnels here), so the bonus is applied
-        # exactly once per login here rather than in each endpoint. OAuth
-        # callbacks (github/google/steam) do NOT call this helper today and so
-        # never trigger the bonus — a pre-existing gap, unrelated to surfacing
-        # this outcome. Capture the OLD last_game_login BEFORE welcome_back
-        # overwrites it to now: that overwrite is what makes the grant one-shot
+        # routes AND the OAuth callbacks (github/google/steam) — every one of
+        # those funnels here, so the bonus is applied exactly once per login
+        # here rather than in each endpoint. Capture the OLD last_game_login
+        # BEFORE welcome_back overwrites it to now: that overwrite is what makes the grant one-shot
         # per return (a second login inside 7 days measures a sub-threshold gap
         # → 0). Fully DEFENSIVE — a bonus failure must never break login, so it
         # is isolated in its own try/except and the row is committed
@@ -946,6 +944,11 @@ async def github_callback(request: Request, code: str, register: bool = False, s
         access_token, refresh_token = create_tokens(str(user.id), db)
         update_user_last_login(db, str(user.id))
 
+        # Best-effort player-activity login tracking (mirrors the password/JSON
+        # login chokepoint above — grants the welcome-back turn bonus and Redis
+        # online-session tracking for OAuth logins too; previously a gap).
+        await _track_player_login(db, user.id)
+
         # ADR-0085: keep tokens OUT of the redirect URL. Stash the token payload
         # server-side under a short-lived single-use code and redirect with only
         # the code (+ user_id / is_new_user, which are not secrets). The SPA POSTs
@@ -1061,6 +1064,11 @@ async def google_callback(request: Request, code: str, register: bool = False, s
     access_token, refresh_token = create_tokens(str(user.id), db)
     update_user_last_login(db, str(user.id))
 
+    # Best-effort player-activity login tracking (mirrors the password/JSON
+    # login chokepoint above — grants the welcome-back turn bonus and Redis
+    # online-session tracking for OAuth logins too; previously a gap).
+    await _track_player_login(db, user.id)
+
     # ADR-0085: tokens go server-side under a single-use code, not in the URL.
     auth_code = store_auth_code({
         "access_token": access_token,
@@ -1131,6 +1139,11 @@ async def steam_callback(request: Request, register: bool = False, invite: Optio
     # Create tokens and update last login
     access_token, refresh_token = create_tokens(str(user.id), db)
     update_user_last_login(db, str(user.id))
+
+    # Best-effort player-activity login tracking (mirrors the password/JSON
+    # login chokepoint above — grants the welcome-back turn bonus and Redis
+    # online-session tracking for OAuth logins too; previously a gap).
+    await _track_player_login(db, user.id)
 
     # ADR-0085: tokens go server-side under a single-use code, not in the URL.
     auth_code = store_auth_code({

@@ -20,6 +20,12 @@ been granted. This test suite pins three things DB-free:
    any of the existing token/user_id fields -- the auth-surface declaration's
    "read-only data field, zero change to token issuance" claim, proven by
    diffing the response dict against a no-welcome-back baseline.
+4. OAuth-callback parity (github/google/steam): previously a documented gap
+   in ``_track_player_login``'s own docstring -- OAuth logins never called
+   the chokepoint, so the welcome-back bonus and Redis online-session
+   tracking only ever fired for password/JSON logins. Pins that all three
+   callbacks now call it, in the same relative position the password routes
+   do (after tokens/last-login are set, before the response is built).
 
 DB-free throughout: ``welcome_back()`` itself takes a transient (unpersisted)
 ``Player()`` ORM instance and mutates it in memory -- no engine, no session,
@@ -33,6 +39,7 @@ import sys
 import types
 import uuid
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -271,3 +278,159 @@ async def test_login_json_threads_welcome_back_without_touching_token_fields(mon
     assert AuthResponse(**granted).model_dump()["welcome_back"] == {
         "granted": True, "bonus": 250, "days_inactive": 12,
     }
+
+
+# ---------------------------------------------------------------------------
+# 4. OAuth callback parity -- github/google/steam now hit the SAME chokepoint
+#    the password/JSON routes do. DB-free: every external touchpoint
+#    (provider exchange, get_oauth_user, token issuance, the single-use
+#    exchange-code store, base/frontend URLs) is monkeypatched on the module-
+#    level names auth.py imports, mirroring test #3's pattern above -- not a
+#    fake OAuth harness, the same "patch the name the route calls" technique.
+# ---------------------------------------------------------------------------
+
+class _FakeOAuthUser:
+    def __init__(self):
+        self.id = uuid.uuid4()
+        self.username = "octocat"
+
+
+class _FakeOAuthRequest:
+    def __init__(self):
+        self.url = "http://testserver/api/v1/auth/github/callback"
+        self.client = types.SimpleNamespace(host="127.0.0.1")
+
+
+def _patch_common_oauth_bits(monkeypatch, call_order):
+    """Shared stubs every OAuth callback test needs: token issuance,
+    last-login stamping, the single-use exchange code, the api/frontend base
+    URLs, and a call-order-recording ``_track_player_login`` spy.
+    Provider-specific pieces (GitHubOAuth/GoogleOAuth/SteamAuth,
+    get_oauth_user) are patched per-test."""
+    monkeypatch.setattr(auth_mod, "create_tokens", lambda uid, db: ("tok-a", "tok-r"))
+
+    def _update_last_login(db, uid):
+        call_order.append(("update_user_last_login", uid))
+    monkeypatch.setattr(auth_mod, "update_user_last_login", _update_last_login)
+
+    async def _spy_track_login(db, user_id):
+        call_order.append(("_track_player_login", user_id))
+        return None
+    monkeypatch.setattr(auth_mod, "_track_player_login", _spy_track_login)
+
+    def _store_code(payload):
+        call_order.append(("store_auth_code", payload["user_id"]))
+        return "auth-code-xyz"
+    monkeypatch.setattr(auth_mod, "store_auth_code", _store_code)
+
+    # get_api_base_url/detect_environment/get_frontend_url are methods on the
+    # Settings CLASS (not pydantic fields), so patch the class, not the
+    # instance -- pydantic's __setattr__ rejects attribute names that aren't
+    # declared fields. API_V1_STR IS a declared field, so the instance-level
+    # setattr works for that one.
+    settings_cls = type(auth_mod.settings)
+    monkeypatch.setattr(settings_cls, "get_api_base_url", lambda self: "http://api.test/api/v1")
+    monkeypatch.setattr(auth_mod.settings, "API_V1_STR", "/api/v1")
+    monkeypatch.setattr(settings_cls, "detect_environment", lambda self: "test")
+    monkeypatch.setattr(settings_cls, "get_frontend_url", lambda self: "http://frontend.test")
+
+
+def _assert_tracked_between_login_and_response(call_order, expected_user_id):
+    names = [c[0] for c in call_order]
+    assert "_track_player_login" in names, "OAuth callback never called _track_player_login"
+    assert names.index("_track_player_login") > names.index("update_user_last_login")
+    assert names.index("_track_player_login") < names.index("store_auth_code")
+    assert call_order[names.index("_track_player_login")][1] == expected_user_id
+
+
+@pytest.mark.asyncio
+async def test_github_callback_fires_track_player_login_after_tokens_before_response(monkeypatch):
+    call_order = []
+    _patch_common_oauth_bits(monkeypatch, call_order)
+    monkeypatch.setattr(auth_mod, "_validate_oauth_state", lambda state: True)
+
+    fake_user = _FakeOAuthUser()
+
+    async def _exchange(code, redirect_uri):
+        return "provider-token"
+
+    async def _get_user_info(token):
+        return "provider-uid-1", {"login": "octocat"}
+
+    monkeypatch.setattr(auth_mod.GitHubOAuth, "exchange_code_for_token", staticmethod(_exchange))
+    monkeypatch.setattr(auth_mod.GitHubOAuth, "get_user_info", staticmethod(_get_user_info))
+
+    async def _get_oauth_user(db, provider, provider_user_id):
+        return fake_user  # existing user -- skip create_oauth_user entirely
+
+    monkeypatch.setattr(auth_mod, "get_oauth_user", _get_oauth_user)
+
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = MagicMock()  # existing Player row
+
+    response = await auth_mod.github_callback(
+        request=_FakeOAuthRequest(), code="ghcode", state="valid-state", invite=None, db=db,
+    )
+
+    assert response.status_code == 307
+    assert "error=oauth_failed" not in response.headers["location"]
+    _assert_tracked_between_login_and_response(call_order, fake_user.id)
+
+
+@pytest.mark.asyncio
+async def test_google_callback_fires_track_player_login_after_tokens_before_response(monkeypatch):
+    call_order = []
+    _patch_common_oauth_bits(monkeypatch, call_order)
+    monkeypatch.setattr(auth_mod, "_validate_oauth_state", lambda state: True)
+
+    fake_user = _FakeOAuthUser()
+
+    async def _exchange(code, redirect_uri):
+        return {"access_token": "provider-token"}
+
+    async def _get_user_info(token_data):
+        return "provider-uid-2", {"email": "a@b.com"}
+
+    monkeypatch.setattr(auth_mod.GoogleOAuth, "exchange_code_for_token", staticmethod(_exchange))
+    monkeypatch.setattr(auth_mod.GoogleOAuth, "get_user_info", staticmethod(_get_user_info))
+
+    async def _get_oauth_user(db, provider, provider_user_id):
+        return fake_user
+
+    monkeypatch.setattr(auth_mod, "get_oauth_user", _get_oauth_user)
+
+    response = await auth_mod.google_callback(
+        request=_FakeOAuthRequest(), code="gcode", state="valid-state", invite=None, db=MagicMock(),
+    )
+
+    assert response.status_code == 307
+    _assert_tracked_between_login_and_response(call_order, fake_user.id)
+
+
+@pytest.mark.asyncio
+async def test_steam_callback_fires_track_player_login_after_tokens_before_response(monkeypatch):
+    call_order = []
+    _patch_common_oauth_bits(monkeypatch, call_order)
+
+    fake_user = _FakeOAuthUser()
+
+    async def _verify_response(request):
+        return "steam-id-1"
+
+    async def _get_user_info(steam_id):
+        return {"personaname": "steamer"}
+
+    monkeypatch.setattr(auth_mod.SteamAuth, "verify_response", staticmethod(_verify_response))
+    monkeypatch.setattr(auth_mod.SteamAuth, "get_user_info", staticmethod(_get_user_info))
+
+    async def _get_oauth_user(db, provider, provider_user_id):
+        return fake_user
+
+    monkeypatch.setattr(auth_mod, "get_oauth_user", _get_oauth_user)
+
+    response = await auth_mod.steam_callback(
+        request=_FakeOAuthRequest(), invite=None, db=MagicMock(),
+    )
+
+    assert response.status_code == 307
+    _assert_tracked_between_login_and_response(call_order, fake_user.id)

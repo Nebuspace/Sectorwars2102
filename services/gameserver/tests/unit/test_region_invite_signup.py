@@ -168,6 +168,22 @@ class TestLockAndValidate:
         _, _, reason = lock_and_validate_invite(db, invite.code)
         assert reason == "ERR_INVITE_EXHAUSTED"
 
+    def test_status_already_exhausted_returns_exhausted_not_not_active(self):
+        # Ordering regression (mirrors region_invite_service.consume_invite's
+        # fix, region_invite_service.py:412-417): a row already status-stamped
+        # 'exhausted' by a winning concurrent redeemer must read as
+        # ERR_INVITE_EXHAUSTED, not the generic ERR_INVITE_NOT_ACTIVE the old
+        # check-order produced (status != ACTIVE was tested before status ==
+        # EXHAUSTED).
+        owner, region_id = uuid.uuid4(), uuid.uuid4()
+        invite = _make_invite(
+            owner_id=owner, region_id=region_id,
+            status=RegionInviteStatus.EXHAUSTED.value, uses=1, max_uses=1,
+        )
+        db = _LockValidateDB(invite=invite)
+        _, _, reason = lock_and_validate_invite(db, invite.code)
+        assert reason == "ERR_INVITE_EXHAUSTED"
+
     def test_expired_fails_closed(self):
         owner, region_id = uuid.uuid4(), uuid.uuid4()
         invite = _make_invite(
