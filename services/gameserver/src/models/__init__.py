@@ -83,3 +83,9 @@ from src.models.claim_license import ClaimLicense
 from src.models.route_optimization_run import RouteOptimizationRun
 from src.models.pirate_holding import PirateHolding, PirateHoldingTier
 from src.models.pirate_kill_log import PirateKillLog, PirateKillDisposition
+from src.models.multi_account import (
+    MultiAccountCluster,
+    MultiAccountFlag,
+    MultiAccountSeverity,
+    MultiAccountAdminDecision,
+)
