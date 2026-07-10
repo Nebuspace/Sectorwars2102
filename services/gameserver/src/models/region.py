@@ -1,6 +1,6 @@
 """Regional models for multi-regional platform"""
 
-from sqlalchemy import Column, String, Integer, DECIMAL, Boolean, Text, TIMESTAMP, ForeignKey, CheckConstraint, UniqueConstraint
+from sqlalchemy import Column, String, Integer, BigInteger, DECIMAL, Boolean, Text, TIMESTAMP, ForeignKey, CheckConstraint, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -25,10 +25,17 @@ class RegionType(str, Enum):
 
 
 class RegionStatus(str, Enum):
+    """ADR-0050 batch3 provisioning-lifecycle hardening: the full 7-state
+    set (DATA_MODELS/galaxy.md:89, SYSTEMS/region-lifecycle.md). GRACE,
+    GENERATION_CORRUPT (SK21), and ATTACHMENT_PENDING (SK22, Phase 14
+    retry exhaustion) extend the original 4-state set."""
     ACTIVE = "active"
     SUSPENDED = "suspended"
     TERMINATED = "terminated"
     PENDING = "pending"
+    GRACE = "grace"
+    GENERATION_CORRUPT = "generation_corrupt"
+    ATTACHMENT_PENDING = "attachment_pending"
 
 
 class MembershipType(str, Enum):
@@ -87,6 +94,19 @@ class Region(Base):
     last_payment_at = Column(TIMESTAMP, nullable=True)
     next_billing_at = Column(TIMESTAMP, nullable=True)
     status = Column(String(50), nullable=False, default=RegionStatus.ACTIVE)
+    # ADR-0050 batch3 provisioning-lifecycle hardening (SK17/SK19/SK21/SK22):
+    # lifecycle timestamps + generation-tracking columns backing the 7-state
+    # RegionStatus set above. All nullable -- set only on the relevant
+    # transition; existing rows read NULL until a future WO wires the
+    # transitions (galaxy.md:90-94, region-lifecycle.md).
+    suspended_at = Column(TIMESTAMP, nullable=True)
+    terminated_at = Column(TIMESTAMP, nullable=True)
+    scheduled_hard_delete_at = Column(TIMESTAMP, nullable=True)
+    # Canon (galaxy.md:93) marks generation_seed NOT NULL; shipped nullable
+    # here per the additive-only migration rule -- a NOT NULL column against
+    # existing region rows with no recorded seed would be destructive.
+    generation_seed = Column(BigInteger, nullable=True)
+    generation_phase_checksums = Column(JSONB, nullable=True, server_default='{}')
     created_at = Column(TIMESTAMP, nullable=False, server_default=func.now())
     updated_at = Column(TIMESTAMP, nullable=False, server_default=func.now(), onupdate=func.now())
     
