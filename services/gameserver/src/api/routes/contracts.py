@@ -67,7 +67,14 @@ class PostContractRequest(BaseModel):
     destination_station_id: str
     commodity_type: str
     quantity: int = Field(..., gt=0)
-    payment: Decimal = Field(..., gt=0)
+    # WO-ECON-CONTRACT-MONEY-HARDEN (Mack LOW #3): Player.credits is a
+    # whole-credit integer column and penalty defaults to 1.0x payment
+    # (post_player_contract) -- a fractional payment can never be honored
+    # exactly regardless of how carefully the service-side rounding is
+    # done, so it's rejected here rather than silently coerced. multiple_of
+    # validates against the Decimal's numeric VALUE (1000.00 passes,
+    # 1000.50 doesn't), not its string precision.
+    payment: Decimal = Field(..., gt=0, multiple_of=1)
     deadline: datetime
     origin_station_id: Optional[str] = None
     insurance_pool_reserve: Decimal = Field(default=Decimal("0"), ge=0)

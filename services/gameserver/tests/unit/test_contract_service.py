@@ -61,6 +61,15 @@ class _FakeQuery:
     def filter(self, *conditions: Any) -> "_FakeQuery":
         return _FakeQuery(self._rows, self._criteria + list(conditions))
 
+    def with_for_update(self) -> "_FakeQuery":
+        # WO-ECON-CONTRACT-MONEY-HARDEN: no-op passthrough. A single-
+        # threaded fake session can't simulate a real Postgres row lock;
+        # this just keeps the query chain (`.filter(...).with_for_update()
+        # .first()`) working. The actual locking behavior is proven live
+        # on Postgres, not here -- see contract_service._load_player's own
+        # docstring.
+        return self
+
     def first(self) -> Any:
         for row in self._rows:
             if all(_match(row, c) for c in self._criteria):
@@ -69,6 +78,23 @@ class _FakeQuery:
 
     def count(self) -> int:
         return sum(1 for row in self._rows if all(_match(row, c) for c in self._criteria))
+
+
+class _FakeNestedTransaction:
+    """WO-ECON-CONTRACT-MONEY-HARDEN: no-op savepoint passthrough for
+    db.begin_nested(). Never swallows an exception (__exit__ returns
+    False) -- proves the sweep's OWN try/except around the `with` block
+    catches and continues past a failing row; does not attempt to fake
+    real SAVEPOINT rollback of Python attribute mutations (a single-
+    threaded fake can't reproduce that faithfully -- see test_mack_
+    attack_accepted_sweep.py's own poisoned-row test for what CAN be
+    proven this way vs. what needs live Postgres)."""
+
+    def __enter__(self) -> "_FakeNestedTransaction":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        return False
 
 
 class _FakeSession:
@@ -97,6 +123,9 @@ class _FakeSession:
 
     def flush(self) -> None:
         self.flush_calls += 1
+
+    def begin_nested(self) -> _FakeNestedTransaction:
+        return _FakeNestedTransaction()
 
     def commit(self) -> None:
         raise AssertionError("service functions are flush-only -- the route commits")

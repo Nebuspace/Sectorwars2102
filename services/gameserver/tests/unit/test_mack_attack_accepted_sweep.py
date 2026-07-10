@@ -47,12 +47,28 @@ class _FakeResult:
 
 
 class _FakeQuery:
-    def __init__(self, rows: List[Any], criteria: Optional[List[Any]] = None) -> None:
+    def __init__(self, rows: List[Any], criteria: Optional[List[Any]] = None,
+                 lock_log: Optional[List[Any]] = None) -> None:
         self._rows = rows
         self._criteria = criteria or []
+        self._lock_log = lock_log
 
     def filter(self, *conditions: Any) -> "_FakeQuery":
-        return _FakeQuery(self._rows, self._criteria + list(conditions))
+        return _FakeQuery(self._rows, self._criteria + list(conditions), self._lock_log)
+
+    def with_for_update(self) -> "_FakeQuery":
+        # WO-ECON-CONTRACT-MONEY-HARDEN: no-op passthrough for the row
+        # lock itself (a single-threaded fake can't simulate a real
+        # Postgres lock -- see contract_service._load_player's own
+        # docstring), BUT records the locked id's ACQUISITION ORDER when
+        # the session was built with a lock_log -- this is what
+        # TestDualLockConsistentOrdering below asserts against, proving
+        # the code's ordering logic without needing real concurrency.
+        if self._lock_log is not None:
+            for cond in self._criteria:
+                if getattr(cond.left, "key", None) == "id":
+                    self._lock_log.append(cond.right.value)
+        return self
 
     def first(self) -> Any:
         for row in self._rows:
@@ -94,10 +110,27 @@ class _RacyContractQuery(_FakeQuery):
         return row
 
 
+class _FakeNestedTransaction:
+    """WO-ECON-CONTRACT-MONEY-HARDEN: no-op savepoint passthrough -- see
+    test_contract_service.py's sibling copy of this class for the full
+    rationale (proves the sweep's own try/except catches and continues
+    past a failing row; does not attempt to fake real SAVEPOINT rollback
+    of Python attribute mutations)."""
+
+    def __enter__(self) -> "_FakeNestedTransaction":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        return False
+
+
 class _RacySession:
     """Same execute()/flush()/commit() contract as the sibling test files'
     _FakeSession, plus a `races` map (contract_id -> mutator, applied once
-    on that row's next SELECT) and a SELECT call counter."""
+    on that row's next SELECT), a SELECT call counter, and a
+    `player_lock_log` list recording the ORDER Player rows were locked in
+    (WO-ECON-CONTRACT-MONEY-HARDEN Mack HIGH #1's dual-lock ordering --
+    see TestDualLockConsistentOrdering)."""
 
     def __init__(self, *, contracts: Optional[List[Any]] = None, players: Optional[List[Any]] = None) -> None:
         self.contracts = contracts or []
@@ -105,13 +138,14 @@ class _RacySession:
         self.flush_calls = 0
         self.races: Dict[Any, Any] = {}
         self.select_calls = 0
+        self.player_lock_log: List[Any] = []
 
     def query(self, model: Any) -> _FakeQuery:
         if model is Contract:
             return _RacyContractQuery(self.contracts, [], self)
         from src.models.player import Player
         if model is Player:
-            return _FakeQuery(self.players)
+            return _FakeQuery(self.players, lock_log=self.player_lock_log)
         raise AssertionError(f"unexpected query for {model!r}")
 
     def execute(self, stmt: Any) -> _FakeResult:
@@ -126,6 +160,9 @@ class _RacySession:
 
     def flush(self) -> None:
         self.flush_calls += 1
+
+    def begin_nested(self) -> _FakeNestedTransaction:
+        return _FakeNestedTransaction()
 
     def commit(self) -> None:
         raise AssertionError("service functions are flush-only -- the route/scheduler commits")
@@ -373,3 +410,226 @@ class TestCancelPlayerContractRacesTheSweepWithDivergentEconomics:
         assert contract.status == ContractStatus.EXPIRED
         assert acceptor.credits == 4980 - 1000  # penalty enforced, not dodged
         assert issuer.credits == 5000 + 1000  # full escrow refund, not the worse 880
+
+
+# ---------------------------------------------------------------------------
+# WO-ECON-CONTRACT-MONEY-HARDEN -- the 3 hardening legs (Mack HIGH #1 /
+# MEDIUM #2 / LOW #3). Same DB-free fake-session convention as the attack
+# tests above; extended here as the regression base per the WO's own
+# instruction.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+class TestDualLockConsistentOrdering:
+    """Leg 1 (Mack HIGH #1): every credit-mutating call site now locks its
+    Player row(s) via with_for_update(); the two call sites that touch
+    TWO players in one operation (abandon()'s acceptor+issuer refund,
+    sweep_expired_accepted_contracts' acceptor-penalty+issuer-refund) must
+    acquire them in a CONSISTENT order (ascending by id) or two concurrent
+    operations locking the same pair in opposite roles could deadlock.
+    This is a single-threaded fake -- it cannot demonstrate the actual
+    deadlock-freedom under real concurrent Postgres transactions (that is
+    the orchestrator's live-Postgres leg), but the ORDERING property
+    itself, the necessary precondition for that guarantee, is fully
+    provable here: _RacySession's player_lock_log records the id each
+    Player query was locked with, in call order."""
+
+    def test_abandon_locks_ascending_by_id_regardless_of_acceptor_issuer_role(self) -> None:
+        low_id, high_id = sorted([uuid.uuid4(), uuid.uuid4()])
+
+        # Case A: the ACCEPTOR happens to have the lower id.
+        acceptor_a = _player(id=low_id, credits=5000)
+        issuer_a = _player(id=high_id, credits=5000)
+        contract_a = _player_contract(
+            issuer_id=issuer_a.id, acceptor_player_id=acceptor_a.id,
+            deadline=_NOW + timedelta(hours=1),  # future -- exercise abandon(), not the sweep
+        )
+        db_a = _RacySession(contracts=[contract_a], players=[acceptor_a, issuer_a])
+        contract_service.abandon(db_a, contract_a.id, acceptor_a.id, now=_NOW)
+        assert db_a.player_lock_log == [low_id, high_id]
+
+        # Case B: the ISSUER happens to have the lower id -- the exact
+        # role-reversal that would deadlock against Case A's shape if
+        # locking simply went "acceptor first, then issuer" unconditionally
+        # (a concurrent Case-A-shaped abandon() on a different contract
+        # sharing this same pair would lock high_id-then-low_id instead).
+        acceptor_b = _player(id=high_id, credits=5000)
+        issuer_b = _player(id=low_id, credits=5000)
+        contract_b = _player_contract(
+            issuer_id=issuer_b.id, acceptor_player_id=acceptor_b.id,
+            deadline=_NOW + timedelta(hours=1),
+        )
+        db_b = _RacySession(contracts=[contract_b], players=[acceptor_b, issuer_b])
+        contract_service.abandon(db_b, contract_b.id, acceptor_b.id, now=_NOW)
+        assert db_b.player_lock_log == [low_id, high_id]
+
+    def test_sweep_expired_accepted_contracts_locks_ascending_by_id(self) -> None:
+        low_id, high_id = sorted([uuid.uuid4(), uuid.uuid4()])
+        acceptor = _player(id=high_id, credits=5000)  # issuer has the LOWER id here
+        issuer = _player(id=low_id, credits=5000)
+        contract = _player_contract(
+            issuer_id=issuer.id, acceptor_player_id=acceptor.id,
+            deadline=_NOW - timedelta(minutes=1),
+        )
+        db = _RacySession(contracts=[contract], players=[acceptor, issuer])
+
+        contract_service.sweep_expired_accepted_contracts(db, now=_NOW)
+
+        assert db.player_lock_log == [low_id, high_id]
+
+    def test_npc_issued_single_player_site_locks_only_the_acceptor(self) -> None:
+        """NPC-issued contracts never trigger the dual-lock path -- only
+        the acceptor is ever locked, and only once."""
+        acceptor = _player(credits=5000)
+        contract = _npc_contract(
+            status=ContractStatus.ACCEPTED, acceptor_player_id=acceptor.id,
+            deadline=_NOW + timedelta(hours=1),
+        )
+        db = _RacySession(contracts=[contract], players=[acceptor])
+
+        contract_service.abandon(db, contract.id, acceptor.id, now=_NOW)
+
+        assert db.player_lock_log == [acceptor.id]
+
+
+@pytest.mark.unit
+class TestPerRowSavepointIsolation:
+    """Leg 2 (Mack MEDIUM #2): before this WO, an unhandled exception
+    anywhere in a per-row credit-mutation body (e.g. a vanished Player row
+    -- not reachable today, no hard-delete path exists, but cheap to
+    harden against) propagated out of the ENTIRE while-loop, discarding
+    every OTHER row's already-applied work in the same shared transaction
+    and re-selecting the same poisoned row on the next scheduler tick
+    forever. Each per-row credit body is now wrapped in its own
+    db.begin_nested() savepoint -- a failure there is caught, logged, and
+    the sweep moves on to the next candidate. (The row's own STATUS flip
+    happens BEFORE the savepoint begins and is therefore NOT reverted by
+    a savepoint failure -- see contract_service.py's own comment on this
+    tradeoff.)"""
+
+    def test_sweep_expired_accepted_contracts_survives_a_missing_acceptor_row(self) -> None:
+        acceptor2 = _player(credits=5000)
+        missing_acceptor_id = uuid.uuid4()  # deliberately never added to db.players
+        c1 = _npc_contract(
+            deadline=_NOW - timedelta(hours=1),
+            acceptor_player_id=missing_acceptor_id, penalty=Decimal("300"),
+        )
+        c2 = _npc_contract(
+            deadline=_NOW - timedelta(minutes=1),
+            acceptor_player_id=acceptor2.id, penalty=Decimal("200"),
+        )
+        db = _RacySession(contracts=[c1, c2], players=[acceptor2])
+
+        # Must complete without raising -- the missing-player ContractError
+        # inside c1's savepoint body is caught and logged, not propagated.
+        result = contract_service.sweep_expired_accepted_contracts(db, now=_NOW)
+
+        assert c1.status == ContractStatus.EXPIRED
+        # c2 -- the OTHER row -- was fully processed despite c1's failure.
+        assert c2.status == ContractStatus.EXPIRED
+        assert acceptor2.credits == 5000 - 200
+        assert result == {"expired": 2}
+
+    def test_sweep_expired_contracts_survives_a_missing_issuer_row(self) -> None:
+        missing_issuer_id = uuid.uuid4()  # deliberately never added to db.players
+        c1 = _player_contract(
+            status=ContractStatus.POSTED, issuer_id=missing_issuer_id,
+            escrow_amount=Decimal("1000.00"), deadline=_NOW - timedelta(hours=1),
+        )
+        real_issuer = _player(credits=5000)
+        c2 = _player_contract(
+            status=ContractStatus.POSTED, issuer_id=real_issuer.id,
+            escrow_amount=Decimal("500.00"), deadline=_NOW - timedelta(minutes=1),
+        )
+        db = _RacySession(contracts=[c1, c2], players=[real_issuer])
+
+        result = contract_service.sweep_expired_contracts(db, now=_NOW)
+
+        assert c1.status == ContractStatus.EXPIRED
+        assert c2.status == ContractStatus.EXPIRED
+        assert real_issuer.credits == 5000 + 500  # c2's refund still landed
+        assert result == {"expired": 2}
+
+
+@pytest.mark.unit
+class TestRoundHalfUpCreditConversion:
+    """Leg 3 (Mack LOW #3): plain int(some_decimal) TRUNCATES toward zero
+    rather than rounding -- a fee/penalty/refund landing on a fractional-
+    credit remainder >= 0.50 silently lost a whole credit on every
+    occurrence before this fix. 125 credits at a 2% fee lands EXACTLY on
+    2.50 -- the sharpest possible case (round-half-up must go UP to 3, not
+    truncate down to 2)."""
+
+    def test_accept_fee_exactly_half_credit_rounds_up_not_down(self) -> None:
+        acceptor = _player(credits=1000)
+        contract = _npc_contract(
+            status=ContractStatus.POSTED,
+            payment=Decimal("125.00"), acceptance_fee_pct=Decimal("2.0"),
+            deadline=_NOW + timedelta(hours=1),
+        )
+        db = _RacySession(contracts=[contract], players=[acceptor])
+
+        result = contract_service.accept(db, contract.id, acceptor.id, now=_NOW)
+
+        # 125 * 2% = 2.50 exactly -- starting balance 1000 - fee 2.50 =
+        # 997.50, exactly halfway between 997 and 998. ROUND_HALF_UP takes
+        # this to 998; plain int() truncation (the old behavior) would
+        # have produced 997 instead -- a full credit's difference from a
+        # single conversion.
+        assert result["acceptance_fee_charged"] == 2.50
+        assert acceptor.credits == 998
+
+    def test_sweep_penalty_exactly_half_credit_rounds_up(self) -> None:
+        acceptor = _player(credits=1000)
+        contract = _npc_contract(
+            deadline=_NOW - timedelta(minutes=1), penalty=Decimal("2.50"),
+            acceptor_player_id=acceptor.id,
+        )
+        db = _RacySession(contracts=[contract], players=[acceptor])
+
+        contract_service.sweep_expired_accepted_contracts(db, now=_NOW)
+
+        assert acceptor.credits == 1000 - 3
+
+    def test_cancel_player_contract_refund_exactly_half_credit_rounds_up(self) -> None:
+        issuer = _player(credits=1000)
+        # ACCEPTED-branch refund = escrow - accept_fee_equivalent -
+        # cancel_fee. escrow(127.50) - accept_fee(125*2%=2.50) -
+        # cancel_fee(125*10%=12.50) = 112.50 exactly.
+        contract = _player_contract(
+            status=ContractStatus.ACCEPTED, issuer_id=issuer.id,
+            payment=Decimal("125.00"), acceptance_fee_pct=Decimal("2.0"),
+            escrow_amount=Decimal("127.50"), deadline=_NOW + timedelta(hours=1),
+        )
+        db = _RacySession(contracts=[contract], players=[issuer])
+
+        result = contract_service.cancel_player_contract(db, contract.id, issuer.id, now=_NOW)
+
+        # ROUND_HALF_UP takes 112.50 to 113, not the truncated 112.
+        assert result["refund"] == 112.50
+        assert issuer.credits == 1000 + 113
+
+    def test_post_contract_schema_rejects_fractional_payment(self) -> None:
+        """The OTHER half of Leg 3: a fractional payment is now rejected
+        at the API schema layer (contracts.py's PostContractRequest),
+        never reaching post_player_contract at all -- a whole-credit
+        Player.credits column can never honor a fractional payment
+        exactly regardless of how carefully the service-side rounding is
+        done, so it's refused up front rather than silently coerced."""
+        from pydantic import ValidationError
+
+        from src.api.routes.contracts import PostContractRequest
+
+        base_kwargs = dict(
+            destination_station_id=str(uuid.uuid4()),
+            commodity_type="ore",
+            quantity=10,
+            deadline=_NOW + timedelta(hours=2),
+        )
+        # Whole-credit payments pass, including a ".00"-formatted Decimal
+        # (multiple_of checks the numeric VALUE, not string precision).
+        PostContractRequest(payment=Decimal("1000"), **base_kwargs)
+        PostContractRequest(payment=Decimal("1000.00"), **base_kwargs)
+
+        with pytest.raises(ValidationError):
+            PostContractRequest(payment=Decimal("1000.50"), **base_kwargs)

@@ -57,6 +57,13 @@ class _FakeQuery:
     def filter(self, *conditions: Any) -> "_FakeQuery":
         return _FakeQuery(self._rows, self._criteria + list(conditions))
 
+    def with_for_update(self) -> "_FakeQuery":
+        # WO-ECON-CONTRACT-MONEY-HARDEN: no-op passthrough -- see
+        # test_contract_service.py's sibling copy of this method for the
+        # full rationale (real locking is proven live on Postgres, not
+        # faked here).
+        return self
+
     def first(self) -> Any:
         for row in self._rows:
             if all(_match(row, c) for c in self._criteria):
@@ -111,8 +118,23 @@ class _FakeSession:
     def flush(self) -> None:
         self.flush_calls += 1
 
+    def begin_nested(self) -> "_FakeNestedTransaction":
+        return _FakeNestedTransaction()
+
     def commit(self) -> None:
         raise AssertionError("service functions are flush-only -- the route commits")
+
+
+class _FakeNestedTransaction:
+    """WO-ECON-CONTRACT-MONEY-HARDEN: no-op savepoint passthrough -- see
+    test_contract_service.py's sibling copy of this class for the full
+    rationale."""
+
+    def __enter__(self) -> "_FakeNestedTransaction":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        return False
 
 
 # --- fixtures ------------------------------------------------------------ #

@@ -123,6 +123,22 @@ def _round_credits(amount: Decimal) -> Decimal:
     return amount.quantize(_CENTS, rounding=ROUND_HALF_UP)
 
 
+def _to_credits_int(amount: Decimal) -> int:
+    """WO-ECON-CONTRACT-MONEY-HARDEN (Mack LOW #3): Player.credits is a
+    whole-credit integer column, but fee/penalty/refund amounts are
+    PERCENTAGES of a payment (2% acceptance fee, 10% cancel fee, etc.) --
+    routinely non-integer even after _round_credits' own cents-precision
+    rounding (2% of 101 credits = 2.02). Plain `int(some_decimal)`
+    TRUNCATES toward zero, silently discarding the fractional remainder
+    on every single conversion -- up to a whole credit evaporates each
+    time the fractional part is >= 0.50 (e.g. int(Decimal("2.50")) == 2,
+    not the correct round-half-up 3). This is the ONE place that
+    Decimal-to-int conversion happens; every call site in this module
+    that used to write `int(<a Decimal expression>)` now calls this
+    instead."""
+    return int(amount.to_integral_value(rounding=ROUND_HALF_UP))
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -170,11 +186,56 @@ def _load_contract(db: Session, contract_id: uuid.UUID) -> Contract:
     return contract
 
 
-def _load_player(db: Session, player_id: uuid.UUID) -> Player:
-    player = db.query(Player).filter(Player.id == player_id).first()
+def _load_player(db: Session, player_id: uuid.UUID, *, for_update: bool = False) -> Player:
+    """WO-ECON-CONTRACT-MONEY-HARDEN: every credit-mutating call site now
+    passes for_update=True -- matches the codebase's established
+    with_for_update() convention (bounty_service.py / citadel_service.py /
+    docking_service.py / trading_service.py) this module was previously
+    the sole money-touching holdout on. Locking here (the point where the
+    row is first read) rather than right before the eventual `.credits =`
+    assignment protects the WHOLE read-check-mutate sequence each caller
+    runs in between -- e.g. accept()'s `Decimal(acceptor.credits) < fee`
+    balance check -- not just the final write."""
+    query = db.query(Player).filter(Player.id == player_id)
+    if for_update:
+        query = query.with_for_update()
+    player = query.first()
     if player is None:
         raise ContractError(f"Player {player_id} not found")
     return player
+
+
+def _load_two_players_for_update(
+    db: Session, id_a: uuid.UUID, id_b: uuid.UUID,
+) -> tuple[Player, Player]:
+    """Lock two distinct Player rows for a single operation that touches
+    both (abandon()'s acceptor+issuer refund, sweep_expired_accepted_
+    contracts' acceptor-penalty+issuer-refund) in a CONSISTENT order --
+    ascending by id -- regardless of which one is the semantic "first"
+    party. Without this, two concurrent operations that both need to lock
+    the SAME pair of players (e.g. player X abandoning a contract issued
+    by player Y, racing player Y abandoning a DIFFERENT contract issued by
+    player X) could acquire the pair in opposite order and deadlock.
+    Ordering by id makes that structurally impossible: every dual-lock
+    call site in this module funnels through this one function, so any
+    two concurrent callers touching the same pair always agree on which
+    row to lock first. Returns (player_a, player_b) in the SAME order as
+    (id_a, id_b) were passed -- only the DB-side lock ACQUISITION order is
+    normalized internally; the caller's semantic pairing is unaffected."""
+    if id_a == id_b:
+        # Defensive only -- accept() already rejects self-accept for
+        # player-issued contracts, so acceptor_player_id != issuer_id is
+        # guaranteed by the time either dual-lock call site here runs.
+        # Never attempt to lock the same row twice regardless.
+        player = _load_player(db, id_a, for_update=True)
+        return player, player
+    if id_a < id_b:
+        player_a = _load_player(db, id_a, for_update=True)
+        player_b = _load_player(db, id_b, for_update=True)
+    else:
+        player_b = _load_player(db, id_b, for_update=True)
+        player_a = _load_player(db, id_a, for_update=True)
+    return player_a, player_b
 
 
 # --- WO-ECON-CONTRACT-2-PLAYER-ESCROW: posting-validation helpers ---------
@@ -251,7 +312,7 @@ def accept(
     if contract.deadline is not None and now >= contract.deadline:
         raise ContractConflictError("expired: this contract's deadline has already passed")
 
-    acceptor = _load_player(db, acceptor_player_id)
+    acceptor = _load_player(db, acceptor_player_id, for_update=True)
     fee = _round_credits(_as_decimal(contract.payment) * _as_decimal(contract.acceptance_fee_pct) / Decimal(100))
     if Decimal(acceptor.credits or 0) < fee:
         raise ContractError(
@@ -263,7 +324,7 @@ def accept(
         acceptor_player_id=acceptor_player_id, accepted_at=now,
     )
 
-    acceptor.credits = int(Decimal(acceptor.credits or 0) - fee)
+    acceptor.credits = _to_credits_int(Decimal(acceptor.credits or 0) - fee)
     db.flush()
 
     logger.info(
@@ -311,7 +372,7 @@ def complete(
             f"stale_status: contract {contract.id} is '{contract.status.value}', not 'accepted'"
         )
 
-    player = _load_player(db, player_id)
+    player = _load_player(db, player_id, for_update=True)
     if not player.is_docked or player.current_port_id != contract.destination_station_id:
         raise ContractConflictError(
             "wrong_station: you must be docked at the contract's destination "
@@ -341,7 +402,7 @@ def complete(
     ship.cargo = cargo
     flag_modified(ship, "cargo")
 
-    payout = int(_round_credits(_as_decimal(contract.payment)))
+    payout = _to_credits_int(_round_credits(_as_decimal(contract.payment)))
     player.credits = (player.credits or 0) + payout
     # WO-ECON-CONTRACT-2-PLAYER-ESCROW: the payout above is identical code
     # for NPC and player-issued contracts -- for NPC rows it mints (NPC
@@ -386,11 +447,25 @@ def abandon(
             f"stale_status: contract {contract.id} is '{contract.status.value}', not 'accepted'"
         )
 
-    player = _load_player(db, player_id)
+    # WO-ECON-CONTRACT-MONEY-HARDEN: lock BOTH players (when this is a
+    # player-issued contract) up front, via the consistent-ordering
+    # helper -- determined here, before _guarded_transition, since the
+    # dual-lock decision needs contract.issuer_type/issuer_id, both
+    # already available on the just-loaded `contract`. Locking player-
+    # first-then-issuer unconditionally (the original code's shape) would
+    # deadlock against another abandon() call where the ROLES are
+    # reversed (player X abandoning a contract issued by Y, racing player
+    # Y abandoning a different contract issued by X) -- see
+    # _load_two_players_for_update's own docstring.
+    if contract.issuer_type == ContractIssuerType.PLAYER:
+        player, issuer = _load_two_players_for_update(db, player_id, contract.issuer_id)
+    else:
+        player = _load_player(db, player_id, for_update=True)
+        issuer = None
 
     _guarded_transition(db, contract, ContractStatus.ACCEPTED, ContractStatus.CANCELLED)
 
-    penalty = int(_round_credits(_as_decimal(contract.penalty)))
+    penalty = _to_credits_int(_round_credits(_as_decimal(contract.penalty)))
     player.credits = max(0, (player.credits or 0) - penalty)
 
     # WO-ECON-CONTRACT-2-PLAYER-ESCROW addition: when the ACCEPTOR walks
@@ -406,9 +481,8 @@ def abandon(
     # WO-ECON-CONTRACT-1-KERNEL, unchanged here) -- this closes a real
     # escrow-conservation gap rather than citing a specific canon row.
     # NPC-issued rows (escrow_amount always 0) are byte-unchanged.
-    if contract.issuer_type == ContractIssuerType.PLAYER:
-        issuer = _load_player(db, contract.issuer_id)
-        refund = int(_round_credits(_as_decimal(contract.escrow_amount)))
+    if issuer is not None:
+        refund = _to_credits_int(_round_credits(_as_decimal(contract.escrow_amount)))
         issuer.credits = (issuer.credits or 0) + refund
         contract.escrow_state = ContractEscrowState.REFUNDING
     db.flush()
@@ -495,10 +569,30 @@ def sweep_expired_contracts(db: Session, now: Optional[datetime] = None) -> Dict
         candidate.status = ContractStatus.EXPIRED
 
         if candidate.escrow_amount and candidate.escrow_amount > 0:
-            issuer = _load_player(db, candidate.issuer_id)
-            refund = int(_round_credits(_as_decimal(candidate.escrow_amount)))
-            issuer.credits = (issuer.credits or 0) + refund
-            candidate.escrow_state = ContractEscrowState.REFUNDING
+            # WO-ECON-CONTRACT-MONEY-HARDEN Mack MEDIUM #2: the row's own
+            # status flip above is already applied to the shared
+            # transaction -- only the credit-side refund below (a single-
+            # player lock + mutation, no cross-row deadlock concern) is
+            # savepoint-isolated. A failure here (e.g. the issuer row
+            # vanished -- not reachable today, no hard-delete path exists,
+            # but cheap to harden against) previously rolled back the
+            # WHOLE shared transaction, discarding every other row this
+            # sweep already processed and re-selecting the same poisoned
+            # row on every future tick forever. Now it rolls back just
+            # this row's refund and the sweep moves on to the next
+            # candidate.
+            try:
+                with db.begin_nested():
+                    issuer = _load_player(db, candidate.issuer_id, for_update=True)
+                    refund = _to_credits_int(_round_credits(_as_decimal(candidate.escrow_amount)))
+                    issuer.credits = (issuer.credits or 0) + refund
+                    candidate.escrow_state = ContractEscrowState.REFUNDING
+            except Exception:
+                logger.exception(
+                    "sweep_expired_contracts: issuer refund failed for contract "
+                    "%s (status already EXPIRED in this same sweep pass; "
+                    "refund/escrow_state reverted, sweep continues)", candidate.id,
+                )
         expired_with_refund += 1
 
     bulk_stmt = (
@@ -601,15 +695,44 @@ def sweep_expired_accepted_contracts(db: Session, now: Optional[datetime] = None
             continue
         candidate.status = ContractStatus.EXPIRED
 
-        acceptor = _load_player(db, candidate.acceptor_player_id)
-        penalty = int(_round_credits(_as_decimal(candidate.penalty)))
-        acceptor.credits = max(0, (acceptor.credits or 0) - penalty)
+        # WO-ECON-CONTRACT-MONEY-HARDEN: same savepoint-isolation shape as
+        # sweep_expired_contracts (Mack MEDIUM #2) -- the status flip above
+        # already landed on the shared transaction; only the credit-side
+        # penalty+refund below is wrapped, so a failure here reverts just
+        # this row's credit effects and the sweep continues past it. The
+        # acceptor/issuer dual-lock (Mack HIGH #1) uses the SAME consistent-
+        # ordering helper abandon() does, for the identical deadlock reason
+        # -- this sweep and a live abandon()/cancel_player_contract() call
+        # on a related contract could otherwise lock the same pair of
+        # players in opposite order.
+        try:
+            with db.begin_nested():
+                needs_issuer_refund = (
+                    candidate.issuer_type == ContractIssuerType.PLAYER
+                    and candidate.escrow_state == ContractEscrowState.HELD
+                )
+                if needs_issuer_refund:
+                    acceptor, issuer = _load_two_players_for_update(
+                        db, candidate.acceptor_player_id, candidate.issuer_id
+                    )
+                else:
+                    acceptor = _load_player(db, candidate.acceptor_player_id, for_update=True)
+                    issuer = None
 
-        if candidate.issuer_type == ContractIssuerType.PLAYER and candidate.escrow_state == ContractEscrowState.HELD:
-            issuer = _load_player(db, candidate.issuer_id)
-            refund = int(_round_credits(_as_decimal(candidate.escrow_amount)))
-            issuer.credits = (issuer.credits or 0) + refund
-            candidate.escrow_state = ContractEscrowState.REFUNDING
+                penalty = _to_credits_int(_round_credits(_as_decimal(candidate.penalty)))
+                acceptor.credits = max(0, (acceptor.credits or 0) - penalty)
+
+                if issuer is not None:
+                    refund = _to_credits_int(_round_credits(_as_decimal(candidate.escrow_amount)))
+                    issuer.credits = (issuer.credits or 0) + refund
+                    candidate.escrow_state = ContractEscrowState.REFUNDING
+        except Exception:
+            logger.exception(
+                "sweep_expired_accepted_contracts: acceptor penalty/issuer "
+                "refund failed for contract %s (status already EXPIRED in "
+                "this same sweep pass; credit-side effects reverted, sweep "
+                "continues)", candidate.id,
+            )
 
         expired += 1
 
@@ -681,7 +804,7 @@ def post_player_contract(
             f"deadline must be at least {PLAYER_POST_MIN_DEADLINE_HOURS} hour(s) out"
         )
 
-    issuer = _load_player(db, issuer_player_id)
+    issuer = _load_player(db, issuer_player_id, for_update=True)
     if _is_player_blocklisted(db, issuer_player_id):
         raise ContractError("You are blocklisted from posting contracts")
 
@@ -701,7 +824,7 @@ def post_player_contract(
             f"you have {issuer.credits or 0}"
         )
 
-    issuer.credits = int(Decimal(issuer.credits or 0) - escrow_amount)
+    issuer.credits = _to_credits_int(Decimal(issuer.credits or 0) - escrow_amount)
 
     contract = Contract(
         id=uuid.uuid4(),
@@ -786,7 +909,7 @@ def cancel_player_contract(
     if contract.issuer_type != ContractIssuerType.PLAYER or contract.issuer_id != issuer_player_id:
         raise ContractError("This contract was not posted by you")
 
-    issuer = _load_player(db, issuer_player_id)
+    issuer = _load_player(db, issuer_player_id, for_update=True)
 
     if contract.status == ContractStatus.POSTED:
         _guarded_transition(db, contract, ContractStatus.POSTED, ContractStatus.CANCELLED)
@@ -811,7 +934,7 @@ def cancel_player_contract(
             f"stale_status: contract {contract.id} is '{contract.status.value}', not cancellable"
         )
 
-    issuer.credits = (issuer.credits or 0) + int(refund)
+    issuer.credits = (issuer.credits or 0) + _to_credits_int(refund)
     contract.escrow_state = ContractEscrowState.REFUNDING
     db.flush()
 
