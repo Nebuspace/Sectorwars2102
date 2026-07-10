@@ -871,19 +871,20 @@ class CombatService:
         except Exception as e:
             logger.error("Failed to award rank points after combat: %s", e)
 
-        # ARIA consciousness + medal hooks for the victor
+        # ARIA consciousness + relationship + medal hooks for the victor
+        # (WO-ARIA-PROGRESSION: single canonical helper, replaces the old
+        # interactions-only inline threshold walk).
         try:
             winner = attacker if combat_result["result"] == CombatResult.ATTACKER_VICTORY else (
                 defender if combat_result["result"] == CombatResult.DEFENDER_VICTORY else None
             )
             if winner:
-                winner.aria_total_interactions += 1
-                # Check consciousness thresholds (50→L2, 150→L3, 400→L4, 1000→L5)
-                thresholds = {50: (2, 1.1), 150: (3, 1.2), 400: (4, 1.35), 1000: (5, 1.5)}
-                for threshold, (level, multiplier) in thresholds.items():
-                    if winner.aria_total_interactions >= threshold and winner.aria_consciousness_level < level:
-                        winner.aria_consciousness_level = level
-                        winner.aria_bonus_multiplier = multiplier
+                from src.services.aria_personal_intelligence_service import (
+                    get_aria_intelligence_service,
+                )
+                get_aria_intelligence_service().update_consciousness_and_relationship_sync(
+                    str(winner.id), self.db
+                )
                 # (Medal awards are handled by the single frozen dispatcher
                 # _dispatch_combat_medals below — the legacy inline
                 # check_combat_medals call was removed to fire the medal hook

@@ -216,21 +216,27 @@ def _added_transaction(db: _FakeSession) -> MarketTransaction:
 
 
 class _FakeARIAService:
-    """Stands in for ARIAPersonalIntelligenceService. All three surfaces are
+    """Stands in for ARIAPersonalIntelligenceService. All four surfaces are
     sync: record_trade_memory_sync (aria_personal_intelligence_service.py:
     444, the sync twin of record_trade_memory), record_trade_observation
-    (:2061), and record_market_observation_sync (proposed WO-ARIA-MARKET-OBS
-    contract -- adjust here the moment lane B's final signature lands). Each
-    call is recorded verbatim for inspection; any of the three can be
-    scripted to raise, to pin the non-blocking contract."""
+    (:2061), record_market_observation_sync (WO-ARIA-MARKET-OBS), and
+    update_consciousness_and_relationship_sync (WO-ARIA-PROGRESSION --
+    added after trading.py's buy/sell ARIA hooks were found calling a
+    surface this spy didn't implement, which was silently swallowed by the
+    hook's own try/except and meant db.flush()/_dispatch_trade_medals
+    never ran in these tests). Each call is recorded verbatim for
+    inspection; any of the four can be scripted to raise, to pin the
+    non-blocking contract."""
 
     def __init__(self) -> None:
         self.memory_calls: List[Dict[str, Any]] = []
         self.observation_calls: List[Dict[str, Any]] = []
         self.market_observation_calls: List[Dict[str, Any]] = []
+        self.consciousness_calls: List[Dict[str, Any]] = []
         self.memory_raises: Optional[Exception] = None
         self.observation_raises: Optional[Exception] = None
         self.market_observation_raises: Optional[Exception] = None
+        self.consciousness_raises: Optional[Exception] = None
 
     def record_trade_memory_sync(self, player_id, trade_data, db):
         self.memory_calls.append({"player_id": player_id, "trade_data": trade_data, "db": db})
@@ -249,6 +255,12 @@ class _FakeARIAService:
         })
         if self.market_observation_raises is not None:
             raise self.market_observation_raises
+
+    def update_consciousness_and_relationship_sync(self, player_id, db):
+        self.consciousness_calls.append({"player_id": player_id, "db": db})
+        if self.consciousness_raises is not None:
+            raise self.consciousness_raises
+        return {"success": True}
 
 
 @pytest.fixture
@@ -312,6 +324,14 @@ class TestAriaTradeHooksBuy:
         assert tr["source_sector_id"] == 7
         assert tr["trade_id"] == _added_transaction(db).id
         assert obs["db"] is db
+
+        # WO-ARIA-PROGRESSION: pins the buy route's wiring to the canonical
+        # consciousness+relationship helper from THIS side (the service-side
+        # implementation and its own behavior are test_aria_progression.py's
+        # job, not this file's).
+        assert len(fake_aria.consciousness_calls) == 1
+        assert fake_aria.consciousness_calls[0]["player_id"] == str(player.id)
+        assert fake_aria.consciousness_calls[0]["db"] is db
 
     async def test_buy_never_repopulates_pending_aria_memories(self, fake_aria):
         player = _neutral_player(credits=10_000)

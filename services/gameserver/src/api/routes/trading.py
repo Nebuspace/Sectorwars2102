@@ -715,15 +715,15 @@ async def buy_resource(
         except Exception as e:
             logger.error("Failed to award rank points for buy trade: %s", e)
 
-        # ARIA consciousness + medal hooks
+        # ARIA consciousness + relationship + medal hooks (WO-ARIA-
+        # PROGRESSION: single canonical helper, replaces the old
+        # interactions-only inline threshold walk).
         try:
-            current_player.aria_total_interactions += 1
-            # Check consciousness thresholds (50→L2, 150→L3, 400→L4, 1000→L5)
-            thresholds = {50: (2, 1.1), 150: (3, 1.2), 400: (4, 1.35), 1000: (5, 1.5)}
-            for threshold, (level, multiplier) in thresholds.items():
-                if current_player.aria_total_interactions >= threshold and current_player.aria_consciousness_level < level:
-                    current_player.aria_consciousness_level = level
-                    current_player.aria_bonus_multiplier = multiplier
+            from src.services.aria_personal_intelligence_service import get_aria_intelligence_service
+
+            get_aria_intelligence_service().update_consciousness_and_relationship_sync(
+                str(current_player.id), db
+            )
             # Check trading medals (lifetime trade-count + revenue from MarketTransaction).
             # Explicit flush required: session is autoflush=False (database.py:19).
             db.flush()
@@ -1055,15 +1055,15 @@ async def sell_resource(
         except Exception as e:
             logger.error("Failed to award rank points for sell trade: %s", e)
 
-        # ARIA consciousness + medal hooks
+        # ARIA consciousness + relationship + medal hooks (WO-ARIA-
+        # PROGRESSION: single canonical helper, replaces the old
+        # interactions-only inline threshold walk).
         try:
-            current_player.aria_total_interactions += 1
-            # Check consciousness thresholds (50→L2, 150→L3, 400→L4, 1000→L5)
-            thresholds = {50: (2, 1.1), 150: (3, 1.2), 400: (4, 1.35), 1000: (5, 1.5)}
-            for threshold, (level, multiplier) in thresholds.items():
-                if current_player.aria_total_interactions >= threshold and current_player.aria_consciousness_level < level:
-                    current_player.aria_consciousness_level = level
-                    current_player.aria_bonus_multiplier = multiplier
+            from src.services.aria_personal_intelligence_service import get_aria_intelligence_service
+
+            get_aria_intelligence_service().update_consciousness_and_relationship_sync(
+                str(current_player.id), db
+            )
             # Check trading medals (lifetime trade-count + revenue from MarketTransaction).
             # Explicit flush required: session is autoflush=False (database.py:19).
             db.flush()

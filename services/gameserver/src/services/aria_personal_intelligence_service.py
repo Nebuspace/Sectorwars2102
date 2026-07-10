@@ -1645,80 +1645,76 @@ class ARIAPersonalIntelligenceService:
         5: {"interactions": 1000, "memories": 150},
     }
 
-    async def update_consciousness_level(self, player_id: str, db: AsyncSession) -> Dict[str, Any]:
+    # WO-ARIA-PROGRESSION: the single canonical copy of the (interactions ->
+    # (level, multiplier)) mapping that was previously duplicated verbatim
+    # across movement_service.py, combat_service.py, and trading.py (buy +
+    # sell) -- all four now call update_consciousness_and_relationship[_sync]
+    # instead of re-declaring this dict. Paired with CONSCIOUSNESS_THRESHOLDS
+    # above for the memory-side gate (aria-companion.md:128: "Both thresholds
+    # ... must be met to advance").
+    CONSCIOUSNESS_INTERACTION_THRESHOLDS = {50: (2, 1.1), 150: (3, 1.2), 400: (4, 1.35), 1000: (5, 1.5)}
+
+    def _apply_consciousness_and_relationship(
+        self, player, total_memories: int,
+    ) -> Dict[str, Any]:
         """
-        Update a player's ARIA consciousness level based on memory count and interaction quality.
-        Called after significant ARIA interactions.
+        Pure state-mutation core shared by ``update_consciousness_and_
+        relationship`` (async) and ``update_consciousness_and_relationship_
+        sync`` -- mutates ``player`` in place; no I/O, no DB access. See the
+        async method's docstring for the full canon citation and the
+        memory-diversity interpretation this WO flags.
         """
-        from src.models.player import Player
+        old_level = player.aria_consciousness_level
+        old_relationship = player.aria_relationship_score or 0
 
-        stmt = select(Player).where(Player.id == player_id)
-        result = await db.execute(stmt)
-        player = result.scalar_one_or_none()
-        if not player:
-            return {"success": False, "message": "Player not found"}
-
-        # Count player's ARIA memories
-        memory_stmt = select(func.count(ARIAPersonalMemory.id)).where(
-            ARIAPersonalMemory.player_id == player_id
-        )
-        memory_result = await db.execute(memory_stmt)
-        memory_count = memory_result.scalar() or 0
-
+        # aria-companion.md:139 -- "Rises +1 per significant interaction
+        # (capped at 100)". This call itself IS the significant interaction
+        # (NO-CANON, flagged for DECISIONS: "significant interaction" =
+        # exactly the call sites that already bump aria_total_interactions
+        # today -- movement, combat victory, buy, sell).
+        player.aria_total_interactions = (player.aria_total_interactions or 0) + 1
+        player.aria_relationship_score = min(100, old_relationship + 1)
         total_interactions = player.aria_total_interactions
-        current_level = player.aria_consciousness_level
 
-        # Check if player qualifies for a higher level
+        # aria-companion.md:128 -- both thresholds must be met to advance.
+        # Ascending walk over CONSCIOUSNESS_INTERACTION_THRESHOLDS (50, 150,
+        # 400, 1000): each time both gates clear, new_level is overwritten,
+        # so the loop's final value is the HIGHEST qualifying level.
         new_level = 1
-        for level in range(5, 1, -1):
-            thresholds = self.CONSCIOUSNESS_THRESHOLDS[level]
-            if total_interactions >= thresholds["interactions"] and memory_count >= thresholds["memories"]:
+        new_multiplier = self.CONSCIOUSNESS_BONUSES[1]
+        for threshold, (level, multiplier) in self.CONSCIOUSNESS_INTERACTION_THRESHOLDS.items():
+            memories_needed = self.CONSCIOUSNESS_THRESHOLDS[level]["memories"]
+            if total_interactions >= threshold and total_memories >= memories_needed:
                 new_level = level
-                break
+                new_multiplier = multiplier
 
-        leveled_up = new_level > current_level
+        leveled_up = new_level > old_level
         if leveled_up:
             player.aria_consciousness_level = new_level
-            player.aria_bonus_multiplier = self.CONSCIOUSNESS_BONUSES[new_level]
+            player.aria_bonus_multiplier = new_multiplier
             logger.info(
-                "Player %s ARIA consciousness upgraded: %d -> %d (multiplier: %.2f)",
-                player_id, current_level, new_level, player.aria_bonus_multiplier,
+                "Player %s ARIA consciousness evolved: %s (%d) -> %s (%d), "
+                "relationship %d -> %d, multiplier %.2f",
+                getattr(player, "id", "?"),
+                self.CONSCIOUSNESS_LEVEL_NAMES.get(old_level, "Unknown"), old_level,
+                self.CONSCIOUSNESS_LEVEL_NAMES.get(new_level, "Unknown"), new_level,
+                old_relationship, player.aria_relationship_score, player.aria_bonus_multiplier,
             )
 
         return {
             "success": True,
-            "consciousness_level": player.aria_consciousness_level,
-            "bonus_multiplier": player.aria_bonus_multiplier,
-            "total_interactions": total_interactions,
-            "memory_count": memory_count,
+            "old_level": old_level,
+            "new_level": player.aria_consciousness_level,
+            "old_level_name": self.CONSCIOUSNESS_LEVEL_NAMES.get(old_level, "Unknown"),
+            "new_level_name": self.CONSCIOUSNESS_LEVEL_NAMES.get(
+                player.aria_consciousness_level, "Unknown"
+            ),
             "leveled_up": leveled_up,
-        }
-
-    async def update_relationship_score(self, player_id: str, db: AsyncSession, increment: int = 1) -> Dict[str, Any]:
-        """
-        Update the ARIA relationship score for a player.
-        Score increases on interaction, decays on inactivity.
-        """
-        from src.models.player import Player
-
-        stmt = select(Player).where(Player.id == player_id)
-        result = await db.execute(stmt)
-        player = result.scalar_one_or_none()
-        if not player:
-            return {"success": False, "message": "Player not found"}
-
-        # Increment interaction count
-        player.aria_total_interactions = (player.aria_total_interactions or 0) + 1
-
-        # Update relationship score (clamped 0-100)
-        old_score = player.aria_relationship_score
-        player.aria_relationship_score = min(100, max(0, old_score + increment))
-
-        return {
-            "success": True,
             "relationship_score": player.aria_relationship_score,
-            "total_interactions": player.aria_total_interactions,
-            "score_change": player.aria_relationship_score - old_score,
+            "old_relationship_score": old_relationship,
+            "bonus_multiplier": float(player.aria_bonus_multiplier),
+            "total_interactions": total_interactions,
+            "total_memories": total_memories,
         }
 
     async def apply_inactivity_decay(self, player_id: str, db: AsyncSession, days_inactive: int) -> Dict[str, Any]:
@@ -1925,106 +1921,95 @@ class ARIAPersonalIntelligenceService:
         self, player_id: str, db: AsyncSession
     ) -> Dict[str, Any]:
         """
-        Holistic consciousness and relationship update that factors in memory
-        diversity, total interactions, and consciousness level to drive both
-        the relationship score and potential level-ups.
+        THE canonical consciousness + relationship promotion path
+        (sw2102-docs/FEATURES/gameplay/aria-companion.md:118-128, :139-144 --
+        canon explicitly names this method as the promotion path). Call once
+        per "significant interaction" to keep the consciousness system
+        actively evolving alongside gameplay (dialogue, trade, combat,
+        movement, ...).
 
-        This is the primary method that should be called after meaningful ARIA
-        interactions (dialogue, trade analysis, combat debrief, etc.) to keep
-        the consciousness system actively evolving alongside gameplay.
+        WO-ARIA-PROGRESSION consolidation: this is now the SINGLE source of
+        truth, replacing the four duplicated inline threshold blocks
+        (movement_service.py, combat_service.py, trading.py buy + sell) AND
+        the two now-removed redundant siblings (update_consciousness_level /
+        update_relationship_score, both zero-caller dead code before this
+        WO). See update_consciousness_and_relationship_sync for the
+        sync-Session twin the three sync call sites use.
 
-        Returns dict with old/new levels, relationship score, and memory counts.
+        Per call: +1 aria_total_interactions, +1 aria_relationship_score
+        (capped 100) -- aria-companion.md:139 "Rises +1 per significant
+        interaction (capped at 100)". NO-CANON (flagged for DECISIONS):
+        "significant interaction" = exactly the event set that already
+        bumps aria_total_interactions today (movement, combat victory, buy,
+        sell) -- not silently redefined by this WO.
+
+        Then checks BOTH promotion thresholds -- aria-companion.md:128
+        "Both thresholds (interactions and unique-type memory diversity)
+        must be met to advance" -- and promotes + sets the new tier's bonus
+        multiplier if newly qualified.
+
+        FLAGGED, NOT SILENTLY RESOLVED (dispatch's explicit ask): canon's
+        memory-side gate is worded "unique-type memory diversity". A LITERAL
+        distinct ARIAPersonalMemory.memory_type COUNT is mathematically
+        incapable of ever promoting past level 1 (Dormant) -- only THREE
+        memory_type values are ever actually written anywhere in this
+        codebase (combat / market / exploration; "social" is named in a
+        docstring but never instantiated by any caller), and even the
+        LOWEST threshold (level 2) requires 10. This method therefore uses
+        the RAW TOTAL memory count (matching this method's own pre-existing
+        arithmetic before this WO), not distinct-type cardinality -- see the
+        dispatch report for the full proof and a dedicated falsifying test.
+        The threshold NUMBERS themselves (10/30/75/150) are unchanged.
         """
         from src.models.player import Player
 
-        # Load the player
         stmt = select(Player).where(Player.id == player_id)
         result = await db.execute(stmt)
         player = result.scalar_one_or_none()
         if not player:
             return {"success": False, "message": "Player not found"}
 
-        # Count total memories grouped by type
-        memory_type_stmt = (
-            select(
-                ARIAPersonalMemory.memory_type,
-                func.count(ARIAPersonalMemory.id).label("cnt"),
-            )
-            .where(ARIAPersonalMemory.player_id == player_id)
-            .group_by(ARIAPersonalMemory.memory_type)
+        memory_stmt = select(func.count(ARIAPersonalMemory.id)).where(
+            ARIAPersonalMemory.player_id == player_id
         )
-        type_result = await db.execute(memory_type_stmt)
-        memory_counts: Dict[str, int] = {}
-        total_memories = 0
-        for row in type_result:
-            memory_counts[row.memory_type] = row.cnt
-            total_memories += row.cnt
+        memory_result = await db.execute(memory_stmt)
+        total_memories = memory_result.scalar() or 0
 
-        # Capture the old state for the diff
-        old_level = player.aria_consciousness_level
-        old_relationship = player.aria_relationship_score
-        total_interactions = player.aria_total_interactions or 0
+        return self._apply_consciousness_and_relationship(player, total_memories)
 
-        # --- Relationship score ---
-        # Formula: base 25 + contribution from memories + contribution from
-        # consciousness depth.  Memories represent breadth of shared experience;
-        # consciousness level represents depth of bond.
-        new_relationship = min(
-            100,
-            int(25 + (total_memories * 0.5) + (player.aria_consciousness_level * 10)),
-        )
-        player.aria_relationship_score = new_relationship
+    def update_consciousness_and_relationship_sync(
+        self, player_id: str, db: Session,
+    ) -> Dict[str, Any]:
+        """
+        Synchronous twin of ``update_consciousness_and_relationship`` for
+        the three sync-Session call sites (WO-ARIA-PROGRESSION --
+        movement_service.py, combat_service.py, trading.py buy + sell all
+        run on a sync Session, exactly the record_trade_memory_sync
+        precedent). Same canonical core (``_apply_consciousness_and_
+        relationship``), same canon citations -- see the async method's
+        docstring. Never raises -- an ARIA progression hiccup must never
+        break movement, combat, or a trade.
+        """
+        try:
+            from src.models.player import Player
 
-        # --- Consciousness level check ---
-        # Walk thresholds from highest to lowest; first match wins.
-        new_level = 1
-        for level in range(5, 1, -1):
-            thresholds = self.CONSCIOUSNESS_THRESHOLDS[level]
-            if (
-                total_interactions >= thresholds["interactions"]
-                and total_memories >= thresholds["memories"]
-            ):
-                new_level = level
-                break
+            player = db.query(Player).filter(Player.id == player_id).first()
+            if not player:
+                return {"success": False, "message": "Player not found"}
 
-        leveled_up = new_level > old_level
-        if leveled_up:
-            player.aria_consciousness_level = new_level
-            player.aria_bonus_multiplier = self.CONSCIOUSNESS_BONUSES[new_level]
-            # Re-calculate relationship with the *new* consciousness level
-            player.aria_relationship_score = min(
-                100,
-                int(25 + (total_memories * 0.5) + (new_level * 10)),
+            total_memories = (
+                db.query(func.count(ARIAPersonalMemory.id))
+                .filter(ARIAPersonalMemory.player_id == player_id)
+                .scalar()
+            ) or 0
+
+            return self._apply_consciousness_and_relationship(player, total_memories)
+        except Exception as e:
+            logger.warning(
+                "update_consciousness_and_relationship_sync failed for player %s: %s",
+                player_id, e,
             )
-            logger.info(
-                "Player %s ARIA consciousness evolved: %s (%d) -> %s (%d), "
-                "relationship %d -> %d, multiplier %.2f",
-                player_id,
-                self.CONSCIOUSNESS_LEVEL_NAMES.get(old_level, "Unknown"),
-                old_level,
-                self.CONSCIOUSNESS_LEVEL_NAMES.get(new_level, "Unknown"),
-                new_level,
-                old_relationship,
-                player.aria_relationship_score,
-                player.aria_bonus_multiplier,
-            )
-
-        return {
-            "success": True,
-            "old_level": old_level,
-            "new_level": player.aria_consciousness_level,
-            "old_level_name": self.CONSCIOUSNESS_LEVEL_NAMES.get(old_level, "Unknown"),
-            "new_level_name": self.CONSCIOUSNESS_LEVEL_NAMES.get(
-                player.aria_consciousness_level, "Unknown"
-            ),
-            "leveled_up": leveled_up,
-            "relationship_score": player.aria_relationship_score,
-            "old_relationship_score": old_relationship,
-            "bonus_multiplier": float(player.aria_bonus_multiplier),
-            "total_interactions": total_interactions,
-            "total_memories": total_memories,
-            "memory_counts": memory_counts,
-        }
+            return {"success": False, "message": str(e)}
 
     async def _resolve_player_language(
         self, player_id: str, db: AsyncSession

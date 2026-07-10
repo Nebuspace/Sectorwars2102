@@ -1699,14 +1699,15 @@ class MovementService:
         # Consume turns
         spend_turns(player, turn_cost)
 
-        # ARIA consciousness hook — movement counts as interaction
+        # ARIA consciousness + relationship hook — movement counts as a
+        # significant interaction (WO-ARIA-PROGRESSION: single canonical
+        # helper, replaces the old interactions-only inline threshold walk).
         try:
-            player.aria_total_interactions += 1
-            thresholds = {50: (2, 1.1), 150: (3, 1.2), 400: (4, 1.35), 1000: (5, 1.5)}
-            for threshold, (level, multiplier) in thresholds.items():
-                if player.aria_total_interactions >= threshold and player.aria_consciousness_level < level:
-                    player.aria_consciousness_level = level
-                    player.aria_bonus_multiplier = multiplier
+            from src.services.aria_personal_intelligence_service import get_aria_intelligence_service
+
+            get_aria_intelligence_service().update_consciousness_and_relationship_sync(
+                str(player.id), self.db
+            )
         except Exception as e:
             logger.error("Failed ARIA hook during movement: %s", e)
 
