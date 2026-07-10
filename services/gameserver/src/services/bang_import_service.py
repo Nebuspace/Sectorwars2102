@@ -1064,9 +1064,14 @@ class BangImportService:
         # sector adjacency graph (sector_warps); to actually make the
         # galaxy navigable end-to-end we wire the spoke regions to
         # central_nexus here. Per ADR-0043 each spoke's endpoint is its
-        # Frontier Gateway Plaza landing sector, and the tunnel is a NATURAL,
-        # LATENT warp (invisible until a Warp Jumper scan reveals it) — not a
-        # constructed gate. The Nexus side anchors on the hub's gate sector.
+        # Frontier Gateway Plaza landing sector, and the tunnel is a NATURAL
+        # warp — not a constructed gate. It is NOT latent: per ruling
+        # (orchestrator, 2026-07-10), Terran + Nexus are pre-discovered for
+        # every player, so this sanctioned Nexus attachment gateway is
+        # visible from the start. ADR-0034's "latent until a Warp Jumper
+        # scan" pattern still governs ordinary in-region natural tunnels
+        # (see the sector_warps import below) — just not this cross-region
+        # gateway. The Nexus side anchors on the hub's gate sector.
         nexus_attachment = attachment_by_region.get("central_nexus")
         if nexus_attachment is not None:
             for spoke_rt in ("player_owned", "terran_space"):
@@ -1131,7 +1136,11 @@ class BangImportService:
 
         # Inter-region tunnel: new region ↔ central_nexus. Mirrors apply()'s
         # ADR-0043 pattern — spoke endpoint is the Frontier landing sector,
-        # tunnel is NATURAL + latent (hidden until a Warp Jumper scan).
+        # tunnel is NATURAL. NOT latent: per ruling (orchestrator,
+        # 2026-07-10), Terran + Nexus are pre-discovered for every player, so
+        # this sanctioned Nexus attachment gateway is visible from the start
+        # — ADR-0034's "latent until a Warp Jumper scan" pattern governs
+        # ordinary in-region natural tunnels only, not this gateway.
         if nexus_gate_id is not None:
             spoke_endpoint = attachment.nexus_landing_sector_id or new_gate
             session.add(WarpTunnel(
@@ -1140,11 +1149,11 @@ class BangImportService:
                 destination_sector_id=nexus_gate_id,
                 type=WarpTunnelType.NATURAL,
                 is_bidirectional=True,
-                is_latent=True,
+                is_latent=False,
                 description=(
                     "Natural Nexus warp linking new player_owned region "
-                    "(Frontier Gateway Plaza) to central_nexus — latent until "
-                    "revealed by a Warp Jumper scan."
+                    "(Frontier Gateway Plaza) to central_nexus — pre-discovered "
+                    "gateway, visible to every player (Terran + Nexus canon)."
                 ),
             ))
 
@@ -1874,13 +1883,17 @@ class BangImportService:
         spoke_attachment: Optional["RegionAttachment"],
         nexus_attachment: "RegionAttachment",
     ) -> None:
-        """ADR-0043: wire one spoke region to the Nexus as a natural latent warp.
+        """ADR-0043: wire one spoke region to the Nexus as a natural warp.
 
         The spoke endpoint is its Frontier Gateway Plaza landing sector (falls
         back to the spoke's gate anchor if landing selection degraded). The
         tunnel is ``type = NATURAL``, ``is_bidirectional = True`` (cross-region
-        travel + return), ``is_latent = True`` (hidden until a Warp Jumper scan
-        per ADR-0034). No-op if the spoke wasn't imported.
+        travel + return), ``is_latent = False``: per ruling (orchestrator,
+        2026-07-10), Terran + Nexus are pre-discovered for every player, so
+        the sanctioned Nexus attachment gateway is visible from the start —
+        ADR-0034's "latent until a Warp Jumper scan" pattern governs ordinary
+        in-region natural tunnels, not this cross-region gateway. No-op if
+        the spoke wasn't imported.
         """
         if spoke_attachment is None:
             return
@@ -1894,10 +1907,11 @@ class BangImportService:
             destination_sector_id=nexus_attachment.gate_sector_id,
             type=WarpTunnelType.NATURAL,
             is_bidirectional=True,
-            is_latent=True,
+            is_latent=False,
             description=(
                 f"Natural Nexus warp linking {spoke_rt} (Frontier Gateway Plaza) "
-                "to central_nexus — latent until revealed by a Warp Jumper scan."
+                "to central_nexus — pre-discovered gateway, visible to every "
+                "player (Terran + Nexus canon)."
             ),
         ))
 
