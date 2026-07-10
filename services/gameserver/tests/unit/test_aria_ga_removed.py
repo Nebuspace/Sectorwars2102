@@ -34,6 +34,7 @@ import uuid
 import pytest
 
 from src.models.aria_personal_intelligence import ARIAExplorationMap, ARIAMarketIntelligence
+from src.models.warp_tunnel import WarpTunnel
 from src.services import aria_personal_intelligence_service as aria_service_module
 from src.services.aria_personal_intelligence_service import ARIAPersonalIntelligenceService
 
@@ -114,12 +115,25 @@ class _FakeResult:
     def scalar_one_or_none(self):
         return self._rows[0] if self._rows else None
 
+    def fetchall(self):
+        return list(self._rows)
+
 
 class FakeCascadeSession:
-    """Minimal AsyncSession double covering the ONE query shape
-    plan_trade_cascade's callee chain issues:
-    db.execute(select(Model).where(and_(eq, eq, ...))) ->
-    .scalars().all() / .scalar_one_or_none()."""
+    """Minimal AsyncSession double covering ARIAExplorationMap /
+    ARIAMarketIntelligence (db.execute(select(Model).where(and_(eq, eq,
+    ...))) -> .scalars().all() / .scalar_one_or_none()) -- this file's own
+    query surface (graph-building + GA-symbol-removal pins).
+
+    WO-ARIA-CASCADE-PATH note: _find_profitable_paths (called by
+    plan_trade_cascade, exercised by TestPlanTradeCascadeByteProtection
+    below) now ALSO issues a sector_warps Core-table select and a
+    WarpTunnel ORM select to build real adjacency -- this fake answers
+    both with an EMPTY result (no configured adjacency data), which is
+    the correct, deliberate behavior for these tests: they exist to pin
+    ARIAExplorationMap/ARIAMarketIntelligence handling, not pathfinding
+    (see test_aria_cascade_path.py's FakeCascadePathSession for the
+    pathfinding-focused fake with real adjacency fixtures)."""
 
     def __init__(self, explorations=(), intelligences=()):
         self.explorations = list(explorations)
@@ -128,11 +142,28 @@ class FakeCascadeSession:
 
     async def execute(self, stmt):
         self.executed += 1
-        entity = stmt.column_descriptions[0]["entity"]
+        entity = None
+        descs = getattr(stmt, "column_descriptions", None)
+        if descs:
+            entity = descs[0].get("entity")
+
         if entity is ARIAExplorationMap:
             rows = self.explorations
         elif entity is ARIAMarketIntelligence:
             rows = self.intelligences
+        elif entity is WarpTunnel:
+            return _FakeResult([])  # no adjacency configured -- see class docstring
+        elif entity is None:
+            # No ORM entity -- the sector_warps Core-table select. Same
+            # "no adjacency known" resolution as the WarpTunnel branch.
+            table_name = None
+            try:
+                table_name = stmt.get_final_froms()[0].name
+            except Exception:
+                pass
+            if table_name != "sector_warps":
+                raise AssertionError(f"unexpected query {stmt!r}")
+            return _FakeResult([])
         else:
             raise AssertionError(f"unexpected query entity {entity!r}")
 
@@ -237,11 +268,14 @@ class TestPlanTradeCascadeByteProtection:
         """Explored sectors AND market intelligence both present -- the
         REAL _build_personal_trade_graph runs against real data (not the
         empty-graph short-circuit above). The overall result still lands
-        on "no_profitable_routes" because _find_profitable_paths is a
-        pre-existing, pre-WO placeholder (always returns an empty list --
-        unrelated to this cleanup, not touched by it) -- this test proves
-        the graph-building half of the chain runs correctly with live
-        data, not that the whole feature is complete."""
+        on "no_profitable_routes" because this fixture (and FakeCascadeSession,
+        by design -- see its own docstring) configures no sector_warps/
+        WarpTunnel adjacency at all, so the sole explored sector has no
+        reachable sell leg -- NOT because _find_profitable_paths is a
+        placeholder anymore (WO-ARIA-CASCADE-PATH replaced it with real
+        Dijkstra pathfinding; see test_aria_cascade_path.py for that
+        coverage). This test's job stays scoped to proving the graph-
+        building half of the chain runs correctly with live data."""
         exploration = _exploration(sector_id=SECTOR_A, visit_count=2, trade_opportunity_score=0.4)
         intel = _intelligence(sector_id=SECTOR_A, station_id=STATION_A, commodity="FUEL")
         db = FakeCascadeSession(explorations=[exploration], intelligences=[intel])

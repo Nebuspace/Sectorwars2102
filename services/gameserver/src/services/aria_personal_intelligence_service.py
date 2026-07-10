@@ -16,6 +16,8 @@ OWASP Security Implementation:
 import json
 import hashlib
 import hmac
+import heapq
+import math
 from typing import Dict, List, Any, Optional, Tuple, Set
 from datetime import datetime, timedelta, UTC
 from decimal import Decimal
@@ -31,8 +33,9 @@ from sqlalchemy import select, and_, or_, func, update
 from sqlalchemy.orm import selectinload, Session
 
 from src.models.player import Player
-from src.models.sector import Sector
+from src.models.sector import Sector, sector_warps
 from src.models.station import Station
+from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
 from src.models.market_transaction import MarketTransaction
 from src.models.aria_personal_intelligence import (
     ARIAPersonalMemory, ARIAMarketIntelligence, ARIAExplorationMap,
@@ -1200,16 +1203,197 @@ class ARIAPersonalIntelligenceService:
         
         return graph
     
+    async def _build_explored_adjacency(
+        self, explored_sector_ids: Set[str], db: AsyncSession,
+    ) -> Dict[str, List[Tuple[str, int]]]:
+        """Adjacency list (sector UUID -> [(neighbour UUID, turn_cost), ...])
+        restricted to ``explored_sector_ids`` on BOTH endpoints -- ADR-0075
+        ("route candidates limited to visited + charted sectors"). Mirrors
+        ``nav_service.NavService._build_known_graph``'s exact edge-source
+        selection (``sector_warps`` association table + ACTIVE ``WarpTunnel``
+        rows), adapted to ``AsyncSession``.
+
+        No UUID<->global-int conversion is needed here, unlike NavService
+        (which keys its graph by the human-readable global ``Sector.sector_id``
+        integer): ``ARIAExplorationMap.sector_id`` -- and therefore every key
+        in ``trade_graph`` -- IS the ``sectors.id`` UUID already, the exact
+        type ``sector_warps``/``WarpTunnel`` key on.
+        """
+        if not explored_sector_ids:
+            return {}
+        ids = list(explored_sector_ids)
+        graph: Dict[str, List[Tuple[str, int]]] = {sid: [] for sid in explored_sector_ids}
+
+        warp_rows = (
+            await db.execute(sector_warps.select().where(sector_warps.c.source_sector_id.in_(ids)))
+        ).fetchall()
+        for row in warp_rows:
+            src, dst = row.source_sector_id, row.destination_sector_id
+            if src not in explored_sector_ids or dst not in explored_sector_ids:
+                continue
+            tc = row.turn_cost or 1
+            graph[src].append((dst, tc))
+            if row.is_bidirectional and src != dst:
+                graph[dst].append((src, tc))
+
+        tunnel_stmt = select(WarpTunnel).where(
+            and_(
+                WarpTunnel.status == WarpTunnelStatus.ACTIVE,
+                WarpTunnel.origin_sector_id.in_(ids),
+            )
+        )
+        tunnel_rows = (await db.execute(tunnel_stmt)).scalars().all()
+        for tunnel in tunnel_rows:
+            origin, dest = tunnel.origin_sector_id, tunnel.destination_sector_id
+            if origin not in explored_sector_ids or dest not in explored_sector_ids:
+                continue
+            tc = tunnel.turn_cost or 1
+            graph[origin].append((dest, tc))
+            if tunnel.is_bidirectional:
+                graph[dest].append((origin, tc))
+
+        return graph
+
+    def _dijkstra_hop_distances(
+        self, graph: Dict[str, List[Tuple[str, int]]], start_sector_id: str, max_jumps: int,
+    ) -> Dict[str, int]:
+        """All-destinations shortest HOP COUNT from ``start_sector_id``,
+        pruned to ``max_jumps``. Returns ``{sector_id: hop_count}`` for
+        every reachable sector within budget (including the start sector
+        itself, at 0).
+
+        Unweighted (every edge costs exactly 1 hop) -- canon's
+        ``max_jumps`` is explicitly a HOP-COUNT budget
+        (aria-companion.md:38, ``Input: ... max_jumps``), not a turn-cost
+        budget like NavService's turn-cost-weighted Dijkstra. Weighting by
+        real ``turn_cost``/tunnel stability here would let a low-turn-cost
+        multi-hop route "beat" a genuinely-fewer-hop route on weighted
+        cost while still violating the hop budget -- not the semantics
+        canon asks for. Still implemented as a min-heap Dijkstra (mirrors
+        ``nav_service.NavService._dijkstra``'s shape) rather than a plain
+        BFS queue, even though the two are equivalent at uniform edge
+        weight -- this stays trivially extensible if a future WO ever
+        needs weighted hops.
+
+        A* was considered and rejected: this is a single-source
+        ALL-destinations search (every other explored sector is a
+        candidate sell leg, not one fixed target) -- exactly Dijkstra/
+        BFS's shape. A* only pays off for a single-source SINGLE-target
+        search with a goal-directed heuristic, which doesn't apply here.
+        """
+        dist: Dict[str, int] = {start_sector_id: 0}
+        pq: List[Tuple[int, str]] = [(0, start_sector_id)]
+        while pq:
+            d, node = heapq.heappop(pq)
+            if d > dist.get(node, math.inf):
+                continue
+            if d >= max_jumps:
+                continue  # do not expand past the jump budget
+            for neighbour, _turn_cost in graph.get(node, []):
+                nd = d + 1
+                if nd < dist.get(neighbour, math.inf):
+                    dist[neighbour] = nd
+                    heapq.heappush(pq, (nd, neighbour))
+        return dist
+
     async def _find_profitable_paths(self, player_id: str, start_sector: str,
                                    trade_graph: Dict[str, Any], target_profit: float,
                                    max_jumps: int, db: AsyncSession) -> List[Dict[str, Any]]:
-        """Find profitable trade paths through known space"""
-        # Simplified pathfinding - in production would use A* or similar
-        profitable_paths = []
-        
-        # This is a placeholder for the actual pathfinding algorithm
-        # Would implement proper graph traversal here
-        
+        """Find profitable trade paths through EXPLORED space only
+        (ADR-0075; aria-companion.md:33-50). Two-leg cascades: buy at a
+        station in ``start_sector``, sell the SAME commodity at a station
+        in another explored sector reachable within ``max_jumps`` real
+        warp/tunnel hops.
+
+        [NO-CANON] Profit-scoring: canon's ``plan_trade_cascade`` input
+        has no cargo/quantity parameter, so ``total_profit`` here is the
+        PER-UNIT price differential (sell avg_price - buy avg_price) from
+        ``trade_graph``'s ``ARIAMarketIntelligence`` observations -- real,
+        populated data (per the WO's own guidance). The alternative
+        signal, ``get_top_routes``/the SQL-aggregate recommendation
+        engine (``ARIATradingObservation``-backed, real completed-trade
+        profit), is DELIBERATELY NOT used here: that engine is SYNC
+        (``Session``, WO-ARIA-OBS-LOG's own documented split matching
+        trading.py's sync buy/sell path) while this entire call chain is
+        ``AsyncSession``-based -- bridging would need
+        ``AsyncSession.run_sync(...)`` (this file's own OBS-LOG section
+        docstring names that as the future connector for "a future async
+        caller"), which this WO does not need to introduce for a
+        secondary signal the WO's own brief already flags as sparse
+        (sell-leg ``profit`` is ``None`` until the cost-basis WO lands).
+        ``confidence`` is the MIN of the two legs' ``prediction_confidence``
+        (conservative combination, not an average) -- flagged, not canon.
+
+        Degrades honestly: returns ``[]`` when the start sector has no
+        market intelligence, no other explored sector is reachable within
+        ``max_jumps``, or no commodity clears ``target_profit`` -- never a
+        fabricated result.
+        """
+        start_ports = trade_graph.get(start_sector, {}).get("ports") or {}
+        if not start_ports:
+            return []
+
+        explored_ids: Set[str] = set(trade_graph.keys())
+        adjacency = await self._build_explored_adjacency(explored_ids, db)
+        hop_distances = self._dijkstra_hop_distances(adjacency, start_sector, max_jumps)
+
+        profitable_paths: List[Dict[str, Any]] = []
+        for sell_sector_id, hops in hop_distances.items():
+            if sell_sector_id == start_sector or hops <= 0 or hops > max_jumps:
+                continue
+            sell_ports = trade_graph.get(sell_sector_id, {}).get("ports") or {}
+            if not sell_ports:
+                continue
+
+            for buy_station_id, buy_commodities in start_ports.items():
+                for commodity, buy_intel in buy_commodities.items():
+                    buy_price = buy_intel.get("avg_price")
+                    if buy_price is None:
+                        continue
+
+                    for sell_station_id, sell_commodities in sell_ports.items():
+                        sell_intel = sell_commodities.get(commodity)
+                        if sell_intel is None:
+                            continue
+                        sell_price = sell_intel.get("avg_price")
+                        if sell_price is None:
+                            continue
+
+                        profit = sell_price - buy_price
+                        if profit < target_profit:
+                            continue
+
+                        confidence = min(
+                            buy_intel.get("confidence", 0.0),
+                            sell_intel.get("confidence", 0.0),
+                        )
+                        profitable_paths.append({
+                            "total_profit": profit,
+                            "jumps": hops,
+                            "profit_per_jump": profit / hops,
+                            "confidence": confidence,
+                            "path": [
+                                {
+                                    "sector_id": start_sector,
+                                    "station_id": buy_station_id,
+                                    "action": "buy",
+                                    "commodity": commodity,
+                                    "expected_price": buy_price,
+                                    "confidence": buy_intel.get("confidence", 0.0),
+                                    "observations": buy_intel.get("observations", 0),
+                                },
+                                {
+                                    "sector_id": sell_sector_id,
+                                    "station_id": sell_station_id,
+                                    "action": "sell",
+                                    "commodity": commodity,
+                                    "expected_price": sell_price,
+                                    "confidence": sell_intel.get("confidence", 0.0),
+                                    "observations": sell_intel.get("observations", 0),
+                                },
+                            ],
+                        })
+
         return profitable_paths
     
     async def _get_quantum_cache(self, player_id: str, cache_key: str,
