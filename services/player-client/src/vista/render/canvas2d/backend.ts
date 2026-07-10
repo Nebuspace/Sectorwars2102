@@ -459,7 +459,11 @@ function buildVistaCache(
   const sunR = primarySun
     ? Math.max(6, Math.min(Math.min(w, h) * 0.13, primarySun.radiusPx * (w / 1440)))
     : Math.max(6, Math.min(w, h) * 0.05);
-  const coronaR = Math.min(Math.hypot(w, h) * 0.55, sunR * (5 + prox * 4));
+  // sunGlareCap (WO-VISTA-MOUNTAINOUS-IDENTITY): scales the glare-halo RADIUS
+  // only, never sunR (the disc itself) — present only on MOUNTAINOUS; every
+  // other type's `?? 1.0` default reproduces the exact prior formula.
+  const sunGlareCap = getProfile(model.planetType).sunGlareCap ?? 1.0;
+  const coronaR = Math.min(Math.hypot(w, h) * 0.55, sunR * (5 + prox * 4)) * sunGlareCap;
   const coreWhite = Math.round(160 + prox * 95);
   const sunAzDir = rngSun() > 0.5 ? 1 : -1;
 
@@ -628,7 +632,23 @@ function buildVistaCache(
     const waveCountMul = 0.8 + choppiness * 0.6;
     const waveAmpMul = Math.max(0.5, waterLayer.waveAmp);
     const whitecapDensity = Math.min(1, 0.3 + choppiness * 0.7);
-    const swellCount = Math.max(6, Math.round(baseSwells * waveCountMul));
+    // waveDensityScale (WO-VISTA-MOUNTAINOUS-IDENTITY): applied AFTER the
+    // generic formula above, bypassing waveAmpMul's dead floor entirely —
+    // present only on MOUNTAINOUS; every other profile's `?? 1.0` default
+    // reproduces the exact prior swellCount/fineCount/amp values.
+    //
+    // swellFloor drops to 0 (not just a smaller positive count) when the
+    // override is present: confirmed via live-mount screenshot that each
+    // swell draws a FILLED "slab" polygon up to 36px tall
+    // (`const slab = 6 + f * 30` below) completely independent of
+    // waveAmpMul/densityScale — in a water band this thin (coverageBase
+    // above), even 1-2 slabs occupy most of its visible height and read as
+    // a solid wavy mass, not a calm lake. Zero swells + a handful of thin
+    // `fine` ripple *lines* (no filled body) is what actually reads calm.
+    const waveFootprint = getProfile(model.planetType).waterFootprint;
+    const densityScale = waveFootprint?.waveDensityScale ?? 1.0;
+    const swellFloor = waveFootprint ? 0 : 6;
+    const swellCount = Math.max(swellFloor, Math.round(baseSwells * waveCountMul * densityScale));
     for (let i = 0; i < swellCount; i++) {
       const lin = i / (swellCount - 1);
       const f = lin * lin;
@@ -638,7 +658,7 @@ function buildVistaCache(
         : (rngWave() * 0.001);
       waves.push({
         yFrac: f,
-        amp: (2 + f * 16) * sizeJitter * waveAmpMul,
+        amp: (2 + f * 16) * sizeJitter * waveAmpMul * densityScale,
         wavelength: (90 + f * 320) * (0.6 + rngWave() * 0.9),
         speed: (0.5 + f * 1.4) * (0.7 + rngWave() * 0.7),
         phase: rngWave() * Math.PI * 2,
@@ -656,12 +676,12 @@ function buildVistaCache(
       });
     }
     // Fine ripple lines between swells
-    const fineCount = Math.round(10 + 8 * waveAmpMul);
+    const fineCount = Math.max(0, Math.round((10 + 8 * waveAmpMul) * densityScale));
     for (let i = 0; i < fineCount; i++) {
       const f = rngWave();
       waves.push({
         yFrac: 0.1 + f * 0.88,
-        amp: (1 + f * 3) * (0.6 + waveAmpMul * 0.4),
+        amp: (1 + f * 3) * (0.6 + waveAmpMul * 0.4) * densityScale,
         wavelength: (24 + f * 70) * (0.7 + rngWave() * 0.6),
         speed: (1.2 + f * 2.2) * (0.8 + rngWave() * 0.6),
         phase: rngWave() * Math.PI * 2,
@@ -6302,8 +6322,18 @@ function drawAlpineRidges(
 
     // Per-ridge seeded profile: two sinusoidal harmonics produce the macro alpine
     // silhouette; a third high-frequency term adds rocky jaggedness.
+    //
+    // WO-VISTA-MOUNTAINOUS-IDENTITY: freqA used to be a FLAT 0.50-1.10 range
+    // for every layer — under 1.1 sine cycles across the full canvas width
+    // is ONE rounded hump, not "multiple jagged mountain peaks" (confirmed
+    // via live-mount screenshot: the whole ridge stack read as smooth
+    // rolling hills, not alpine geology, even with ample terrainH). Now
+    // scales with depthFrac so distant ridges stay a soft, hazy 1-2-hump
+    // horizon line (matching real atmospheric-perspective blur) while near
+    // ridges get 3-5 individually distinct peaks — the "foreground/
+    // midground peaks, ridgelines" the WANTED list asks for.
     const phaseA = rng() * Math.PI * 2;
-    const freqA  = 0.50 + rng() * 0.60;
+    const freqA  = (1.0 + depthFrac * 1.8) + rng() * 0.60;
     const phaseB = rng() * Math.PI * 2;
     const freqB  = freqA * 1.70 + rng() * 0.40;
     const bRatio = 0.30 + rng() * 0.18;
@@ -7830,7 +7860,14 @@ function drawScene(
   ctx.fillStyle = cache.glowGrad;
   ctx.fillRect(0, 0, w, h);
   if (dc.sunUp) {
-    const shg = ctx.createRadialGradient(sunX, horizonY, 0, sunX, horizonY, Math.max(w, h) * 0.35);
+    // sunGlareCap (WO-VISTA-MOUNTAINOUS-IDENTITY): this radial "sun highlight"
+    // glow is a SEPARATE additive source from the corona capped in
+    // buildVistaCache — both stack via 'lighter' blending, and this one has
+    // the larger footprint (0.35 * max(w,h) radius), so it needed the same
+    // cap to actually reduce the sky-blowout the critic reported. Present
+    // only on MOUNTAINOUS; `?? 1.0` reproduces the prior radius everywhere else.
+    const glareCap = getProfile(model.planetType).sunGlareCap ?? 1.0;
+    const shg = ctx.createRadialGradient(sunX, horizonY, 0, sunX, horizonY, Math.max(w, h) * 0.35 * glareCap);
     const sa = 0.22 * Math.max(0.2, dc.bright) * (1 + dc.warm * 0.8);
     shg.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${sa.toFixed(3)})`);
     shg.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);

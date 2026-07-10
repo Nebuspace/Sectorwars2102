@@ -709,15 +709,24 @@ function buildWater(
   // HIGH coverage (e.g. OCEANIC ~0.85) → thin land strip → waterlineY close to horizonY.
   // LOW  coverage (e.g. MOUNTAINOUS ~0.30) → wide land strip → waterlineY well below.
   // One seeded jitter draw (±0.03) adds per-seed variation while preserving the signal.
-  const coverageBase = lerp(0.45, 0.05, clamp01(waterCoverage));
+  //
+  // profile.waterFootprint (WO-VISTA-MOUNTAINOUS-IDENTITY) overrides coverageBase
+  // and the waveAmp/chop sample ranges below — present only on MOUNTAINOUS, so
+  // every other profile's formula and rng-draw sequence is byte-identical to
+  // before (same number of sampleRange/next01 calls either way, only the
+  // bounds passed to them differ when the override is present).
+  const wf = profile.waterFootprint;
+  const coverageBase = wf?.coverageBase ?? lerp(0.45, 0.05, clamp01(waterCoverage));
   const jitter       = (rng.next01() - 0.5) * 0.06;  // same 1 rng draw consumed as before
   const waterlineY   = clamp(
     horizonY + coverageBase + jitter,
     horizonY + 0.04,                          // minimum: always a visible land strip above water
     Math.min(horizonY + 0.55, 0.97),          // maximum: enough water visible + canvas guard
   );
-  const waveAmp    = sampleRange(rng, 0.004, 0.018);
-  const chop       = sampleRange(rng, 0.1, 0.75);
+  const [waveAmpMin, waveAmpMax] = wf?.waveAmpRange ?? [0.004, 0.018];
+  const [chopMin, chopMax]       = wf?.chopRange     ?? [0.1, 0.75];
+  const waveAmp    = sampleRange(rng, waveAmpMin, waveAmpMax);
+  const chop       = sampleRange(rng, chopMin, chopMax);
   const foamMul    = sampleRange(rng, 1.0, 2.4);
   const spraySpeedMul = sampleRange(rng, 0.8, 1.5);
 

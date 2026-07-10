@@ -170,6 +170,67 @@ export interface AlpineRidgesConfig {
 }
 
 // ---------------------------------------------------------------------------
+// WaterFootprintConfig — shrinks a profile's water body to a demoted "lake"
+// ---------------------------------------------------------------------------
+
+/**
+ * Overrides buildWater's (pipeline.ts) generic coverage/wave-character
+ * formulas for a specific profile — WO-VISTA-MOUNTAINOUS-IDENTITY.
+ *
+ * The generic formula (`lerp(0.45, 0.05, waterCoverage)`) still carves a
+ * large, full-width water band even at LOW waterCoverage (MOUNTAINOUS's
+ * 0.18 → ~20-30% of canvas height) — plenty of vertical space to read as a
+ * foreground-dominating wave-field, AND it starves drawAlpineRidges of the
+ * terrainH it needs (drawAlpineRidges clips its whole ridge/scree/treeline
+ * fill to [horizonY, waterTopY]). This override pushes the water band to
+ * its thinnest possible footprint and calms the wave character, so the
+ * water reads as an optional lake glimpsed at the mountain base rather
+ * than an ocean — freeing the reclaimed vertical space for foreground/
+ * midground peaks.
+ *
+ * Present only on MOUNTAINOUS_PROFILE; absent for all other planet types
+ * (their water keeps the exact same generic formula as before — this is
+ * purely additive, never touches the shared computation path itself).
+ * Consumed by buildWater in pipeline.ts; ignored everywhere else.
+ */
+export interface WaterFootprintConfig {
+  /**
+   * Replaces the computed `coverageBase` entirely (not blended). Larger
+   * values push the waterline further from the horizon → a THINNER visible
+   * water band. The shared formula's own clamp (`horizonY + 0.55` max, 0.97
+   * absolute ceiling) is still applied afterward, so this cannot push water
+   * off-canvas — 0.56 sits right at that upper bound, the thinnest band the
+   * existing clamp allows.
+   */
+  coverageBase: number;
+  /**
+   * Overrides sampleRange's [min, max] for waveAmp. NOTE (found via live-
+   * mount screenshot, not code-reading): backend.ts's own
+   * `waveAmpMul = Math.max(0.5, waterLayer.waveAmp)` floors this to 0.5 for
+   * EVERY profile, since waveAmp's whole valid range (0.004-0.018 stock) is
+   * always well under 0.5 — a pre-existing, universal dead lever, not
+   * something this WO introduced. Kept here anyway (harmless, self-
+   * documents intent, and stops being dead the moment that floor is ever
+   * fixed) — waveDensityScale below is the field that ACTUALLY reduces
+   * visible wave size/count today.
+   */
+  waveAmpRange: [number, number];
+  /** Overrides sampleRange's [min, max] for chop — minimal chop, not open-sea swell. */
+  chopRange: [number, number];
+  /**
+   * Multiplies swellCount, fineCount, and every wave's amp AFTER the shared
+   * formula computes them (bypasses the waveAmpMul floor above entirely).
+   * 1.0 = unchanged. This is the lever that actually shrinks the visible
+   * wave field to lake-scale: a thinner water band (from coverageBase
+   * above) packs the SAME wave count into much less vertical space unless
+   * count is also scaled down, or dense overlapping crests (additive
+   * 'lighter' blending) read as a solid bright swath instead of a calm
+   * surface — confirmed via live-mount screenshot during this WO.
+   */
+  waveDensityScale: number;
+}
+
+// ---------------------------------------------------------------------------
 // OceanicSurfaceConfig — open-water params for the OCEANIC surface renderer
 // ---------------------------------------------------------------------------
 
@@ -450,6 +511,23 @@ export interface PlanetProfile {
    * Consumed by drawAlpineRidges in backend.ts; ignored everywhere else.
    */
   alpineRidges?: AlpineRidgesConfig;
+
+  /**
+   * Demotes this profile's water body to a thin "lake" footprint, overriding
+   * buildWater's generic coverage/wave formulas. Present only on
+   * MOUNTAINOUS; absent for all other types (their water is untouched).
+   * Consumed by buildWater in pipeline.ts; ignored everywhere else.
+   */
+  waterFootprint?: WaterFootprintConfig;
+
+  /**
+   * Scales the sun corona radius (the atmospheric glare halo, NOT the sun
+   * disc itself) — 1.0 = unchanged generic size; smaller values cap glare
+   * spread. Present only on MOUNTAINOUS; absent (→ 1.0, no-op) for all
+   * other types. Consumed in buildVistaCache in backend.ts; ignored
+   * everywhere else.
+   */
+  sunGlareCap?: number;
 
   /**
    * Oceanic open-water surface configuration.
@@ -1379,6 +1457,34 @@ const MOUNTAINOUS_PROFILE: PlanetProfile = {
   // 40 % scree band, 14 px conifer spacing.  Values match the hardcoded constants in
   // drawAlpineRidges — profile integration only, no visual change.
   alpineRidges: { ridgeCount: 4, snowLineFrac: 0.60, screeFrac: 0.40, treeStepPx: 14 },
+
+  // WO-VISTA-MOUNTAINOUS-IDENTITY: demote water to an optional lake glimpsed
+  // at the mountain base, not a foreground-dominating ocean. coverageBase=0.56
+  // sits at the shared clamp's own upper bound (horizonY + 0.55, 0.97 ceiling)
+  // — the thinnest water band the existing formula's safety clamp allows,
+  // vs. the generic formula's ~0.38 for MOUNTAINOUS's 0.18 waterCoverage.
+  // This directly reclaims the vertical space drawAlpineRidges needs for
+  // foreground/midground peaks (terrainH = waterTopY - horizonY). Wave/chop
+  // ranges dropped well below the open-water defaults ([0.004,0.018] /
+  // [0.1,0.75]) for a calm, glassy lake surface instead of ocean swells.
+  // waveDensityScale=0.04 (tuned via TWO live-mount screenshot iterations,
+  // not code-reading alone — see the swellFloor comment in backend.ts for
+  // the full slab-polygon finding): 0.04 rounds swellCount to 0 (no filled
+  // wave-body slabs at all, each up to 36px tall independent of amplitude —
+  // in a band this thin that alone read as a solid wavy mass) while still
+  // leaving ~1 thin `fine`-ripple LINE for a hint of shimmer, not a flat void.
+  waterFootprint: {
+    coverageBase: 0.56,
+    waveAmpRange: [0.002, 0.006],
+    chopRange:    [0.05, 0.18],
+    waveDensityScale: 0.04,
+  },
+
+  // WO-VISTA-MOUNTAINOUS-IDENTITY: caps the sun corona's glare spread (the
+  // atmospheric glow halo, not the disc) at 60% of the generic radius —
+  // critic tour reported the sun blowing out ~1/3 of the sky against
+  // MOUNTAINOUS's dark, high-contrast basePalette.
+  sunGlareCap: 0.60,
 
   // Alpine meadows in lowlands; half density — not a jungle.
   denseFloraFactor: 0.5,
