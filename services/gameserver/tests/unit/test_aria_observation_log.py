@@ -174,6 +174,25 @@ class _FakeCacheQuery:
         return len(victims)
 
 
+class _NoOpSavepoint:
+    """Stand-in for the real SQLAlchemy Session.begin_nested() context
+    manager (WO-SWEEP-QUANTUM-CACHE-COLUMN's savepoint around
+    _invalidate_aggregate_cache_sync's DELETE) -- no real transactional
+    backing, success just falls through; a raised exception inside the
+    `with` block propagates normally via Python's own context-manager
+    protocol, matching record_trade_observation's own outer try/except
+    (this method itself has no try/except of its own -- see its
+    docstring). Real SAVEPOINT failure-isolation behavior is proven
+    against a real SQLite Session in
+    test_aria_quantum_cache_column_savepoint.py, not re-proven here."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False  # never swallow -- let the caller's own try/except handle it
+
+
 class FakeObsSession:
     """Minimal sync db double: dispatches db.query(*cols) by owning mapped
     class (a real InstrumentedAttribute exposes ``.class_``; a bare model
@@ -188,6 +207,7 @@ class FakeObsSession:
         self.queries = 0
         self.group_queries = 0
         self.added = []
+        self.flushes = 0
 
     def add(self, obj):
         self.added.append(obj)
@@ -211,6 +231,12 @@ class FakeObsSession:
             # _FakeCacheQuery is generic enough to serve both.
             return _FakeCacheQuery(self.memories, self, cols)
         raise AssertionError(f"unexpected query owner {owner!r}")
+
+    def begin_nested(self):
+        return _NoOpSavepoint()
+
+    def flush(self):
+        self.flushes += 1
 
 
 # --------------------------------------------------------------------------- #

@@ -2547,11 +2547,27 @@ class ARIAPersonalIntelligenceService:
         the dispatch report as a deliberate simplification given the
         observation-log's per-player scale doesn't warrant a finer
         partition yet.
+
+        WO-SWEEP-QUANTUM-CACHE-COLUMN: the DELETE itself was ALREADY safe
+        from the aria_quantum_cache.port_id/station_id defect (a `.filter(
+        ...).delete()` bulk statement only references its WHERE-clause
+        columns -- player_id/cache_key here -- never the full column list a
+        plain SELECT would), but this is the ONE live, production-reachable
+        write against this table (record_trade_observation ->
+        trading.py:414, folded into the SAME trade commit per that
+        method's own "CALLER owns the commit" contract) with NO savepoint
+        protection -- ANY DB-level failure here (this defect or a future
+        one) would poison the session and take the real trade's own commit
+        down with it. Mirrors record_market_observation_sync's per-write
+        savepoint discipline (WO-SWEEP-ARIA-MI-COLUMN) — the caller's own
+        broad try/except catches the Python-level exception either way,
+        but only a SAVEPOINT actually protects the transaction itself.
         """
-        db.query(ARIAQuantumCache).filter(
-            ARIAQuantumCache.player_id == player_id,
-            ARIAQuantumCache.cache_key == self._RECOMMENDATION_CACHE_KEY,
-        ).delete(synchronize_session=False)
+        with db.begin_nested():
+            db.query(ARIAQuantumCache).filter(
+                ARIAQuantumCache.player_id == player_id,
+                ARIAQuantumCache.cache_key == self._RECOMMENDATION_CACHE_KEY,
+            ).delete(synchronize_session=False)
 
 
 # Singleton instance
