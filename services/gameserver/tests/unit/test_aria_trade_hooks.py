@@ -1,22 +1,39 @@
-"""DB-free pins for the ARIA trade hooks (WO-ARIA-OBS-LOG Lane C):
-routes/trading.py's ``_record_aria_trade_hooks`` helper, wired into both the
-buy and sell completion paths.
+"""DB-free pins for the ARIA trade + market-observation hooks in
+routes/trading.py:
 
-Scope: this lane owns trading.py's CALL SITE only -- not the real
-``aria_personal_intelligence_service.py`` internals (lane A/B's file). Both
-ARIA surfaces (``record_trade_memory``, ``record_trade_observation``) are
-therefore SPIED via a fake service object substituted for
-``get_aria_intelligence_service()``, rather than exercised for real -- this
-isolates the pins to "did trading.py call the right surface with the right
-data, and does a raise from either surface still leave the trade intact",
-which is exactly what this lane is responsible for proving.
+- WO-ARIA-OBS-LOG: ``_record_aria_trade_hooks``, wired into the buy and sell
+  completion paths.
+- WO-ARIA-MARKET-OBS: ``_record_aria_market_observation``, wired into
+  ``get_market_info`` and ``dock_at_station``.
+
+Scope: this lane owns trading.py's CALL SITES only -- not the real
+``aria_personal_intelligence_service.py`` internals (lane B's file). Every
+ARIA surface (``record_trade_memory_sync``, ``record_trade_observation``,
+``record_market_observation_sync``) is therefore SPIED via a fake service
+object substituted for ``get_aria_intelligence_service()``, rather than
+exercised for real -- this isolates the pins to "did trading.py call the
+right surface with the right data, and does a raise from either surface
+still leave the route intact", which is exactly what this lane is
+responsible for proving.
 
 Harness: reuses test_trading_core_pins.py's proven DB-free
 _FakeSession/_FakeQuery/_neutral_player/_neutral_station/_ship/_market_price
-convention for calling the REAL buy_resource/sell_resource route coroutines
-directly (no test-file-to-test-file import -- each trading.py test file
-keeps its own self-contained harness, matching that file's own precedent of
-not sharing fixtures via a conftest).
+convention for calling the REAL route coroutines directly (no
+test-file-to-test-file import -- each trading.py test file keeps its own
+self-contained harness, matching that file's own precedent of not sharing
+fixtures via a conftest).
+
+``dock_at_station`` note: unlike buy/sell/get_market_info, this route also
+touches docking_service.acquire/_realize_fee/ship_size_for and
+turn_service.regenerate_turns -- faking all of that DB surface just to
+prove a 3-line hook addition is disproportionate and risks a fake harness
+that doesn't reflect the real service. Its coverage here is therefore: (1)
+a full DB-free unit test of the shared ``_record_aria_market_observation``
+helper (identical code path both routes call, including the exception-
+isolation contract), plus (2) structural/source pins proving the hook is
+wired at the right point in ``dock_at_station`` (before its single commit,
+never preceded by ``_ensure_market_prices``). ``get_market_info`` gets full
+route-level coverage since its DB surface is tractable.
 """
 from __future__ import annotations
 
@@ -27,7 +44,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.api.routes.trading import TradeRequest, buy_resource, sell_resource
+from src.api.routes.trading import (
+    TradeRequest,
+    _record_aria_market_observation,
+    buy_resource,
+    get_market_info,
+    sell_resource,
+)
 from src.models.market_transaction import MarketPrice, MarketTransaction
 from src.models.player import Player
 from src.models.ship import Ship, ShipType
@@ -39,9 +62,10 @@ from src.models.station import Station, StationClass, StationStatus, StationType
 
 
 class _FakeQuery:
-    def __init__(self, *, first: Any = None, seq=None) -> None:
+    def __init__(self, *, first: Any = None, seq=None, all_results=None) -> None:
         self._first = first
         self._seq = list(seq) if seq is not None else None
+        self._all = list(all_results) if all_results is not None else []
 
     def filter(self, *a: Any, **k: Any) -> "_FakeQuery":
         return self
@@ -56,6 +80,9 @@ class _FakeQuery:
         if self._seq is not None:
             return self._seq.pop(0) if self._seq else None
         return self._first
+
+    def all(self) -> list:
+        return self._all
 
 
 class _FakeSession:
@@ -144,10 +171,15 @@ def _ship(*, capacity=100, used=0, contents=None) -> Ship:
     )
 
 
-def _market_price(station_id, *, buy_price, sell_price, quantity) -> MarketPrice:
+def _market_price(station_id, *, buy_price, sell_price, quantity, commodity="ore") -> MarketPrice:
     return MarketPrice(
-        id=uuid.uuid4(), station_id=station_id, commodity="ore",
+        id=uuid.uuid4(), station_id=station_id, commodity=commodity,
         buy_price=buy_price, sell_price=sell_price, quantity=quantity,
+        # price_trend has a Column(default=0.0) that only applies on a REAL
+        # flush (never triggered by this fake session) -- get_market_info's
+        # response building does float(price.price_trend), which raises on
+        # a bare None. Set explicitly so a fake row behaves like a real one.
+        price_trend=0.0,
     )
 
 
@@ -158,6 +190,17 @@ def _session_for(player: Player, station: Station, ship: Ship, market_price: Mar
         Player: _FakeQuery(seq=[player, None] * player_seq_len),
         Ship: _FakeQuery(first=ship),
         MarketPrice: _FakeQuery(first=market_price),
+    })
+
+
+def _market_info_session_for(station: Station, market_price_rows: list) -> _FakeSession:
+    """get_market_info's DB surface: Station (._get_station_or_404) +
+    MarketPrice.all() (the resources loop). station.commodities={}
+    (_neutral_station) short-circuits _ensure_market_prices before it ever
+    touches MarketPrice, so no MarketPrice.first() spec is needed here."""
+    return _FakeSession({
+        Station: _FakeQuery(first=station),
+        MarketPrice: _FakeQuery(all_results=market_price_rows),
     })
 
 
@@ -173,18 +216,21 @@ def _added_transaction(db: _FakeSession) -> MarketTransaction:
 
 
 class _FakeARIAService:
-    """Stands in for ARIAPersonalIntelligenceService. Both surfaces are sync,
-    matching the real record_trade_memory_sync (aria_personal_intelligence_
-    service.py:444, the sync twin of record_trade_memory) and
-    record_trade_observation (:2061). Each call is recorded verbatim for
-    inspection; either can be scripted to raise, to pin the non-blocking
-    contract."""
+    """Stands in for ARIAPersonalIntelligenceService. All three surfaces are
+    sync: record_trade_memory_sync (aria_personal_intelligence_service.py:
+    444, the sync twin of record_trade_memory), record_trade_observation
+    (:2061), and record_market_observation_sync (proposed WO-ARIA-MARKET-OBS
+    contract -- adjust here the moment lane B's final signature lands). Each
+    call is recorded verbatim for inspection; any of the three can be
+    scripted to raise, to pin the non-blocking contract."""
 
     def __init__(self) -> None:
         self.memory_calls: List[Dict[str, Any]] = []
         self.observation_calls: List[Dict[str, Any]] = []
+        self.market_observation_calls: List[Dict[str, Any]] = []
         self.memory_raises: Optional[Exception] = None
         self.observation_raises: Optional[Exception] = None
+        self.market_observation_raises: Optional[Exception] = None
 
     def record_trade_memory_sync(self, player_id, trade_data, db):
         self.memory_calls.append({"player_id": player_id, "trade_data": trade_data, "db": db})
@@ -195,6 +241,14 @@ class _FakeARIAService:
         self.observation_calls.append({"player_id": player_id, "trade_result": trade_result, "db": db})
         if self.observation_raises is not None:
             raise self.observation_raises
+
+    def record_market_observation_sync(self, player_id, station_id, market_prices, db):
+        self.market_observation_calls.append({
+            "player_id": player_id, "station_id": station_id,
+            "market_prices": market_prices, "db": db,
+        })
+        if self.market_observation_raises is not None:
+            raise self.market_observation_raises
 
 
 @pytest.fixture
@@ -383,6 +437,190 @@ class TestAriaWriteNeverBlocksTrade:
 
         assert result["transaction"]["total_cost"] == 300
         assert db.commit_calls == 1
+
+
+# ---------------------------------------------------------------------------
+# WO-ARIA-MARKET-OBS: get_market_info (full route-level coverage)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestAriaMarketObservationGetMarketInfo:
+    async def test_get_market_info_records_one_batched_observation_call(self, fake_aria):
+        station = _neutral_station()
+        rows = [
+            _market_price(station.id, commodity="ore", buy_price=20, sell_price=30, quantity=500),
+            _market_price(station.id, commodity="equipment", buy_price=80, sell_price=100, quantity=50),
+        ]
+        player = _neutral_player(credits=10_000)
+        db = _market_info_session_for(station, rows)
+
+        await get_market_info(
+            station_id=str(station.id), db=db, current_user=None, current_player=player,
+        )
+
+        assert len(fake_aria.market_observation_calls) == 1
+        call = fake_aria.market_observation_calls[0]
+        assert call["player_id"] == str(player.id)
+        assert call["station_id"] == str(station.id)
+        assert call["db"] is db
+
+        # All commodities batched into the ONE call -- not one call each.
+        payload = call["market_prices"]
+        assert len(payload) == 2
+        by_commodity = {p["commodity"]: p for p in payload}
+        assert by_commodity["ore"]["buy_price"] == 20
+        assert by_commodity["ore"]["sell_price"] == 30
+        assert by_commodity["ore"]["quantity"] == 500
+        assert by_commodity["equipment"]["buy_price"] == 80
+        assert by_commodity["equipment"]["sell_price"] == 100
+
+    async def test_get_market_info_commits_exactly_once_for_the_observation_write(self, fake_aria):
+        """get_market_info is otherwise a pure GET with no commit of its
+        own (_neutral_station's commodities={} short-circuits
+        _ensure_market_prices before any commit inside it) -- the ONLY
+        commit in this route comes from the ARIA hook's explicit commit."""
+        station = _neutral_station()
+        rows = [_market_price(station.id, commodity="ore", buy_price=20, sell_price=30, quantity=500)]
+        player = _neutral_player(credits=10_000)
+        db = _market_info_session_for(station, rows)
+
+        await get_market_info(
+            station_id=str(station.id), db=db, current_user=None, current_player=player,
+        )
+
+        assert db.commit_calls == 1
+
+    async def test_get_market_info_returns_normally_when_observation_write_raises(self, fake_aria):
+        fake_aria.market_observation_raises = RuntimeError("simulated ARIA market outage")
+        station = _neutral_station()
+        rows = [_market_price(station.id, commodity="ore", buy_price=20, sell_price=30, quantity=500)]
+        player = _neutral_player(credits=10_000)
+        db = _market_info_session_for(station, rows)
+
+        result = await get_market_info(
+            station_id=str(station.id), db=db, current_user=None, current_player=player,
+        )
+
+        # Route completed normally (200-equivalent: a real MarketInfoResponse,
+        # not an exception) despite the observation write raising.
+        assert result.resources["ore"]["buy_price"] == 20
+        assert db.commit_calls == 1
+
+    async def test_get_market_info_skips_the_call_when_station_has_no_priced_commodities(self, fake_aria):
+        """Empty market_price_rows -> _record_aria_market_observation's own
+        early-return -- no call at all, not a call with an empty payload."""
+        station = _neutral_station()
+        player = _neutral_player(credits=10_000)
+        db = _market_info_session_for(station, [])
+
+        await get_market_info(
+            station_id=str(station.id), db=db, current_user=None, current_player=player,
+        )
+
+        assert fake_aria.market_observation_calls == []
+        # No pending write -> the route's explicit commit is still a no-op
+        # call (harmless), so this isn't asserted either way here.
+
+
+# ---------------------------------------------------------------------------
+# WO-ARIA-MARKET-OBS: shared _record_aria_market_observation helper
+# (this IS dock_at_station's observation code path too -- see module
+# docstring for why dock_at_station itself isn't route-level tested here)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestAriaMarketObservationHelper:
+    async def test_helper_batches_all_rows_into_one_call(self, fake_aria):
+        station = _neutral_station()
+        player = _neutral_player(credits=10_000)
+        rows = [
+            _market_price(station.id, commodity="ore", buy_price=20, sell_price=30, quantity=500),
+            _market_price(station.id, commodity="fuel", buy_price=5, sell_price=8, quantity=200),
+        ]
+        db = _FakeSession({})
+
+        await _record_aria_market_observation(db, player, station, rows)
+
+        assert len(fake_aria.market_observation_calls) == 1
+        payload = fake_aria.market_observation_calls[0]["market_prices"]
+        assert {p["commodity"] for p in payload} == {"ore", "fuel"}
+
+    async def test_helper_never_raises_when_the_service_call_raises(self, fake_aria):
+        fake_aria.market_observation_raises = RuntimeError("simulated outage")
+        station = _neutral_station()
+        player = _neutral_player(credits=10_000)
+        rows = [_market_price(station.id, commodity="ore", buy_price=20, sell_price=30, quantity=500)]
+        db = _FakeSession({})
+
+        # Must not raise -- this is the exact guarantee dock_at_station's
+        # own try/except relies on to keep returning 200 with an injected
+        # observation-path exception.
+        await _record_aria_market_observation(db, player, station, rows)
+
+        assert len(fake_aria.market_observation_calls) == 1
+
+    async def test_helper_makes_zero_calls_for_an_empty_row_list(self, fake_aria):
+        station = _neutral_station()
+        player = _neutral_player(credits=10_000)
+        db = _FakeSession({})
+
+        await _record_aria_market_observation(db, player, station, [])
+
+        assert fake_aria.market_observation_calls == []
+
+
+# ---------------------------------------------------------------------------
+# WO-ARIA-MARKET-OBS: structural pins for dock_at_station's wiring
+# ---------------------------------------------------------------------------
+
+
+class TestAriaMarketObservationDockStructural:
+    """dock_at_station's own DB surface (docking_service.acquire/
+    _realize_fee/ship_size_for, turn_service.regenerate_turns) is out of
+    this lane's scope to fake -- see module docstring. These pins instead
+    prove, from source, that the hook is wired where it needs to be:
+    inside the try block, before the route's single commit (so the write
+    folds into the docking transaction), and never behind a call to
+    _ensure_market_prices (whose own docstring warns it may commit, which
+    would split "one session, single commit" mid-flight -- see the inline
+    comment at the call site)."""
+
+    def test_hook_call_precedes_the_single_commit(self):
+        import inspect
+
+        from src.api.routes import trading as trading_routes
+
+        source = inspect.getsource(trading_routes.dock_at_station)
+        hook_index = source.index("_record_aria_market_observation(")
+        # dock_at_station has an EARLIER db.commit() too (the "all slips
+        # occupied" queue-enqueue early-return branch, before the granted-
+        # slip check) -- search from hook_index so this finds the commit
+        # AFTER the hook (the real single-commit at the end of the try
+        # block), not that unrelated earlier one.
+        commit_index = source.index("db.commit()", hook_index)
+        assert hook_index < commit_index, (
+            "the market-observation hook must run before dock_at_station's "
+            "single commit so the write folds into the same transaction"
+        )
+
+    def test_dock_at_station_never_calls_ensure_market_prices(self):
+        import inspect
+
+        from src.api.routes import trading as trading_routes
+
+        source = inspect.getsource(trading_routes.dock_at_station)
+        assert "_ensure_market_prices(" not in source
+
+    def test_hook_reads_market_price_rows_queried_in_the_same_function(self):
+        import inspect
+
+        from src.api.routes import trading as trading_routes
+
+        source = inspect.getsource(trading_routes.dock_at_station)
+        assert "MarketPrice" in source
+        assert "_record_aria_market_observation(db, current_player, station, station_prices)" in source
 
 
 # ---------------------------------------------------------------------------

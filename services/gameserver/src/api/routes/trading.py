@@ -393,6 +393,58 @@ async def _record_aria_trade_hooks(
         logger.debug("ARIA trade observation recording skipped: %s", e)
 
 
+async def _record_aria_market_observation(
+    db: Session,
+    player: Player,
+    station: Station,
+    market_price_rows,
+) -> None:
+    """Best-effort ARIA market-observation recording (WO-ARIA-MARKET-OBS):
+    one ``record_market_observation_sync`` call per station visit, ALL
+    commodities batched into a single payload. The dedup window (repeated
+    views during one dock shouldn't spam duplicate observations) lives
+    INSIDE the service, per lane B's contract -- this hook fires
+    unconditionally on every call and never maintains route-side dedup
+    state.
+
+    ``market_price_rows`` is the RAW (station-side, un-rank-adjusted)
+    ``MarketPrice`` rows for this station -- deliberately NOT the
+    player-rank-discounted view ``get_market_info`` builds for its response
+    payload. A shared per-commodity price-history signal must mean the same
+    thing regardless of which route observed it or which player's rank
+    happened to be active; mixing in a per-player discount would corrupt
+    trend/volatility aggregates the moment two players (or one player's
+    rank-up) produced different "prices" for the same station state.
+
+    FLUSH-FREE by design (matches the OBS-LOG sync twins): only stages the
+    write via ``db.add()``-equivalent inside the service; the CALLER owns
+    the commit. Never blocks or fails the route.
+    """
+    if not market_price_rows:
+        return
+
+    from src.services.aria_personal_intelligence_service import get_aria_intelligence_service
+
+    aria_service = get_aria_intelligence_service()
+    market_prices = [
+        {
+            "commodity": row.commodity,
+            "price": row.buy_price,
+            "buy_price": row.buy_price,
+            "sell_price": row.sell_price,
+            "quantity": row.quantity,
+        }
+        for row in market_price_rows
+    ]
+
+    try:
+        aria_service.record_market_observation_sync(
+            str(player.id), str(station.id), market_prices, db,
+        )
+    except Exception as e:
+        logger.debug("ARIA market observation recording skipped: %s", e)
+
+
 @router.post("/buy")
 async def buy_resource(
     trade_request: TradeRequest,
@@ -1135,7 +1187,18 @@ async def get_market_info(
             "previous_buy_price": price.previous_buy_price,
             "previous_sell_price": price.previous_sell_price,
         }
-    
+
+    # ARIA market-observation hook (WO-ARIA-MARKET-OBS): best-effort, reads
+    # the raw `market_prices` rows already queried above (not the
+    # rank-adjusted `resources` built just now -- see
+    # _record_aria_market_observation's docstring). This route has no other
+    # commit point of its own (a pure GET otherwise) -- unlike
+    # _ensure_market_prices above, whose commits are conditional on a first
+    # read/lazy tick -- so the write needs its own explicit commit here or
+    # it is silently discarded when the request's session closes uncommitted.
+    await _record_aria_market_observation(db, current_player, station, market_prices)
+    db.commit()
+
     return MarketInfoResponse(
         resources=resources,
         port={
@@ -1332,6 +1395,18 @@ async def dock_at_station(
         current_player.credits -= docking_fee
         docking_service._realize_fee(db, station, docking_fee)
         slip_result["occupancy"].fee_paid = docking_fee
+
+        # ARIA market-observation hook (WO-ARIA-MARKET-OBS): best-effort,
+        # folds into this transaction's single commit below. Deliberately
+        # does NOT call _ensure_market_prices first (unlike get_market_info)
+        # -- that helper may itself commit (see its docstring), which would
+        # split this route's documented "one session, single commit"
+        # transaction mid-flight. A station with no MarketPrice rows yet
+        # (never read/traded) simply yields zero observations here; the
+        # next get_market_info call lazily creates them in its own
+        # read-only context.
+        station_prices = db.query(MarketPrice).filter(MarketPrice.station_id == station.id).all()
+        await _record_aria_market_observation(db, current_player, station, station_prices)
 
         db.commit()
 

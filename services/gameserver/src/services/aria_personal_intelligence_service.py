@@ -41,6 +41,7 @@ from src.models.aria_personal_intelligence import (
 )
 from src.core.config import settings
 from src.core.security import get_password_hash
+from src.core.game_time import scaled_elapsed
 
 logger = logging.getLogger(__name__)
 
@@ -160,9 +161,18 @@ class ARIAPersonalIntelligenceService:
             )
             return None
         
-        # Get port's sector
+        # Get port's sector. sector_uuid (not the Integer sector_id -- see
+        # station.py:99-100) is the FK-compatible field ARIAMarketIntelligence.
+        # sector_id (UUID, NOT NULL) actually needs; a station with no
+        # resolved sector_uuid can't be recorded (WO-ARIA-MARKET-OBS).
         station = await db.get(Station, station_id)
         if not station:
+            return None
+        if station.sector_uuid is None:
+            logger.warning(
+                "record_market_observation: station %s has no sector_uuid -- skipping",
+                station_id,
+            )
             return None
 
         # Check existing intelligence
@@ -175,27 +185,31 @@ class ARIAPersonalIntelligenceService:
         )
         result = await db.execute(stmt)
         intelligence = result.scalar_one_or_none()
-        
+
         observation = {
             "price": price,
             "quantity": quantity,
             "timestamp": datetime.now(UTC).isoformat()
         }
-        
+
         if intelligence:
-            # Update existing intelligence
-            intelligence.price_observations.append(observation)
+            # Update existing intelligence. REASSIGN (never in-place
+            # .append()) -- price_observations is a plain Column(JSON), and
+            # in-place mutation of the same list object bypasses SQLAlchemy's
+            # attribute-set change tracking entirely, so the append would be
+            # silently lost at flush (WO-ARIA-MARKET-OBS finding).
+            intelligence.price_observations = intelligence.price_observations + [observation]
             intelligence.data_points += 1
             intelligence.last_visit = datetime.now(UTC)
-            
+
             # Recalculate statistics
             prices = [obs["price"] for obs in intelligence.price_observations[-50:]]  # Last 50
             intelligence.average_price = statistics.mean(prices)
             intelligence.price_volatility = statistics.stdev(prices) if len(prices) > 1 else 0.0
-            
+
             # Update patterns if enough data
             if intelligence.data_points >= self.MIN_DATA_POINTS_FOR_PREDICTION:
-                patterns = await self._identify_price_patterns(
+                patterns = self._identify_price_patterns(
                     intelligence.price_observations
                 )
                 intelligence.identified_patterns = patterns
@@ -207,7 +221,7 @@ class ARIAPersonalIntelligenceService:
             intelligence = ARIAMarketIntelligence(
                 player_id=player_id,
                 station_id=station_id,
-                sector_id=station.sector_id,
+                sector_id=station.sector_uuid,
                 commodity=commodity,
                 price_observations=[observation],
                 average_price=price,
@@ -247,7 +261,163 @@ class ARIAPersonalIntelligenceService:
                 )
         
         return intelligence
-    
+
+    # Canonical dedup window (WO-ARIA-MARKET-OBS, NO-CANON -- flagged for the
+    # DECISIONS batch): one market observation per (player, station,
+    # commodity) per 10 CANONICAL minutes, spanning every hook site that
+    # calls record_market_observation_sync for that station visit (dock,
+    # market view, ...). Uses game_time.scaled_elapsed -- CANONICAL, not
+    # wall-clock, matching this codebase's established clock-domain
+    # convention (docking/construction/ownership durations all compare a
+    # scaled-elapsed wall duration against a canonical threshold; see
+    # src/core/game_time.py's module docstring).
+    MARKET_OBSERVATION_DEDUP_WINDOW = timedelta(minutes=10)
+
+    def record_market_observation_sync(
+        self, player_id: str, station_id: str,
+        market_prices: List[Dict[str, Any]], db: Session,
+    ) -> None:
+        """
+        Synchronous, multi-commodity twin of ``record_market_observation``
+        for sync-Session callers (WO-ARIA-MARKET-OBS) -- trading.py's
+        dock / market-view hooks run on a sync Session and need to record a
+        whole station visit's price list in one call, not one commodity at
+        a time.
+
+        One call per station visit; ``market_prices`` is the FULL commodity
+        price list observed at ``station_id`` this visit. Each entry:
+        ``{"commodity": str, "price": float | None, "quantity": int}``
+        (``quantity`` optional, defaults to 0).
+
+        Per-(player, station, commodity) upsert, gated by
+        ``MARKET_OBSERVATION_DEDUP_WINDOW`` on that row's own ``last_visit``
+        -- naturally covers "spans both hook sites" (whichever hook fires
+        first sets ``last_visit``; a second hook re-submitting the same
+        commodity within the window is a no-op for that commodity) while
+        still recording any commodity that's genuinely new to this player+
+        station regardless of what else in the same payload was just seen.
+
+        FLUSH-ONLY: only ``db.add()``s / mutates already-attached rows; the
+        CALLER owns the commit (folds into the route's single commit).
+        Never raises -- an ARIA market-observation hiccup must never break
+        docking or the market view.
+        """
+        try:
+            if not self._validate_player_at_port_sync(player_id, station_id, db):
+                self._log_security_event_sync(
+                    player_id, "invalid_market_observation", "warning",
+                    {"station_id": station_id, "commodity_count": len(market_prices or [])},
+                    db,
+                )
+                return
+
+            station = db.query(Station).filter(Station.id == station_id).first()
+            if not station:
+                logger.warning(
+                    "record_market_observation_sync: station %s not found -- skipping",
+                    station_id,
+                )
+                return
+            if station.sector_uuid is None:
+                logger.warning(
+                    "record_market_observation_sync: station %s has no sector_uuid -- skipping",
+                    station_id,
+                )
+                return
+
+            if not market_prices:
+                return  # empty market -> 0 writes, no error
+
+            now = datetime.now(UTC)
+
+            for entry in market_prices:
+                commodity = entry.get("commodity")
+                if not commodity:
+                    logger.warning(
+                        "record_market_observation_sync: entry with no commodity for "
+                        "player %s at station %s -- skipping", player_id, station_id,
+                    )
+                    continue
+
+                price = entry.get("price")
+                if price is None:
+                    logger.info(
+                        "record_market_observation_sync: %s at station %s has no "
+                        "price -- skipping", commodity, station_id,
+                    )
+                    continue  # price 0 is a real market state and IS recorded
+
+                quantity = entry.get("quantity", 0)
+
+                intelligence = (
+                    db.query(ARIAMarketIntelligence)
+                    .filter(
+                        ARIAMarketIntelligence.player_id == player_id,
+                        ARIAMarketIntelligence.station_id == station_id,
+                        ARIAMarketIntelligence.commodity == commodity,
+                    )
+                    .first()
+                )
+
+                observation = {
+                    "price": price,
+                    "quantity": quantity,
+                    "timestamp": now.isoformat(),
+                }
+
+                if intelligence is not None:
+                    if (
+                        intelligence.last_visit is not None
+                        and scaled_elapsed(intelligence.last_visit, now)
+                        < self.MARKET_OBSERVATION_DEDUP_WINDOW
+                    ):
+                        continue  # within the dedup window -- no-op for this commodity
+
+                    # REASSIGN, never in-place .append() -- price_observations
+                    # is a plain Column(JSON); in-place mutation of the same
+                    # list object bypasses SQLAlchemy's change tracking and
+                    # would be silently lost at flush.
+                    intelligence.price_observations = intelligence.price_observations + [observation]
+                    intelligence.data_points += 1
+                    intelligence.last_visit = now
+
+                    prices = [obs["price"] for obs in intelligence.price_observations[-50:]]
+                    intelligence.average_price = statistics.mean(prices)
+                    intelligence.price_volatility = statistics.stdev(prices) if len(prices) > 1 else 0.0
+
+                    if intelligence.data_points >= self.MIN_DATA_POINTS_FOR_PREDICTION:
+                        intelligence.identified_patterns = self._identify_price_patterns(
+                            intelligence.price_observations
+                        )
+                        intelligence.prediction_confidence = min(
+                            intelligence.data_points / 20, 0.95
+                        )
+                else:
+                    intelligence = ARIAMarketIntelligence(
+                        player_id=player_id,
+                        station_id=station_id,
+                        sector_id=station.sector_uuid,
+                        commodity=commodity,
+                        price_observations=[observation],
+                        average_price=price,
+                        price_volatility=0.0,
+                        data_points=1,
+                        last_visit=now,
+                        intelligence_quality=0.1,
+                    )
+                    db.add(intelligence)
+
+                intelligence.intelligence_quality = self._calculate_intelligence_quality(
+                    intelligence.data_points,
+                    intelligence.last_visit,
+                    intelligence.price_volatility,
+                )
+        except Exception as e:
+            logger.warning(
+                "record_market_observation_sync failed for player %s at station %s: %s",
+                player_id, station_id, e,
+            )
+
     # =============================================================================
     # CONVENIENCE MEMORY RECORDERS (Combat, Trade, Exploration)
     # =============================================================================
@@ -912,24 +1082,59 @@ class ARIAPersonalIntelligenceService:
     
     async def _validate_player_at_port(self, player_id: str, station_id: str,
                                      db: AsyncSession) -> bool:
-        """Validate player has a ship at the port"""
-        from src.models.ship import Ship
-        
-        stmt = select(Ship).where(
-            and_(
-                Ship.player_id == player_id,
-                Ship.current_port_id == station_id
-            )
-        )
+        """Validate player is docked at this station.
+
+        WO-ARIA-MARKET-OBS fix: the previous implementation queried
+        ``Ship.player_id`` / ``Ship.current_port_id`` -- neither column
+        exists on the ``Ship`` model (see models/ship.py; it has
+        ``owner_id`` and no port reference at all). Every call raised
+        ``AttributeError`` building the ``select()``, silently swallowed by
+        this method's callers, so this gate has ALWAYS returned a false
+        negative in practice -- a total, silent no-op. Docking state
+        actually lives on ``Player``: ``is_docked`` (bool) +
+        ``current_sector_id``, checked against the station's sector -- the
+        exact convention every trading.py route already uses (see
+        buy_resource/sell_resource's "must be docked" + "must be in the
+        same sector" checks).
+        """
+        from src.models.player import Player
+
+        stmt = select(Player).where(Player.id == player_id)
         result = await db.execute(stmt)
-        return result.scalar_one_or_none() is not None
-    
+        player = result.scalar_one_or_none()
+        if player is None or not player.is_docked:
+            return False
+
+        station = await db.get(Station, station_id)
+        if station is None:
+            return False
+
+        return player.current_sector_id == station.sector_id
+
+    def _validate_player_at_port_sync(self, player_id: str, station_id: str,
+                                      db: Session) -> bool:
+        """Synchronous twin of ``_validate_player_at_port`` for sync-Session
+        callers (WO-ARIA-MARKET-OBS) -- same Player.is_docked +
+        current_sector_id-vs-station.sector_id check, same bug-fix
+        rationale as the async version above."""
+        from src.models.player import Player
+
+        player = db.query(Player).filter(Player.id == player_id).first()
+        if player is None or not player.is_docked:
+            return False
+
+        station = db.query(Station).filter(Station.id == station_id).first()
+        if station is None:
+            return False
+
+        return player.current_sector_id == station.sector_id
+
     async def _log_security_event(self, player_id: str, event_type: str,
                                 severity: str, event_data: Dict[str, Any],
                                 db: AsyncSession):
         """Log security events for audit (OWASP A09)"""
         # Calculate anomaly score
-        anomaly_score = await self._calculate_anomaly_score(
+        anomaly_score = self._calculate_anomaly_score(
             player_id, event_type, event_data
         )
         
@@ -947,10 +1152,39 @@ class ARIAPersonalIntelligenceService:
             log_entry.security_flags.append("high_anomaly_score")
             log_entry.action_taken = "flagged_for_review"
             logger.warning(f"High anomaly score {anomaly_score} for player {player_id}")
-        
+
         db.add(log_entry)
         await db.commit()
-    
+
+    def _log_security_event_sync(self, player_id: str, event_type: str,
+                                 severity: str, event_data: Dict[str, Any],
+                                 db: Session) -> None:
+        """Synchronous twin of ``_log_security_event`` for sync-Session
+        callers (WO-ARIA-MARKET-OBS). FLUSH-ONLY like every other sync twin
+        in this class -- the caller owns the commit; the append to
+        ``security_flags`` below is safe in-place mutation on a brand-new,
+        not-yet-added ``log_entry`` (there is no prior committed baseline to
+        lose), unlike the price_observations bug this WO also fixes."""
+        anomaly_score = self._calculate_anomaly_score(
+            player_id, event_type, event_data
+        )
+
+        log_entry = ARIASecurityLog(
+            player_id=player_id,
+            event_type=event_type,
+            event_severity=severity,
+            event_data=event_data,
+            anomaly_score=anomaly_score,
+            created_at=datetime.now(UTC)
+        )
+
+        if anomaly_score > self.anomaly_threshold:
+            log_entry.security_flags.append("high_anomaly_score")
+            log_entry.action_taken = "flagged_for_review"
+            logger.warning(f"High anomaly score {anomaly_score} for player {player_id}")
+
+        db.add(log_entry)
+
     def _initialize_encryption(self) -> Fernet:
         """Initialize encryption for personal memories (OWASP A02)"""
         # In production, load from secure key management
@@ -1047,8 +1281,15 @@ class ARIAPersonalIntelligenceService:
         
         return min(quality, 0.99)  # Cap at 99%
     
-    async def _identify_price_patterns(self, observations: List[Dict]) -> List[str]:
-        """Identify patterns in price history"""
+    def _identify_price_patterns(self, observations: List[Dict]) -> List[str]:
+        """Identify patterns in price history.
+
+        Pure computation, no I/O -- made sync (WO-ARIA-MARKET-OBS) so both
+        the async record_market_observation and the sync
+        record_market_observation_sync can share this one implementation
+        instead of duplicating it. Its one caller previously used ``await``
+        for no reason (nothing inside this method ever awaited anything).
+        """
         if len(observations) < 10:
             return []
         
@@ -1161,9 +1402,14 @@ class ARIAPersonalIntelligenceService:
             else:
                 return f"Limited profit potential for {commodity}"
     
-    async def _calculate_anomaly_score(self, player_id: str, event_type: str,
-                                     event_data: Dict[str, Any]) -> float:
-        """Calculate anomaly score for security monitoring"""
+    def _calculate_anomaly_score(self, player_id: str, event_type: str,
+                                event_data: Dict[str, Any]) -> float:
+        """Calculate anomaly score for security monitoring.
+
+        Pure computation, no I/O -- made sync (WO-ARIA-MARKET-OBS) so both
+        _log_security_event (async) and its new sync twin can share this one
+        implementation.
+        """
         # Simple anomaly detection - in production would use ML
         score = 0.0
         
