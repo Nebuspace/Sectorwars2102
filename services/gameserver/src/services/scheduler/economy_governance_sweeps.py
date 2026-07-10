@@ -30,6 +30,7 @@ from src.services.scheduler._common import (
     _ACTIVE_PLAYERS_RECOMPUTE_STATE_KEY,
     _ACTIVE_PLAYERS_WINDOW_DAYS,
     _TREASURY_RECON_STATE_KEY,
+    _REGION_LIFECYCLE_STATE_KEY,
     _GENESIS_COMPLETION_LOCK_KEY,
     _PLANETARY_ADVANCE_LOCK_KEY,
     _GOVERNANCE_SWEEP_LOCK_KEY,
@@ -330,6 +331,60 @@ def _run_treasury_reconciliation_gated(db: Session) -> Dict[str, Any]:
     return result
 
 
+def _run_region_lifecycle_advance_gated(db: Session) -> Dict[str, Any]:
+    """Day-gate wrapper around ``region_lifecycle_service``'s ``advance_
+    to_grace`` / ``advance_to_terminated`` / ``dispatch_terminated_
+    cleanup`` (WO-P8-region-lifecycle-cron) — mirrors ``_run_treasury_
+    reconciliation_gated``'s Galaxy.state day-anchor discipline EXACTLY,
+    including the SAME no-arg ``canonical_day_number()`` call and the same
+    already-locked-session, no-lock-of-its-own shape (rides Phase 7 of the
+    governance sweep's ``_GOVERNANCE_SWEEP_LOCK_KEY``). The caller (Phase 7)
+    owns the commit/rollback around this call, same as every other phase.
+
+    ``advance_to_terminated`` runs AFTER ``advance_to_grace`` in the same
+    pass so a region overdue enough to have missed an entire cron cycle
+    catches up through both transitions in one call — see ``advance_to_
+    terminated``'s own docstring.
+
+    Returns {"region_lifecycle_skipped", "advanced_to_grace",
+    "advanced_to_terminated", "cleanup_eligible"}.
+    """
+    from src.models.galaxy import Galaxy
+    from src.services import region_lifecycle_service
+
+    result: Dict[str, Any] = {
+        "region_lifecycle_skipped": False,
+        "advanced_to_grace": 0, "advanced_to_terminated": 0, "cleanup_eligible": 0,
+    }
+
+    this_day = canonical_day_number()
+    galaxy = db.query(Galaxy).order_by(Galaxy.created_at.asc()).first()
+    gstate = dict(galaxy.state or {}) if galaxy is not None else {}
+    last_day = gstate.get(_REGION_LIFECYCLE_STATE_KEY)
+    already_today = (
+        galaxy is not None
+        and last_day is not None
+        and int(last_day) >= this_day
+    )
+    if already_today:
+        result["region_lifecycle_skipped"] = True
+        return result
+
+    grace_stats = region_lifecycle_service.advance_to_grace(db)
+    terminated_stats = region_lifecycle_service.advance_to_terminated(db)
+    cleanup_stats = region_lifecycle_service.dispatch_terminated_cleanup(db)
+    result["advanced_to_grace"] = grace_stats["advanced_to_grace"]
+    result["advanced_to_terminated"] = terminated_stats["advanced_to_terminated"]
+    result["cleanup_eligible"] = cleanup_stats["cleanup_eligible"]
+
+    if galaxy is not None:
+        gstate = dict(galaxy.state or {})
+        gstate[_REGION_LIFECYCLE_STATE_KEY] = this_day
+        galaxy.state = gstate
+        flag_modified(galaxy, "state")
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Regional governance sweep — open/close elections + finalize policies
 # ---------------------------------------------------------------------------
@@ -398,9 +453,19 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
     ALERT-ONLY — a mismatch is logged, never auto-corrected; this phase writes
     nothing to any balance.
 
+    Phase 7 advances the region lifecycle (WO-P8-region-lifecycle-cron):
+    SUSPENDED -> GRACE and GRACE -> TERMINATED per ``region_lifecycle_
+    service.advance_to_grace`` / ``advance_to_terminated`` (region-
+    lifecycle.md's daily-cron triggers), plus a read-only terminated-
+    cleanup-eligibility discovery pass (``dispatch_terminated_cleanup`` —
+    the dispatch point gate-cascade wires the real cascade onto later).
+    Self-gated to once per canonical day via ``_run_region_lifecycle_
+    advance_gated`` (mirrors Phase 6's day-anchor discipline exactly).
+
     Returns {auto_created, opened, tallied, enacted, rejected,
     regions_recomputed, treaties_expired, treasury_checked,
-    treasury_mismatched}.
+    treasury_mismatched, advanced_to_grace, advanced_to_terminated,
+    cleanup_eligible}.
     """
     from src.core.database import SessionLocal
     from src.models.region import (
@@ -425,7 +490,9 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
 
     result = {"auto_created": 0, "opened": 0, "tallied": 0, "enacted": 0,
               "rejected": 0, "regions_recomputed": 0, "treaties_expired": 0,
-              "treasury_checked": 0, "treasury_mismatched": 0}
+              "treasury_checked": 0, "treasury_mismatched": 0,
+              "advanced_to_grace": 0, "advanced_to_terminated": 0,
+              "cleanup_eligible": 0}
     now = datetime.utcnow()
 
     db = SessionLocal()
@@ -900,6 +967,26 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
             db.commit()
         except Exception:
             logger.exception("Governance sweep: treasury reconciliation phase failed")
+            db.rollback()
+
+        # --- Phase 7: region lifecycle advance (WO-P8-region-lifecycle-cron) -
+        # region-lifecycle.md's daily-cron triggers: SUSPENDED -> GRACE at 7
+        # days since Region.suspended_at, GRACE -> TERMINATED at 30 days since
+        # the SAME original suspended_at (region_lifecycle_service.advance_
+        # to_grace / advance_to_terminated), plus a read-only cleanup-
+        # eligibility discovery pass (dispatch_terminated_cleanup — gate-
+        # cascade wires the real cascade on later, not built here). Self-gated
+        # to once per canonical day (see _run_region_lifecycle_advance_gated),
+        # mirroring Phase 6's day-anchor discipline exactly. A failure here
+        # must NEVER break the governance sweep proper.
+        try:
+            lifecycle = _run_region_lifecycle_advance_gated(db)
+            result["advanced_to_grace"] = lifecycle["advanced_to_grace"]
+            result["advanced_to_terminated"] = lifecycle["advanced_to_terminated"]
+            result["cleanup_eligible"] = lifecycle["cleanup_eligible"]
+            db.commit()
+        except Exception:
+            logger.exception("Governance sweep: region lifecycle advance phase failed")
             db.rollback()
 
         # Final commit closes out any open (no-op) transaction so the advisory

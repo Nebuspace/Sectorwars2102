@@ -320,7 +320,9 @@ async def _npc_scheduler_main_loop() -> None:
                 "NPC scheduler: research cockpit frame broadcast failed (loop continues)"
             )
 
-        # Regional governance sweep (open/close elections + finalize policies).
+        # Regional governance sweep (open/close elections + finalize policies,
+        # treasury reconciliation, and — WO-P8-region-lifecycle-cron — the
+        # region lifecycle advance: SUSPENDED -> GRACE -> TERMINATED).
         # Drives the democratic loop forward on the durable per-row voting
         # windows so an election/policy resolves even if no player happens to
         # read it — runs in the worker thread, own session, own advisory lock.
@@ -341,6 +343,15 @@ async def _npc_scheduler_main_loop() -> None:
                         gov.get("auto_created", 0), gov.get("opened", 0),
                         gov.get("tallied", 0), gov.get("enacted", 0),
                         gov.get("rejected", 0),
+                    )
+                if gov.get("advanced_to_grace") or gov.get("advanced_to_terminated"):
+                    logger.info(
+                        "NPC scheduler: region lifecycle — %d advanced to "
+                        "grace, %d advanced to terminated (%d eligible for "
+                        "cleanup cascade)",
+                        gov.get("advanced_to_grace", 0),
+                        gov.get("advanced_to_terminated", 0),
+                        gov.get("cleanup_eligible", 0),
                     )
             except asyncio.CancelledError:
                 raise

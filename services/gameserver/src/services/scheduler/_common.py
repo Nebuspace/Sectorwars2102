@@ -142,6 +142,13 @@ _ACTIVE_PLAYERS_WINDOW_DAYS = 30
 # canonical day — mirroring _ACTIVE_PLAYERS_RECOMPUTE_STATE_KEY's discipline —
 # regardless of process restarts.
 _TREASURY_RECON_STATE_KEY = "treasury_reconciliation_last_day"
+# Galaxy.state JSONB key holding the canonical-DAY index of the last region-
+# lifecycle advance pass (WO-P8-region-lifecycle-cron: region_lifecycle_
+# service.advance_to_grace / advance_to_terminated / dispatch_terminated_
+# cleanup). Rides the governance sweep as Phase 7, gated to run at most
+# ONCE per canonical day — mirroring _TREASURY_RECON_STATE_KEY's discipline
+# exactly (same already-locked-session, no lock of its own).
+_REGION_LIFECYCLE_STATE_KEY = "region_lifecycle_advance_last_day"
 # Galaxy.state JSONB key holding the canonical-DAY index of the last ARIA
 # storage-prune pass (WO-F16). The dormant prune kernel
 # (ARIAPersonalIntelligenceService.prune_player_storage) evicts each player's
