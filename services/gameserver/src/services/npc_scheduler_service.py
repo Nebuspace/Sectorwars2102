@@ -561,6 +561,21 @@ ROUTE_RUNS_RETENTION_SWEEP_SECONDS = int(
     os.environ.get("ROUTE_RUNS_RETENTION_SWEEP_SECONDS", str(24 * 60 * 60))
 )
 
+# NPC contract generation + expiry sweep (WO-ECON-CONTRACT-1-KERNEL). The
+# generator posts new cargo_delivery contracts on a station-scan cadence
+# (fast enough for a fresh board without hammering Postgres on every 60s
+# wake); the expiry sweep prunes posted-but-never-accepted contracts past
+# their deadline on a tighter cadence since a stale board is more visible
+# to players than a slow generation refresh. Both NO-CANON — contracts.md
+# is silent on either cadence; proposed to DECISIONS alongside the
+# generator's own pool/quantity/deadline sizing constants.
+CONTRACT_GENERATION_SWEEP_SECONDS = int(
+    os.environ.get("CONTRACT_GENERATION_SWEEP_SECONDS", str(15 * 60))
+)
+CONTRACT_EXPIRE_SWEEP_SECONDS = int(
+    os.environ.get("CONTRACT_EXPIRE_SWEEP_SECONDS", str(5 * 60))
+)
+
 # Session-level advisory lock key (pg_try_advisory_xact_lock argument).
 _ADVISORY_LOCK_KEY = 0x53573231  # 'SW21'
 
@@ -4597,6 +4612,49 @@ def _run_price_alert_sweep_sync() -> int:
 
 
 # ---------------------------------------------------------------------------
+# NPC contract generation + expiry sweeps (WO-ECON-CONTRACT-1-KERNEL) — own
+# SessionLocal, commit after, close on exit; mirrors _run_price_alert_sweep_
+# sync's discipline exactly. The pure, testable cores
+# (contract_generator.generate_npc_contracts / contract_service.sweep_
+# expired_contracts) live in their own service modules — these wrappers are
+# session-management glue only, not independently unit-tested.
+# ---------------------------------------------------------------------------
+
+def _run_contract_generation_sync() -> int:
+    from src.core.database import SessionLocal
+    from src.services.contract_generator import generate_npc_contracts
+
+    db = SessionLocal()
+    try:
+        result = generate_npc_contracts(db)
+        db.commit()
+        return result.get("generated", 0)
+    except Exception:
+        logger.exception("NPC contract generation sweep failed")
+        db.rollback()
+        return 0
+    finally:
+        db.close()
+
+
+def _run_contract_expire_sweep_sync() -> int:
+    from src.core.database import SessionLocal
+    from src.services.contract_service import sweep_expired_contracts
+
+    db = SessionLocal()
+    try:
+        result = sweep_expired_contracts(db)
+        db.commit()
+        return result.get("expired", 0)
+    except Exception:
+        logger.exception("Contract expire sweep failed")
+        db.rollback()
+        return 0
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
 # Price-history time-series sweep (WO-ECON-MKT-TIMESERIES) — hourly
 # PriceHistory snapshots + daily/weekly rollups + retention pruning
 # ---------------------------------------------------------------------------
@@ -5352,6 +5410,39 @@ async def _broadcast_events(events: List[Dict[str, Any]]) -> None:
                     logger.exception(
                         "NPC scheduler: genesis_progress send failed for owner %s",
                         owner_id,
+                    )
+            continue
+
+        # WO-CMB-NPC-INITIATED-1: npc_combat_initiated is BOTH a
+        # personal frame to the defender AND a sector spectator broadcast
+        # (npc_combat_initiation_service.build_npc_combat_initiated_event's
+        # own docstring) — unlike genesis_progress (personal-only) or the
+        # generic fallback below (sector-only). Fired from
+        # _sweep_one/_maybe_initiate_police_combat (npc_engagement_service.py),
+        # which cannot call the live-context emit_npc_combat_initiated (no
+        # running loop inside the scheduler's sync per-row SAVEPOINT) — this
+        # drains the returned event dict here, POST the per-loop
+        # work_db.commit() in _run_due_ticks_sync, same discipline as every
+        # other event this function handles.
+        if event.get("type") == "npc_combat_initiated":
+            defender_user_id = event.get("defender_user_id")
+            if defender_user_id is not None:
+                try:
+                    await connection_manager.send_personal_message(
+                        str(defender_user_id), dict(event)
+                    )
+                except Exception:
+                    logger.exception(
+                        "NPC scheduler: npc_combat_initiated personal send failed for %s",
+                        defender_user_id,
+                    )
+            sector_id = event.get("sector_id")
+            if sector_id is not None:
+                try:
+                    await connection_manager.broadcast_to_sector(int(sector_id), dict(event))
+                except Exception:
+                    logger.exception(
+                        "NPC scheduler: npc_combat_initiated sector broadcast failed"
                     )
             continue
 
@@ -6515,3 +6606,37 @@ async def npc_scheduler_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: presence sweep crashed (loop continues)")
+
+        # NPC contract generation (WO-ECON-CONTRACT-1-KERNEL) — scans every
+        # station as a potential cargo_delivery pickup point and posts new
+        # NPC-issued contracts on stations under their per-destination pool
+        # cap. Own SessionLocal, commit in the wrapper — NOT awaited inline.
+        if elapsed % CONTRACT_GENERATION_SWEEP_SECONDS == 0:
+            try:
+                generated = await asyncio.to_thread(_run_contract_generation_sync)
+                if generated:
+                    logger.info(
+                        "NPC scheduler: contract generation — posted %d new contract(s)",
+                        generated,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: contract generation sweep crashed (loop continues)")
+
+        # NPC contract expiry (WO-ECON-CONTRACT-1-KERNEL) — bulk-expires any
+        # posted-but-never-accepted contract strictly past its deadline.
+        # Tighter cadence than generation — a stale board is more visible
+        # to players than a slow generation refresh.
+        if elapsed % CONTRACT_EXPIRE_SWEEP_SECONDS == 0:
+            try:
+                expired = await asyncio.to_thread(_run_contract_expire_sweep_sync)
+                if expired:
+                    logger.info(
+                        "NPC scheduler: contract expiry sweep — expired %d contract(s)",
+                        expired,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: contract expiry sweep crashed (loop continues)")
