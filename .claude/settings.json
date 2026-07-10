@@ -1,0 +1,20 @@
+{
+  "outputStyle": "Samantha",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/mrathbone/github/Nebuspace/.claude/coordination-precommit-hook.sh /Users/mrathbone/github/Nebuspace/.samantha/coord impl-sectorwars"
+          },
+          {
+            "type": "command",
+            "command": "/Users/mrathbone/github/Nebuspace/.claude/worker-git-deny-hook.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
