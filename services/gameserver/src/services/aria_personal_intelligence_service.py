@@ -919,7 +919,72 @@ class ARIAPersonalIntelligenceService:
         encrypted = base64.b64decode(encrypted_content.encode())
         decrypted = self.cipher_suite.decrypt(encrypted)
         return json.loads(decrypted.decode())
-    
+
+    async def recall_memories(
+        self, player_id: str, db: AsyncSession,
+        memory_type: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Recall (decrypt) an owner's own ARIA memories -- the read-back
+        half of ``_create_memory``/``_encrypt_memory`` (WO-DRIFT-aria-rt-
+        mem-readpath-dead). ``ARIAPersonalMemory`` has been write-only
+        since inception: content lands encrypted via ``_encrypt_memory``
+        but ``_decrypt_memory`` had zero callers -- this is the Tier-1
+        recall/transparency read path ADR-0016's data-index route docstring
+        flagged as "a separate, future memory-journal endpoint."
+
+        SECURITY (ADR-0016, OWASP A01 -- personal data isolation): the
+        isolation guard is enforced at the QUERY level -- ``player_id`` is
+        the WHERE-clause filter itself, not a post-fetch check. The one
+        caller (``GET /ai/memories``) sources ``player_id`` from the
+        JWT-authenticated ``current_player``, never a client-supplied
+        parameter, so this method can only ever be asked for the caller's
+        own rows in practice; the query-level filter is what makes that
+        true regardless of caller.
+
+        A row whose content fails to decrypt (wrong key generation,
+        corrupt row) is skipped rather than raising, so one bad row can't
+        502 an entire recall.
+        """
+        stmt = (
+            select(ARIAPersonalMemory)
+            .where(ARIAPersonalMemory.player_id == player_id)
+        )
+        if memory_type is not None:
+            stmt = stmt.where(ARIAPersonalMemory.memory_type == memory_type)
+        stmt = stmt.order_by(ARIAPersonalMemory.created_at.desc()).limit(limit)
+
+        result = await db.execute(stmt)
+        memories = result.scalars().all()
+
+        recalled: List[Dict[str, Any]] = []
+        for memory in memories:
+            encrypted = (memory.memory_content or {}).get("encrypted")
+            if not encrypted:
+                continue
+            try:
+                content = self._decrypt_memory(encrypted)
+            except Exception:
+                logger.warning(
+                    "Failed to decrypt ARIA memory %s for player %s -- skipped",
+                    memory.id, player_id,
+                )
+                continue
+
+            memory.access_count = (memory.access_count or 0) + 1
+            memory.last_accessed = datetime.now(UTC)
+
+            recalled.append({
+                "id": str(memory.id),
+                "memory_type": memory.memory_type,
+                "importance_score": memory.importance_score,
+                "confidence_level": memory.confidence_level,
+                "created_at": memory.created_at.isoformat() if memory.created_at else None,
+                "content": content,
+            })
+
+        return recalled
+
     # =============================================================================
     # HELPER METHODS
     # =============================================================================

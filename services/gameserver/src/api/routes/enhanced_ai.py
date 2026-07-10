@@ -244,6 +244,31 @@ class ARIADataStreamOut(BaseModel):
         }
 
 
+class ARIAMemoryOut(BaseModel):
+    """One decrypted ARIA memory -- the read-back half of the encrypted
+    Tier-1 memory-journal (WO-DRIFT-aria-rt-mem-readpath-dead, ADR-0016).
+    ``content`` is the plaintext dict ``_decrypt_memory`` recovered from
+    ``ARIAPersonalMemory.memory_content``."""
+    id: str
+    memory_type: str
+    importance_score: float
+    confidence_level: float
+    created_at: Optional[str] = None
+    content: Dict[str, Any]
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "id": "123e4567-e89b-12d3-a456-426614174000",
+                "memory_type": "market",
+                "importance_score": 0.72,
+                "confidence_level": 0.9,
+                "created_at": "2026-07-09T12:00:00Z",
+                "content": {"event": "trade_transaction", "commodity": "organics"},
+            }
+        }
+
+
 # =============================================================================
 # SECURITY MIDDLEWARE
 # =============================================================================
@@ -803,6 +828,47 @@ async def get_aria_data_index(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="ARIA data index temporarily unavailable"
+        )
+
+
+@router.get(
+    "/memories",
+    response_model=List[ARIAMemoryOut],
+    summary="Recall your own decrypted ARIA memories",
+    description=(
+        "Tier-1 memory-journal transparency read path -- decrypts and returns "
+        "YOUR OWN ARIAPersonalMemory rows (WO-DRIFT-aria-rt-mem-readpath-dead), "
+        "the endpoint the data-index route's docstring flagged as future work."
+    )
+)
+async def get_aria_memories(
+    memory_type: Optional[str] = Query(
+        None, description="Filter to one memory_type registry key (e.g. 'market', 'threat.combat')"
+    ),
+    limit: int = Query(50, ge=1, le=200),
+    current_player: Player = Depends(get_current_player),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Owner-only by construction: there is no player-id path/query
+    parameter to spoof -- ``current_player.id`` comes from the
+    JWT-authenticated dependency and is the only id ever passed to
+    ``recall_memories``'s query-level filter (ADR-0016 isolation). A
+    request can therefore only ever recall the requester's own memories,
+    never another player's."""
+    try:
+        from src.services.aria_personal_intelligence_service import get_aria_intelligence_service
+
+        aria_service = get_aria_intelligence_service()
+        memories = await aria_service.recall_memories(
+            str(current_player.id), db, memory_type=memory_type, limit=limit,
+        )
+        await db.commit()
+        return memories
+    except Exception as e:
+        logger.error(f"Error recalling ARIA memories: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="ARIA memory recall temporarily unavailable"
         )
 
 
