@@ -139,17 +139,28 @@ class PlaythroughWorld:
 def playthrough_world(db: Session) -> PlaythroughWorld:
     """Builds the DESTINATION half of the playthrough (a station + a hostile
     NPC ship + one acceptable contract) in a fresh, combat-legal
-    ``PLAYER_OWNED`` region, warp-connected to WHATEVER Terran Space starting
-    sector already exists in this DB.
+    ``PLAYER_OWNED`` region, warp-connected to a Terran Space starting
+    sector -- REUSED if this DB already seeds one (stage), SELF-SEEDED if
+    not (a bare fresh-migrated DB, e.g. phase-2 CI: ``alembic upgrade head``
+    with no data seed at all).
 
-    Deliberately does NOT create a NEW Terran Space region: ``POST /auth/
-    register`` (auth.py:584-599) always queries the DB's existing Terran
-    Space region + its lowest-``sector_id`` sector and places the new player
-    there -- a second, competing Terran Space region here would not
-    necessarily be the one register picks, silently breaking the warp
-    connection this fixture builds. If no Terran Space region is seeded in
-    this DB at all, register() itself would 500 regardless of this fixture,
-    so the honest response is to skip rather than build a misleading world.
+    Reuse, not duplicate, when one already exists: ``POST /auth/register``
+    (auth.py:584-599) always queries the DB's existing Terran Space region +
+    its lowest-``sector_id`` sector and places the new player there -- a
+    second, competing Terran Space region would not necessarily be the one
+    register picks, silently breaking the warp connection this fixture
+    builds. Self-seeding a MINIMAL one only when none exists avoids that
+    collision by construction (there is nothing to compete with).
+
+    ``valid_region_type_sector_count`` CHECK (models/region.py:194-199,
+    verified against the CURRENT constraint text -- b4d2f7e9a1c6 widened
+    player_owned's cap but left terran_space untouched): terran_space
+    requires ``total_sectors = 300`` EXACTLY, not a floor/range like
+    player_owned's [100, 1500] -- the created region uses exactly 300. Only
+    ONE real Sector row is actually created (register only ever needs the
+    lowest-``sector_id`` one to exist, not all 300) -- ``total_sectors`` is
+    a declared-capacity column read by the CHECK constraint and canon
+    displays, not a row-count invariant enforced anywhere else in this path.
     """
     w = PlaythroughWorld()
 
@@ -157,7 +168,15 @@ def playthrough_world(db: Session) -> PlaythroughWorld:
         Region.region_type == RegionType.TERRAN_SPACE.value
     ).first()
     if terran_region is None:
-        pytest.skip("No Terran Space region seeded in this DB — POST /auth/register requires one")
+        terran_region = Region(
+            name="Terran Space",
+            display_name="Terran Space",
+            region_type=RegionType.TERRAN_SPACE.value,
+            total_sectors=300,  # valid_region_type_sector_count: EXACT for terran_space
+        )
+        db.add(terran_region)
+        db.flush()
+
     w.start_sector = (
         db.query(Sector)
         .filter(Sector.region_id == terran_region.id)
@@ -165,7 +184,32 @@ def playthrough_world(db: Session) -> PlaythroughWorld:
         .first()
     )
     if w.start_sector is None:
-        pytest.skip("Terran Space region has no sectors seeded in this DB")
+        terran_cluster = Cluster(
+            name="Terran Space Cluster",
+            region_id=terran_region.id,
+            type=ClusterType.STANDARD,
+        )
+        db.add(terran_cluster)
+        db.flush()
+        # sector_id is UNIQUE galaxy-wide (Sector.sector_id, not just within
+        # this new region) — a low fixed value like 1 would be safe on a
+        # genuinely blank DB but is NOT provably safe against some other
+        # partially-seeded scenario that already has other regions/sectors.
+        # Random high offset (same convention as `base` below, distinct
+        # range so the two can never collide with each other) sidesteps
+        # that regardless of what else is in this DB. Register()'s own
+        # ORDER BY sector_id ASC still picks it trivially — it's the ONLY
+        # sector in this fresh region either way.
+        terran_sector_id = uuid.uuid4().int % 100_000 + 400_000
+        w.start_sector = Sector(
+            sector_id=terran_sector_id,
+            name="Terran Space Sector 1",
+            region_id=terran_region.id,
+            cluster_id=terran_cluster.id,
+            x_coord=0, y_coord=0, z_coord=0,
+        )
+        db.add(w.start_sector)
+        db.flush()
 
     base = uuid.uuid4().int % 100_000 + 500_000  # avoid colliding with baseline sector_id ranges
 
