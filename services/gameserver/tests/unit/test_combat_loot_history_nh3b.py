@@ -91,6 +91,13 @@ def _make_player(*, ship, personal_reputation=0, turns=999_999, max_turns=1_000)
         grey_kind=None,
         settings={},
         team_id=None,
+        # SUSPECT-LIFE-1 (post-dates this file): attack_player now reads
+        # these unconditionally via suspect_service.is_live_suspect for the
+        # fed-zone-immunity check. Real Player rows always carry them
+        # (migration-backed, default False/NULL); this fake needs the same
+        # completeness or attack_player raises AttributeError.
+        is_suspect=False,
+        suspect_until=None,
     )
 
 

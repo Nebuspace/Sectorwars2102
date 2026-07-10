@@ -83,12 +83,17 @@ class TestRegionSnapshotHelper:
 
 
 class TestEveryConstructorSiteCarriesSnapshot:
-    def test_exactly_five_combat_log_constructor_sites_at_head(self):
+    def test_exactly_six_combat_log_constructor_sites_at_head(self):
         """WO-CMB-CLOG-SNAP-1 audit found exactly 5 CombatLog(...) call
         sites in combat_service.py at HEAD (attack_player, attack_npc_ship,
-        attack_sector_drones, attack_planet, attack_port). A changed count
-        means a site was added or removed -- either way this must be a
-        deliberate, reviewed change to this pin, not a silent drift."""
+        attack_sector_drones, attack_planet, attack_port). WO-CMB-NPC-
+        INITIATED-1 (Max ruling, 2026-07-10) deliberately added a 6th --
+        npc_attack_player, the symmetric NPC-initiated-attack mirror of
+        attack_npc_ship -- and it carries region_id_snapshot= (see the
+        test below), so this pin is bumped 5 -> 6 as its own reviewed
+        change. A changed count means a site was added or removed --
+        either way this must be a deliberate, reviewed change to this
+        pin, not a silent drift."""
         tree = ast.parse(_COMBAT_SERVICE_PATH.read_text())
         call_sites = [
             node for node in ast.walk(tree)
@@ -96,11 +101,11 @@ class TestEveryConstructorSiteCarriesSnapshot:
             and isinstance(node.func, ast.Name)
             and node.func.id == "CombatLog"
         ]
-        assert len(call_sites) == 5, (
-            f"expected 5 CombatLog(...) constructor sites in combat_service.py, "
-            f"found {len(call_sites)} -- a new site (e.g. POLICE-OUTCOMES) must "
-            "carry region_id_snapshot= too; update this pin deliberately once "
-            "it's covered."
+        assert len(call_sites) == 6, (
+            f"expected 6 CombatLog(...) constructor sites in combat_service.py, "
+            f"found {len(call_sites)} -- a new site must carry "
+            "region_id_snapshot= too; update this pin deliberately once it's "
+            "covered."
         )
 
     def test_every_combat_log_constructor_site_carries_region_snapshot(self):
@@ -311,6 +316,13 @@ def _make_player(*, ship, personal_reputation=0, turns=999_999, max_turns=1_000,
         grey_kind=None,
         settings={},
         team_id=None,
+        # SUSPECT-LIFE-1 (post-dates this file): attack_player now reads
+        # these unconditionally via suspect_service.is_live_suspect for the
+        # fed-zone-immunity check. Real Player rows always carry them
+        # (migration-backed, default False/NULL); this fake needs the same
+        # completeness or attack_player raises AttributeError.
+        is_suspect=False,
+        suspect_until=None,
     )
 
 

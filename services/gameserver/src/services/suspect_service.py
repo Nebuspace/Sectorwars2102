@@ -19,10 +19,16 @@ NOT built here (explicitly out of this WO's scope, per the work order):
     npc_scheduler_service.py is contended by other in-flight WOs, so the
     periodic-job registration is NOT added there. See this module's own
     report for the open item.
-  * Fed-zone immunity suspension (attacking a live suspect fires no
-    ``attack_innocent``) -- touches combat_service.py's offense predicate,
-    which is HELD pending an unrelated in-flight pass. The exact diff is
-    prepared and included in the WO report, not applied.
+
+Fed-zone / Federation-Suspect immunity (attacking a live suspect fires no
+``attack_innocent``) -- APPLIED (combat_service.py's ``attack_player``, the
+same ``if`` check as the pre-existing WO-BL grey-flag exemption: ``if
+attack_was_penalty_free or defender_is_live_suspect``). ``is_live_suspect``
+below is the intended caller. ``attack_innocent`` carries no zone gating
+anywhere in combat_service.py, so the suspension applies at the mechanic's
+actual universal scope; canon's fed-space framing (police-forces.md) and the
+nonexistent fight-back-cost mechanic remain pre-existing DOC-GAPs, not
+resolved by this diff.
 """
 from __future__ import annotations
 
@@ -86,9 +92,9 @@ def _apply_rep_penalty(db: Session, player_id: uuid.UUID, reason: str) -> None:
 def is_live_suspect(player: Player, *, now: Optional[datetime] = None) -> bool:
     """True iff ``player`` is EFFECTIVELY suspect right now -- checks
     ``suspect_until`` against the clock, not just the ``is_suspect`` boolean
-    (which can be stale until the lazy auto-clear sweep runs). The
-    combat_service.py fed-zone-immunity diff (prepared, not applied -- see
-    module doc-comment) is the intended caller of this."""
+    (which can be stale until the lazy auto-clear sweep runs). Called by
+    combat_service.py's ``attack_player`` fed-zone-immunity check (see
+    module doc-comment)."""
     now = _now(now)
     return bool(player.is_suspect) and player.suspect_until is not None and player.suspect_until > now
 

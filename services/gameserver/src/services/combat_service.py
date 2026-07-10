@@ -923,8 +923,21 @@ class CombatService:
             is_good_standing,
             attack_is_penalty_free,
         )
+        # Fed-zone / Federation-Suspect immunity (WO-CMB-SUSPECT-LIFE-1 held
+        # item, applied). Mirrors the grey-flag exemption immediately above:
+        # a defender who is EFFECTIVELY suspect right now (is_live_suspect
+        # checks suspect_until against the clock, not just the possibly-stale
+        # is_suspect boolean) is being lawfully brought to justice, so the
+        # same attack_innocent rep penalty + police routing suspension
+        # applies. attack_innocent carries NO zone gating anywhere in this
+        # module — the suspension is universal-scope, matching the
+        # mechanic's actual reach (canon's fed-space framing + the
+        # nonexistent fight-back-cost mechanic are pre-existing DOC-GAPs).
+        from src.services.suspect_service import is_live_suspect
+
         defender_was_good_standing = is_good_standing(defender)
         attack_was_penalty_free = attack_is_penalty_free(attacker, defender)
+        defender_is_live_suspect = is_live_suspect(defender)
 
         # Personal reputation + bounty hooks
         attacked_innocent = False
@@ -956,16 +969,26 @@ class CombatService:
                     # innocent. Reputation penalty + police "attack_innocent"
                     # engagement trigger (attacked_innocent gates that below) —
                     # UNLESS the target is grey and this attacker qualifies for the
-                    # penalty-free exemption (WO-BL): bringing a flagged aggressor
-                    # to justice is lawful, so neither the rep penalty nor the
-                    # police "attack_innocent" routing fires.
-                    if attack_was_penalty_free:
-                        logger.info(
-                            "Grey-flag exemption: player %s killed grey target %s "
-                            "penalty-free (kind=%s) — attack_innocent rep + police "
-                            "skipped (WO-BL)",
-                            attacker.id, defender.id, defender.grey_kind,
-                        )
+                    # penalty-free exemption (WO-BL), OR the target is a LIVE
+                    # Federation Suspect (WO-CMB-SUSPECT-LIFE-1): bringing a
+                    # flagged aggressor or a wanted suspect to justice is lawful,
+                    # so neither the rep penalty nor the police "attack_innocent"
+                    # routing fires.
+                    if attack_was_penalty_free or defender_is_live_suspect:
+                        if attack_was_penalty_free:
+                            logger.info(
+                                "Grey-flag exemption: player %s killed grey target %s "
+                                "penalty-free (kind=%s) — attack_innocent rep + police "
+                                "skipped (WO-BL)",
+                                attacker.id, defender.id, defender.grey_kind,
+                            )
+                        else:
+                            logger.info(
+                                "Fed-zone/suspect exemption: player %s killed live-"
+                                "suspect target %s penalty-free — attack_innocent rep "
+                                "+ police skipped (WO-CMB-SUSPECT-LIFE-1)",
+                                attacker.id, defender.id,
+                            )
                     else:
                         rep_service.adjust_reputation(attacker.id, -100, "attack_innocent")
                         attacked_innocent = True
