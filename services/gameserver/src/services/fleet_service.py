@@ -100,6 +100,51 @@ class FleetService:
         ships = fleet.total_ships or 0
         return min(0.20, max(0.0, (ships - 2) * 0.025))
 
+    def get_coordination_bonus(self, ship_id: UUID) -> float:
+        """
+        Return the cached coordination_bonus of the fleet a ship is
+        currently enrolled in as a FleetMember, or 0.0 if the ship isn't
+        fleet-enrolled.
+
+        Ship-keyed (not player-keyed): the bonus belongs to whichever SHIP
+        is actually fighting, not to who owns it -- a player piloting a
+        ship that ISN'T fleet-enrolled gets no bonus even if they
+        separately own an enrolled ship elsewhere, and an NPC-controlled
+        ship (never a FleetMember -- fleets are Team-owned player
+        structures) transparently resolves to 0.0 with no special-casing
+        needed by the caller.
+
+        Reads the SAME static value _compute_coordination_bonus writes on
+        roster-change events (create/add/remove/KIA) -- never recomputes
+        here, per fleet-coordination.md:95 ("the combat resolver reads the
+        cached value").
+
+        Defensive on the whole read (mirrors combat_service._medal_combat_
+        damage_bonus / _sector_combat_modifier): a fleet-lookup hiccup —
+        including a caller whose session/mock isn't wired for a FleetMember
+        query at all — must never break combat resolution, so any failure
+        degrades to 0.0 rather than propagating. The isinstance checks below
+        are deliberate, not just a None-guard: a permissive test double
+        (e.g. an unconfigured MagicMock session used elsewhere in the combat
+        suite for unrelated purposes) can return a truthy, numeric-coercible
+        stand-in for `.first()` without ever raising, silently smuggling in
+        a nonzero bonus — isinstance anchors this to a genuine FleetMember
+        row backed by a genuine Fleet, never a stand-in that merely "looks"
+        truthy.
+        """
+        try:
+            member = self.db.query(FleetMember).filter(
+                FleetMember.ship_id == ship_id
+            ).first()
+            if not isinstance(member, FleetMember) or not isinstance(member.fleet, Fleet):
+                return 0.0
+            return max(0.0, float(member.fleet.coordination_bonus or 0.0))
+        except Exception as e:  # never let a fleet-lookup hiccup break combat
+            logger.error(
+                "Coordination-bonus read failed (continuing without): %s", e
+            )
+            return 0.0
+
     # Fleet Management Methods
 
     def create_fleet(

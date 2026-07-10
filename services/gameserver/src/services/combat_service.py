@@ -2766,6 +2766,26 @@ class CombatService:
             attacker_damage_mult = 1.0
             attacker_drones = 0
 
+        # WO-P4-fleet-coord-combat-wire: fold each side's fleet
+        # coordination_bonus in as a SEPARATE multiplicative outer factor.
+        # Canon (combat-resolver.md "Damage stack — order of operations",
+        # step 1) lists `(1 + fleet.coordination_bonus)` as its own term
+        # alongside `(1 + rank.combat_bonus / 100)`, and the doc's
+        # "Multiplicative composition order" note rules the two stack
+        # multiplicatively -- so this multiplies the existing rank+medal
+        # mult rather than folding into its additive bucket. Ship-keyed
+        # (FleetService.get_coordination_bonus), not player-keyed: applies
+        # to whichever ship is actually firing, so the NPC-initiated
+        # attacker/defender branches above need no special-casing here — an
+        # NPC ship can never be a FleetMember and transparently resolves to
+        # 0.0 (multiplier 1.0, identity). A ship outside any fleet (or in a
+        # <3-ship fleet, fleet-tactics.md) also resolves to 0.0 — the
+        # solo-combatant path is byte-identical to the pre-wire damage.
+        from src.services.fleet_service import FleetService
+        fleet_service = FleetService(self.db)
+        attacker_damage_mult *= (1.0 + fleet_service.get_coordination_bonus(attacker_ship.id))
+        defender_damage_mult *= (1.0 + fleet_service.get_coordination_bonus(defender_ship.id))
+
         # Combat parameters
         attacker_attack = self._calculate_attack_power(attacker_ship, attacker_drones)
         defender_defense = self._calculate_defense_power(defender_ship, defender_drones)
