@@ -4,23 +4,28 @@ Covers the plan's unit-test surface that needs no database: schedule
 block resolution (including multi-day route cycles), the canonical
 clock at monkeypatched GAME_TIME_SCALE (patched as a module attribute —
 the game_time helpers read it at call time), respawn-cooldown deadline
-math, trader schedule construction, and Federation squad tiers.
+math, trader schedule construction, Federation squad tiers, and the
+held-sweep wrapper-level pins (WO-CMB-SUSPECT-LIFE-1 / WO-RT-TEAM-REP /
+WO-PIRATE-ECO-2 loop wiring).
 """
 
-from datetime import datetime, timedelta, UTC
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from src.core import game_time
+from src.services.npc_engagement_service import _federation_squad_size
 from src.services.npc_scheduler_service import (
+    _run_pirate_ecosystem_tick_sync,
+    _run_suspect_clear_sweep_sync,
+    _run_team_reputation_sweep_sync,
     canonical_day_number,
     canonical_minute_of_day,
     canonical_weekday,
     resolve_schedule_block,
 )
-from src.services.npc_engagement_service import _federation_squad_size
 from src.services.npc_spawn_service import RESPAWN_COOLDOWN_MINUTES
 from src.services.npc_trading_service import build_trader_schedule
-
 
 # ---------------------------------------------------------------------------
 # Canonical clock
@@ -172,3 +177,99 @@ class TestFederationSquadTiers:
 
     def test_public_enemy_brings_the_captain(self):
         assert _federation_squad_size(self._player(-900)) == (3, True)
+
+
+# ---------------------------------------------------------------------------
+# Held-sweep wrapper-level pins (WO-CMB-SUSPECT-LIFE-1 / WO-RT-TEAM-REP /
+# WO-PIRATE-ECO-2) — no existing sweep wrapper in npc_scheduler_service.py
+# had a wrapper-level unit test before this (they are session-management
+# glue only, per _run_contract_generation_sync's own comment); one pin per
+# new wrapper proves the specific, load-bearing contract every sweep here
+# depends on: a raising core is CAUGHT (rollback, safe default returned)
+# rather than propagating out of asyncio.to_thread and crashing the
+# scheduler's while-True loop.
+# ---------------------------------------------------------------------------
+
+class _FakeLockDB:
+    """Minimal SessionLocal() stand-in: db.execute(...).scalar() always
+    reports the lock acquired; commit/rollback/close just record whether
+    they fired, matching a real session shape closely enough for a
+    wrapper-level pin (no live Postgres)."""
+    def __init__(self):
+        self.committed = False
+        self.rolled_back = False
+        self.closed = False
+
+    def execute(self, *args, **kwargs):
+        return SimpleNamespace(scalar=lambda: True)
+
+    def query(self, *args, **kwargs):
+        raise RuntimeError("query layer exploded")
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
+
+    def close(self):
+        self.closed = True
+
+
+class TestHeldSweepWiringNeverBreaksTheLoop:
+    def test_suspect_clear_sweep_survives_a_raising_core(self):
+        db = _FakeLockDB()
+        with patch("src.core.database.SessionLocal", return_value=db), patch(
+            "src.services.suspect_service.clear_expired_suspects",
+            side_effect=RuntimeError("boom"),
+        ):
+            result = _run_suspect_clear_sweep_sync()
+        assert result == 0
+        assert db.rolled_back is True
+        assert db.committed is False
+        assert db.closed is True
+
+    def test_team_reputation_sweep_survives_a_raising_core(self):
+        db = _FakeLockDB()
+        with patch("src.core.database.SessionLocal", return_value=db), patch(
+            "src.services.team_reputation_service.sweep_due_team_reputations",
+            side_effect=RuntimeError("boom"),
+        ):
+            result = _run_team_reputation_sweep_sync()
+        assert result == {"due": 0, "recalculated": 0}
+        assert db.rolled_back is True
+        assert db.committed is False
+        assert db.closed is True
+
+    def test_pirate_ecosystem_tick_sweep_survives_a_raising_core(self):
+        # The fake db's own query(...) raises directly (simulating the
+        # region-scan query itself failing) — exercises the wrapper's
+        # OUTER try/except without needing to mock two levels deep into
+        # run_weekly_tick/evolution_tick.
+        db = _FakeLockDB()
+        with patch("src.core.database.SessionLocal", return_value=db):
+            result = _run_pirate_ecosystem_tick_sync()
+        assert result == {
+            "regions_ticked": 0, "growth_actions": 0,
+            "holdings_evaluated": 0, "evolutions": 0,
+        }
+        assert db.rolled_back is True
+        assert db.committed is False
+        assert db.closed is True
+
+    def test_locked_elsewhere_skips_cleanly_without_touching_the_core(self):
+        """A skip-on-contention path (lock held by another instance) must
+        NOT call the core at all, and must NOT roll back (there is nothing
+        to roll back — the lock-check itself is the only statement run)."""
+        class _LockHeldDB(_FakeLockDB):
+            def execute(self, *args, **kwargs):
+                return SimpleNamespace(scalar=lambda: False)
+
+        db = _LockHeldDB()
+        with patch("src.core.database.SessionLocal", return_value=db), patch(
+            "src.services.suspect_service.clear_expired_suspects",
+        ) as mock_core:
+            result = _run_suspect_clear_sweep_sync()
+        assert result == 0
+        mock_core.assert_not_called()
+        assert db.closed is True

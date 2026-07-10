@@ -73,6 +73,12 @@ ALL_STATIC_KEYS = {
     "_TRADER_MISSION_LOCK_KEY": sched._TRADER_MISSION_LOCK_KEY,
     "_BULK_FILL_TRADERS_LOCK_KEY": sched._BULK_FILL_TRADERS_LOCK_KEY,
     "_RETENTION_SWEEP_LOCK_KEY": sched._RETENTION_SWEEP_LOCK_KEY,
+    # WO-CMB-SUSPECT-LIFE-1 / WO-PIRATE-ECO-2 held-sweep wiring — two more
+    # own-key sweeps. (WO-RT-TEAM-REP's TEAM_REPUTATION_SWEEP_LOCK_KEY is
+    # imported from team_reputation_service.py, not module-level HERE, so
+    # it is a name-site below but deliberately absent from this dict.)
+    "_SUSPECT_CLEAR_LOCK_KEY": sched._SUSPECT_CLEAR_LOCK_KEY,
+    "_PIRATE_ECOSYSTEM_TICK_LOCK_KEY": sched._PIRATE_ECOSYSTEM_TICK_LOCK_KEY,
 }
 
 # Every {"key": <bare Name>} lock-acquisition site, keyed by its enclosing
@@ -106,6 +112,15 @@ EXPECTED_NAME_SITE_MAP = {
     "_run_retention_sweep_sync": "_RETENTION_SWEEP_LOCK_KEY",
     "_run_citizen_rebake_sweep_sync": "_CITIZEN_REBAKE_LOCK_KEY",
     "_run_presence_sweep_sync": "_PRESENCE_SWEEP_LOCK_KEY",
+    # WO-CMB-SUSPECT-LIFE-1 / WO-RT-TEAM-REP / WO-PIRATE-ECO-2 held-sweep
+    # wiring — three previously-built cores, wired into the loop dispatch
+    # this pass. TEAM_REPUTATION_SWEEP_LOCK_KEY is imported from
+    # team_reputation_service.py (its own pre-declared 'TREP' mnemonic),
+    # not redeclared here — the bare-Name binding site still shows up in
+    # this AST scan regardless of where the name is defined.
+    "_run_suspect_clear_sweep_sync": "_SUSPECT_CLEAR_LOCK_KEY",
+    "_run_team_reputation_sweep_sync": "TEAM_REPUTATION_SWEEP_LOCK_KEY",
+    "_run_pirate_ecosystem_tick_sync": "_PIRATE_ECOSYSTEM_TICK_LOCK_KEY",
 }
 
 # 26 bare-Name sites + 1 Call-form site (bootstrap_region_sync) = the true
@@ -240,7 +255,7 @@ def test_all_static_keys_pairwise_distinct():
         seen[value] = name
     assert not dupes, f"colliding lock keys: {dupes}"
     assert len(values) == len(set(values))
-    assert len(ALL_STATIC_KEYS) == 26  # 1 global + 2 legacy + 23 new sweep-type keys
+    assert len(ALL_STATIC_KEYS) == 28  # 1 global + 2 legacy + 25 new sweep-type keys
 
 
 def test_all_static_keys_nonnegative_and_63bit_safe():

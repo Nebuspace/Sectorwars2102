@@ -576,6 +576,40 @@ CONTRACT_EXPIRE_SWEEP_SECONDS = int(
     os.environ.get("CONTRACT_EXPIRE_SWEEP_SECONDS", str(5 * 60))
 )
 
+# Suspect auto-clear sweep (WO-CMB-SUSPECT-LIFE-1 held wiring) —
+# suspect_service.clear_expired_suspects. NO-CANON: ships.md:293 names the
+# auto-clear BEHAVIOR ("auto-clears at suspect_until") but not a sweep
+# interval; proposed to DECISIONS — 5 minutes keeps the cleared flag
+# reasonably prompt without hammering the player table on every 60s wake.
+SUSPECT_CLEAR_SWEEP_SECONDS = int(
+    os.environ.get("SUSPECT_CLEAR_SWEEP_SECONDS", str(5 * 60))
+)
+
+# Team-reputation recalculation sweep (WO-RT-TEAM-REP held wiring) —
+# team_reputation_service.sweep_due_team_reputations.
+# RECALCULATION_INTERVAL (team_reputation_service.py) is 1 day; checking
+# well inside that window keeps a due team's recalculation from lagging
+# visibly behind its next_recalculation stamp without adding real load
+# (the query is a single indexed next_recalculation <= now filter).
+# NO-CANON: canon is silent on sweep cadence, only the daily recalculation
+# interval itself.
+TEAM_REPUTATION_SWEEP_SECONDS = int(
+    os.environ.get("TEAM_REPUTATION_SWEEP_SECONDS", str(30 * 60))
+)
+
+# Pirate-ecosystem weekly growth + evolution tick sweep (WO-PIRATE-ECO-2
+# held wiring) — pirate_ecosystem_service.run_weekly_tick / evolution_tick.
+# Both engines are idempotent per their own window (growth: once per UTC
+# week via last_growth_tick_at; evolution: a day-granularity threshold
+# re-evaluated fresh every call), so sweeping more often than weekly is
+# safe — a daily cadence keeps a freshly-due evolution roll from waiting up
+# to a week to be noticed, without scanning every active region's holdings
+# on every 60s tick. NO-CANON: pirate-ecosystem.md names the engines' own
+# windows, not an outer sweep interval; proposed to DECISIONS.
+PIRATE_ECOSYSTEM_TICK_SWEEP_SECONDS = int(
+    os.environ.get("PIRATE_ECOSYSTEM_TICK_SWEEP_SECONDS", str(24 * 60 * 60))
+)
+
 # Session-level advisory lock key (pg_try_advisory_xact_lock argument).
 _ADVISORY_LOCK_KEY = 0x53573231  # 'SW21'
 
@@ -694,6 +728,19 @@ _BULK_FILL_TRADERS_LOCK_KEY = _mnemonic_lock_key("BFIL")
 # Player retention-SIGNAL sweep (WO-RE2) — distinct from the unrelated
 # RouteOptimizationRun retention job just above (_ROUTE_RUNS_RETENTION_LOCK_KEY).
 _RETENTION_SWEEP_LOCK_KEY = _mnemonic_lock_key("RETN")
+# Suspect auto-clear sweep (WO-CMB-SUSPECT-LIFE-1 held wiring) — own key,
+# not the global one. suspect_service.clear_expired_suspects only writes
+# already-expired rows (a second instance racing the sweep finds zero
+# matching rows on its own pass), so this lock exists purely to stop two
+# instances double-flushing the same rows in the same instant, not for
+# correctness.
+_SUSPECT_CLEAR_LOCK_KEY = _mnemonic_lock_key("SUSP")
+# Pirate-ecosystem weekly growth + evolution tick sweep (WO-PIRATE-ECO-2
+# held wiring) — own key; covers the whole per-region growth + per-holding
+# evolution pass in one lock (mirrors the citizen-rebake sweep's own
+# whole-pass-one-lock shape rather than a per-region key — growth's own
+# per-window idempotence is already the finer-grained safety net).
+_PIRATE_ECOSYSTEM_TICK_LOCK_KEY = _mnemonic_lock_key("PECO")
 
 # ADR-0063: recruit lifecycle stage lasts 7 canonical days, then ACTIVE.
 RECRUIT_STAGE_HOURS = 7 * 24
@@ -4655,6 +4702,153 @@ def _run_contract_expire_sweep_sync() -> int:
 
 
 # ---------------------------------------------------------------------------
+# Three previously-held sweep wirings (WO-CMB-SUSPECT-LIFE-1 / WO-RT-TEAM-REP
+# / WO-PIRATE-ECO-2) — each sync core was built and independently unit-tested
+# by its own author; wiring it behind this scheduler's loop dispatch was the
+# explicitly-reported open item on all three. Own SessionLocal, commit/
+# rollback/close discipline mirroring _run_price_alert_sweep_sync exactly.
+# ---------------------------------------------------------------------------
+
+def _run_suspect_clear_sweep_sync() -> int:
+    """Auto-clear every player whose suspect_until has elapsed
+    (ships.md:293's "auto-clears at suspect_until" guarantee — nothing else
+    re-checks a stale is_suspect flag once the triggering encounter is
+    over). Returns the count cleared."""
+    from src.core.database import SessionLocal
+    from src.services.suspect_service import clear_expired_suspects
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _SUSPECT_CLEAR_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return 0
+        cleared = clear_expired_suspects(db)
+        db.commit()
+        return cleared
+    except Exception:
+        logger.exception("Suspect auto-clear sweep failed")
+        db.rollback()
+        return 0
+    finally:
+        db.close()
+
+
+def _run_team_reputation_sweep_sync() -> Dict[str, int]:
+    """Recalculate every team whose TeamReputation.next_recalculation is
+    due. Uses team_reputation_service's own pre-declared
+    TEAM_REPUTATION_SWEEP_LOCK_KEY ('TREP') rather than a locally-derived
+    one — GCRB/PRSW precedent applied to a lock key owned by its SOURCE
+    module and imported here, not redeclared. Returns {due, recalculated}."""
+    from src.core.database import SessionLocal
+    from src.services.team_reputation_service import (
+        TEAM_REPUTATION_SWEEP_LOCK_KEY,
+        sweep_due_team_reputations,
+    )
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": TEAM_REPUTATION_SWEEP_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return {"due": 0, "recalculated": 0}
+        result = sweep_due_team_reputations(db)
+        db.commit()
+        return result
+    except Exception:
+        logger.exception("Team-reputation sweep failed")
+        db.rollback()
+        return {"due": 0, "recalculated": 0}
+    finally:
+        db.close()
+
+
+def _run_pirate_ecosystem_tick_sync() -> Dict[str, int]:
+    """The outer per-region/per-holding loop pirate_ecosystem_service's own
+    docstrings name as "the outer scheduler's job (Lane B, deferred)": for
+    every ACTIVE region, run the weekly growth tick; for every
+    pirate-controlled (owner_player_id IS NULL), non-Stronghold holding in
+    that region, run the evolution tick. Both engines are self-contained
+    and idempotent per their own window (see the cadence constant's own
+    docstring). Per-region/per-holding SAVEPOINT isolation (db.begin_nested)
+    mirrors the citizen-rebake sweep's per-ship isolation — one bad row
+    can't abort the rest of the pass.
+
+    Realtime telemetry for growth/evolution
+    (pirate_ecosystem_service._broadcast_pirate_event) is a documented,
+    PRE-EXISTING no-op from a worker-thread caller ("no running loop —
+    sync/worker context; nothing polls this today", per that function's own
+    docstring) — unrelated to this wiring, not fixed here.
+
+    Returns {regions_ticked, growth_actions, holdings_evaluated,
+    evolutions}."""
+    from src.core.database import SessionLocal
+    from src.models.pirate_holding import PirateHolding, PirateHoldingTier
+    from src.models.region import Region, RegionStatus
+    from src.services.pirate_ecosystem_service import evolution_tick, run_weekly_tick
+
+    empty = {"regions_ticked": 0, "growth_actions": 0, "holdings_evaluated": 0, "evolutions": 0}
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _PIRATE_ECOSYSTEM_TICK_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return empty
+
+        counts = dict(empty)
+        regions = db.query(Region).filter(Region.status == RegionStatus.ACTIVE.value).all()
+        for region in regions:
+            counts["regions_ticked"] += 1
+            try:
+                with db.begin_nested():
+                    result = run_weekly_tick(db, region)
+                if result.get("action") not in (
+                    "skipped", "already_ticked_this_window", "no_growth",
+                ):
+                    counts["growth_actions"] += 1
+            except Exception:
+                logger.exception(
+                    "Pirate-ecosystem growth tick failed for region %s", region.id,
+                )
+
+            holdings = (
+                db.query(PirateHolding)
+                .filter(
+                    PirateHolding.region_id == region.id,
+                    PirateHolding.owner_player_id.is_(None),
+                    PirateHolding.tier != PirateHoldingTier.STRONGHOLD,
+                )
+                .all()
+            )
+            for holding in holdings:
+                counts["holdings_evaluated"] += 1
+                try:
+                    with db.begin_nested():
+                        result = evolution_tick(db, holding)
+                    if result.get("action") == "evolved":
+                        counts["evolutions"] += 1
+                except Exception:
+                    logger.exception(
+                        "Pirate-ecosystem evolution tick failed for holding %s", holding.id,
+                    )
+
+        db.commit()
+        return counts
+    except Exception:
+        logger.exception("Pirate-ecosystem tick sweep failed")
+        db.rollback()
+        return empty
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
 # Price-history time-series sweep (WO-ECON-MKT-TIMESERIES) — hourly
 # PriceHistory snapshots + daily/weekly rollups + retention pruning
 # ---------------------------------------------------------------------------
@@ -6640,3 +6834,55 @@ async def npc_scheduler_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: contract expiry sweep crashed (loop continues)")
+
+        # Suspect auto-clear sweep (WO-CMB-SUSPECT-LIFE-1 held wiring) —
+        # ships.md:293's "auto-clears at suspect_until" guarantee needed a
+        # sweep since nothing else re-checks a stale is_suspect flag once
+        # the triggering encounter is over.
+        if elapsed % SUSPECT_CLEAR_SWEEP_SECONDS == 0:
+            try:
+                cleared = await asyncio.to_thread(_run_suspect_clear_sweep_sync)
+                if cleared:
+                    logger.info(
+                        "NPC scheduler: suspect auto-clear sweep — cleared %d player(s)",
+                        cleared,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: suspect auto-clear sweep crashed (loop continues)")
+
+        # Team-reputation recalculation sweep (WO-RT-TEAM-REP held wiring)
+        # — recalculates every team whose next_recalculation is due.
+        if elapsed % TEAM_REPUTATION_SWEEP_SECONDS == 0:
+            try:
+                team_rep = await asyncio.to_thread(_run_team_reputation_sweep_sync)
+                if team_rep.get("recalculated"):
+                    logger.info(
+                        "NPC scheduler: team-reputation sweep — recalculated %d of %d "
+                        "due team(s)",
+                        team_rep.get("recalculated", 0), team_rep.get("due", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: team-reputation sweep crashed (loop continues)")
+
+        # Pirate-ecosystem weekly growth + evolution tick sweep
+        # (WO-PIRATE-ECO-2 held wiring) — the outer per-region/per-holding
+        # loop pirate_ecosystem_service's own docstrings named as deferred
+        # scheduler work (Lane B).
+        if elapsed % PIRATE_ECOSYSTEM_TICK_SWEEP_SECONDS == 0:
+            try:
+                eco = await asyncio.to_thread(_run_pirate_ecosystem_tick_sync)
+                if eco.get("growth_actions") or eco.get("evolutions"):
+                    logger.info(
+                        "NPC scheduler: pirate-ecosystem tick — %d region(s) ticked, "
+                        "%d growth action(s), %d holding(s) evaluated, %d evolution(s)",
+                        eco.get("regions_ticked", 0), eco.get("growth_actions", 0),
+                        eco.get("holdings_evaluated", 0), eco.get("evolutions", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: pirate-ecosystem tick sweep crashed (loop continues)")
