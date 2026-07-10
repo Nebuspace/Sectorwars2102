@@ -14,7 +14,6 @@ from fastapi.responses import JSONResponse
 
 from src.api.api import api_router
 from src.core.config import settings
-from src.core.database import Base, async_engine
 from src.utils.error_handling import setup_error_handling
 
 # Configure logging
@@ -28,21 +27,15 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """FastAPI 0.115+ lifespan handler (replaces @app.on_event startup/shutdown).
 
-    Runs DB schema init, admin user bootstrap, the Redis service connection,
-    the WebSocket heartbeat cleanup background task, and the bang job orphan
-    recovery sweep on startup; disconnects Redis and logs a shutdown line on
-    teardown.
+    Runs admin user bootstrap, the Redis service connection, the WebSocket
+    heartbeat cleanup background task, and the bang job orphan recovery sweep
+    on startup; disconnects Redis and logs a shutdown line on teardown.
+
+    Schema is NOT created here — Alembic (`start.sh`'s `alembic upgrade head`)
+    is the sole schema authority, applied before this process ever starts.
     """
     # ---------- startup ----------
     logger.info("Starting Sectorwars 2102 Game Server...")
-
-    try:
-        # Create database tables
-        async with async_engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database tables initialized")
-    except Exception as e:
-        logger.error(f"Database initialization failed: {e}")
 
     # Initialize default admin user if needed
     try:
