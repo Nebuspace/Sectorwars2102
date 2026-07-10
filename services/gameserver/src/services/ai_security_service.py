@@ -14,7 +14,7 @@ import html
 import logging
 import hashlib
 import time
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from dataclasses import dataclass
 from enum import Enum
 import json
@@ -235,7 +235,8 @@ class AISecurityService:
         player_id: str,
         session_id: str,
         skip_sql_injection: bool = False,
-        skip_xss: bool = False
+        skip_xss: bool = False,
+        seed_from: Optional[Any] = None,
     ) -> Tuple[bool, List[SecurityViolation]]:
         """
         Comprehensive input validation and security scanning
@@ -246,15 +247,21 @@ class AISecurityService:
             session_id: ID of the current session
             skip_sql_injection: Skip SQL injection checks (use for creative/storytelling contexts)
             skip_xss: Skip XSS checks (use for non-HTML contexts like AI dialogue)
+            seed_from: WO-ARIA-TRUST-PERSIST -- a real Player ORM row, if
+                the caller has one loaded. This is always the FIRST
+                security-service call in every flow, so it's the natural
+                seed point; every other method in this class (check_rate_
+                limits, check_cost_limits_detailed, etc.) reuses the same
+                now-seeded in-memory profile for the rest of the request.
 
         Returns:
             Tuple[bool, List[SecurityViolation]]: (is_safe, violations_found)
         """
         violations = []
-        
+
         # Update player profile
-        profile = self.get_or_create_player_profile(player_id)
-        
+        profile = self.get_or_create_player_profile(player_id, seed_from=seed_from)
+
         # Check if player is blocked
         if self.is_player_blocked(player_id):
             violations.append(SecurityViolation(
@@ -724,11 +731,69 @@ class AISecurityService:
         instance_cost = self.instance_cost_tracking.get(today_key, 0.0)
         self.instance_cost_tracking[today_key] = instance_cost + actual_cost_usd
 
-    def get_or_create_player_profile(self, player_id: str) -> PlayerSecurityProfile:
-        """Get or create security profile for player"""
+    def get_or_create_player_profile(
+        self, player_id: str, *, seed_from: Optional[Any] = None,
+    ) -> PlayerSecurityProfile:
+        """Get or create security profile for player.
+
+        WO-ARIA-TRUST-PERSIST: `seed_from`, if given (a real Player ORM
+        row -- typed Any to avoid a hard import cycle with src.models.
+        player), hydrates a BRAND NEW profile from its aria_trust_score /
+        aria_violation_count / aria_blocked_until columns -- "on first
+        touch per process". Ignored once a profile already exists in
+        `self.player_profiles`: an existing in-memory profile reflects
+        more-current in-process state than a possibly-stale re-read of
+        the row would. Backward-compatible -- every pre-existing caller
+        that never passes `seed_from` gets EXACTLY the old bare-default
+        behavior."""
         if player_id not in self.player_profiles:
-            self.player_profiles[player_id] = PlayerSecurityProfile(player_id=player_id)
+            profile = PlayerSecurityProfile(player_id=player_id)
+            if seed_from is not None:
+                trust = getattr(seed_from, "aria_trust_score", None)
+                if trust is not None:
+                    profile.trust_score = trust
+                violations = getattr(seed_from, "aria_violation_count", None)
+                if violations is not None:
+                    profile.violation_count = violations
+                blocked_until = getattr(seed_from, "aria_blocked_until", None)
+                if blocked_until is not None:
+                    profile.is_blocked = True
+                    # Player.aria_blocked_until is DateTime(timezone=True)
+                    # (a real Postgres round-trip returns a tz-AWARE
+                    # datetime) but every comparison in this class uses
+                    # naive datetime.utcnow() -- comparing the two raises
+                    # TypeError. Normalize to naive UTC on the way in so
+                    # is_player_blocked's existing expiry check (unchanged
+                    # otherwise) keeps working exactly as it already does
+                    # for an in-process block. Caught by this WO's own
+                    # restart-simulation test using a realistic aware
+                    # fixture -- a naive test fixture would have hidden
+                    # this from ever surfacing until a real restart hit a
+                    # real blocked player.
+                    profile.block_expires = (
+                        blocked_until.replace(tzinfo=None) if blocked_until.tzinfo else blocked_until
+                    )
+                    # NOT auto-cleared here even if already in the past --
+                    # is_player_blocked()'s existing expiry check runs on
+                    # the NEXT read and clears it exactly as it already
+                    # does for an in-process expiry, so a stale persisted
+                    # block from before a restart self-corrects on first
+                    # use rather than needing special-cased logic here.
+            self.player_profiles[player_id] = profile
         return self.player_profiles[player_id]
+
+    def get_trust_columns(self, player_id: str) -> Dict[str, Any]:
+        """WO-ARIA-TRUST-PERSIST: the CURRENT in-memory trust/violation/
+        block state, shaped for a Player-row UPDATE. The caller applies
+        this via whatever Session type it holds (sync or async) in the
+        SAME transaction as its own work -- AISecurityService stays
+        DB-agnostic; it never opens a session or commits itself."""
+        profile = self.get_or_create_player_profile(player_id)
+        return {
+            "aria_trust_score": profile.trust_score,
+            "aria_violation_count": profile.violation_count,
+            "aria_blocked_until": profile.block_expires if profile.is_blocked else None,
+        }
 
     def is_player_blocked(self, player_id: str) -> bool:
         """Check if player is currently blocked"""

@@ -57,6 +57,17 @@ class Player(Base):
     aria_relationship_score = Column(Integer, nullable=False, default=25)  # 0-100
     aria_total_interactions = Column(Integer, nullable=False, default=0)
 
+    # ARIA trust / abuse-ladder persistence (WO-ARIA-TRUST-PERSIST). Canon:
+    # OPERATIONS/aria.md:239-241, ADR-0065 M-U1. Previously lived ONLY in
+    # ai_security_service.py's in-memory AISecurityService singleton --
+    # a blocked abuser was silently amnestied on every process restart.
+    # AISecurityService seeds its in-memory profile from these columns on
+    # first touch per process and writes every penalty/block back here in
+    # the same transaction as the caller's own commit.
+    aria_trust_score = Column(Float, nullable=False, default=1.0)  # 0.0 (untrusted) - 1.0 (trusted)
+    aria_violation_count = Column(Integer, nullable=False, default=0)
+    aria_blocked_until = Column(DateTime(timezone=True), nullable=True)
+
     current_ship_id = Column(UUID(as_uuid=True), ForeignKey("ships.id", ondelete="SET NULL"), nullable=True)
     home_sector_id = Column(Integer, nullable=False, default=1)
     current_sector_id = Column(Integer, nullable=False, default=1)

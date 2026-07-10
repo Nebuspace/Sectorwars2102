@@ -1694,7 +1694,8 @@ class PlayerSecurityAction(BaseModel):
 async def take_security_action(
     player_id: str,
     action: PlayerSecurityAction,
-    current_admin: User = Depends(get_current_admin)
+    current_admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
 ):
     """
     Take security action on a player:
@@ -1702,11 +1703,23 @@ async def take_security_action(
     - unblock: Immediately unblock player
     - reset_violations: Reset violation count to 0
     - reset_trust: Reset trust score to 1.0
+
+    WO-ARIA-TRUST-PERSIST: every action here writes through to the Player
+    row's aria_trust_score/aria_violation_count/aria_blocked_until columns
+    -- an admin unblock that only touched the in-memory ladder would get
+    silently UNDONE on the next process restart if a stale aria_blocked_
+    until timestamp were still sitting on the row, exactly the amnesty bug
+    this WO closes (just in the opposite direction: an admin's own
+    corrective action, not an abuser's block, would be the thing lost).
     """
     try:
+        player_row = db.query(Player).filter(Player.id == uuid.UUID(player_id)).first()
+        if player_row is None:
+            raise HTTPException(status_code=404, detail=f"Player {player_id} not found")
+
         security_service = get_security_service()
-        profile = security_service.get_or_create_player_profile(player_id)
-        
+        profile = security_service.get_or_create_player_profile(player_id, seed_from=player_row)
+
         if action.action == "block":
             if action.duration_hours is None:
                 raise HTTPException(status_code=400, detail="duration_hours required for block action")
@@ -1731,9 +1744,13 @@ async def take_security_action(
             
         else:
             raise HTTPException(status_code=400, detail=f"Unknown action: {action.action}")
-        
+
+        for _col, _val in security_service.get_trust_columns(player_id).items():
+            setattr(player_row, _col, _val)
+        db.commit()
+
         logger.info(f"Admin {current_admin.username} took security action '{action.action}' on player {player_id}: {action.reason}")
-        
+
         return {
             "success": True,
             "message": message,

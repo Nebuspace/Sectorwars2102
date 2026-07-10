@@ -352,9 +352,23 @@ async def answer_dialogue(
         str(player.id),
         str(exchange_id),
         skip_sql_injection=True,  # Creative storytelling context
-        skip_xss=True  # Not HTML rendering context
+        skip_xss=True,  # Not HTML rendering context
+        seed_from=player,  # WO-ARIA-TRUST-PERSIST: seed on first touch this process
     )
-    
+
+    # WO-ARIA-TRUST-PERSIST: write the ladder's CURRENT state back to the
+    # Player row -- validate_input is the only call in this flow that can
+    # mutate trust/violation/block state (via apply_security_penalty), so
+    # this single write-through, placed BEFORE the is_safe branch below,
+    # covers both the accept and reject paths in one place. EXPLICIT
+    # commit here (verified: get_db() never auto-commits, only closes in
+    # its finally -- an uncommitted change is silently discarded on the
+    # reject path's early `raise` below, exactly the path where a NEW
+    # block is most likely to have just triggered).
+    for _col, _val in security_service.get_trust_columns(str(player.id)).items():
+        setattr(player, _col, _val)
+    db.commit()
+
     if not is_safe:
         # Log security violation for monitoring
         logger.warning(f"Security violation by player {player.id}: {[v.violation_type.value for v in violations]}")
