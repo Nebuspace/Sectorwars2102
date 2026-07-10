@@ -1608,6 +1608,137 @@ class CombatService:
             result_dict["quantum_shards_dropped"] = quantum_shards_dropped
         return result_dict
 
+    def npc_attack_player(self, npc_ship_id: uuid.UUID, defender_id: uuid.UUID) -> Dict[str, Any]:
+        """Resolve an NPC-INITIATED attack against a player (WO-CMB-NPC-
+        INITIATED-1, Max ruling 2026-07-10) — the symmetric mirror of
+        ``attack_npc_ship``: there the PLAYER is the attacker and the NPC
+        ship is the defender; here the NPC ship is the attacker and the
+        PLAYER is the defender.
+
+        Callers: ``npc_engagement_service.npc_initiate_attack`` is the
+        police/pirate POLICY layer — defender/NPC guards, squad selection,
+        the Terran-Space law-enforcement bypass amendment, and the
+        ``npc_attack_initiated`` WS event all live THERE, not here. This
+        method is purely mechanical resolution + persistence, mirroring
+        ``attack_npc_ship``'s own shape and re-using its exact NPC-ship-
+        destroyed handling (``is_destroyed``/``is_active``/``status``,
+        ``_spawn_cargo_wreck``, ``npc_spawn_service.handle_npc_ship_
+        destroyed``) and the ALREADY-established ``_handle_ship_
+        destruction(player, None, cause)`` idiom for "a player's ship
+        destroyed by a non-player cause" (the same call ``attack_npc_ship``
+        itself makes when the NPC wins:
+        ``self._handle_ship_destruction(attacker, None, "combat")``).
+
+        FLUSH-ONLY — deliberately NOT matching ``attack_player``/
+        ``attack_npc_ship``'s own ``self.db.commit()``. This may be called
+        from inside ``sweep_pending_engagements``' per-row SAVEPOINT
+        (WO-B1/B2 discipline); a commit here would finalize the ENTIRE
+        session, not just this NPC's row, breaking that per-row isolation.
+        The caller owns the commit.
+
+        No CombatLog schema change: ``attacker_id`` stays NULL (no Player
+        behind the NPC) — the literal mirror of ``attack_npc_ship``'s own
+        ``defender_id`` NULL idiom, flipped to the attacker side.
+        ``cargo_stolen`` is returned raw, not transferred: disposal is
+        faction-specific policy (pirates loot into their own hold; police
+        confiscate to a depot per police-forces.md outcome #3), so it's
+        the CALLER's decision, not this method's.
+        """
+        npc_ship = self.db.query(Ship).filter(Ship.id == npc_ship_id).first()
+        if npc_ship is None or npc_ship.is_destroyed:
+            return {"success": False, "message": "NPC has no active ship"}
+
+        defender = self.db.query(Player).filter(Player.id == defender_id).first()
+        if defender is None or defender.current_ship is None or defender.current_ship.is_destroyed:
+            return {"success": False, "message": "Defender has no active ship"}
+
+        if npc_ship.sector_id != defender.current_sector_id:
+            return {"success": False, "message": "Target is not in your sector"}
+
+        sector = self.db.query(Sector).filter(Sector.sector_id == defender.current_sector_id).first()
+        if sector is None:
+            return {"success": False, "message": "Sector not found"}
+
+        combat_result = self._resolve_ship_combat(
+            attacker=None, defender=defender, sector=sector, attacker_ship=npc_ship,
+        )
+
+        defender_ship = defender.current_ship
+        combat_log = CombatLog(
+            combat_type=CombatType.SHIP_VS_SHIP.value,
+            outcome=COMBAT_RESULT_TO_OUTCOME[combat_result["result"]],
+            sector_id=sector.sector_id,
+            sector_uuid=sector.id,
+            region_id_snapshot=_combat_log_region_snapshot(sector),
+            attacker_id=None,
+            attacker_ship_id=npc_ship.id,
+            attacker_ship_name=npc_ship.name,
+            attacker_ship_type=npc_ship.type.value,
+            defender_id=defender.id,
+            defender_ship_id=defender.current_ship_id,
+            defender_ship_name=defender_ship.name if defender_ship else None,
+            defender_ship_type=defender_ship.type.value if defender_ship else None,
+            rounds=combat_result["rounds"],
+            attacker_drones=0,
+            defender_drones=defender.defense_drones,
+            attacker_drones_lost=combat_result["attacker_drones_lost"],
+            defender_drones_lost=combat_result["defender_drones_lost"],
+            attacker_damage_dealt=combat_result["attacker_damage_dealt"],
+            defender_damage_dealt=combat_result["defender_damage_dealt"],
+            cargo_looted=None,
+            combat_log=json.dumps(combat_result["combat_details"]),
+            ended_at=datetime.now(),
+        )
+        self.db.add(combat_log)
+        self.db.flush()
+
+        dead_npc = None
+        if combat_result["defender_ship_destroyed"]:
+            self._handle_ship_destruction(defender, None, "npc_combat")
+
+        if combat_result["attacker_ship_destroyed"]:
+            npc_ship.is_destroyed = True
+            npc_ship.is_active = False
+            npc_ship.status = ShipStatus.DESTROYED
+            self._spawn_cargo_wreck(
+                destroyed_ship=npc_ship, cause="combat",
+                original_owner=None, killing_blow_pilot=defender,
+            )
+            try:
+                from src.services.npc_spawn_service import handle_npc_ship_destroyed
+                dead_npc = handle_npc_ship_destroyed(
+                    self.db, npc_ship.id,
+                    killed_by_player_id=defender.id,
+                    combat_log_id=combat_log.id,
+                )
+            except ImportError:
+                logger.warning(
+                    "npc_spawn_service not available — NPC ship %s destroyed without KIA processing",
+                    npc_ship.id,
+                )
+
+        flag_modified(npc_ship, "combat")
+        if defender_ship is not None:
+            flag_modified(defender_ship, "combat")
+        self.db.flush()
+
+        return {
+            "success": True,
+            "message": combat_result["message"],
+            "combat_result": combat_result["result"].name,
+            "combat_log_id": str(combat_log.id),
+            "npc_ship_destroyed": combat_result["attacker_ship_destroyed"],
+            "defender_ship_destroyed": combat_result["defender_ship_destroyed"],
+            "dead_npc": dead_npc,
+            "npc_ship_id": str(npc_ship.id),
+            "npc_ship_name": npc_ship.name,
+            "npc_ship_type": npc_ship.type.name,
+            "defender_id": str(defender.id),
+            "defender_ship_id": str(defender.current_ship_id) if defender.current_ship_id else None,
+            "sector_id": sector.sector_id,
+            "cargo_stolen": combat_result.get("cargo_stolen") or {},
+        }
+
     def attack_sector_drones(self, attacker_id: uuid.UUID, sector_id: int) -> Dict[str, Any]:
         """Attack the hostile drones deployed in the player's current sector.
 
