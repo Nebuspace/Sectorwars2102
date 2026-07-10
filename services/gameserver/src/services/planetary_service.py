@@ -396,6 +396,22 @@ GOURMET_FOOD_STOCKPILE_KEY = "gourmet_food"
 GOURMET_FOOD_PRODUCTION_BONUS = 0.05  # NO-CANON: +5% to growth + commodity output
 GOURMET_FOOD_CONSUMED_PER_COLONIST_PER_DAY = 0.001  # NO-CANON: 1u / 1000 colonists / day
 
+# Colonist food consumption + starvation (WO-P5; CANON:
+# SYSTEMS/planetary-production-tick.md "Colonist consumption", lines 123-134).
+# Every colonist eats COLONIST_FOOD_CONSUMED_PER_COLONIST_PER_DAY organics/day
+# (food IS organics -- there is no separate food commodity). Pro-rated to this
+# tick's capped_elapsed exactly like every other accrual in
+# apply_resource_production (same fractional-carry idiom as gourmet food,
+# banked under COLONIST_FOOD_CARRY_KEY so a fast-polled colony never
+# double-charges or drops a fraction). When the PRE-tick organics stockpile
+# can't cover this tick's whole-unit consumption, the deficit starves
+# colonists: STARVATION_DEATHS_PER_MISSING_FOOD_UNIT colonists die per missing
+# food unit (ceil-rounded per canon, so any deficit kills at least one).
+COLONIST_FOOD_CONSUMED_PER_COLONIST_PER_DAY = 0.5  # CANON: production-tick.md:125
+STARVATION_DEATHS_PER_MISSING_FOOD_UNIT = 2         # CANON: production-tick.md:134
+COLONIST_FOOD_CARRY_KEY = "food_consumed"
+STARVATION_WARNING_KEY = "starvation_warning"
+
 
 def _read_gourmet_food_stockpile(planet: "Planet") -> int:
     """Read a planet's gourmet_food stockpile from the active_events JSONB.
@@ -892,16 +908,21 @@ class PlanetaryService:
         ):
             surplus_rate = (planet.colonists or 0) * SURPLUS_PIONEER_RATE_PER_DAY
 
+        colonists = planet.colonists or 0
         if (
             all((rates.get(key, 0) or 0) <= 0 for key, _ in resource_cols)
             and research_rate <= 0
             and surplus_rate <= 0
+            and colonists <= 0
         ):
             # Nothing producing (no commodity allocation AND no research lab AND
-            # no surplus-pioneer faucet); keep the anchor current so a later
-            # allocation doesn't accrue retroactively. No backlog to drain when
-            # nothing is produced, so advancing fully to now is correct here (no
-            # runaway risk).
+            # no surplus-pioneer faucet) AND no colonists to feed; keep the anchor
+            # current so a later allocation/colonization doesn't accrue
+            # retroactively. No backlog to drain when nothing is produced or
+            # consumed, so advancing fully to now is correct here (no runaway
+            # risk). A live colony (colonists > 0) always falls through past this
+            # gate even with zero allocations -- food consumption (WO-P5) still
+            # runs on an idle colony.
             planet.last_production = now
             return True
 
@@ -963,17 +984,59 @@ class PlanetaryService:
             else:
                 gourmet_remainder = 0.0
 
+        # Colonist food consumption + starvation (WO-P5; CANON:
+        # production-tick.md "Colonist consumption", lines 123-134). Mirrors the
+        # gourmet-food fractional-carry block immediately above: sub-unit
+        # consumption banks under COLONIST_FOOD_CARRY_KEY so a fast-polled
+        # colony never double-charges or drops a fraction. Runs whenever
+        # colonists > 0, independent of whether any commodity is allocated for
+        # production -- a colony with zero allocations still eats.
+        food_consumed_whole = 0
+        food_remainder = 0.0
+        pre_tick_organics = getattr(planet, "organics", 0) or 0
+        starvation_deaths = 0
+        food_deficit = 0
+        if colonists > 0:
+            food_to_consume = (
+                carry.get(COLONIST_FOOD_CARRY_KEY, 0.0)
+                + colonists
+                * COLONIST_FOOD_CONSUMED_PER_COLONIST_PER_DAY
+                * (capped_elapsed / SECONDS_PER_DAY)
+            )
+            food_consumed_whole = int(food_to_consume)
+            food_remainder = food_to_consume - food_consumed_whole
+            if food_consumed_whole > pre_tick_organics:
+                # CANON invariant 8: starvation floors organics at 0 rather than
+                # going negative -- the deficit overflows into colonist deaths
+                # instead. The determination uses ONLY the PRE-tick stockpile
+                # (this same tick's freshly produced organics, applied below by
+                # the existing gains-loop, does not retroactively feed anyone).
+                food_deficit = food_consumed_whole - pre_tick_organics
+                starvation_deaths = math.ceil(food_deficit * STARVATION_DEATHS_PER_MISSING_FOOD_UNIT)
+
         if (
             sum(g for g, _ in gains.values())
             + research_gained
             + surplus_gained
             + gourmet_consumed_whole
+            + food_consumed_whole
         ) <= 0:
             # Not enough elapsed time for a whole unit of anything yet (including
-            # a whole unit of gourmet consumption); leave the anchor (and stored
-            # carry) untouched so fractions keep banking against the growing
-            # elapsed window.
+            # a whole unit of gourmet or colonist-food consumption); leave the
+            # anchor (and stored carry) untouched so fractions keep banking
+            # against the growing elapsed window.
             return False
+
+        # Apply this tick's colonist food consumption (+ any starvation) to the
+        # organics stockpile BEFORE the production gains-loop below adds newly
+        # produced organics -- so the net result matches canon's additive
+        # "produced - consumed" delta (production-tick.md "Tick output") while
+        # the starvation determination above used only the pre-tick stockpile.
+        if food_consumed_whole > 0:
+            planet.organics = max(0, pre_tick_organics - food_consumed_whole)
+        if starvation_deaths > 0:
+            planet.colonists = max(0, colonists - starvation_deaths)
+            planet.population = max(planet.colonists, (planet.population or 0) - starvation_deaths)
 
         # Per-resource storage cap (CANON: production-tick.md "Storage caps" /
         # invariant 2). Each commodity stockpile is clamped to the citadel-derived
@@ -1009,6 +1072,14 @@ class PlanetaryService:
         # carry dict with a 0.0 surplus key.
         if surplus_rate > 0 or "surplus_pioneers" in carry:
             carry["surplus_pioneers"] = surplus_produced - surplus_gained
+        # Bank the colonist-food fractional remainder whenever there are
+        # colonists to feed (mirrors the unconditional research carry-store
+        # above — food consumption is universal to any live colony, not gated
+        # like the optional gourmet/surplus faucets).
+        if colonists > 0:
+            carry[COLONIST_FOOD_CARRY_KEY] = food_remainder
+        else:
+            carry.pop(COLONIST_FOOD_CARRY_KEY, None)
 
         # Bank the gourmet-food fractional remainder only while supplied; clear a
         # stale carry once the stockpile is exhausted (gourmet_remainder is 0.0
@@ -1059,6 +1130,20 @@ class PlanetaryService:
             }
         else:
             new_events.pop("overflow_warning", None)
+        # Starvation-warning surfacing (CANON: production-tick.md "Outputs /
+        # state changes" — "planet.starvation_warning — if food deficit
+        # occurred"). Mirrors overflow_warning's stamp/clear idiom directly
+        # above: record the deficit + colonists lost + a wall-clock stamp when
+        # this tick starved the colony, clear a stale marker otherwise so the
+        # JSONB doesn't carry a phantom warning forward.
+        if starvation_deaths > 0:
+            new_events[STARVATION_WARNING_KEY] = {
+                "food_deficit": food_deficit,
+                "colonists_lost": starvation_deaths,
+                "at": now.isoformat(),
+            }
+        else:
+            new_events.pop(STARVATION_WARNING_KEY, None)
         planet.active_events = new_events
         # Advance the anchor by ONLY the consumed (capped) window, not to now, so
         # a backlog > 24h drains 24h per subsequent tick rather than being
@@ -1073,6 +1158,8 @@ class PlanetaryService:
             + ", ".join(f"+{g} {c}" for c, (g, _) in gains.items() if g > 0)
             + (f", +{research_gained} research" if research_gained > 0 else "")
             + (f", +{surplus_gained} surplus_pioneers" if surplus_gained > 0 else "")
+            + (f", -{food_consumed_whole} organics (food)" if food_consumed_whole > 0 else "")
+            + (f", -{starvation_deaths} colonists (starvation)" if starvation_deaths > 0 else "")
         )
         return True
 
@@ -2347,6 +2434,18 @@ class PlanetaryService:
             # most recent tick — the client raises the at-cap warning off this.
             "overflowWarning": (
                 (planet.active_events or {}).get("overflow_warning")
+                if isinstance(planet.active_events, dict) else None
+            ),
+            # WO-P5: the last starvation event the production tick stamped into
+            # active_events when the pre-tick organics stockpile couldn't cover
+            # colonist food consumption (production-tick.md "Colonist
+            # consumption"). None when nothing starved at the most recent tick.
+            # (VERIFY-FIRST NOTE: the WO's Lane B named routes/planets.py, but
+            # that route is a pure pass-through of this dict -- the planet DTO
+            # is built here, exactly like overflowWarning just above -- so both
+            # lanes land in this one file.)
+            "starvationWarning": (
+                (planet.active_events or {}).get(STARVATION_WARNING_KEY)
                 if isinstance(planet.active_events, dict) else None
             ),
             "lastProductionAt": planet.last_production.isoformat() if planet.last_production else None,
