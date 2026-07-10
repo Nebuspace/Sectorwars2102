@@ -175,6 +175,12 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - AI_DIALOGUE_ENABLED=${AI_DIALOGUE_ENABLED:-true}
+      # NPC scheduler master switch (Loops A/B/C + startup seeding/repair).
+      # config.py defaults FALSE and compose never forwarded the var, so the
+      # scheduler could NEVER start on a checked-in config (census defect,
+      # ruled GO 2026-07-10). Default stays false -- prod-static intent
+      # preserved; each environment opts in via its own env (stage sets true).
+      - NPC_SCHEDULER_ENABLED=${NPC_SCHEDULER_ENABLED:-false}
       # Duration compression for dev (1.0 in prod): construction days,
       # grace windows, slip tenures, takeover months all scale by this
       - GAME_TIME_SCALE=${GAME_TIME_SCALE:-1.0}
