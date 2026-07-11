@@ -1308,6 +1308,17 @@ class FleetService:
         if destroyed:
             self.remove_ship_from_fleet(member.fleet_id, ship.id)
 
+    def _lock_players_ascending(self, player_ids) -> Dict[UUID, Player]:
+        """Lock every Player row in one ascending-id pass — deterministic order
+        so concurrent fleet kills on a shared pair can't deadlock (WO-FLEET-KILL-
+        LOCK-ORDER; the N-row generalization of WO-COMBAT-DUAL-LOCK-ORDER)."""
+        locked: Dict[UUID, Player] = {}
+        for pid in sorted(player_ids):
+            player = self.db.query(Player).filter(Player.id == pid).populate_existing().with_for_update().first()
+            if player is not None:
+                locked[pid] = player
+        return locked
+
     def _distribute_fleet_kill_rewards(
         self,
         killed_ship: Ship,
@@ -1398,14 +1409,24 @@ class FleetService:
             # picks them up fresh instead of clobbering them.
             self.db.flush()
 
-            # Lock the killed (target) player's row ONCE for the whole loop so
-            # the JSONB read/clear and reputation reads are serialized against
-            # concurrent kills (collect_bounty_share locks each HUNTER row, not
-            # the target — the target lock belongs here, mirroring solo's
-            # collect_bounty which locks both).
-            killed_player = self.db.query(Player).filter(
-                Player.id == killed_player_id
-            ).populate_existing().with_for_update().first()
+            # Lock EVERY involved Player row (killed target + all distinct
+            # participants) in ONE ascending-id batch, upfront, before any
+            # per-participant work begins (WO-FLEET-KILL-LOCK-ORDER). The prior
+            # shape locked killed_player first, then let collect_bounty_share
+            # lock each hunter in killer_fleet.members iteration order — NOT
+            # ascending-id — so two concurrent fleet kills sharing a pair of
+            # players with reversed killed/participant roles could lock that
+            # pair in opposite orders and deadlock (classic AB-BA). Locking
+            # ascending-id here closes that: any two overlapping batches
+            # converge on the same acquisition order regardless of which
+            # player is "killed" and which is "participant" in each battle.
+            # collect_bounty_share's own hunter-row lock (bounty_service.py)
+            # is now a redundant re-lock of an already-held row — safe same-tx
+            # Postgres no-op, left as defense-in-depth. This also serializes
+            # the killed (target) player's JSONB read/clear and reputation
+            # reads against concurrent kills, same as before.
+            locked_players = self._lock_players_ascending(set(participant_ids) | {killed_player_id})
+            killed_player = locked_players.get(killed_player_id)
 
             had_bounty = False
             # Designate the LAST participant to claim the pay-once-then-cleared
@@ -1490,8 +1511,8 @@ class FleetService:
                         grey_service = GreyFlagService(self.db)
                         for pid in penalized_ids:
                             # .populate_existing(): row is already FOR-UPDATE-
-                            # held from the loop above (bounty_service's own
-                            # lock on this same hunter row) + upstream
+                            # held from the upfront ascending-id batch
+                            # (_lock_players_ascending above) + upstream
                             # flushes — no flush needed here.
                             member = (
                                 self.db.query(Player)
