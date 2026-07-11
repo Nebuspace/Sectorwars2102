@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import operator
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, List, Optional
@@ -221,10 +221,18 @@ def _player(**overrides: Any) -> SimpleNamespace:
 
 
 def _locker(contract: SimpleNamespace, owner_id: uuid.UUID, **overrides: Any) -> StorageLocker:
+    # last_fee_settled_at / created_at are server_default=func.now() --
+    # a fresh, unflushed Python object never gets those without a real DB
+    # round-trip, so a DB-free fixture must set them explicitly. Pinned
+    # to "now" so an ordinary deposit test's settle_fee call sees ~0
+    # elapsed days (a clean no-op) and isn't surprised by an unrelated
+    # rent charge -- tests that actually exercise fee accrual override
+    # last_fee_settled_at explicitly to the past.
     base = dict(
         id=uuid.uuid4(), owner_player_id=owner_id, station_id=contract.destination_station_id,
         contract_id=contract.id, status=StorageLockerStatus.ACTIVE,
         rent_rate=Decimal("1"), accrued_fee=Decimal("0"),
+        last_fee_settled_at=datetime.now(UTC), created_at=datetime.now(UTC),
     )
     base.update(overrides)
     return StorageLocker(**base)
@@ -416,7 +424,15 @@ class TestDepositGuards:
 
 @pytest.mark.unit
 class TestDepositLockOrder:
-    def test_locker_locked_before_player_before_ship(self) -> None:
+    def test_locker_locked_before_player_before_settle_before_ship(self) -> None:
+        """WO-STORE-FEE-ACCRUAL: settle_fee's own internal re-lock of the
+        Locker row (a harmless idempotent re-acquire, same session) now
+        sits between deposit_cargo's own Player lock and its Ship lock --
+        settle_fee doesn't lock Player here because this is a fresh
+        locker with zero prior stored units (no rent owed yet), so its
+        own Player-lock branch never fires. See the sibling test below
+        for the WITH-stored-units case, where settle_fee's Player lock
+        also appears."""
         contract = _contract(quantity=100)
         player = _player(id=uuid.uuid4())
         contract.acceptor_player_id = player.id
@@ -426,7 +442,30 @@ class TestDepositLockOrder:
 
         storage_service.deposit_cargo(db, locker.id, player.id, 10)
 
-        assert db.for_update_calls == ["StorageLocker", "Player", "Ship"]
+        assert db.for_update_calls == ["StorageLocker", "Player", "StorageLocker", "Ship"]
+
+    def test_settle_fee_locks_locker_then_player_when_rent_is_owed(self) -> None:
+        """The full lock chain when settle_fee's OWN Player-lock branch
+        fires (stored_units > 0, some rent genuinely owed): deposit_
+        cargo's Locker -> deposit_cargo's Player -> settle_fee's Locker
+        (re-lock) -> settle_fee's Player (re-lock, to charge the fee) ->
+        deposit_cargo's Ship."""
+        contract = _contract(quantity=100)
+        player = _player(id=uuid.uuid4(), credits=1000)
+        contract.acceptor_player_id = player.id
+        player.current_port_id = contract.destination_station_id
+        locker = _locker(
+            contract, player.id,
+            last_fee_settled_at=datetime.now(UTC) - timedelta(days=1),
+        )
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        # A prior deposit already sitting in the locker -- something for
+        # the elapsed day of rent to actually apply to.
+        db.deposits = [_deposit(locker, quantity=20, deposited_by=player.id)]
+
+        storage_service.deposit_cargo(db, locker.id, player.id, 10)
+
+        assert db.for_update_calls == ["StorageLocker", "Player", "StorageLocker", "Player", "Ship"]
 
 
 # --- complete-on-full: the cargo-bridge delegation to contract_service ----- #
@@ -562,3 +601,300 @@ class TestCompleteOnFullQuantity:
         # Net-zero holds even in the over-capacity case: nothing left
         # over from the phantom injection once complete() decrements it.
         assert player.current_ship.cargo["contents"]["ore"] == 0
+
+
+# --- WO-STORE-FEE-ACCRUAL: settle_fee -------------------------------------- #
+
+@pytest.mark.unit
+class TestSettleFee:
+    def test_fee_is_units_times_rate_times_days(self) -> None:
+        contract = _contract()
+        player = _player(id=uuid.uuid4(), credits=1000)
+        contract.acceptor_player_id = player.id
+        locker = _locker(
+            contract, player.id, rent_rate=Decimal("1"),
+            last_fee_settled_at=datetime.now(UTC) - timedelta(days=2),
+        )
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        db.deposits = [_deposit(locker, quantity=30, deposited_by=player.id)]
+
+        result = storage_service.settle_fee(db, locker.id)
+
+        # 30 units x 1cr/unit/day x 2 days = 60 credits.
+        assert result["fee_charged"] == 60
+        assert player.credits == 1000 - 60
+        assert locker.accrued_fee == Decimal("60")
+
+    def test_fractional_cents_floor_not_half_up_the_remainder_stays_pending(self) -> None:
+        """D18 (continuous-accrue-and-round-once) supersedes this WO's
+        original per-period ROUND_HALF_UP design: 100 units x
+        0.015cr/unit/day x 1 day = 1.50 credits exactly (already whole
+        cents via _round_credits). Only the WHOLE credit already crossed
+        (floor(1.50) - floor(0) = 1) is charged THIS call -- it is NOT
+        bumped up to 2. The 0.50 remainder isn't lost: it stays pending
+        in the ledger (accrued_fee == 1.50) for a future settlement to
+        eventually cross."""
+        contract = _contract()
+        player = _player(id=uuid.uuid4(), credits=1000)
+        contract.acceptor_player_id = player.id
+        locker = _locker(
+            contract, player.id, rent_rate=Decimal("0.015"),
+            last_fee_settled_at=datetime.now(UTC) - timedelta(days=1),
+        )
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        db.deposits = [_deposit(locker, quantity=100, deposited_by=player.id)]
+
+        result = storage_service.settle_fee(db, locker.id)
+
+        assert result["fee_charged"] == 1
+        assert player.credits == 999
+        assert locker.accrued_fee == Decimal("1.50")
+
+    def test_resettle_at_the_same_instant_is_a_noop(self) -> None:
+        contract = _contract()
+        player = _player(id=uuid.uuid4(), credits=1000)
+        contract.acceptor_player_id = player.id
+        locker = _locker(
+            contract, player.id, last_fee_settled_at=datetime.now(UTC) - timedelta(days=1),
+        )
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        db.deposits = [_deposit(locker, quantity=10, deposited_by=player.id)]
+
+        fixed_now = locker.last_fee_settled_at + timedelta(days=1)
+        r1 = storage_service.settle_fee(db, locker.id, now=fixed_now)
+        assert r1["fee_charged"] == 10  # 10 units x 1cr x 1 day
+        credits_after_first_settle = player.credits
+
+        # Re-settle at the EXACT same instant -- zero elapsed time.
+        r2 = storage_service.settle_fee(db, locker.id, now=fixed_now)
+
+        assert r2["fee_charged"] == 0
+        assert r2["days_settled"] == 0
+        assert player.credits == credits_after_first_settle  # untouched -- no double-charge
+
+    def test_credits_floor_at_zero_forgives_the_shortfall(self) -> None:
+        """Matches contract_service.abandon()'s own floor-and-forgive
+        convention -- the player pays what they can down to 0, the
+        shortfall is simply forgiven, never tracked as debt. D18
+        supersedes this WO's original design on ONE point: accrued_fee
+        is now the continuous THEORETICAL ledger (not "only what was
+        actually collected") -- it advances to the FULL 50 regardless of
+        the floor-and-forgive below, so the forgiven 45 is genuinely
+        forgiven and is never re-billed on a later settle."""
+        contract = _contract()
+        player = _player(id=uuid.uuid4(), credits=5)
+        contract.acceptor_player_id = player.id
+        locker = _locker(
+            contract, player.id, rent_rate=Decimal("1"),
+            last_fee_settled_at=datetime.now(UTC) - timedelta(days=5),
+        )
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        db.deposits = [_deposit(locker, quantity=10, deposited_by=player.id)]
+
+        result = storage_service.settle_fee(db, locker.id)
+
+        # Theoretical fee: 10 units x 1cr x 5 days = 50 -- far more than
+        # the player's 5 credits.
+        assert result["fee_charged"] == 5
+        assert player.credits == 0
+        assert locker.accrued_fee == Decimal("50")
+
+    def test_forgiven_shortfall_is_never_re_billed_on_a_later_settle(self) -> None:
+        """The other half of the floor-and-forgive-is-genuine invariant:
+        once a whole-credit boundary is crossed and partially forgiven,
+        a LATER settle (even with the player now flush with credits)
+        must not re-attempt collecting the forgiven remainder -- only
+        NEWLY-crossed boundaries from the new period are ever charged."""
+        contract = _contract()
+        player = _player(id=uuid.uuid4(), credits=5)
+        contract.acceptor_player_id = player.id
+        anchor = datetime.now(UTC) - timedelta(days=5)
+        locker = _locker(contract, player.id, rent_rate=Decimal("1"), last_fee_settled_at=anchor)
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        db.deposits = [_deposit(locker, quantity=10, deposited_by=player.id)]
+
+        # First settle: theoretical 50, only 5 collectible -- forgiven.
+        r1 = storage_service.settle_fee(db, locker.id, now=anchor + timedelta(days=5))
+        assert r1["fee_charged"] == 5
+        assert player.credits == 0
+
+        # Player comes into money, and a full day passes with the SAME
+        # 10 units still stored -- a second, genuinely NEW 10cr owed.
+        player.credits = 1000
+        r2 = storage_service.settle_fee(db, locker.id, now=anchor + timedelta(days=6))
+
+        # Only the NEW day's 10cr is charged -- the earlier forgiven 45
+        # never resurfaces as a hidden debt.
+        assert r2["fee_charged"] == 10
+        assert player.credits == 990
+        assert locker.accrued_fee == Decimal("60")  # 50 (forgiven) + 10 (new)
+
+    def test_no_stored_units_advances_anchor_without_charging(self) -> None:
+        contract = _contract()
+        player = _player(id=uuid.uuid4(), credits=1000)
+        contract.acceptor_player_id = player.id
+        original_anchor = datetime.now(UTC) - timedelta(days=3)
+        locker = _locker(contract, player.id, last_fee_settled_at=original_anchor)
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        # No deposits at all -- empty locker.
+
+        result = storage_service.settle_fee(db, locker.id)
+
+        assert result["fee_charged"] == 0
+        assert player.credits == 1000  # untouched
+        assert locker.last_fee_settled_at > original_anchor  # anchor still advanced
+        # The empty-locker branch never needs to lock Player at all.
+        assert "Player" not in db.for_update_calls
+
+    def test_settle_locks_locker_then_player_when_rent_is_owed(self) -> None:
+        contract = _contract()
+        player = _player(id=uuid.uuid4(), credits=1000)
+        contract.acceptor_player_id = player.id
+        locker = _locker(
+            contract, player.id, last_fee_settled_at=datetime.now(UTC) - timedelta(days=1),
+        )
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        db.deposits = [_deposit(locker, quantity=10, deposited_by=player.id)]
+
+        storage_service.settle_fee(db, locker.id)
+
+        assert db.for_update_calls == ["StorageLocker", "Player"]
+
+    def test_settle_fee_locker_not_found_404s(self) -> None:
+        db = _FakeSession()
+        with pytest.raises(StorageNotFoundError):
+            storage_service.settle_fee(db, uuid.uuid4())
+
+    def test_d18_salami_slicing_closed_tiny_periods_eventually_charge(self) -> None:
+        """D18's whole reason to exist: the 1-unit-top-off script -- many
+        settle calls, each individually well under a whole credit
+        (0.30cr/day here), used to round to 0 FOREVER under the old
+        per-period rounding. Under continuous-accrue-and-round-once, the
+        ledger keeps every fractional contribution, so the 4th call
+        (cumulative 1.20) finally crosses the first whole-credit
+        boundary and charges it."""
+        contract = _contract()
+        player = _player(id=uuid.uuid4(), credits=1000)
+        contract.acceptor_player_id = player.id
+        anchor = datetime.now(UTC)
+        locker = _locker(
+            contract, player.id, rent_rate=Decimal("0.30"), last_fee_settled_at=anchor,
+        )
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        db.deposits = [_deposit(locker, quantity=1, deposited_by=player.id)]
+
+        charges = []
+        for day in range(1, 5):
+            result = storage_service.settle_fee(db, locker.id, now=anchor + timedelta(days=day))
+            charges.append(result["fee_charged"])
+
+        assert charges == [0, 0, 0, 1]  # never evades forever -- the 4th call crosses 1.20
+        assert player.credits == 999
+        assert locker.accrued_fee == Decimal("1.20")
+
+    def test_d18_no_per_trip_minimum_tax_on_a_legit_multi_trip_settlement(self) -> None:
+        """The other half of D18's guard: a legitimate multi-trip
+        fulfillment must NOT be charged a >=1cr minimum on every single
+        settlement. Three periods at 0.50cr each (1.50cr theoretical
+        total) charge exactly 1 credit total across all three calls --
+        never 3 (one minimum-charge per trip)."""
+        contract = _contract()
+        player = _player(id=uuid.uuid4(), credits=1000)
+        contract.acceptor_player_id = player.id
+        anchor = datetime.now(UTC)
+        locker = _locker(
+            contract, player.id, rent_rate=Decimal("0.50"), last_fee_settled_at=anchor,
+        )
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        db.deposits = [_deposit(locker, quantity=1, deposited_by=player.id)]
+
+        charges = []
+        for day in range(1, 4):
+            result = storage_service.settle_fee(db, locker.id, now=anchor + timedelta(days=day))
+            charges.append(result["fee_charged"])
+
+        assert charges == [0, 1, 0]  # NOT [1, 1, 1] -- no per-call minimum tax
+        assert sum(charges) == 1
+        assert player.credits == 999
+        assert locker.accrued_fee == Decimal("1.50")
+
+    def test_stored_units_override_bills_the_pre_deposit_count(self) -> None:
+        """The parameter D17's deferred-settle call in deposit_cargo
+        relies on: when supplied, stored_units_override wins over the
+        live _stored_units() query entirely -- proven here by a locker
+        whose ACTUAL live deposits (30) differ from the override (5),
+        confirming the override -- not the live count -- drives the
+        charge."""
+        contract = _contract()
+        player = _player(id=uuid.uuid4(), credits=1000)
+        contract.acceptor_player_id = player.id
+        locker = _locker(
+            contract, player.id, rent_rate=Decimal("1"),
+            last_fee_settled_at=datetime.now(UTC) - timedelta(days=1),
+        )
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        db.deposits = [_deposit(locker, quantity=30, deposited_by=player.id)]  # live count: 30
+
+        result = storage_service.settle_fee(db, locker.id, stored_units_override=5)
+
+        # 5 (override) x 1cr x 1 day = 5 -- NOT 30 x 1cr x 1 day = 30.
+        assert result["fee_charged"] == 5
+        assert player.credits == 995
+
+
+# --- WO-STORE-FEE-ACCRUAL: D17 payout-then-settle reorder ------------------ #
+
+@pytest.mark.unit
+class TestD17PayoutThenSettle:
+    def test_completion_payout_lands_before_the_final_rent_settle(self) -> None:
+        """The direct proof of the reorder: the player starts BROKE (0
+        credits), so a pre-payout settle would floor the whole fee to 0
+        and forgive it entirely. D17 settles AFTER contract_service.
+        complete()'s payout credits the player -- so the fee is
+        genuinely, fully collectible out of the money the player just
+        earned, not floored-and-forgiven at their poorest moment."""
+        contract = _contract(quantity=15, payment=Decimal("1000.00"))
+        player = _player(id=uuid.uuid4(), credits=0)
+        contract.acceptor_player_id = player.id
+        player.current_port_id = contract.destination_station_id
+        anchor = datetime.now(UTC) - timedelta(days=10)
+        locker = _locker(contract, player.id, rent_rate=Decimal("1"), last_fee_settled_at=anchor)
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        # 5 units already sitting in the locker for the full 10-day
+        # period -- a real 50cr rent bill by the time the final
+        # installment lands.
+        db.deposits = [_deposit(locker, quantity=5, deposited_by=player.id)]
+
+        result = storage_service.deposit_cargo(db, locker.id, player.id, 10)
+
+        assert result["completed"] is True
+        assert contract.status == ContractStatus.COMPLETED
+        # If settled BEFORE payout (the pre-D17 bug), fee_charged would
+        # floor to 0 (player had 0 credits) and player.credits would
+        # land at exactly 1000. D17 collects the full 50cr bill against
+        # the flush post-payout balance instead.
+        assert result["fee_charged"] == 50
+        assert player.credits == 1000 - 50
+
+    def test_final_installments_units_are_not_billed_for_storage_time_never_incurred(self) -> None:
+        """stored_units_override=old_stored_units (5, the pre-final-
+        deposit count) drives the settlement -- NOT the post-deposit
+        accumulated total (15). The final 10 units are bridged straight
+        back out by complete() the instant they arrive; billing them for
+        the 10-day period would charge rent on storage time that never
+        actually happened."""
+        contract = _contract(quantity=15, payment=Decimal("500.00"))
+        player = _player(id=uuid.uuid4(), credits=100)
+        contract.acceptor_player_id = player.id
+        player.current_port_id = contract.destination_station_id
+        anchor = datetime.now(UTC) - timedelta(days=10)
+        locker = _locker(contract, player.id, rent_rate=Decimal("1"), last_fee_settled_at=anchor)
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        db.deposits = [_deposit(locker, quantity=5, deposited_by=player.id)]
+
+        result = storage_service.deposit_cargo(db, locker.id, player.id, 10)
+
+        # 5 units (pre-existing) x 1cr x 10 days = 50 -- NOT 15 x 1 x 10
+        # = 150, which is what billing the post-deposit total would give.
+        assert result["fee_charged"] == 50
+        assert player.credits == 100 + 500 - 50
