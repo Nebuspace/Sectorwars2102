@@ -933,6 +933,18 @@ class GenesisService:
             tier_info["can_deploy"] = can_deploy
             tiers[tier_name] = tier_info
 
+        # Reputation gate (ADR-0088, GENESIS_MIN_REPUTATION above — the same
+        # bar enforced at acquisition in player.py's purchase_genesis_device
+        # and at deploy in _enforce_deploy_restrictions). Exposed here so the
+        # client can render the requirement BEFORE the player clicks "Acquire
+        # Device", instead of only surfacing it on the 400 the gate raises.
+        rep = player.personal_reputation or 0
+        reputation_gate = {
+            "required": GENESIS_MIN_REPUTATION,
+            "current": rep,
+            "met": rep >= GENESIS_MIN_REPUTATION,
+        }
+
         return {
             "purchases_this_week": purchases_this_week,
             "purchases_remaining": remaining,
@@ -942,6 +954,7 @@ class GenesisService:
             "ship_genesis_capacity": ship_capacity,
             "formation_hours": self.formation_hours,
             "tiers": tiers,
+            "reputation_gate": reputation_gate,
         }
 
     # ------------------------------------------------------------------ #

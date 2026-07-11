@@ -70,6 +70,15 @@ class FormationStatusResponse(BaseModel):
     is_usable: bool
 
 
+class ReputationGate(BaseModel):
+    """Federation reputation gate for genesis device acquisition/deploy
+    (ADR-0088). Lets the client render the requirement pre-click instead of
+    only surfacing it on the 400 the gate raises."""
+    required: int
+    current: int
+    met: bool
+
+
 class AvailablePurchasesResponse(BaseModel):
     """Response for available genesis device purchases."""
     purchases_this_week: int
@@ -80,6 +89,7 @@ class AvailablePurchasesResponse(BaseModel):
     ship_genesis_capacity: int
     formation_hours: int
     tiers: dict
+    reputation_gate: ReputationGate
 
 
 # ------------------------------------------------------------------ #
