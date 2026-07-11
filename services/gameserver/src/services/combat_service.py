@@ -710,9 +710,22 @@ class CombatService:
         if attacker_id == defender_id:
             return {"success": False, "message": "You cannot attack yourself"}
 
-        # Get players with row locks to prevent concurrent combat race conditions
-        attacker = self.db.query(Player).filter(Player.id == attacker_id).populate_existing().with_for_update().first()
-        defender = self.db.query(Player).filter(Player.id == defender_id).populate_existing().with_for_update().first()
+        # Get players with row locks to prevent concurrent combat race
+        # conditions -- locked in ASCENDING-ID order (mirrors bounty_
+        # service.place_bounty's :331-336 dual-lock convention, the same
+        # convention _load_two_players_for_update uses elsewhere) so two
+        # concurrent attack_player calls touching the same pair of players
+        # (P1->P2 and P2->P1, both ordinary "engage" clicks) can never
+        # acquire the pair in opposite order and deadlock. Previously locked
+        # in raw call-argument order (attacker-then-defender), which
+        # disagreed with every other dual-Player-lock site in this codebase
+        # and produced a live AB-BA deadlock under ordinary concurrent PvP.
+        if attacker_id < defender_id:
+            attacker = self.db.query(Player).filter(Player.id == attacker_id).populate_existing().with_for_update().first()
+            defender = self.db.query(Player).filter(Player.id == defender_id).populate_existing().with_for_update().first()
+        else:
+            defender = self.db.query(Player).filter(Player.id == defender_id).populate_existing().with_for_update().first()
+            attacker = self.db.query(Player).filter(Player.id == attacker_id).populate_existing().with_for_update().first()
 
         if not attacker or not defender:
             return {"success": False, "message": "Player not found"}

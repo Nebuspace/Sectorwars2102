@@ -456,23 +456,21 @@ def _no_hangar(monkeypatch):
 
 
 class TestAttackPlayerLockOrder:
-    def test_locks_players_in_call_argument_order_not_ascending_id(self) -> None:
-        """CRITICAL finding, empirically pinned: attack_player locks
-        attacker THEN defender in raw call-argument order (combat_service.
-        py:714-715) -- NOT the ascending-id convention every other dual-
+    def test_locks_players_in_ascending_id_order_not_call_argument_order(self) -> None:
+        """Regression proof for WO-COMBAT-DUAL-LOCK-ORDER: attack_player now
+        locks attacker and defender in ASCENDING-ID order (combat_service.py
+        ~:713-727), matching the ascending-id convention every other dual-
         Player-lock site in this codebase uses (bounty_service._load_two_
         players_for_update, contract_service._load_two_players_for_update,
-        bounty_service.place_bounty's own new branch). Chosen ids here have
+        bounty_service.place_bounty's own branch). Chosen ids here have
         attacker_id > defender_id specifically so "locks attacker first"
-        and "locks the lower id first" disagree -- proving this is call-
-        order, not id-order. Two players attacking each other in the same
-        instant (P1->P2 and P2->P1, both ordinary "engage" clicks, no
-        exploit needed) lock in OPPOSITE order across the two transactions
-        -- a live AB-BA deadlock on ordinary concurrent PvP combat, not a
-        security vector (Cipher's lane) or an artifact of this WO's 3
-        sites (this function is untouched by the current diff -- pre-
-        existing, surfaced by this WO's own cross-check instruction to
-        compare attack_player's ordering against npc_attack_player's)."""
+        and "locks the lower id first" disagree -- proving the acquisition
+        order tracks id, not call-argument position. Before this fix, two
+        players attacking each other in the same instant (P1->P2 and
+        P2->P1, both ordinary "engage" clicks, no exploit needed) locked in
+        OPPOSITE order across the two transactions -- a live AB-BA deadlock
+        on ordinary concurrent PvP combat. If this ever reverts to call-
+        argument order, that deadlock reopens."""
         low_id, high_id = sorted([uuid.uuid4(), uuid.uuid4()])
         attacker_ship = _ship(sid=uuid.uuid4())
         # ESCAPE_POD short-circuits cleanly at combat_service.py:758,
@@ -486,10 +484,13 @@ class TestAttackPlayerLockOrder:
 
         assert result == {"success": False, "message": "escape_pods_are_indestructible"}
         player_locks = [entry for entry in db.lock_log if entry[0] == "Player"]
-        assert player_locks == [("Player", high_id), ("Player", low_id)], (
-            f"attack_player locked {player_locks} -- expected attacker "
-            f"(the HIGHER id here) locked first, proving call-argument "
-            f"order, not the codebase's ascending-id convention."
+        assert player_locks == [("Player", low_id), ("Player", high_id)], (
+            f"attack_player locked {player_locks} -- expected the LOWER id "
+            f"(the defender here) locked first, proving ascending-id order, "
+            f"not raw call-argument order. A [(\"Player\", high_id), "
+            f"(\"Player\", low_id)] result here means this has reverted to "
+            f"the pre-fix call-argument order and the AB-BA deadlock is "
+            f"live again."
         )
 
 
