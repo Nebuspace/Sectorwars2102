@@ -704,8 +704,14 @@ class FleetService:
         Returns a dict with round results including damage dealt,
         ships destroyed/retreated, and remaining counts per side.
         """
-        # Lock battle row to prevent concurrent round simulation
-        battle = self.db.query(FleetBattle).filter(FleetBattle.id == battle_id).with_for_update().first()
+        # Lock battle row to prevent concurrent round simulation.
+        # populate_existing() forces this locked re-read to bypass the
+        # identity-map cache: the route pre-reads `battle` unlocked to
+        # authorize the caller before calling into this method, so without
+        # it this query would return the stale pre-lock object.
+        battle = self.db.query(FleetBattle).filter(
+            FleetBattle.id == battle_id
+        ).populate_existing().with_for_update().first()
         if not battle:
             raise ValueError(f"Battle {battle_id} not found")
 

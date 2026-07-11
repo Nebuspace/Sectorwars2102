@@ -785,9 +785,13 @@ def sweep_research_faucet(db: Session, planet: Planet, *, _via_settle: bool = Fa
 
         # Lock the owner LAST, and re-check first-sweep status under the lock
         # (another sweep/op may have stamped swept_at between the peek and here).
+        # populate_existing(): the request's own get_current_player load left this
+        # Player row UNLOCKED in the identity map; without a forced refresh here
+        # the locked re-read would silently return that stale cached object.
         player = (
             db.query(Player)
             .filter(Player.id == planet.owner_id)
+            .populate_existing()
             .with_for_update()
             .first()
         )
@@ -845,9 +849,12 @@ def sweep_research_faucet(db: Session, planet: Planet, *, _via_settle: bool = Fa
     # --- Steady-state per-planet drain --------------------------------------
     # Lock the owner in the SAME transaction as the held planet lock
     # (planet-then-player — shipped invariant).
+    # populate_existing(): same identity-map-staleness guard as the first-sweep
+    # branch above — the request's unlocked Player load must be refreshed here.
     player = (
         db.query(Player)
         .filter(Player.id == planet.owner_id)
+        .populate_existing()
         .with_for_update()
         .first()
     )

@@ -58,6 +58,8 @@ from datetime import datetime
 from typing import Any, Dict, List
 from uuid import uuid4
 
+import pytest
+
 from src.models.fleet import (
     Fleet, FleetMember, FleetBattle, FleetBattleCasualty,
     FleetRole, FleetStatus, BattlePhase,
@@ -96,6 +98,9 @@ class _FakeQuery:
         return self
 
     def with_for_update(self, *a, **k):
+        return self
+
+    def populate_existing(self, *a, **k):
         return self
 
     def _matching(self):
@@ -790,3 +795,151 @@ class TestFlagshipSuccession:
         svc, session = make_service()  # empty FleetMember pool
         result = svc._promote_flagship_successor(fleet, fallen_pilot_id=uuid4())
         assert result is None
+
+
+# --------------------------------------------------------------------------- #
+# WO-MONEY-STRAGGLER-NAIVE site 3/3 -- simulate_battle_round's battle lock
+# gained .populate_existing(): fleets.py:284 pre-reads `battle` UNLOCKED (to
+# authorize the caller) before ever calling into this method, populating the
+# session's identity map for that PK; the re-lock here is a SECOND query for
+# the SAME (FleetBattle, battle_id) on the SAME session, which SQLAlchemy's
+# with_for_update() alone will NOT refresh -- it hands back the stale cached
+# object. That stale object feeds two things this method treats as
+# authoritative: the double-simulation guard (`battle.ended_at`) and the
+# round-number derivation (`len(battle.battle_log) + 1`).
+# --------------------------------------------------------------------------- #
+
+class TestSimulateBattleRoundPopulateExistingGuard:
+    def test_populate_existing_precedes_with_for_update_in_source(self):
+        """Structural pin (mirrors test_trading_core_pins.py's
+        inspect.getsource technique): the battle-lock query must chain
+        .populate_existing() before .with_for_update() -- calling it after
+        (or omitting it) silently reopens the staleness hole with no
+        functional-test signal in a DB-free harness (see the class below's
+        own docstring on why _FakeQuery structurally can't detect this)."""
+        import inspect
+        source = inspect.getsource(FleetService.simulate_battle_round)
+        assert ".populate_existing().with_for_update()" in source, (
+            "simulate_battle_round's battle-lock query no longer chains "
+            ".populate_existing() immediately before .with_for_update() -- "
+            "this reopens the WO-MONEY-STRAGGLER-NAIVE site-3 stale-battle "
+            "lost-update (ended_at / battle_log read stale under a "
+            "concurrent double-fire)"
+        )
+
+    def test_real_sqlalchemy_identity_map_staleness_repro_and_fix(self):
+        """Real SQLAlchemy engine (SQLite, StaticPool + check_same_thread=
+        False so two Session() calls share one in-memory DB -- a second,
+        independently-committing session simulates a genuine concurrent
+        writer), mirroring test_storage_deposit_prelock_identity_map.py's
+        established idiom. Real FleetBattle carries a Postgres-only
+        dialects.postgresql.UUID primary key that blocks
+        Base.metadata.create_all() on SQLite entirely (same precedent that
+        file documents for Player) -- irrelevant here since this is pure
+        SQLAlchemy identity-map/Session mechanics, independent of which
+        mapped class or columns are involved. Mirrors the exact two fields
+        simulate_battle_round treats as authoritative post-lock: ended_at
+        (the double-simulation guard) and battle_log (round-number
+        derivation) -- proves both the BROKEN shape (no populate_existing)
+        and the FIX (with populate_existing, matching the real chain) in
+        one row."""
+        import sqlalchemy as sa
+        from sqlalchemy.orm import declarative_base, sessionmaker
+        from sqlalchemy.pool import StaticPool
+
+        Base = declarative_base()
+
+        class MirrorFleetBattle(Base):
+            __tablename__ = "mirror_fleet_battles"
+            id = sa.Column(sa.Integer, primary_key=True)
+            ended_at = sa.Column(sa.DateTime, nullable=True)
+            battle_log = sa.Column(sa.JSON, default=list)
+
+        def session_factory():
+            engine = sa.create_engine(
+                "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool,
+            )
+            Base.metadata.create_all(engine)
+            return sessionmaker(bind=engine)
+
+        # -- BROKEN shape: no populate_existing() -> stale read. -----------
+        SessionFactory = session_factory()
+        seed = SessionFactory()
+        seed.add(MirrorFleetBattle(id=1, ended_at=None, battle_log=[{"round": 1}]))
+        seed.commit()
+        seed.close()
+
+        poisoned = SessionFactory()
+        # fleets.py:284's unlocked pre-read, on the same session.
+        pre_check = poisoned.query(MirrorFleetBattle).filter(MirrorFleetBattle.id == 1).first()
+        assert pre_check.ended_at is None
+
+        # A concurrent round-simulation genuinely ends the battle and
+        # appends to the log in a DIFFERENT session/transaction.
+        concurrent = SessionFactory()
+        row = concurrent.query(MirrorFleetBattle).filter(MirrorFleetBattle.id == 1).first()
+        row.ended_at = datetime(2026, 1, 1)
+        row.battle_log = [{"round": 1}, {"round": 2}]
+        concurrent.commit()
+        concurrent.close()
+
+        # The "locked" re-read -- SAME session, SAME PK, no populate_existing.
+        stale = (
+            poisoned.query(MirrorFleetBattle).filter(MirrorFleetBattle.id == 1)
+            .with_for_update().first()
+        )
+        assert stale is pre_check  # identity map: same cached Python object
+        assert stale.ended_at is None  # STALE -- double-simulation guard blind
+        assert stale.battle_log == [{"round": 1}]  # STALE -- wrong round number
+        poisoned.close()
+
+        # -- THE FIX: populate_existing() chained before with_for_update(),
+        # matching fleet_service.simulate_battle_round's real chain. -------
+        SessionFactory2 = session_factory()
+        seed2 = SessionFactory2()
+        seed2.add(MirrorFleetBattle(id=1, ended_at=None, battle_log=[{"round": 1}]))
+        seed2.commit()
+        seed2.close()
+
+        fixed = SessionFactory2()
+        pre_check2 = fixed.query(MirrorFleetBattle).filter(MirrorFleetBattle.id == 1).first()
+        assert pre_check2.ended_at is None
+
+        concurrent2 = SessionFactory2()
+        row2 = concurrent2.query(MirrorFleetBattle).filter(MirrorFleetBattle.id == 1).first()
+        row2.ended_at = datetime(2026, 1, 1)
+        row2.battle_log = [{"round": 1}, {"round": 2}]
+        concurrent2.commit()
+        concurrent2.close()
+
+        fresh = (
+            fixed.query(MirrorFleetBattle).filter(MirrorFleetBattle.id == 1)
+            .populate_existing().with_for_update().first()
+        )
+        assert fresh is pre_check2  # populate_existing refreshes in place
+        assert fresh.ended_at == datetime(2026, 1, 1)  # FRESH -- guard sees it
+        assert fresh.battle_log == [{"round": 1}, {"round": 2}]  # FRESH round #
+        fixed.close()
+
+    def test_double_simulation_guard_holds_through_the_real_method(self):
+        """Functional (DB-free) coverage of simulate_battle_round's own
+        guard, through the ACTUAL production method -- not a restatement.
+        _FakeQuery has no identity map at all (it re-derives from the live,
+        mutable pool on every call, see the class docstring above), so it
+        cannot reproduce the staleness itself -- that's the real-SQLAlchemy
+        test above's job. This proves the guard's PLAIN behavior (an ended
+        battle refuses a second round) is unbroken by the populate_existing()
+        chain -- the .populate_existing() no-op stub added for this WO must
+        not change this method's observable outcome for the ordinary,
+        uncontended path."""
+        attacker_fleet = make_fleet()
+        defender_fleet = make_fleet()
+        svc, session = make_service()
+        battle = make_battle(
+            attacker_fleet=attacker_fleet, defender_fleet=defender_fleet, battle_log=[{"round": 1}],
+        )
+        battle.ended_at = datetime(2026, 1, 1)
+        session._pools[FleetBattle] = [battle]
+
+        with pytest.raises(ValueError, match="already ended"):
+            svc.simulate_battle_round(battle.id)

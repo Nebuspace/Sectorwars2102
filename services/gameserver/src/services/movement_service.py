@@ -2355,6 +2355,25 @@ class MovementService:
         except Exception as e:
             logger.error("Exploration medal dispatch hook failed during movement: %s", e)
 
+        # WO-MONEY-STRAGGLER-NAIVE follow-up: _detonate_sector_mines above
+        # mutates destination_sector.defenses IN-MEMORY (mine count,
+        # mine_owner_id) before this point, on a session opened
+        # autoflush=False (core/database.py:19) -- unflushed on a REPEAT
+        # visit (the ARIA exploration-map hook's only self.db.flush(), :2314,
+        # sits inside its first-visit-only branch and does not fire here).
+        # _update_player_presence's Sector lock now carries
+        # .populate_existing() (closes the players_present identity-map
+        # staleness this same WO fixed), which would otherwise DISCARD that
+        # unflushed mine-detonation mutation on the locked re-read. Flushing
+        # here, immediately before the presence-lock call, persists it (and
+        # any other pending pre-lock Sector mutation from the hooks above)
+        # first, so the populate_existing re-read picks it up fresh instead
+        # of reverting it. Same transaction -- this method still owns the
+        # eventual commit below -- so this is not a premature commit, only
+        # an earlier flush. Mirrors bounty_service.collect_bounty's
+        # WO-BOUNTY-COLLECT-FLUSH precedent for the identical class of bug.
+        self.db.flush()
+
         # Updates player's presence in sector records
         self._update_player_presence(player, old_sector_id, destination_sector_id)
 
@@ -2414,6 +2433,7 @@ class MovementService:
             row = (
                 self.db.query(Sector)
                 .filter(Sector.sector_id == sid)
+                .populate_existing()
                 .with_for_update()
                 .first()
             )
