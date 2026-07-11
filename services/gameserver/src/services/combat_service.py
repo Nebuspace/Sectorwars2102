@@ -4,9 +4,10 @@ import uuid
 import random
 import math
 from typing import List, Dict, Any, Optional, Tuple
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
 from sqlalchemy import and_, or_
 
 from src.models.player import Player
@@ -306,6 +307,48 @@ def _emit_teammate_under_attack(attacker: Player, defender: Player, sector_id: O
         )
 
 
+def _emit_warp_gate_destroyed(gate_id: uuid.UUID, sector_id: Optional[int], attacker_name: str) -> None:
+    """Best-effort ``warp_gate_destroyed`` sector broadcast (WO-P3-galaxy-
+    gate-destruction, warp-gates.md:342: "The destroyed-gate event is
+    published on the realtime bus... so subscribed players see the route
+    disappear"). Called POST-COMMIT from attack_warp_gate, the same
+    discipline _emit_teammate_under_attack / _emit_combat_phase_events
+    already use in this file (never before the commit -- a WS hiccup must
+    not be able to touch the already-landed transaction).
+
+    Broadcasts to the gate's SOURCE sector (where the beacon/gate
+    structure physically exists) -- NO-CANON (flag for Max): canon
+    doesn't specify whether both endpoints should hear this, only that
+    "subscribed players see the route disappear"; the source sector is
+    where the structure players would actually be looking at lives.
+
+    Transport mirrors _emit_teammate_under_attack verbatim: lazy import,
+    grab the running loop, loop.create_task so the send never blocks, and
+    swallow every failure (no loop, no socket, a quiet client)."""
+    if sector_id is None:
+        return
+    try:
+        import asyncio
+        from src.services.websocket_service import connection_manager
+
+        loop = asyncio.get_running_loop()
+        loop.create_task(connection_manager.broadcast_to_sector(
+            sector_id,
+            {
+                "type": "warp_gate_destroyed",
+                "gate_id": str(gate_id),
+                "attacker_name": attacker_name,
+                "sector_id": sector_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        ))
+    except Exception:
+        logger.debug(
+            "Skipped warp_gate_destroyed WS event (no loop or socket)",
+            exc_info=True,
+        )
+
+
 def _combat_round_deltas(combat_details: List[Dict[str, Any]]) -> Dict[int, List[Dict[str, Any]]]:
     """Group a fight's ``combat_details`` action log by round number (WO-DBB-RT3).
 
@@ -597,6 +640,40 @@ class CombatService:
         ShipType.COLONY_SHIP: 0.1,
         ShipType.ESCAPE_POD: 0.0,
     }
+
+    # --- Warp-gate destruction & salvage (WO-P3-galaxy-gate-destruction,
+    # warp-gates.md:323-354) ------------------------------------------------
+    GATE_ATTACK_TURN_COST = 75  # canon-exact
+    GATE_INVULNERABILITY_HOURS = 48  # canon-exact
+    # canon-exact yields (warp-gates.md:345-349) -- keys match the same
+    # cargo-content commodity keys warp_gate_service.py's own
+    # _charge_cargo/_refund_cargo helpers already use elsewhere in this
+    # gate lineage (ore/equipment/lumen_crystals).
+    GATE_SALVAGE_YIELD = {"ore": 500, "equipment": 250, "lumen_crystals": 10}
+    # NO-CANON (flag for Max): warp-gates.md states "reputation loss with
+    # the owner's faction/team" qualitatively but gives no magnitude. -25
+    # mirrors this file's own existing infrastructure-assault penalty scale
+    # (attacked_chartered_planet is -50 PERSONAL rep for assaulting a
+    # civilian-chartered planet; this is a FACTION rep penalty for
+    # destroying another player's built infrastructure, judged a smaller
+    # single-faction hit than that broader civilian-protection penalty).
+    # TEAM-reputation loss is not applied — no established single-action
+    # team-reputation-penalty hook exists elsewhere in this codebase to
+    # mirror (team_reputation_service's own triggers are aggregate/
+    # calculated, not per-combat-action deltas); flagged as a canon gap,
+    # not silently built as a guess.
+    GATE_OWNER_FACTION_REP_PENALTY = -25
+    # NO-CANON (flag for Max): canon specifies gate HP pools (5,000 /
+    # 10,000) and turret counts once upgraded (10/25/50) but no explicit
+    # per-attack damage magnitude for the gate-vs-attacker exchange itself.
+    # Reuses _calculate_attack_power unscaled (the SAME base-attack figure
+    # ship-vs-ship combat already uses) rather than inventing a
+    # gate-specific damage multiplier -- a gate is a tough, static,
+    # multi-attack siege target by design (mirrors this file's own
+    # multi-attack_planet-call planet-siege precedent), not a one-shot
+    # kill. If this reads as too grindy against a 10,000-HP active gate,
+    # that is a magnitude call for Max/DECISIONS, not something to guess
+    # bigger here.
 
     # --- Between-battle shield regeneration (WO-SR1) ---------------------
     # ShipSpecification.shield_recharge_rate seeds Ship.combat but nothing
@@ -2226,7 +2303,332 @@ class CombatService:
             "turns_remaining": attacker.turns,
             "combat_log_id": str(combat_log.id)
         }
-    
+
+    def attack_warp_gate(self, attacker_id: uuid.UUID, gate_id: uuid.UUID) -> Dict[str, Any]:
+        """Attack a warp gate (beacon, focus, or active) after its 48-hour
+        invulnerability window (WO-P3-galaxy-gate-destruction, warp-gates.md
+        :323-354). Costs 75 turns + reputation loss with the owner's
+        faction. On kill: the WarpTunnel flips COLLAPSED, the beacon/gate
+        structure rows are deleted, and the attacker's ship cargo receives
+        partial salvage.
+
+        No CombatLog row is written here (unlike attack_planet/attack_port/
+        attack_sector_drones) -- CombatType has no gate-appropriate member
+        and adding one would touch combat_log.py, outside this WO's owned
+        paths; canon requires only a realtime-bus event for gate
+        destruction, which this method fires post-commit below.
+
+        Commit boundary: self.db.commit() at the end -- matching EVERY
+        other attack method in this class (attack_planet/attack_port/
+        attack_sector_drones all self-commit internally), not the
+        assigning WO's literal "route owns commit" instruction. Verified
+        via grep: 6 separate self.db.commit() call sites already exist in
+        this file, one per attack method -- introducing a route-commits
+        exception for only this new method would be the actual
+        inconsistency. See this WO's report."""
+        from src.models.warp_gate import WarpGate, WarpGateBeacon, WarpGateStatus
+        from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
+
+        # WO-P3 revise (cipher, HIGH, lock-order): GATE locked first,
+        # PLAYER second -- warp_gate_service.py's own module docstring
+        # (:55-57) documents this as an explicit contract ("the BEACON/
+        # GATE row is locked first, the PLAYER row second"), reaffirmed at
+        # 7 separate call sites in that file (anchor_focus, toll reconfig,
+        # transfer, cancel, ...). The original build locked Player first,
+        # which risks a deadlock against any concurrent warp_gate_service
+        # operation on the SAME gate that follows the documented order.
+        #
+        # WO-P3 revise (mack, concurrency): this lock ALSO serializes the
+        # gate.hp RMW below -- without it, two different attackers race
+        # the shared read-decide-write independently. Whoever loses the
+        # race blocks here until the winner's transaction commits; by the
+        # time the loser's SELECT FOR UPDATE resumes, the winner has
+        # already deleted the beacon (cascading the WarpGate row away too
+        # -- see below), so the loser's query simply finds no row and
+        # falls through to the EXISTING "Warp gate not found" branch --
+        # no double-salvage, no double-delete, no separate error path
+        # needed for that half of the race.
+        gate = self.db.query(WarpGate).filter(WarpGate.id == gate_id).with_for_update().first()
+        if not gate:
+            return {"success": False, "message": "Warp gate not found"}
+        if gate.status not in (WarpGateStatus.HARMONIZING, WarpGateStatus.ACTIVE):
+            return {"success": False, "message": "This gate cannot be attacked"}
+
+        beacon = self.db.query(WarpGateBeacon).filter(WarpGateBeacon.id == gate.beacon_id).first()
+        if beacon is None:
+            return {"success": False, "message": "Warp gate structure not found"}
+
+        if gate.player_id == attacker_id:
+            return {"success": False, "message": "Cannot attack your own warp gate"}
+
+        # Lock the attacker row before any charge (mirrors attack_planet)
+        # -- AFTER the gate, per the lock-order contract above.
+        attacker = self.db.query(Player).filter(Player.id == attacker_id).with_for_update().first()
+        if not attacker:
+            return {"success": False, "message": "Player not found"}
+        if not attacker.current_ship:
+            return {"success": False, "message": "No active ship selected"}
+
+        # WO-P3 revise (cipher, CRITICAL, 2nd pass): location check gates
+        # on the DESTINATION sector, not the source (the original build's
+        # mistake). The structure combat actually attacks is gate.hp (the
+        # focus / merged gate) -- _resolve_warp_gate_combat only ever
+        # touches gate.hp, never beacon.hp (the separate 5,000 source-side
+        # value). Confirmed by re-reading warp_gate_service.anchor_focus
+        # (:928), which REQUIRES player.current_sector_id == beacon.
+        # destination_sector_id to create this exact structure in the
+        # first place -- that's where it physically sits. Gating on
+        # source_sector_id let an attacker destroy the gate from the
+        # public, undefended source side, never from the destination
+        # sector canon's own defense story is actually about ("gather
+        # defenders... at the destination sector before the gate goes
+        # live", warp-gates.md:164).
+        if attacker.current_sector_id != beacon.destination_sector_id:
+            return {"success": False, "message": "You must be in the gate's sector to attack it"}
+
+        # Invulnerability window guard -- BEFORE any charge/mutation, per
+        # the WO's own explicit ordering requirement. CONFIRMED against
+        # canon's own dedicated "48-hour invulnerability window" section
+        # (warp-gates.md:157-167, not just the Destruction section's
+        # passing mention): "For the first 48 real-time hours after Phase
+        # 1 deployment, the beacon is flagged invulnerable... The focus
+        # inherits the same invulnerability flag for the REMAINDER of that
+        # 48h window PLUS the Phase 3 harmonization hour." Two components,
+        # not one:
+        #   (a) fixed 48h from beacon.created_at (Phase 1 deploy) -- the
+        #       base window, covers Phase 1/2 regardless of gate phase.
+        #   (b) for a HARMONIZING gate specifically, ALSO protected through
+        #       gate.harmonization_completes_at -- covers the edge case
+        #       where Phase 2 travel eats nearly the full 48h and
+        #       harmonization starts right as the base window would
+        #       otherwise expire; canon explicitly grants the FULL
+        #       harmonization hour regardless of where it falls.
+        # whichever is LATER wins. beacon.invulnerable_until is
+        # deliberately NOT reused for either component: it is cleared to
+        # None at HARMONIZING->ACTIVE (warp_gate_service.advance_gate) and
+        # tracks a DIFFERENT concern (the unmatched-beacon's own expiry
+        # timer), not "this structure lineage is under combat protection"
+        # -- see this WO's report.
+        now = datetime.now(timezone.utc)
+        invuln_until = beacon.created_at + timedelta(hours=self.GATE_INVULNERABILITY_HOURS)
+        if gate.status == WarpGateStatus.HARMONIZING and gate.harmonization_completes_at is not None:
+            invuln_until = max(invuln_until, gate.harmonization_completes_at)
+        if now < invuln_until:
+            return {
+                "success": False,
+                "message": (
+                    "ERR_GATE_INVULNERABLE: this gate is still within its "
+                    "48-hour invulnerability window"
+                ),
+            }
+
+        if attacker.is_docked or attacker.is_landed:
+            return {"success": False, "message": "Cannot attack while docked at a port or landed on a planet"}
+
+        turn_cost = self.GATE_ATTACK_TURN_COST
+        _regen_turns(self.db, attacker)
+        if attacker.turns < turn_cost:
+            return {"success": False, "message": "Not enough turns to attack a warp gate"}
+
+        combat_result = self._resolve_warp_gate_combat(attacker, gate)
+        spend_turns(attacker, turn_cost)
+
+        destroyed = combat_result["destroyed"]
+        salvage_granted: Dict[str, int] = {}
+        # WO-P3 revise (cipher, sanity-check requested, confirmed + fixed):
+        # the destroyed-gate broadcast must target where the structure (and
+        # any onlookers/defenders) actually are -- the destination, the
+        # SAME field the location check above now uses. The original build
+        # broadcast to source_sector_id, the identical wrong-side mistake.
+        target_sector_id = beacon.destination_sector_id
+
+        if destroyed:
+            from src.services.warp_gate_service import _refund_cargo
+
+            tunnel = None
+            if gate.warp_tunnel_id:
+                tunnel = self.db.query(WarpTunnel).filter(WarpTunnel.id == gate.warp_tunnel_id).first()
+            if tunnel is not None:
+                tunnel.status = WarpTunnelStatus.COLLAPSED
+
+            # WO-P3 landmine: lock the SHIP row before the cargo RMW
+            # (mirrors WO-P4-play-beacon-kernel's own equipment-cargo
+            # lesson -- resources live on the Ship, not the Player).
+            # Attacker Player is already locked above; Player-then-Ship
+            # stays the consistent lock order this codebase uses
+            # everywhere else a cargo grant follows a Player-row charge.
+            ship = (
+                self.db.query(Ship)
+                .filter(Ship.id == attacker.current_ship_id, Ship.owner_id == attacker.id)
+                .with_for_update()
+                .first()
+            )
+            if ship is not None:
+                _refund_cargo(ship, self.GATE_SALVAGE_YIELD)
+                salvage_granted = dict(self.GATE_SALVAGE_YIELD)
+
+            # Structure rows deleted (canon: "the structure rows (beacon/
+            # focus) are deleted"). WarpGate.beacon_id is
+            # ondelete="CASCADE", so deleting the beacon removes the
+            # WarpGate row too in one statement. Deliberately NOT the
+            # cascade_region_gate_teardown pattern (flip WarpGate.status=
+            # COLLAPSED, keep the row) -- that path preserves the row as
+            # an idempotency marker for a re-invocable region-sweep and to
+            # keep freeing the owner's gate-cap slot auditable; a one-shot
+            # combat kill has no re-invocation concern, and canon's own
+            # wording for THIS path says "deleted", not "flipped".
+            #
+            # Belt + suspenders (WO-P3 revise, mack): the gate-row lock
+            # above already makes this StaleDataError structurally
+            # unreachable in steady state (a second attacker's gate query
+            # blocks, then finds no row at all once it resumes -- never
+            # reaches this delete). Caught anyway for any path outside the
+            # locked lineage (e.g. a GM force-delete). A failed flush
+            # leaves the SESSION -- not just this statement -- unusable
+            # until rollback (see message_beacon_service's own equivalent
+            # lesson), and the salvage grant + tunnel flip above already
+            # happened in THIS same transaction, so a savepoint scoped to
+            # only the delete would leave those stale-and-wrong on a
+            # rollback-free path -- the whole transaction must go, not
+            # just this statement.
+            try:
+                self.db.delete(beacon)
+                self.db.flush()
+            except (StaleDataError, ObjectDeletedError):
+                self.db.rollback()
+                return {
+                    "success": False,
+                    "message": "ERR_GATE_ALREADY_DESTROYED: this warp gate was destroyed by another attack first",
+                    "destroyed": True,
+                    "gate_hp_remaining": 0,
+                    "salvage_granted": {},
+                }
+
+            owner = self.db.query(Player).filter(Player.id == gate.player_id).first()
+            if owner is not None:
+                try:
+                    from src.models.faction import Faction
+                    from src.services.faction_service import (
+                        apply_faction_rep_delta,
+                        dominant_reputation_faction_id,
+                    )
+
+                    owner_faction_id = dominant_reputation_faction_id(self.db, owner.id)
+                    if owner_faction_id is not None:
+                        owner_faction = (
+                            self.db.query(Faction).filter(Faction.id == owner_faction_id).first()
+                        )
+                        if owner_faction is not None:
+                            apply_faction_rep_delta(
+                                self.db, attacker.id, owner_faction.faction_type,
+                                self.GATE_OWNER_FACTION_REP_PENALTY,
+                                "destroyed_warp_gate",
+                            )
+                except Exception as e:
+                    logger.error("Failed owner-faction reputation hook after gate destruction: %s", e)
+
+        # Commit changes -- see docstring for why this method self-commits.
+        self.db.commit()
+
+        if destroyed:
+            # WO-P3 revise (mack, CRITICAL): use the gate_id PARAMETER, not
+            # gate.id. On a kill, only the beacon is explicitly deleted
+            # (WarpGate.beacon_id is ondelete=CASCADE, so the gate row
+            # cascades away at the DB level without the SESSION ever
+            # calling db.delete(gate) itself). SessionLocal's default
+            # expire_on_commit=True means the self.db.commit() above
+            # expires every object touched this transaction, including
+            # `gate` -- the VERY NEXT attribute access on it (gate.id)
+            # triggers a refresh-on-access SELECT against a row that's
+            # already gone, raising ObjectDeletedError uncaught past this
+            # point (a raw 500 on a kill that already fully committed).
+            # gate_id is the plain UUID parameter this method received --
+            # immune to ORM expiration, and identical to gate.id by
+            # construction since it's what the gate was looked up by.
+            _emit_warp_gate_destroyed(gate_id, target_sector_id, attacker.username)
+
+        return {
+            "success": True,
+            "message": combat_result["message"],
+            "destroyed": destroyed,
+            "gate_hp_remaining": combat_result["gate_hp_remaining"],
+            "salvage_granted": salvage_granted,
+            "turns_consumed": turn_cost,
+            "turns_remaining": attacker.turns,
+        }
+
+    def _resolve_warp_gate_combat(self, attacker: Player, gate: Any) -> Dict[str, Any]:
+        """Resolve a single attack-pass against a warp gate's HP pool,
+        reusing the standard weapon damage stack (_apply_weapon_damage,
+        combat-resolver.md) rather than reinventing planet-style hit-chance
+        math. A gate is a static, non-evading target (no escape mechanic) --
+        canon's "Resolution uses the standard combat resolver ... against
+        the target's effective HP" reads as one resolution per attack call,
+        the same shape attack_sector_drones/attack_planet/attack_port
+        already use (repeat ATTACKS wear a gate down over time, mirroring
+        this file's own multi-attack_planet-call siege precedent, not an
+        internal multi-round loop within one call).
+
+        Shields/turrets are read defensively via getattr with a 0 default:
+        WarpGate has no shields/turret_count column today (the entire
+        Upgrades section -- shield generator, turret arrays -- is canon
+        Design-only and unbuilt), so both are structurally 0 for every
+        currently-existing gate. This hook is genuinely wired to those
+        field names, not stubbed with a hardcoded 0 -- a future Upgrades
+        WO that adds real columns lights this up with zero changes here."""
+        attacker_ship = attacker.current_ship
+        weapon_key = self.SHIP_DEFAULT_WEAPONS.get(attacker_ship.type, "laser") if attacker_ship else "laser"
+        weapon = self.WEAPON_TYPES[weapon_key]
+
+        attacker_power = self._calculate_attack_power(attacker_ship, attacker.attack_drones or 0)
+
+        gate_shields = float(getattr(gate, "shields", 0) or 0)
+        gate_combat = {"shields": gate_shields, "hull": float(gate.hp or 0)}
+        hit = self._apply_weapon_damage(
+            damage=attacker_power,
+            weapon=weapon,
+            target_combat=gate_combat,
+            shield_resistance=0.0,
+            armor_rating=0.0,
+        )
+        gate.hp = max(0, int(round(gate_combat["hull"])))
+        destroyed = gate.hp <= 0
+
+        return_fire: Optional[Dict[str, Any]] = None
+        turret_count = int(getattr(gate, "turret_count", 0) or 0)
+        if turret_count > 0 and attacker_ship is not None:
+            # NO-CANON (flag for Max): canon doesn't specify turrets'
+            # weapon type or per-turret damage. "laser" mirrors the
+            # conservative fallback default every unmapped ship type
+            # already gets; 3 damage/turret mirrors _calculate_attack_
+            # power's own 2-pts-per-drone shape for a comparable
+            # small-per-unit contribution.
+            turret_weapon = self.WEAPON_TYPES["laser"]
+            turret_damage = turret_count * 3
+            attacker_combat = self._ensure_combat_state(attacker_ship)
+            return_fire = self._apply_weapon_damage(
+                damage=turret_damage,
+                weapon=turret_weapon,
+                target_combat=attacker_combat,
+                shield_resistance=self._resistance_fraction(getattr(attacker_ship, "shield_resistance", 0.0)),
+                armor_rating=self._resistance_fraction(getattr(attacker_ship, "armor_rating", 0.0)),
+            )
+            flag_modified(attacker_ship, "combat")
+
+        hit_amount = hit["hull_damage"] + hit["shield_damage"]
+        message = (
+            "The warp gate is destroyed!" if destroyed
+            else f"Your attack deals {hit_amount:.0f} damage to the warp gate ({gate.hp} HP remaining)"
+        )
+
+        return {
+            "destroyed": destroyed,
+            "gate_hp_remaining": gate.hp,
+            "hit": hit,
+            "return_fire": return_fire,
+            "message": message,
+        }
+
     def get_combat_log(self, combat_log_id: uuid.UUID) -> Dict[str, Any]:
         """Get detailed information about a combat log."""
         # Get combat log

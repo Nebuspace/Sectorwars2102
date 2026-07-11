@@ -413,6 +413,69 @@ async def attack_sector_drones(
     )
 
 
+# --- Warp-gate destruction (WO-P3-galaxy-gate-destruction) -----------------
+
+class AttackWarpGateRequest(BaseModel):
+    """Request to attack a warp gate."""
+    gateId: str = Field(..., description="UUID of the WarpGate to attack")
+
+
+class AttackWarpGateResponse(BaseModel):
+    """Response from a warp-gate attack."""
+    success: bool
+    message: str
+    destroyed: bool = False
+    gateHpRemaining: Optional[int] = None
+    salvageGranted: Optional[dict] = None
+    turnsConsumed: Optional[int] = None
+    turnsRemaining: Optional[int] = None
+
+
+@router.post("/attack-warp-gate", response_model=AttackWarpGateResponse)
+async def attack_warp_gate(
+    body: AttackWarpGateRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db)
+):
+    """
+    Attack a warp gate (beacon, focus, or active) after its 48-hour
+    invulnerability window (warp-gates.md:323-354).
+
+    A 75-turn engagement resolved against the gate's HP pool using the
+    standard combat-resolver damage stack, plus reputation loss with the
+    owner's faction. Destroying a gate collapses its WarpTunnel, deletes
+    the beacon/gate structure rows, and grants the attacker partial
+    salvage (ORE 500 / EQUIPMENT 250 / LUMEN_CRYSTALS 10) into their ship
+    cargo. Turn cost, locking, and commit are all handled inside
+    CombatService.attack_warp_gate.
+    """
+    try:
+        gate_uuid = UUID(body.gateId)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid gateId") from None
+
+    result = CombatService(db).attack_warp_gate(attacker_id=player.id, gate_id=gate_uuid)
+
+    if not result.get("success"):
+        message = result.get("message", "Warp gate attack failed")
+        status_code = 400
+        if message.startswith("ERR_GATE_INVULNERABLE"):
+            status_code = 400  # validation-class rejection, not a 404/403
+        elif message == "Warp gate not found":
+            status_code = 404
+        raise HTTPException(status_code=status_code, detail=message)
+
+    return AttackWarpGateResponse(
+        success=True,
+        message=result["message"],
+        destroyed=result.get("destroyed", False),
+        gateHpRemaining=result.get("gate_hp_remaining"),
+        salvageGranted=result.get("salvage_granted"),
+        turnsConsumed=result.get("turns_consumed"),
+        turnsRemaining=result.get("turns_remaining"),
+    )
+
+
 # --- Sector Retreat (flee current sector) ---
 
 class SectorRetreatResponse(BaseModel):
