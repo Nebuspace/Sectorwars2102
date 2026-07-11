@@ -473,6 +473,10 @@
   padding: 4px 0;
 }
 
+.genesis-rep-gate-note {
+  color: #ffc107;
+}
+
 .device-footer {
   padding: 12px;
   background: rgba(0, 0, 0, 0.3);
@@ -1117,6 +1121,15 @@
   color: #00ff41;
   width: 40px;
   text-align: right;
+}
+
+.coverage-row {
+  font-size: 0.75em;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.coverage-row strong {
+  color: #00d9ff;
 }
 
 .upgrade-tiers {

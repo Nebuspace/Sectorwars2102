@@ -5,7 +5,8 @@ import TradingInterface from '../trading/TradingInterface';
 import ConstructionVenue from './ConstructionVenue';
 import PortOfficeVenue from './PortOfficeVenue';
 import ContractBoardVenue from './ContractBoardVenue';
-import { InsuranceManager, MaintenanceManager, ModuleGridInterface } from '../ships';
+import { InsuranceManager, MaintenanceManager, ModuleGridInterface, TIER_LABEL } from '../ships';
+import { shipAPI } from '../../services/api';
 import { formatCredits } from '../../utils/formatters';
 import './spacedock.css';
 
@@ -292,6 +293,10 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
   // Weekly acquisition limit readout (canon: 3/week).
   const [genesisWeeklyRemaining, setGenesisWeeklyRemaining] = useState<number | null>(null);
   const [genesisWeeklyLimit, setGenesisWeeklyLimit] = useState<number>(3);
+  // Federation reputation gate (ADR-0088). Rides a separate deploy window
+  // from the rest of this response — GRACEFUL-DEGRADE: null (hide the rep
+  // row entirely) unless the server actually sends the field.
+  const [genesisRepGate, setGenesisRepGate] = useState<{ required: number; current: number; met: boolean } | null>(null);
 
   // Local genesis tracking for immediate UI feedback
   const [localGenesisDevices, setLocalGenesisDevices] = useState<number | null>(null);
@@ -311,6 +316,15 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
         if (!data) return;
         if (typeof data.purchases_remaining === 'number') setGenesisWeeklyRemaining(data.purchases_remaining);
         if (typeof data.max_purchases_per_week === 'number') setGenesisWeeklyLimit(data.max_purchases_per_week);
+        const gate = data.reputation_gate;
+        if (gate && typeof gate === 'object'
+          && typeof gate.required === 'number'
+          && typeof gate.current === 'number'
+          && typeof gate.met === 'boolean') {
+          setGenesisRepGate(gate);
+        } else {
+          setGenesisRepGate(null);
+        }
       })
       .catch(() => {});
   }, [activeVenue]);
@@ -813,6 +827,26 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
   // chosen at deploy. Acquiring one costs a flat GENESIS_DEVICE_PRICE and is
   // rate-limited to 3/week (server-enforced).
   const GENESIS_DEVICE_PRICE = 25000;
+
+  // The raw purchase endpoint uses `fetch` directly (not the apiRequest/apiClient
+  // wrapper), so it doesn't get that layer's detail-extraction for free. A plain
+  // `error.detail || 'Purchase failed'` silently loses the real reason whenever
+  // the gameserver's global error handler wraps it as `{message}` instead, or
+  // renders `[object Object]` when a 422 sends `detail` as FastAPI's validation
+  // array (`[{loc, msg, type}, ...]`) rather than a string.
+  const extractGenesisErrorDetail = (error: unknown, fallback: string): string => {
+    const raw = (error as { detail?: unknown; message?: unknown } | null)?.detail
+      ?? (error as { detail?: unknown; message?: unknown } | null)?.message;
+    if (typeof raw === 'string' && raw) return raw;
+    if (Array.isArray(raw)) {
+      const msgs = raw
+        .map(e => (e && typeof e === 'object' && typeof (e as { msg?: unknown }).msg === 'string' ? (e as { msg: string }).msg : null))
+        .filter((m): m is string => Boolean(m));
+      if (msgs.length) return msgs.join('; ');
+    }
+    return fallback;
+  };
+
   const purchaseGenesisDevice = useCallback(async () => {
     const token = getToken();
     if (!token || genesisPurchasing) return;
@@ -841,8 +875,8 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       });
 
       if (!response.ok) {
-        const error = await response.json();
-        setGenesisError(error.detail || 'Purchase failed');
+        const error = await response.json().catch(() => null);
+        setGenesisError(extractGenesisErrorDetail(error, 'Purchase failed'));
         // Restore credits on error
         setLocalCredits(prev => (prev ?? displayCredits) + price);
         setGenesisPurchasing(false);
@@ -1117,6 +1151,27 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       setRepairSuccess(null);
     }
   }, [activeVenue, fetchShipData]);
+
+  // Hull insurance coverage tier — surfaced inline on the Services venue.
+  // Coverage attaches to the hull for life (station-independent), so it's
+  // shown regardless of whether this station's underwriter desk is open.
+  const [insuranceTier, setInsuranceTier] = useState<string | null>(null);
+
+  const fetchInsuranceStatus = useCallback(async (shipId: string) => {
+    try {
+      const data = await shipAPI.getInsurance(shipId) as { current_tier?: string };
+      setInsuranceTier(typeof data?.current_tier === 'string' ? data.current_tier : null);
+    } catch (error) {
+      console.error('Insurance status error:', error);
+      setInsuranceTier(null);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (activeVenue === 'services' && shipData?.id) {
+      fetchInsuranceStatus(shipData.id);
+    }
+  }, [activeVenue, shipData?.id, fetchInsuranceStatus]);
 
   const repairShip = useCallback(async () => {
     const token = getToken();
@@ -2375,7 +2430,7 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
               ) : (
                 <>
                   <p className="section-description">
-                    Slip construction — coming soon. Custom ship building is not yet available at this facility.
+                    This facility isn&apos;t a TradeDock — construction slips only run at a Tier A/B TradeDock station.
                   </p>
                   <button className="action-button" disabled>Reserve Dock Slip</button>
                 </>
@@ -2578,7 +2633,11 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
               <span className="ship-icon">🚀</span>
               <div className="ship-genesis-info">
                 <h4>Your Ship: {shipData?.name || 'Unknown'}</h4>
-                <span className="ship-type">{shipData?.type || 'Unknown Type'}</span>
+                {/* A default-named ship (e.g. "Defender") doubles its own type
+                    ("Defender" / "DEFENDER") — drop the redundant line. */}
+                {(!shipData?.name || !shipData?.type || shipData.name.toUpperCase() !== shipData.type.toUpperCase()) && (
+                  <span className="ship-type">{shipData?.type || 'Unknown Type'}</span>
+                )}
               </div>
             </div>
             {canHoldGenesis ? (
@@ -2624,7 +2683,7 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
             </div>
           )}
           {genesisError && (
-            <div className="genesis-error-message">
+            <div className="genesis-error-message" role="alert" aria-live="polite" aria-atomic="true">
               <span className="error-icon">❌</span>
               {genesisError}
             </div>
@@ -2643,6 +2702,11 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
                   <li>🪐 Tier &amp; biome are chosen when you deploy — not now</li>
                   <li>💳 Sequence cost (25k / 75k / 250k) is paid at deploy</li>
                   <li>📅 {genesisWeeklyRemaining !== null ? `${genesisWeeklyRemaining} of ${genesisWeeklyLimit} acquisitions left this week` : `Limited to ${genesisWeeklyLimit} per week`}</li>
+                  {genesisRepGate && !genesisRepGate.met && (
+                    <li id="genesis-rep-gate-note" className="genesis-rep-gate-note">
+                      🎖️ Requires Heroic Federation standing (≥{genesisRepGate.required}) — you&apos;re at {genesisRepGate.current}
+                    </li>
+                  )}
                 </ul>
               </div>
               <div className="device-footer">
@@ -2650,11 +2714,13 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
                 <button
                   className="purchase-device-btn"
                   onClick={() => purchaseGenesisDevice()}
-                  disabled={genesisPurchasing || displayCredits < GENESIS_DEVICE_PRICE || !canHoldGenesis || !hasCapacity || genesisWeeklyRemaining === 0}
+                  disabled={genesisPurchasing || displayCredits < GENESIS_DEVICE_PRICE || !canHoldGenesis || !hasCapacity || genesisWeeklyRemaining === 0 || Boolean(genesisRepGate && !genesisRepGate.met)}
+                  aria-describedby={genesisRepGate && !genesisRepGate.met ? 'genesis-rep-gate-note' : undefined}
                 >
                   {genesisPurchasing ? 'Acquiring…'
                     : !canHoldGenesis ? 'Ship Incompatible'
                     : !hasCapacity ? 'Ship At Capacity'
+                    : genesisRepGate && !genesisRepGate.met ? 'Reputation Too Low'
                     : genesisWeeklyRemaining === 0 ? 'Weekly Limit Reached'
                     : 'Acquire Device'}
                 </button>
@@ -3065,6 +3131,9 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
                 <h3>Hull Insurance</h3>
                 <p>{shipData ? `Insure ${shipData.name} against destruction` : 'Insure your ship against destruction'}</p>
                 <div className="service-status">
+                  <div className="coverage-row">
+                    Coverage: <strong>{insuranceTier ? (TIER_LABEL[insuranceTier] ?? insuranceTier) : '—'}</strong>
+                  </div>
                   Pay a one-time premium; the registered owner is paid out if the hull is destroyed.
                 </div>
                 <div className="service-action">
@@ -3082,6 +3151,11 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
                 <div className="service-icon">📜</div>
                 <h3>Hull Insurance</h3>
                 <p>Protection against ship destruction</p>
+                <div className="service-status">
+                  <div className="coverage-row">
+                    Coverage: <strong>{insuranceTier ? (TIER_LABEL[insuranceTier] ?? insuranceTier) : '—'}</strong>
+                  </div>
+                </div>
                 <div className="service-unavailable-note">
                   No underwriter currently operates at this station.
                 </div>
@@ -3098,7 +3172,7 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
                 <InsuranceManager
                   shipId={shipData.id}
                   playerCredits={displayCredits}
-                  onChanged={() => { refreshPlayerState(); fetchShipData(); }}
+                  onChanged={() => { refreshPlayerState(); fetchShipData(); fetchInsuranceStatus(shipData.id); }}
                   onClose={() => setShowInsurance(false)}
                 />
               </div>
