@@ -295,21 +295,45 @@ class AISecurityService:
         length_violations = self.validate_input_length(text, player_id, session_id)
         violations.extend(length_violations)
         
-        # Sanitization (creates cleaned version but doesn't modify original for analysis)
+        # Sanitization -- NFKC-normalizes (sanitize_input, ADR-0057 A-V1
+        # layer 1) so a fullwidth-form or NFKC-compatibility-decomposable
+        # "homoglyph" (e.g. Mathematical Alphanumeric / circled letters)
+        # folds to its canonical ASCII form BEFORE any content-pattern
+        # detector below looks at it. WO-SEC-VALIDATOR-NORMALIZE-BYPASS:
+        # every detector below that matches literal patterns/keywords now
+        # runs on `sanitized_text`, not raw `text` -- previously they ran
+        # on raw `text` despite this comment's own prior claim, which left
+        # the whole suite bypassable via fullwidth/compatibility Unicode
+        # obfuscation (sanitize_input's normalized output was computed but
+        # never consumed). Length/rate checks above stay on raw `text`
+        # (they measure size, not content-signature).
+        #
+        # SCOPE LIMIT (empirically verified, not an implementation gap):
+        # NFKC only folds characters with a Unicode compatibility
+        # decomposition mapping. It does NOT touch cross-script
+        # "confusable" homoglyphs (e.g. Cyrillic а/е/о/р/с standing in for
+        # Latin lookalikes -- a separate table, UTS #39 confusables, not
+        # NFKC), zero-width joiners/spaces (U+200B/200D, Cf format chars,
+        # no decomposition target), or bidi-override control chars
+        # (U+202E RLO / U+202C PDF, same reason). Those three bypass
+        # classes are NOT closed by this fix and need their own
+        # remediation (bidi-control rejection, ZWJ/ZWSP stripping, a
+        # confusables-skeleton fold) -- out of this WO's hard bound
+        # ("only behavior change: detectors see NFKC-normalized text").
         sanitized_text = self.sanitize_input(text)
 
         # XSS detection (skip for non-HTML contexts)
         if not skip_xss:
-            xss_violations = self.detect_xss(text, player_id, session_id)
+            xss_violations = self.detect_xss(sanitized_text, player_id, session_id)
             violations.extend(xss_violations)
 
         # SQL injection detection (skip for creative/storytelling contexts)
         if not skip_sql_injection:
-            sql_violations = self.detect_sql_injection(text, player_id, session_id)
+            sql_violations = self.detect_sql_injection(sanitized_text, player_id, session_id)
             violations.extend(sql_violations)
-        
+
         # AI-specific attack detection
-        ai_violations = self.detect_ai_specific_attacks(text, player_id, session_id)
+        ai_violations = self.detect_ai_specific_attacks(sanitized_text, player_id, session_id)
         violations.extend(ai_violations)
 
         # ADR-0057 A-V1 layer 2 / A-I2 -- JSON-envelope breakout detection
@@ -318,22 +342,27 @@ class AISecurityService:
         # call validate_input before EnhancedAIService is ever touched),
         # so a malformed envelope is rejected at the ingestion boundary
         # with zero changes needed to either route file.
-        envelope_violations = self.detect_envelope_breakout(text, player_id, session_id)
+        envelope_violations = self.detect_envelope_breakout(sanitized_text, player_id, session_id)
         violations.extend(envelope_violations)
 
         # System command detection
-        system_violations = self.detect_system_commands(text, player_id, session_id)
+        system_violations = self.detect_system_commands(sanitized_text, player_id, session_id)
         violations.extend(system_violations)
-        
+
         # Code injection detection
-        code_violations = self.detect_code_injection(text, player_id, session_id)
+        code_violations = self.detect_code_injection(sanitized_text, player_id, session_id)
         violations.extend(code_violations)
-        
+
         # Content appropriateness check
-        content_violations = self.check_content_appropriateness(text, player_id, session_id)
+        content_violations = self.check_content_appropriateness(sanitized_text, player_id, session_id)
         violations.extend(content_violations)
-        
-        # Cost abuse detection
+
+        # Cost abuse detection -- stays on raw `text`. These patterns
+        # (repeated-char runs, very-long-word, repeated-phrase) measure
+        # size/repetition, not a content signature an obfuscator would
+        # bother hiding; Python 3's `\w` is already Unicode-aware (matches
+        # fullwidth/accented word chars without NFKC), so normalization
+        # doesn't materially change what this detector catches.
         cost_violations = self.detect_cost_abuse(text, player_id, session_id)
         violations.extend(cost_violations)
         
