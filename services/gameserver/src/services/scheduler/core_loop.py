@@ -92,6 +92,7 @@ from src.services.scheduler.contract_sweeps import (
     _run_contract_generation_sync,
     _run_contract_expire_sweep_sync,
 )
+from src.services.scheduler.beacon_sweeps import _run_beacon_expire_sweep_sync
 
 logger = logging.getLogger(__name__)
 
@@ -856,6 +857,29 @@ async def _npc_scheduler_main_loop() -> None:
             raise
         except Exception:
             logger.exception("NPC scheduler: contract expiry sweep crashed (loop continues)")
+
+        # Message-beacon expiry sweep (WO-P4-play-beacon-kernel) — same
+        # no-gate WO-SCHED-CADENCE-DRIFT treatment as contract expiry above;
+        # the sweep's own durable due-check (BEACON_EXPIRE_SWEEP_SECONDS)
+        # gates the real work. Broadcasts `beacon_expired` for any player
+        # still in an affected sector, POST-commit, here on the event loop
+        # (never from the worker thread the sweep ran in) — same discipline
+        # as the genesis-completion sweep's own genesis_progress broadcast.
+        try:
+            beacon_expired_count, beacon_events = await asyncio.to_thread(
+                _run_beacon_expire_sweep_sync
+            )
+            if beacon_expired_count:
+                logger.info(
+                    "NPC scheduler: beacon expiry sweep — expired %d beacon(s)",
+                    beacon_expired_count,
+                )
+            if beacon_events:
+                await _broadcast_events(beacon_events)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("NPC scheduler: beacon expiry sweep crashed (loop continues)")
 
         # Suspect auto-clear sweep (WO-CMB-SUSPECT-LIFE-1 held wiring) —
         # ships.md:293's "auto-clears at suspect_until" guarantee needed a

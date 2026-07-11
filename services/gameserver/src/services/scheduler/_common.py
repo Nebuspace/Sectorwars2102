@@ -220,6 +220,7 @@ CITIZEN_REBAKE_CHECK_SECONDS = int(
 _SUSPECT_CLEAR_STATE_KEY = "suspect_clear_last_run_at"
 _CONTRACT_GENERATION_STATE_KEY = "contract_generation_last_run_at"
 _CONTRACT_EXPIRE_STATE_KEY = "contract_expire_last_run_at"
+_BEACON_EXPIRE_STATE_KEY = "beacon_expire_last_run_at"
 _TEAM_REPUTATION_SWEEP_STATE_KEY = "team_reputation_sweep_last_run_at"
 _PIRATE_ECOSYSTEM_TICK_STATE_KEY = "pirate_ecosystem_tick_last_run_at"
 # Deliberately NO coarse elapsed pre-filter for these 4 (unlike the
@@ -531,6 +532,17 @@ CONTRACT_EXPIRE_SWEEP_SECONDS = int(
     os.environ.get("CONTRACT_EXPIRE_SWEEP_SECONDS", str(5 * 60))
 )
 
+# Message-beacon expiry sweep (WO-P4-play-beacon-kernel) —
+# message_beacon_service.sweep_expired. NO-CANON: message-beacons.md:53
+# names the auto-removal BEHAVIOR ("the periodic beacon-expiry tick") but
+# not an interval, and canon is explicit the deployer is never notified
+# (no urgency to a fast cadence, unlike a player-visible contract board) —
+# proposed to DECISIONS; 10 minutes keeps an expired beacon from lingering
+# long without adding sweep pressure.
+BEACON_EXPIRE_SWEEP_SECONDS = int(
+    os.environ.get("BEACON_EXPIRE_SWEEP_SECONDS", str(10 * 60))
+)
+
 # Suspect auto-clear sweep (WO-CMB-SUSPECT-LIFE-1 held wiring) —
 # suspect_service.clear_expired_suspects. NO-CANON: ships.md:293 names the
 # auto-clear BEHAVIOR ("auto-clears at suspect_until") but not a sweep
@@ -708,6 +720,11 @@ _CONTRACT_GENERATION_LOCK_KEY = _mnemonic_lock_key("CGEN")
 # double-expire (and double-refund) the same contracts. 'CEXP' = Contract
 # EXPire.
 _CONTRACT_EXPIRE_LOCK_KEY = _mnemonic_lock_key("CEXP")
+
+# Message-beacon expiry sweep (WO-P4-play-beacon-kernel) — own key so a
+# second gameserver instance can't double-delete/double-broadcast the same
+# expired beacons. 'BCNX' = BeaCoN eXpire.
+_BEACON_EXPIRE_LOCK_KEY = _mnemonic_lock_key("BCNX")
 
 # ADR-0063: recruit lifecycle stage lasts 7 canonical days, then ACTIVE.
 RECRUIT_STAGE_HOURS = 7 * 24

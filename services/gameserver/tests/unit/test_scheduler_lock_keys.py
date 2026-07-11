@@ -106,6 +106,10 @@ ALL_STATIC_KEYS = {
     # expire sweep now takes its own lock too, so two gameserver instances
     # can't double-expire (and double-refund) the same contracts.
     "_CONTRACT_EXPIRE_LOCK_KEY": sched._CONTRACT_EXPIRE_LOCK_KEY,
+    # WO-P4-play-beacon-kernel — message-beacon expiry sweep, own lock so
+    # two gameserver instances can't double-delete/double-broadcast the
+    # same expired beacons.
+    "_BEACON_EXPIRE_LOCK_KEY": sched._BEACON_EXPIRE_LOCK_KEY,
 }
 
 # Every {"key": <bare Name>} lock-acquisition site, keyed by its enclosing
@@ -152,6 +156,8 @@ EXPECTED_NAME_SITE_MAP = {
     "_run_contract_generation_sync": "_CONTRACT_GENERATION_LOCK_KEY",
     # WO-DRIFT-econ-contract-sweep-advisory-lock (expire half).
     "_run_contract_expire_sweep_sync": "_CONTRACT_EXPIRE_LOCK_KEY",
+    # WO-P4-play-beacon-kernel — message-beacon expiry sweep.
+    "_run_beacon_expire_sweep_sync": "_BEACON_EXPIRE_LOCK_KEY",
 }
 
 # 28 bare-Name sites + 1 Call-form site (bootstrap_region_sync) = the true
@@ -286,7 +292,7 @@ def test_all_static_keys_pairwise_distinct():
         seen[value] = name
     assert not dupes, f"colliding lock keys: {dupes}"
     assert len(values) == len(set(values))
-    assert len(ALL_STATIC_KEYS) == 30  # 1 global + 2 legacy + 27 new sweep-type keys
+    assert len(ALL_STATIC_KEYS) == 31  # 1 global + 2 legacy + 27 new sweep-type keys + 1 (WO-P4-play-beacon-kernel)
 
 
 def test_all_static_keys_nonnegative_and_63bit_safe():

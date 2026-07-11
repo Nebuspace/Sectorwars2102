@@ -93,3 +93,4 @@ from src.models.multi_account import (
     MultiAccountSeverity,
     MultiAccountAdminDecision,
 )
+from src.models.message_beacon import MessageBeacon
