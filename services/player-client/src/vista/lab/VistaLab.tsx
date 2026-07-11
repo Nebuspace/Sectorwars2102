@@ -56,6 +56,9 @@ import { randomVistaInput } from '../core/validate';
 import VistaCanvas from '../react';
 // Lane B — will resolve once pipeline.ts lands; expected tsc gap until integrate
 import { generateVista } from '../core/pipeline';
+// PERF-HARNESS sub-part (c) — reads sub-part (b)'s collector; expected tsc
+// gap until that lane lands (see PerfOverlay.tsx's own doc comment).
+import PerfOverlay from '../perf/PerfOverlay';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -811,6 +814,7 @@ export default function VistaLab() {
             input={vistaInput}
             clock={clockMode === 'live' ? clock : clockPhase * DAY_CYCLE_SECONDS}
           />
+          <PerfOverlay />
         </div>
       </main>
 

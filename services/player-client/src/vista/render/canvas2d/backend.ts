@@ -28,6 +28,7 @@ import { generateVista } from '../../core/pipeline';
 import { shadeFlank, rimLight, aoPool } from './lighting';
 import { postProcess, buildGrainPattern } from './post';
 import { getProfile } from '../../core/profiles';
+import { perfCollector } from '../../perf/collector';
 
 // ---------------------------------------------------------------------------
 // Day-cycle constants — verbatim from SolarSystemViewscreen.tsx L1952–1954
@@ -604,6 +605,7 @@ function buildVistaCache(
   if (hasWater && waterLayer) {
     // Type-branched gradient — each water type uses palette.water/foam, NOT hardcoded blue.
     waterBand = ctx.createLinearGradient(0, waterTopY, 0, h);
+    perfCollector.recordAlloc();
     if (waterType === 'lava') {
       // Lava sea: fiery orange-red glow; no rolling-sea animation below.
       waterBand.addColorStop(0,    `rgba(${wc.r}, ${wc.g}, ${wc.b}, 0.92)`);
@@ -981,6 +983,7 @@ function buildVistaCache(
   // ---- Cached horizon glow gradient ----
   const gx = w * (0.25 + rngBase() * 0.5);
   const glowGrad = ctx.createLinearGradient(0, horizonY, 0, h);
+  perfCollector.recordAlloc();
   const glowRgb = model.palette.scatterBand;
   glowGrad.addColorStop(0, rgba(glowRgb, 0.18));
   glowGrad.addColorStop(1, rgba(glowRgb, 0));
@@ -1187,11 +1190,13 @@ function drawWeatherSky(
   const [r, g, b] = hazeColor.split(',').map((s) => parseInt(s.trim(), 10));
   ctx.save();
   const dark = ctx.createLinearGradient(0, 0, 0, horizonY * 1.1);
+  perfCollector.recordAlloc();
   dark.addColorStop(0, `rgba(18, 22, 30, ${(sd * 0.8).toFixed(3)})`);
   dark.addColorStop(1, `rgba(28, 34, 44, ${(sd * 0.4).toFixed(3)})`);
   ctx.fillStyle = dark;
   ctx.fillRect(0, 0, w, horizonY * 1.1);
   const tint = ctx.createLinearGradient(0, 0, 0, horizonY * 1.1);
+  perfCollector.recordAlloc();
   tint.addColorStop(0, `rgba(${r}, ${g}, ${b}, ${(sd * 0.22).toFixed(3)})`);
   tint.addColorStop(1, `rgba(${r}, ${g}, ${b}, ${(sd * 0.10).toFixed(3)})`);
   ctx.fillStyle = tint;
@@ -1230,6 +1235,7 @@ function drawAccretionDisc(
   // 1) Wide outer corona glow — broad warm-orange haze, very luminous
   const outerR = discR * 5.5;
   const og = ctx.createRadialGradient(sunX, sunY, discR * 0.22, sunX, sunY, outerR);
+  perfCollector.recordAlloc();
   og.addColorStop(0,    `rgba(255, 140, 30, ${(0.55 * emK).toFixed(3)})`);
   og.addColorStop(0.22, `rgba(255, 95, 18, ${(0.32 * emK).toFixed(3)})`);
   og.addColorStop(0.50, `rgba(210, 55, 8,  ${(0.15 * emK).toFixed(3)})`);
@@ -1241,6 +1247,7 @@ function drawAccretionDisc(
   // 2) Gravitational lensing ring — soft bright aureole just outside the disc edge
   const lensR = discR * 1.30;
   const lg = ctx.createRadialGradient(sunX, sunY, discR * 0.88, sunX, sunY, lensR);
+  perfCollector.recordAlloc();
   lg.addColorStop(0,   `rgba(255, 210, 110, ${(0.48 * emK).toFixed(3)})`);
   lg.addColorStop(0.5, `rgba(255, 160,  55, ${(0.22 * emK).toFixed(3)})`);
   lg.addColorStop(1,   'rgba(200, 80, 10, 0)');
@@ -1270,6 +1277,7 @@ function drawAccretionDisc(
   }
   // Doppler brightening: approaching side blazes white-hot; receding side red-dimmed
   const doppGrad = ctx.createLinearGradient(-discR, 0, discR, 0);
+  perfCollector.recordAlloc();
   doppGrad.addColorStop(0,    `rgba(255, 248, 200, ${(0.82 * emK).toFixed(3)})`);
   doppGrad.addColorStop(0.40, 'rgba(255, 200, 80, 0)');
   doppGrad.addColorStop(1,    `rgba(60,  25,   5, ${(0.35 * emK).toFixed(3)})`);
@@ -1329,6 +1337,7 @@ function drawPulsar(
   // 1) Outer magnetic nebula — wide blue-white haze, always visible (self-luminous)
   const haloR = Math.max(Math.min(w, h) * 0.32, sunR * 10);
   const halo  = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, haloR);
+  perfCollector.recordAlloc();
   // Self-emissive: barely modulated by dc.bright so it reads at night too
   const haloK = 0.55 + dc.bright * 0.45;
   halo.addColorStop(0,    `rgba(140, 195, 255, ${(0.45 * haloK).toFixed(3)})`);
@@ -1342,6 +1351,7 @@ function drawPulsar(
   // 2) Inner magnetic corona — tighter, brighter ring around the neutron star
   const coronaR = Math.max(Math.min(w, h) * 0.08, sunR * 3.5);
   const corona  = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, coronaR);
+  perfCollector.recordAlloc();
   corona.addColorStop(0,   `rgba(200, 230, 255, ${(0.65 * haloK).toFixed(3)})`);
   corona.addColorStop(0.5, `rgba(120, 185, 255, ${(0.30 * haloK).toFixed(3)})`);
   corona.addColorStop(1,   'rgba(70, 140, 255, 0)');
@@ -1360,6 +1370,7 @@ function drawPulsar(
     const mx = sunX + ax * beamL * 0.60;
     const my = sunY + ay * beamL * 0.60;
     const bg = ctx.createLinearGradient(sunX, sunY, mx, my);
+    perfCollector.recordAlloc();
     // Beams are always bright — self-luminous, pulse modulates intensity
     const ba = (0.70 + 0.30 * dc.bright) * pulse;
     bg.addColorStop(0,   `rgba(225, 242, 255, ${Math.min(1, ba * 1.10).toFixed(3)})`);
@@ -1380,6 +1391,7 @@ function drawPulsar(
   const nsr = Math.max(5, sunR * 0.65);
   ctx.globalAlpha = Math.min(1, pulse * 1.1);
   const nd = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, nsr * 3.5);
+  perfCollector.recordAlloc();
   nd.addColorStop(0,    'rgba(245, 255, 255, 0.98)');
   nd.addColorStop(0.25, 'rgba(195, 230, 255, 0.85)');
   nd.addColorStop(0.60, 'rgba(130, 185, 255, 0.40)');
@@ -1526,6 +1538,7 @@ function drawLandedSkyPlanets(
     ctx.fillStyle = p.bandColor;
     ctx.fillRect(px - p.r, py - p.r * 0.1, p.r * 2, p.r * 0.5);
     const lg = ctx.createRadialGradient(px - p.r * 0.3, py - p.r * 0.3, p.r * 0.1, px, py, p.r * 1.2);
+    perfCollector.recordAlloc();
     lg.addColorStop(0,   'rgba(255,255,255,0.16)');
     lg.addColorStop(0.7, 'rgba(255,255,255,0)');
     lg.addColorStop(1,   'rgba(0,0,0,0.1)');
@@ -1624,12 +1637,14 @@ function drawLandedMoons(
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     const innerHalo = ctx.createRadialGradient(mx, my, m.r * 0.2, mx, my, m.r * 2.0);
+    perfCollector.recordAlloc();
     innerHalo.addColorStop(0, `rgba(${m.tint}, ${(0.10 * prom * ext * sunWash * dayFaint * nightGlow).toFixed(3)})`);
     innerHalo.addColorStop(1, `rgba(${m.tint}, 0)`);
     ctx.fillStyle = innerHalo;
     ctx.fillRect(mx - m.r * 2.0, my - m.r * 2.0, m.r * 4.0, m.r * 4.0);
     const outerR = m.r * (2.6 + (1 - dc.bright) * 1.4);
     const outerHalo = ctx.createRadialGradient(mx, my, m.r * 0.6, mx, my, outerR);
+    perfCollector.recordAlloc();
     outerHalo.addColorStop(0, `rgba(${m.tint}, ${(0.12 * prom * ext * sunWash * dayFaint * nightGlow).toFixed(3)})`);
     outerHalo.addColorStop(1, `rgba(${m.tint}, 0)`);
     ctx.fillStyle = outerHalo;
@@ -1718,6 +1733,7 @@ function buildParticleSprite(
   if (kind === 'EMBER') {
     // Warm radial core fading to transparent orange — built once, re-used every frame
     const hg = sc.createRadialGradient(cx - rad * 0.25, cy - rad * 0.25, rad * 0.08, cx, cy, rad);
+    perfCollector.recordAlloc();
     hg.addColorStop(0,   `rgba(${Math.min(255, r + 60)}, ${Math.min(255, g + 80)}, ${Math.min(255, b + 100)}, 1)`);
     hg.addColorStop(0.4, `rgba(${r}, ${g}, 20, 0.85)`);
     hg.addColorStop(1,   'rgba(200, 30, 0, 0)');
@@ -1726,6 +1742,7 @@ function buildParticleSprite(
   } else if (kind === 'SNOW') {
     // Soft white disc with hard centre and feathered edge
     const sg = sc.createRadialGradient(cx, cy, 0, cx, cy, rad * 0.65);
+    perfCollector.recordAlloc();
     sg.addColorStop(0,   `rgba(${r}, ${g}, ${b}, 1)`);
     sg.addColorStop(0.5, `rgba(${r}, ${g}, ${b}, 0.85)`);
     sg.addColorStop(1,   `rgba(${r}, ${g}, ${b}, 0)`);
@@ -1734,6 +1751,7 @@ function buildParticleSprite(
   } else if (kind === 'SPORE') {
     // Bioluminescent soft glow
     const pg = sc.createRadialGradient(cx, cy, 0, cx, cy, rad * 0.75);
+    perfCollector.recordAlloc();
     pg.addColorStop(0,   `rgba(${r}, ${g}, ${b}, 1)`);
     pg.addColorStop(0.4, `rgba(${r}, ${g}, ${b}, 0.55)`);
     pg.addColorStop(1,   `rgba(${r}, ${g}, ${b}, 0)`);
@@ -1761,6 +1779,7 @@ function buildParticleSprite(
   } else {
     // FAINT — very soft diffuse circle
     const fg = sc.createRadialGradient(cx, cy, 0, cx, cy, rad * 0.45);
+    perfCollector.recordAlloc();
     fg.addColorStop(0, `rgba(${r}, ${g}, ${b}, 0.35)`);
     fg.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
     sc.fillStyle = fg;
@@ -1849,6 +1868,12 @@ function drawLandedParticles(
 ): void {
   const horizonY = cache.horizonY;
   const groups   = cache.particleGroups;
+
+  if (perfCollector.enabled) {
+    let liveCount = 0;
+    for (let gi = 0; gi < groups.length; gi++) liveCount += groups[gi].particles.length;
+    perfCollector.recordParticles(liveCount);
+  }
 
   ctx.save();
 
@@ -2160,6 +2185,7 @@ function drawLandmarks(
         ctx.globalCompositeOperation = 'lighter';
         ctx.globalAlpha = 0.30;
         const cg = ctx.createRadialGradient(cx, baseY - height + notchD, 0, cx, baseY - height + notchD, notchW * 2.5);
+        perfCollector.recordAlloc();
         cg.addColorStop(0, lm.accentColor);
         cg.addColorStop(1, 'rgba(255, 60, 0, 0)');
         ctx.fillStyle = cg;
@@ -2554,6 +2580,7 @@ function drawGasGiantBands(
     const [hr, hg, hb] = pal.skyHorizon;
     const [sr, sg, sb] = pal.surface;
     const base = ctx.createLinearGradient(0, 0, 0, h);
+    perfCollector.recordAlloc();
     base.addColorStop(0,    `rgb(${Math.round(tr * (0.15 + b * 0.25))}, ${Math.round(tg * (0.15 + b * 0.25))}, ${Math.round(tb * (0.18 + b * 0.28))})`);
     base.addColorStop(0.25, `rgb(${Math.round(hr * (0.55 + b * 0.45))}, ${Math.round(hg * (0.55 + b * 0.45))}, ${Math.round(hb * (0.55 + b * 0.45))})`);
     base.addColorStop(0.60, `rgb(${Math.round(hr * (0.48 + b * 0.52))}, ${Math.round(hg * (0.48 + b * 0.52))}, ${Math.round(hb * (0.48 + b * 0.52))})`);
@@ -2626,6 +2653,7 @@ function drawGasGiantBands(
 
     // Vertical gradient: feathered top/bottom edges, solid mid-band core.
     const bgrad = ctx.createLinearGradient(0, bandCY - thick * 0.5, 0, bandCY + thick * 0.5);
+    perfCollector.recordAlloc();
     bgrad.addColorStop(0,    `rgba(${br}, ${bg2}, ${bb}, 0)`);
     bgrad.addColorStop(0.22, `rgba(${br}, ${bg2}, ${bb}, ${(alpha * 0.80).toFixed(3)})`);
     bgrad.addColorStop(0.50, `rgba(${br}, ${bg2}, ${bb}, ${alpha.toFixed(3)})`);
@@ -2658,6 +2686,7 @@ function drawGasGiantBands(
     const [nr, ng, nb] = nearRidge;
     const outerAlpha   = 0.58 * (0.65 + b * 0.35);
     const stormGrad    = ctx.createRadialGradient(sx, stormY, stormRx * 0.20, sx, stormY, stormRx);
+    perfCollector.recordAlloc();
     stormGrad.addColorStop(0,    `rgba(${Math.round(nr * 0.55)}, ${Math.round(ng * 0.45)}, ${Math.round(nb * 0.40)}, ${outerAlpha.toFixed(3)})`);
     stormGrad.addColorStop(0.38, `rgba(${ar}, ${ag}, ${ab}, ${(outerAlpha * 0.72).toFixed(3)})`);
     stormGrad.addColorStop(0.72, `rgba(${Math.round(nr * 0.75)}, ${Math.round(ng * 0.55)}, ${Math.round(nb * 0.45)}, ${(outerAlpha * 0.40).toFixed(3)})`);
@@ -2674,6 +2703,7 @@ function drawGasGiantBands(
     ctx.globalCompositeOperation = 'lighter';
     ctx.globalAlpha = 0.22 * b;
     const eyeGrad = ctx.createRadialGradient(sx, stormY, 0, sx, stormY, stormRx * 0.30);
+    perfCollector.recordAlloc();
     eyeGrad.addColorStop(0, `rgba(${ar}, ${ag}, ${ab}, 0.60)`);
     eyeGrad.addColorStop(1, `rgba(${ar}, ${ag}, ${ab}, 0)`);
     ctx.fillStyle = eyeGrad;
@@ -2700,6 +2730,7 @@ function drawGasGiantBands(
 
     // Top edge
     const topGrad = ctx.createLinearGradient(0, 0, 0, h * 0.28);
+    perfCollector.recordAlloc();
     topGrad.addColorStop(0, `rgba(${limbR}, ${limbG}, ${limbB}, 0.72)`);
     topGrad.addColorStop(1, `rgba(${limbR}, ${limbG}, ${limbB}, 0)`);
     ctx.fillStyle = topGrad;
@@ -2707,6 +2738,7 @@ function drawGasGiantBands(
 
     // Bottom edge
     const btmGrad = ctx.createLinearGradient(0, h, 0, h * 0.72);
+    perfCollector.recordAlloc();
     btmGrad.addColorStop(0, `rgba(${limbR}, ${limbG}, ${limbB}, 0.72)`);
     btmGrad.addColorStop(1, `rgba(${limbR}, ${limbG}, ${limbB}, 0)`);
     ctx.fillStyle = btmGrad;
@@ -2714,6 +2746,7 @@ function drawGasGiantBands(
 
     // Left edge
     const leftGrad = ctx.createLinearGradient(0, 0, w * 0.20, 0);
+    perfCollector.recordAlloc();
     leftGrad.addColorStop(0, `rgba(${limbR}, ${limbG}, ${limbB}, 0.55)`);
     leftGrad.addColorStop(1, `rgba(${limbR}, ${limbG}, ${limbB}, 0)`);
     ctx.fillStyle = leftGrad;
@@ -2721,6 +2754,7 @@ function drawGasGiantBands(
 
     // Right edge
     const rightGrad = ctx.createLinearGradient(w, 0, w * 0.80, 0);
+    perfCollector.recordAlloc();
     rightGrad.addColorStop(0, `rgba(${limbR}, ${limbG}, ${limbB}, 0.55)`);
     rightGrad.addColorStop(1, `rgba(${limbR}, ${limbG}, ${limbB}, 0)`);
     ctx.fillStyle = rightGrad;
@@ -2753,6 +2787,7 @@ function drawPlating(
 
   // Base plating fill — gradient lighter at horizon, darker at camera
   const fill = ctx.createLinearGradient(0, horizonY, 0, h);
+  perfCollector.recordAlloc();
   fill.addColorStop(0,   `rgb(${Math.round(sr * 0.72)}, ${Math.round(sg * 0.72)}, ${Math.round(sb * 0.78)})`);
   fill.addColorStop(0.5, `rgb(${Math.round(sr * 0.55)}, ${Math.round(sg * 0.55)}, ${Math.round(sb * 0.60)})`);
   fill.addColorStop(1,   `rgb(${Math.round(sr * 0.38)}, ${Math.round(sg * 0.38)}, ${Math.round(sb * 0.42)})`);
@@ -2853,6 +2888,7 @@ function drawPlating(
     ctx.globalAlpha = 0.12 * dc.bright + 0.05;
     const bleedH = Math.min(groundH * 0.22, h * 0.08);
     const warmBleed = ctx.createLinearGradient(0, horizonY, 0, horizonY + bleedH);
+    perfCollector.recordAlloc();
     warmBleed.addColorStop(0,   `rgba(${wr}, ${wg}, ${wb}, 0.70)`);
     warmBleed.addColorStop(1,   `rgba(${wr}, ${wg}, ${wb}, 0)`);
     ctx.fillStyle = warmBleed;
@@ -3195,6 +3231,7 @@ function drawDuneSea(
   {
     const [sr, sg, sb] = pal.surface;
     const fill = ctx.createLinearGradient(0, horizonY, 0, h);
+    perfCollector.recordAlloc();
     fill.addColorStop(0, `rgb(${Math.round(sr * 0.82)}, ${Math.round(sg * 0.82)}, ${Math.round(sb * 0.84)})`);
     fill.addColorStop(1, `rgb(${Math.round(sr * 0.52)}, ${Math.round(sg * 0.52)}, ${Math.round(sb * 0.54)})`);
     ctx.fillStyle = fill;
@@ -3319,6 +3356,7 @@ function drawDuneSea(
       const strongAlp = crestAlp.toFixed(3);
       const weakAlp   = (crestAlp * 0.40).toFixed(3);
       const crestGrad = ctx.createLinearGradient(0, 0, w, 0);
+      perfCollector.recordAlloc();
       if (sunFrac < 0.5) {
         // Sun on left → windward (lit) faces left, slip-face faces right
         crestGrad.addColorStop(0.0, `rgba(${crestR}, ${crestG}, ${crestB}, ${strongAlp})`);
@@ -3414,6 +3452,7 @@ function drawDepositGlyph(
     ctx.globalCompositeOperation = 'lighter';
     ctx.globalAlpha = 0.25 * intensity;
     const gg = ctx.createRadialGradient(sx, sy - sz * 0.3, 0, sx, sy - sz * 0.3, sz * 0.7);
+    perfCollector.recordAlloc();
     gg.addColorStop(0, `rgba(${ar}, ${ag}, ${ab}, 0.9)`);
     gg.addColorStop(1, `rgba(${ar}, ${ag}, ${ab}, 0)`);
     ctx.fillStyle = gg;
@@ -3430,6 +3469,7 @@ function drawDepositGlyph(
       const rise = t === 0 ? sz * 0.4 : sz * 0.4 + (t * 8 + pi * 2.1) % (sz * 1.4);
       const pr   = sz * (0.30 + pi * 0.10);
       const pg   = ctx.createRadialGradient(px2, sy - rise, 0, px2, sy - rise, pr * 1.8);
+      perfCollector.recordAlloc();
       pg.addColorStop(0, `rgba(${gR}, ${gG}, ${gB}, ${(0.30 * intensity).toFixed(3)})`);
       pg.addColorStop(1, `rgba(${gR}, ${gG}, ${gB}, 0)`);
       ctx.fillStyle = pg;
@@ -3443,6 +3483,7 @@ function drawDepositGlyph(
     const botW   = sz * 0.22;
     ctx.globalCompositeOperation = 'lighter';
     const vg = ctx.createLinearGradient(sx, sy, sx, sy - ventH);
+    perfCollector.recordAlloc();
     vg.addColorStop(0,   `rgba(${ar}, ${ag}, ${ab}, ${(0.55 * intensity).toFixed(3)})`);
     vg.addColorStop(0.6, `rgba(230, 230, 240, ${(0.30 * intensity).toFixed(3)})`);
     vg.addColorStop(1,   `rgba(230, 230, 240, 0)`);
@@ -3455,6 +3496,7 @@ function drawDepositGlyph(
     ctx.closePath();
     ctx.fill();
     const bg = ctx.createRadialGradient(sx, sy, 0, sx, sy, sz * 0.9);
+    perfCollector.recordAlloc();
     bg.addColorStop(0, `rgba(${ar}, ${ag}, ${ab}, ${(0.6 * intensity).toFixed(3)})`);
     bg.addColorStop(1, `rgba(${ar}, ${ag}, ${ab}, 0)`);
     ctx.fillStyle = bg;
@@ -3466,6 +3508,7 @@ function drawDepositGlyph(
     const ph = sz * 0.50;
     ctx.globalCompositeOperation = 'source-over';
     const pg = ctx.createRadialGradient(sx, sy, 0, sx, sy, pw);
+    perfCollector.recordAlloc();
     pg.addColorStop(0,   `rgba(${Math.round(ar * 0.15)}, ${Math.round(ag * 0.12)}, ${Math.round(ab * 0.20)}, ${(0.75 * intensity).toFixed(3)})`);
     pg.addColorStop(0.7, `rgba(${Math.round(ar * 0.10)}, ${Math.round(ag * 0.10)}, ${Math.round(ab * 0.15)}, ${(0.55 * intensity).toFixed(3)})`);
     pg.addColorStop(1,   `rgba(${Math.round(ar * 0.05)}, ${Math.round(ag * 0.05)}, ${Math.round(ab * 0.08)}, 0)`);
@@ -3520,6 +3563,7 @@ function drawDepositGlyph(
     ctx.globalAlpha = 0.18 * intensity;
     const glowR = sz * 1.25;
     const cg = ctx.createRadialGradient(sx, sy - sz * 0.3, 0, sx, sy - sz * 0.3, glowR);
+    perfCollector.recordAlloc();
     cg.addColorStop(0,   `rgba(${ar}, ${ag}, ${ab}, 0.7)`);
     cg.addColorStop(0.5, `rgba(${ar}, ${ag}, ${ab}, 0.25)`);
     cg.addColorStop(1,   `rgba(${ar}, ${ag}, ${ab}, 0)`);
@@ -3540,6 +3584,7 @@ function drawDepositGlyph(
       const pulse  = t === 0 ? 1.0 : 0.5 + 0.5 * Math.sin(t * 1.2 + di * 1.3);
       const dr     = sz * (0.18 + di * 0.04);
       const dg2    = ctx.createRadialGradient(dx, dy, 0, dx, dy, dr * 2.2);
+      perfCollector.recordAlloc();
       dg2.addColorStop(0, `rgba(${blR}, ${blG}, ${blB}, ${(0.7 * pulse * intensity).toFixed(3)})`);
       dg2.addColorStop(1, `rgba(${blR}, ${blG}, ${blB}, 0)`);
       ctx.fillStyle = dg2;
@@ -3555,6 +3600,7 @@ function drawDepositGlyph(
     ctx.globalCompositeOperation = 'lighter';
     ctx.globalAlpha = 0.4 * intensity;
     const fg = ctx.createRadialGradient(sx, sy, 0, sx, sy, sz);
+    perfCollector.recordAlloc();
     fg.addColorStop(0, `rgba(${ar}, ${ag}, ${ab}, 0.8)`);
     fg.addColorStop(1, `rgba(${ar}, ${ag}, ${ab}, 0)`);
     ctx.fillStyle = fg;
@@ -3590,6 +3636,7 @@ function drawEnergyGlyph(
     const topW = sz * 1.2;
     const botW = sz * 0.3;
     const col  = ctx.createLinearGradient(sx, sy, sx, sy - colH);
+    perfCollector.recordAlloc();
     col.addColorStop(0,   `rgba(${ar}, ${Math.min(255, ag + 40)}, ${ab}, ${(0.7 * intensity).toFixed(3)})`);
     col.addColorStop(0.4, `rgba(210, 225, 240, ${(0.50 * intensity).toFixed(3)})`);
     col.addColorStop(1,   `rgba(200, 220, 240, 0)`);
@@ -3602,6 +3649,7 @@ function drawEnergyGlyph(
     ctx.closePath();
     ctx.fill();
     const bg = ctx.createRadialGradient(sx, sy, 0, sx, sy, sz * 1.5);
+    perfCollector.recordAlloc();
     bg.addColorStop(0, `rgba(${ar}, ${Math.min(255, ag + 20)}, ${ab}, ${(0.8 * intensity).toFixed(3)})`);
     bg.addColorStop(1, `rgba(${ar}, ${ag}, ${ab}, 0)`);
     ctx.fillStyle = bg;
@@ -3625,6 +3673,7 @@ function drawEnergyGlyph(
     // Soft radial glow at center to ground the marker
     ctx.globalAlpha = 0.18 * intensity;
     const tg = ctx.createRadialGradient(sx, sy, 0, sx, sy, sz * 0.55);
+    perfCollector.recordAlloc();
     tg.addColorStop(0, `rgba(${ar}, ${ag}, ${ab}, 0.7)`);
     tg.addColorStop(1, `rgba(${ar}, ${ag}, ${ab}, 0)`);
     ctx.fillStyle = tg;
@@ -3641,6 +3690,7 @@ function drawEnergyGlyph(
     // Corona halo behind rays — soft diffuse disc
     ctx.globalAlpha = 0.22 * intensity;
     const corona = ctx.createRadialGradient(sx, sy, innerR * 0.5, sx, sy, sz * 1.55);
+    perfCollector.recordAlloc();
     corona.addColorStop(0,   `rgba(${ar}, ${ag}, ${ab}, 0.65)`);
     corona.addColorStop(0.5, `rgba(${ar}, ${ag}, ${ab}, 0.20)`);
     corona.addColorStop(1,   `rgba(${ar}, ${ag}, ${ab}, 0)`);
@@ -3733,6 +3783,7 @@ function drawHazardGlyph(
     ctx.closePath();
     ctx.clip();
     const lg = ctx.createLinearGradient(minX, minY, maxX, maxY);
+    perfCollector.recordAlloc();
     lg.addColorStop(0,   `rgba(200, 60, 10, ${(alphaFloor * 0.70).toFixed(3)})`);
     lg.addColorStop(0.5, `rgba(240, 100, 20, ${(alphaFloor * 0.85).toFixed(3)})`);
     lg.addColorStop(1,   `rgba(180, 40, 5,  ${(alphaFloor * 0.60).toFixed(3)})`);
@@ -3841,6 +3892,7 @@ function drawHazardGlyph(
     ctx.closePath();
     ctx.clip();
     const rg = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(rW, rH) * 0.6);
+    perfCollector.recordAlloc();
     rg.addColorStop(0,   `rgba(160, 200, 60, ${(alphaFloor * 0.55).toFixed(3)})`);
     rg.addColorStop(0.6, `rgba(110, 160, 30, ${(alphaFloor * 0.40).toFixed(3)})`);
     rg.addColorStop(1,   `rgba(80, 120, 20, 0)`);
@@ -3860,6 +3912,7 @@ function drawHazardGlyph(
   } else if (visual === 'flood-zone') {
     // Blue semi-transparent wash with ripple lines
     const fg2 = ctx.createLinearGradient(minX, minY, minX, maxY);
+    perfCollector.recordAlloc();
     fg2.addColorStop(0,   `rgba(40, 80, 160, ${(alphaFloor * 0.45).toFixed(3)})`);
     fg2.addColorStop(0.5, `rgba(30, 65, 140, ${(alphaFloor * 0.60).toFixed(3)})`);
     fg2.addColorStop(1,   `rgba(20, 50, 110, ${(alphaFloor * 0.40).toFixed(3)})`);
@@ -3906,6 +3959,7 @@ function drawHazardGlyph(
     const advance = t === 0 ? 0.5 : ((t * 0.04 * severity) % 1.0);
     const frontX  = minX + advance * rW;
     const df      = ctx.createLinearGradient(frontX - rW * 0.3, 0, frontX + rW * 0.05, 0);
+    perfCollector.recordAlloc();
     df.addColorStop(0,   `rgba(180, 130, 70, 0)`);
     df.addColorStop(0.6, `rgba(180, 130, 70, ${(alphaFloor * 0.65).toFixed(3)})`);
     df.addColorStop(1,   `rgba(150, 100, 50, ${(alphaFloor * 0.45).toFixed(3)})`);
@@ -3942,6 +3996,7 @@ function drawHazardGlyph(
     ctx.beginPath(); ctx.arc(cx, cy, craterR, 0, Math.PI * 2); ctx.stroke();
     // Dark interior
     const ifill = ctx.createRadialGradient(cx, cy, 0, cx, cy, craterR * 0.88);
+    perfCollector.recordAlloc();
     ifill.addColorStop(0, `rgba(25, 20, 15, ${(alphaFloor * 0.55).toFixed(3)})`);
     ifill.addColorStop(1, `rgba(25, 20, 15, 0)`);
     ctx.fillStyle = ifill;
@@ -5033,6 +5088,7 @@ function drawScatterInstances(
       if (glowStr > 0.02) {
         const haloR = sizePx * (2.0 + glow * 2.5);
         const halo  = ctx.createRadialGradient(sx, sy, 0, sx, sy, haloR);
+        perfCollector.recordAlloc();
         halo.addColorStop(0, `rgba(${tr}, ${tg}, ${tb}, ${(glowStr * 0.55).toFixed(3)})`);
         halo.addColorStop(1, `rgba(${tr}, ${tg}, ${tb}, 0)`);
         ctx.globalAlpha = 1;
@@ -5316,6 +5372,7 @@ function drawRiverCorridor(
       ctx.clip();
       const gA = (0.18 * b).toFixed(3);
       const glintGrad = ctx.createLinearGradient(citSX, riverTopY, citSX, riverTopY + glintH);
+      perfCollector.recordAlloc();
       glintGrad.addColorStop(0, `rgba(255, 255, 255, ${gA})`);
       glintGrad.addColorStop(1, `rgba(255, 255, 255, 0)`);
       ctx.fillStyle   = glintGrad;
@@ -5373,6 +5430,7 @@ function drawCumulusCloud(
   const baseTop = cy;
   const baseBtm = cy + lobeR * 0.55;
   const sg = ctx.createLinearGradient(cx, baseTop, cx, baseBtm);
+  perfCollector.recordAlloc();
   sg.addColorStop(0, `rgba(${shR}, ${shG}, ${shB}, 0)`);
   sg.addColorStop(1, `rgba(${shR}, ${shG}, ${shB}, ${(alpha * 0.48).toFixed(3)})`);
   ctx.fillStyle = sg;
@@ -5383,6 +5441,7 @@ function drawCumulusCloud(
     const lx = cx - cloudW * 0.42 + (lobeOffsets[lb] ?? lb / lobeCount) * cloudW * 0.84;
     const ly = cy - lobeR * 0.08;
     const lg = ctx.createRadialGradient(lx, ly - lobeR * 0.20, 0, lx, ly, lobeR);
+    perfCollector.recordAlloc();
     lg.addColorStop(0,    `rgba(${litR}, ${litG}, ${litB}, ${(alpha * 1.00).toFixed(3)})`);
     lg.addColorStop(0.45, `rgba(${tr}, ${tg}, ${tb},  ${(alpha * 0.68).toFixed(3)})`);
     lg.addColorStop(0.80, `rgba(${tr}, ${tg}, ${tb},  ${(alpha * 0.20).toFixed(3)})`);
@@ -5414,6 +5473,7 @@ function drawCirrusCloud(
     const hh  = Math.max(1, halfH * (1.0 - si * 0.22));
     const a   = alpha * alphas[si];
     const hg  = ctx.createLinearGradient(cx - hw, sy, cx + hw, sy);
+    perfCollector.recordAlloc();
     hg.addColorStop(0,    `rgba(${tr}, ${tg}, ${tb}, 0)`);
     hg.addColorStop(0.12, `rgba(${tr}, ${tg}, ${tb}, ${a.toFixed(3)})`);
     hg.addColorStop(0.88, `rgba(${tr}, ${tg}, ${tb}, ${a.toFixed(3)})`);
@@ -5445,6 +5505,7 @@ function drawAshCloud(
     // Slow turbulent pulse — deterministic via bi phase offset, never Math.random
     const pulse = t === 0 ? 1 : 1 + 0.07 * Math.sin(t * 0.38 + bi * 1.27);
     const rg = ctx.createRadialGradient(bx, by, 0, bx, by, br * pulse);
+    perfCollector.recordAlloc();
     rg.addColorStop(0,    `rgba(${tr}, ${tg}, ${tb}, ${(alpha * 0.82).toFixed(3)})`);
     rg.addColorStop(0.55, `rgba(${tr}, ${tg}, ${tb}, ${(alpha * 0.44).toFixed(3)})`);
     rg.addColorStop(1,    `rgba(${tr}, ${tg}, ${tb}, 0)`);
@@ -5478,6 +5539,7 @@ function drawNightSky(
     const nx1 = w * 0.35;
     const ny1 = horizonY * 0.28;
     const nG1 = ctx.createRadialGradient(nx1, ny1, 0, nx1, ny1, r1);
+    perfCollector.recordAlloc();
     nG1.addColorStop(0,   `hsla(${hue}, 62%, 24%, ${(den * 0.30).toFixed(3)})`);
     nG1.addColorStop(0.5, `hsla(${hue}, 48%, 16%, ${(den * 0.14).toFixed(3)})`);
     nG1.addColorStop(1,   `hsla(${hue}, 32%, 10%, 0)`);
@@ -5488,6 +5550,7 @@ function drawNightSky(
     const nx2 = w * 0.68;
     const ny2 = horizonY * 0.44;
     const nG2 = ctx.createRadialGradient(nx2, ny2, 0, nx2, ny2, r2);
+    perfCollector.recordAlloc();
     nG2.addColorStop(0, `hsla(${(hue + 28) % 360}, 56%, 20%, ${(den * 0.20).toFixed(3)})`);
     nG2.addColorStop(1, `hsla(${(hue + 28) % 360}, 40%, 10%, 0)`);
     ctx.fillStyle = nG2;
@@ -5505,6 +5568,7 @@ function drawNightSky(
     ctx.translate(gb.cx, gb.cy);
     ctx.rotate(gb.angle);
     const bGrad = ctx.createLinearGradient(-gb.width, 0, gb.width, 0);
+    perfCollector.recordAlloc();
     bGrad.addColorStop(0,    `rgba(200, 205, 240, 0)`);
     bGrad.addColorStop(0.28, `rgba(200, 205, 240, ${(gba * 0.80).toFixed(3)})`);
     bGrad.addColorStop(0.50, `rgba(210, 215, 255, ${gba.toFixed(3)})`);
@@ -5528,6 +5592,7 @@ function drawNightSky(
       if (peakAlpha < 0.01) continue;
       const finalAlpha = peakAlpha * starVisibility;
       const sg = ctx.createLinearGradient(ss.x0, ss.y0, ss.x1, ss.y1);
+      perfCollector.recordAlloc();
       sg.addColorStop(0,    `rgba(255, 255, 255, ${(finalAlpha * 0.95).toFixed(3)})`);
       sg.addColorStop(0.35, `rgba(220, 235, 255, ${(finalAlpha * 0.50).toFixed(3)})`);
       sg.addColorStop(1,    `rgba(200, 220, 255, 0)`);
@@ -5580,6 +5645,7 @@ function drawGodRays(
     const midX = (x1 + x2) * 0.5;
     const midY = (y1 + y2) * 0.5;
     const rg   = ctx.createLinearGradient(sunX, sunY, midX, midY);
+    perfCollector.recordAlloc();
     const a0   = rayAlpha * ray.alphaMul;
     rg.addColorStop(0,   `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${a0.toFixed(3)})`);
     rg.addColorStop(0.6, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(a0 * 0.28).toFixed(3)})`);
@@ -5637,6 +5703,7 @@ function drawFrozenSheet(
       const tr = 40 + rngFs() * 80;                                // radius 40–120 px
       const ta = fsProfile.glacialDepth * (0.08 + rngFs() * 0.10); // 0.05–0.18 scaled
       const tg = ctx.createRadialGradient(tx, ty, 0, tx, ty, tr);
+      perfCollector.recordAlloc();
       tg.addColorStop(0,   `rgba(62, 118, 185, ${ta.toFixed(3)})`);
       tg.addColorStop(0.6, `rgba(80, 140, 205, ${(ta * 0.40).toFixed(3)})`);
       tg.addColorStop(1,   'rgba(80, 140, 205, 0)');
@@ -5818,6 +5885,7 @@ function drawFrozenSheet(
       ctx.globalAlpha = alpha;
       ctx.scale(1, gAR);   // flatten circle → ellipse; restore() undoes the scale
       const gg = ctx.createRadialGradient(gx, gy / gAR, 0, gx, gy / gAR, gRad);
+      perfCollector.recordAlloc();
       gg.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 1)`);
       gg.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
       ctx.fillStyle = gg;
@@ -5929,6 +5997,7 @@ function drawAuroraCurtains(
       const crnB  = Math.round(220 - colorShift * 40);
 
       const grad = ctx.createLinearGradient(cx, curtainTop, cx, curtainBtm);
+      perfCollector.recordAlloc();
       grad.addColorStop(0,    `rgba(${crnR}, ${crnG}, ${crnB}, 0)`);
       grad.addColorStop(0.10, `rgba(${crnR}, ${crnG}, ${crnB}, ${(alpha * 0.45).toFixed(3)})`);
       grad.addColorStop(0.30, `rgba(${bodyR}, ${bodyG}, ${bodyB}, ${alpha.toFixed(3)})`);
@@ -6016,6 +6085,7 @@ function drawAuroraCurtains(
 
       // Hummock body: soft radial gradient ellipse, icier/lighter than the surface
       const hg = ctx.createRadialGradient(hx, hy, 0, hx, hy, hw);
+      perfCollector.recordAlloc();
       hg.addColorStop(0,    `rgba(${Math.min(255, sr + 48)}, ${Math.min(255, sg + 55)}, ${Math.min(255, sb + 72)}, ${(hAlp * brightFac).toFixed(3)})`);
       hg.addColorStop(0.65, `rgba(${Math.min(255, sr + 18)}, ${Math.min(255, sg + 20)}, ${Math.min(255, sb + 28)}, ${(hAlp * brightFac * 0.35).toFixed(3)})`);
       hg.addColorStop(1,    `rgba(${sr}, ${sg}, ${sb}, 0)`);
@@ -6045,6 +6115,7 @@ function drawAuroraCurtains(
     ctx.globalCompositeOperation = 'lighter';
     const washA    = nightI * 0.055;
     const washGrad = ctx.createLinearGradient(0, gTop, 0, gBtm);
+    perfCollector.recordAlloc();
     washGrad.addColorStop(0, `rgba(20, 110, 55, ${washA.toFixed(3)})`);
     washGrad.addColorStop(1, `rgba(20, 110, 55, 0)`);
     ctx.fillStyle = washGrad;
@@ -6100,6 +6171,7 @@ function drawWaterFX(
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
     const reflGrad = ctx.createLinearGradient(0, wt, 0, wt + reflH);
+    perfCollector.recordAlloc();
     reflGrad.addColorStop(0,    `rgba(${horR}, ${horG}, ${horBl}, ${reflAlpha.toFixed(3)})`);
     reflGrad.addColorStop(0.55, `rgba(${Math.round((horR + topR) / 2)}, ${Math.round((horG + topG) / 2)}, ${Math.round((horBl + topBl) / 2)}, ${(reflAlpha * 0.42).toFixed(3)})`);
     reflGrad.addColorStop(1,    `rgba(${topR}, ${topG}, ${topBl}, 0)`);
@@ -6116,6 +6188,7 @@ function drawWaterFX(
     const patchH   = Math.min(reflH * 0.55, 55);
     const sunAlpha = 0.20 * dc.bright;
     const sunPatch = ctx.createRadialGradient(sunX, wt + 5, 0, sunX, wt + patchH, patchW);
+    perfCollector.recordAlloc();
     sunPatch.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${sunAlpha.toFixed(3)})`);
     sunPatch.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
     ctx.fillStyle = sunPatch;
@@ -6295,6 +6368,7 @@ function drawAlpineRidges(
   {
     const [sr, sg, sb] = pal.surface;
     const fill = ctx.createLinearGradient(0, horizonY, 0, terrainBtm);
+    perfCollector.recordAlloc();
     fill.addColorStop(0, `rgb(${Math.round(sr * 0.90)}, ${Math.round(sg * 0.90)}, ${Math.round(sb * 0.88)})`);
     fill.addColorStop(1, `rgb(${Math.round(sr * 0.58)}, ${Math.round(sg * 0.60)}, ${Math.round(sb * 0.56)})`);
     ctx.fillStyle = fill;
@@ -6419,6 +6493,7 @@ function drawAlpineRidges(
       const veilAlpha = 0.06 * (1 - depthFrac) * Math.max(0.12, b);
       if (veilAlpha > 0.003) {
         const veilGrad = ctx.createLinearGradient(0, 0, 0, horizonY);
+        perfCollector.recordAlloc();
         veilGrad.addColorStop(0,    `rgba(${hazeR}, ${hazeG}, ${hazeB}, ${(veilAlpha * 0.20).toFixed(3)})`);
         veilGrad.addColorStop(0.65, `rgba(${hazeR}, ${hazeG}, ${hazeB}, ${veilAlpha.toFixed(3)})`);
         veilGrad.addColorStop(1,    `rgba(${hazeR}, ${hazeG}, ${hazeB}, ${(veilAlpha * 0.35).toFixed(3)})`);
@@ -6494,6 +6569,7 @@ function drawAlpineRidges(
 
       ctx.save();
       const screeGrad = ctx.createLinearGradient(0, nearBaseY, 0, screeBtmY);
+      perfCollector.recordAlloc();
       screeGrad.addColorStop(0, `rgba(${scR}, ${scG}, ${scB}, ${screeAlpha.toFixed(3)})`);
       screeGrad.addColorStop(1, `rgba(${scR}, ${scG}, ${scB}, 0)`);
       ctx.fillStyle = screeGrad;
@@ -6642,6 +6718,7 @@ function drawCoastalLand(
   // Top edge at horizonY (flat); lower edge traces the composite shore curve.
   ctx.save();
   const landGrad = ctx.createLinearGradient(0, horizonY, 0, wTopY + shoreAmp * 0.6);
+  perfCollector.recordAlloc();
   landGrad.addColorStop(0,    `rgb(${Math.round(sr * 0.86)}, ${Math.round(sg * 0.86)}, ${Math.round(sb * 0.86)})`);
   landGrad.addColorStop(0.65, `rgb(${sr}, ${sg}, ${sb})`);
   landGrad.addColorStop(1,    `rgb(${Math.round(sr * 0.78)}, ${Math.round(sg * 0.82)}, ${Math.round(sb * 0.74)})`);
@@ -6686,6 +6763,7 @@ function drawCoastalLand(
   ctx.closePath();
 
   const beachGrad = ctx.createLinearGradient(0, wTopY - beachDepth, 0, wTopY + shoreAmp * 0.5);
+  perfCollector.recordAlloc();
   beachGrad.addColorStop(0,    `rgba(${sandR}, ${sandG}, ${sandB}, 0)`);
   beachGrad.addColorStop(0.45, `rgba(${sandR}, ${sandG}, ${sandB}, ${(beachA * 0.52).toFixed(3)})`);
   beachGrad.addColorStop(1,    `rgba(${sandR}, ${sandG}, ${sandB}, ${beachA.toFixed(3)})`);
@@ -6744,6 +6822,7 @@ function drawLavaSea(
   {
     ctx.save();
     const crustGrad = ctx.createLinearGradient(0, wt, 0, h);
+    perfCollector.recordAlloc();
     crustGrad.addColorStop(0,    'rgba(10, 4, 2, 0.80)');   // cool/thick at horizon
     crustGrad.addColorStop(0.50, 'rgba(16, 6, 3, 0.64)');
     crustGrad.addColorStop(1,    'rgba(24, 8, 4, 0.42)');   // thinner/warmer near camera
@@ -6834,6 +6913,7 @@ function drawLavaSea(
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     const nodeGrad = ctx.createRadialGradient(ax, ay, 0, ax, ay, nodeR * 2.8);
+    perfCollector.recordAlloc();
     nodeGrad.addColorStop(0,    `rgba(${Math.min(255, ar + 10)}, ${Math.min(255, ag + 90)}, ${Math.min(255, ab + 50)}, ${nodeA.toFixed(3)})`);
     nodeGrad.addColorStop(0.45, `rgba(${wr}, ${wg}, ${wb}, ${rimA.toFixed(3)})`);
     nodeGrad.addColorStop(1,    `rgba(${wr}, ${wg}, ${wb}, 0)`);
@@ -6851,6 +6931,7 @@ function drawLavaSea(
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     const shoreGrad = ctx.createLinearGradient(0, wt, 0, wt + shoreH);
+    perfCollector.recordAlloc();
     shoreGrad.addColorStop(0, `rgba(${ar}, ${ag}, ${ab}, 0.44)`);
     shoreGrad.addColorStop(1, `rgba(${wr}, ${wg}, ${wb}, 0)`);
     ctx.fillStyle = shoreGrad;
@@ -6866,6 +6947,7 @@ function drawLavaSea(
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     const radGrad = ctx.createLinearGradient(0, h - radH, 0, h);
+    perfCollector.recordAlloc();
     radGrad.addColorStop(0, `rgba(${wr}, ${wg}, ${wb}, 0)`);
     radGrad.addColorStop(1, `rgba(${wr}, ${Math.round(wg * 0.65)}, ${Math.round(wb * 0.28)}, 0.24)`);
     ctx.fillStyle = radGrad;
@@ -6968,6 +7050,7 @@ function drawOceanicSurface(
       for (let x = w; x >= 0; x -= 8) ctx.lineTo(x, crestAt(x) + slabH);
       ctx.closePath();
       const bodyGrad = ctx.createLinearGradient(0, baseY - amp, 0, baseY + slabH);
+      perfCollector.recordAlloc();
       bodyGrad.addColorStop(0, `rgba(${Math.min(255, wr + 32)}, ${Math.min(255, wg + 46)}, ${Math.min(255, wb + 52)}, ${(fillAlpha * 0.75).toFixed(3)})`);
       bodyGrad.addColorStop(1, `rgba(${wr}, ${wg}, ${wb}, 0)`);
       ctx.fillStyle = bodyGrad;
@@ -7199,6 +7282,7 @@ function drawTropicalLagoon(
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
     const shallowGrad = ctx.createLinearGradient(0, wTopY, 0, wTopY + shallowH);
+    perfCollector.recordAlloc();
     shallowGrad.addColorStop(0,   `rgba(${shR}, ${shG}, ${shB}, ${shA.toFixed(3)})`);
     shallowGrad.addColorStop(0.5, `rgba(${shR}, ${shG}, ${shB}, ${(shA * 0.38).toFixed(3)})`);
     shallowGrad.addColorStop(1,   `rgba(${shR}, ${shG}, ${shB}, 0)`);
@@ -7294,6 +7378,7 @@ function drawTropicalLagoon(
 
     ctx.save();
     const sandGrad = ctx.createLinearGradient(0, horizonY, 0, wTopY);
+    perfCollector.recordAlloc();
     sandGrad.addColorStop(0,    `rgb(${sandDR}, ${sandDG}, ${sandDB})`);   // darker at horizon
     sandGrad.addColorStop(0.70, `rgb(${sr}, ${sg}, ${sb})`);               // full surface colour
     sandGrad.addColorStop(1,    `rgb(${sandWR}, ${sandWG}, ${sandWB})`);   // slightly wet at waterline
@@ -7547,6 +7632,21 @@ function drawBarrenVacuum(
 }
 
 // ---------------------------------------------------------------------------
+// timed — perf-harness call-site wrapper (WO-PERF-HARNESS sub-part a).
+// Measures a draw* call as one named layer in perfCollector; a pure
+// passthrough (fn() with no performance.now() calls) when disabled, so
+// there is zero hot-path cost in prod. Wraps at the CALL SITE rather than
+// inside each draw* body — untouched function bodies stay byte-identical
+// regardless of internal early returns.
+// ---------------------------------------------------------------------------
+function timed(name: string, fn: () => void): void {
+  if (!perfCollector.enabled) { fn(); return; }
+  const __t0 = performance.now();
+  fn();
+  perfCollector.record(name, performance.now() - __t0);
+}
+
+// ---------------------------------------------------------------------------
 // drawScene — the per-frame compositor
 //
 // Ported from drawLandedScene (SolarSystemViewscreen.tsx L3477), adapted to
@@ -7582,6 +7682,7 @@ function drawScene(
     if (!hasAtmosphere) {
       // VACUUM: near-black sky regardless of sun position
       g = ctx.createLinearGradient(0, 0, 0, horizonY * 1.15);
+      perfCollector.recordAlloc();
       g.addColorStop(0,   'rgb(2, 2, 6)');
       g.addColorStop(0.6, 'rgb(4, 4, 12)');
       g.addColorStop(1,   'rgb(8, 8, 20)');
@@ -7590,6 +7691,7 @@ function drawScene(
       const warm = dc.warm;
       const skyGrad = model.layers.sky.gradient;
       g = ctx.createLinearGradient(0, 0, 0, horizonY * 1.15);
+      perfCollector.recordAlloc();
       if (skyGrad.length >= 2) {
         // Drive each stop through the day-cycle brightness curve.
         // Stops near 1.0 (horizon) get more warm sunrise/sunset tint than the zenith.
@@ -7632,6 +7734,7 @@ function drawScene(
           const [br, bg2, bb] = band.color;
           const bAlpha = dc.bright * 0.16;
           const bGrad  = ctx.createLinearGradient(0, bandCY - bandHH, 0, bandCY + bandHH);
+          perfCollector.recordAlloc();
           bGrad.addColorStop(0,   `rgba(${br}, ${bg2}, ${bb}, 0)`);
           bGrad.addColorStop(0.5, `rgba(${br}, ${bg2}, ${bb}, ${bAlpha.toFixed(3)})`);
           bGrad.addColorStop(1,   `rgba(${br}, ${bg2}, ${bb}, 0)`);
@@ -7651,6 +7754,7 @@ function drawScene(
     const wG = Math.min(255, Math.round(100 + sc.g * 0.18));
     const wB = Math.min(255, Math.round(20 + sc.b * 0.22));
     const sunriseBand = ctx.createLinearGradient(0, horizonY - bandH, 0, horizonY);
+    perfCollector.recordAlloc();
     sunriseBand.addColorStop(0,   `rgba(${wR}, ${wG}, ${wB}, 0)`);
     sunriseBand.addColorStop(0.5, `rgba(${wR}, ${Math.max(0, wG - 30)}, ${Math.max(0, wB - 10)}, ${(warmAlpha * 0.55).toFixed(3)})`);
     sunriseBand.addColorStop(1,   `rgba(${wR}, ${Math.max(0, wG - 60)}, 10, ${warmAlpha.toFixed(3)})`);
@@ -7663,7 +7767,7 @@ function drawScene(
 
   // 1b) Weather sky overlay
   if (hasAtmosphere && cache.skyDarken > 0) {
-    drawWeatherSky(ctx, w, horizonY, cache.skyDarken, cache.hazeColor);
+    timed('drawWeatherSky', () => drawWeatherSky(ctx, w, horizonY, cache.skyDarken, cache.hazeColor));
   }
 
   // 2) Starfield — multi-layer color-graded (WO-V3-CELESTIAL).
@@ -7733,20 +7837,20 @@ function drawScene(
   // 2c) Night sky — nebula wash, galactic band, shooting stars (WO-V2-CLOUDS-RAYS).
   //     Gated on starVisibility so effects fade out cleanly well before sunrise.
   if (hasAtmosphere && starVisibility > 0.25) {
-    drawNightSky(ctx, w, horizonY, t, cache, starVisibility);
+    timed('drawNightSky', () => drawNightSky(ctx, w, horizonY, t, cache, starVisibility));
   }
 
   // 2f) Ring arc — planet's own ring system as an overhead arc stretching horizon-to-horizon.
   //     Drawn before clouds (rings are above the atmosphere) and before the sun disc.
   if (model.layers.celestial.ringArc) {
-    drawRingArc(ctx, w, horizonY, model, dc);
+    timed('drawRingArc', () => drawRingArc(ctx, w, horizonY, model, dc));
   }
 
   // 2g) ARCTIC aurora curtains — sky phase (WO-V5-ARCTIC).
   //     Drawn after stars + ring-arc, before god-rays and clouds.  Additive glow
   //     so curtains bloom over the dark sky; intensity gated on nightI inside fn.
   if (model.planetType === 'ARCTIC') {
-    drawAuroraCurtains(ctx, w, h, horizonY, t, cache, dc, 'sky');
+    timed('drawAuroraCurtains', () => drawAuroraCurtains(ctx, w, h, horizonY, t, cache, dc, 'sky'));
   }
 
   // 2d) God-rays — wedge fan from the sun, drawn BEFORE clouds so cloud masses
@@ -7758,7 +7862,7 @@ function drawScene(
     const rayXu     = cache.sunAzDir > 0 ? rayPhase : 1 - rayPhase;
     const raySunX   = w * (0.06 + rayXu * 0.88);
     const raySunY   = horizonY - Math.max(-0.05, dc.sunAlt) * horizonY * SKY_Y_SCALE;
-    drawGodRays(ctx, w, horizonY, raySunX, raySunY, cache, dc);
+    timed('drawGodRays', () => drawGodRays(ctx, w, horizonY, raySunX, raySunY, cache, dc));
   }
 
   // 2b) Clouds — kind-distinct parallax layers (WO-V2-CLOUDS-RAYS).
@@ -7775,16 +7879,17 @@ function drawScene(
       const ch = h * c.hFrac;
       const cy = Math.min(horizonY * c.yFrac * 2, horizonY - ch - 4);
       if (c.kind === 'cumulus') {
-        drawCumulusCloud(ctx, cx, cy, c.w, ch, c.alpha,
-          cloudTR, cloudTG, cloudTB, c.lobeCount, c.lobeOffsets);
+        timed('drawCumulusCloud', () => drawCumulusCloud(ctx, cx, cy, c.w, ch, c.alpha,
+          cloudTR, cloudTG, cloudTB, c.lobeCount, c.lobeOffsets));
       } else if (c.kind === 'cirrus') {
-        drawCirrusCloud(ctx, cx, cy, c.w, ch, c.alpha, cloudTR, cloudTG, cloudTB);
+        timed('drawCirrusCloud', () => drawCirrusCloud(ctx, cx, cy, c.w, ch, c.alpha, cloudTR, cloudTG, cloudTB));
       } else if (c.kind === 'ash') {
-        drawAshCloud(ctx, cx, cy, c.w, ch, c.alpha,
-          cloudTR, cloudTG, cloudTB, t, c.layer);
+        timed('drawAshCloud', () => drawAshCloud(ctx, cx, cy, c.w, ch, c.alpha,
+          cloudTR, cloudTG, cloudTB, t, c.layer));
       } else {
         // Overcast deck — full-width band, linear gradient top→bottom
         const og = ctx.createLinearGradient(0, cy, 0, cy + ch);
+        perfCollector.recordAlloc();
         og.addColorStop(0, `rgba(${cloudTR}, ${cloudTG}, ${cloudTB}, ${(c.alpha * 0.82).toFixed(3)})`);
         og.addColorStop(1, `rgba(${cloudTR}, ${cloudTG}, ${cloudTB}, ${(c.alpha * 0.28).toFixed(3)})`);
         ctx.fillStyle = og;
@@ -7812,16 +7917,17 @@ function drawScene(
     const sunDim = (hasAtmosphere ? (1 - cache.skyDarken * 0.8) : 1) * horizonFade;
     if (cache.sunSpecial === 'accretion') {
       // BLACK_HOLE — accretion disc replaces the normal corona+disc (WO-V3-CELESTIAL)
-      drawAccretionDisc(ctx, sunX, sunY, cache, dc, t);
+      timed('drawAccretionDisc', () => drawAccretionDisc(ctx, sunX, sunY, cache, dc, t));
     } else if (cache.sunSpecial === 'pulsar') {
       // NEUTRON — sweeping lighthouse beams replace normal sun (WO-V3-CELESTIAL)
-      drawPulsar(ctx, sunX, sunY, cache, dc, t);
+      timed('drawPulsar', () => drawPulsar(ctx, sunX, sunY, cache, dc, t));
     } else {
       // Normal star: corona glow + disc + optional companion
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
       const breathe = t === 0 ? 1 : 0.92 + 0.08 * Math.sin(t * 0.5);
       const coronaGrad = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, coronaR);
+      perfCollector.recordAlloc();
       coronaGrad.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(0.35).toFixed(3)})`);
       coronaGrad.addColorStop(0.35, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(0.12).toFixed(3)})`);
       coronaGrad.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
@@ -7830,6 +7936,7 @@ function drawScene(
       ctx.fillRect(sunX - coronaR, sunY - coronaR, coronaR * 2, coronaR * 2);
       const cw = cache.coreWhite;
       const discGrad = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, sunR);
+      perfCollector.recordAlloc();
       discGrad.addColorStop(0, `rgba(${Math.min(255, sc.r + cw * 0.4)}, ${Math.min(255, sc.g + cw * 0.4)}, ${Math.min(255, sc.b + cw * 0.4)}, 0.98)`);
       discGrad.addColorStop(0.6, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0.95)`);
       discGrad.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0.5)`);
@@ -7843,6 +7950,7 @@ function drawScene(
         const c2x = sunX + sunR * 4.5 * c2side;
         const c2y = sunY + sunR * 1.8;
         const cc = ctx.createRadialGradient(c2x, c2y, 0, c2x, c2y, c2r * 4);
+        perfCollector.recordAlloc();
         cc.addColorStop(0, `rgba(${c2.r}, ${c2.g}, ${c2.b}, 0.4)`);
         cc.addColorStop(1, `rgba(${c2.r}, ${c2.g}, ${c2.b}, 0)`);
         ctx.fillStyle = cc;
@@ -7858,12 +7966,12 @@ function drawScene(
 
   // 3a) Sibling planets arcing across the sky
   if (cache.skyPlanets.length > 0) {
-    drawLandedSkyPlanets(ctx, w, horizonY, t, cache, dc, sunWorldX, sunWorldY, dc.sunAlt, sunXu);
+    timed('drawLandedSkyPlanets', () => drawLandedSkyPlanets(ctx, w, horizonY, t, cache, dc, sunWorldX, sunWorldY, dc.sunAlt, sunXu));
   }
 
   // 3b) Moons
   if (cache.moons.length > 0) {
-    drawLandedMoons(ctx, w, horizonY, t, cache, dc, sunWorldX, sunWorldY, dc.sunAlt, sunXu);
+    timed('drawLandedMoons', () => drawLandedMoons(ctx, w, horizonY, t, cache, dc, sunWorldX, sunWorldY, dc.sunAlt, sunXu));
   }
 
   // 4) Horizon glow
@@ -7881,6 +7989,7 @@ function drawScene(
     // only on MOUNTAINOUS; `?? 1.0` reproduces the prior radius everywhere else.
     const glareCap = getProfile(model.planetType).sunGlareCap ?? 1.0;
     const shg = ctx.createRadialGradient(sunX, horizonY, 0, sunX, horizonY, Math.max(w, h) * 0.35 * glareCap);
+    perfCollector.recordAlloc();
     const sa = 0.22 * Math.max(0.2, dc.bright) * (1 + dc.warm * 0.8);
     shg.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${sa.toFixed(3)})`);
     shg.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
@@ -7901,21 +8010,21 @@ function drawScene(
     // Lava sea: cooled-crust crackle + emissive channel network over the base gradient.
     // Self-emissive — not keyed to the day cycle; always visible.
     if (cache.waterType === 'lava') {
-      drawLavaSea(ctx, w, h, cache);
+      timed('drawLavaSea', () => drawLavaSea(ctx, w, h, cache));
     }
 
     // Frozen sheet: cracked pack-ice plates + pressure ridges + glacial tint.
     // ICE only — ARCTIC frozen water uses the simpler base gradient here;
     // its sea-ice + aurora treatment is WO-V5-ARCTIC.
     if (cache.waterType === 'frozen' && cache.model.planetType === 'ICE') {
-      drawFrozenSheet(ctx, w, h, t, cache, dc, sunX, wt, wh);
+      timed('drawFrozenSheet', () => drawFrozenSheet(ctx, w, h, t, cache, dc, sunX, wt, wh));
     }
 
     // OCEANIC open-water signature: parallax swell field + sun/moon-glitter
     // specular track + distant archipelago islets.  OCEANIC waterType is 'ocean';
     // gate on planetType so coastal/tidal TERRAN variants are not affected.
     if (cache.model.planetType === 'OCEANIC') {
-      drawOceanicSurface(ctx, w, h, t, cache, dc, sunX, wt, wh);
+      timed('drawOceanicSurface', () => drawOceanicSurface(ctx, w, h, t, cache, dc, sunX, wt, wh));
     }
 
     const crestRGB = dc.sunUp
@@ -7959,6 +8068,7 @@ function drawScene(
       for (let x = w; x >= 0; x -= 10) ctx.lineTo(x, yAt(x) + slab);
       ctx.closePath();
       const faceGrad = ctx.createLinearGradient(0, baseY - amp, 0, baseY + slab);
+      perfCollector.recordAlloc();
       faceGrad.addColorStop(0, `rgba(${Math.round(70 + f * 60)}, ${Math.round(140 + f * 50)}, ${Math.round(175 + f * 40)}, ${(0.30 + f * 0.22).toFixed(3)})`);
       faceGrad.addColorStop(1, 'rgba(6, 26, 48, 0)');
       ctx.fillStyle = faceGrad;
@@ -7997,7 +8107,7 @@ function drawScene(
     // WO-V3-WATER-FX: specular glitter, flip-reflection, whitecap foam.
     // Liquid types only — frozen and lava have no liquid-surface light optics.
     if (cache.waterType !== 'frozen' && cache.waterType !== 'lava' && cache.waterType !== '') {
-      drawWaterFX(ctx, w, h, t, cache, dc, sunX, wt, wh);
+      timed('drawWaterFX', () => drawWaterFX(ctx, w, h, t, cache, dc, sunX, wt, wh));
     }
 
     ctx.restore();
@@ -8015,22 +8125,22 @@ function drawScene(
     // storm oval, and limb darkening — painting over the sky gradient from §1.
     // Ground/ridge/water paths are already gated out by this else-if chain;
     // §4b water is also skipped because GAS_GIANT has waterAllowList:[] → hasWater=false.
-    drawGasGiantBands(ctx, w, h, t, model, cache, dc);
+    timed('drawGasGiantBands', () => drawGasGiantBands(ctx, w, h, t, model, cache, dc));
   } else if (cache.terrainMode === 'plating') {
     // ARTIFICIAL skyline: megastructure silhouettes root at horizonY and project
     // upward into the sky band — drawn before plating so spires sit on the horizon
     // while the plating deck fills the foreground ground plane below.
-    drawArtificialSkyline(ctx, w, h, t, model, cache, dc, sunX);
-    drawPlating(ctx, w, h, t, model, cache, dc);
+    timed('drawArtificialSkyline', () => drawArtificialSkyline(ctx, w, h, t, model, cache, dc, sunX));
+    timed('drawPlating', () => drawPlating(ctx, w, h, t, model, cache, dc));
   } else if (model.planetType === 'DESERT') {
     // DESERT signature — replaces the generic ridge renderer with a sculpted dune sea.
     // No water on DESERT worlds (waterAllowList: []), so no water-clip needed here.
-    drawDuneSea(ctx, w, h, t, model, cache, dc, sunX);
+    timed('drawDuneSea', () => drawDuneSea(ctx, w, h, t, model, cache, dc, sunX));
   } else if (model.planetType === 'MOUNTAINOUS') {
     // MOUNTAINOUS alpine signature — layered snow-capped ridgelines receding into
     // atmospheric haze + scree/treeline foreground band.  Handles coastal water clip
     // internally so the pre-painted water band remains unobscured.
-    drawAlpineRidges(ctx, w, h, t, model, cache, dc, horizonY, sunX);
+    timed('drawAlpineRidges', () => drawAlpineRidges(ctx, w, h, t, model, cache, dc, horizonY, sunX));
   } else {
     // Default surface path — ridges + ground plane draw regardless of water presence.
     // When water is present, ridge fills clip to [0, waterTopY] so they remain visible
@@ -8124,6 +8234,7 @@ function drawScene(
           const veilAlpha = 0.07 * (1 - depthFrac) * Math.max(0.2, dc.bright);
           if (veilAlpha > 0.004) {
             const veilGrad = ctx.createLinearGradient(0, 0, 0, horizonY);
+            perfCollector.recordAlloc();
             veilGrad.addColorStop(0,    `rgba(${hazeR}, ${hazeG}, ${hazeB}, ${(veilAlpha * 0.25).toFixed(3)})`);
             veilGrad.addColorStop(0.65, `rgba(${hazeR}, ${hazeG}, ${hazeB}, ${veilAlpha.toFixed(3)})`);
             veilGrad.addColorStop(1,    `rgba(${hazeR}, ${hazeG}, ${hazeB}, ${(veilAlpha * 0.4).toFixed(3)})`);
@@ -8150,11 +8261,11 @@ function drawScene(
       const groundBtm = cache.hasWater ? wTopY : h;
       if (groundBtm > groundY) {
         if (cache.waterType === 'coastal' && model.planetType === 'TERRAN') {
-          drawCoastalLand(ctx, w, h, t, model, cache, dc, horizonY, wTopY);
+          timed('drawCoastalLand', () => drawCoastalLand(ctx, w, h, t, model, cache, dc, horizonY, wTopY));
         } else if (model.planetType === 'TROPICAL') {
           // TROPICAL lagoon signature: turquoise shallows overlay, seeded reef ring,
           // sandy beach gradient, and palm-fringe silhouettes at the waterline.
-          drawTropicalLagoon(ctx, w, h, t, cache, dc, sunX, horizonY, wTopY);
+          timed('drawTropicalLagoon', () => drawTropicalLagoon(ctx, w, h, t, cache, dc, sunX, horizonY, wTopY));
         } else {
           ctx.fillStyle = rgba(model.palette.surface, 1);
           ctx.fillRect(0, groundY, w, groundBtm - groundY);
@@ -8167,14 +8278,14 @@ function drawScene(
     if (model.planetType === 'ARCTIC') {
       const arcticGBtm = cache.hasWater ? wTopY : h;
       if (arcticGBtm > horizonY) {
-        drawAuroraCurtains(ctx, w, h, horizonY, t, cache, dc, 'ground', arcticGBtm);
+        timed('drawAuroraCurtains', () => drawAuroraCurtains(ctx, w, h, horizonY, t, cache, dc, 'ground', arcticGBtm));
       }
     }
 
     // 5a'') BARREN vacuum overlay — dense starfield + crater field + terminator shadow.
     // Drawn over ridge fills; existing basalt rock scatter (§5f) renders on top.
     if (model.planetType === 'BARREN') {
-      drawBarrenVacuum(ctx, w, h, t, model, cache, dc, horizonY, sunX);
+      timed('drawBarrenVacuum', () => drawBarrenVacuum(ctx, w, h, t, model, cache, dc, horizonY, sunX));
     }
 
     // 5a+) River corridor — TERRAN/JUNGLE with citadel (river mode).
@@ -8187,14 +8298,14 @@ function drawScene(
       (model.planetType === 'TERRAN' || model.planetType === 'JUNGLE') &&
       cache.scatterScreens.some(g => g.kind === 'citadel')
     ) {
-      drawRiverCorridor(ctx, w, h, t, model, cache, dc, horizonY, wTopY);
+      timed('drawRiverCorridor', () => drawRiverCorridor(ctx, w, h, t, model, cache, dc, horizonY, wTopY));
     }
   }
 
   // 5b) Terrain landmarks — silhouettes from model.layers.terrain.landmarks.
   //     Drawn for 'surface' and 'plating'; GAS_GIANT emits none so this is a no-op.
   if (cache.landmarks.length > 0) {
-    drawLandmarks(ctx, cache, dc);
+    timed('drawLandmarks', () => drawLandmarks(ctx, cache, dc));
   }
 
   // 5f) Feature scatters — flora tufts / rock blobs / glitter-sparks.
@@ -8204,7 +8315,7 @@ function drawScene(
   //     NOTE: the 'citadel' scatter kind is skipped inside drawScatterInstances and
   //     drawn separately in step 5g so it always sits on top of the flora canopy.
   if (cache.scatterScreens.length > 0) {
-    drawScatterInstances(ctx, t, cache, dc);
+    timed('scatter', () => drawScatterInstances(ctx, t, cache, dc));
   }
 
   // 5g) Citadel structure — drawn AFTER flora scatter (step 5f) so the settlement
@@ -8212,26 +8323,26 @@ function drawScene(
   //     scatter group is absent (site-gated in the pipeline: only emitted when
   //     site.citadelCeiling > 0).
   if (cache.scatterScreens.some(g => g.kind === 'citadel')) {
-    drawCitadelStructure(ctx, t, cache, dc);
+    timed('drawCitadelStructure', () => drawCitadelStructure(ctx, t, cache, dc));
   }
 
   // 5c) Deposit markers — ore-vein / gas-seep / thermal-vent / hydrocarbon-pool /
   //     crystal / biolumin — drawn after terrain so they sit on the ground surface.
   for (const dm of cache.depositScreens) {
-    drawDepositGlyph(ctx, w, h, t, dm.sx, dm.sy, dm.visual, dm.intensity, model.palette.accent);
+    timed('drawDepositGlyph', () => drawDepositGlyph(ctx, w, h, t, dm.sx, dm.sy, dm.visual, dm.intensity, model.palette.accent));
   }
 
   // 5d) Energy source marker — GEOTHERMAL / TIDAL / SOLAR / WIND
   if (cache.energyScreen) {
     const em = cache.energyScreen;
-    drawEnergyGlyph(ctx, w, h, t, em.sx, em.sy, em.source, em.intensity, model.palette.accent);
+    timed('drawEnergyGlyph', () => drawEnergyGlyph(ctx, w, h, t, em.sx, em.sy, em.source, em.intensity, model.palette.accent));
   }
 
   // 5e) Hazard overlays — drawn with source-over + alpha floor (Truthfulness clause §2.5).
   //     Must remain visible even on high-desirability lush worlds: source-over prevents
   //     the bloom/lighter composite from washing the glyph out.
   for (const hz of cache.hazardScreens) {
-    drawHazardGlyph(ctx, w, h, t, hz.visual, hz.severity, hz.pts);
+    timed('drawHazardGlyph', () => drawHazardGlyph(ctx, w, h, t, hz.visual, hz.severity, hz.pts));
   }
 
   // 6) Atmosphere haze overlay (atmospheric worlds only)
@@ -8239,6 +8350,7 @@ function drawScene(
     ctx.save();
     ctx.globalCompositeOperation = 'source-over';
     const hazeGrad = ctx.createLinearGradient(0, horizonY * 0.7, 0, horizonY * 1.05);
+    perfCollector.recordAlloc();
     const [hr, hg, hb] = cache.hazeColor.split(',').map((s) => parseInt(s.trim(), 10));
     hazeGrad.addColorStop(0, `rgba(${hr}, ${hg}, ${hb}, 0)`);
     hazeGrad.addColorStop(1, `rgba(${hr}, ${hg}, ${hb}, ${(cache.hazeStrength * 0.35 * dc.bright).toFixed(3)})`);
@@ -8249,7 +8361,7 @@ function drawScene(
 
   // 7) Particles — foreground atmospheric effects (multi-kind compositor)
   if (cache.particleGroups.length > 0) {
-    drawLandedParticles(ctx, w, h, t, cache);
+    timed('drawLandedParticles', () => drawLandedParticles(ctx, w, h, t, cache));
   }
 
   // 8) Scene-level night dim (atmospheric worlds only — vacuum has no atmosphere
@@ -8325,6 +8437,7 @@ export function mount(model: VistaModel, target: VistaTarget): VistaHandle {
   let currentT = 0;
 
   function render(): void {
+    perfCollector.frameStart();
     // Rebuild grain tile when model.seed changes (new planet loaded via update()).
     if (currentModel.seed !== grainSeedKey) {
       grainSeedKey = currentModel.seed;
@@ -8335,10 +8448,11 @@ export function mount(model: VistaModel, target: VistaTarget): VistaHandle {
     drawScene(offCtx, w, h, currentT, currentModel, cache);
     // Post-process chain: blit → bloom → vignette → split-tone grade → film grain.
     const profile = getProfile(currentModel.planetType);
-    postProcess(
+    timed('postProcess', () => postProcess(
       ctx, offscreen, w, h, currentModel, grainTile, profile.grade,
       bloomScratch, currentInput?.view?.quality,
-    );
+    ));
+    perfCollector.frameEnd();
   }
 
   // Initial render at t=0 (reduced-motion / frozen frame)

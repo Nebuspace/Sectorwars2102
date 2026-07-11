@@ -41,6 +41,9 @@ import type { VistaInput } from '../contract';
 import VistaCanvas from '../react';
 import { SeededRng, deriveChildSeed } from '../core/rng';
 import { DAY_CYCLE_SECONDS } from '../render/canvas2d/backend';
+// PERF-HARNESS sub-part (c) — optional mount per the brief; expected tsc gap
+// until sub-part (b)'s collector lands (see PerfOverlay.tsx's own comment).
+import PerfOverlay from '../perf/PerfOverlay';
 
 // ---------------------------------------------------------------------------
 // Night-clock helper
@@ -661,6 +664,15 @@ const FIXED_INPUTS: Record<string, VistaInput> = {
 const MAX_SETTLE_FRAMES = 60;
 
 export default function VistaProof() {
+  // PERF-HARNESS benchmark hook (additive, zero behavior change when unset):
+  // a headless benchmark driver can page.addInitScript() a FULL custom
+  // VistaInput here -- pre-navigation, so it's present before this component's
+  // first render -- to reach seeds/hazards/moons/rings/nebula combinations the
+  // ?type=+slider surface below can't express. When set, it takes priority
+  // over EVERYTHING else in this function (type param, slider overrides); the
+  // existing lab-driven paths are otherwise completely untouched.
+  const externalInput = (window as any).__VISTA_PERF_INPUT__ as VistaInput | undefined;
+
   // Select input: ?type=<PLANET_TYPE> → FIXED_INPUTS lookup; absent/unknown → PROOF_INPUT.
   // Select phase: ?phase=night → night-mode clock (3 am, sun below horizon); default = day.
   const params     = new URLSearchParams(window.location.search);
@@ -704,7 +716,7 @@ export default function VistaProof() {
     ovNativeLife    !== undefined || ovAtmDensity  !== undefined ||
     ovHabitability  !== undefined;
 
-  const activeInput: VistaInput = hasOverrides ? {
+  const activeInput: VistaInput = externalInput ?? (hasOverrides ? {
     ...baseInput,
     planet: {
       ...baseInput.planet,
@@ -716,7 +728,7 @@ export default function VistaProof() {
       }),
       ...(ovHabitability  !== undefined && { habitability:  Math.round(ovHabitability * 100) }),
     },
-  } : baseInput;
+  } : baseInput);
 
   // Build a label that lists active override keys for the harness footer.
   const overrideKeys = (
@@ -729,7 +741,9 @@ export default function VistaProof() {
     ] as (string | false)[]
   ).filter(Boolean) as string[];
 
-  const activeLabel = overrideKeys.length > 0
+  const activeLabel = externalInput
+    ? `type: ${externalInput.planet.type} [external]`
+    : overrideKeys.length > 0
     ? `type: ${typeParam || 'default'} [${overrideKeys.join(',')}]`
     : (typeParam && FIXED_INPUTS[typeParam]
         ? `type: ${typeParam}`
@@ -812,6 +826,7 @@ export default function VistaProof() {
         style={{ width: 1440, height: 900, position: 'relative', marginTop: 20 }}
       >
         <VistaCanvas input={activeInput} clock={activeClock} />
+        <PerfOverlay />
       </div>
 
       <div style={{ color: '#666', fontSize: 11, fontFamily: 'monospace', marginTop: 8 }}>

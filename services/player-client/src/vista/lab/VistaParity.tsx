@@ -33,6 +33,9 @@ import {
   landedPalette,
 } from '../../components/tactical/SolarSystemViewscreen';
 import { VistaCanvas } from '../react';
+// PERF-HARNESS sub-part (c) — optional mount per the brief; expected tsc gap
+// until sub-part (b)'s collector lands (see PerfOverlay.tsx's own comment).
+import PerfOverlay from '../perf/PerfOverlay';
 
 // ---------------------------------------------------------------------------
 // Representative per-type sources — ONE source drives BOTH sides.
@@ -221,11 +224,14 @@ export default function VistaParity() {
         >
           {engineInput
             ? (
-              <VistaCanvas
-                input={engineInput}
-                clock={0}
-                style={{ width: '100%', height: '100%' }}
-              />
+              <>
+                <VistaCanvas
+                  input={engineInput}
+                  clock={0}
+                  style={{ width: '100%', height: '100%' }}
+                />
+                <PerfOverlay />
+              </>
             )
             : (
               <div style={{ color: '#f55', padding: 12, fontFamily: 'monospace', fontSize: 11 }}>
