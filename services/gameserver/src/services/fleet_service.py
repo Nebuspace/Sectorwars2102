@@ -1385,6 +1385,19 @@ class FleetService:
             bounty_service = BountyService(self.db)
 
             # --- BOUNTY: per-member ledger resolution -------------------------
+            # WO-BOUNTY-COLLECT-FLUSH (fleet twin): killed_player was loaded
+            # UNLOCKED via ship.owner above and MUTATED IN-MEMORY by
+            # ShipService.destroy_ship (insurance payout player.credits +=
+            # compensation, escape-pod reseat player.current_ship_id) before
+            # this lock — unflushed on this autoflush=False session, since the
+            # intervening cargo-wreck flush only fires on a NON-empty hold.
+            # The .populate_existing() below (closing the stale-identity-map
+            # re-read) would otherwise DISCARD those pending mutations on
+            # every empty-cargo kill. Flushing here, immediately before the
+            # lock call, persists them first so the populate_existing re-read
+            # picks them up fresh instead of clobbering them.
+            self.db.flush()
+
             # Lock the killed (target) player's row ONCE for the whole loop so
             # the JSONB read/clear and reputation reads are serialized against
             # concurrent kills (collect_bounty_share locks each HUNTER row, not
@@ -1392,7 +1405,7 @@ class FleetService:
             # collect_bounty which locks both).
             killed_player = self.db.query(Player).filter(
                 Player.id == killed_player_id
-            ).with_for_update().first()
+            ).populate_existing().with_for_update().first()
 
             had_bounty = False
             # Designate the LAST participant to claim the pay-once-then-cleared
@@ -1476,9 +1489,14 @@ class FleetService:
                             and is_good_standing(killed_player)):
                         grey_service = GreyFlagService(self.db)
                         for pid in penalized_ids:
+                            # .populate_existing(): row is already FOR-UPDATE-
+                            # held from the loop above (bounty_service's own
+                            # lock on this same hunter row) + upstream
+                            # flushes — no flush needed here.
                             member = (
                                 self.db.query(Player)
                                 .filter(Player.id == pid)
+                                .populate_existing()
                                 .with_for_update()
                                 .first()
                             )

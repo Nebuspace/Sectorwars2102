@@ -714,9 +714,12 @@ class BountyService:
         n = max(1, int(num_participants))
 
         # Lock THIS member's row before any credit mutation (lost-update guard).
+        # .populate_existing() mirrors WO-BOUNTY-COLLECT-FLUSH above: no flush
+        # needed here (nothing pending on hunter before this lock).
         hunter = (
             self.db.query(Player)
             .filter(Player.id == hunter_id)
+            .populate_existing()
             .with_for_update()
             .first()
         )
