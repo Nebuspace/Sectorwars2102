@@ -29,7 +29,7 @@
 
 import { VistaInput, VistaModel, RGB } from '../contract';
 import { SeedBus, SeededRng, deriveChildSeed } from './rng';
-import { getProfile, isProfiledType, ArchetypeEntry, LandmarkKind, WaterType } from './profiles';
+import { getProfile, isProfiledType, ArchetypeEntry, LandmarkKind, WaterType, PlanetProfile } from './profiles';
 import { derivePalette, hexToRgb } from './palette';
 import {
   placeFloraScatters,
@@ -127,6 +127,8 @@ function deriveLighting(
   desirability: number,
   sunAzimuth: number,
   sunElevation: number,
+  profile: PlanetProfile,
+  emissiveRng: SeededRng,
 ): VistaModel['lighting'] {
   const starKind  = input.celestial.star.kind;
   const starColor = hexToRgb(input.celestial.star.color);
@@ -168,6 +170,30 @@ function deriveLighting(
   const warm: RGB = [255, 240, 210];
   const keyColor = lerpRgb(starColor, warm, desirability * 0.4);
 
+  // [TK-2] Emissive light source — ONLY drawn from emissiveRng when the
+  // profile actually configures one, so every profile WITHOUT emissiveSource
+  // never touches this stream: their models stay byte-identical (both in
+  // pixel output AND in downstream rng-draw sequence) to before this field
+  // existed. Color: 'alpenglow' uses keyColor (the sun's own color — alpenglow
+  // IS sunlight); 'lava'/'aurora' use palette.accent (already the type's
+  // documented "glow" color — see profiles.ts's per-profile comments).
+  let emissiveSource: VistaModel['lighting']['emissiveSource'];
+  if (profile.emissiveSource) {
+    const base = profile.emissiveSource;
+    const jitterX  = (emissiveRng.next01() - 0.5) * 0.10; // ±0.05
+    const jitterY  = (emissiveRng.next01() - 0.5) * 0.06; // ±0.03
+    const jitterI  = 0.85 + emissiveRng.next01() * 0.30;  // ×0.85–1.15
+    const jitterR  = 0.90 + emissiveRng.next01() * 0.20;  // ×0.90–1.10
+    const color: RGB = base.kind === 'alpenglow' ? keyColor : palette.accent;
+    emissiveSource = {
+      kind:      base.kind,
+      pos:       [clamp01(base.pos[0] + jitterX), clamp01(base.pos[1] + jitterY)],
+      color,
+      intensity: clamp01(base.intensity * jitterI),
+      radius:    Math.max(0.05, base.radius * jitterR),
+    };
+  }
+
   return {
     keyDir:           [sunAzimuth, sunElevation],
     keyColor,
@@ -176,6 +202,7 @@ function deriveLighting(
     fill,
     bloom,
     colorGradeWarmth,
+    ...(emissiveSource ? { emissiveSource } : {}),
   };
 }
 
@@ -688,6 +715,45 @@ function buildTerrain(
     },
     landmarks,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Stage 7a — buildHero  (WO-VISTA-TK1; 6 types only)
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate the hero-landform descriptor for this world — the single
+ * dominant midground focal feature (WO-VISTA-TK1). Only emitted when the
+ * profile assigns a shape (profiles.ts's PlanetProfile.heroLandform:
+ * VOLCANIC=cone, ICE=glacier, OCEANIC=sea-stack, BARREN=mesa,
+ * MOUNTAINOUS=massif, TERRAN=delta-bluff). Absent for all other types →
+ * `undefined`, so their models are byte-identical to before this stage
+ * existed and no rng is drawn for them.
+ *
+ * ISOLATION: drawn from an independent 'hero-landform' child seed — NOT one
+ * of the 10 SeedBus streams — so adding this stage never shifts any other
+ * stream's draw sequence (same isolation pattern as buildFeatures's
+ * 'hero-flora' / 'citadel-anchor' / 'dense-flora' streams above).
+ */
+function buildHero(
+  input: VistaInput,
+  profile: PlanetProfile,
+  horizonY: number,
+): VistaModel['layers']['hero'] {
+  const cfg = profile.heroLandform;
+  if (!cfg) return undefined;
+
+  const heroRng = new SeededRng(deriveChildSeed(input.seed, 'hero-landform'));
+
+  // Center-biased X so the hero reads as the dominant midground feature
+  // without ever crowding the canvas edges.
+  const x = 0.30 + heroRng.next01() * 0.40;   // [0.30 .. 0.70]
+  // Base sits ON the ground line, exactly like a terrain.landmarks entry.
+  const y = horizonY;
+  // ±12% seeded jitter around the profile's base size.
+  const scale = cfg.baseScale * (0.88 + heroRng.next01() * 0.24);
+
+  return { shape: cfg.shape, pos: [x, y], scale };
 }
 
 // ---------------------------------------------------------------------------
@@ -1204,7 +1270,15 @@ export function generateVista(input: VistaInput): VistaModel {
   const sunAzimuth   = bus.celestial.int(30, 330);
   const sunElevation = bus.celestial.int(20, 70);
 
-  const lighting = deriveLighting(input, palette, desirability, sunAzimuth, sunElevation);
+  // bus.palette's own draws (derivePalette above) are complete by this point
+  // and nothing else in the pipeline reads bus.palette afterward, so reusing
+  // it here for emissiveSource jitter (TK-2) cannot shift any OTHER stage's
+  // draw sequence — see deriveLighting's own comment for the byte-identical
+  // guarantee this depends on (the draw only happens when profile.emissiveSource
+  // is set).
+  const lighting = deriveLighting(
+    input, palette, desirability, sunAzimuth, sunElevation, profile, bus.palette,
+  );
 
   // ── Stage 5: sky + celestial ─────────────────────────────────────────────
   const sky       = buildSky(input, palette, bus.sky, desirability);
@@ -1248,6 +1322,9 @@ export function generateVista(input: VistaInput): VistaModel {
     mode: terrainMode,
     ...(profile.emissive ? { emissive: profile.emissive } : {}),
   };
+
+  // ── Stage 7a: hero landform (WO-VISTA-TK1; 6 types only) ────────────────
+  const hero = buildHero(input, profile, terrain.horizonY);
 
   // ── Stage 8: water / lava (aquatic profiles only) ───────────────────────
   const water = buildWater(profile, palette, terrain.horizonY, input.planet.waterCoverage, bus.water);
@@ -1298,6 +1375,7 @@ export function generateVista(input: VistaInput): VistaModel {
       celestial,
       atmosphere,
       terrain,
+      ...(hero     ? { hero }     : {}),
       ...(water    ? { water }    : {}),
       features,
       hazards,

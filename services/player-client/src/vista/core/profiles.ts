@@ -33,6 +33,10 @@ export type WaterType =
 export type LandmarkKind =
   | 'cone' | 'caldera' | 'arch' | 'mesa' | 'crater' | 'spire' | 'canyon' | 'glacier';
 
+/** Matches VistaModel layers.hero.shape union. */
+export type HeroShape =
+  | 'cone' | 'glacier' | 'sea-stack' | 'mesa' | 'massif' | 'delta-bluff';
+
 // ---------------------------------------------------------------------------
 // CoastalSig — terrain-signature params for the TERRAN coastal-land renderer
 // ---------------------------------------------------------------------------
@@ -490,6 +494,26 @@ export interface PlanetProfile {
   emissive?: { color: RGB; density: number };
 
   /**
+   * [TK-2] Optional emissive light SOURCE — a natural glow (lava, aurora,
+   * alpenglow) that tints nearby layers and feeds bloom. DISTINCT from
+   * `emissive` above (the ARTIFICIAL-only window/signage grid) — do not
+   * conflate the two. Absent for profiles without a natural glow source;
+   * their models are byte-identical to before this field existed.
+   * pos/intensity are BASE values; the pipeline (deriveLighting) applies a
+   * small per-seed jitter so every world of this type has a slightly
+   * different — but deterministic — glow placement.
+   */
+  emissiveSource?: {
+    kind: 'lava' | 'aurora' | 'alpenglow';
+    /** Base normalized position (0–1 × 0–1). */
+    pos: [number, number];
+    /** Base 0–1 glow strength. */
+    intensity: number;
+    /** Normalized influence radius, fraction of canvas width. */
+    radius: number;
+  };
+
+  /**
    * Coastal-land terrain-signature configuration.
    * Present only on TERRAN; absent for all other types.
    * Consumed by drawCoastalLand in backend.ts; ignored everywhere else.
@@ -591,6 +615,18 @@ export interface PlanetProfile {
    * Set to 'broad-tree' (TERRAN) or 'canopy-tree' (JUNGLE).
    */
   heroFloraKind?: string;
+
+  /**
+   * [TK-1] Hero-landform shape (WO-VISTA-TK1) — the single dominant midground
+   * focal feature for this type. Present only on the 6 types with a hero
+   * shape (VOLCANIC=cone, ICE=glacier, OCEANIC=sea-stack, BARREN=mesa,
+   * MOUNTAINOUS=massif, TERRAN=delta-bluff); absent for all other types, so
+   * their models are byte-identical to before this field existed.
+   * baseScale is the pre-jitter size multiplier the pipeline's buildHero
+   * stage samples around (see pipeline.ts's isolated 'hero-landform' stream).
+   * Consumed by buildHero in pipeline.ts; ignored everywhere else.
+   */
+  heroLandform?: { shape: HeroShape; baseScale: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -732,6 +768,10 @@ const TERRAN_PROFILE: PlanetProfile = {
 
   // Full natural lushness — meadows and forests carpet the land band.
   denseFloraFactor: 1.0,
+
+  // Hero landform (WO-VISTA-TK1): a broad, low golden-hour delta-bluff —
+  // the river-to-citadel composition's new focal headland.
+  heroLandform: { shape: 'delta-bluff', baseScale: 1.5 },
 };
 
 // ---------------------------------------------------------------------------
@@ -846,6 +886,12 @@ const VOLCANIC_PROFILE: PlanetProfile = {
     gas:        'gas-seep',
   },
 
+  // [TK-2] Lava glow — near the caldera/cone band (archetypes anchor landmarks
+  // there); pos.y sits low, in the terrain/midground, not the sky. Color is
+  // NOT set here — the pipeline derives it from basePalette.accent above
+  // (already documented as "lava glow" — reusing it, not duplicating it).
+  emissiveSource: { kind: 'lava', pos: [0.5, 0.62], intensity: 0.55, radius: 0.22 },
+
   // Scorched film stock: pushed warm (embers/magma), deep vignette, heavy grain.
   grade: { warmthBias: 0.30, vignetteStrength: 0.65, grainScale: 1.5 },
 
@@ -857,6 +903,10 @@ const VOLCANIC_PROFILE: PlanetProfile = {
 
   // floraKinds: [] already blocks flora; 0.0 makes the intent explicit.
   denseFloraFactor: 0.0,
+
+  // Hero landform (WO-VISTA-TK1): the stratovolcano cone — the "no volcano
+  // on a volcanic world" diagnosis this WO fixes at the root.
+  heroLandform: { shape: 'cone', baseScale: 2.0 },
 };
 
 // ---------------------------------------------------------------------------
@@ -981,6 +1031,10 @@ const OCEANIC_PROFILE: PlanetProfile = {
 
   // Rich tidal-shelf life; full understory density appropriate.
   denseFloraFactor: 1.0,
+
+  // Hero landform (WO-VISTA-TK1): towering sea-stacks rising from the water —
+  // the focal drama an open ocean world was missing.
+  heroLandform: { shape: 'sea-stack', baseScale: 1.7 },
 };
 
 // ---------------------------------------------------------------------------
@@ -1215,6 +1269,13 @@ const ICE_PROFILE: PlanetProfile = {
     water:   'hydrocarbon-pool',
   },
 
+  // [TK-2] Aurora — a sky-band phenomenon, so pos.y sits high (upper sky),
+  // not in the terrain. Color reuses basePalette.accent above (already
+  // documented as "ice-crystal refraction glow" — a cyan-blue that reads as
+  // aurora too). Intensity is night-modulated by the renderer (skyDim), not
+  // here — this is the seed-stable BASE strength.
+  emissiveSource: { kind: 'aurora', pos: [0.5, 0.16], intensity: 0.60, radius: 0.55 },
+
   // Glacial film stock: cool-blue cast, crisp vignette, fine grain.
   grade: { warmthBias: -0.32, vignetteStrength: 0.58, grainScale: 0.9 },
 
@@ -1225,6 +1286,10 @@ const ICE_PROFILE: PlanetProfile = {
 
   // Extremophile lichen/moss only; quarter density.
   denseFloraFactor: 0.15,
+
+  // Hero landform (WO-VISTA-TK1): a towering blue-ice glacier — the ICE
+  // biome's single highest-impact addition per the AAA directive.
+  heroLandform: { shape: 'glacier', baseScale: 1.8 },
 };
 
 // ---------------------------------------------------------------------------
@@ -1472,6 +1537,14 @@ const MOUNTAINOUS_PROFILE: PlanetProfile = {
     gas:        'gas-seep',
   },
 
+  // [TK-2] Alpenglow — warm low-sun light on a peak. Color is NOT
+  // basePalette.accent (that's a cool mineral-vein green here, wrong for
+  // alpenglow) -- the pipeline derives alpenglow's color from
+  // lighting.keyColor instead (the actual sun color, already warm-blended
+  // by deriveLighting -- physically correct: alpenglow IS sunlight).
+  // pos.y sits mid-high, near a ridge/peak band.
+  emissiveSource: { kind: 'alpenglow', pos: [0.55, 0.38], intensity: 0.45, radius: 0.30 },
+
   // Alpine film stock: muted neutral, deep vignette for dramatic peaks.
   // WO-VISTA-MOUNTAINOUS-IDENTITY-R2: bloomScale tames the shared
   // desirability-driven bloom pass (post.ts applyBloom) specifically for
@@ -1538,6 +1611,10 @@ const MOUNTAINOUS_PROFILE: PlanetProfile = {
   // silhouette (triangle silhouette, also clean) — grass 3x and conifer 2x
   // as likely to be picked as lichen for any given dense-flora instance.
   floraKindWeights: [3, 1, 2],
+
+  // Hero landform (WO-VISTA-TK1): promotes the R2 equal ridges to one
+  // dominant Matterhorn-style hero massif with a solid snow-cap.
+  heroLandform: { shape: 'massif', baseScale: 1.6 },
 };
 
 // ---------------------------------------------------------------------------
@@ -1653,6 +1730,10 @@ const BARREN_PROFILE: PlanetProfile = {
 
   // Airless — nothing grows; floraKinds: [] also blocks the scatter path.
   denseFloraFactor: 0.0,
+
+  // Hero landform (WO-VISTA-TK1): a raking-shadow mesa/canyon wall — turns
+  // "dead rock" into a real place, cheapest paired with the ringArc sky wire.
+  heroLandform: { shape: 'mesa', baseScale: 1.6 },
 };
 
 // ---------------------------------------------------------------------------

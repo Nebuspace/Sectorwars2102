@@ -25,10 +25,11 @@
 import { VistaModel, VistaTarget, VistaHandle, VistaInput, RGB } from '../../contract';
 import { SeededRng, deriveChildSeed } from '../../core/rng';
 import { generateVista } from '../../core/pipeline';
-import { shadeFlank, rimLight, aoPool } from './lighting';
+import { shadeFlank, rimLight, aoPool, drawEmissiveGlow } from './lighting';
 import { postProcess, buildGrainPattern } from './post';
 import { getProfile } from '../../core/profiles';
 import { perfCollector } from '../../perf/collector';
+import { drawHeroLandform, type HeroGeom } from './hero';
 
 // ---------------------------------------------------------------------------
 // Day-cycle constants — verbatim from SolarSystemViewscreen.tsx L1952–1954
@@ -191,6 +192,9 @@ type LandmarkGeom = {
   useAccent: boolean;  // whether to draw the accent pass
 };
 
+// HeroGeom (WO-VISTA-TK1 hero-landform geometry) is owned by hero.ts —
+// imported below (BACKEND-SPLIT: this is the new per-layer module's type).
+
 type VistaCache = {
   key: string;
   ctx: CanvasRenderingContext2D;
@@ -273,6 +277,10 @@ type VistaCache = {
 
   // Terrain landmarks — pre-baked geometry from model.layers.terrain.landmarks
   landmarks: LandmarkGeom[];
+
+  // Hero landform (WO-VISTA-TK1) — pre-baked geometry from model.layers.hero.
+  // null when the model has no hero (all non-hero-shape types).
+  hero: HeroGeom | null;
 
   // Cached gradient objects (bound to this ctx; rebuilt on remount)
   glowGrad: CanvasGradient;
@@ -911,13 +919,65 @@ function buildVistaCache(
     return { kind: lm.kind, cx, baseY, height, width, fillColor, accentColor, useAccent };
   });
 
+  // ---- Hero landform (WO-VISTA-TK1) — pre-baked geometry from model.layers.hero ----
+  // Anchored to horizonY exactly like a terrain.landmarks entry, but sized to
+  // dominate the midground — this IS the scene's single focal feature, not
+  // background silhouette dressing. null when the model has no hero (all
+  // non-hero-shape types — see PlanetProfile.heroLandform in profiles.ts).
+  const heroModel = model.layers.hero;
+  const hero: HeroGeom | null = heroModel ? (() => {
+    const hcx = heroModel.pos[0] * w;
+    const hBaseY = horizonY;
+    // Larger envelope than background landmarks (0.30×h / 0.16×w caps above) —
+    // BUT the landmark formula's h*0.48 cap is only safe because landmark
+    // scale values (0.04–0.18) are tiny; the hero's much larger baseScale
+    // (1.5–2.0, profiles.ts) needs an explicit HEADROOM clamp too, or a
+    // high-horizon world (small horizonY → little sky above the ground line)
+    // pushes the apex above y=0 (confirmed via live screenshot: MOUNTAINOUS's
+    // massif apex was clipped off-canvas before this clamp existed).
+    const headroomPx = hBaseY; // pixel distance from the horizon line to y=0
+    const hHeight = Math.max(50, Math.min(h * 0.55, headroomPx * 0.88, heroModel.scale * h * 0.30));
+    const hWidth  = Math.max(45, Math.min(w * 0.40, heroModel.scale * w * 0.16));
+
+    const hdr = Math.round(geoBase[0] * 0.55);
+    const hdg = Math.round(geoBase[1] * 0.55);
+    const hdb = Math.round(geoBase[2] * 0.55);
+    let hFillColor   = `rgba(${hdr}, ${hdg}, ${hdb}, 0.97)`;
+    let hAccentColor = `rgba(${accentRgb[0]}, ${accentRgb[1]}, ${accentRgb[2]}, 0.75)`;
+
+    if (heroModel.shape === 'glacier') {
+      // Pale blue-white ice — same blend formula as the background glacier landmark.
+      hFillColor = `rgba(${Math.min(255, Math.round(hdr * 0.4 + 200))}, ${Math.min(255, Math.round(hdg * 0.4 + 218))}, ${Math.min(255, Math.round(hdb * 0.4 + 235))}, 0.92)`;
+      hAccentColor = 'rgba(230, 248, 255, 0.6)';
+    } else if (heroModel.shape === 'mesa' || heroModel.shape === 'delta-bluff') {
+      // Warm sedimentary/soil tint — leans on the surface palette, not geology.
+      const [sr, sg, sb] = model.palette.surface;
+      hFillColor = `rgba(${Math.round(sr * 0.62)}, ${Math.round(sg * 0.62)}, ${Math.round(sb * 0.62)}, 0.96)`;
+    } else if (heroModel.shape === 'sea-stack') {
+      hAccentColor = 'rgba(220, 235, 245, 0.5)'; // sea-spray sheen
+    }
+    // 'cone' and 'massif' keep the darkened-geology default (volcanic rock / alpine stone).
+
+    return {
+      shape: heroModel.shape, cx: hcx, baseY: hBaseY,
+      height: hHeight, width: hWidth,
+      fillColor: hFillColor, accentColor: hAccentColor,
+    };
+  })() : null;
+
   // ---- Cone/caldera emitter positions for EMBER anchoring ----
-  // Built here, after landmarks, so we have baked pixel coords.
+  // Built here, after landmarks + hero, so we have baked pixel coords.
   const coneEmitters: VistaCache['coneEmitters'] = [];
   for (const lm of landmarks) {
     if (lm.kind === 'cone' || lm.kind === 'caldera') {
       coneEmitters.push({ cx: lm.cx, topY: lm.baseY - lm.height });
     }
+  }
+  // Hero cone (WO-VISTA-TK1 / TK-3 fold-in): the hero landform is the dominant
+  // vent when present — EMBER particles anchor to ITS apex too, not just the
+  // smaller background-landmark cones.
+  if (hero && hero.shape === 'cone') {
+    coneEmitters.push({ cx: hero.cx, topY: hero.baseY - hero.height });
   }
 
   // ---- Multi-kind atmospheric particle groups ----
@@ -1160,6 +1220,7 @@ function buildVistaCache(
     particleGroups,
     coneEmitters,
     landmarks,
+    hero,
     glowGrad,
     terrainMode,
     cloudBands,
@@ -8302,6 +8363,17 @@ function drawScene(
     }
   }
 
+  // 5a+++) Hero landform (WO-VISTA-TK1) — the single dominant midground focal
+  //        feature. Locked composition slot: AFTER the terrain fill (ridges +
+  //        ground plane + ARCTIC/BARREN overlays + river corridor) so the hero
+  //        silhouette sits visibly on solid ground rather than being painted
+  //        over by it, and BEFORE the small background landmarks (§5b) so the
+  //        hero reads as the dominant feature they sit alongside. No-op (null
+  //        geom) for all non-hero-shape types — see PlanetProfile.heroLandform.
+  if (cache.hero) {
+    timed('drawHeroLandform', () => drawHeroLandform(ctx, cache.hero, model.lighting, dc.bright));
+  }
+
   // 5b) Terrain landmarks — silhouettes from model.layers.terrain.landmarks.
   //     Drawn for 'surface' and 'plating'; GAS_GIANT emits none so this is a no-op.
   if (cache.landmarks.length > 0) {
@@ -8373,6 +8445,14 @@ function drawScene(
     ctx.fillRect(0, 0, w, h);
     ctx.restore();
   }
+
+  // 9) Emissive light source (TK-2) — drawn LAST, after night-dim, so its
+  //    additive 'lighter' glow always reads clearly regardless of day/night
+  //    dimming (lava/aurora/alpenglow are self-emissive; night-dim darkening
+  //    everything ELSE first, then this glow sitting on top, is the correct
+  //    order). No-op (see lighting.ts's drawEmissiveGlow) for every biome
+  //    without model.lighting.emissiveSource — byte-identical for those.
+  timed('drawEmissiveGlow', () => drawEmissiveGlow(ctx, w, h, model.lighting, dc.skyDim));
 }
 
 // ---------------------------------------------------------------------------

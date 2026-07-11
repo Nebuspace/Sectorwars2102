@@ -338,6 +338,28 @@ export interface VistaModel {
 
     /** -1 (cold/blue) .. +1 (warm/golden). */
     colorGradeWarmth: number;
+
+    /**
+     * [TK-2] Optional emissive light SOURCE — tints nearby layers via
+     * additive gradient overlays and feeds the existing bloom pass (no
+     * post.ts changes needed; bloom already re-composites any bright pixels
+     * drawScene produces). DISTINCT from layers.terrain.emissive (the
+     * ARTIFICIAL-only window/signage grid) — this is a natural glow (lava,
+     * aurora, alpenglow), not a building light. Present only for profiles
+     * with PlanetProfile.emissiveSource configured (profiles.ts); absent for
+     * every other type, so their models are byte-identical to before this
+     * field existed.
+     */
+    emissiveSource?: {
+      kind: 'lava' | 'aurora' | 'alpenglow';
+      /** Normalized screen position (0–1 × 0–1); seed-jittered from the profile's base. */
+      pos: [number, number];
+      color: RGB;
+      /** 0–1 glow strength; seed-jittered from the profile's base. */
+      intensity: number;
+      /** Normalized influence radius, fraction of canvas width. */
+      radius: number;
+    };
   };
 
   layers: {
@@ -463,6 +485,25 @@ export interface VistaModel {
         pos: [number, number];
         scale: number;
       }[];
+    };
+
+    /**
+     * [TK-1] Hero-landform — the single dominant midground focal feature
+     * (WO-VISTA-TK1). Present only for the 6 planet types with a hero shape
+     * assigned (profiles.ts's PlanetProfile.heroLandform: VOLCANIC=cone,
+     * ICE=glacier, OCEANIC=sea-stack, BARREN=mesa, MOUNTAINOUS=massif,
+     * TERRAN=delta-bluff); absent for all other types, so their models are
+     * byte-identical to before this field existed.
+     * Consumed by drawHeroLandform (render/canvas2d/hero.ts); ignored elsewhere.
+     */
+    hero?: {
+      shape: 'cone' | 'glacier' | 'sea-stack' | 'mesa' | 'massif' | 'delta-bluff';
+
+      /** Normalized [x, y] anchor — matches terrain.landmarks.pos convention. */
+      pos: [number, number];
+
+      /** Dimensionless size multiplier — heroes read larger than background landmarks. */
+      scale: number;
     };
 
     water?: {

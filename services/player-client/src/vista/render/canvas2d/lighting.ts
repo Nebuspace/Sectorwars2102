@@ -50,6 +50,14 @@ export interface LightingModel {
   bloom: number;
   /** −1 (cold/blue) … +1 (warm/golden). */
   colorGradeWarmth: number;
+  /** [TK-2] Optional emissive light source — see VistaModel['lighting'] in contract.ts. */
+  emissiveSource?: {
+    kind: 'lava' | 'aurora' | 'alpenglow';
+    pos: [number, number];
+    color: RGB;
+    intensity: number;
+    radius: number;
+  };
 }
 
 /** Returned by shadeFlank and rimLight. */
@@ -356,4 +364,148 @@ export function applyGroundVignette(
   ctx.fillStyle = grad;
   ctx.fillRect(0, horizonY, w, h - horizonY);
   ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// emissiveTintAt — pure distance-falloff tint from the emissive source (TK-2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns an additive tint color for a point at (x01, y01) — normalized 0–1
+ * canvas coordinates — based on its distance from lighting.emissiveSource.
+ * Pure (no ctx, no drawing): callers composite it themselves with 'lighter'
+ * at whatever alpha suits their layer, same pattern as keyTint().
+ *
+ * `rgba(0,0,0,0)` (a no-op tint) when no emissive source is present, or when
+ * the point is outside the source's influence radius — this is the shared
+ * TOOLKIT primitive (TK-2); wiring it into specific existing draw functions
+ * (ash plume, snow bands, peak faces) is per-biome WO scope, not this one.
+ *
+ * @param lighting model.lighting block
+ * @param x01      point x, normalized 0–1 (canvas-width fraction)
+ * @param y01      point y, normalized 0–1 (canvas-height fraction)
+ */
+export function emissiveTintAt(lighting: LightingModel, x01: number, y01: number): string {
+  const src = lighting.emissiveSource;
+  if (!src) return 'rgba(0, 0, 0, 0)';
+
+  const dx = x01 - src.pos[0];
+  const dy = y01 - src.pos[1];
+  const dist = Math.hypot(dx, dy);
+  const falloff = clamp(1 - dist / src.radius, 0, 1);
+  // Squared falloff: a tighter, more concentrated glow than linear.
+  const alpha = falloff * falloff * clamp(src.intensity, 0, 1) * 0.35;
+  return rgbaStr(src.color, alpha);
+}
+
+// ---------------------------------------------------------------------------
+// drawEmissiveGlow — the emissive light source itself (TK-2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Draws the emissive light source's own glow — the visible light shape that
+ * feeds the existing bloom pass (post.ts's applyBloom re-composites any
+ * bright pixels the whole scene buffer has; no post.ts changes needed here).
+ *
+ * No-op when lighting.emissiveSource is absent — this is the ONLY call site
+ * backend.ts needs (one `timed()`-wrapped call in drawScene); every biome
+ * without a configured emissiveSource returns immediately, before touching
+ * ctx state at all, guaranteeing byte-identical output for those biomes.
+ *
+ * Draw shape depends on `kind`:
+ *   'lava'      — a point-ish radial glow (caldera / lava-lake under-light).
+ *   'alpenglow' — a wider elliptical wash (sunlight raking across a peak).
+ *   'aurora'    — a soft vertical curtain band across the upper sky;
+ *                 `skyDim` (0 day … 1 night) modulates its strength so it's
+ *                 barely visible at noon and prominent at night, matching
+ *                 the real phenomenon (and avoiding a jarring always-on glow).
+ *
+ * @param ctx     Canvas 2D rendering context (drawScene's offscreen buffer)
+ * @param w       Canvas width (pixels)
+ * @param h       Canvas height (pixels)
+ * @param lighting model.lighting block
+ * @param skyDim  0 (full day) … 1 (full night); only consumed for 'aurora'
+ */
+export function drawEmissiveGlow(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  lighting: LightingModel,
+  skyDim = 0,
+): void {
+  const src = lighting.emissiveSource;
+  if (!src) return; // no-op — byte-identical for every biome without one
+
+  const cx = src.pos[0] * w;
+  const cy = src.pos[1] * h;
+  const r  = src.radius * w;
+  const [cr, cg, cb] = src.color;
+  const intensity = clamp(src.intensity, 0, 1);
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+
+  if (src.kind === 'aurora') {
+    const strength = intensity * clamp(skyDim, 0.15, 1);
+    drawAuroraCurtain(ctx, w, cy, r, cr, cg, cb, strength);
+  } else {
+    // 'lava' → tight radial glow; 'alpenglow' → wider elliptical wash.
+    const squashY = src.kind === 'alpenglow' ? 0.42 : 1.0;
+    drawGlowGradient(ctx, cx, cy, r, squashY, cr, cg, cb, intensity);
+  }
+
+  ctx.restore();
+}
+
+/** Single radial (or vertically-squashed elliptical) additive glow. */
+function drawGlowGradient(
+  ctx: CanvasRenderingContext2D,
+  cx: number, cy: number, r: number, squashY: number,
+  cr: number, cg: number, cb: number, intensity: number,
+): void {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(1, squashY);
+  const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
+  grad.addColorStop(0,   `rgba(${cr}, ${cg}, ${cb}, ${(intensity * 0.55).toFixed(3)})`);
+  grad.addColorStop(0.5, `rgba(${cr}, ${cg}, ${cb}, ${(intensity * 0.22).toFixed(3)})`);
+  grad.addColorStop(1,   `rgba(${cr}, ${cg}, ${cb}, 0)`);
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fillStyle = grad;
+  ctx.fill();
+  ctx.restore();
+}
+
+/**
+ * Soft vertical aurora curtain: 3 overlapping bands spanning most of the sky
+ * width, each a vertical gradient (bright mid-band, fading top/bottom), with
+ * a static (non-time-driven — determinism) horizontal offset per band so
+ * they read as an irregular curtain rather than one flat stripe.
+ */
+function drawAuroraCurtain(
+  ctx: CanvasRenderingContext2D,
+  w: number, centerY: number, r: number,
+  cr: number, cg: number, cb: number, strength: number,
+): void {
+  if (strength < 0.02) return;
+  const bandCount = 3;
+  const bandW = w * 0.42;
+  const bandH = r * 2.2;
+  for (let i = 0; i < bandCount; i++) {
+    // Deterministic offsets — a fixed spread, not seed-drawn (the source
+    // position itself already carries the seed's per-world jitter).
+    const t = i / (bandCount - 1); // 0, 0.5, 1
+    const bx = w * (0.20 + t * 0.60);
+    const bandAlpha = strength * (0.55 - Math.abs(t - 0.5) * 0.35);
+
+    const grad = ctx.createLinearGradient(bx, centerY - bandH / 2, bx, centerY + bandH / 2);
+    grad.addColorStop(0,   `rgba(${cr}, ${cg}, ${cb}, 0)`);
+    grad.addColorStop(0.45, `rgba(${cr}, ${cg}, ${cb}, ${(bandAlpha).toFixed(3)})`);
+    grad.addColorStop(0.55, `rgba(${cr}, ${cg}, ${cb}, ${(bandAlpha).toFixed(3)})`);
+    grad.addColorStop(1,   `rgba(${cr}, ${cg}, ${cb}, 0)`);
+
+    ctx.fillStyle = grad;
+    ctx.fillRect(bx - bandW / 2, centerY - bandH / 2, bandW, bandH);
+  }
 }
