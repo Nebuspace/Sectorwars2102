@@ -290,21 +290,31 @@ class BountyService:
         Pure lock-ORDER fix — no credit/refund amount or business logic
         changes anywhere in this file.
 
-        Returns (player_a, player_b) in the SAME order as (id_a, id_b)
-        were passed — only the DB-side lock ACQUISITION order is
-        normalized internally; the caller's semantic pairing (which one
-        is "placer"/"collector" vs "target") is unaffected. Either or
-        both may be None if not found — callers already null-check both
-        before use."""
+        WO-BOUNTY-COLLECT-FLUSH: every lock query below also carries
+        ``.populate_existing()`` — mirrors contract_service._load_player's
+        ``for_update=True`` branch (its ``_load_two_players_for_update``
+        twin routes ALL three lock cases, including the equal-id one,
+        through that same for_update=True helper). Without it, a caller
+        that already holds an UNLOCKED, identity-mapped copy of one of
+        these players (route-level ``get_current_player`` in cancel_bounty's
+        case) would have this with_for_update() re-read return the STALE
+        cached instance instead of the fresh locked row — a lost-update on
+        any RMW the caller performs after this call returns (cancel_bounty's
+        ``placer.credits += refund``). This is safe everywhere it's called
+        from in this file: cancel_bounty locks BEFORE any mutation (nothing
+        pending to discard), and collect_bounty's caller (attack_player)
+        now flushes its own pending in-memory mutations immediately before
+        calling this helper (see collect_bounty), so populate_existing's
+        re-read picks those up fresh rather than discarding them."""
         if id_a == id_b:
-            player = self.db.query(Player).filter(Player.id == id_a).with_for_update().first()
+            player = self.db.query(Player).filter(Player.id == id_a).populate_existing().with_for_update().first()
             return player, player
         if id_a < id_b:
-            player_a = self.db.query(Player).filter(Player.id == id_a).with_for_update().first()
-            player_b = self.db.query(Player).filter(Player.id == id_b).with_for_update().first()
+            player_a = self.db.query(Player).filter(Player.id == id_a).populate_existing().with_for_update().first()
+            player_b = self.db.query(Player).filter(Player.id == id_b).populate_existing().with_for_update().first()
         else:
-            player_b = self.db.query(Player).filter(Player.id == id_b).with_for_update().first()
-            player_a = self.db.query(Player).filter(Player.id == id_a).with_for_update().first()
+            player_b = self.db.query(Player).filter(Player.id == id_b).populate_existing().with_for_update().first()
+            player_a = self.db.query(Player).filter(Player.id == id_a).populate_existing().with_for_update().first()
         return player_a, player_b
 
     def place_bounty(
@@ -500,6 +510,20 @@ class BountyService:
         self, collector_id: uuid.UUID, target_id: uuid.UUID
     ) -> Dict[str, Any]:
         """Award all bounties on target to collector (called on kill)."""
+        # WO-BOUNTY-COLLECT-FLUSH: combat_service.attack_player mutates
+        # attacker/defender IN-MEMORY (quantum-wallet loot transfer, drone
+        # counts, ship-destruction swap) before calling this method, on a
+        # session opened autoflush=False (core/database.py:19) — none of
+        # that is persisted yet. _load_two_players_for_update below now
+        # carries .populate_existing() (closes cancel_bounty's stale-placer
+        # lost-update), which would otherwise DISCARD those unflushed
+        # combat mutations on the locked re-read. Flushing here, immediately
+        # before the lock call, persists them first so the populate_existing
+        # re-read picks them up fresh instead of clobbering them. Same
+        # transaction — attack_player still owns the eventual commit — so
+        # this is not a premature commit, only an earlier flush.
+        self.db.flush()
+
         # Lock both rows to prevent double-collection race condition.
         # WO-ECON-BOUNTY-DUAL-LOCK-ORDER: acquired in ascending-id order via
         # the shared helper (not collector-then-target unconditionally) so

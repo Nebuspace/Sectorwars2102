@@ -72,6 +72,15 @@ class _FakeQuery:
     def with_for_update(self, *a, **k):
         return self
 
+    def populate_existing(self):
+        # WO-BOUNTY-COLLECT-FLUSH: _load_two_players_for_update's lock
+        # queries now chain .populate_existing().with_for_update() (mirrors
+        # test_bounty_dual_lock_order.py's own _FakeQuery fix for the same
+        # chained-call shape, added there for place_bounty under WO-MONEY-
+        # NOLOCK-RMW). This fake has no identity map to refresh — pure
+        # passthrough so the chained call doesn't AttributeError.
+        return self
+
     def first(self):
         return self._players.get(self._match_id)
 
