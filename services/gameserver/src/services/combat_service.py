@@ -710,6 +710,18 @@ class CombatService:
         if attacker_id == defender_id:
             return {"success": False, "message": "You cannot attack yourself"}
 
+        # Friendly-fire prevention (factions-and-teams.md:383): same-team
+        # players cannot attack each other. Column-scalar team_id reads (no
+        # full-object load, so no identity-map poisoning of the
+        # .populate_existing() locked reads below; no row lock acquired,
+        # matching "reject before any lock"). Mirrors the identical
+        # db.query(Player.team_id)...scalar() shape already used at
+        # movement_service.py:203.
+        attacker_team = self.db.query(Player.team_id).filter(Player.id == attacker_id).scalar()
+        defender_team = self.db.query(Player.team_id).filter(Player.id == defender_id).scalar()
+        if attacker_team is not None and attacker_team == defender_team:
+            return {"success": False, "message": "Friendly-fire prevention: you cannot attack a teammate"}
+
         # Get players with row locks to prevent concurrent combat race
         # conditions -- locked in ASCENDING-ID order (mirrors bounty_
         # service.place_bounty's :331-336 dual-lock convention, the same

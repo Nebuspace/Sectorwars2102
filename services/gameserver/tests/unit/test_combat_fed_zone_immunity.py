@@ -62,7 +62,7 @@ def _make_ship(*, type_=ShipType.SCOUT_SHIP, sector_id=1, name="Test Hull"):
 
 def _make_player(
     *, ship, personal_reputation=0, is_suspect=False, suspect_until=None,
-    grey_until=None, grey_kind=None,
+    grey_until=None, grey_kind=None, team_id=None,
 ):
     return types.SimpleNamespace(
         id=uuid.uuid4(),
@@ -91,7 +91,7 @@ def _make_player(
         grey_until=grey_until,
         grey_kind=grey_kind,
         settings={},
-        team_id=None,
+        team_id=team_id,
         is_suspect=is_suspect,
         suspect_until=suspect_until,
     )
@@ -142,6 +142,29 @@ class _PlayerQueryStub:
         return self._players.get(self._pending_id)
 
 
+class _PlayerColumnQueryStub:
+    """Handles attack_player's friendly-fire pre-lock guard shape --
+    db.query(Player.team_id).filter(Player.id == X).scalar() -- a
+    column-only scalar read, distinct from _PlayerQueryStub's full-object
+    db.query(Player) rows (WO-COMBAT-FRIENDLY-FIRE)."""
+
+    def __init__(self, players_by_id, column_key):
+        self._players = players_by_id
+        self._column_key = column_key
+        self._pending_id = None
+
+    def filter(self, cond):
+        rhs = getattr(cond, "right", None)
+        self._pending_id = getattr(rhs, "value", None)
+        return self
+
+    def scalar(self):
+        player = self._players.get(self._pending_id)
+        if player is None:
+            return None
+        return getattr(player, self._column_key)
+
+
 class _StubQuery:
     def __init__(self, first=None, all_=None):
         self._first = first
@@ -180,6 +203,8 @@ class _FakeCombatDb:
     def query(self, model):
         if model is PlayerModel:
             return _PlayerQueryStub(self._players)
+        if model is PlayerModel.team_id:
+            return _PlayerColumnQueryStub(self._players, "team_id")
         if model is ShipModel:
             return _StubQuery(first=self._ship_first, all_=[])
         if model is SectorModel:
@@ -268,3 +293,80 @@ class TestLiveSuspectDefenderSuppressesAttackInnocent:
 
         assert result["success"] is True
         assert attacker.personal_reputation == -100
+
+
+def _setup_teams(monkeypatch, *, attacker_team_id, defender_team_id):
+    """Same harness as ``_setup``, but exposes ``team_id`` on both players
+    for the WO-COMBAT-FRIENDLY-FIRE pre-lock guard tests. Defender kept
+    good-standing (``personal_reputation=0``) since these tests probe the
+    friendly-fire guard itself, not the suspect/attack_innocent branch
+    ``_setup``'s fixtures target."""
+    sector = _sector()
+    attacker = _make_player(ship=_make_ship(), personal_reputation=0, team_id=attacker_team_id)
+    defender = _make_player(ship=_make_ship(), personal_reputation=0, team_id=defender_team_id)
+
+    db = _FakeCombatDb(players=[attacker, defender], sector=sector)
+    cs = CombatService(db)
+    monkeypatch.setattr(cs, "_resolve_ship_combat", lambda *a, **k: _victory_result())
+    monkeypatch.setattr(cs, "_handle_ship_destruction", lambda *a, **k: None)
+    monkeypatch.setattr(
+        npc_engagement_service_module, "route_engagement", lambda *a, **k: None
+    )
+    return cs, attacker, defender, db
+
+
+class TestFriendlyFirePreventionGuard:
+    """WO-COMBAT-FRIENDLY-FIRE sub-part (a): ``attack_player``'s pre-lock
+    friendly-fire guard (factions-and-teams.md:383, "Friendly-fire
+    prevention" under Combat advantages). Guard sits immediately after the
+    self-attack reject and before the ``.populate_existing().with_for_
+    update()`` player-lock block, reading ``team_id`` via cheap
+    column-scalar queries (no full-object load -- no identity-map
+    poisoning of the locked reads that follow; no row lock acquired)."""
+
+    def test_same_team_attack_blocked_zero_state_change(self, monkeypatch):
+        team = uuid.uuid4()
+        cs, attacker, defender, db = _setup_teams(
+            monkeypatch, attacker_team_id=team, defender_team_id=team,
+        )
+        attacker_turns_before = attacker.turns
+        attacker_credits_before = attacker.credits
+        defender_credits_before = defender.credits
+        defender_ship = defender.current_ship
+
+        result = cs.attack_player(attacker_id=attacker.id, defender_id=defender.id)
+
+        assert result["success"] is False
+        assert result["message"] == "Friendly-fire prevention: you cannot attack a teammate"
+        # Zero state change: rejected before any lock / turn-charge / combat-log.
+        assert attacker.turns == attacker_turns_before
+        assert attacker.credits == attacker_credits_before
+        assert defender.credits == defender_credits_before
+        assert defender_ship.is_destroyed is False
+        assert db.added == []  # no CombatLog row created
+        assert db.commits == 0
+
+    def test_teamless_players_not_blocked(self, monkeypatch):
+        """Two players with team_id None are NOT teammates (a shared-None
+        collision must not read as "same team") -- the guard falls through
+        to normal combat resolution."""
+        cs, attacker, defender, db = _setup_teams(
+            monkeypatch, attacker_team_id=None, defender_team_id=None,
+        )
+
+        result = cs.attack_player(attacker_id=attacker.id, defender_id=defender.id)
+
+        assert result["success"] is True
+        assert result.get("message") != "Friendly-fire prevention: you cannot attack a teammate"
+
+    def test_cross_team_attack_unaffected(self, monkeypatch):
+        """Different (non-null) team_ids -- not teammates, normal combat
+        resolution proceeds untouched by this diff."""
+        cs, attacker, defender, db = _setup_teams(
+            monkeypatch, attacker_team_id=uuid.uuid4(), defender_team_id=uuid.uuid4(),
+        )
+
+        result = cs.attack_player(attacker_id=attacker.id, defender_id=defender.id)
+
+        assert result["success"] is True
+        assert result.get("message") != "Friendly-fire prevention: you cannot attack a teammate"

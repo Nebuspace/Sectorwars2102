@@ -426,6 +426,19 @@ class _AttackQueryStub:
     def all(self):
         return self._all
 
+    def scalar(self):
+        # WO-COMBAT-FRIENDLY-FIRE: attack_player's pre-lock guard does
+        # db.query(Player.team_id).filter(...).scalar() -- a column-only
+        # scalar read that falls through _FakeAttackDb.query()'s
+        # model-is-PlayerModel branch (it's Player.team_id, not Player) to
+        # the catch-all _AttackQueryStub(first=None, all_=[]). This file's
+        # _make_player has no team concept at all (no team_id attribute,
+        # no team mechanics exercised anywhere in this suite), so both
+        # attacker and defender are unambiguously teamless -- None here is
+        # faithful. Every other real call shape in this file (Ship/Station)
+        # never calls .scalar(), so this is inert for them.
+        return None
+
 
 class _FakeAttackDb:
     """Minimal synchronous Session double covering exactly the queries

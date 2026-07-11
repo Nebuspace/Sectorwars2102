@@ -632,6 +632,9 @@ class FleetService:
         if not attacker or not defender:
             raise ValueError("Invalid fleet IDs")
 
+        if attacker.team_id is not None and attacker.team_id == defender.team_id:
+            raise ValueError("Friendly-fire prevention: fleets on the same team cannot battle")
+
         if attacker.status == FleetStatus.IN_BATTLE.value:
             raise ValueError("Attacker fleet is already in battle")
 

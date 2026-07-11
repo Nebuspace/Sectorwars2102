@@ -402,6 +402,21 @@ class _OrderLogQuery:
             self._lock_log.append((self._label, row.id))
         return rows
 
+    def scalar(self):
+        # WO-COMBAT-FRIENDLY-FIRE: attack_player's pre-lock guard does
+        # db.query(Player.team_id).filter(...).scalar() -- a column-only
+        # scalar read that falls through _LockOrderSession.query()'s
+        # model-is-combat_service.Player branch (it's Player.team_id, not
+        # the Player class) to the catch-all _OrderLogQuery([], ...). This
+        # file's _player() fixture has no team_id attribute at all -- no
+        # team mechanics are exercised anywhere in this lock-ORDER suite --
+        # so both attacker and defender are unambiguously teamless; None
+        # here is faithful, not a guess. Deliberately does NOT append to
+        # lock_log: a scalar column read acquires no row lock (matches
+        # attack_player's own "no row lock acquired" comment), so it must
+        # stay invisible to the lock-ORDER proofs this fake exists for.
+        return None
+
 
 class _LockOrderSession:
     def __init__(self, *, players=(), ships=()):

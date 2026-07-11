@@ -176,6 +176,18 @@ class _StubQuery:
     def all(self):
         return self._all
 
+    def scalar(self):
+        # WO-COMBAT-FRIENDLY-FIRE: attack_player's pre-lock guard does
+        # db.query(Player.team_id).filter(...).scalar() -- a column-only
+        # scalar read that falls through _FakeCombatDb.query()'s
+        # model-is-PlayerModel branch (it's Player.team_id, not Player) to
+        # this catch-all. Every player fixture in this file is genuinely
+        # teamless (team_id=None, see _make_player above), so None here is
+        # faithful -- not a guess. Every other real call shape in this file
+        # (Ship/Sector/ShipSpecification/NPCCharacter) never calls
+        # .scalar(), so this addition is inert for them.
+        return None
+
 
 class _FakeCombatDb:
     """Minimal synchronous Session double: routes .query(Model) by class,
