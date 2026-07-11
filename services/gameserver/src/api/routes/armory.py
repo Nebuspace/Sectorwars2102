@@ -84,15 +84,70 @@ def _station_offers_service(station: Station, service_key: str) -> bool:
     return bool(station.is_spacedock) or bool(services.get(service_key))
 
 
+def _armory_caps(ship: Ship, spec: ShipSpecification) -> dict:
+    """Attack/defense drone + mine purchase caps for a given ship + spec.
+
+    Single source of truth for the caps formula — both GET /catalog and
+    POST /purchase call this so the two never drift apart. Carried-scalar
+    caps agree with the drone-ROWS economy's cap (drone_service.py
+    _get_max_drones): spec.max_drones + the installed Drone Bay upgrade's
+    +2/level bonus (DroneService._drone_bay_bonus); mines are capped at
+    MINES_CAP.
+    """
+    drone_bay_bonus = DroneService._drone_bay_bonus(ship)
+    return {
+        "attack_drones": spec.max_drones + drone_bay_bonus,
+        "defense_drones": spec.max_drones + drone_bay_bonus,
+        "mines": MINES_CAP,
+    }
+
+
+def _current_loadout(player: Player, db: Session) -> dict | None:
+    """Compute the player's carried drone/mine counts and purchase caps from
+    their current ship + specification.
+
+    Returns None when the player has no current ship or no resolvable
+    specification — caps are undefined in that state. Callers must OMIT the
+    loadout key entirely rather than surface it with caps: null, since the
+    SpaceDock UI dereferences loadout.caps.* unconditionally once a loadout
+    key is present (a null caps object would crash the frontend).
+    """
+    if not player.current_ship_id:
+        return None
+    ship = db.query(Ship).filter(Ship.id == player.current_ship_id).first()
+    if not ship:
+        return None
+    spec = db.query(ShipSpecification).filter(
+        ShipSpecification.type == ship.type
+    ).first()
+    if not spec:
+        return None
+    return {
+        "attack_drones": player.attack_drones,
+        "defense_drones": player.defense_drones,
+        "mines": player.mines,
+        "caps": _armory_caps(ship, spec),
+    }
+
+
 # Endpoints
 
 @router.get("/catalog")
 async def get_armory_catalog(
     player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
 ):
     """List armory items with prices and the station service gating each.
-    Viewing the catalog does not require being docked."""
-    return {
+    Viewing the catalog does not require being docked.
+
+    Includes the player's current loadout + purchase caps (via
+    _current_loadout) when they have an active ship with a resolvable
+    specification, so the SpaceDock loadout box has caps to render on
+    entry instead of waiting for a purchase response. Omitted entirely for
+    a shipless player — see _current_loadout for why caps: null is not an
+    option here.
+    """
+    response = {
         "items": [
             {
                 "item": key,
@@ -113,6 +168,10 @@ async def get_armory_catalog(
             for key, entry in ARMORY_CATALOG.items()
         ]
     }
+    loadout = _current_loadout(player, db)
+    if loadout is not None:
+        response["loadout"] = loadout
+    return response
 
 
 @router.post("/purchase")
@@ -184,15 +243,10 @@ async def purchase_armory_item(
             detail="No specification available for your current ship",
         )
 
-    # Carried-scalar caps agree with the drone-ROWS economy's cap
-    # (drone_service.py _get_max_drones): spec.max_drones + the installed
-    # Drone Bay upgrade's +2/level bonus.
-    drone_bay_bonus = DroneService._drone_bay_bonus(ship)
-    caps = {
-        "attack_drones": spec.max_drones + drone_bay_bonus,
-        "defense_drones": spec.max_drones + drone_bay_bonus,
-        "mines": MINES_CAP,
-    }
+    # Same formula source as GET /catalog (_armory_caps) — ship + spec are
+    # already loaded locally here, so we call the caps-only helper directly
+    # rather than _current_loadout(player, db), which would re-query both.
+    caps = _armory_caps(ship, spec)
     current = {
         "attack_drones": player.attack_drones,
         "defense_drones": player.defense_drones,
