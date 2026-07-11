@@ -64,6 +64,16 @@ class _FakeQuery:
         # faked here).
         return self
 
+    def populate_existing(self) -> "_FakeQuery":
+        # WO-MONEY-REREAD-CLASS: no-op passthrough, matching the real
+        # chainable Query API this fake models -- contract_service._load_player
+        # now chains .populate_existing() ahead of .with_for_update() on every
+        # for_update=True re-read (identity-map freshness, see
+        # money-reread-class-fake-query-passthrough in mack's project memory).
+        # This fake has no identity map to refresh; the passthrough just keeps
+        # the query chain from AttributeError-ing.
+        return self
+
     def first(self) -> Any:
         for row in self._rows:
             if all(_match(row, c) for c in self._criteria):

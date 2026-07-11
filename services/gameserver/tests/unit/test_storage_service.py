@@ -120,6 +120,19 @@ class _FakeQuery:
             return _FakeQuery(rows, self._criteria, self._session, self._entity, self._order_by_cols)
         return self
 
+    def populate_existing(self) -> "_FakeQuery":
+        # WO-MONEY-REREAD-CLASS: no-op passthrough -- contract_service.
+        # _load_player now chains .populate_existing() ahead of .with_for_
+        # update() on every for_update=True re-read (settle_fee's owner
+        # re-lock, _load_and_lock_deposit_targets' / _load_and_lock_retrieve_
+        # targets' player re-lock). Deliberately does NOT touch
+        # self._session.for_update_calls -- that recording lives in
+        # with_for_update() itself, called right after this in the real
+        # chain, so this file's lock-order assertions (TestDepositLockOrder /
+        # TestSettleFee's own) are unaffected. See money-reread-class-fake-
+        # query-passthrough in mack's project memory.
+        return self
+
     def _matching(self) -> List[Any]:
         matches = [row for row in self._rows if all(_match(row, c) for c in self._criteria)]
         for col in reversed(self._order_by_cols):

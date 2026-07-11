@@ -198,7 +198,7 @@ def _load_player(db: Session, player_id: uuid.UUID, *, for_update: bool = False)
     balance check -- not just the final write."""
     query = db.query(Player).filter(Player.id == player_id)
     if for_update:
-        query = query.with_for_update()
+        query = query.populate_existing().with_for_update()
     player = query.first()
     if player is None:
         raise ContractError(f"Player {player_id} not found")

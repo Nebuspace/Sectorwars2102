@@ -272,6 +272,7 @@ class ContrabandService:
         station = (
             self.db.query(Station)
             .filter(Station.id == station_id)
+            .populate_existing()
             .with_for_update()
             .first()
         )
@@ -281,6 +282,7 @@ class ContrabandService:
         player = (
             self.db.query(Player)
             .filter(Player.id == player_id)
+            .populate_existing()
             .with_for_update()
             .first()
         )
@@ -290,6 +292,7 @@ class ContrabandService:
         ship = (
             self.db.query(Ship)
             .filter(Ship.id == ship_id, Ship.owner_id == player_id)
+            .populate_existing()
             .with_for_update()
             .first()
         )

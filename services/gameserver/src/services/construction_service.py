@@ -679,14 +679,26 @@ def _progress_phases(reservation: Any, now: datetime) -> bool:
 # ---------------------------------------------------------------------------
 
 def _lock_station(db: Session, station_id) -> Station:
-    station = db.query(Station).filter(Station.id == station_id).with_for_update().first()
+    station = (
+        db.query(Station)
+        .filter(Station.id == station_id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
     if station is None:
         raise ConstructionError(404, "Station not found")
     return station
 
 
 def _lock_player(db: Session, player_id) -> Player:
-    player = db.query(Player).filter(Player.id == player_id).with_for_update().first()
+    player = (
+        db.query(Player)
+        .filter(Player.id == player_id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
     if player is None:
         raise ConstructionError(404, "Player not found")
     return player
@@ -882,7 +894,13 @@ def _advance_station(db: Session, station: Station, now: datetime) -> None:
             # 70% of total cost (canon sell-back minus 30%); the treasury nets
             # the sale price minus that refund.
             refund = claim_forfeit_refund(res.total_cost)
-            player = db.query(Player).filter(Player.id == res.player_id).with_for_update().first()
+            player = (
+                db.query(Player)
+                .filter(Player.id == res.player_id)
+                .populate_existing()
+                .with_for_update()
+                .first()
+            )
             if player is not None:
                 player.credits += refund
             station.treasury_balance = (station.treasury_balance or 0) + res.total_cost - refund

@@ -70,6 +70,17 @@ class _FakeQuery:
                     self._lock_log.append(cond.right.value)
         return self
 
+    def populate_existing(self) -> "_FakeQuery":
+        # WO-MONEY-REREAD-CLASS: no-op passthrough -- _load_player /
+        # _load_two_players_for_update now chain .populate_existing() ahead
+        # of .with_for_update() on every for_update=True re-read. Deliberately
+        # does NOT touch _lock_log (that recording lives in with_for_update(),
+        # called right after this in the real chain, so acquisition-order
+        # assertions below are unaffected). Inherited by _RacyContractQuery
+        # too. See money-reread-class-fake-query-passthrough in mack's
+        # project memory.
+        return self
+
     def first(self) -> Any:
         for row in self._rows:
             if all(_match(row, c) for c in self._criteria):
