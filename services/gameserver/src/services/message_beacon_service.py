@@ -364,9 +364,13 @@ def deploy(
     # Lock the player row up front -- every subsequent check reads live
     # state (turns/credits) off this same locked row, and the eventual
     # debit happens on it too (mirrors trading.py's dock/buy lock-then-
-    # validate-then-mutate shape).
+    # validate-then-mutate shape). WO-MONEY-REREAD-SERVICES: player was
+    # already loaded unlocked by the route's get_current_player dependency
+    # on this same session; populate_existing() forces this lock to re-read
+    # live credits/turns rather than returning the stale identity-mapped
+    # instance.
     player = (
-        db.query(Player).filter(Player.id == player_id).with_for_update().first()
+        db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
     )
     if player is None:
         raise BeaconError(f"Player {player_id} not found")
@@ -650,8 +654,12 @@ def salvage(db: Session, beacon_id: uuid.UUID, player_id: uuid.UUID) -> Dict[str
     docstring for the anti-oracle rationale (same error either way)."""
     beacon = _load_beacon(db, beacon_id)
 
+    # WO-MONEY-REREAD-SERVICES: player was already loaded unlocked by the
+    # route's get_current_player dependency on this same session;
+    # populate_existing() forces this lock to re-read live credits/turns
+    # rather than returning the stale identity-mapped instance.
     player = (
-        db.query(Player).filter(Player.id == player_id).with_for_update().first()
+        db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
     )
     if player is None:
         raise BeaconError(f"Player {player_id} not found")

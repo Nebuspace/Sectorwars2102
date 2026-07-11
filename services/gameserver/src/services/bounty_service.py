@@ -317,8 +317,12 @@ class BountyService:
                 "message": f"Minimum bounty is {BOUNTY_MIN_AMOUNT} credits",
             }
 
-        # Lock placer row to prevent concurrent bounty placement race conditions
-        placer = self.db.query(Player).filter(Player.id == placer_id).with_for_update().first()
+        # Lock placer row to prevent concurrent bounty placement race conditions.
+        # WO-MONEY-REREAD-SERVICES: placer was already loaded unlocked by the
+        # route's get_current_player dependency on this same session;
+        # populate_existing() forces this lock to re-read live credits rather
+        # than returning the stale identity-mapped instance.
+        placer = self.db.query(Player).filter(Player.id == placer_id).populate_existing().with_for_update().first()
         target = self.db.query(Player).filter(Player.id == target_id).first()
 
         if not placer or not target:

@@ -136,6 +136,11 @@ class _PlayerQueryStub:
         self._pending_id = getattr(rhs, "value", None)
         return self
 
+    def populate_existing(self, *a, **k):
+        # WO-MONEY-REREAD-SERVICES: no-op passthrough, matches real
+        # SQLAlchemy Query's chainable-and-returns-self shape.
+        return self
+
     def with_for_update(self, *a, **k):
         return self
 

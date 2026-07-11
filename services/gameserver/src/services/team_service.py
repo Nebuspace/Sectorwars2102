@@ -84,7 +84,7 @@ class TeamService:
         # Check if player already has a team.
         # Locks the creator row to prevent concurrent create/join race
         # conditions (same lock pattern as ship_upgrades purchases).
-        creator = self.db.query(Player).filter(Player.id == creator_id).with_for_update().first()
+        creator = self.db.query(Player).filter(Player.id == creator_id).populate_existing().with_for_update().first()
         if not creator:
             raise ValueError("Player not found")
         

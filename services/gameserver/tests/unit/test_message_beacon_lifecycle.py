@@ -54,6 +54,11 @@ class _FakeQuery:
     def filter(self, *conditions: Any) -> "_FakeQuery":
         return _FakeQuery(self._rows, self._criteria + list(conditions))
 
+    def populate_existing(self) -> "_FakeQuery":
+        # WO-MONEY-REREAD-SERVICES: no-op passthrough, matches real
+        # SQLAlchemy Query's chainable-and-returns-self shape.
+        return self
+
     def with_for_update(self) -> "_FakeQuery":
         return self
 

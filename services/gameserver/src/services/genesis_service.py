@@ -366,7 +366,11 @@ class GenesisService:
         tier_config = GENESIS_TIERS[tier]
 
         # --- Load player with lock to prevent concurrent purchase race ---
-        player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
+        # WO-MONEY-REREAD-SERVICES: player was already loaded unlocked by the
+        # route's get_current_player dependency on this same session;
+        # populate_existing() forces this lock to re-read live credits rather
+        # than returning the stale identity-mapped instance.
+        player = self.db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
         if not player:
             raise ValueError("Player not found")
 

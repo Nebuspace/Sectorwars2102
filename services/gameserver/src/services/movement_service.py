@@ -782,7 +782,13 @@ class MovementService:
             self.db.rollback()
 
         # Lock player row to prevent concurrent movement race conditions
-        player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
+        player = (
+            self.db.query(Player)
+            .filter(Player.id == player_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
         if not player:
             return {"success": False, "message": "Player not found", "turn_cost": 0}
 
@@ -1411,7 +1417,13 @@ class MovementService:
         beyond get_available_moves' free {name, type, turn_cost} baseline.
         See the module comment above this method for the full ladder design.
         """
-        player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
+        player = (
+            self.db.query(Player)
+            .filter(Player.id == player_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
         if not player:
             return {"success": False, "message": "Player not found"}
 
@@ -1819,7 +1831,7 @@ class MovementService:
             # as the player-row lock in move_player_to_sector).
             locked = self.db.query(WarpTunnel).filter(
                 WarpTunnel.id == tunnel.id
-            ).with_for_update().first()
+            ).populate_existing().with_for_update().first()
             if locked is not None and locked.status == WarpTunnelStatus.ACTIVE:
                 locked.status = WarpTunnelStatus.COLLAPSED
                 # The traversal fails, so the caller (move_player_to_sector)

@@ -628,7 +628,7 @@ def unlock_node(db: Session, player_id: Any, node_id: str) -> Dict[str, Any]:
     ``unlocked``, and flushes. The CALLER commits (mirrors citadel_service's
     deduct-and-flush, commit-at-route pattern).
     """
-    player = db.query(Player).filter(Player.id == player_id).with_for_update().first()
+    player = db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
     if not player:
         return {"success": False, "message": "Player not found"}
 
@@ -1277,7 +1277,7 @@ def start_contract(
         if planet.owner_id is not None and str(planet.owner_id) != str(player_id):
             return {"success": False, "message": "You do not own the target planet."}
 
-    player = db.query(Player).filter(Player.id == player_id).with_for_update().first()
+    player = db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
     if player is None:
         return {"success": False, "message": "Player not found."}
 
@@ -1510,7 +1510,7 @@ def cancel_contract(db: Session, player_id: Any, contract_id: str,
     if now.tzinfo is None:
         now = now.replace(tzinfo=UTC)
 
-    player = db.query(Player).filter(Player.id == player_id).with_for_update().first()
+    player = db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
     if player is None:
         return {"success": False, "message": "Player not found."}
 

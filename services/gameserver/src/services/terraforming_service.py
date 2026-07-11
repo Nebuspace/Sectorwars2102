@@ -146,7 +146,7 @@ class TerraformingService:
             )
 
         # Lock player for credit deduction race prevention
-        player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
+        player = self.db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
         if not player:
             raise ValueError("Player not found")
 

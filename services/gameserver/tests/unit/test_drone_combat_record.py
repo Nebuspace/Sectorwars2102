@@ -204,7 +204,14 @@ class _SectorDronesDb:
     def query(self, model):
         q = MagicMock()
         if model is PlayerModel:
-            q.filter.return_value.with_for_update.return_value.first.return_value = self._attacker
+            # WO-MONEY-REREAD-SERVICES: combat_service now chains
+            # .populate_existing() ahead of .with_for_update() -- route the
+            # mock chain through it (returns the same filtered-query mock)
+            # so .first() still resolves to the real attacker fixture
+            # instead of an unconfigured auto-vivified MagicMock.
+            filtered = q.filter.return_value
+            filtered.populate_existing.return_value = filtered
+            filtered.with_for_update.return_value.first.return_value = self._attacker
         elif model is SectorModel:
             q.filter.return_value.first.return_value = self._sector
         elif model is DroneModel:

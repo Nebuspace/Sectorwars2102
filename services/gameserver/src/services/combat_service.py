@@ -711,8 +711,8 @@ class CombatService:
             return {"success": False, "message": "You cannot attack yourself"}
 
         # Get players with row locks to prevent concurrent combat race conditions
-        attacker = self.db.query(Player).filter(Player.id == attacker_id).with_for_update().first()
-        defender = self.db.query(Player).filter(Player.id == defender_id).with_for_update().first()
+        attacker = self.db.query(Player).filter(Player.id == attacker_id).populate_existing().with_for_update().first()
+        defender = self.db.query(Player).filter(Player.id == defender_id).populate_existing().with_for_update().first()
 
         if not attacker or not defender:
             return {"success": False, "message": "Player not found"}
@@ -1204,11 +1204,11 @@ class CombatService:
         canon gives no numeric value and the CONCORD FactionType is
         Design-only — deferred with a logged TODO, not invented.
         """
-        attacker = self.db.query(Player).filter(Player.id == attacker_id).with_for_update().first()
+        attacker = self.db.query(Player).filter(Player.id == attacker_id).populate_existing().with_for_update().first()
         if not attacker:
             return {"success": False, "message": "Player not found"}
 
-        npc_ship = self.db.query(Ship).filter(Ship.id == ship_id).with_for_update().first()
+        npc_ship = self.db.query(Ship).filter(Ship.id == ship_id).populate_existing().with_for_update().first()
         if not npc_ship or npc_ship.is_destroyed:
             return {"success": False, "message": "Target ship not found"}
 
@@ -1860,7 +1860,7 @@ class CombatService:
         # (mirrors attack_player / attack_planet).
         attacker = self.db.query(Player).filter(
             Player.id == attacker_id
-        ).with_for_update().first()
+        ).populate_existing().with_for_update().first()
         if not attacker:
             return {"success": False, "message": "Player not found"}
 
@@ -2025,14 +2025,14 @@ class CombatService:
         """Attack a planet."""
         # Get attacker with a row lock to prevent concurrent turn deduction
         # races (mirrors attack_player / attack_npc_ship)
-        attacker = self.db.query(Player).filter(Player.id == attacker_id).with_for_update().first()
+        attacker = self.db.query(Player).filter(Player.id == attacker_id).populate_existing().with_for_update().first()
         if not attacker:
             return {"success": False, "message": "Player not found"}
-        
+
         # Check if attacker has an active ship
         if not attacker.current_ship:
             return {"success": False, "message": "No active ship selected"}
-        
+
         # Get planet
         planet = self.db.query(Planet).filter(Planet.id == planet_id).first()
         if not planet:
@@ -2363,7 +2363,7 @@ class CombatService:
 
         # Lock the attacker row before any charge (mirrors attack_planet)
         # -- AFTER the gate, per the lock-order contract above.
-        attacker = self.db.query(Player).filter(Player.id == attacker_id).with_for_update().first()
+        attacker = self.db.query(Player).filter(Player.id == attacker_id).populate_existing().with_for_update().first()
         if not attacker:
             return {"success": False, "message": "Player not found"}
         if not attacker.current_ship:

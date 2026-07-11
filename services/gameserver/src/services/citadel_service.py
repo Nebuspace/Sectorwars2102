@@ -549,7 +549,7 @@ class CitadelService:
             }
 
         # For levels 1+: lock player row to prevent concurrent credit races
-        player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
+        player = self.db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
         if not player:
             return {"success": False, "message": "Player not found"}
 
@@ -640,7 +640,7 @@ class CitadelService:
         refund = int((target_info.get("upgrade_cost", 0) or 0) * 0.5)
 
         if refund > 0:
-            player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
+            player = self.db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
             if player:
                 player.credits += refund
 
@@ -1574,7 +1574,7 @@ class CitadelService:
         unit_cost = spec.get("tier_costs", {}).get(count_to_be, spec["cost"])
 
         # --- Lock player for credit deduction ---
-        player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
+        player = self.db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
         if not player:
             return {"success": False, "message": "Player not found"}
 

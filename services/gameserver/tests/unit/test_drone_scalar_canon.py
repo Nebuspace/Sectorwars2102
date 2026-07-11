@@ -255,7 +255,14 @@ def _armory_db(*, player, station, ship, spec):
     def _query(model):
         q = MagicMock()
         if model is PlayerModel:
-            q.filter.return_value.with_for_update.return_value.first.return_value = player
+            # armory.py's route chains .populate_existing() ahead of
+            # .with_for_update() (pre-existing route-layer convention,
+            # WO-MONEY-REREAD-CLASS) -- route the mock chain through it so
+            # .first() still resolves to the real player fixture instead of
+            # an unconfigured auto-vivified MagicMock.
+            filtered = q.filter.return_value
+            filtered.populate_existing.return_value = filtered
+            filtered.with_for_update.return_value.first.return_value = player
         elif model is StationModel:
             q.filter.return_value.first.return_value = station
         elif model is ShipModel:

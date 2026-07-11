@@ -492,10 +492,14 @@ class FleetService:
         Raises ValueError on any precondition failure.
         """
         # Lock the fleet row so concurrent resupply/decay/battle transitions are
-        # serialized against this top-up.
+        # serialized against this top-up. WO-MONEY-REREAD-SERVICES: the route
+        # already read this Fleet row unlocked (fleets.py:601) on this same
+        # session, so populate_existing() forces this locked re-read to
+        # actually refresh from the DB instead of returning the identity-
+        # mapped (possibly stale) instance.
         fleet = self.db.query(Fleet).filter(
             Fleet.id == fleet_id
-        ).with_for_update().first()
+        ).populate_existing().with_for_update().first()
         if not fleet:
             raise ValueError(f"Fleet {fleet_id} not found")
 
@@ -517,9 +521,13 @@ class FleetService:
             raise ValueError("Only a member of the fleet can resupply it")
 
         # Row-lock the paying player; read docking + credits under the lock.
+        # WO-MONEY-REREAD-SERVICES: player was already loaded unlocked by the
+        # route's get_current_player dependency on this same session;
+        # populate_existing() forces this lock to re-read live credits rather
+        # than returning the stale identity-mapped instance.
         player = self.db.query(Player).filter(
             Player.id == player_id
-        ).with_for_update().first()
+        ).populate_existing().with_for_update().first()
         if not player:
             raise ValueError(f"Player {player_id} not found")
 

@@ -1307,7 +1307,7 @@ class PlanetaryService:
         cost = self._calculate_upgrade_cost(building_type, current_level, target_level)
 
         # Lock player for credit deduction
-        player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
+        player = self.db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
         if not player:
             raise ValueError("Player not found")
         if player.credits < cost["credits"]:
@@ -1372,7 +1372,7 @@ class PlanetaryService:
         # method locks player→planet-row, so this cannot deadlock.
         planet = self.db.query(Planet).filter(
             Planet.id == planet.id
-        ).with_for_update().first()
+        ).populate_existing().with_for_update().first()
 
         # Price the upgrade: only ADDED units cost credits (decreases are free,
         # no refund). ADR-0076 scaled pricing — each added unit is charged the
@@ -1396,7 +1396,7 @@ class PlanetaryService:
             # integrity — same pattern as the rest of this service).
             player = self.db.query(Player).filter(
                 Player.id == player_id
-            ).with_for_update().first()
+            ).populate_existing().with_for_update().first()
             if not player:
                 raise ValueError("Player not found")
             if (player.credits or 0) < cost:
@@ -2065,7 +2065,7 @@ class PlanetaryService:
         equipment_cost = next_level_info["equipment_cost"]
 
         # Lock player for credit deduction (planet already locked above via with_for_update)
-        player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
+        player = self.db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
         if not player:
             raise ValueError("Player not found")
 

@@ -66,6 +66,14 @@ class _FakeQuery:
     def filter(self, *conditions: Any) -> "_FakeQuery":
         return _FakeQuery(self._rows, self._criteria + list(conditions), self._session, self._entity)
 
+    def populate_existing(self) -> "_FakeQuery":
+        # WO-MONEY-REREAD-SERVICES: no-op passthrough -- the real SQLAlchemy
+        # Query object is chainable-and-returns-self here too. The
+        # for_update_calls tracking stays entirely inside with_for_update()
+        # (called right after in the real chain), so this must NOT touch
+        # session state itself.
+        return self
+
     def with_for_update(self) -> "_FakeQuery":
         # WO-P3 revise (mack, concurrency) -- records WHICH entity got
         # FOR UPDATE'd so a test can prove the gate row is actually

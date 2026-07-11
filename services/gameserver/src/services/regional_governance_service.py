@@ -1555,10 +1555,17 @@ class RegionalGovernanceService:
 
         # Re-read the policy under a row lock so the read-modify-write of the
         # tallies is atomic against a concurrent vote on the same policy.
+        # WO-MONEY-REREAD-SERVICES: policy was already loaded unlocked by the
+        # route (regional_governance.py) on this same AsyncSession; the
+        # Query-API's .populate_existing() has no async-select equivalent, so
+        # execution_options(populate_existing=True) forces this locked
+        # re-read to actually refresh votes_for/votes_against/status from the
+        # DB instead of returning the stale identity-mapped instance.
         locked = await db.execute(
             select(RegionalPolicy)
             .where(RegionalPolicy.id == policy.id)
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
         policy = locked.scalar_one()
 

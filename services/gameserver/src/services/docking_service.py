@@ -671,7 +671,13 @@ def bump(db: Session, station: Station, bumper: Player, occupant_player_id) -> D
     within the same transaction.
     """
     # 1. Lock the station row — serializes against acquire() and other bumps.
-    station = db.query(Station).filter(Station.id == station.id).with_for_update().first()
+    station = (
+        db.query(Station)
+        .filter(Station.id == station.id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
 
     occupancy = db.query(DockingSlipOccupancy).filter(
         DockingSlipOccupancy.station_id == station.id,
@@ -701,7 +707,13 @@ def bump(db: Session, station: Station, bumper: Player, occupant_player_id) -> D
     # 2. Lock both player rows in ASCENDING player-id order (deadlock avoidance).
     locked: Dict[Any, Player] = {}
     for pid in sorted([bumper.id, occupancy.player_id]):
-        row = db.query(Player).filter(Player.id == pid).with_for_update().first()
+        row = (
+            db.query(Player)
+            .filter(Player.id == pid)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
         if row is not None:
             locked[pid] = row
     bumper = locked.get(bumper.id, bumper)
@@ -839,7 +851,11 @@ def acquire_long_term(
     # Lock the player row to safely deduct credits (no other player row
     # involved here, so no ordering concern beyond station-first).
     player_locked = (
-        db.query(Player).filter(Player.id == player.id).with_for_update().first()
+        db.query(Player)
+        .filter(Player.id == player.id)
+        .populate_existing()
+        .with_for_update()
+        .first()
     )
     if player_locked is None:
         return {"status": "error", "detail": "Player not found"}
