@@ -38,7 +38,7 @@ silently decided.
 import enum
 import uuid
 
-from sqlalchemy import Column, DateTime, Enum, ForeignKey, Integer, Numeric, String, func
+from sqlalchemy import Column, DateTime, Enum, ForeignKey, Index, Integer, Numeric, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -136,6 +136,20 @@ class StorageLocker(Base):
     contract = relationship("Contract")
     deposits = relationship("ContractCargoDeposit", back_populates="locker", cascade="all, delete-orphan")
 
+    # Model<->migration parity (WO-STORE-DEPOSIT-FLOW, cipher LOW): these
+    # 4 indexes already exist live via 61b7e6f4ff93 (the first 3) and
+    # b9a7404a2c20 (the unique one) -- mirrored here byte-for-byte (same
+    # names, same columns, same unique flag) so `Base.metadata.create_all()`
+    # on a fresh test DB and `alembic --autogenerate` both agree with what
+    # the migrations actually built. NOT a new migration -- the DB objects
+    # already exist; this is pure declarative-model bookkeeping.
+    __table_args__ = (
+        Index("idx_storage_locker_owner", "owner_player_id"),
+        Index("idx_storage_locker_station", "station_id"),
+        Index("idx_storage_locker_contract", "contract_id"),
+        Index("idx_storage_locker_owner_contract_unique", "owner_player_id", "contract_id", unique=True),
+    )
+
     def __repr__(self):
         return f"<StorageLocker {self.id} station={self.station_id} status={self.status.name}>"
 
@@ -163,6 +177,12 @@ class ContractCargoDeposit(Base):
 
     locker = relationship("StorageLocker", back_populates="deposits")
     depositor = relationship("Player")
+
+    # Model<->migration parity -- see StorageLocker's own __table_args__
+    # comment; this index already exists live via 61b7e6f4ff93.
+    __table_args__ = (
+        Index("idx_cargo_deposit_locker", "locker_id"),
+    )
 
     def __repr__(self):
         return f"<ContractCargoDeposit {self.id} locker={self.locker_id} {self.quantity}x {self.commodity}>"

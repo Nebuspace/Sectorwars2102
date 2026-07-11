@@ -69,6 +69,7 @@ from src.api.routes.resources import router as resources_router  # WO-ARCH-RES-1
 from src.api.routes.pirate_ecosystem import router as pirate_ecosystem_router  # WO-PIRATE-ECO-1
 from src.api.routes.contracts import router as contracts_router  # WO-ECON-CONTRACT-1-KERNEL
 from src.api.routes.beacons import router as beacons_router  # WO-P4-play-beacon-kernel
+from src.api.routes.storage import router as storage_router  # WO-STORE-DEPOSIT-FLOW
 from src.core.config import settings
 
 # Main API router - note that the version is now in the main API_V1_STR prefix
@@ -198,6 +199,10 @@ api_router.include_router(contracts_router, tags=["contracts"])
 # physical "message in a bottle" in a sector (router carries its own
 # /beacons prefix).
 api_router.include_router(beacons_router, tags=["beacons"])
+# Storage lockers (WO-STORE-DEPOSIT-FLOW): rent a locker at a contract's
+# destination station, deposit cargo in installments, auto-complete on
+# full quantity (router carries its own /storage prefix).
+api_router.include_router(storage_router, tags=["storage"])
 
 # Only include test routes in development/test environments
 if settings.TESTING or settings.DEVELOPMENT_MODE:
