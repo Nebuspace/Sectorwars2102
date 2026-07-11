@@ -45,10 +45,16 @@ function layoutKnownSectors(
   chart: NavChartResponse,
   adjacentIds: Set<number>
 ): { sectors: MapSector[]; connections: MapConnection[] } {
-  if (!chart.sectors.length) return { sectors: [], connections: [] };
+  // Defensive: NavChartResponse's shape is enforced by the TS type, not at
+  // runtime -- a malformed/incomplete 200 response (WO-UIPC-COCKPITINSTRUMENT-OCCLUSION
+  // follow-up hardening) must not crash the map. Empty arrays render the same
+  // "nothing known yet" state the loading/error branches already show.
+  const chartSectors = chart?.sectors ?? [];
+  const chartEdges = chart?.edges ?? [];
+  if (!chartSectors.length) return { sectors: [], connections: [] };
 
-  const xs = chart.sectors.map((s) => s.x);
-  const ys = chart.sectors.map((s) => s.y);
+  const xs = chartSectors.map((s) => s.x);
+  const ys = chartSectors.map((s) => s.y);
   const minX = Math.min(...xs);
   const maxX = Math.max(...xs);
   const minY = Math.min(...ys);
@@ -58,7 +64,7 @@ function layoutKnownSectors(
   const midX = (minX + maxX) / 2;
   const midY = (minY + maxY) / 2;
 
-  const sectors: MapSector[] = chart.sectors.map((s) => ({
+  const sectors: MapSector[] = chartSectors.map((s) => ({
     id: s.sector_id,
     name: s.name,
     type: s.type,
@@ -72,10 +78,10 @@ function layoutKnownSectors(
   // chart.edges already lists both directions of a bidirectional edge --
   // dedupe to one rendered line per undirected pair+kind, and use whether a
   // reverse entry exists to decide the one-way arrow.
-  const edgeKeys = new Set(chart.edges.map((e) => `${e.from}>${e.to}:${e.kind}`));
+  const edgeKeys = new Set(chartEdges.map((e) => `${e.from}>${e.to}:${e.kind}`));
   const seenPairs = new Set<string>();
   const connections: MapConnection[] = [];
-  for (const e of chart.edges) {
+  for (const e of chartEdges) {
     const canonical = e.from < e.to ? `${e.from}-${e.to}:${e.kind}` : `${e.to}-${e.from}:${e.kind}`;
     if (seenPairs.has(canonical)) continue;
     seenPairs.add(canonical);
