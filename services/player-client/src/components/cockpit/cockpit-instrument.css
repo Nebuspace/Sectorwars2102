@@ -25,6 +25,39 @@
   box-shadow: inset 0 8px 12px rgba(0, 0, 0, 0.6);
 }
 
+/* WO-UIPC-COCKPITINSTRUMENT-OCCLUSION: every standalone /game/* route wraps
+   <GameLayout><CockpitInstrument>..., making .instrument-monitor a DIRECT
+   child of .main-viewport (game-layout.css) -- the exact shape PlayerInfo
+   had before its own container-level fix (WO-UIPC-PLAYERINFO-OVERLAY).
+   GameLayout's two fixed overlays -- the MFD sidebar rail (.game-sidebar,
+   position:absolute, z-index:20) and the always-on HUD bar
+   (.player-vitals-hud, position:absolute, z-index:30) -- aren't reserved
+   space in .main-viewport's flow, so the frame's own LED header +
+   screen-hud-content rendered straight underneath both on every standalone
+   route (confirmed live at 1440x900: GalaxyMap, TeamManager,
+   GovernancePanel, CombatInterface, PlanetManager, ShipSelector,
+   TradingInterface, RankingPage, SettingsPage -- identical occlusion
+   geometry on all 9, since none of them override this shared frame).
+   Scoped via the CHILD combinator, not a bare `.instrument-monitor` rule,
+   so EMBEDDED usages are structurally excluded from the extra padding:
+   ShipSelector/PlanetManager render bare (no GameLayout) inside PlayerInfo's
+   HANGAR/COLONIES tabs -- nested under .pi-body, which is already offset by
+   player-info.css, so re-adding the offset here would double it; Trading-
+   Interface's docked/SpaceDockInterface embedding skips CockpitInstrument
+   entirely (bare Fragment, "TradeLedgerShell" doc comment). Only a DIRECT
+   .main-viewport child -- i.e. the GameLayout-wrapped standalone-route case
+   -- matches, so nothing double-offsets.
+   Clearance mirrors player-info.css's proven-live measurements: left reads
+   the SAME --sidebar-w custom prop the rail is sized from (inherited from
+   .game-container, auto-collapses to 0 with .console-collapsed, no extra
+   JS/state); top is a fixed rem clearance (no shared --hud-h var exists to
+   read -- 3.4rem measured live against the HUD's ~50px/3.1rem rendered
+   height, +0.3rem margin, same value player-info.css uses). Right/bottom
+   keep the frame's own 0.4rem baseline. */
+.main-viewport > .instrument-monitor {
+  padding: 3.4rem 0.4rem 0.4rem calc(var(--sidebar-w) + 0.4rem);
+}
+
 /* Metallic texture overlay — same idiom as .cockpit-console::before */
 .instrument-monitor::before {
   content: '';
