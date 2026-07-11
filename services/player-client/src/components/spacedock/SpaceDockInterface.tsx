@@ -71,6 +71,7 @@ interface ShipCatalogEntry {
   hull_points: number;
   attack_rating: number;
   defense_rating: number;
+  max_genesis_devices: number;
   description: string;
   reason?: string | null;
 }
@@ -2447,6 +2448,7 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
                             <span title="Drone capacity">🤖 {ship.max_drones}</span>
                             <span title="Shield capacity">🛡️ {ship.max_shields}</span>
                             <span title="Hull points">🔩 {ship.hull_points}</span>
+                            <span title="Genesis Device capacity">🧬 {ship.max_genesis_devices || 0}</span>
                           </div>
                         </div>
                         {ship.purchasable ? (
