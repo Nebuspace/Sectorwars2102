@@ -5,25 +5,38 @@
 .player-info {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  min-height: 0;
-  /* WO-UIPC-PLAYERINFO-OVERLAY: .main-viewport doesn't reserve space for
-     GameLayout's two fixed overlays -- the MFD sidebar rail (.game-sidebar,
-     position:absolute, z-index:20) and the always-on HUD bar
-     (.player-vitals-hud, position:absolute, z-index:30, game-layout.css /
-     player-vitals-hud.css). This view rendered full-bleed straight underneath
-     both: the tab bar collided with the HUD text, and every faction-standings
-     row's LEFT half (the faction NAME) sat behind the opaque rail, leaving
-     only the right-edge value visible. Left clearance reads the SAME
-     `--sidebar-w` custom property the rail itself is sized from (set on
-     `.game-container`, game-layout.css -- inherited down through
-     `.main-viewport`; collapses to 0 automatically with `.console-collapsed`,
-     so the toggle needs no extra handling here). Top clearance is a fixed rem
-     value -- no shared `--hud-h` var exists to read, so 3.4rem is a measured
-     clearance (live-mount screenshot: the HUD's rendered box bottom-edges at
-     ~50px / 3.1rem at 16px root; +0.3rem margin) rather than a guess.
+  /* WO-UIPC-COCKPIT-CONTENT-REGION (supersedes the WO-UIPC-PLAYERINFO-OVERLAY
+     padding hack below, same clearance values, different mechanism): Max
+     ruled a TRUE bounded grid column, not an observably-equivalent padding
+     offset. .main-viewport doesn't reserve space for GameLayout's two fixed
+     overlays -- the MFD sidebar rail (.game-sidebar, position:absolute,
+     z-index:20) and the always-on HUD bar (.player-vitals-hud,
+     position:absolute, z-index:30, game-layout.css / player-vitals-hud.css).
+     This view rendered full-bleed straight underneath both: the tab bar
+     collided with the HUD text, and every faction-standings row's LEFT half
+     (the faction NAME) sat behind the opaque rail, leaving only the
+     right-edge value visible.
+     position:absolute + explicit left/top/right/bottom (NOT padding) carves
+     a GENUINE bounded box -- this element's own border-box now starts at
+     x=var(--sidebar-w), not x=0-with-inset-content -- while staying entirely
+     local to this element: .main-viewport stays position:relative
+     (game-layout.css, UNTOUCHED) as the positioning context, exactly like
+     .game-sidebar/.cockpit-console already use position:absolute off that
+     same context. Left clearance reads the SAME `--sidebar-w` custom
+     property the rail itself is sized from (set on `.game-container`,
+     game-layout.css -- inherited down through `.main-viewport`; collapses to
+     0 automatically with `.console-collapsed`, so the toggle needs no extra
+     handling here). Top clearance is a fixed rem value -- no shared
+     `--hud-h` var exists to read, so 3.4rem is a measured clearance
+     (live-mount screenshot: the HUD's rendered box bottom-edges at ~50px /
+     3.1rem at 16px root; +0.3rem margin) rather than a guess.
      PLY-CONTAINER-SCOPED: touches only this file, not the shared chrome. */
-  padding: 3.4rem 0.5rem 0.5rem calc(var(--sidebar-w) + 0.5rem);
+  position: absolute;
+  top: 3.4rem;
+  left: var(--sidebar-w);
+  right: 0;
+  bottom: 0;
+  padding: 0 0.5rem 0.5rem 0.5rem;
   gap: 0.5rem;
   box-sizing: border-box;
 }
