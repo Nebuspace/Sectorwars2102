@@ -85,6 +85,9 @@ class _FakeQuery:
             if opname == "eq":
                 if value != rhs:
                     return False
+            elif opname == "in_op":
+                if value not in rhs:
+                    return False
             else:
                 raise NotImplementedError(f"fake query: unsupported operator {cond.operator!r}")
         return True
@@ -94,6 +97,32 @@ class _FakeQuery:
             if self._matches(row):
                 return row
         return None
+
+    def all(self):
+        return [row for row in self._rows if self._matches(row)]
+
+    def order_by(self, *criteria):
+        # WO-MONEY-NOLOCK-RMW: npc_attack_player's dual-ship lock adds a
+        # deterministic ORDER BY Ship.id ahead of the FOR UPDATE — a no-op
+        # here (this fake has no real lock/ordering semantics to prove; the
+        # ordering-CONSISTENCY property across call sites is proven at the
+        # source-review/ordering-proof layer, not by this single-threaded
+        # fake). Passthrough so the chained call doesn't AttributeError.
+        return self
+
+    def populate_existing(self):
+        # WO-MONEY-NOLOCK-RMW: real SQLAlchemy re-freshens the identity-map
+        # copy of an already-loaded row; this fake has no identity map (each
+        # fixture row IS the one-and-only in-memory object), so there is
+        # nothing to refresh. Passthrough so the chained call doesn't
+        # AttributeError — mirrors the money-reread-class rollout's fake
+        # passthrough fix for this exact chained-call shape.
+        return self
+
+    def with_for_update(self, *a, **k):
+        # WO-MONEY-NOLOCK-RMW: no real row lock to take against an in-memory
+        # list. Passthrough so the chained call doesn't AttributeError.
+        return self
 
 
 class _FakeSession:

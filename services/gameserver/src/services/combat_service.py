@@ -1747,12 +1747,40 @@ class CombatService:
         confiscate to a depot per police-forces.md outcome #3), so it's
         the CALLER's decision, not this method's.
         """
-        npc_ship = self.db.query(Ship).filter(Ship.id == npc_ship_id).first()
+        # Lock order: Player (defender) FIRST, then the two Ship rows (the
+        # NPC's hull + the defender's own current_ship) SECOND, in
+        # ASCENDING Ship.id order — mirrors attack_player's Player-before-
+        # Ship convention (both Players locked, then both current_ship rows
+        # via one ordered Ship.id.in_() query) and attack_npc_ship's own
+        # Player-before-Ship order. defender, npc_ship, AND defender.
+        # current_ship are all pre-loaded UNLOCKED upstream by
+        # npc_combat_initiation_service._guard_failure (which lazy-loads
+        # defender.current_ship while validating it there), so every
+        # re-read below needs populate_existing() to pick up the locked
+        # row's live state instead of the stale identity-mapped copy.
+        defender = self.db.query(Player).filter(Player.id == defender_id).populate_existing().with_for_update().first()
+        if defender is None:
+            return {"success": False, "message": "Defender has no active ship"}
+
+        if defender.current_ship_id is None:
+            return {"success": False, "message": "Defender has no active ship"}
+
+        ship_ids = sorted(
+            {npc_ship_id, defender.current_ship_id},
+            key=lambda sid: str(sid),
+        )
+        locked_ships = {
+            ship.id: ship
+            for ship in self.db.query(Ship).filter(
+                Ship.id.in_(ship_ids)
+            ).order_by(Ship.id).populate_existing().with_for_update().all()
+        }
+
+        npc_ship = locked_ships.get(npc_ship_id)
         if npc_ship is None or npc_ship.is_destroyed:
             return {"success": False, "message": "NPC has no active ship"}
 
-        defender = self.db.query(Player).filter(Player.id == defender_id).first()
-        if defender is None or defender.current_ship is None or defender.current_ship.is_destroyed:
+        if defender.current_ship is None or defender.current_ship.is_destroyed:
             return {"success": False, "message": "Defender has no active ship"}
 
         if npc_ship.sector_id != defender.current_sector_id:

@@ -72,6 +72,16 @@ class _FakeQuery:
             self._lock_log.append(self._match_id)
         return self
 
+    def populate_existing(self):
+        # WO-MONEY-NOLOCK-RMW: place_bounty's placer branch chains
+        # `.populate_existing().with_for_update()` (placer may already be
+        # identity-mapped unlocked by the route's get_current_player
+        # dependency). This fake has no identity map to refresh -- pure
+        # passthrough so the chained call doesn't AttributeError, mirrors
+        # the money-reread-class rollout's fake-passthrough fix for this
+        # exact chained-call shape.
+        return self
+
     def first(self):
         return self._players.get(self._match_id)
 
@@ -171,6 +181,80 @@ class TestCollectBountyLockOrder:
 
         assert result["success"] is True
         assert db.player_lock_log == [low_id, high_id]
+
+
+# --------------------------------------------------------------------------- #
+# place_bounty -- WO-MONEY-NOLOCK-RMW: place_bounty now ALSO locks its pair
+# (placer, target) in ascending-id order via its own inline if/else, rather
+# than the shared _load_two_players_for_update helper cancel_bounty/
+# collect_bounty funnel through. This is the ordering-CONSISTENCY-critical
+# question: does place_bounty's independently-written branch actually agree
+# with the helper's convention, for BOTH id-orderings and against the
+# helper's OWN output for the identical pair?
+# --------------------------------------------------------------------------- #
+
+class TestPlaceBountyLockOrder:
+    def test_locks_ascending_when_placer_has_the_lower_id(self) -> None:
+        low_id, high_id = sorted([uuid4(), uuid4()])
+        placer = make_player(player_id=low_id, credits=10_000)
+        target = make_player(player_id=high_id)
+        db = _FakeSession(placer, target)
+        service = bs.BountyService(db)
+
+        result = service.place_bounty(placer.id, target.id, 1000)
+
+        assert result["success"] is True
+        assert db.player_lock_log == [low_id, high_id]
+
+    def test_locks_ascending_when_placer_has_the_higher_id(self) -> None:
+        """The role-reversal companion -- placer is the semantic "first"
+        party but, if place_bounty locked unconditionally placer-then-
+        target, this would lock high-then-low: the opposite order from the
+        case above and from a concurrent cancel_bounty/collect_bounty on
+        the SAME pair with roles reversed."""
+        low_id, high_id = sorted([uuid4(), uuid4()])
+        placer = make_player(player_id=high_id, credits=10_000)
+        target = make_player(player_id=low_id)
+        db = _FakeSession(placer, target)
+        service = bs.BountyService(db)
+
+        result = service.place_bounty(placer.id, target.id, 1000)
+
+        assert result["success"] is True
+        assert db.player_lock_log == [low_id, high_id]
+
+
+class TestPlaceBountyAgreesWithTheSharedHelper:
+    """THE crux cross-function check: place_bounty's own inline if/else
+    must converge on the IDENTICAL ascending order the shared
+    _load_two_players_for_update helper produces for cancel_bounty/
+    collect_bounty -- a place_bounty racing a cancel_bounty (or a
+    collect_bounty) on the SAME pair of players, with roles reversed, is
+    exactly the scenario an AB-BA cycle needs. If place_bounty's own
+    ordering ever diverges from the helper's, this is the test that would
+    catch it."""
+
+    def test_place_bounty_and_load_two_players_helper_agree_on_order(self) -> None:
+        low_id, high_id = sorted([uuid4(), uuid4()])
+
+        # place_bounty: placer has the HIGH id, target has the LOW id.
+        placer = make_player(player_id=high_id, credits=10_000)
+        place_target = make_player(player_id=low_id)
+        place_db = _FakeSession(placer, place_target)
+        bs.BountyService(place_db).place_bounty(placer.id, place_target.id, 1000)
+
+        # _load_two_players_for_update (via collect_bounty): collector has
+        # the LOW id, target has the HIGH id -- the SAME two ids as above,
+        # roles/call-argument-order reversed.
+        collector = make_player(player_id=low_id, credits=0)
+        collect_target = make_player(player_id=high_id, bounties=[
+            {"id": "b1", "placed_by": str(uuid4()), "amount": 3000, "type": "player"},
+        ])
+        collect_db = _FakeSession(collector, collect_target)
+        bs.BountyService(collect_db).collect_bounty(collector.id, collect_target.id)
+
+        assert place_db.player_lock_log == [low_id, high_id]
+        assert collect_db.player_lock_log == [low_id, high_id]
 
 
 # --------------------------------------------------------------------------- #
