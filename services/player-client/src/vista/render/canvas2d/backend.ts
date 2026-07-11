@@ -8328,7 +8328,34 @@ function drawScene(
           // sandy beach gradient, and palm-fringe silhouettes at the waterline.
           timed('drawTropicalLagoon', () => drawTropicalLagoon(ctx, w, h, t, cache, dc, sunX, horizonY, wTopY));
         } else {
-          ctx.fillStyle = rgba(model.palette.surface, 1);
+          // INTERIM STOPGAP for DEFECT-vista-volcanic-ice-render — a flat,
+          // fully-opaque single-color fill reads fine for mid-tone surface
+          // colors but reads as a broken black void (VOLCANIC, near-black
+          // basalt [14,10,15]) or a blown-out white wash (ICE, near-white
+          // snowpack [203,217,241]) at the palette's tonal extremes — every
+          // OTHER same-family palette field (geologyBands, ridge*) clusters
+          // in that same extreme range by design, so blending toward any of
+          // them barely moves the visible value. Blending 35% toward
+          // middle-gray at the horizon-far edge instead is brightness-
+          // ADAPTIVE (pulls dark surfaces lighter, light surfaces darker,
+          // same formula, no per-type branch) while the camera-near edge
+          // stays the true canonical surface tone — breaks the flatness for
+          // every type that lands here (OCEANIC/ARCTIC/BARREN/JUNGLE too).
+          // Superseded and DELETED by WO-VISTA-VOLCANIC / WO-VISTA-ICE's
+          // dedicated terrain renderers; remove this block when those land.
+          const [sr, sg, sb] = model.palette.surface;
+          const MID_GRAY = 128;
+          const LIFT_FRAC = 0.35;
+          const farStop: RGB = [
+            sr + (MID_GRAY - sr) * LIFT_FRAC,
+            sg + (MID_GRAY - sg) * LIFT_FRAC,
+            sb + (MID_GRAY - sb) * LIFT_FRAC,
+          ];
+          const groundGrad = ctx.createLinearGradient(0, groundY, 0, groundBtm);
+          perfCollector.recordAlloc();
+          groundGrad.addColorStop(0, rgba(farStop, 1));
+          groundGrad.addColorStop(1, rgba(model.palette.surface, 1));
+          ctx.fillStyle = groundGrad;
           ctx.fillRect(0, groundY, w, groundBtm - groundY);
         }
       }
