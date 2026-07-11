@@ -9,6 +9,14 @@ interface Sector {
   connected_sectors?: number[];
 }
 
+/** Minimal shape NavigationMap needs from a plotted course hop — a
+ * structural subset of AutopilotContext's CourseHop so this tactical
+ * component never imports from contexts/. */
+export interface CourseHopPoint {
+  sector_id: number;
+  name: string;
+}
+
 interface NavigationMapProps {
   currentSectorId: number;
   sectors: Sector[];
@@ -18,6 +26,16 @@ interface NavigationMapProps {
   onNavigate: (sectorId: number) => void;
   width?: number;
   height?: number;
+  /**
+   * Plotted autopilot course (ADR-0072) — when present, draws a polyline
+   * across every hop in order plus a ship marker riding at
+   * `currentHopIndex`. Hops beyond the 1-hop neighborhood already covered
+   * by `sectors` are chain-injected into the node graph (WO-NAV-COURSE-
+   * OVERLAY) so the whole route positions, not just the visible portion.
+   */
+  course?: CourseHopPoint[] | null;
+  /** Index into `course` of the hop currently in progress. */
+  currentHopIndex?: number;
 }
 
 interface Node {
@@ -43,7 +61,9 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
   moveCosts,
   onNavigate,
   width = 600,
-  height = 600
+  height = 600,
+  course = null,
+  currentHopIndex = 0
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const [nodes, setNodes] = useState<Node[]>([]);
@@ -60,6 +80,44 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
   const availableMovesRef = useRef(availableMoves);
   availableMovesRef.current = availableMoves;
 
+  // Course-chain injection (WO-NAV-COURSE-OVERLAY, seam ruling): `sectors`
+  // is the 1-hop neighborhood only, so a multi-hop plotted course reaches
+  // beyond it. Splice the course's OWN hops in as a connected chain —
+  // hop[i]→hop[i+1] is an edge by construction (nav_service's Dijkstra
+  // path), and hop[0] chains back to the current sector — so the force
+  // layout can position every hop without pulling in the broader known
+  // graph. Identity-preserving no-op (returns `sectors` itself) when no
+  // course is plotted, so untouched nav rendering stays byte-identical.
+  const mergedSectors = useMemo(() => {
+    if (!course || course.length === 0) return sectors;
+
+    const byId = new Map<number, Sector>();
+    (sectors || []).forEach(s => byId.set(s.id, { ...s, connected_sectors: [...(s.connected_sectors || [])] }));
+
+    const linkEdge = (fromId: number, toId: number) => {
+      const node = byId.get(fromId);
+      if (node && !(node.connected_sectors || []).includes(toId)) {
+        node.connected_sectors = [...(node.connected_sectors || []), toId];
+      }
+    };
+
+    let prevId = currentSectorId;
+    course.forEach(hop => {
+      if (!byId.has(hop.sector_id)) {
+        byId.set(hop.sector_id, {
+          id: hop.sector_id,
+          name: hop.name,
+          connected_sectors: [prevId]
+        });
+      }
+      linkEdge(prevId, hop.sector_id);
+      linkEdge(hop.sector_id, prevId);
+      prevId = hop.sector_id;
+    });
+
+    return Array.from(byId.values());
+  }, [sectors, course, currentSectorId]);
+
   // Topology signature: the layout depends only on WHICH sectors exist, the
   // current sector, the available moves, and the canvas size — NOT on the
   // sector objects' identity. The dashboard re-fetches currentSector every 5s
@@ -67,19 +125,21 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
   // `availableMoves` array refs with identical content. Keying the layout
   // effect on this stable STRING (instead of the array refs) stops the force
   // simulation from re-initializing — and the nodes from bobbing/resizing —
-  // on every poll. It re-runs only when the actual graph changes.
+  // on every poll. It re-runs only when the actual graph changes (including
+  // when a course is plotted/replotted, since mergedSectors folds course
+  // hop ids into the signature too).
   const topoSig = useMemo(() => {
-    const ids = (sectors || []).map(s => s.id).sort((a, b) => a - b).join(',');
+    const ids = (mergedSectors || []).map(s => s.id).sort((a, b) => a - b).join(',');
     const moves = [...(availableMoves || [])].sort((a, b) => a - b).join(',');
     return `${ids}|${currentSectorId}|${moves}|${width}x${height}`;
-  }, [sectors, availableMoves, currentSectorId, width, height]);
+  }, [mergedSectors, availableMoves, currentSectorId, width, height]);
 
   // Initialize nodes with force-directed layout (only when topology changes)
   useEffect(() => {
-    if (!sectors || sectors.length === 0) return;
+    if (!mergedSectors || mergedSectors.length === 0) return;
 
     // Create nodes centered around current sector
-    const currentSector = sectors.find(s => s.id === currentSectorId);
+    const currentSector = mergedSectors.find(s => s.id === currentSectorId);
     if (!currentSector) return;
 
     const centerX = width / 2;
@@ -89,7 +149,7 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
     // (e.g. a destination listed via both warp and tunnel) would otherwise
     // render overlapping phantom nodes with duplicate React keys.
     const seenIds = new Set<number>();
-    const uniqueSectors = sectors.filter(sector => {
+    const uniqueSectors = mergedSectors.filter(sector => {
       if (seenIds.has(sector.id)) return false;
       seenIds.add(sector.id);
       return true;
@@ -485,6 +545,82 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
             );
           })}
         </g>
+
+        {/* Plotted course overlay (ADR-0072 autopilot) — a bright polyline
+            across every hop in order plus per-hop waypoint markers and a
+            ship marker riding at currentHopIndex. Independent of the dim
+            default connection lines above; renders nothing when no course
+            is plotted (WO-NAV-COURSE-OVERLAY). */}
+        {course && course.length > 0 && (() => {
+          const originNode = nodes.find(n => n.id === currentSectorId);
+          if (!originNode) return null;
+
+          // Ordered waypoint nodes: origin first, then every hop that has
+          // settled into the node graph. A chain-injected hop not yet laid
+          // out on the very first render frame (topoSig effect hasn't run
+          // yet) is skipped defensively rather than crashing.
+          const waypoints: { node: Node; hopIndex: number }[] = [];
+          course.forEach((hop, i) => {
+            const n = nodes.find(nd => nd.id === hop.sector_id);
+            if (n) waypoints.push({ node: n, hopIndex: i });
+          });
+          if (waypoints.length === 0) return null;
+
+          const pathD = [originNode, ...waypoints.map(wp => wp.node)]
+            .map((n, i) => `${i === 0 ? 'M' : 'L'} ${n.x} ${n.y}`)
+            .join(' ');
+
+          // Ship marker sits ON currentHopIndex (the hop currently in
+          // progress); once arrived (index runs past the last hop) it
+          // clamps to the destination rather than vanishing.
+          const clampedShipHop = Math.min(Math.max(currentHopIndex, 0), course.length - 1);
+
+          return (
+            <g
+              className="course-overlay"
+              style={{ pointerEvents: 'none' }}
+              role="img"
+              aria-label={`Plotted autopilot course, ${course.length} hops`}
+            >
+              <path
+                d={pathD}
+                data-testid="course-polyline"
+                className="course-polyline"
+                fill="none"
+              />
+              {waypoints.map(({ node: n, hopIndex }) => {
+                const hop = course[hopIndex];
+                const isDone = hopIndex < clampedShipHop;
+                const isShipHere = hopIndex === clampedShipHop;
+                return (
+                  <g key={`course-hop-${hop.sector_id}`}>
+                    <circle
+                      cx={n.x}
+                      cy={n.y}
+                      r={6}
+                      data-testid={`course-hop-marker-${hop.sector_id}`}
+                      className={`course-hop-marker${isDone ? ' done' : ''}${isShipHere ? ' current' : ''}`}
+                    >
+                      <title>{`Hop ${hopIndex + 1}: ${hop.name}`}</title>
+                    </circle>
+                    {isShipHere && (
+                      <text
+                        x={n.x}
+                        y={n.y - 16}
+                        textAnchor="middle"
+                        data-testid="course-ship-marker"
+                        className="course-ship-marker"
+                      >
+                        <title>{`Ship — current leg ${clampedShipHop + 1} of ${course.length}`}</title>
+                        ▲
+                      </text>
+                    )}
+                  </g>
+                );
+              })}
+            </g>
+          );
+        })()}
       </svg>
     </div>
 

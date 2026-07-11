@@ -3287,9 +3287,15 @@ const GameDashboard: React.FC = () => {
                           onNavigate={handleMove}
                           width={440}
                           height={300}
+                          course={autopilot.course?.hops ?? null}
+                          currentHopIndex={autopilot.currentHopIndex}
                         />
                       )}
-                      {/* Course strip — rendered below the warp graph whenever a course exists */}
+                      {/* Course summary — total turns + progress; the old
+                          ≤6-chip breadcrumb is retired in favor of the
+                          polyline overlay drawn directly on the map above,
+                          which shows the COMPLETE route regardless of hop
+                          count (WO-NAV-COURSE-OVERLAY). */}
                       {(() => {
                         const apCourse = autopilot.course;
                         const apLastPlot = autopilot.lastPlot;
@@ -3299,44 +3305,22 @@ const GameDashboard: React.FC = () => {
                           const unreach = apLastPlot as import('../../contexts/AutopilotContext').CourseUnreachable;
                           const nearest = unreach.nearest_known;
                           return (
-                            <div className="nav-course-strip nav-course-unreachable">
+                            <div
+                              className="nav-course-strip nav-course-unreachable"
+                              role="alert"
+                            >
                               BEYOND CHARTED SPACE — NEAREST KNOWN APPROACH:{' '}
                               {nearest ? `SECTOR ${nearest.sector_id}` : 'UNKNOWN'}
                             </div>
                           );
                         }
-                        // Reachable course breadcrumb strip
+                        // Reachable course summary — the map draws the route itself
                         if (apCourse && apCourse.hops.length > 0) {
-                          const hops = apCourse.hops;
-                          const MAX_VISIBLE = 6;
-                          const showEllipsis = hops.length > MAX_VISIBLE + 1;
-                          const visibleHops = showEllipsis ? hops.slice(0, MAX_VISIBLE) : hops;
+                          const legNumber = Math.min(hopIdx + 1, apCourse.hops.length);
                           return (
                             <div className="nav-course-strip">
-                              <div className="nav-course-breadcrumb">
-                                {visibleHops.map((hop, i) => (
-                                  <span
-                                    key={hop.sector_id}
-                                    className={`nav-course-hop${i < hopIdx ? ' nav-course-hop-done' : i === hopIdx ? ' nav-course-hop-current' : ''}`}
-                                    title={hop.name}
-                                  >
-                                    {hop.sector_id}
-                                  </span>
-                                ))}
-                                {showEllipsis && (
-                                  <>
-                                    <span className="nav-course-ellipsis">…</span>
-                                    <span
-                                      className={`nav-course-hop${hops.length - 1 < hopIdx ? ' nav-course-hop-done' : hops.length - 1 === hopIdx ? ' nav-course-hop-current' : ''}`}
-                                      title={hops[hops.length - 1].name}
-                                    >
-                                      {hops[hops.length - 1].sector_id}
-                                    </span>
-                                  </>
-                                )}
-                              </div>
-                              <div className="nav-course-meta">
-                                <TurnsIcon /> {apCourse.total_turns} · {hops.length} HOPS
+                              <div className="nav-course-meta" role="status" aria-live="polite">
+                                <TurnsIcon /> {apCourse.total_turns} · LEG {legNumber}/{apCourse.hops.length}
                               </div>
                             </div>
                           );

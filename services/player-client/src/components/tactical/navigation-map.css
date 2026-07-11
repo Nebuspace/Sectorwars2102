@@ -138,6 +138,63 @@
   opacity: 0.6;
 }
 
+/* Plotted course overlay (ADR-0072 autopilot) — WO-NAV-COURSE-OVERLAY.
+   A bright gold polyline + waypoint markers layered above the dim default
+   connection lines, distinguishing the plotted route from the ambient
+   known-sector graph. */
+.course-polyline {
+  stroke: #ffd700;
+  stroke-width: 2.5;
+  stroke-dasharray: 6, 4;
+  stroke-linecap: round;
+  opacity: 0.85;
+  animation: course-dash-flow 1.2s linear infinite;
+}
+
+@keyframes course-dash-flow {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+
+.course-hop-marker {
+  fill: none;
+  stroke: #ffd700;
+  stroke-width: 1.5;
+  filter: drop-shadow(0 0 4px #ffd700);
+  transition: opacity 0.2s ease;
+}
+
+/* Completed hop — dim it, mirrors the retired breadcrumb chip's done state.
+   stroke-dasharray adds a non-color cue on top of the opacity drop so a
+   done hop reads as a dashed ring for achromatopsia, not just fainter. */
+.course-hop-marker.done {
+  opacity: 0.35;
+  stroke-dasharray: 2 1;
+}
+
+/* Hop currently in progress — pulse, mirrors the ship's active leg */
+.course-hop-marker.current {
+  animation: course-hop-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes course-hop-pulse {
+  0%, 100% {
+    r: 6;
+    filter: drop-shadow(0 0 4px #ffd700);
+  }
+  50% {
+    r: 8;
+    filter: drop-shadow(0 0 10px #ffd700);
+  }
+}
+
+.course-ship-marker {
+  fill: #ffd700;
+  text-shadow: 0 0 8px #ffd700, 0 0 4px rgba(0, 0, 0, 0.9);
+  font-weight: bold;
+}
+
 @keyframes indicator-pulse {
   0%, 100% {
     opacity: 1;
@@ -203,7 +260,9 @@
   .connection-line.current,
   .node-circle.current,
   .node-glow,
-  .current-indicator {
+  .current-indicator,
+  .course-polyline,
+  .course-hop-marker.current {
     animation: none;
   }
 
