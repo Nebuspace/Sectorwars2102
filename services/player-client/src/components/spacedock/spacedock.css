@@ -967,18 +967,22 @@
 
 .qty-controls {
   display: flex;
-  gap: 4px;
+  align-items: center;
+  gap: 8px;
 }
 
-.qty-controls input {
-  width: 50px;
-  padding: 4px;
-  background: rgba(0, 0, 0, 0.5);
-  border: 1px solid rgba(0, 217, 255, 0.3);
-  border-radius: 4px;
-  color: #ffffff;
+.qty-controls input[type="range"] {
+  width: 90px;
+  accent-color: #00d9ff;
+  cursor: pointer;
+}
+
+.qty-readout {
+  min-width: 1.5em;
   text-align: center;
   font-size: 0.85em;
+  font-weight: bold;
+  color: #ffffff;
 }
 
 .buy-btn {
@@ -996,10 +1000,12 @@
 }
 
 .current-loadout {
-  margin-top: 20px;
+  margin: 0 auto 20px;
   padding: 16px;
+  max-width: 480px;
   background: rgba(0, 0, 0, 0.3);
   border-radius: 8px;
+  text-align: center;
 }
 
 .current-loadout h4 {
@@ -1009,12 +1015,15 @@
 
 .loadout-stats {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 24px;
 }
 
 .loadout-item {
   display: flex;
   flex-direction: column;
+  align-items: center;
 }
 
 .item-label {
@@ -2216,6 +2225,10 @@
     grid-template-columns: 1fr;
   }
 
+  .loadout-stats {
+    gap: 12px;
+  }
+
   .services-grid {
     grid-template-columns: 1fr;
   }
@@ -3005,6 +3018,13 @@
 .eq-total {
   font-size: 0.7em;
   color: rgba(255, 255, 255, 0.6);
+}
+
+.qty-disabled-reason {
+  font-size: 0.7em;
+  color: #ffc107;
+  font-style: italic;
+  text-align: right;
 }
 
 .buy-btn:disabled {

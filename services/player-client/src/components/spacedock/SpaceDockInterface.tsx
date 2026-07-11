@@ -2676,9 +2676,17 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
   };
 
   const renderArmoryItemCard = (item: ArmoryCatalogItem) => {
-    const qty = armoryQuantities[item.item] ?? 1;
-    const totalCost = item.price * qty;
     const loadoutKey = loadoutKeyForItem(item.item);
+    // Purchasable ceiling for the qty slider: bounded by whatever's left in
+    // the loadout cap (when this item feeds one) and by what the player can
+    // actually afford — never a flat 100 that dead-ends short of usable.
+    const capFree = armoryLoadout && loadoutKey
+      ? Math.max(0, armoryLoadout.caps[loadoutKey] - armoryLoadout[loadoutKey])
+      : null;
+    const affordable = item.price > 0 ? Math.floor(displayCredits / item.price) : 100;
+    const effectiveMax = Math.max(1, Math.min(100, capFree ?? 100, affordable));
+    const qty = Math.min(armoryQuantities[item.item] ?? 1, effectiveMax);
+    const totalCost = item.price * qty;
     // Gate on the station's services map via the item's service key —
     // the catalog doesn't send an 'available' flag
     const gated = item.available === false ||
@@ -2723,17 +2731,22 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
           <span className="eq-price">{formatCredits(item.price)}</span>
           <div className="qty-controls">
             <input
-              type="number"
+              type="range"
+              id={`armory-qty-${item.item}`}
               min={1}
-              max={100}
+              max={effectiveMax}
+              step={1}
               value={qty}
               onChange={e => {
-                const next = Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 1));
+                const next = Math.max(1, Math.min(effectiveMax, parseInt(e.target.value, 10) || 1));
                 setArmoryQuantities(prev => ({ ...prev, [item.item]: next }));
               }}
-              disabled={gated || Boolean(armoryBuying)}
+              disabled={gated || Boolean(armoryBuying) || effectiveMax <= 1}
               aria-label={`${item.name} quantity`}
+              aria-valuetext={`${qty} of ${effectiveMax}`}
+              aria-describedby={effectiveMax <= 1 && !gated && blockReason ? `armory-reason-${item.item}` : undefined}
             />
+            <output htmlFor={`armory-qty-${item.item}`} className="qty-readout">{qty}</output>
             <button
               className="buy-btn"
               onClick={() => purchaseArmoryItem(item, qty)}
@@ -2743,6 +2756,11 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
               {isBuying ? '...' : 'Buy'}
             </button>
           </div>
+          {effectiveMax <= 1 && !gated && blockReason && (
+            <div id={`armory-reason-${item.item}`} className="qty-disabled-reason">
+              {blockReason}
+            </div>
+          )}
           {qty > 1 && !gated && (
             <span className="eq-total">Total: {formatCredits(totalCost)}</span>
           )}
@@ -2790,6 +2808,36 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
             </div>
           )}
 
+          <div className="current-loadout">
+            <h4>📊 Current Ship Loadout</h4>
+            <div className="loadout-stats">
+              <div className="loadout-item">
+                <span className="item-label">Attack Drones</span>
+                <span className="item-value">
+                  {armoryLoadout
+                    ? `${armoryLoadout.attack_drones} / ${armoryLoadout.caps.attack_drones}`
+                    : (playerState?.attack_drones ?? 0)}
+                </span>
+              </div>
+              <div className="loadout-item">
+                <span className="item-label">Defense Drones</span>
+                <span className="item-value">
+                  {armoryLoadout
+                    ? `${armoryLoadout.defense_drones} / ${armoryLoadout.caps.defense_drones}`
+                    : (playerState?.defense_drones ?? 0)}
+                </span>
+              </div>
+              <div className="loadout-item">
+                <span className="item-label">Mines</span>
+                <span className="item-value">
+                  {armoryLoadout
+                    ? `${armoryLoadout.mines} / ${armoryLoadout.caps.mines}`
+                    : '—'}
+                </span>
+              </div>
+            </div>
+          </div>
+
           {!armoryCatalogError && armoryCatalog && (
             <div className="armory-categories">
               {droneItems.length > 0 && (
@@ -2824,36 +2872,6 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
               )}
             </div>
           )}
-
-          <div className="current-loadout">
-            <h4>📊 Current Ship Loadout</h4>
-            <div className="loadout-stats">
-              <div className="loadout-item">
-                <span className="item-label">Attack Drones</span>
-                <span className="item-value">
-                  {armoryLoadout
-                    ? `${armoryLoadout.attack_drones} / ${armoryLoadout.caps.attack_drones}`
-                    : (playerState?.attack_drones ?? 0)}
-                </span>
-              </div>
-              <div className="loadout-item">
-                <span className="item-label">Defense Drones</span>
-                <span className="item-value">
-                  {armoryLoadout
-                    ? `${armoryLoadout.defense_drones} / ${armoryLoadout.caps.defense_drones}`
-                    : (playerState?.defense_drones ?? 0)}
-                </span>
-              </div>
-              <div className="loadout-item">
-                <span className="item-label">Mines</span>
-                <span className="item-value">
-                  {armoryLoadout
-                    ? `${armoryLoadout.mines} / ${armoryLoadout.caps.mines}`
-                    : '—'}
-                </span>
-              </div>
-            </div>
-          </div>
         </div>
         <BlackMarketButton />
       </div>
