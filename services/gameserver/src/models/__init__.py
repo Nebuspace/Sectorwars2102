@@ -64,6 +64,12 @@ from src.models.docking import DockingSlipOccupancy, DockingQueueEntry
 from src.models.pending_engagement import PendingEngagement, EngagementStatus
 from src.models.cargo_wreck import CargoWreck, WreckCause
 from src.models.migration_contract import MigrationContract, MigrationContractStatus
+# WO-STORE-LOCKER-MODEL: Contract was never registered here (pre-existing
+# gap -- contract_service.py imports it directly) -- StorageLocker's own
+# `contract = relationship("Contract")` string reference needs it in
+# SQLAlchemy's declarative class registry to resolve at mapper-configure
+# time, so this WO adds the missing registration as a necessary byproduct.
+from src.models.contract import Contract
 from src.models.npc_character import (
     NPCCharacter,
     NPCArchetype,
@@ -94,3 +100,10 @@ from src.models.multi_account import (
     MultiAccountAdminDecision,
 )
 from src.models.message_beacon import MessageBeacon
+from src.models.storage_locker import (
+    StorageLocker,
+    StorageLockerStatus,
+    StorageLockerTier,
+    StorageLockerRiskState,
+    ContractCargoDeposit,
+)
