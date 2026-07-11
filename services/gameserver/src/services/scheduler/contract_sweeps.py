@@ -168,9 +168,49 @@ def _run_contract_expire_sweep_sync() -> int:
     swept at all, so an accepted contract's failure penalty was never
     applied) under this SAME CEXP lock + due-check + single commit, rather
     than a second lock/tick of its own — both are "contract expiry", just
-    two different source statuses. The returned count is the sum of both."""
+    two different source statuses.
+
+    WO-STORE-EXPIRY-CLAIMABLE + D19 (deposit-wins is a REQUIRED semantic,
+    orchestrator-ruled, not an accepted side-effect): also runs storage_
+    service.sweep_expired_lockers under this SAME CEXP lock + due-check +
+    single commit, AFTER the accepted-contracts sweep -- a THIRD facet of
+    "contract expiry", not a new lock/tick of its own.
+
+    THE DEADLOCK + THE DEPOSIT-WINS REQUIREMENT, SOLVED BY ONE MECHANISM:
+    an earlier version of this fix split contract-expiry and locker-
+    conversion into two SEPARATE transactions (deadlock-free by
+    construction, since the second never held a Contract lock) -- but
+    that gives an ORDINARY first-committer-wins race for a completing
+    deposit landing at the deadline, not the DETERMINISTIC deposit-wins
+    D19 requires. The single-transaction design below fixes BOTH at
+    once: sweep_expired_accepted_contracts (contract_service.py) now
+    takes an `expiry_gate` callback (storage_service.gate_contract_
+    expiry_on_locker) that, for a storage-linked contract, probes its
+    Locker's row lock SKIP LOCKED *before* expiring the Contract. A
+    contended Locker (a live completing deposit_cargo call already holds
+    it) means the gate DEFERS that one contract's expiry this tick --
+    the in-flight deposit finishes uncontested and completes the
+    contract (deposit-wins), and the sweep picks the contract up on a
+    LATER tick if it's still overdue then. An uncontended Locker means
+    the gate ACQUIRES it (Locker-then-Contract order, matching deposit_
+    cargo's own order exactly) before the contract's guarded UPDATE runs
+    -- consistent ordering across the WHOLE codebase kills the AB-BA
+    cycle structurally (grepped: storage_service.py and this file are
+    the ONLY two places anywhere in src/ that ever touch both a Contract
+    lock and a Locker lock in the same transaction; storage_service.py
+    already always locks Locker first). See contract_service.sweep_
+    expired_accepted_contracts's own docstring for the gate contract and
+    the infinite-loop fix its `.all()`-based rewrite required, and
+    storage_service.gate_contract_expiry_on_locker's own docstring for
+    the two-step existence-then-skip_locked-probe.
+
+    The return value stays contracts-expired-count-only (posted +
+    accepted, unchanged shape for any existing caller); lockers-
+    converted is reported separately via its own log line, not folded
+    into the returned int."""
     from src.core.database import SessionLocal
     from src.services.contract_service import sweep_expired_accepted_contracts, sweep_expired_contracts
+    from src.services.storage_service import gate_contract_expiry_on_locker, sweep_expired_lockers
 
     db = SessionLocal()
     try:
@@ -186,7 +226,12 @@ def _run_contract_expire_sweep_sync() -> int:
         ):
             return 0
         posted_result = sweep_expired_contracts(db)
-        accepted_result = sweep_expired_accepted_contracts(db)
+        accepted_result = sweep_expired_accepted_contracts(db, expiry_gate=gate_contract_expiry_on_locker)
+        locker_result = sweep_expired_lockers(db)
+        if locker_result.get("converted", 0):
+            logger.info(
+                "NPC scheduler: %d locker(s) converted to CLAIMABLE storage", locker_result["converted"],
+            )
         db.commit()
         return posted_result.get("expired", 0) + accepted_result.get("expired", 0)
     except Exception:

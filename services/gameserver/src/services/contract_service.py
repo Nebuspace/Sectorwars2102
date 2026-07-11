@@ -34,7 +34,7 @@ import logging
 import uuid
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Any, Dict, FrozenSet, List, Optional
+from typing import Any, Callable, Dict, FrozenSet, List, Optional
 
 from sqlalchemy import update
 from sqlalchemy.orm import Session
@@ -605,7 +605,10 @@ def sweep_expired_contracts(db: Session, now: Optional[datetime] = None) -> Dict
     return {"expired": expired_with_refund + (bulk_result.rowcount or 0)}
 
 
-def sweep_expired_accepted_contracts(db: Session, now: Optional[datetime] = None) -> Dict[str, int]:
+def sweep_expired_accepted_contracts(
+    db: Session, now: Optional[datetime] = None,
+    expiry_gate: Optional[Callable[[Session, Contract], bool]] = None,
+) -> Dict[str, int]:
     """WO-DRIFT-econ-accepted-deadline-expiry: bulk-expire every `accepted`
     contract whose deadline has strictly passed without completion.
     Canon (contracts.md's state-transition matrix) puts this edge on
@@ -613,6 +616,25 @@ def sweep_expired_accepted_contracts(db: Session, now: Optional[datetime] = None
     -> `ACCEPTED` is the terminal pre-completion state here), so this sweep
     is the code-equivalent of canon's in_progress deadline-expiry, not a new
     concept -- see the LEGAL_TRANSITIONS comment above.
+
+    `expiry_gate` (WO-STORE-EXPIRY-CLAIMABLE + D19, deposit-wins is a
+    REQUIRED semantic): an optional per-candidate veto, called as
+    `expiry_gate(db, candidate)` BEFORE the guarded UPDATE below.
+    `False` DEFERS that one candidate's expiry entirely this tick (no
+    UPDATE attempted, no penalty charged, contract stays ACCEPTED,
+    picked up again on a later tick if still overdue then). `True`
+    proceeds exactly as the un-gated path always has. `None` (the
+    default) means every candidate proceeds -- EVERY OTHER caller of
+    this function (direct test calls, any future caller) is completely
+    unaffected. This module stays ignorant of WHAT the gate checks or
+    WHY -- keeping the circular import boundary intact (storage_service
+    already imports this module at load time; this module must never
+    import storage_service back) -- see storage_service.gate_contract_
+    expiry_on_locker for the actual storage-linked-locker probe the
+    scheduler wires in, and its own docstring for why deferring here is
+    what makes a completing deposit_cargo call deterministically WIN a
+    deadline race instead of losing an ordinary first-committer coin
+    flip.
 
     ACCEPTOR PENALTY -- canon-backed (contracts.md's Penalties section:
     "penalty credits are debited from the acceptor's account"). Charges
@@ -647,38 +669,74 @@ def sweep_expired_accepted_contracts(db: Session, now: Optional[datetime] = None
     on purpose: `_guarded_transition` conflates two different failure modes
     under one exception (an ILLEGAL edge per LEGAL_TRANSITIONS, which would
     recur identically on every retry of the SAME row, vs. a genuinely-RACED
-    row, which won't recur since a fresh SELECT excludes it once its real
-    DB status has moved on) -- catching both the same way here would let a
-    LEGAL_TRANSITIONS regression (the table missing the ACCEPTED -> EXPIRED
-    edge this WO adds) spin this `while True` forever on the same
-    permanently-illegal candidate instead of failing loudly. The raw UPDATE
-    below can only ever fail for the second reason (no table consultation
-    to fail), exactly mirroring sweep_expired_contracts's own per-row idiom:
-    a row raced away between the SELECT and the UPDATE (a live
-    complete()/abandon() on a different session -- the CEXP advisory lock
-    only serializes concurrent *sweep* instances) is simply skipped; the
-    next iteration's fresh, server-side-filtered SELECT excludes it (its
-    real DB status has already moved past 'accepted') -- no infinite loop.
-    A per-row UPDATE that DOES match is applied to the in-memory `candidate`
-    object too (same convention `sweep_expired_contracts` and
-    `_guarded_transition` both use -- a raw Core `update()` never syncs the
-    ORM identity map on its own). FLUSH-ONLY -- the scheduler wrapper
-    commits inside the same CEXP advisory lock sweep_expired_contracts
-    uses."""
+    row, which won't recur since its real DB status has moved on) --
+    catching both the same way here would let a LEGAL_TRANSITIONS
+    regression (the table missing the ACCEPTED -> EXPIRED edge this WO
+    adds) spin forever on the same permanently-illegal candidate instead
+    of failing loudly. The raw UPDATE below can only ever fail for the
+    second reason (no table consultation to fail).
+
+    CANDIDATES GATHERED UPFRONT (`.all()`), NOT a `while True` + repeated
+    `.first()` (WO-STORE-EXPIRY-CLAIMABLE): the original shape re-ran the
+    SAME server-side-filtered SELECT every iteration specifically so a
+    row that raced away between selects (a live complete()/abandon() on
+    a different session) was excluded from ever being re-attempted. But
+    a GATE-DEFERRED candidate (see `expiry_gate` above) doesn't change
+    its own status at all -- leaving it ACCEPTED -- so a repeated fresh
+    SELECT would keep re-matching and re-deferring the SAME row FOREVER,
+    an infinite loop this WO's own gate would introduce into the old
+    shape. Gathering the full candidate list ONCE up front and iterating
+    it in Python sidesteps this entirely (a deferred candidate is simply
+    never revisited within this pass) WITHOUT weakening the raced-away
+    protection: that protection never actually depended on re-querying --
+    the guarded UPDATE's own `rowcount == 0 -> continue` below ALREADY
+    independently excludes a row whose real DB status moved on between
+    the upfront SELECT and this row's own turn in the loop, identical in
+    effect to the old shape's query-level exclusion, just discovered one
+    step later. A per-row UPDATE that DOES match is applied to the
+    in-memory `candidate` object too (same convention `sweep_expired_
+    contracts` and `_guarded_transition` both use -- a raw Core
+    `update()` never syncs the ORM identity map on its own).
+
+    A gate that ACQUIRES a Locker's lock (returns True) but whose
+    contract then turns out to be raced-away (rowcount == 0 -- completed
+    or abandoned by a different session between the upfront SELECT and
+    this candidate's turn) leaves this transaction holding that Locker's
+    lock, unused, until the whole sweep commits -- not a bug (nothing
+    else in this transaction reaches for it again in a way that could
+    cycle), just briefly held longer than strictly needed; noted here so
+    a future reader doesn't mistake it for a leak.
+
+    `.all()` gathers the FULL candidate set into memory upfront -- fine
+    at this sweep's actual scale (the per-tick overdue-accepted-contract
+    backlog is small; the sweep runs every CONTRACT_EXPIRE_SWEEP_SECONDS
+    and never lets a large backlog accumulate in steady state), but this
+    is not a bulk-safe pattern for an UNBOUNDED backlog -- if that
+    assumption ever stops holding, chunk the query rather than assuming
+    `.all()` still scales.
+
+    FLUSH-ONLY -- the scheduler wrapper commits inside the same CEXP
+    advisory lock sweep_expired_contracts uses."""
     now = now or _now()
 
-    expired = 0
-    while True:
-        candidate = (
-            db.query(Contract)
-            .filter(
-                Contract.status == ContractStatus.ACCEPTED,
-                Contract.deadline < now,
-            )
-            .first()
+    candidates = (
+        db.query(Contract)
+        .filter(
+            Contract.status == ContractStatus.ACCEPTED,
+            Contract.deadline < now,
         )
-        if candidate is None:
-            break
+        .all()
+    )
+
+    expired = 0
+    for candidate in candidates:
+        if expiry_gate is not None and not expiry_gate(db, candidate):
+            # Deferred -- a storage-linked contract whose Locker is
+            # currently held by a live completing deposit_cargo call
+            # (see expiry_gate's own docstring above). Left ACCEPTED,
+            # untouched, no penalty; picked up again on a later tick if
+            # still overdue then.
+            continue
 
         row_stmt = (
             update(Contract)
@@ -687,11 +745,11 @@ def sweep_expired_accepted_contracts(db: Session, now: Optional[datetime] = None
         )
         result = db.execute(row_stmt)
         if result.rowcount == 0:
-            # Raced away between the SELECT above and this UPDATE (a live
-            # complete()/abandon() on a different session/connection) -- no
-            # mutation occurred, so the next iteration's fresh SELECT simply
-            # won't return this row again (its real DB status has already
-            # moved past 'accepted').
+            # Raced away between the upfront SELECT and this UPDATE (a
+            # live complete()/abandon() on a different session) -- no
+            # mutation occurred; simply skipped, see this function's own
+            # docstring for why the upfront `.all()` doesn't weaken this
+            # protection.
             continue
         candidate.status = ContractStatus.EXPIRED
 

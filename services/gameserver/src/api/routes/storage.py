@@ -1,4 +1,5 @@
-"""StorageLocker API routes -- WO-STORE-DEPOSIT-FLOW (STORAGE-HEIST S1).
+"""StorageLocker API routes -- WO-STORE-DEPOSIT-FLOW / WO-STORE-EXPIRY-
+CLAIMABLE (STORAGE-HEIST S1).
 
 - ``POST /storage/lockers``                 -- rent/reuse a locker for an
   accepted contract at its destination station.
@@ -6,6 +7,9 @@
   the locker's contract; auto-completes the contract on full quantity
   (see storage_service.deposit_cargo's own docstring for the "cargo
   bridge" that delegates to contract_service.complete()).
+- ``POST /storage/lockers/{locker_id}/retrieve`` -- retrieve cargo from a
+  CLAIMABLE locker (a contract that missed its deadline) back onto your
+  ship; omit `quantity` to take as much as fits in one trip.
 
 Route owns db.commit() / db.rollback() -- storage_service is flush-only
 throughout, matching contracts.py's own exact convention (accept_
@@ -33,6 +37,13 @@ class RentLockerRequest(BaseModel):
 
 class DepositCargoRequest(BaseModel):
     quantity: int = Field(..., gt=0)
+
+
+class RetrieveCargoRequest(BaseModel):
+    # Optional: omit to take as much as fits in one trip (see
+    # storage_service.retrieve_claimable_cargo's own docstring for why
+    # partial multi-trip retrieve, not reject-if-over, is the design).
+    quantity: Optional[int] = Field(None, gt=0)
 
 
 def _parse_uuid(raw: str, field_name: str) -> uuid.UUID:
@@ -99,6 +110,30 @@ async def deposit_cargo(
     locker_uuid = _parse_uuid(locker_id, "locker_id")
     try:
         result = storage_service.deposit_cargo(db, locker_uuid, current_player.id, body.quantity)
+    except StorageError as exc:
+        db.rollback()
+        _raise_for(exc)
+    else:
+        db.commit()
+        return result
+
+
+@router.post("/lockers/{locker_id}/retrieve")
+async def retrieve_cargo(
+    locker_id: str,
+    body: RetrieveCargoRequest,
+    db: Session = Depends(get_db),
+    current_player: Player = Depends(get_current_player),
+) -> Dict[str, Any]:
+    """Retrieve cargo from a CLAIMABLE locker (a contract whose deadline
+    passed before reaching full quantity -- see storage_service.sweep_
+    expired_lockers) back onto your current ship. Omit `quantity` to
+    take as much as fits in one trip; a locker larger than your hold
+    stays CLAIMABLE with the remainder for a later trip -- the retrieve-
+    side mirror of the deposit flow's own multi-trip design."""
+    locker_uuid = _parse_uuid(locker_id, "locker_id")
+    try:
+        result = storage_service.retrieve_claimable_cargo(db, locker_uuid, current_player.id, body.quantity)
     except StorageError as exc:
         db.rollback()
         _raise_for(exc)

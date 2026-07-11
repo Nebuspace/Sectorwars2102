@@ -55,6 +55,37 @@ the player's poorest moment). settle_fee's re-lock of Locker/Player rows
 this function already holds is a harmless same-session re-acquire, not a
 new lock-order hazard -- see both functions' own docstrings for the full
 reasoning.
+
+EXPIRY -> CLAIMABLE -> RETRIEVE (WO-STORE-EXPIRY-CLAIMABLE + D19): miss
+the contract's deadline before reaching full quantity and the locker
+converts to CLAIMABLE storage -- the player keeps whatever was
+deposited, rent keeps ticking, retrieve later (canon, storage_locker.py's
+own model docstring). sweep_expired_lockers() runs inside contract_
+sweeps.py's `_run_contract_expire_sweep_sync`, the SAME transaction as
+the contract-expiry sweep, right after it -- NOT a settle-on-access
+check, since expiry is a scheduler-driven event with no natural "access"
+moment of its own to hang a check off. D19 (deposit-wins is a REQUIRED
+semantic, orchestrator-ruled): contract_service.sweep_expired_accepted_
+contracts is called with `expiry_gate=gate_contract_expiry_on_locker` --
+see that function's own docstring for the full mechanism (a Locker-lock-
+first probe that both DEFERS a contended contract's expiry, letting an
+in-flight completing deposit_cargo call win deterministically, AND kills
+a confirmed AB-BA deadlock by making the sweep's own lock order
+consistently Locker-then-Contract, matching deposit_cargo everywhere
+else in the codebase). The
+NEW-CONTRACT-GETS-A-NEW-LOCKER invariant is a structural property of
+get_or_create_locker's own existing (owner, contract_id) lookup, not new
+code: converting a locker sets contract_id -> NULL, and a query filtering
+`contract_id == <a real new contract's id>` can never match a NULL row,
+so a player who lets a contract lapse and then accepts a new one for the
+same station always mints a genuinely fresh locker -- the old claimable
+deposits can never silently count toward a different contract's
+completion. retrieve_claimable_cargo() is deposit_cargo's mirror-image
+(same Locker->Player->Ship lock order) with one asymmetry: capacity is
+enforced on the way OUT too (unlike the deposit-side cargo bridge, which
+is a same-transaction phantom that nets to zero, retrieved cargo actually
+PERSISTS on the ship) -- see that function's own docstring for why
+partial multi-trip retrieve (not reject-if-over) is the right call.
 """
 import logging
 import uuid
@@ -67,6 +98,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.contract import Contract, ContractStatus
+from src.models.player import Player
 from src.models.ship import Ship
 from src.models.storage_locker import ContractCargoDeposit, StorageLocker, StorageLockerStatus
 from src.services import contract_service
@@ -89,6 +121,49 @@ def _stored_units(db: Session, locker_id: uuid.UUID) -> int:
         .scalar()
     )
     return int(total or 0)
+
+
+def _consume_deposits(db: Session, locker_id: uuid.UUID, take: int) -> str:
+    """WO-STORE-EXPIRY-CLAIMABLE (retrieve): consumes `take` units from a
+    locker's ContractCargoDeposit audit rows, oldest-first (deposited_at
+    ascending) -- a defensible, deterministic choice since these rows
+    are fungible units of the SAME commodity, not economically distinct
+    lots. Deletes rows fully consumed; reduces the one partially-consumed
+    boundary row in place, leaving it for a later retrieve call.
+
+    SINGLE-COMMODITY ONLY -- the S1 invariant every contract-tied locker
+    holds exactly one commodity type (see _stored_units' own docstring:
+    the ONLY way a locker gets deposits is deposit_cargo, which always
+    writes contract.commodity_type). Raises loudly rather than silently
+    picking a mix if that invariant is ever violated by a future S2
+    change. Caller (retrieve_claimable_cargo) guarantees `take` <=
+    the locker's current total via _stored_units, so this always fully
+    consumes `take` units and never runs out of rows mid-loop."""
+    rows = (
+        db.query(ContractCargoDeposit)
+        .filter(ContractCargoDeposit.locker_id == locker_id)
+        .order_by(ContractCargoDeposit.deposited_at)
+        .all()
+    )
+    commodities = {row.commodity for row in rows}
+    if len(commodities) > 1:
+        raise StorageError(
+            f"multi_commodity_locker: locker {locker_id} holds {sorted(commodities)} -- "
+            "retrieval only supports a single commodity per locker (S1 invariant)"
+        )
+    commodity = next(iter(commodities))
+
+    remaining = take
+    for row in rows:
+        if remaining <= 0:
+            break
+        if row.quantity <= remaining:
+            remaining -= row.quantity
+            db.delete(row)
+        else:
+            row.quantity -= remaining
+            remaining = 0
+    return commodity
 
 
 class StorageError(Exception):
@@ -152,6 +227,148 @@ def get_or_create_locker(
     db.flush()
     logger.info("Player %s rented locker %s for contract %s", player_id, locker.id, contract_id)
     return locker
+
+
+def gate_contract_expiry_on_locker(db: Session, contract: Contract) -> bool:
+    """WO-STORE-EXPIRY-CLAIMABLE + D19 (deposit-wins is a REQUIRED
+    semantic, orchestrator-ruled -- not merely an accepted side effect):
+    the `expiry_gate` contract_service.sweep_expired_accepted_contracts
+    calls for EACH candidate, BEFORE expiring it (see that function's
+    own docstring for the full gate contract). Returns `True` ("safe to
+    expire now") or `False` ("defer this contract's expiry -- a live
+    completing deposit_cargo call currently holds its Locker").
+
+    TWO-STEP, deliberately disambiguating "locker held" from "locker
+    genuinely doesn't exist" (the nuance mack flagged):
+    1. Plain, UNLOCKED existence check -- does this contract even have
+       an ACTIVE StorageLocker at all? No -> `True` immediately (the
+       overwhelming majority of contracts; zero extra locking attempted
+       for the common non-storage case).
+    2. A locker exists -> probe it via a SKIP LOCKED acquisition (a
+       real SQLAlchemy/Postgres feature, `with_for_update(skip_locked=
+       True)` -- not hand-rolled). Because step 1 already confirmed a
+       matching row EXISTS, a `None` result here is UNAMBIGUOUSLY
+       "exists but contended" (a live deposit_cargo call already holds
+       it, per its own Locker-first order) -- never confusable with
+       "doesn't exist". Returns `False` (defer).
+    3. A row comes back -> THIS transaction now holds that Locker's
+       lock, in Locker-then-Contract order (matching deposit_cargo's
+       own order exactly) -- the caller's subsequent Contract UPDATE is
+       therefore safe. This is what makes the WHOLE codebase
+       consistently Locker-then-Contract for any transaction touching
+       both (grepped: storage_service.py and contract_sweeps.py are the
+       ONLY two places anywhere in src/ that ever combine a Contract
+       lock and a Locker lock in one transaction; storage_service.py
+       already always locks Locker first everywhere else) -- killing
+       the AB-BA cycle structurally, not just making one side non-
+       blocking. Returns `True`.
+
+    Deliberately does NOT settle or convert the locker itself here -- it
+    only ACQUIRES the lock as a gate. sweep_expired_lockers (run right
+    after sweep_expired_accepted_contracts, same transaction) does the
+    actual settle+CLAIMABLE-flip; its own settle_fee call's `with_for_
+    update()` re-acquires THIS SAME lock, a harmless same-session
+    re-acquire (the established pattern throughout this module -- see
+    sweep_expired_lockers's own docstring)."""
+    locker = (
+        db.query(StorageLocker)
+        .filter(
+            StorageLocker.contract_id == contract.id, StorageLocker.status == StorageLockerStatus.ACTIVE,
+        )
+        .first()
+    )
+    if locker is None:
+        return True
+
+    acquired = (
+        db.query(StorageLocker)
+        .filter(StorageLocker.id == locker.id)
+        .with_for_update(skip_locked=True)
+        .first()
+    )
+    return acquired is not None
+
+
+def sweep_expired_lockers(db: Session, now: Optional[datetime] = None) -> Dict[str, int]:
+    """WO-STORE-EXPIRY-CLAIMABLE: converts every ACTIVE locker whose tied
+    Contract has expired into CLAIMABLE storage -- canon: "miss the
+    deadline -> cargo converts to CLAIMABLE storage (the player keeps
+    it, rent keeps ticking, retrieve later)" (storage_locker.py's own
+    model docstring). Settles the final rent period up to `now`, then
+    flips status -> CLAIMABLE and nulls contract_id (the locker's own
+    columns already support this with zero migration -- see the model's
+    own comments; CLAIMABLE was forward-built into the enum, contract_id
+    was already nullable with ondelete=SET NULL).
+
+    TRIGGER: hooked into the EXISTING contract-expiry sweep rather than a
+    new scheduled entry. contract_service.sweep_expired_accepted_contracts
+    is the sole path that ever transitions a Contract ACCEPTED -> EXPIRED
+    (grepped LEGAL_TRANSITIONS -- no other edge produces it), and it
+    already runs inside contract_sweeps.py's `_run_contract_expire_sweep_
+    sync` under the CEXP advisory lock, in the SAME transaction, before a
+    single `db.commit()`. This function is called immediately after it,
+    in that SAME transaction -- so a candidate's Contract.status ==
+    EXPIRED read here always reflects that SAME pass's just-flushed
+    flips (contract_service's own sweep ends with db.flush(), not
+    commit). Reusing CEXP (not a new lock/cadence key) mirrors the
+    file's own precedent for combining the `posted` and `accepted`
+    expiry sweeps under one lock/tick -- both are "contract expiry",
+    this is a third facet of the same event, not an independent concern.
+
+    NOT a raw bulk UPDATE (unlike sweep_expired_contracts' bulk-shortcut
+    for its majority case): every candidate needs an individualized
+    settle_fee call (locks + rent math + a Player credit touch), so this
+    is a plain per-row loop, matching sweep_expired_accepted_contracts'
+    own reasoning for why ITS sweep can't bulk-shortcut either.
+
+    RACE SAFETY / D19 DEPOSIT-WINS (WO-STORE-EXPIRY-CLAIMABLE, verified
+    against a concurrent deposit_cargo call, not assumed safe -- an
+    earlier version of this docstring analyzed a race here that turned
+    out to be a confirmed AB-BA deadlock; see gate_contract_expiry_on_
+    locker's own docstring for the fix, and D19's own ruling for why
+    "deposit wins the deadline race" is a REQUIRED semantic, not an
+    accepted side effect): contract_service.sweep_expired_accepted_
+    contracts is now ALWAYS called with `expiry_gate=gate_contract_
+    expiry_on_locker` by the scheduler -- for every storage-linked
+    contract EXPIRED in THIS pass, that gate already SUCCESSFULLY
+    acquired its Locker's row lock (Locker-then-Contract order, matching
+    deposit_cargo's own order) before the contract was ever expired. A
+    contract whose Locker was contended (a live completing deposit)
+    never reaches EXPIRED status in this pass at all -- it stays
+    ACCEPTED, deferred to a later tick, and the in-flight deposit
+    completes uncontested (deposit-wins). This means by the time THIS
+    function runs, every EXPIRED candidate's Locker lock is GUARANTEED
+    already held by this same transaction -- the settle_fee call below
+    (which does its own `with_for_update()`) is therefore always a
+    harmless same-session re-acquire, never a fresh contended
+    acquisition; there is no remaining race to analyze here at all, it
+    was fully resolved upstream by the gate."""
+    now = now or contract_service._now()
+
+    active_lockers = db.query(StorageLocker).filter(StorageLocker.status == StorageLockerStatus.ACTIVE).all()
+    converted = 0
+    for locker in active_lockers:
+        if locker.contract_id is None:
+            # Defensive only -- every S1 ACTIVE locker is contract-tied at
+            # creation (get_or_create_locker always sets it); a future S2
+            # standalone-rented locker (no contract at all) would land
+            # here too and correctly has nothing to expire against.
+            continue
+        contract = _load_contract(db, locker.contract_id)
+        if contract.status != ContractStatus.EXPIRED:
+            continue
+
+        settle_fee(db, locker.id, now=now)
+        locker.status = StorageLockerStatus.CLAIMABLE
+        locker.contract_id = None
+        converted += 1
+        logger.info(
+            "Locker %s converted to CLAIMABLE -- contract %s expired without reaching full quantity",
+            locker.id, contract.id,
+        )
+
+    db.flush()
+    return {"converted": converted}
 
 
 def settle_fee(
@@ -278,6 +495,94 @@ def settle_fee(
     }
 
 
+def _prelock_deposit_guard(db: Session, locker_id: uuid.UUID, player_id: uuid.UUID) -> None:
+    """WO-STORE-EXPIRY-CLAIMABLE Q2 mitigation-a (cipher MEDIUM-HIGH,
+    orchestrator-ruled ADDRESS): a SCALAR-ONLY existence+ownership+
+    station pre-check, called BEFORE _load_and_lock_deposit_targets ever
+    acquires a row lock. Raises StorageError/StorageNotFoundError on
+    failure; returns None on success (the caller re-reads everything for
+    real via the locked path further down -- this function's ONLY job is
+    to reject a doomed request as early and cheaply as possible).
+    Extracted into its own function purely to keep _load_and_lock_
+    deposit_targets under the ruff C901 gate.
+
+    THE VECTOR THIS CLOSES: previously the wrong-station rejection only
+    fired AFTER the Locker's with_for_update() lock had already been
+    taken -- a player docked anywhere could POST /deposit against their
+    OWN locker for free (fails the station check, rolls back, zero
+    cargo/turns/credits cost, no rate limit), contending the Locker's
+    lock on every attempt. Against the deposit-wins expiry gate (which
+    defers a contract's expiry whenever its Locker is momentarily
+    contended), this was a free, unlimited lever to probabilistically
+    dodge the deadline penalty.
+
+    SCALAR-ONLY, NOT FULL-ORM (mack's CRITICAL catch on the first
+    version of this fix -- money-RMW identity-map poisoning, confirmed
+    via a real-SQLAlchemy repro, not theoretical): an earlier draft did
+    an unlocked FULL-ORM read of both Locker and Player here. That loads
+    each into the session's identity map; the LATER "authoritative"
+    locked re-read of the SAME PK (_load_and_lock_deposit_targets' own
+    with_for_update(), and settle_fee's own internal Player re-load)
+    returns the SAME cached Python object -- with_for_update() acquires
+    the real DB lock but does NOT refresh attribute values onto an
+    already-mapped object without `.populate_existing()`. The
+    "authoritative" read was therefore silently STALE, and since this
+    locker's owner IS the depositing player, that staleness reached
+    settle_fee's own `owner.credits -= charge` -- a genuine lost-update
+    on player.credits against any concurrently-committed change in the
+    window. Reading ONLY columns (`Query(Model.col, ...)` -- a
+    tuple/Row, never a mapped entity) never touches the identity map at
+    all, so EVERY later full-ORM read (in _load_and_lock_deposit_targets
+    and in settle_fee) is genuinely the FIRST load of that PK this
+    transaction -- real, fresh, correctly FOR UPDATE-locked data. See
+    construction_service.py:797 / citadel_service.py for this
+    codebase's OWN existing `populate_existing()` convention for the
+    cases that truly need a full-object refresh instead -- deliberately
+    NOT used here, since a clean scalar pre-check avoids the identity
+    map entirely rather than needing a refresh from it.
+
+    OWNERSHIP-FIRST (cipher LOW-MED: closes a station-existence oracle
+    -- a non-owner probing arbitrary locker_ids could previously
+    distinguish "not yours" from "wrong station" per locker, leaking
+    which station a given locker sits at). A non-owner gets the SAME
+    generic "does not belong to you" rejection regardless of station --
+    no station information ever reaches someone who isn't this locker's
+    owner. `owner_player_id` is immutable exactly like `station_id`
+    (grepped: zero writers anywhere, set once at creation), so this
+    scalar read is TOCTOU-safe for the identical reason.
+
+    TOCTOU-SAFE for both immutable scalars (verified, not assumed --
+    grepped the whole tree for any `.station_id =` / `.owner_player_id
+    =` targeting a StorageLocker: zero writers besides get_or_create_
+    locker's own constructor call at creation): this pre-check's reads
+    are GUARANTEED identical to the later locked reads -- no window for
+    either to change between the two. The PLAYER's own position CAN
+    legitimately change (they could undock/move), so this pre-check's
+    read of current_port_id is a cheap, EARLY, non-authoritative reject
+    only -- the ORIGINAL post-lock station check in _load_and_lock_
+    deposit_targets stays in place UNCHANGED as the truly authoritative
+    one (now genuinely fresh, since the identity map was never poisoned
+    on the way here); this is additive, not a replacement. Status/
+    contract checks stay exactly where they were -- this fix targets
+    the specific zero-barrier "spam your OWN locker from anywhere"
+    vector cipher confirmed, not a refactor of the whole guard chain."""
+    pre_check_row = (
+        db.query(StorageLocker.station_id, StorageLocker.owner_player_id)
+        .filter(StorageLocker.id == locker_id)
+        .first()
+    )
+    if pre_check_row is None:
+        raise StorageNotFoundError(f"Locker {locker_id} not found")
+    pre_check_station_id, pre_check_owner_id = pre_check_row
+    if pre_check_owner_id != player_id:
+        raise StorageError("This locker does not belong to you")
+    pre_check_port_id = db.query(Player.current_port_id).filter(Player.id == player_id).scalar()
+    if pre_check_port_id != pre_check_station_id:
+        raise StorageError(
+            "wrong_station: you must be docked at the locker's station to deposit"
+        )
+
+
 def _load_and_lock_deposit_targets(
     db: Session, locker_id: uuid.UUID, player_id: uuid.UUID,
 ) -> tuple:
@@ -289,7 +594,16 @@ def _load_and_lock_deposit_targets(
     complexity under the ruff C901 gate (genuinely enforced -- `C90` is
     in this project's pyproject.toml `[tool.ruff] select`, not just
     available) -- no behavior change from the pre-extraction inline
-    version."""
+    version.
+
+    Calls _prelock_deposit_guard() FIRST, before any lock -- see that
+    function's own docstring for the full Q2 mitigation-a story (the
+    free-spam vector it closes, the identity-map-poisoning bug its
+    scalar-only design avoids, and the ownership-first station-oracle
+    fix). Everything below this point is the ORIGINAL locked flow,
+    unchanged."""
+    _prelock_deposit_guard(db, locker_id, player_id)
+
     locker = db.query(StorageLocker).filter(StorageLocker.id == locker_id).with_for_update().first()
     if locker is None:
         raise StorageNotFoundError(f"Locker {locker_id} not found")
@@ -501,4 +815,148 @@ def deposit_cargo(
         "fee_charged": settlement["fee_charged"],
         "completed": completed,
         "complete_result": complete_result,
+    }
+
+
+def _load_and_lock_retrieve_targets(
+    db: Session, locker_id: uuid.UUID, player_id: uuid.UUID, quantity: Optional[int],
+) -> tuple:
+    """Locks + validates the Locker, then the Player -- retrieve_
+    claimable_cargo's own Locker-then-Player order. Raises StorageError /
+    StorageNotFoundError on any guard failure. Pulled out purely to keep
+    retrieve_claimable_cargo's own cyclomatic complexity under the ruff
+    C901 gate, same reasoning as _load_and_lock_deposit_targets."""
+    locker = db.query(StorageLocker).filter(StorageLocker.id == locker_id).with_for_update().first()
+    if locker is None:
+        raise StorageNotFoundError(f"Locker {locker_id} not found")
+    if locker.owner_player_id != player_id:
+        raise StorageError("This locker does not belong to you")
+    if locker.status != StorageLockerStatus.CLAIMABLE:
+        raise StorageError(
+            f"locker_not_claimable: locker {locker.id} is '{locker.status.value}', not 'claimable'"
+        )
+
+    player = contract_service._load_player(db, player_id, for_update=True)
+    if not player.is_docked or player.current_port_id != locker.station_id:
+        raise StorageError(
+            "wrong_station: you must be docked at the locker's station to retrieve"
+        )
+    if quantity is not None and quantity <= 0:
+        raise StorageError("invalid_quantity: retrieve quantity must be positive")
+
+    return locker, player
+
+
+def _resolve_retrieve_take(quantity: Optional[int], available: int, capacity_left: int) -> int:
+    """How many units THIS retrieve call actually moves onto the ship --
+    see retrieve_claimable_cargo's own docstring for the partial-retrieve
+    design (explicit `quantity` validated against both what's stored and
+    what fits; omitted `quantity` greedily takes as much as fits).
+    Extracted alongside _load_and_lock_retrieve_targets for the same
+    C901 reason."""
+    if quantity is not None:
+        if quantity > available:
+            raise StorageError(
+                f"insufficient_stored: locker holds {available}, tried to retrieve {quantity}"
+            )
+        if quantity > capacity_left:
+            raise StorageError(
+                f"insufficient_cargo_capacity: {capacity_left} free, tried to retrieve {quantity}"
+            )
+        return quantity
+    take = min(available, capacity_left)
+    if take <= 0:
+        raise StorageError("insufficient_cargo_capacity: no free cargo space to retrieve into")
+    return take
+
+
+def retrieve_claimable_cargo(
+    db: Session, locker_id: uuid.UUID, player_id: uuid.UUID, quantity: Optional[int] = None,
+) -> Dict[str, Any]:
+    """WO-STORE-EXPIRY-CLAIMABLE: retrieves cargo from a CLAIMABLE locker
+    (see sweep_expired_lockers) back onto the player's current ship.
+
+    CAPACITY (Max's brief flagged this as the open design call --
+    PARTIAL RETRIEVE, not reject-if-over): `quantity` is OPTIONAL. Omit
+    it to take as much as fits in one trip, up to everything stored; a
+    ship too small to take it all in a single trip retrieves the rest on
+    a LATER call -- the locker simply stays CLAIMABLE with the leftover,
+    still accruing rent. This mirrors the deposit side's own multi-trip
+    design (this entire kernel's reason to exist -- a small ship
+    shouldn't be permanently locked out of cargo it legitimately owns
+    just because it can't carry it all at once). Pass an explicit
+    `quantity` to take a specific smaller amount instead (validated
+    against BOTH what's stored and what fits); the retrieve route's own
+    request body makes this an optional field for exactly this reason.
+    Reject-if-over was considered and rejected: it would permanently
+    strand a large claimable balance behind "go find/rent a bigger ship"
+    with no in-feature way out, for cargo the player already rightfully
+    owns.
+
+    Released once EMPTY (remaining <= 0 after this call) -- an emptied
+    claimable locker has nothing left to justify existing (and nothing
+    left to accrue rent against); stays CLAIMABLE otherwise.
+
+    LOCK ORDER: Locker -> Player -> Ship, matching deposit_cargo's own
+    order exactly (retrieve is the mirror-image operation; reusing the
+    SAME order means no new AB-BA surface is introduced). settle_fee's
+    own re-lock of Locker/Player is the same harmless same-session
+    re-acquire used throughout this module. FLUSH-ONLY -- the route owns
+    the commit."""
+    locker, player = _load_and_lock_retrieve_targets(db, locker_id, player_id, quantity)
+
+    # Rent settled up to now BEFORE computing what's retrievable -- the
+    # player owes rent on everything stored right up to this instant,
+    # regardless of how much they're about to walk away with.
+    settlement = settle_fee(db, locker.id, now=contract_service._now())
+
+    available = _stored_units(db, locker.id)
+    if available <= 0:
+        # Already fully retrieved on an earlier call -- release the
+        # (now-empty) locker rather than leaving a claimable husk with
+        # zero cargo still accruing rent against nothing.
+        locker.status = StorageLockerStatus.RELEASED
+        db.flush()
+        return {
+            "locker_id": str(locker.id), "retrieved": 0, "commodity": None,
+            "remaining": 0, "released": True, "fee_charged": settlement["fee_charged"],
+        }
+
+    # Ship locked THIRD, for the cargo RMW.
+    ship = (
+        db.query(Ship)
+        .filter(Ship.id == player.current_ship_id, Ship.owner_id == player.id)
+        .with_for_update()
+        .first()
+    )
+    if ship is None:
+        raise StorageError("No active ship to retrieve cargo into")
+
+    cargo = ship.cargo if isinstance(ship.cargo, dict) else {}
+    capacity = int(cargo.get("capacity", 0) or 0)
+    used = int(cargo.get("used", 0) or 0)
+    capacity_left = max(0, capacity - used)
+    take = _resolve_retrieve_take(quantity, available, capacity_left)
+
+    commodity = _consume_deposits(db, locker.id, take)
+
+    contents = dict(cargo.get("contents") or {})
+    contents[commodity] = int(contents.get(commodity, 0) or 0) + take
+    cargo["contents"] = contents
+    cargo["used"] = used + take
+    ship.cargo = cargo
+    flag_modified(ship, "cargo")
+
+    remaining = available - take
+    if remaining <= 0:
+        locker.status = StorageLockerStatus.RELEASED
+    db.flush()
+
+    logger.info(
+        "Player %s retrieved %d %s from claimable locker %s (%d remaining)",
+        player_id, take, commodity, locker.id, remaining,
+    )
+    return {
+        "locker_id": str(locker.id), "retrieved": take, "commodity": commodity,
+        "remaining": remaining, "released": remaining <= 0, "fee_charged": settlement["fee_charged"],
     }

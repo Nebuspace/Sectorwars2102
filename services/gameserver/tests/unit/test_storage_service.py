@@ -35,7 +35,7 @@ from src.models.contract import Contract, ContractIssuerType, ContractStatus
 from src.models.player import Player
 from src.models.ship import Ship, ShipType
 from src.models.storage_locker import ContractCargoDeposit, StorageLocker, StorageLockerStatus
-from src.services import storage_service
+from src.services import contract_service, storage_service
 from src.services.storage_service import StorageError, StorageNotFoundError
 
 
@@ -48,7 +48,27 @@ def _match(row: Any, cond: Any) -> bool:
         return row_val == cond.right.value
     if cond.operator is in_op:
         return row_val in cond.right.value
+    if cond.operator is operator.lt:
+        # WO-STORE-EXPIRY-CLAIMABLE: contract_service.sweep_expired_
+        # accepted_contracts' own `Contract.deadline < now` candidate
+        # query -- driven for real (not mocked) in the combined-sweep
+        # tests below, mirroring test_contract_service.py's own _match.
+        return row_val < cond.right.value
     raise NotImplementedError(f"unsupported operator {cond.operator!r}")
+
+
+class _FakeNestedTransaction:
+    """No-op savepoint passthrough for db.begin_nested() -- sweep_
+    expired_accepted_contracts' own per-row credit-effects isolation.
+    Mirrors test_contract_service.py's own _FakeNestedTransaction
+    exactly; never swallows an exception (a single-threaded fake can't
+    reproduce real SAVEPOINT rollback of Python attribute mutations)."""
+
+    def __enter__(self) -> "_FakeNestedTransaction":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        return False
 
 
 class _FakeResult:
@@ -60,22 +80,51 @@ class _FakeQuery:
     def __init__(
         self, rows: List[Any], criteria: Optional[List[Any]] = None,
         session: Optional["_FakeSession"] = None, entity: Optional[str] = None,
+        order_by_cols: Optional[List[Any]] = None,
     ) -> None:
         self._rows = rows
         self._criteria = criteria or []
         self._session = session
         self._entity = entity
+        self._order_by_cols = order_by_cols or []
 
     def filter(self, *conditions: Any) -> "_FakeQuery":
-        return _FakeQuery(self._rows, self._criteria + list(conditions), self._session, self._entity)
+        return _FakeQuery(
+            self._rows, self._criteria + list(conditions), self._session, self._entity, self._order_by_cols,
+        )
 
-    def with_for_update(self) -> "_FakeQuery":
+    def order_by(self, *columns: Any) -> "_FakeQuery":
+        # WO-STORE-EXPIRY-CLAIMABLE: _consume_deposits' oldest-first
+        # retrieval order. Stable-sorts by each column's .key, LAST
+        # column first (Python's sort stability makes repeated single-
+        # key sorts equivalent to a real multi-column ORDER BY) -- this
+        # file only ever passes one column, but this stays correct if a
+        # future caller passes more.
+        return _FakeQuery(
+            self._rows, self._criteria, self._session, self._entity, self._order_by_cols + list(columns),
+        )
+
+    def with_for_update(self, skip_locked: bool = False) -> "_FakeQuery":
         if self._session is not None:
             self._session.for_update_calls.append(self._entity)
+        if skip_locked and self._session is not None and self._session.contended_locker_ids:
+            # WO-STORE-EXPIRY-CLAIMABLE + D19: gate_contract_expiry_on_
+            # locker's own skip_locked probe -- a single-threaded fake
+            # can't reproduce REAL Postgres row contention, so this is an
+            # explicit, documented SIMULATION: rows whose id is listed in
+            # the session's contended_locker_ids are excluded from THIS
+            # query's results, standing in for "another transaction
+            # already holds this row's lock." Real contention proof is
+            # the live-Postgres two-connection CI leg, not this.
+            rows = [r for r in self._rows if getattr(r, "id", None) not in self._session.contended_locker_ids]
+            return _FakeQuery(rows, self._criteria, self._session, self._entity, self._order_by_cols)
         return self
 
     def _matching(self) -> List[Any]:
-        return [row for row in self._rows if all(_match(row, c) for c in self._criteria)]
+        matches = [row for row in self._rows if all(_match(row, c) for c in self._criteria)]
+        for col in reversed(self._order_by_cols):
+            matches.sort(key=lambda row: getattr(row, col.key))
+        return matches
 
     def first(self) -> Any:
         matches = self._matching()
@@ -103,9 +152,43 @@ class _FakeSumQuery:
         return sum(int(row.quantity) for row in matches)
 
 
+class _FakeScalarQuery:
+    """Stands in for db.query(Model.col1, Model.col2, ...) -- COLUMN-ONLY
+    queries (Q2 mitigation-a's own scalar pre-check shape, deliberately
+    never populating a full ORM object into the session's identity map
+    -- see _prelock_deposit_guard's own docstring for why). .first()
+    returns a bare value for a single column or a tuple for multiple
+    (matching real SQLAlchemy Row unpacking closely enough for this
+    file's own tuple-unpack / .scalar() call sites); .scalar() returns
+    the bare single-column value."""
+
+    def __init__(self, rows: List[Any], columns: List[Any], criteria: Optional[List[Any]] = None) -> None:
+        self._rows = rows
+        self._columns = columns
+        self._criteria = criteria or []
+
+    def filter(self, *conditions: Any) -> "_FakeScalarQuery":
+        return _FakeScalarQuery(self._rows, self._columns, self._criteria + list(conditions))
+
+    def _matching(self) -> List[Any]:
+        return [row for row in self._rows if all(_match(row, c) for c in self._criteria)]
+
+    def _extract(self, row: Any) -> Any:
+        values = tuple(getattr(row, col.key) for col in self._columns)
+        return values[0] if len(values) == 1 else values
+
+    def first(self) -> Any:
+        matches = self._matching()
+        return self._extract(matches[0]) if matches else None
+
+    def scalar(self) -> Any:
+        return self.first()
+
+
 class _FakeSession:
     def __init__(
         self, *, contracts=None, players=None, ships=None, lockers=None, deposits=None,
+        contended_locker_ids=None,
     ) -> None:
         self.contracts = contracts or []
         self.players = players or []
@@ -120,6 +203,10 @@ class _FakeSession:
         self.deposits = deposits or []
         self.flush_calls = 0
         self.for_update_calls: List[Optional[str]] = []
+        # WO-STORE-EXPIRY-CLAIMABLE + D19: locker ids to simulate as
+        # SKIP LOCKED-contended -- see _FakeQuery.with_for_update's own
+        # comment for what this stands in for (and its limits).
+        self.contended_locker_ids = contended_locker_ids or set()
 
     def query(self, *entities: Any) -> Any:
         head = entities[0]
@@ -133,6 +220,17 @@ class _FakeSession:
             return _FakeQuery(self.lockers, session=self, entity="StorageLocker")
         if head is ContractCargoDeposit:
             return _FakeQuery(self.deposits, session=self, entity="ContractCargoDeposit")
+        if hasattr(head, "class_"):
+            # Column-only query (Q2 mitigation-a's scalar pre-check
+            # shape, e.g. db.query(StorageLocker.station_id, ...)) --
+            # route by the column's OWN mapped class, never touching the
+            # identity map (no _FakeQuery/session tracking at all, since
+            # a real scalar query never populates an ORM object either).
+            rows_by_class = {
+                Contract: self.contracts, Player: self.players, Ship: self.ships,
+                StorageLocker: self.lockers, ContractCargoDeposit: self.deposits,
+            }
+            return _FakeScalarQuery(rows_by_class[head.class_], list(entities))
         # Only remaining query shape this module issues: the aggregate
         # func.coalesce(func.sum(ContractCargoDeposit.quantity), 0).
         return _FakeSumQuery(self.deposits)
@@ -142,6 +240,14 @@ class _FakeSession:
             self.lockers.append(obj)
         elif isinstance(obj, ContractCargoDeposit):
             self.deposits.append(obj)
+
+    def delete(self, obj: Any) -> None:
+        # WO-STORE-EXPIRY-CLAIMABLE: _consume_deposits deletes a fully-
+        # consumed ContractCargoDeposit row.
+        if isinstance(obj, ContractCargoDeposit) and obj in self.deposits:
+            self.deposits.remove(obj)
+        elif isinstance(obj, StorageLocker) and obj in self.lockers:
+            self.lockers.remove(obj)
 
     def execute(self, stmt: Any) -> _FakeResult:
         # _guarded_transition's atomic UPDATE contracts SET ... WHERE ...
@@ -158,6 +264,9 @@ class _FakeSession:
 
     def flush(self) -> None:
         self.flush_calls += 1
+
+    def begin_nested(self) -> _FakeNestedTransaction:
+        return _FakeNestedTransaction()
 
     def commit(self) -> None:
         raise AssertionError("service functions are flush-only -- the route commits")
@@ -239,9 +348,16 @@ def _locker(contract: SimpleNamespace, owner_id: uuid.UUID, **overrides: Any) ->
 
 
 def _deposit(locker: StorageLocker, **overrides: Any) -> ContractCargoDeposit:
+    # deposited_at is server_default=func.now() -- same reasoning as
+    # _locker's own last_fee_settled_at/created_at fix: a fresh,
+    # unflushed Python object never gets it without a real DB round-
+    # trip. WO-STORE-EXPIRY-CLAIMABLE's _consume_deposits sorts by this
+    # column, so it needs a real, sortable default now (previously no
+    # code ever read it). Tests needing a SPECIFIC order override it
+    # explicitly per-row.
     base = dict(
         id=uuid.uuid4(), locker_id=locker.id, commodity="ore", quantity=10,
-        deposited_by=uuid.uuid4(),
+        deposited_by=uuid.uuid4(), deposited_at=datetime.now(UTC),
     )
     base.update(overrides)
     return ContractCargoDeposit(**base)
@@ -354,6 +470,34 @@ class TestDepositGuards:
         with pytest.raises(StorageError, match="wrong_station"):
             storage_service.deposit_cargo(db, locker.id, player.id, 10)
         assert db.deposits == []
+        # Q2 mitigation-a (cipher MEDIUM-HIGH): the pre-lock station
+        # check rejects BEFORE the Locker's with_for_update() lock is
+        # ever acquired -- zero-cost, unlimited free-spam attempts
+        # against your own locker previously acquired+contended this
+        # lock on every single failed attempt.
+        assert db.for_update_calls == []
+
+    def test_wrong_station_never_contends_the_lock_even_with_a_real_locker_owned_by_the_caller(self) -> None:
+        """The confirmed free-spam vector, spelled out directly: a
+        player who owns a perfectly valid, ACTIVE locker but calls from
+        the wrong station gets rejected without EVER acquiring that
+        locker's row lock -- unlimited free attempts cost nothing and
+        contend nothing, closing cipher's finding against the deposit-
+        wins expiry gate (a contended locker used to be a lever to
+        probabilistically defer your own deadline penalty)."""
+        contract = _contract()
+        player = _player(id=uuid.uuid4())
+        contract.acceptor_player_id = player.id
+        player.current_port_id = uuid.uuid4()  # anywhere but the locker's station
+        locker = _locker(contract, player.id, status=StorageLockerStatus.ACTIVE)
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+
+        for _ in range(5):  # "unlimited free attempts" -- prove it holds repeatedly
+            with pytest.raises(StorageError, match="wrong_station"):
+                storage_service.deposit_cargo(db, locker.id, player.id, 10)
+
+        assert db.for_update_calls == []
+        assert locker.status == StorageLockerStatus.ACTIVE  # completely untouched
 
     def test_not_owner_rejected(self) -> None:
         contract = _contract()
@@ -365,6 +509,31 @@ class TestDepositGuards:
 
         with pytest.raises(StorageError, match="does not belong to you"):
             storage_service.deposit_cargo(db, locker.id, stranger.id, 10)
+
+    def test_not_owner_rejected_the_same_way_regardless_of_station(self) -> None:
+        """Q2 mitigation-a, cipher LOW-MED (the station-existence
+        oracle): _prelock_deposit_guard checks ownership BEFORE station,
+        so a non-owner gets the IDENTICAL generic rejection whether
+        they're nowhere near the locker's station OR standing right at
+        it -- no station information is ever revealed to someone probing
+        a locker_id they don't own."""
+        contract = _contract()
+        owner = _player(id=uuid.uuid4())
+        stranger_elsewhere = _player(id=uuid.uuid4())
+        stranger_at_the_station = _player(id=uuid.uuid4())
+        contract.acceptor_player_id = owner.id
+        locker = _locker(contract, owner.id)
+        stranger_elsewhere.current_port_id = uuid.uuid4()  # nowhere near it
+        stranger_at_the_station.current_port_id = locker.station_id  # right at it
+        db = _FakeSession(
+            contracts=[contract], players=[owner, stranger_elsewhere, stranger_at_the_station],
+            lockers=[locker],
+        )
+
+        with pytest.raises(StorageError, match="does not belong to you"):
+            storage_service.deposit_cargo(db, locker.id, stranger_elsewhere.id, 10)
+        with pytest.raises(StorageError, match="does not belong to you"):
+            storage_service.deposit_cargo(db, locker.id, stranger_at_the_station.id, 10)
 
     def test_insufficient_cargo_rejected(self) -> None:
         contract = _contract()
@@ -898,3 +1067,508 @@ class TestD17PayoutThenSettle:
         # = 150, which is what billing the post-deposit total would give.
         assert result["fee_charged"] == 50
         assert player.credits == 100 + 500 - 50
+
+
+# --- WO-STORE-EXPIRY-CLAIMABLE: sweep_expired_lockers ----------------------- #
+
+@pytest.mark.unit
+class TestSweepExpiredLockers:
+    def test_active_locker_with_expired_contract_converts_to_claimable(self) -> None:
+        now = datetime.now(UTC)
+        contract = _contract(status=ContractStatus.EXPIRED, deadline=now - timedelta(hours=1))
+        player = _player(id=uuid.uuid4(), credits=10000)
+        contract.acceptor_player_id = player.id
+        locker = _locker(
+            contract, player.id, status=StorageLockerStatus.ACTIVE, rent_rate=Decimal("1"),
+            last_fee_settled_at=now - timedelta(days=2),
+        )
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        db.deposits = [_deposit(locker, quantity=20, deposited_by=player.id)]
+
+        result = storage_service.sweep_expired_lockers(db, now=now)
+
+        assert result["converted"] == 1
+        assert locker.status == StorageLockerStatus.CLAIMABLE
+        assert locker.contract_id is None
+        assert locker.last_fee_settled_at == now
+        # 20 units x 1cr/unit/day x 2 days = 40 -- rent settled as part
+        # of the conversion, not skipped.
+        assert player.credits == 10000 - 40
+
+    def test_active_locker_with_still_accepted_contract_untouched(self) -> None:
+        contract = _contract(status=ContractStatus.ACCEPTED)
+        player = _player(id=uuid.uuid4())
+        contract.acceptor_player_id = player.id
+        locker = _locker(contract, player.id, status=StorageLockerStatus.ACTIVE)
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+
+        result = storage_service.sweep_expired_lockers(db)
+
+        assert result["converted"] == 0
+        assert locker.status == StorageLockerStatus.ACTIVE
+        assert locker.contract_id == contract.id
+
+    def test_already_claimable_locker_untouched_not_reprocessed(self) -> None:
+        contract = _contract(status=ContractStatus.EXPIRED)
+        player = _player(id=uuid.uuid4())
+        locker = _locker(
+            contract, player.id, status=StorageLockerStatus.CLAIMABLE, contract_id=None,
+            accrued_fee=Decimal("7.50"),
+        )
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+
+        result = storage_service.sweep_expired_lockers(db)
+
+        assert result["converted"] == 0
+        assert locker.accrued_fee == Decimal("7.50")  # untouched -- no re-settle
+
+    def test_released_locker_untouched(self) -> None:
+        contract = _contract(status=ContractStatus.EXPIRED)
+        player = _player(id=uuid.uuid4())
+        locker = _locker(contract, player.id, status=StorageLockerStatus.RELEASED, contract_id=None)
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+
+        result = storage_service.sweep_expired_lockers(db)
+
+        assert result["converted"] == 0
+
+    def test_combined_with_accepted_sweep_contract_fails_and_locker_converts(self) -> None:
+        """The real scheduler order: contract_service.sweep_expired_
+        accepted_contracts runs FIRST (flips ACCEPTED -> EXPIRED, charges
+        the acceptor penalty), THEN storage_service.sweep_expired_lockers
+        (sees that SAME pass's just-flushed EXPIRED status, converts +
+        settles rent) -- exactly how contract_sweeps.py's `_run_contract_
+        expire_sweep_sync` calls them, in one transaction."""
+        now = datetime.now(UTC)
+        contract = _contract(
+            status=ContractStatus.ACCEPTED, deadline=now - timedelta(hours=1), penalty=Decimal("300.00"),
+        )
+        player = _player(id=uuid.uuid4(), credits=1000)
+        contract.acceptor_player_id = player.id
+        locker = _locker(
+            contract, player.id, status=StorageLockerStatus.ACTIVE, rent_rate=Decimal("1"),
+            last_fee_settled_at=now - timedelta(days=1),
+        )
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        db.deposits = [_deposit(locker, quantity=10, deposited_by=player.id)]
+
+        accepted_result = contract_service.sweep_expired_accepted_contracts(db, now=now)
+        locker_result = storage_service.sweep_expired_lockers(db, now=now)
+
+        assert accepted_result["expired"] == 1
+        assert contract.status == ContractStatus.EXPIRED
+        assert locker_result["converted"] == 1
+        assert locker.status == StorageLockerStatus.CLAIMABLE
+        assert locker.contract_id is None
+        # Penalty (300) applied first by the accepted-sweep, THEN rent
+        # (10 units x 1cr x 1 day = 10) settled by the locker-sweep:
+        # 1000 - 300 - 10 = 690. Proves both effects land, in order.
+        assert player.credits == 690
+
+    def test_new_contract_after_expiry_mints_a_fresh_locker_invariant(self) -> None:
+        """THE explicit acceptance criterion (cipher's pre-emptive catch):
+        new contract = new locker row. Proven via the REAL get_or_create_
+        locker function, not a mock -- the fresh locker's own id differs
+        from the claimable one, and the old claimable deposits (tied to
+        the OLD locker's id) do not count toward the NEW locker's
+        accumulated total."""
+        now = datetime.now(UTC)
+        old_contract = _contract(status=ContractStatus.EXPIRED, deadline=now - timedelta(hours=1))
+        player = _player(id=uuid.uuid4())
+        old_contract.acceptor_player_id = player.id
+        old_locker = _locker(old_contract, player.id, status=StorageLockerStatus.ACTIVE)
+        db = _FakeSession(contracts=[old_contract], players=[player], lockers=[old_locker])
+        db.deposits = [_deposit(old_locker, quantity=30, deposited_by=player.id)]
+
+        storage_service.sweep_expired_lockers(db, now=now)
+        assert old_locker.status == StorageLockerStatus.CLAIMABLE
+        assert old_locker.contract_id is None
+
+        # A NEW contract, same player, same destination station.
+        new_contract = _contract(
+            status=ContractStatus.ACCEPTED, destination_station_id=old_contract.destination_station_id,
+            quantity=20,
+        )
+        new_contract.acceptor_player_id = player.id
+        db.contracts.append(new_contract)
+
+        new_locker = storage_service.get_or_create_locker(db, player.id, new_contract.id)
+
+        assert new_locker.id != old_locker.id  # genuinely fresh, not re-linked
+        assert new_locker.contract_id == new_contract.id
+        assert new_locker.status == StorageLockerStatus.ACTIVE
+        # The old claimable deposits (30 units) are tied to old_locker.id
+        # -- they must NOT count toward the new locker's total, or the
+        # new contract could false-complete without a single new deposit.
+        assert storage_service._stored_units(db, new_locker.id) == 0
+        assert storage_service._stored_units(db, old_locker.id) == 30  # untouched, still claimable
+
+
+# --- WO-STORE-EXPIRY-CLAIMABLE: retrieve_claimable_cargo -------------------- #
+
+@pytest.mark.unit
+class TestRetrieveClaimableCargo:
+    def test_full_retrieve_releases_locker_and_loads_ship(self) -> None:
+        contract = _contract()
+        player = _player(
+            id=uuid.uuid4(), current_ship=_ship(cargo={"capacity": 500, "used": 0, "contents": {}}),
+        )
+        player.current_port_id = contract.destination_station_id
+        locker = _locker(contract, player.id, status=StorageLockerStatus.CLAIMABLE, contract_id=None)
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        db.deposits = [_deposit(locker, quantity=50, deposited_by=player.id)]
+
+        result = storage_service.retrieve_claimable_cargo(db, locker.id, player.id)
+
+        assert result["retrieved"] == 50
+        assert result["commodity"] == "ore"
+        assert result["remaining"] == 0
+        assert result["released"] is True
+        assert locker.status == StorageLockerStatus.RELEASED
+        assert player.current_ship.cargo["contents"]["ore"] == 50
+        assert player.current_ship.cargo["used"] == 50
+        assert db.deposits == []  # fully consumed
+
+    def test_capacity_constrained_retrieve_stays_claimable_with_remainder(self) -> None:
+        """The capacity nuance the WO flagged: a locker holding more than
+        the ship can carry retrieves as much as fits, leaves the rest
+        CLAIMABLE for a later trip -- never rejects outright."""
+        contract = _contract()
+        player = _player(
+            id=uuid.uuid4(), current_ship=_ship(cargo={"capacity": 50, "used": 0, "contents": {}}),
+        )
+        player.current_port_id = contract.destination_station_id
+        locker = _locker(contract, player.id, status=StorageLockerStatus.CLAIMABLE, contract_id=None)
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        db.deposits = [_deposit(locker, quantity=150, deposited_by=player.id)]
+
+        result = storage_service.retrieve_claimable_cargo(db, locker.id, player.id)
+
+        assert result["retrieved"] == 50
+        assert result["remaining"] == 100
+        assert result["released"] is False
+        assert locker.status == StorageLockerStatus.CLAIMABLE
+        assert player.current_ship.cargo["used"] == 50
+
+    def test_explicit_quantity_retrieves_exactly_that_much(self) -> None:
+        contract = _contract()
+        player = _player(
+            id=uuid.uuid4(), current_ship=_ship(cargo={"capacity": 500, "used": 0, "contents": {}}),
+        )
+        player.current_port_id = contract.destination_station_id
+        locker = _locker(contract, player.id, status=StorageLockerStatus.CLAIMABLE, contract_id=None)
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        db.deposits = [_deposit(locker, quantity=100, deposited_by=player.id)]
+
+        result = storage_service.retrieve_claimable_cargo(db, locker.id, player.id, quantity=30)
+
+        assert result["retrieved"] == 30
+        assert result["remaining"] == 70
+        assert result["released"] is False
+        assert locker.status == StorageLockerStatus.CLAIMABLE
+
+    def test_explicit_quantity_exceeding_available_rejected(self) -> None:
+        contract = _contract()
+        player = _player(id=uuid.uuid4())
+        player.current_port_id = contract.destination_station_id
+        locker = _locker(contract, player.id, status=StorageLockerStatus.CLAIMABLE, contract_id=None)
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        db.deposits = [_deposit(locker, quantity=50, deposited_by=player.id)]
+
+        with pytest.raises(StorageError, match="insufficient_stored"):
+            storage_service.retrieve_claimable_cargo(db, locker.id, player.id, quantity=100)
+
+    def test_explicit_quantity_exceeding_capacity_rejected(self) -> None:
+        contract = _contract()
+        player = _player(
+            id=uuid.uuid4(), current_ship=_ship(cargo={"capacity": 50, "used": 0, "contents": {}}),
+        )
+        player.current_port_id = contract.destination_station_id
+        locker = _locker(contract, player.id, status=StorageLockerStatus.CLAIMABLE, contract_id=None)
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        db.deposits = [_deposit(locker, quantity=100, deposited_by=player.id)]
+
+        with pytest.raises(StorageError, match="insufficient_cargo_capacity"):
+            storage_service.retrieve_claimable_cargo(db, locker.id, player.id, quantity=60)
+
+    def test_wrong_station_rejected(self) -> None:
+        contract = _contract()
+        player = _player(id=uuid.uuid4())
+        player.current_port_id = uuid.uuid4()  # NOT the locker's station
+        locker = _locker(contract, player.id, status=StorageLockerStatus.CLAIMABLE, contract_id=None)
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+
+        with pytest.raises(StorageError, match="wrong_station"):
+            storage_service.retrieve_claimable_cargo(db, locker.id, player.id)
+
+    def test_not_owner_rejected(self) -> None:
+        contract = _contract()
+        owner = _player(id=uuid.uuid4())
+        stranger = _player(id=uuid.uuid4())
+        locker = _locker(contract, owner.id, status=StorageLockerStatus.CLAIMABLE, contract_id=None)
+        db = _FakeSession(contracts=[contract], players=[owner, stranger], lockers=[locker])
+
+        with pytest.raises(StorageError, match="does not belong to you"):
+            storage_service.retrieve_claimable_cargo(db, locker.id, stranger.id)
+
+    def test_locker_not_claimable_rejected(self) -> None:
+        contract = _contract()
+        player = _player(id=uuid.uuid4())
+        contract.acceptor_player_id = player.id
+        locker = _locker(contract, player.id, status=StorageLockerStatus.ACTIVE)
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+
+        with pytest.raises(StorageError, match="locker_not_claimable"):
+            storage_service.retrieve_claimable_cargo(db, locker.id, player.id)
+
+    def test_retrieve_from_already_emptied_locker_releases_and_returns_zero(self) -> None:
+        contract = _contract()
+        player = _player(id=uuid.uuid4())
+        player.current_port_id = contract.destination_station_id
+        locker = _locker(contract, player.id, status=StorageLockerStatus.CLAIMABLE, contract_id=None)
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        # No deposits at all -- already fully retrieved on an earlier call.
+
+        result = storage_service.retrieve_claimable_cargo(db, locker.id, player.id)
+
+        assert result["retrieved"] == 0
+        assert result["commodity"] is None
+        assert result["released"] is True
+        assert locker.status == StorageLockerStatus.RELEASED
+
+    def test_multi_trip_retrieve_second_call_gets_the_rest(self) -> None:
+        contract = _contract()
+        player = _player(
+            id=uuid.uuid4(), current_ship=_ship(cargo={"capacity": 50, "used": 0, "contents": {}}),
+        )
+        player.current_port_id = contract.destination_station_id
+        locker = _locker(contract, player.id, status=StorageLockerStatus.CLAIMABLE, contract_id=None)
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        db.deposits = [_deposit(locker, quantity=80, deposited_by=player.id)]
+
+        r1 = storage_service.retrieve_claimable_cargo(db, locker.id, player.id)
+        assert r1["retrieved"] == 50
+        assert r1["released"] is False
+        assert locker.status == StorageLockerStatus.CLAIMABLE
+
+        # "Return to base, unload" -- same ship, emptied for the next trip.
+        player.current_ship.cargo = {"capacity": 50, "used": 0, "contents": {}}
+        r2 = storage_service.retrieve_claimable_cargo(db, locker.id, player.id)
+
+        assert r2["retrieved"] == 30
+        assert r2["remaining"] == 0
+        assert r2["released"] is True
+        assert locker.status == StorageLockerStatus.RELEASED
+
+    def test_rent_settled_on_retrieve(self) -> None:
+        contract = _contract()
+        player = _player(id=uuid.uuid4(), credits=1000)
+        player.current_port_id = contract.destination_station_id
+        anchor = datetime.now(UTC) - timedelta(days=2)
+        locker = _locker(
+            contract, player.id, status=StorageLockerStatus.CLAIMABLE, contract_id=None,
+            rent_rate=Decimal("1"), last_fee_settled_at=anchor,
+        )
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        db.deposits = [_deposit(locker, quantity=20, deposited_by=player.id)]
+
+        result = storage_service.retrieve_claimable_cargo(db, locker.id, player.id)
+
+        # 20 units x 1cr x 2 days = 40 -- charged as part of retrieval,
+        # not skipped just because the locker's already claimable.
+        assert result["fee_charged"] == 40
+        assert player.credits == 960
+
+    def test_lock_order_locker_then_player_then_ship(self) -> None:
+        contract = _contract()
+        player = _player(id=uuid.uuid4(), credits=1000)
+        player.current_port_id = contract.destination_station_id
+        locker = _locker(
+            contract, player.id, status=StorageLockerStatus.CLAIMABLE, contract_id=None,
+            rent_rate=Decimal("1"), last_fee_settled_at=datetime.now(UTC) - timedelta(days=1),
+        )
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        db.deposits = [_deposit(locker, quantity=10, deposited_by=player.id)]
+
+        storage_service.retrieve_claimable_cargo(db, locker.id, player.id)
+
+        # Locker -> Player (this function's own order) -> settle_fee's
+        # re-lock of Locker -> Player (rent genuinely owed) -> Ship.
+        assert db.for_update_calls == ["StorageLocker", "Player", "StorageLocker", "Player", "Ship"]
+
+    def test_consume_deposits_fifo_partial_boundary_row(self) -> None:
+        """_consume_deposits' own oldest-first consumption: three 10-unit
+        rows at staggered timestamps, retrieving 15 -- the oldest row is
+        fully consumed (deleted), the second is left at 5 (partially
+        consumed), the third is untouched."""
+        contract = _contract()
+        player = _player(
+            id=uuid.uuid4(), current_ship=_ship(cargo={"capacity": 500, "used": 0, "contents": {}}),
+        )
+        player.current_port_id = contract.destination_station_id
+        locker = _locker(contract, player.id, status=StorageLockerStatus.CLAIMABLE, contract_id=None)
+        t0 = datetime.now(UTC) - timedelta(hours=3)
+        row_oldest = _deposit(locker, quantity=10, deposited_at=t0)
+        row_middle = _deposit(locker, quantity=10, deposited_at=t0 + timedelta(hours=1))
+        row_newest = _deposit(locker, quantity=10, deposited_at=t0 + timedelta(hours=2))
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+        db.deposits = [row_newest, row_oldest, row_middle]  # deliberately out of order
+
+        result = storage_service.retrieve_claimable_cargo(db, locker.id, player.id, quantity=15)
+
+        assert result["retrieved"] == 15
+        assert len(db.deposits) == 2
+        assert row_oldest not in db.deposits  # fully consumed, deleted
+        assert row_middle.quantity == 5  # partially consumed, boundary row
+        assert row_newest.quantity == 10  # untouched
+
+
+# --- WO-STORE-EXPIRY-CLAIMABLE + D19: gate_contract_expiry_on_locker ------- #
+
+@pytest.mark.unit
+class TestGateContractExpiryOnLocker:
+    def test_no_active_locker_at_all_proceeds_true_with_zero_locking(self) -> None:
+        contract = _contract()
+        db = _FakeSession(contracts=[contract])
+
+        result = storage_service.gate_contract_expiry_on_locker(db, contract)
+
+        assert result is True
+        # The common non-storage case: zero locking attempted at all.
+        assert db.for_update_calls == []
+
+    def test_active_locker_but_belongs_to_a_different_contract_proceeds_true(self) -> None:
+        contract = _contract()
+        other_contract = _contract()
+        player = _player(id=uuid.uuid4())
+        unrelated_locker = _locker(other_contract, player.id, status=StorageLockerStatus.ACTIVE)
+        db = _FakeSession(contracts=[contract, other_contract], lockers=[unrelated_locker])
+
+        result = storage_service.gate_contract_expiry_on_locker(db, contract)
+
+        assert result is True
+        assert db.for_update_calls == []
+
+    def test_claimable_or_released_locker_does_not_gate_proceeds_true(self) -> None:
+        """A locker that's already CLAIMABLE/RELEASED for this contract
+        (a stale/already-processed row) isn't a live in-flight deposit
+        -- the existence check itself filters to status == ACTIVE, so
+        this correctly falls through to the no-locker path."""
+        contract = _contract()
+        player = _player(id=uuid.uuid4())
+        contract.acceptor_player_id = player.id
+        stale_locker = _locker(contract, player.id, status=StorageLockerStatus.RELEASED)
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[stale_locker])
+
+        result = storage_service.gate_contract_expiry_on_locker(db, contract)
+
+        assert result is True
+
+    def test_active_locker_uncontended_acquires_and_proceeds_true(self) -> None:
+        contract = _contract()
+        player = _player(id=uuid.uuid4())
+        contract.acceptor_player_id = player.id
+        locker = _locker(contract, player.id, status=StorageLockerStatus.ACTIVE)
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+
+        result = storage_service.gate_contract_expiry_on_locker(db, contract)
+
+        assert result is True
+        # Existence check (unlocked) + the skip_locked acquisition probe.
+        assert db.for_update_calls == ["StorageLocker"]
+
+    def test_active_locker_contended_defers_false(self) -> None:
+        """The disambiguating case (mack's own flagged nuance): step 1
+        already proved the locker EXISTS, so step 2's None result here
+        is unambiguously CONTENDED, not absent."""
+        contract = _contract()
+        player = _player(id=uuid.uuid4())
+        contract.acceptor_player_id = player.id
+        locker = _locker(contract, player.id, status=StorageLockerStatus.ACTIVE)
+        db = _FakeSession(
+            contracts=[contract], players=[player], lockers=[locker],
+            contended_locker_ids={locker.id},
+        )
+
+        result = storage_service.gate_contract_expiry_on_locker(db, contract)
+
+        assert result is False
+
+    def test_gate_never_settles_or_converts_the_locker_itself(self) -> None:
+        """The gate ONLY acquires the lock as a probe -- it must never
+        settle rent or flip status; that's sweep_expired_lockers' own
+        job, run separately right after."""
+        contract = _contract()
+        player = _player(id=uuid.uuid4())
+        contract.acceptor_player_id = player.id
+        locker = _locker(
+            contract, player.id, status=StorageLockerStatus.ACTIVE, accrued_fee=Decimal("0"),
+        )
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+
+        storage_service.gate_contract_expiry_on_locker(db, contract)
+
+        assert locker.status == StorageLockerStatus.ACTIVE  # unchanged
+        assert locker.accrued_fee == Decimal("0")  # unsettled
+        assert locker.contract_id == contract.id  # not nulled
+
+
+# --- WO-STORE-EXPIRY-CLAIMABLE + D19: deposit-wins-at-the-deadline -------- #
+
+@pytest.mark.unit
+class TestDepositWinsAtTheDeadlineIntegration:
+    def test_gated_sweep_defers_a_contended_contract_leaving_it_accepted(self) -> None:
+        """Structural proof of the deposit-wins mechanism, driving the
+        REAL contract_service.sweep_expired_accepted_contracts with the
+        REAL gate_contract_expiry_on_locker wired in exactly as the
+        scheduler wires them -- not mocks standing in for either. A
+        contract whose Locker is (simulated) contended stays ACCEPTED,
+        untouched, no penalty charged; a sibling contract with no locker
+        at all still expires normally in the SAME pass."""
+        now = datetime.now(UTC)
+        contended_contract = _contract(
+            status=ContractStatus.ACCEPTED, deadline=now - timedelta(hours=1), penalty=Decimal("500.00"),
+        )
+        player = _player(id=uuid.uuid4(), credits=1000)
+        contended_contract.acceptor_player_id = player.id
+        contended_locker = _locker(contended_contract, player.id, status=StorageLockerStatus.ACTIVE)
+
+        plain_contract = _contract(
+            status=ContractStatus.ACCEPTED, deadline=now - timedelta(hours=1), penalty=Decimal("100.00"),
+        )
+        plain_contract.acceptor_player_id = player.id
+
+        db = _FakeSession(
+            contracts=[contended_contract, plain_contract], players=[player],
+            lockers=[contended_locker], contended_locker_ids={contended_locker.id},
+        )
+
+        result = contract_service.sweep_expired_accepted_contracts(
+            db, now=now, expiry_gate=storage_service.gate_contract_expiry_on_locker,
+        )
+
+        # Only the plain (non-storage) contract expired -- the contended
+        # one was deferred, deposit-wins-style, untouched and unpenalized.
+        assert result == {"expired": 1}
+        assert contended_contract.status == ContractStatus.ACCEPTED
+        assert plain_contract.status == ContractStatus.EXPIRED
+        assert player.credits == 900  # only the plain contract's 100cr penalty charged
+        assert contended_locker.status == StorageLockerStatus.ACTIVE  # untouched too
+
+    def test_gate_deferral_does_not_infinite_loop_the_sweep(self) -> None:
+        """The regression this WO's own .all()-restructure fixes: a
+        candidate the gate ALWAYS defers must not spin the sweep
+        forever -- it terminates having correctly left that one
+        candidate untouched."""
+        now = datetime.now(UTC)
+        contract = _contract(status=ContractStatus.ACCEPTED, deadline=now - timedelta(hours=1))
+        player = _player(id=uuid.uuid4())
+        contract.acceptor_player_id = player.id
+        db = _FakeSession(contracts=[contract], players=[player])
+
+        always_defer = lambda db, candidate: False  # noqa: E731
+
+        result = contract_service.sweep_expired_accepted_contracts(db, now=now, expiry_gate=always_defer)
+
+        assert result == {"expired": 0}
+        assert contract.status == ContractStatus.ACCEPTED  # deferred, not stuck mid-loop

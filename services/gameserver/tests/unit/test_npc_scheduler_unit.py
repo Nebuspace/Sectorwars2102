@@ -330,10 +330,22 @@ class TestHeldSweepWiringNeverBreaksTheLoop:
 
     def test_contract_expire_sweep_combines_posted_and_accepted_counts(self):
         """WO-DRIFT-econ-accepted-deadline-expiry: the CONTRACT_EXPIRE
-        driver now runs sweep_expired_accepted_contracts alongside sweep_
+        driver runs sweep_expired_accepted_contracts alongside sweep_
         expired_contracts under the SAME CEXP lock/due-check/commit -- the
         wrapper's return value is their sum, and both cores are reached
-        exactly once."""
+        exactly once.
+
+        WO-STORE-EXPIRY-CLAIMABLE + D19: storage_service.sweep_expired_
+        lockers also runs under this SAME lock (a third facet of
+        "contract expiry" -- see contract_sweeps.py's own docstring) and
+        must be mocked too, or it hits _FakeLockDB's real query layer
+        (which raises for anything but Galaxy) and the whole sweep rolls
+        back instead of committing. sweep_expired_accepted_contracts is
+        called with `expiry_gate=gate_contract_expiry_on_locker` now
+        (the deposit-wins/deadlock-fix mechanism -- see test_contract_
+        service.py's own gate tests) -- since this test mocks the whole
+        function, the gate argument is passed through untouched and
+        doesn't affect this test's own count-combining assertion."""
         db = _FakeLockDB()
         with patch("src.core.database.SessionLocal", return_value=db), patch(
             "src.services.contract_service.sweep_expired_contracts",
@@ -341,13 +353,40 @@ class TestHeldSweepWiringNeverBreaksTheLoop:
         ) as mock_posted, patch(
             "src.services.contract_service.sweep_expired_accepted_contracts",
             return_value={"expired": 2},
-        ) as mock_accepted:
+        ) as mock_accepted, patch(
+            "src.services.storage_service.sweep_expired_lockers",
+            return_value={"converted": 1},
+        ) as mock_lockers:
             result = _run_contract_expire_sweep_sync()
         assert result == 5
         mock_posted.assert_called_once()
         mock_accepted.assert_called_once()
+        mock_lockers.assert_called_once()
         assert db.committed is True
         assert db.closed is True
+
+    def test_contract_expire_sweep_wires_the_deposit_wins_gate(self):
+        """D19 (deposit-wins REQUIRED): the scheduler must actually PASS
+        storage_service.gate_contract_expiry_on_locker as sweep_expired_
+        accepted_contracts' own expiry_gate kwarg -- a regression pin
+        against silently dropping the gate in a future refactor (which
+        would quietly revert to first-committer-wins with no test
+        failure anywhere else, since a missing kwarg just falls back to
+        the gate's own None-default)."""
+        db = _FakeLockDB()
+        with patch("src.core.database.SessionLocal", return_value=db), patch(
+            "src.services.contract_service.sweep_expired_contracts", return_value={"expired": 0},
+        ), patch(
+            "src.services.contract_service.sweep_expired_accepted_contracts",
+            return_value={"expired": 0},
+        ) as mock_accepted, patch(
+            "src.services.storage_service.sweep_expired_lockers", return_value={"converted": 0},
+        ), patch(
+            "src.services.storage_service.gate_contract_expiry_on_locker",
+        ) as mock_gate:
+            _run_contract_expire_sweep_sync()
+
+        mock_accepted.assert_called_once_with(db, expiry_gate=mock_gate)
 
     def test_contract_expire_sweep_locked_elsewhere_skips_cleanly_without_touching_the_core(self, caplog):
         """Mirrors test_locked_elsewhere_skips_cleanly_without_touching_the_

@@ -76,6 +76,13 @@ class _FakeQuery:
                 return row
         return None
 
+    def all(self) -> List[Any]:
+        # WO-STORE-EXPIRY-CLAIMABLE + D19: sweep_expired_accepted_
+        # contracts gathers its candidates upfront now (the expiry_gate
+        # deferral fix -- see that function's own docstring for why a
+        # repeated fresh .first() would infinite-loop on a deferred row).
+        return [row for row in self._rows if all(_match(row, c) for c in self._criteria)]
+
     def count(self) -> int:
         return sum(1 for row in self._rows if all(_match(row, c) for c in self._criteria))
 
@@ -523,3 +530,68 @@ class TestSweepExpiredAcceptedContracts:
         assert c1.status == ContractStatus.EXPIRED
         assert c2.status == ContractStatus.EXPIRED
         assert acceptor.credits == 4700  # 5000 - 100 - 200
+
+    def test_expiry_gate_none_default_is_unaffected(self) -> None:
+        """WO-STORE-EXPIRY-CLAIMABLE + D19: the new expiry_gate parameter
+        defaults to None -- every OTHER caller (including every existing
+        test above, called positionally/keyword without it) must behave
+        identically to before it existed."""
+        acceptor = _player(credits=5000)
+        c = _contract(
+            status=ContractStatus.ACCEPTED, deadline=_NOW - timedelta(minutes=1),
+            acceptor_player_id=acceptor.id, penalty=Decimal("300.00"),
+        )
+        db = _FakeSession(contracts=[c], players=[acceptor])
+
+        result = contract_service.sweep_expired_accepted_contracts(db, now=_NOW, expiry_gate=None)
+
+        assert result == {"expired": 1}
+        assert c.status == ContractStatus.EXPIRED
+        assert acceptor.credits == 4700
+
+    def test_expiry_gate_defers_one_candidate_others_still_expire(self) -> None:
+        """The gate contract itself, isolated from storage_service's own
+        gate_contract_expiry_on_locker implementation (that integration
+        lives in test_storage_service.py): a gate that vetoes ONE
+        specific contract leaves it ACCEPTED and unpenalized while its
+        sibling still expires normally in the SAME pass."""
+        acceptor = _player(credits=5000)
+        deferred = _contract(
+            status=ContractStatus.ACCEPTED, deadline=_NOW - timedelta(minutes=1),
+            acceptor_player_id=acceptor.id, penalty=Decimal("999.00"),
+        )
+        expires_normally = _contract(
+            status=ContractStatus.ACCEPTED, deadline=_NOW - timedelta(minutes=1),
+            acceptor_player_id=acceptor.id, penalty=Decimal("100.00"),
+        )
+        db = _FakeSession(contracts=[deferred, expires_normally], players=[acceptor])
+
+        def gate(db, candidate):
+            return candidate.id != deferred.id
+
+        result = contract_service.sweep_expired_accepted_contracts(db, now=_NOW, expiry_gate=gate)
+
+        assert result == {"expired": 1}
+        assert deferred.status == ContractStatus.ACCEPTED  # vetoed, untouched
+        assert expires_normally.status == ContractStatus.EXPIRED
+        assert acceptor.credits == 4900  # only the 100cr penalty charged
+
+    def test_expiry_gate_always_deferring_terminates_no_infinite_loop(self) -> None:
+        """THE regression this WO's own .all()-based rewrite fixes: the
+        original while-True + repeated-fresh-.first() shape would spin
+        forever on a candidate the gate ALWAYS defers, since deferring
+        doesn't change the row's own status. This must terminate
+        cleanly, leaving the candidate untouched."""
+        acceptor = _player(credits=5000)
+        c = _contract(
+            status=ContractStatus.ACCEPTED, deadline=_NOW - timedelta(minutes=1),
+            acceptor_player_id=acceptor.id,
+        )
+        db = _FakeSession(contracts=[c], players=[acceptor])
+
+        result = contract_service.sweep_expired_accepted_contracts(
+            db, now=_NOW, expiry_gate=lambda db, candidate: False,
+        )
+
+        assert result == {"expired": 0}
+        assert c.status == ContractStatus.ACCEPTED  # deferred forever this tick, not corrupted

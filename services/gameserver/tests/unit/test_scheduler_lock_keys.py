@@ -154,7 +154,12 @@ EXPECTED_NAME_SITE_MAP = {
     "_run_pirate_ecosystem_tick_sync": "_PIRATE_ECOSYSTEM_TICK_LOCK_KEY",
     # WO-SCHED-LOOP-WEDGE: generation's write phase, own advisory lock.
     "_run_contract_generation_sync": "_CONTRACT_GENERATION_LOCK_KEY",
-    # WO-DRIFT-econ-contract-sweep-advisory-lock (expire half).
+    # WO-DRIFT-econ-contract-sweep-advisory-lock (expire half). Also the
+    # site WO-STORE-EXPIRY-CLAIMABLE + D19 hangs its expiry_gate-based
+    # deposit-wins/deadlock fix off of (storage_service.sweep_expired_
+    # lockers + gate_contract_expiry_on_locker both run inside THIS same
+    # CEXP-locked transaction -- no new binding site here, since neither
+    # of those functions acquires pg_try_advisory_xact_lock itself).
     "_run_contract_expire_sweep_sync": "_CONTRACT_EXPIRE_LOCK_KEY",
     # WO-P4-play-beacon-kernel — message-beacon expiry sweep.
     "_run_beacon_expire_sweep_sync": "_BEACON_EXPIRE_LOCK_KEY",
