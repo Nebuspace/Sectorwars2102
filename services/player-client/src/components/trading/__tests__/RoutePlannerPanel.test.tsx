@@ -79,7 +79,10 @@ describe('RoutePlannerPanel', () => {
     });
 
     expect(container.querySelector('.route-planner-body')).toBeNull();
-    expect(container.querySelector('.route-planner-header')?.textContent).toContain('Route Planner');
+    expect(container.querySelector('.route-planner-header')?.textContent).toContain('Trade Route Optimizer');
+    // WO-UIPC-ROUTEPLANNER-EXPLAINER: the commerce-vs-navigation explainer is
+    // always visible, even collapsed, so it's not gated behind expanding the panel.
+    expect(container.querySelector('.route-planner-subtitle')?.textContent).toContain('this is commerce, not navigation');
   });
 
   it('expands on header click and defaults the start sector to the current sector', async () => {

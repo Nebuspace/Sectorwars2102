@@ -144,9 +144,19 @@ const RoutePlannerPanel: React.FC = () => {
           }
         }}
       >
-        <h3>Route Planner</h3>
+        <h3 aria-describedby="route-planner-subtitle">Trade Route Optimizer</h3>
         <span className="route-planner-toggle">{collapsed ? '▶' : '▼'}</span>
       </div>
+
+      {/* WO-UIPC-ROUTEPLANNER-EXPLAINER: always visible (even collapsed) so a
+          player scanning the Trading Hub gets the "commerce, not navigation"
+          distinction without needing to open the panel first -- one tight
+          line, Scroll-Law compact, matches the header's own muted label
+          styling rather than a paragraph block. aria-describedby links it to
+          the title above for screen readers (Pixel's a11y pass). */}
+      <p id="route-planner-subtitle" className="route-planner-subtitle">
+        Finds the most profitable buy-low/sell-high trade loops across the galaxy — this is commerce, not navigation. To plot a travel course, use NAV CHART.
+      </p>
 
       {!collapsed && (
         <div className="route-planner-body">
