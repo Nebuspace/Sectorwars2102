@@ -14,10 +14,17 @@ leaves open:
   3. shipless / specless purchase 400s, with exact message text pinned;
   4. that POST /purchase computes caps from its OWN locally-loaded ship +
      spec (exactly one query each), never a second fetch;
-  5. an empirical, live-SQLAlchemy proof of a identity-map staleness hazard
-     on the SAME purchase handler's player-row re-read (pre-existing --
-     NOT introduced by this refactor, but load-bearing on the money path
-     this refactor sits inside of, so surfaced here).
+  5. an empirical, live-SQLAlchemy proof PAIR for the identity-map
+     staleness hazard on the purchase/deploy handlers' player-row re-read:
+     (a) the raw SQLAlchemy fact that a PLAIN with_for_update() re-read (no
+     populate_existing()) returns the stale cached object -- why the guard
+     is required; (b) confirmation that chaining .populate_existing() (the
+     exact shape armory.py:204/:329 ship today, WO-MONEY-REREAD-CLASS)
+     actually observes the fresh value, closing the lost-update. (a) was
+     originally the bug-finding repro when this file was first written;
+     WO-MONEY-REREAD-CLASS has since shipped the fix, so (a) is relabeled
+     below to state the underlying fact rather than imply live code is
+     currently broken, and (b) is new.
 """
 import types
 import uuid
@@ -42,6 +49,16 @@ class _CountingFakeQuery:
         self._counter = counter
 
     def filter(self, *a, **k):
+        return self
+
+    def populate_existing(self, *a, **k):
+        # WO-MONEY-REREAD-CLASS chained .populate_existing() onto armory.py's
+        # locked Player re-reads (:204/:329) to close the identity-map
+        # staleness this file's own live-SQLAlchemy repro proved (see the
+        # bug/guard/proof test trio below). This counting fake has no
+        # identity map to refresh -- passthrough keeps it a no-op, matching
+        # the real chainable-query API shape so the now-fixed route code
+        # doesn't AttributeError.
         return self
 
     def with_for_update(self, *a, **k):
@@ -320,49 +337,68 @@ async def test_catalog_response_frontend_deref_pattern_never_crashes_shipless():
 
 
 # --------------------------------------------------------------------------- #
-# identity-map staleness on the player row re-read (pre-existing, NOT
-# introduced by this refactor -- the caps extraction never touches this
-# code path -- but it sits directly on the money path this WO is verifying,
-# so it's surfaced here rather than silently passed over. Proven with a
-# LIVE SQLAlchemy session, per project convention: FakeSession's flat
-# Model -> row map is structurally blind to identity-map semantics and
-# cannot prove or disprove this either way.
+# identity-map staleness on the player row re-read -- bug -> guard -> proof.
+#
+# armory.py:204 (purchase_armory_item) and :329 (deploy_mines) now chain
+# .populate_existing().with_for_update() -- WO-MONEY-REREAD-CLASS shipped
+# this as the fix for the bug this section originally found and proved (see
+# armory-purchase-player-reread-stale in mack's project memory). The two
+# tests below are a matched pair, both against a LIVE SQLAlchemy session
+# (per project convention: FakeSession's flat Model -> row map is
+# structurally blind to identity-map semantics and cannot prove or
+# disprove either direction):
+#
+#   1. test_plain_with_for_update_alone_is_identity_map_stale_why_the_guard_is_required
+#      -- the raw SQLAlchemy fact, independent of this file's live route
+#      code: with_for_update() alone does NOT refresh an already-loaded
+#      instance. This is NOT a claim that live armory.py is currently
+#      broken -- it's the reason the guard below was required at all.
+#   2. test_populate_existing_with_for_update_observes_fresh_value_closing_lost_update
+#      -- same repro shape, WITH .populate_existing() added -- the exact
+#      chain armory.py ships today. Proves the fresh (post-concurrent-
+#      commit) value is observed, i.e. the fix actually closes the gap.
 # --------------------------------------------------------------------------- #
 
-def test_purchase_handler_player_reread_pattern_is_identity_map_stale():
-    """armory.py's purchase handler does:
+def test_plain_with_for_update_alone_is_identity_map_stale_why_the_guard_is_required():
+    """The raw SQLAlchemy fact this file's guard depends on -- this is NOT a
+    claim that live armory.py currently has this shape. It doesn't:
+    armory.py:204 (purchase_armory_item) and :329 (deploy_mines) both chain
+    `.populate_existing().with_for_update()` today (WO-MONEY-REREAD-CLASS,
+    fixed). Before that fix landed, the shape was:
 
         player: Player = Depends(get_current_player)      # UNLOCKED read,
                                                             # same `db` session
         ...
         player = db.query(Player).filter(Player.id == player.id) \\
-                   .with_for_update().first()               # "authoritative"
-                                                              # locked re-read,
-                                                              # SAME session,
-                                                              # SAME PK
+                   .with_for_update().first()               # PLAIN locked
+                                                              # re-read, SAME
+                                                              # session, SAME
+                                                              # PK, no
+                                                              # populate_existing()
 
     get_current_player() (src/auth/dependencies.py:128) issues its own
     unlocked `db.query(Player).filter(...).first()` on the SAME session
     FastAPI injects into the route body. This test proves, with a live
-    SQLAlchemy 2.0 session (not a mock), that the second query -- despite
-    genuinely holding `.with_for_update()` -- returns the SAME cached Python
-    object with PRE-lock attribute values when another session commits a
-    change to that row in between. The row lock is real; the "freshness"
-    the comment at armory.py:202-203 promises is not, because nothing calls
-    `.populate_existing()`.
+    SQLAlchemy 2.0 session (not a mock), the underlying ORM fact that made
+    that shape a bug: a plain `.with_for_update()` re-read -- despite
+    genuinely holding the row lock -- returns the SAME cached Python object
+    with PRE-lock attribute values when another session commits a change to
+    that row in between. The row lock is real; "freshness" is not, unless
+    `.populate_existing()` is chained too.
 
-    Money-path blast radius: `player.credits` (the credit check, armory.py
-    :273) and `player.attack_drones` / `defense_drones` / `mines` (the cap
-    check, armory.py :250-254) are ALL read off this same stale object.
-    Concretely: two near-simultaneous purchases from the same player (a
-    double-click on Buy, or two open tabs) -- request A's dependency
-    resolution reads player unlocked, request B fully completes (spends
-    credits / adds drones) and commits before A's with_for_update() fires --
-    A's "locked, authoritative" check still sees B's PRE-purchase counts,
-    can pass a cap/credit check it should fail, and A's subsequent write
-    (`player.credits -= total_cost`, `player.attack_drones += quantity`)
-    lands on the stale object and overwrites B's update on commit (lost
-    update on both money and cap-enforced loadout counts).
+    Money-path blast radius the fix closes: `player.credits` (the credit
+    check, armory.py :273) and `player.attack_drones` / `defense_drones` /
+    `mines` (the cap check, armory.py :250-254) would ALL have been read off
+    a stale object under the pre-fix shape. Concretely: two near-simultaneous
+    purchases from the same player (a double-click on Buy, or two open tabs)
+    -- request A's dependency resolution reads player unlocked, request B
+    fully completes (spends credits / adds drones) and commits before A's
+    with_for_update() fires -- A's "locked, authoritative" check would still
+    see B's PRE-purchase counts, could pass a cap/credit check it should
+    fail, and A's subsequent write would land on the stale object and
+    overwrite B's update on commit (lost update on both money and
+    cap-enforced loadout counts). The companion test directly below proves
+    the shipped fix actually closes this.
     """
     import sqlalchemy as sa
     from sqlalchemy.orm import declarative_base, sessionmaker
@@ -411,6 +447,82 @@ def test_purchase_handler_player_reread_pattern_is_identity_map_stale():
     )
     assert player2.attack_drones == 0, (
         f"expected STALE attack_drones=0 (proving the bug); got {player2.attack_drones}"
+    )
+
+    S.close()
+
+
+def test_populate_existing_with_for_update_observes_fresh_value_closing_lost_update():
+    """INVERTED companion to the test above -- proves the FIX, not just the
+    bug. Exact same repro shape (unlocked read on session S -> a CONCURRENT
+    session commits a change to the same PK -> re-read on S), except the
+    re-read now chains `.populate_existing().with_for_update()` -- the exact
+    shape armory.py:204 (purchase_armory_item) and :329 (deploy_mines) ship
+    today (WO-MONEY-REREAD-CLASS). PASS only if the re-read observes the
+    FRESH (post-concurrent-commit) value, proving `.populate_existing()`
+    actually forces a refresh from the locked row rather than returning the
+    stale identity-map copy the test above pins.
+    """
+    import sqlalchemy as sa
+    from sqlalchemy.orm import declarative_base, sessionmaker
+
+    Base = declarative_base()
+
+    class Account(Base):
+        __tablename__ = "accounts_mack_repro_fixed"
+        id = sa.Column(sa.Integer, primary_key=True)
+        credits = sa.Column(sa.Integer)
+        attack_drones = sa.Column(sa.Integer)
+
+    engine = sa.create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionFactory = sessionmaker(bind=engine, autoflush=False)
+
+    seed = SessionFactory()
+    seed.add(Account(id=1, credits=1000, attack_drones=0))
+    seed.commit()
+    seed.close()
+
+    # Session S == the ONE db session FastAPI injects for the whole request.
+    S = SessionFactory()
+
+    # get_current_player()-shaped unlocked pre-read.
+    player = S.query(Account).filter(Account.id == 1).first()
+    assert player.credits == 1000 and player.attack_drones == 0
+
+    # A concurrent request (separate session) completes a purchase in between.
+    concurrent = SessionFactory()
+    row = concurrent.query(Account).filter(Account.id == 1).first()
+    row.credits = 250        # spent 750 credits
+    row.attack_drones = 7    # bought 7 drones
+    concurrent.commit()
+    concurrent.close()
+
+    # The FIXED shape: populate_existing() chained ahead of with_for_update(),
+    # exactly as armory.py:204 / :329 ship today.
+    player2 = (
+        S.query(Account)
+        .filter(Account.id == 1)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+
+    assert player2 is player, (
+        "identity map still returns the SAME object -- expected: "
+        "populate_existing() refreshes attributes IN PLACE, it doesn't hand "
+        "back a different object. If this ever fails, the repro shape "
+        "itself has changed and the fresh-value assertion below needs "
+        "re-verifying independently of this identity check."
+    )
+    assert player2.credits == 250, (
+        f"expected FRESH credits=250 (proving the fix); got {player2.credits} -- "
+        "if this ever reads 1000, populate_existing() is NOT forcing a refresh "
+        "from the locked row, and the lost-update WO-MONEY-REREAD-CLASS was "
+        "meant to close is still live."
+    )
+    assert player2.attack_drones == 7, (
+        f"expected FRESH attack_drones=7 (proving the fix); got {player2.attack_drones}"
     )
 
     S.close()

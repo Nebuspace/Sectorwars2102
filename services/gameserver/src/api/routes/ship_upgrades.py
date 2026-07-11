@@ -397,7 +397,7 @@ async def purchase_ship(
         )
 
     # Lock the player row to prevent concurrent purchases double-spending credits
-    player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
 
     # Must be docked at a station
     if not player.is_docked or not player.current_port_id:
@@ -541,7 +541,7 @@ async def set_active_ship(
     except (ValueError, AttributeError, TypeError):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ship not found")
 
-    locked_player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    locked_player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
     ship = db.query(Ship).filter(Ship.id == ship_uuid, Ship.owner_id == player.id).first()
     if not ship:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ship not found")
@@ -628,7 +628,7 @@ async def purchase_ship_insurance(
         )
 
     # Lock the player row first (credits), then resolve + lock the ship row.
-    locked_player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    locked_player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
     ship = _resolve_owned_ship(ship_id, locked_player, db, lock=True)
 
     if ship.is_destroyed:
@@ -1017,7 +1017,7 @@ async def repair_ship_maintenance(
             detail=f"Invalid repair tier '{request.tier}'. Valid: basic, emergency, premium",
         )
 
-    locked_player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    locked_player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
     ship = _resolve_owned_ship(ship_id, locked_player, db, lock=True)
     if ship.is_destroyed:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{ship.name} is destroyed")

@@ -340,10 +340,12 @@ async def repair_player_ship(
     Charges the full restore-to-max cost atomically, then restores hull and
     shields to max via ShipService.repair_ship (Basic = full restore).
     """
-    # Lock the player row so the credit charge is race-safe.
+    # Lock the player row so the credit charge is race-safe. populate_existing()
+    # refreshes the identity-mapped object from the DB row under the lock —
+    # without it, get_current_player's earlier unlocked load is returned stale.
     locked_player = db.query(Player).filter(
         Player.id == player.id
-    ).with_for_update().first()
+    ).populate_existing().with_for_update().first()
 
     if not locked_player.is_docked or not locked_player.current_port_id:
         raise HTTPException(

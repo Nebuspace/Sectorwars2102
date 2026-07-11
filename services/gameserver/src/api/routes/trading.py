@@ -529,7 +529,7 @@ async def buy_resource(
 
     # Lock player row to prevent race conditions on concurrent trades
     # (after the station lock — see lock-order note above)
-    current_player = db.query(Player).filter(Player.id == current_player.id).with_for_update().first()
+    current_player = db.query(Player).filter(Player.id == current_player.id).populate_existing().with_for_update().first()
 
     # Get current ship
     current_ship = db.query(Ship).filter(
@@ -874,7 +874,7 @@ async def sell_resource(
 
     # Lock player row to prevent race conditions on concurrent trades
     # (after the station lock — see lock-order note above)
-    current_player = db.query(Player).filter(Player.id == current_player.id).with_for_update().first()
+    current_player = db.query(Player).filter(Player.id == current_player.id).populate_existing().with_for_update().first()
 
     # Get current ship
     current_ship = db.query(Ship).filter(
@@ -1357,7 +1357,7 @@ async def dock_at_station(
 
     # Lock player row to prevent concurrent turn deduction races
     # (after the station lock — see lock-order note above)
-    current_player = db.query(Player).filter(Player.id == current_player.id).with_for_update().first()
+    current_player = db.query(Player).filter(Player.id == current_player.id).populate_existing().with_for_update().first()
 
     # ADR-0004: continuous lazy regen — refill the pool for real elapsed time
     # inside the row lock, BEFORE the affordability check, so docking is never
@@ -1553,7 +1553,7 @@ async def undock_from_port(
     UNDOCKING_TURN_COST = 1
 
     # Lock player row to prevent concurrent turn deduction races
-    current_player = db.query(Player).filter(Player.id == current_player.id).with_for_update().first()
+    current_player = db.query(Player).filter(Player.id == current_player.id).populate_existing().with_for_update().first()
 
     # ADR-0004: continuous lazy regen before the affordability check.
     regenerate_turns(db, current_player)

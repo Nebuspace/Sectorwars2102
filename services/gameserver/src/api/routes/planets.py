@@ -388,7 +388,7 @@ async def claim_planet(
 
     # Lock the player row to prevent concurrent credit races
     # (mirrors trading.py's with_for_update pattern)
-    player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
 
     # Founding-grant fee: "10,000 credits investment (the founding-grant fee
     # paid to the destination claim)" — colonization.md, Traditional colonization
@@ -687,7 +687,7 @@ async def abandon_planet_route(
         )
 
     # Re-read the player under a row lock to mutate landed-state safely.
-    player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
 
     try:
         result = abandonment_service.abandon_planet(db, planet, player)
@@ -743,7 +743,7 @@ async def reclaim_planet_route(
     if not planet:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Planet not found")
 
-    player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
     ship = (
         db.query(Ship)
         .filter(Ship.id == player.current_ship_id, Ship.owner_id == player.id)
@@ -945,7 +945,7 @@ async def transfer_colonists(
     # ship/planet pair (mirrors trading.py's with_for_update pattern).
     # Same lock_timeout (set LOCAL above) applies — fail fast, don't hang.
     try:
-        player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+        player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
     except OperationalError:
         db.rollback()
         raise HTTPException(
@@ -2052,7 +2052,7 @@ async def cancel_terraforming(
 
     # Lock the player row to prevent concurrent credit races on the refund
     # (mirrors the claim route's with_for_update pattern)
-    player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
 
     from src.services.terraforming_service import TerraformingService
     service = TerraformingService(db)

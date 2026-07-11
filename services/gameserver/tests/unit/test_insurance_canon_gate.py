@@ -115,6 +115,16 @@ class _FakeQuery:
     def filter(self, *a: Any, **k: Any) -> "_FakeQuery":
         return self
 
+    def populate_existing(self, *a: Any, **k: Any) -> "_FakeQuery":
+        # WO-MONEY-REREAD-CLASS chained .populate_existing() onto
+        # ship_upgrades.py's locked Player re-read (:631) to fix identity-map
+        # staleness (mack's project memory: unlocked-pre-check-poisons-
+        # identity-map). This fixed-result fake has no identity map to
+        # refresh -- passthrough keeps it a no-op, matching the real
+        # chainable-query API shape so route code that now calls it doesn't
+        # AttributeError.
+        return self
+
     def with_for_update(self, *a: Any, **k: Any) -> "_FakeQuery":
         return self
 

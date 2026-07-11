@@ -201,7 +201,7 @@ async def purchase_armory_item(
 
     # Lock the player row to prevent concurrent purchases double-spending
     # credits or overshooting loadout caps
-    player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
 
     # Must be docked at a station
     if not player.is_docked or not player.current_port_id:
@@ -326,7 +326,7 @@ async def deploy_mines(
     """
     from src.models.sector import Sector
 
-    player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
 
     if player.is_docked or player.is_landed:
         raise HTTPException(

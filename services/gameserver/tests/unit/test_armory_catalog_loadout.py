@@ -44,6 +44,15 @@ class _FakeQuery:
     def filter(self, *a, **k):
         return self
 
+    def populate_existing(self, *a, **k):
+        # WO-MONEY-REREAD-CLASS chained .populate_existing() onto armory.py's
+        # locked Player re-reads (:204/:329) to fix identity-map staleness
+        # (mack's project memory: armory-purchase-player-reread-stale). This
+        # flat Model -> row fake has no identity map to refresh -- passthrough
+        # keeps it a no-op here, matching the real chainable-query API shape
+        # so route code that now calls it doesn't AttributeError.
+        return self
+
     def with_for_update(self, *a, **k):
         return self
 

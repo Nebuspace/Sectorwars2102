@@ -267,8 +267,10 @@ async def load_batch(
         raise HTTPException(status_code=404, detail="Contract not found")
 
     # Lock player first, then the contract row (leaf), serializing concurrent
-    # loads on the same contract.
-    locked_player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    # loads on the same contract. populate_existing() refreshes the identity-
+    # mapped object from the DB row under the lock — without it, the earlier
+    # unlocked load from get_current_player is returned stale.
+    locked_player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
     contract = (
         db.query(MigrationContract)
         .filter(
