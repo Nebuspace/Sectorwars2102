@@ -6,6 +6,7 @@ import ConstructionVenue from './ConstructionVenue';
 import PortOfficeVenue from './PortOfficeVenue';
 import ContractBoardVenue from './ContractBoardVenue';
 import { InsuranceManager, MaintenanceManager, ModuleGridInterface, TIER_LABEL } from '../ships';
+import { getStationClassInfo } from '../common/stationIdentity';
 import { shipAPI } from '../../services/api';
 import { formatCredits } from '../../utils/formatters';
 import './spacedock.css';
@@ -100,21 +101,48 @@ interface ArmoryLoadout {
   };
 }
 
-// Station class display labels (trading classification 0-11)
-const CLASS_LABELS: Record<number, string> = {
-  0: 'Sol Hub',
-  1: 'Mining Operation',
-  2: 'Agricultural Center',
-  3: 'Industrial Hub',
-  4: 'Distribution Center',
-  5: 'Collection Hub',
-  6: 'Mixed Market',
-  7: 'Resource Exchange',
-  8: 'Black Hole Exchange',
-  9: 'Nova Market',
-  10: 'Luxury Market',
-  11: 'Premium Tech Hub'
+// Per-STATION-CLASS static greeter, keyed by the same numeric class as
+// stationIdentity.tsx's STATION_CLASSES (WO-UI3-CONCIERGE). Tone is drawn
+// from sw2102-docs/FEATURES/economy/haggling.md's "Port personality types"
+// table (Federation/Border/Frontier/Luxury/Black Market archetypes, matched
+// to a class by that table's "Found at" column where it names an exact
+// class, otherwise the closest-fit archetype for that class range) plus the
+// class's own trade-pattern blurb. STATIC text/art only — no LLM, no
+// backend call; narrative haggling (the LLM-driven trader dialogue) is
+// 📐 design-only in canon and explicitly out of scope here.
+const STATION_GREETERS: Record<number, string> = {
+  // Federation core (Class 0-4 per haggling.md) — formal, procedural.
+  0: '"Welcome to Sol Hub, pilot — humanity\'s gateway. Papers in order? Right this way; the manifest desk is ready when you are."',
+  // Border archetype — economic, mutual-benefit framing.
+  1: '"Ore\'s the currency out here. Fill your hold and we\'ll make the trip worth it — organics and equipment waiting on the racks."',
+  2: '"Fresh off the hydro-domes and ready to trade. Bring ore, take organics — fair weight, fair price, same as always."',
+  // Federation-adjacent, procedural.
+  3: '"Fabrication bay\'s running hot. Equipment orders go on the manifest — queue at the desk and we\'ll have your parts crated by shift\'s end."',
+  4: '"We cross-dock exotic tech through here daily — ore, organics, equipment, fuel, all logged and cleared. State your manifest and we\'ll route you through."',
+  // Border archetype continues through the mid classes.
+  5: '"We take in raw and refined alike — ore, organics, equipment, fuel — and pay out in the finer stock. Everyone walks away ahead."',
+  6: '"A little of everything moves through here. Ore and organics in, equipment and fuel out — no fuss, no surprises."',
+  // Frontier archetype (outer rim, low faction control) — personal, blunt.
+  7: '"Out this far you learn to trust the scales, not the flag on your hull. Equipment and fuel for ore and organics — square deal, no questions."',
+  // Black Market archetype — exact match, Class 8 in canon. Risk/discretion.
+  8: '"Everything moves through the Hole at a premium, and nobody asks where it came from. We both walk away with nothing in writing."',
+  // Not in the canon table directly; volatile-market urgency befitting a
+  // stellar-proximity exchange that sells everything at a premium.
+  9: '"Prices run hot this close to the flare, pilot. Everything sells at a premium here — buy now or buy later at a worse rate."',
+  // Luxury archetype — exact match, Class 10 in canon. Exclusive, prestige.
+  10: '"Welcome to the Market, pilot — mind the display cases. Gourmet stock in, luxury goods and exotic tech out. Taste is the only currency that matters here."',
+  // Federation-adjacent, precision/tech formality.
+  11: '"Exotic tech in, precision components out — every unit certified before it leaves this bay. State your order and we\'ll begin calibration."',
 };
+
+// Fallback for stations with no recognized class (legacy/unclassified data) —
+// same tone as the pre-WO generic line.
+const DEFAULT_GREETER = 'Welcome aboard. Choose a destination to access this station’s services.';
+
+function getStationGreeting(stationClass?: number | null): string {
+  if (stationClass == null) return DEFAULT_GREETER;
+  return STATION_GREETERS[stationClass] ?? DEFAULT_GREETER;
+}
 
 // Service flags worth surfacing in the hub header, with display icons
 const SERVICE_ICONS: Array<{ key: string; icon: string; label: string }> = [
@@ -1765,7 +1793,8 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
     const stationClass = currentStation?.station_class;
     const tagline = currentStation?.is_spacedock
       ? 'Premier Trading & Construction Facility'
-      : (stationClass != null && CLASS_LABELS[stationClass]) || 'Orbital Trading Station';
+      : getStationClassInfo(stationClass)?.name || 'Orbital Trading Station';
+    const greeting = getStationGreeting(stationClass);
 
     const status = currentStation?.status;
     const statusLabel = status
@@ -1814,22 +1843,10 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
               </div>
             )}
           </div>
-          {onUndock && (
-            <button
-              className="hub-undock-btn"
-              onClick={onUndock}
-              disabled={helmBusy}
-              aria-disabled={helmBusy}
-              aria-label={helmBusy ? 'Undock unavailable — helm is busy' : 'Undock and launch into space'}
-              title="Undock and launch into space"
-            >
-              {helmBusy ? '🚀 LAUNCHING…' : '🚀 UNDOCK & LAUNCH'}
-            </button>
-          )}
         </div>
 
         <div className="hub-welcome">
-          <p>Welcome aboard. Choose a destination to access this station&apos;s services.</p>
+          <p>{greeting}</p>
         </div>
 
         <div className="venues-grid">
@@ -3381,17 +3398,18 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
 
   return (
     <div className="spacedock-interface">
-      {/* Persistent UNDOCK (WO-UI3-STATION-MODE): the hub's own
-          `.hub-undock-btn` (renderHub, above) only exists in the 'hub'
-          venue — every other venue (shipyard/armory/services/mining/
-          gambling/trading/genesis/construction/portoffice/contracts) had NO
-          undock at all. A single instance in the OUTER FRAME, sibling to
-          `renderActiveVenue()`, is reachable from every venue including the
-          hub (the hub's own button still renders too — deliberately not
-          de-duped here, see WO-UI3-STATION-MODE: renderHub's internals are
-          CONCIERGE's region, sequenced after this WO). Reuses
-          `.hub-undock-btn`'s visual treatment; `.station-face-undock`
-          (spacedock.css) only adds the fixed corner placement. */}
+      {/* Persistent UNDOCK (WO-UI3-STATION-MODE, de-duped by WO-UI3-CONCIERGE):
+          originally the hub's own `renderHub()` rendered a second
+          `.hub-undock-btn` inline in its header — every other venue
+          (shipyard/armory/services/mining/gambling/trading/genesis/
+          construction/portoffice/contracts) had NO undock at all, so
+          STATION-MODE added this single instance in the OUTER FRAME,
+          sibling to `renderActiveVenue()`, reachable from every venue.
+          renderHub's own copy was removed once this one covered the hub
+          view too, so exactly ONE undock button now exists anywhere in
+          this component. Reuses `.hub-undock-btn`'s visual treatment;
+          `.station-face-undock` (spacedock.css) only adds the fixed corner
+          placement. */}
       {onUndock && (
         <button
           type="button"

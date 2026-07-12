@@ -143,8 +143,13 @@
   font-size: 0.8em;
 }
 
+/* Per-station-class greeter line (WO-UI3-CONCIERGE) is in-character trader
+   dialogue, quoted in the greeter map itself — italic matches the codebase's
+   existing flavor-text convention (e.g. .bm-registry-desc, .bm-warning-text
+   in this same file). */
 .hub-welcome p {
   margin: 0;
+  font-style: italic;
 }
 
 /* On short viewports (e.g. 1440x900) the hub's fixed chrome leaves the

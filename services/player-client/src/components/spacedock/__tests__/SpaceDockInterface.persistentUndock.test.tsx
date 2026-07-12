@@ -11,12 +11,10 @@
  *
  * Fix: a single `.station-face-undock` instance now renders in the OUTER
  * FRAME (sibling to `renderActiveVenue()`, SpaceDockInterface.tsx's final
- * `return`), so it survives every `activeVenue` switch. Deliberately NOT
- * de-duped against the hub's own `.hub-undock-btn` (see the WO's own
- * comment at the outer-frame call site) — renderHub()'s internals are
- * CONCIERGE's region, sequenced after this WO, so both instances coexist on
- * the hub view; this suite only asserts the persistent one is present in
- * BOTH states.
+ * `return`), so it survives every `activeVenue` switch. WO-UI3-CONCIERGE
+ * removed renderHub()'s own inline `.hub-undock-btn` once this outer-frame
+ * instance covered the hub view too, so exactly ONE undock button now
+ * exists anywhere in the component, on every venue including the hub.
  *
  * Mount target: gambling (`renderGamblingHall`) — the one venue that is
  * ALWAYS available (no stationServices gate) and renders fully inline (no
@@ -85,7 +83,7 @@ describe('SpaceDockInterface — persistent UNDOCK survives a venue switch (WO-U
     errorSpy.mockRestore();
   });
 
-  it('renders on the hub view (alongside the hub-only button)', async () => {
+  it('renders on the hub view as the ONE AND ONLY undock button (WO-UI3-CONCIERGE de-dupe)', async () => {
     await act(async () => {
       root.render(<SpaceDockInterface onUndock={onUndock} helmBusy={false} />);
     });
@@ -93,6 +91,9 @@ describe('SpaceDockInterface — persistent UNDOCK survives a venue switch (WO-U
     const persistent = container.querySelector('.station-face-undock');
     expect(persistent).not.toBeNull();
     expect(persistent?.textContent).toContain('UNDOCK & LAUNCH');
+    // renderHub() used to render its own second `.hub-undock-btn` inline —
+    // confirm it's gone: exactly one element carries the class anywhere.
+    expect(container.querySelectorAll('.hub-undock-btn').length).toBe(1);
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
