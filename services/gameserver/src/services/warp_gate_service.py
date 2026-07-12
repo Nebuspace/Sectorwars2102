@@ -1658,11 +1658,46 @@ def list_player_projects(db: Session, player: Player) -> List[Dict[str, Any]]:
     return projects
 
 
-def list_sector_structures(db: Session, sector_number: int) -> Dict[str, Any]:
+def _beacon_expired_readonly(db: Session, beacon: WarpGateBeacon, now: datetime) -> bool:
+    """Pure predicate mirroring ``_lazy_expire_beacon``'s expiry condition,
+    WITHOUT the write (no ``beacon.status`` mutation, no flush) — the read
+    query it runs (counting in-progress gates) is a plain SELECT, safe for
+    a genuinely read-only caller. Used by ``list_sector_structures(...,
+    read_only=True)`` so a display fetch shows an accurate PREVIEW of
+    beacon expiry without persisting it (mirrors the existing
+    ``salvage_service.grace_status`` live-preview idiom -- advisory, not a
+    lock-in; the real expiry flip still happens on the next write-capable
+    visit to this route)."""
+    if beacon.invulnerable_until is None or _aware(now) < _aware(beacon.invulnerable_until):
+        return False
+    in_progress = (
+        db.query(WarpGate)
+        .filter(
+            WarpGate.beacon_id == beacon.id,
+            WarpGate.status.in_([WarpGateStatus.HARMONIZING, WarpGateStatus.ACTIVE]),
+        )
+        .count()
+    )
+    return not in_progress
+
+
+def list_sector_structures(db: Session, sector_number: int, *, read_only: bool = False) -> Dict[str, Any]:
     """Beacons and active outbound gates visible in a sector (gates are
-    'visible to all in source sector' per canon). Lazily advances first."""
+    'visible to all in source sector' per canon). Lazily advances first.
+
+    ``read_only=True`` (WO-UI2-INTRASYSTEM-MODEL REVISE) skips the
+    harmonization ADVANCE and the beacon-expiry WRITE entirely -- a display
+    fetch must never pace either progress mechanic. A HARMONIZING gate past
+    its completion timer, or a DEPLOYED beacon past its expiry window, keeps
+    showing its current persisted state until a normal, write-capable call
+    to this route (``read_only=False``, the default -- used unchanged by
+    ``GET /warp-gates/sector/{sector_id}``) visits and settles it; the
+    beacon side additionally applies a pure, non-writing expiry PREVIEW
+    (``_beacon_expired_readonly``) so an obviously-expired beacon isn't
+    shown as still deployed even though nothing gets persisted."""
     now = datetime.now(UTC)
-    advance_gates_touching_sector(db, sector_number, now)
+    if not read_only:
+        advance_gates_touching_sector(db, sector_number, now)
 
     beacon_rows = (
         db.query(WarpGateBeacon)
@@ -1674,9 +1709,13 @@ def list_sector_structures(db: Session, sector_number: int) -> Dict[str, Any]:
     )
     beacons = []
     for beacon in beacon_rows:
-        _lazy_expire_beacon(db, beacon, now)
-        if beacon.status != WarpGateBeaconStatus.DEPLOYED:
-            continue
+        if read_only:
+            if _beacon_expired_readonly(db, beacon, now):
+                continue
+        else:
+            _lazy_expire_beacon(db, beacon, now)
+            if beacon.status != WarpGateBeaconStatus.DEPLOYED:
+                continue
         owner = db.query(Player).filter(Player.id == beacon.player_id).first()
         destination = _sector_by_number(db, beacon.destination_sector_id)
         beacons.append({

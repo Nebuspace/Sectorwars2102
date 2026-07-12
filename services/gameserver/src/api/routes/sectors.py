@@ -5,6 +5,20 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 
+# WO-UI2-INTRASYSTEM-MODEL (REVISE): the unified /contents endpoint below
+# must be genuinely READ-ONLY (orchestrator ruling) -- it assembles its union
+# from the underlying READ services directly, NEVER the 4 fragments' own
+# ROUTE functions (those pace progress mechanics: discovery marks, gate-
+# harmonization ADVANCE). Only FormationResponse/SectorStructuresResponse
+# (plain Pydantic models, no side effects) are imported from the sibling
+# route modules; get_current_sector/get_sector_structures are NOT imported
+# here anymore. Module-level so tests can monkeypatch
+# ``sectors_routes.generate_system`` / ``sectors_routes.warp_gate_service``
+# the same way this file's other routes are monkeypatched elsewhere in the
+# suite (e.g. the frozen-datetime fixture). Neither player.py nor
+# warp_gates.py imports anything from this module, so no circular-import risk.
+from src.api.routes.player import FormationResponse
+from src.api.routes.warp_gates import SectorStructuresResponse
 from src.auth.dependencies import get_current_player
 from src.core.database import get_db
 from src.models.cargo_wreck import CargoWreck
@@ -12,7 +26,7 @@ from src.models.planet import Planet
 from src.models.player import Player
 from src.models.sector import Sector
 from src.models.station import Station
-from src.services import salvage_service
+from src.services import salvage_service, warp_gate_service
 from src.services.celestial_service import generate_system
 
 router = APIRouter(
@@ -89,6 +103,53 @@ class SectorPlanetsResponse(BaseModel):
 
 class SectorStationsResponse(BaseModel):
     stations: List[StationResponse]
+
+
+class SectorHazards(BaseModel):
+    """Live environmental hazard reading for a sector (SectorResponse's
+    hazard_level/radiation_level -- api/routes/player.py -- grouped under
+    one key so the unified payload names it explicitly rather than leaving
+    two loose top-level numbers)."""
+    hazard_level: int
+    radiation_level: float
+
+
+class SectorContentsResponse(BaseModel):
+    """WO-UI2-INTRASYSTEM-MODEL -- the single-call union of the 5 sources
+    the player-client currently stitches together per sector: the static
+    celestial system (GET /sectors/{id}/system), live ship presence +
+    hazards + special-formations (GET /player/current-sector), salvageable
+    wrecks (GET /sectors/{id}/wrecks), and warp-gate structures
+    (GET /warp-gates/sector/{id}). The static-system fields below are named
+    to match SystemSnapshot (player-client SolarSystemViewscreen.tsx)
+    exactly, so a later FE pass can adopt this payload directly.
+
+    The star/nebula/belt/debris/habitable_zone/bodies/stations fields are
+    passed through from GET /sectors/{id}/system as loosely-typed
+    Dict[str, Any] -- exactly as loose as that route's own
+    ``response_model=Dict[str, Any]`` -- rather than reimplementing a
+    stricter shape that isn't this endpoint's to own (celestial_service
+    controls it; rigidifying it here would risk silent drift the next time
+    that shape changes).
+    """
+    sector_id: int
+    sector_type: str | None = None
+    star: Dict[str, Any] | None = None
+    extra_stars: List[Dict[str, Any]] | None = None
+    nebula: Dict[str, Any] | None = None
+    belt: Dict[str, Any] | None = None
+    debris: Dict[str, Any] | None = None
+    habitable_zone: Dict[str, Any] | None = None
+    bodies: List[Dict[str, Any]] = []
+    stations: List[Dict[str, Any]] = []
+    # Live sector state (GET /player/current-sector passthrough).
+    live_ships: List[Any] = []
+    hazards: SectorHazards
+    formations: List[FormationResponse] = []
+    # Salvage (GET /sectors/{id}/wrecks passthrough).
+    wrecks: List[WreckResponse] = []
+    # Gate structures (GET /warp-gates/sector/{id} passthrough).
+    warp_gates: SectorStructuresResponse
 
 @router.get("/{sector_id}/planets", response_model=SectorPlanetsResponse)
 async def get_sector_planets(
@@ -326,3 +387,164 @@ async def salvage_wreck(
     killing-blow pilot are exempt) — the time cost applies regardless.
     """
     return salvage_service.salvage_wreck(db, player, request.wreck_id, request.quantity)
+
+
+def _enrich_players_present(db: Session, present: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Pure read: enriches NPC presence entries with LIVE activity/mission/
+    archetype (NPCCharacter query only, no write) -- lifted out of
+    get_sector_contents's body verbatim (same logic get_current_sector,
+    api/routes/player.py, applies inline) purely to keep the route's own
+    cyclomatic complexity readable; not a behavior change."""
+    npc_ids = [e.get("player_id") for e in present
+               if isinstance(e, dict) and e.get("is_npc") and e.get("player_id")]
+    if not npc_ids:
+        return present
+    from src.models.npc_character import NPCCharacter
+    npcs = db.query(NPCCharacter).filter(NPCCharacter.id.in_(npc_ids)).all()
+    by_id = {str(n.id): n for n in npcs}
+    enriched = []
+    for e in present:
+        if isinstance(e, dict) and e.get("is_npc"):
+            n = by_id.get(str(e.get("player_id")))
+            if n is not None:
+                e = dict(e)
+                act = n.current_activity
+                e["activity"] = (act.name if hasattr(act, "name") else str(act)) if act else None
+                e["mission"] = (n.daily_schedule or {}).get("mission") or "commerce"
+                e["archetype"] = n.archetype.name if n.archetype else None
+        enriched.append(e)
+    return enriched
+
+
+@router.get("/{sector_id}/contents", response_model=SectorContentsResponse)
+async def get_sector_contents(
+    sector_id: int,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """WO-UI2-INTRASYSTEM-MODEL (REVISE) -- the single unified, GENUINELY
+    READ-ONLY GET consolidating the 4 sector-contents sources the
+    player-client stitches together (SolarSystemViewscreen's SystemSnapshot
+    fetch, GameDashboard's players_present/special_formations/hazard props,
+    sectorWrecks, GatewrightPanel's warp-gate-structures fetch) into one
+    call, additively -- none of the 4 backing ROUTES are modified or called.
+
+    Orchestrator ruling: a display fetch must never pace a progress
+    mechanic. This endpoint assembles its union from the underlying READ
+    queries/services directly, deliberately bypassing every write those 4
+    routes normally perform as a side effect of being viewed:
+      - planet/feature discovery marks + the persisted-skeleton
+        first-visit INSERT (get_sector_system's celestial_service calls) --
+        replaced by generate_system(..., read_only=True), which sources the
+        skeleton via get_celestial_read_only (pure, deterministic
+        in-memory fallback -- see that function's docstring) instead of
+        get_or_create_celestial, and simply never calls
+        mark_planet_discovered/mark_feature_discovered at all.
+      - per-player formation discovery-flip (get_current_sector's
+        flip_formation_discovery + commit) -- replaced by reading
+        find_formations_for_sector + is_formation_known_to_player +
+        is_formation_investigated directly, exactly mirroring how
+        MoveOption.special_formations already discloses formations on
+        adjacent sectors WITHOUT discovering them (player.py's own
+        AvailableMovesResponse docstring: "viewing the move list does NOT
+        discover anything... an undiscovered formation here is withheld to
+        a generic, identity-less anomaly").
+      - gate-harmonization ADVANCE + beacon-expiry write
+        (get_sector_structures' list_sector_structures) -- replaced by
+        warp_gate_service.list_sector_structures(..., read_only=True),
+        which skips advance_gates_touching_sector entirely and applies a
+        pure, non-writing expiry PREVIEW instead of flipping beacon status.
+      - get_sector_wrecks is called AS-IS: confirmed already 100%
+        read-only (Sector + CargoWreck queries, salvage_service.grace_status
+        is itself a pure preview) -- no write to strip.
+
+    Net effect: a HARMONIZING gate whose timer already elapsed, or a
+    DEPLOYED beacon past its window, keeps showing its current persisted
+    state via THIS endpoint until a normal write-capable visit to the real
+    routes settles it -- the accepted tradeoff of "genuinely read-only".
+
+    Restricted to the player's OWN current sector (403 otherwise, RULED
+    KEEP): this is NOT a generic "peek at any sector" fetch -- live ship
+    presence/composition is disclosed only for the sector the player is
+    standing in, mirroring GET /player/current-sector's own fog-of-war
+    boundary. See monk's threat-rollup-static-only-security-precedent /
+    fog-of-war-bounds-endpoint-consolidation memory.
+    """
+    if sector_id != player.current_sector_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Sector contents are only available for your current sector.",
+        )
+
+    player_region_id = player.current_region_id
+    sector_query = db.query(Sector).filter(Sector.sector_id == sector_id)
+    if player_region_id:
+        sector_query = sector_query.filter(Sector.region_id == player_region_id)
+    else:
+        sector_query = sector_query.filter(Sector.region_id == None)  # noqa: E711
+    sector = sector_query.first()
+    if not sector:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Sector {sector_id} not found in your region",
+        )
+
+    # --- Static celestial system: read-only skeleton, zero discovery marks. ---
+    planets = db.query(Planet).filter(Planet.sector_uuid == sector.id).all()
+    stations = db.query(Station).filter(Station.sector_uuid == sector.id).all()
+    system = generate_system(db, sector, planets, stations, read_only=True)
+    # can_rename mirrors get_sector_system's own post-processing (a pure
+    # comparison, no write) so bodies carry the same field the FE expects.
+    pid = str(player.id)
+    for b in (system.get("bodies") or []):
+        if b.get("real"):
+            b["can_rename"] = (b.get("discovered_by") == pid)
+
+    # --- Live ships: sector.players_present + NPC enrichment (already
+    #     100% read-only in the source route -- NPCCharacter query only). ---
+    present = _enrich_players_present(db, sector.players_present or [])
+
+    # --- Formations: read without discovering (MoveOption precedent). ---
+    from src.services.special_formation_service import (
+        find_formations_for_sector,
+        is_formation_investigated,
+        is_formation_known_to_player,
+    )
+    formation_responses = []
+    for f in find_formations_for_sector(db, sector):
+        discovered = is_formation_known_to_player(db, player.id, f.id)
+        formation_responses.append(FormationResponse(
+            id=str(f.id),
+            is_discovered=discovered,
+            is_anchor=(f.anchor_sector_id == sector.id),
+            name=f.name if discovered else None,
+            type=(f.type.value if hasattr(f.type, 'value') else str(f.type)) if discovered else None,
+            is_investigated=is_formation_investigated(f) if discovered else False,
+        ))
+
+    # --- Wrecks: get_sector_wrecks is already read-only -- called as-is. ---
+    wrecks = await get_sector_wrecks(sector_id=sector_id, player=player, db=db)
+
+    # --- Warp-gate structures: read-only (no ADVANCE, no expiry write). ---
+    gates = warp_gate_service.list_sector_structures(db, sector_id, read_only=True)
+
+    return SectorContentsResponse(
+        sector_id=system.get("sector_id", sector_id),
+        sector_type=system.get("sector_type"),
+        star=system.get("star"),
+        extra_stars=system.get("extra_stars"),
+        nebula=system.get("nebula"),
+        belt=system.get("belt"),
+        debris=system.get("debris"),
+        habitable_zone=system.get("habitable_zone"),
+        bodies=system.get("bodies", []),
+        stations=system.get("stations", []),
+        live_ships=present,
+        hazards=SectorHazards(
+            hazard_level=sector.hazard_level,
+            radiation_level=sector.radiation_level,
+        ),
+        formations=formation_responses,
+        wrecks=wrecks,
+        warp_gates=SectorStructuresResponse(**gates),
+    )
