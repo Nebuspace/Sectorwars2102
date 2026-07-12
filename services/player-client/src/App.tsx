@@ -40,6 +40,9 @@ import GovernancePanel from './components/governance/GovernancePanel'
 const VistaLab    = import.meta.env.DEV ? lazy(() => import('./vista/lab/VistaLab'))    : null;
 const VistaProof  = import.meta.env.DEV ? lazy(() => import('./vista/lab/VistaProof'))  : null;
 const VistaParity = import.meta.env.DEV ? lazy(() => import('./vista/lab/VistaParity')) : null;
+// WO-UI0-PERSISTENT-SHELL lane B — dev-only geometry harness, same
+// DEV-gated dead-code-elimination as the Vista lab routes above.
+const LabShell    = import.meta.env.DEV ? lazy(() => import('./components/layouts/LabShell')) : null;
 
 interface ApiResponse {
   message?: string;
@@ -696,6 +699,9 @@ function App() {
               )}
               {import.meta.env.DEV && VistaParity && (
                 <Route path="/lab/vista-parity" element={<Suspense fallback={<div>Loading…</div>}><VistaParity /></Suspense>} />
+              )}
+              {import.meta.env.DEV && LabShell && (
+                <Route path="/lab/shell" element={<Suspense fallback={<div>Loading…</div>}><LabShell /></Suspense>} />
               )}
               <Route path="*" element={<MainApp />} />
                 </Routes>

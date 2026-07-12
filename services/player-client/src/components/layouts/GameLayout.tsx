@@ -16,6 +16,7 @@ import WelcomeBackToast from '../auth/WelcomeBackToast';
 import NpcCombatBanner from '../combat/NpcCombatBanner';
 import FirstSessionObjectives from '../onboarding/FirstSessionObjectives';
 import { useFirstSession } from '../onboarding/useFirstSession';
+import { ShellPresenceContext, useShellPresent } from './ShellContext';
 import './game-layout.css';
 import '../../styles/themes/cockpit-animations.css';
 import '../../styles/themes/cockpit-components.css';
@@ -128,6 +129,15 @@ const MFDAlertWiring: React.FC = () => {
 };
 
 const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
+  // ── Persistent-shell passthrough (WO-UI0-PERSISTENT-SHELL lane B) ────────
+  // If an ancestor shell already provides the cockpit chrome (shellPresent),
+  // a nested <GameLayout> call becomes a no-op — mirrors EmbeddedContext's
+  // HangarShell/ColonialShell pattern so two shells never nest. Dormant:
+  // shellPresent stays false everywhere until Lane A lands the persistent
+  // shell provider, so this early return never fires yet.
+  const shellPresent = useShellPresent();
+  if (shellPresent) return <>{children}</>;
+
   const { user } = useAuth();
   const { playerState, isLoading, isRefreshing, refreshPlayerState } = useGame();
   // const { currentTheme } = useTheme(); // Available for future use
@@ -238,7 +248,15 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
   }, [playerState?.is_docked, playerState?.is_landed]);
   const toggleWindshield = () => setWindshieldMin((m) => !m);
 
+  // ── Mode classes (WO-UI0-PERSISTENT-SHELL lane B, ADDITIVE per ruling D3) ─
+  // Layered alongside (never replacing) the legacy console-expand/windshield-
+  // min/landed-expanded classes above, which still drive the --band-h/
+  // --sidebar-w/--deck-h var math — this class carries no styling of its own
+  // yet. Landed wins over docked, matching today's landed-expanded precedence.
+  const mode = playerState?.is_landed ? 'mode-surface' : playerState?.is_docked ? 'mode-station' : 'mode-flight';
+
   return (
+    <ShellPresenceContext.Provider value={true}>
     <div className="game-layout-wrapper">
       {/* Cockpit-wide realtime medal toast: consumes the medal_awarded WS event
           so a freshly-earned decoration pops on any /game route. */}
@@ -260,7 +278,7 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
             .console-collapsed → the edge-toggle hides the console for an
             unobstructed scene (rail-peek retired; logout lives in the HUD). */}
         <div
-          className={`game-container${
+          className={`game-container ${mode}${
             playerState?.is_docked || playerState?.is_landed ? ' console-expand' : ''
           }${sidebarOpen ? '' : ' console-collapsed'}${
             windshieldMin && grounded ? ' windshield-min' : ''
@@ -346,6 +364,7 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
         </div>
       </div>
     </div>
+    </ShellPresenceContext.Provider>
   );
 };
 

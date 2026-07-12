@@ -82,7 +82,25 @@
    Magnitudes (--band-h / --console-w / the rail-vs-console split) are starting
    values for the Orchestrator's browser-prove tuning. */
 .game-container {
-  display: block;
+  /* WO-UI0-PERSISTENT-SHELL lane B (ADDITIVE, ruling D3): grid-template-areas
+     names the sidebar/windshield/deck/statusbar/teleprinter slots for the
+     persistent-shell Lane A to consume later. It is INERT today — every
+     current child of this container (.game-sidebar, .game-content) stays
+     `position: absolute` with its own explicit top/left/bottom/width (or
+     inset: 0), so none of them are placed into the grid by browsers (out-of-
+     flow items with no assigned grid-area use the container's own padding
+     box as their containing block, exactly as they did under `display: block`)
+     — switching to `display: grid` changes zero pixels. statusbar/teleprinter
+     are RESERVED + empty this WO (no child assigned to them; their `auto`
+     row tracks collapse to 0 with nothing in them). */
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr;
+  grid-template-rows: var(--band-h) 1fr auto auto;
+  grid-template-areas:
+    "windshield  windshield"
+    "sidebar     deck"
+    "statusbar   statusbar"
+    "teleprinter teleprinter";
   flex: 1;
   overflow: hidden;
   position: relative;

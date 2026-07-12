@@ -417,7 +417,11 @@ interface GameContextType {
   exploreCurrentLocation: () => Promise<void>;
 }
 
-const GameContext = createContext<GameContextType | undefined>(undefined);
+// Exported (additive, zero-behavior-change) so a dev-only harness can supply
+// a mocked value via <GameContext.Provider> — see LabShell.tsx
+// (WO-UI0-PERSISTENT-SHELL lane B). No existing consumer is affected; every
+// other usage still goes through useGame() below.
+export const GameContext = createContext<GameContextType | undefined>(undefined);
 
 export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const { user, isAuthenticated } = useAuth();
