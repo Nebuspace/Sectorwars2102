@@ -1,16 +1,17 @@
-/* LandingPage — neon "COLD START / IGNITION" static scaffold
-   (WO-LANDING-NEON sub-parts a+c). Authored fresh from the design-of-record
-   at audit/design-briefs/sw2102-landing-neon.html, NOT extracted from
-   App.css. Dark-only / not theme-reactive by design (ThemeProvider's
-   data-theme is irrelevant here) — every custom property and selector is
-   scoped under .landing-root so nothing leaks into, or in from, the rest of
-   the cockpit's global stylesheets.
+/* LandingPage — neon "COLD START / IGNITION" landing (WO-LANDING-NEON).
+   Authored fresh from the design-of-record at
+   audit/design-briefs/sw2102-landing-neon.html, NOT extracted from App.css.
+   Dark-only / not theme-reactive by design (ThemeProvider's data-theme is
+   irrelevant here) — every custom property and selector is scoped under
+   .landing-root so nothing leaks into, or in from, the rest of the
+   cockpit's global stylesheets.
 
-   The artifact's boot overlay, ignition flash, starfield canvas draw loop,
-   cursor-reactive reticle, hold-to-charge warp fill, and scroll-reveal
-   IntersectionObserver are intentionally NOT ported here — that's the
-   WO-LANDING-NEON (b) follow-up. This file renders the page's "already lit"
-   end-state. */
+   Sub-parts (a)+(c) shipped the static "already lit" structure. This pass
+   (sub-parts b+d) adds the boot overlay, ignition flash, starfield canvas
+   draw loop, cursor-reactive tooltip, hold-to-charge warp fill, and the
+   frame stroke-draw hero border. The artifact's `.rv` scroll-reveal
+   IntersectionObserver was NOT in this sub-part's enumerated scope and is
+   intentionally left unbuilt (see LandingPage.tsx's file-header note). */
 
 .landing-root {
   --landing-panel: rgba(11, 18, 32, 0.85);
@@ -167,6 +168,140 @@
   border-top: 0;
 }
 
+/* ---------- boot overlay (green phosphor cold-start) ---------- */
+.landing-boot {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: #02030a;
+  display: grid;
+  place-items: center;
+  font-family: var(--landing-mono);
+  color: var(--landing-green);
+  overflow: hidden;
+}
+.landing-boot.landing-boot-gone {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.6s 0.2s;
+}
+.landing-boot-crt {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(120% 88% at 50% 50%, transparent 52%, rgba(0, 0, 0, 0.9) 100%);
+  box-shadow: inset 0 0 200px rgba(0, 20, 6, 0.6);
+}
+.landing-boot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0) 0 2px, rgba(0, 40, 10, 0.25) 2px 4px);
+  animation: landing-roll 8s linear infinite;
+}
+.landing-boot-inner {
+  position: relative;
+  z-index: 2;
+  width: min(680px, 86vw);
+  padding: 24px;
+}
+.landing-boot-line {
+  white-space: pre-wrap;
+  text-shadow: 0 0 8px rgba(61, 255, 116, 0.6);
+  font-size: 0.86rem;
+  letter-spacing: 0.02em;
+  margin: 2px 0;
+  opacity: 0.92;
+  min-height: 1.2em;
+}
+.landing-boot-line.dim {
+  color: var(--landing-green-dim);
+}
+.landing-boot-aria {
+  color: #eafff0;
+  text-shadow: 0 0 12px rgba(61, 255, 116, 0.8);
+  margin-top: 14px;
+  font-size: 1rem;
+}
+.landing-caret {
+  display: inline-block;
+  width: 0.6ch;
+  background: var(--landing-green);
+  animation: landing-cbl 1s steps(1) infinite;
+}
+.landing-wake {
+  margin-top: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--landing-mono);
+  font-size: 0.9rem;
+  letter-spacing: 0.18em;
+  color: #02120a;
+  background: var(--landing-green);
+  border: none;
+  padding: 14px 26px;
+  border-radius: 6px;
+  cursor: pointer;
+  box-shadow: 0 0 24px rgba(61, 255, 116, 0.5);
+  animation: landing-wpulse 1.6s infinite;
+}
+.landing-wake:focus-visible {
+  outline: 2px solid var(--landing-cyan);
+  outline-offset: 2px;
+}
+.landing-skip {
+  position: absolute;
+  top: 20px;
+  right: 24px;
+  z-index: 3;
+  font-family: var(--landing-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.2em;
+  color: var(--landing-green-dim);
+  background: none;
+  border: 1px solid rgba(61, 255, 116, 0.3);
+  border-radius: 5px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+.landing-skip:hover {
+  color: var(--landing-green);
+}
+.landing-skip:focus-visible {
+  outline: 2px solid var(--landing-cyan);
+  outline-offset: 2px;
+}
+
+/* ---------- ignition flash ---------- */
+.landing-flash {
+  position: fixed;
+  inset: 0;
+  z-index: 99;
+  background: radial-gradient(circle at 50% 48%, #d6fbff, #22d3ee 30%, transparent 62%);
+  opacity: 0;
+  pointer-events: none;
+  animation: landing-flash-pulse 1.1s ease-out;
+}
+
+/* ---------- cursor-reactive ARIA tooltip ---------- */
+.landing-cursor-note {
+  position: fixed;
+  z-index: 50;
+  font-family: var(--landing-mono);
+  font-size: 0.66rem;
+  color: var(--landing-cyan);
+  background: rgba(6, 10, 20, 0.85);
+  border: 1px solid var(--landing-line-2);
+  border-radius: 6px;
+  padding: 5px 9px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s;
+  white-space: nowrap;
+  box-shadow: 0 0 12px rgba(0, 0, 0, 0.5);
+}
+
 /* ---------- top bar ---------- */
 .landing-topbar {
   position: sticky;
@@ -259,16 +394,48 @@
   overflow: hidden;
 }
 .landing-galaxy-canvas {
-  /* Static/inert placeholder backdrop — WO-LANDING-NEON (b) replaces this
-     with the starfield RAF draw loop. */
+  /* The starfield RAF draw loop (WO-LANDING-NEON (b)) draws to this canvas
+     for the component's whole lifetime -- it starts before the boot overlay
+     ever fades, invisible (opacity 0) so it's already moving the instant
+     .landing-galaxy-canvas-live reveals it. The ambient gradient wash stays
+     as a backdrop under the drawn stars/nodes (transparent clearRect lets it
+     show through) AND doubles as the entire visual for reduced-motion users
+     (whose draw loop never runs at all). */
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   z-index: 0;
+  opacity: 0;
+  transition: opacity 1s;
   background:
     radial-gradient(60% 70% at 65% 45%, rgba(34, 211, 238, 0.12), transparent 60%),
     radial-gradient(40% 50% at 30% 70%, rgba(176, 107, 255, 0.08), transparent 65%);
+}
+.landing-galaxy-canvas-live {
+  opacity: 1;
+}
+.landing-frame {
+  position: absolute;
+  inset: 18px;
+  width: calc(100% - 36px);
+  height: calc(100% - 36px);
+  z-index: 1;
+  pointer-events: none;
+}
+.landing-frame-rect {
+  fill: none;
+  stroke: rgba(34, 211, 238, 0.35);
+  stroke-width: 1.5;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+}
+.landing-frame-rect.landing-frame-drawn {
+  stroke-dashoffset: 0;
+  transition: stroke-dashoffset 900ms ease-in-out;
+}
+.landing-frame-rect.landing-frame-instant {
+  stroke-dashoffset: 0;
 }
 .landing-hero-grid {
   position: relative;
@@ -329,11 +496,24 @@
   padding: 16px 30px;
   border-radius: 10px;
   cursor: pointer;
+  overflow: hidden;
   box-shadow: 0 0 26px rgba(34, 211, 238, 0.4);
   transition: 0.2s;
 }
 .landing-warp:hover {
   transform: translateY(-2px);
+}
+.landing-warp-fill {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  opacity: 0.5;
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 200ms linear;
+}
+.landing-warp-label {
+  position: relative;
 }
 .landing-ghost {
   font-family: var(--landing-mono);
@@ -383,6 +563,8 @@
 .landing-feedline {
   padding: 4px 0;
   color: var(--landing-ink);
+  opacity: 0;
+  animation: landing-fin 0.5s forwards;
 }
 .landing-feedline-w {
   color: var(--landing-violet);
@@ -739,6 +921,36 @@
     opacity: 0;
   }
 }
+@keyframes landing-fin {
+  to {
+    opacity: 1;
+  }
+}
+@keyframes landing-roll {
+  to {
+    background-position: 0 200px;
+  }
+}
+@keyframes landing-wpulse {
+  0%,
+  100% {
+    box-shadow: 0 0 24px rgba(61, 255, 116, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 40px rgba(61, 255, 116, 0.85);
+  }
+}
+@keyframes landing-flash-pulse {
+  0% {
+    opacity: 0;
+  }
+  25% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0;
+  }
+}
 
 @media (max-width: 900px) {
   .landing-hero-grid {
@@ -790,5 +1002,14 @@
   .landing-root * {
     animation: none !important;
     transition: none !important;
+  }
+  /* Without this, .landing-feedline's opacity:0 base (paired with the
+     landing-fin animation above, neutralized by the blanket rule) would
+     leave every feed line permanently invisible -- the same latent bug the
+     design-of-record artifact has (its `.feedline{opacity:0;animation:fin
+     forwards}` + its own reduced-motion `*{animation:none}` rule never
+     explicitly restores `.feedline` opacity either). Fixed here. */
+  .landing-feedline {
+    opacity: 1;
   }
 }
