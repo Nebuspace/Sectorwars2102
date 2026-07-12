@@ -816,25 +816,39 @@ async def declare_war(
 ):
     """Declare war on another team. Requires team leader."""
     from src.models.team import Team
-    # Lock both teams to prevent concurrent war declaration races
-    team = db.query(Team).filter(Team.id == team_id).with_for_update().first()
+
+    # Parse + validate the target team ID BEFORE acquiring any lock -- an
+    # invalid id must never reach the lock stage at all.
+    target_id = request.target_team_id
+    try:
+        target_uuid = UUID(target_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail="Invalid target team ID")
+
+    # Cannot declare war on yourself -- checked before locking too, so a
+    # self-target never attempts to lock the same row twice.
+    if str(team_id) == target_id:
+        raise HTTPException(status_code=400, detail="Cannot declare war on your own team")
+
+    # Lock both teams in ASCENDING-id order (never caller-order) to avoid an
+    # AB-BA deadlock against fleet_service._lock_teams_ascending's ascending-
+    # id Team locks taken during a concurrent battle round -- mirrors that
+    # helper's own idiom exactly (WO-DECLARE-WAR-LOCK-ORDER).
+    locked = {}
+    for tid in sorted((team_id, target_uuid)):
+        row = db.query(Team).filter(Team.id == tid).populate_existing().with_for_update().first()
+        if row is not None:
+            locked[tid] = row
+
+    team = locked.get(team_id)
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
     if team.leader_id != current_player.id:
         raise HTTPException(status_code=403, detail="Only team leader can declare war")
 
-    # Lock target team
-    target_id = request.target_team_id
-    try:
-        target_team = db.query(Team).filter(Team.id == UUID(target_id)).with_for_update().first()
-    except (ValueError, AttributeError):
-        raise HTTPException(status_code=400, detail="Invalid target team ID")
+    target_team = locked.get(target_uuid)
     if not target_team:
         raise HTTPException(status_code=404, detail="Target team not found")
-
-    # Cannot declare war on yourself
-    if str(team_id) == target_id:
-        raise HTTPException(status_code=400, detail="Cannot declare war on your own team")
 
     # Store war declaration in member_roles JSONB (used as general metadata store)
     from sqlalchemy.orm.attributes import flag_modified
