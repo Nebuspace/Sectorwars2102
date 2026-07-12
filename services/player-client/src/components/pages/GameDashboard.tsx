@@ -6,7 +6,6 @@ import { useAutopilot } from '../../contexts/AutopilotContext';
 import { useFirstLogin } from '../../contexts/FirstLoginContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 // import { useTheme } from '../../themes/ThemeProvider'; // Available for future use
-import GameLayout from '../layouts/GameLayout';
 import TradingInterface from '../trading/TradingInterface';
 import SpaceDockInterface from '../spacedock/SpaceDockInterface';
 import PortOfficeVenue from '../spacedock/PortOfficeVenue';
@@ -2012,12 +2011,11 @@ const GameDashboard: React.FC = () => {
   }
 
   return (
-    <GameLayout>
+    <div className="game-dashboard cockpit-mode">
       {/* WO-INVERTED-L: the windshield band is ALWAYS present (the 34px
           green-bar collapse is retired). Docked/landed now EXPAND the console
           via .console-expand on the container (GameLayout), not by collapsing
           the scene — so .docked-min/.landed-min are no longer applied here. */}
-      <div className="game-dashboard cockpit-mode">
         {/* System Alerts - Float over cockpit */}
         {error && (
           <div className="cockpit-alert error">
@@ -3650,7 +3648,6 @@ const GameDashboard: React.FC = () => {
 
         {/* ARIA assistant is mounted globally in GameLayout for all /game routes */}
       </div>
-    </GameLayout>
   );
 };
 
