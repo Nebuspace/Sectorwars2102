@@ -17,6 +17,7 @@ import LoginForm from './components/auth/LoginForm'
 import RegisterForm from './components/auth/RegisterForm'
 import UserProfile from './components/auth/UserProfile'
 import OAuthCallback from './components/auth/OAuthCallback'
+import GameShellRoute from './components/layouts/GameShellRoute'
 import GameDashboard from './components/pages/GameDashboard'
 import GalaxyMap from './components/pages/GalaxyMap'
 import RankingPage from './components/pages/RankingPage'
@@ -636,61 +637,27 @@ function App() {
               <Route path="/oauth-callback" element={<OAuthCallback />} />
               <Route path="/debug" element={<DebugPage />} />
               <Route path="/test-auth" element={<TestAuthPage />} />
+              {/* WO-UI0-PERSISTENT-SHELL lane A — all /game/* pages nest under ONE
+                  layout route so GameShellRoute -> GameLayout mounts once and
+                  survives navigation between them (only the Outlet slot swaps).
+                  ProtectedRoute hoisted to the parent; children inherit the guard. */}
               <Route path="/game" element={
                 <ProtectedRoute>
-                  <GameDashboard />
+                  <GameShellRoute />
                 </ProtectedRoute>
-              } />
-              <Route path="/game/map" element={
-                <ProtectedRoute>
-                  <GalaxyMap />
-                </ProtectedRoute>
-              } />
-              <Route path="/game/team" element={
-                <ProtectedRoute>
-                  <TeamManager />
-                </ProtectedRoute>
-              } />
-              <Route path="/game/governance" element={
-                <ProtectedRoute>
-                  <GovernancePanel />
-                </ProtectedRoute>
-              } />
-              <Route path="/game/combat" element={
-                <ProtectedRoute>
-                  <CombatInterface />
-                </ProtectedRoute>
-              } />
-              <Route path="/game/planets" element={
-                <ProtectedRoute>
-                  <PlanetManager />
-                </ProtectedRoute>
-              } />
-              <Route path="/game/ships" element={
-                <ProtectedRoute>
-                  <ShipSelector />
-                </ProtectedRoute>
-              } />
-              <Route path="/game/player" element={
-                <ProtectedRoute>
-                  <PlayerInfo />
-                </ProtectedRoute>
-              } />
-              <Route path="/game/trading" element={
-                <ProtectedRoute>
-                  <TradingInterface />
-                </ProtectedRoute>
-              } />
-              <Route path="/game/ranking" element={
-                <ProtectedRoute>
-                  <RankingPage />
-                </ProtectedRoute>
-              } />
-              <Route path="/game/settings" element={
-                <ProtectedRoute>
-                  <SettingsPage />
-                </ProtectedRoute>
-              } />
+              }>
+                <Route index element={<GameDashboard />} />
+                <Route path="map" element={<GalaxyMap />} />
+                <Route path="team" element={<TeamManager />} />
+                <Route path="governance" element={<GovernancePanel />} />
+                <Route path="combat" element={<CombatInterface />} />
+                <Route path="planets" element={<PlanetManager />} />
+                <Route path="ships" element={<ShipSelector />} />
+                <Route path="player" element={<PlayerInfo />} />
+                <Route path="trading" element={<TradingInterface />} />
+                <Route path="ranking" element={<RankingPage />} />
+                <Route path="settings" element={<SettingsPage />} />
+              </Route>
               {import.meta.env.DEV && VistaLab && (
                 <Route path="/lab/vista" element={<Suspense fallback={<div>Loading Vista Lab…</div>}><VistaLab /></Suspense>} />
               )}
