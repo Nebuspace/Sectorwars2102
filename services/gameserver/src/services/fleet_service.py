@@ -851,6 +851,58 @@ class FleetService:
         attacker = locked_fleets.get(attacker_fleet_id)
         defender = locked_fleets.get(defender_fleet_id)
 
+        # Lock both participating Team rows too (WO-FLEET-TREASURY-LOCK
+        # sub-part (a) REVISION), HOISTED here -- right after the Fleet
+        # lock, BEFORE the fire loop below can reach
+        # _distribute_fleet_kill_rewards -> _lock_players_ascending.
+        #
+        # The un-hoisted shape (Team locked only inside _apply_battle_loot,
+        # at the END of the method) was a SHIP-BLOCKER, not a fast-follow:
+        # the 70%-loss battle-end threshold fires the SAME round a kill
+        # tallies, so the mid-round Player lock from the kill-reward path
+        # ALWAYS precedes the battle-end Team lock on that closing round --
+        # Player-then-Team, the REVERSE of team_service.py's own internal
+        # Team-then-Player order (deposit_to_treasury / withdraw_from_
+        # treasury / transfer_to_player) and this codebase's documented
+        # resource-before-player deadlock contract (trading.py:513,
+        # planet_grid.py:245, auth.py:549). A concurrent team-treasury call
+        # from a player who is also a kill-reward participant/target is a
+        # real, player-triggerable AB-BA deadlock on the ordinary attrition-
+        # ending path -- not an edge case. Hoisting the Team lock to HERE
+        # restores FleetBattle -> Fleet -> Team -> Player as this
+        # transaction's full, contract-compliant lock order.
+        #
+        # Accepted, deliberate cost: EVERY simulate_battle_round call now
+        # acquires both Team locks up front, not just the round that
+        # actually ends the battle -- an ordinary formation/damage round
+        # that never touches treasury still pays for this acquisition. That
+        # is the honest price of the deadlock contract; the alternative
+        # (locking Team only when the round happens to end) can't be made
+        # conditional without re-introducing the exact race this closes,
+        # since whether THIS round ends the battle is only known after the
+        # fire loop -- by which point a kill may have already locked Player.
+        #
+        # _apply_battle_loot's OWN _lock_teams_ascending call is left
+        # completely unchanged and still fires unconditionally on every
+        # path into it:
+        #   - Round path (here): by the time _apply_battle_loot runs, these
+        #     same Team rows are already held by THIS transaction -- its
+        #     call is a same-transaction re-acquisition, a Postgres no-op
+        #     (a transaction never blocks on its own held lock).
+        #   - Admin path (admin_fleets.intervene_in_battle -> _end_battle ->
+        #     _apply_battle_loot): never routes through this method, so
+        #     never locks a Player at all -- _apply_battle_loot's call is
+        #     the ONLY Team lock on that path, and with no Player lock
+        #     anywhere in that transaction there is no Player-before-Team
+        #     edge to guard against there.
+        team_ids = {
+            fleet.team_id
+            for fleet in (attacker, defender)
+            if fleet is not None and fleet.team_id is not None
+        }
+        if team_ids:
+            self._lock_teams_ascending(team_ids)
+
         # Get active ships (hull > 0, not destroyed)
         attacker_ships = self._get_active_fleet_ships(attacker)
         defender_ships = self._get_active_fleet_ships(defender)
@@ -1784,6 +1836,39 @@ class FleetService:
             "battle_ongoing": False,
         }
 
+    def _lock_teams_ascending(self, team_ids) -> Dict[UUID, Team]:
+        """Lock every Team row in one ascending-id pass — deterministic order,
+        mirroring ``_lock_fleets_ascending`` / ``_lock_players_ascending``'s
+        same N-row pattern (raw UUID ``<`` comparison order matches
+        Postgres's default UUID ordering).
+
+        WO-FLEET-TREASURY-LOCK sub-part (a): closes a treasury lost-update.
+        ``_apply_battle_loot`` used to read/write ``attacker.team.
+        treasury_credits`` / ``defender.team.treasury_credits`` through the
+        Fleet -> Team relationship completely UNLOCKED — the FleetBattle +
+        both Fleet FOR-UPDATE locks the caller holds (``simulate_battle_
+        round``) do not cover the FK-related Team rows. A concurrent
+        ``team_service.deposit_to_treasury`` / ``withdraw_from_treasury`` /
+        ``transfer_to_player`` call — which DOES lock its Team row via
+        ``with_for_update()`` before mutating ``treasury_<resource>`` via
+        ``setattr`` — could race this unlocked read/write and have its
+        committed delta silently clobbered by a stale-snapshot absolute
+        write from here (classic lost-update).
+
+        populate_existing() is required for the same reason as the sibling
+        helpers: forces the locked re-read to bypass the identity map and
+        pick up the live row rather than any Team snapshot already cached
+        on this session (e.g. from an earlier ``.team`` relationship
+        access), matching resupply_fleet's established WO-MONEY-REREAD-
+        SERVICES precedent.
+        """
+        locked: Dict[UUID, Team] = {}
+        for tid in sorted(team_ids):
+            team = self.db.query(Team).filter(Team.id == tid).populate_existing().with_for_update().first()
+            if team is not None:
+                locked[tid] = team
+        return locked
+
     def _apply_battle_loot(
         self,
         battle: FleetBattle,
@@ -1801,28 +1886,111 @@ class FleetService:
         idempotency guard — behavior is byte-identical to the inline block
         this replaces, not a redesign. Only ``_end_battle`` calls this, and
         only once ``battle.winner`` has already been decided.
-        """
-        if battle.winner == "attacker" and defender and defender.team:
-            loot = (defender.team.treasury_credits or 0) // 10
-            battle.credits_looted = loot
-            if attacker and attacker.team:
-                attacker.team.treasury_credits = (attacker.team.treasury_credits or 0) + loot
-            if loot > 0:
-                defender.team.treasury_credits = (defender.team.treasury_credits or 0) - loot
-                # WO-TT review HIGH: ledger the combat-loot treasury moves (same txn).
-                self._record_combat_loot(attacker, attacker.team if attacker else None, loot, won=True, battle=battle)
-                self._record_combat_loot(attacker, defender.team, loot, won=False, battle=battle)
 
-        elif battle.winner == "defender" and attacker and attacker.team:
-            loot = (attacker.team.treasury_credits or 0) // 10
+        WO-FLEET-TREASURY-LOCK sub-part (a): locks BOTH involved Team rows
+        (via ``_lock_teams_ascending``, off the raw ``Fleet.team_id`` FK —
+        not the ``.team`` relationship, so this never itself triggers an
+        unlocked relationship load before the lock, mirroring how
+        ``simulate_battle_round`` reads the raw fleet-id FKs off ``battle``
+        instead of its relationships) BEFORE any ``treasury_credits`` read
+        below. Gated on ``battle.winner`` being decisive (``"attacker"`` /
+        ``"defender"``): a drawn battle never read or wrote either Team row
+        even before this fix, so it locks nothing here either — no wasted
+        FOR-UPDATE acquisition on the no-op path. Same-team case (both
+        fleets' ``team_id`` equal — currently blocked at ``initiate_battle``,
+        kept defensive here since ``_end_battle`` is also reachable from the
+        admin force-winner path) dedupes to ONE lock: the ``team_ids`` set
+        collapses the duplicate id, so ``attacker_team`` and
+        ``defender_team`` below resolve to the SAME Team object and the
+        credit-then-debit nets to a wash on that one row — never a double
+        lock attempt on the same id.
+
+        NAIVE-SAFE — no upstream ``flush()`` needed ahead of this lock
+        (full caller trace, WO-FLEET-TREASURY-LOCK): every path that reaches
+        this method was audited for a PRIOR mutation of either Team row on
+        THIS session before the lock:
+          - Round path — ``simulate_battle_round`` -> ``_end_battle`` ->
+            here: ``simulate_battle_round`` locks FleetBattle + both Fleet
+            rows off raw FK ids and never assigns through ``.team``; its
+            calling route (``fleets.py`` ``POST .../simulate-round``) only
+            queries ``FleetBattle`` + ``FleetMember`` for the membership
+            check, never touches ``Team``.
+          - Admin path — ``admin_fleets.intervene_in_battle`` (``end_battle``
+            / ``force_winner`` actions) -> ``_end_battle`` -> here: reads
+            ``battle`` unlocked, sets ``battle.winner`` directly, and calls
+            straight into ``_end_battle`` — no Fleet or Team touched first.
+          - Mid-round callees on the round path (``_apply_damage_to_ship`` ->
+            ``_record_ship_casualty`` -> ``_distribute_fleet_kill_rewards``
+            -> ``bounty_service`` / ``personal_reputation_service`` /
+            ``grey_flag_service``) mutate Player/Bounty/Reputation rows, but
+            grepping every one of those modules plus this whole file turns
+            up ZERO ``Team`` touches outside this method's own four
+            ``treasury_credits`` assignments (the only other ``Team`` query
+            in fleet_service.py is ``create_fleet``'s unrelated existence
+            check, never reached from the battle chain).
+        So there is no pending-unflushed Team mutation for
+        ``populate_existing()`` to discard here — a plain locked re-read is
+        sufficient, matching ``_lock_fleets_ascending``'s own naive-safe
+        precedent.
+
+        LOCK-ORDERING (RESOLVED — WO-FLEET-TREASURY-LOCK REVISION): the
+        round path's Player-before-Team hazard flagged in the original
+        sub-part (a) build is CLOSED. ``simulate_battle_round`` now locks
+        both Team rows itself, HOISTED to right after its own Fleet lock —
+        see the comment block there — which is BEFORE the fire loop can
+        reach the mid-round kill-reward Player lock
+        (``_lock_players_ascending`` in ``_distribute_fleet_kill_rewards``).
+        That restores FleetBattle -> Fleet -> Team -> Player as the round
+        transaction's full order, matching ``team_service.py``'s own
+        Team-then-Player order (``deposit_to_treasury`` / ``withdraw_from_
+        treasury`` / ``transfer_to_player``) and this codebase's documented
+        resource-before-player deadlock contract. This method's own
+        ``_lock_teams_ascending`` call above is therefore, on the round
+        path, a same-transaction RE-acquisition of rows already held by the
+        hoist — a documented Postgres no-op (a transaction never blocks on
+        a lock it already holds), regardless of the fact that it runs after
+        the fire loop's Player lock in call order. On the admin path
+        (``admin_fleets.intervene_in_battle`` -> ``_end_battle`` -> here,
+        which never goes through ``simulate_battle_round`` and never locks
+        a Player), this call remains the ONLY Team lock, with no Player
+        edge to guard against there either.
+        """
+        # Only lock when the winner is decisive (attacker/defender) --
+        # matches the original code's own zero-Team-touch behavior on a
+        # draw (neither branch below fires), so a drawn battle never pays
+        # for a Team row lock it will never read or write.
+        team_ids = set()
+        if battle.winner in ("attacker", "defender"):
+            team_ids = {
+                fleet.team_id
+                for fleet in (attacker, defender)
+                if fleet is not None and fleet.team_id is not None
+            }
+        locked_teams = self._lock_teams_ascending(team_ids) if team_ids else {}
+        attacker_team = locked_teams.get(attacker.team_id) if attacker else None
+        defender_team = locked_teams.get(defender.team_id) if defender else None
+
+        if battle.winner == "attacker" and defender and defender_team:
+            loot = (defender_team.treasury_credits or 0) // 10
             battle.credits_looted = loot
-            if defender and defender.team:
-                defender.team.treasury_credits = (defender.team.treasury_credits or 0) + loot
+            if attacker and attacker_team:
+                attacker_team.treasury_credits = (attacker_team.treasury_credits or 0) + loot
             if loot > 0:
-                attacker.team.treasury_credits = (attacker.team.treasury_credits or 0) - loot
+                defender_team.treasury_credits = (defender_team.treasury_credits or 0) - loot
                 # WO-TT review HIGH: ledger the combat-loot treasury moves (same txn).
-                self._record_combat_loot(defender, defender.team if defender else None, loot, won=True, battle=battle)
-                self._record_combat_loot(defender, attacker.team, loot, won=False, battle=battle)
+                self._record_combat_loot(attacker, attacker_team if attacker else None, loot, won=True, battle=battle)
+                self._record_combat_loot(attacker, defender_team, loot, won=False, battle=battle)
+
+        elif battle.winner == "defender" and attacker and attacker_team:
+            loot = (attacker_team.treasury_credits or 0) // 10
+            battle.credits_looted = loot
+            if defender and defender_team:
+                defender_team.treasury_credits = (defender_team.treasury_credits or 0) + loot
+            if loot > 0:
+                attacker_team.treasury_credits = (attacker_team.treasury_credits or 0) - loot
+                # WO-TT review HIGH: ledger the combat-loot treasury moves (same txn).
+                self._record_combat_loot(defender, defender_team if defender else None, loot, won=True, battle=battle)
+                self._record_combat_loot(defender, attacker_team, loot, won=False, battle=battle)
 
     def _end_battle(self, battle: FleetBattle) -> Dict[str, Any]:
         """End a fleet battle and determine the winner.

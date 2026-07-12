@@ -257,7 +257,12 @@ class TestEndBattleIdempotent:
         make_member(fleet=attacker_fleet, ship=a_ship)  # attaches via back_populates
 
         battle = make_battle(attacker_fleet=attacker_fleet, defender_fleet=defender_fleet, battle_log=[])
-        session = make_session()
+        # Team must be seeded into the fake session's pool (WO-FLEET-
+        # TREASURY-LOCK): _apply_battle_loot now locks both Team rows via a
+        # genuine self.db.query(Team)...with_for_update() re-read instead of
+        # the old in-Python `.team` relationship access, so the fake session
+        # needs Team rows to resolve that query against.
+        session = make_session({Team: [attacker_team, defender_team]})
         svc = FleetService(db=session)
         return svc, session, battle, attacker_team, defender_team
 
