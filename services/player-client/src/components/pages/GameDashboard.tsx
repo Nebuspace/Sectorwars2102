@@ -16,6 +16,7 @@ import TacticalCard from '../tactical/TacticalCard';
 import SolarSystemViewscreen from '../tactical/SolarSystemViewscreen';
 import PlanetPortPair from '../tactical/PlanetPortPair';
 import NavigationMap from '../tactical/NavigationMap';
+import { chartToNavSectors } from '../tactical/navChartTransform';
 import QuantumDriveConsole from '../quantum/QuantumDriveConsole';
 import GatewrightPanel from '../gatewright/GatewrightPanel';
 import CommsMailbox from '../comms/CommsMailbox';
@@ -26,7 +27,7 @@ import CockpitColonyManagement from '../cockpit/CockpitColonyManagement';
 import type { ProductionLine } from '../cockpit/ProductionPanel';
 import type { PerColonistRates, ProdRole } from '../cockpit/CoupledColonistSliders';
 import SafeVaultPanel from '../cockpit/SafeVaultPanel';
-import { regionOwnerAPI } from '../../services/api';
+import { regionOwnerAPI, navAPI, type NavChartResponse } from '../../services/api';
 import apiClient from '../../services/apiClient';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { TurnsIcon } from '../icons/TurnsIcon';
@@ -907,6 +908,63 @@ const GameDashboard: React.FC = () => {
 
     return Array.from(byId.values());
   }, [currentSector, availableMoves]);
+
+  // Deep known-graph feed (WO-NAV-MULTIHOP-FEED sub-part b): GET /nav/chart
+  // returns the player's FULL known-space graph (visited ∪ corp-shared ∪
+  // current), scanner-bounded and node-capped by chartToNavSectors. Fetched
+  // on mount and refetched whenever the current sector changes (a warp/
+  // tunnel move can grow the known set). scannerRange is passed as
+  // `undefined` (util defaults to 12) -- neither ship.scanner_range nor
+  // ShipUpgradeService.effective_scanner_range is exposed anywhere in the
+  // player-client API surface today (grepped services/api.ts + contexts/),
+  // so there is no live client-side value to pass. On a failed refetch the
+  // PREVIOUS chart is kept rather than cleared -- still-valid known data,
+  // and the merge below always falls back to the unaffected 1-hop
+  // `navSectors` regardless of chart state, so the map is never blanked.
+  const [navChart, setNavChart] = useState<NavChartResponse | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    navAPI.getChart()
+      .then((chart) => { if (!cancelled) setNavChart(chart); })
+      .catch(() => { /* non-fatal -- keep last-known chart, see comment above */ });
+    return () => { cancelled = true; };
+  }, [currentSector?.sector_id]);
+
+  // Scanner-bounded BFS neighborhood + frontier ids, per chartToNavSectors.
+  // Frontier rendering is DEFERRED (orchestrator ruling) -- frontierIds is
+  // consumed only to EXCLUDE those nodes from the merge below, never to
+  // render them.
+  const { sectors: deepChartSectors, frontierIds } = useMemo(() => {
+    if (!navChart || !currentSector) {
+      return { sectors: [], frontierIds: [] as number[], truncated: false };
+    }
+    return chartToNavSectors(navChart, currentSector.sector_id);
+  }, [navChart, currentSector?.sector_id]);
+
+  // MERGE (not replace) the deep graph into the 1-hop navSectors feed.
+  // A literal replace would break Accept #4: /nav/chart classifies a
+  // player's UNVISITED adjacent destinations as frontier, so a fresh
+  // player's map would go nearly empty and unvisited-but-adjacent moves
+  // (still clickable via availableMoves) would vanish. The 1-hop entries
+  // are kept byte-for-byte (name/type), only their connected_sectors gets
+  // unioned with the deep graph's -- deeper nodes render (untraversable,
+  // since availableMoves only ever lists true 1-hop destinations) but the
+  // existing adjacency/click-to-move surface is untouched.
+  const mergedNavSectors = useMemo(() => {
+    const frontierSet = new Set(frontierIds);
+    const byId = new Map<number, { id: number; name: string; type?: string; connected_sectors: number[] }>();
+    navSectors.forEach(s => byId.set(s.id, { ...s, connected_sectors: [...s.connected_sectors] }));
+    deepChartSectors.forEach(s => {
+      if (frontierSet.has(s.id)) return; // frontier rendering deferred
+      const existing = byId.get(s.id);
+      if (existing) {
+        existing.connected_sectors = Array.from(new Set([...existing.connected_sectors, ...s.connected_sectors]));
+      } else {
+        byId.set(s.id, { id: s.id, name: s.name, type: s.type, connected_sectors: [...s.connected_sectors] });
+      }
+    });
+    return Array.from(byId.values());
+  }, [navSectors, deepChartSectors, frontierIds]);
 
   // Stable identity for the NavigationMap prop: an inline array literal would
   // be a new reference every render, re-running the map's node-init effect.
@@ -3281,7 +3339,7 @@ const GameDashboard: React.FC = () => {
                       {currentSector && (
                         <NavigationMap
                           currentSectorId={currentSector.sector_id}
-                          sectors={navSectors}
+                          sectors={mergedNavSectors}
                           availableMoves={affordableMoveIds}
                           moveCosts={moveCosts}
                           onNavigate={handleMove}
