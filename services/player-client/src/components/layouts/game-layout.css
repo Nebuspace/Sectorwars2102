@@ -319,6 +319,107 @@
   background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.015) 0%, rgba(0, 0, 0, 0.22) 100%);
 }
 
+/* SURFACE FACE (WO-UI4-SURFACE-MODE): unlike DOCKED, the WINDSHIELD RULING
+   (orchestrator-LOCKED) keeps the landed vista — `SolarSystemViewscreen
+   scene="landed"` is real type/habitability/citadel-aware content plus the
+   bespoke `.landed-expanded` 65%-band landmass enrichment, so it is NEVER
+   stripped here. Only the surrounding chrome (frame vignette + HUD-chip
+   skin, below) and the deck bezel change.
+
+   Deck: `.surface-face-workspace` is the mechanical bezel-swap sibling of
+   `.station-face-workspace` above — identical load-bearing grid-column/
+   grid-row placement math, same flat panel background, none of the CRT
+   `.monitor-bezel` rivets. Two landed branches converge on it:
+     - owned-colony (GameDashboard.tsx): the `.console-monitor.planetary-ops-
+       monitor.full-width` + `.monitor-bezel` wrapper is replaced by this
+       class directly (same mechanical swap DOCKED already got) — its
+       `.monitor-screen` child is salvaged verbatim.
+     - population-hub (GameDashboard.tsx wraps <PopulationCenterInterface/>
+       in this class): that component owns its own `.console-monitor
+       .population-center-monitor.full-width` + `.monitor-bezel` markup
+       internally (../planetary/population-center.css, out of this WO's file
+       scope) — the two rules below neutralize its inner bezel and stretch
+       it to fill the workspace PURELY IN CSS, so no other file needs
+       touching. Both converge on one visual result. */
+.game-container.mode-surface .surface-face-workspace {
+  position: relative;
+  grid-column: 1 / -1;
+  grid-row: 1 / -1;
+  min-width: 0;
+  min-height: 0;
+  max-height: 100%;
+  padding: 0.25rem;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  background-color: #1a1d24;
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.015) 0%, rgba(0, 0, 0, 0.22) 100%);
+}
+
+/* PopulationCenterInterface's OWN `.console-monitor` wrapper carries no
+   flex-grow of its own (base rule: display:flex; flex-direction:column;,
+   cockpit.css) — stretch it to fill `.surface-face-workspace`. No-op for
+   the owned-colony branch, which no longer renders a `.console-monitor` at
+   all (see GameDashboard.tsx). */
+.game-container.mode-surface .surface-face-workspace > .console-monitor {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* `.monitor-bezel` is a position:absolute, pointer-events:none decorative
+   overlay (cockpit.css) — safe to drop with zero layout impact and no
+   markup access, for the same reason DOCKED's bezel-swap could drop it
+   outright in JSX. */
+.game-container.mode-surface .surface-face-workspace .monitor-bezel {
+  display: none;
+}
+
+/* Windshield chrome restyle — frame vignette + HUD-chip skin swap to a warm
+   "surface" grammar (amber), distinct from the flight cockpit's cyan and
+   DOCKED's flat untinted panel. Scoped under `.game-container.mode-surface`
+   so FLIGHT's (and DOCKED's, though it never renders these) own `.windshield-
+   frame`/`.hud-overlay` skin is structurally unreachable — same class names,
+   different ancestor mode. Only the frame/chip CONTAINER is retinted; HUD
+   typography (`.hud-value`/`.hud-label`) is untouched — restyling the glass,
+   not the data readouts. */
+.game-container.mode-surface .windshield-frame::before {
+  background: radial-gradient(
+    ellipse at center,
+    transparent 55%,
+    rgba(60, 30, 0, 0.18) 82%,
+    rgba(40, 20, 0, 0.32) 100%
+  );
+}
+
+.game-container.mode-surface .frame-corner {
+  border-color: rgba(232, 163, 61, 0.35);
+}
+
+.game-container.mode-surface .hud-overlay {
+  background: rgba(20, 12, 4, 0.4);
+  border-color: rgba(232, 163, 61, 0.3);
+  box-shadow:
+    0 0 14px rgba(232, 163, 61, 0.14),
+    inset 0 1px 0 rgba(232, 163, 61, 0.08);
+}
+
+.game-container.mode-surface .hud-chip-tab {
+  border-color: rgba(232, 163, 61, 0.4);
+  color: rgba(232, 163, 61, 0.85);
+  /* Guaranteed legibility over the variable landform/sky/water backdrop —
+     the base .hud-chip-tab (cockpit.css) has no text-shadow to match, so
+     this is a dark drop-shadow, not a glow. Flight-cyan .hud-chip-tab
+     (cockpit.css:654) doesn't sit over a variable scene the same way and
+     is left untouched — a WO-UI4-SURFACE-MODE follow-up if it ever needs
+     one. */
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+.game-container.mode-surface .hud-chip-tab:hover {
+  background: rgba(232, 163, 61, 0.18);
+  color: #e8a33d;
+}
+
 /* CENTERED, prominent "Minimize Viewport" button — symmetric to
    .windshield-expand; shown only while the viewport is EXPANDED (grounded +
    windshieldMin=false). Anchored to the BOTTOM of the visual scene band using

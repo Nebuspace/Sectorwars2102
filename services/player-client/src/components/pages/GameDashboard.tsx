@@ -2610,19 +2610,32 @@ const GameDashboard: React.FC = () => {
             </div>
           ) : playerState?.is_landed && landedPlanet?.is_population_hub ? (
             /* LANDED ON A POPULATION HUB: the Capital Sector welcome +
-               Pioneer Office, not the generic owned-colony console. */
-            <PopulationCenterInterface planet={landedPlanet} />
+               Pioneer Office, not the generic owned-colony console.
+               `.surface-face-workspace` (WO-UI4-SURFACE-MODE, game-layout.css)
+               places it the same way the owned-colony branch below is placed;
+               PopulationCenterInterface owns its own `.console-monitor
+               .population-center-monitor.full-width` + `.monitor-bezel`
+               markup internally (out of this WO's file scope) — game-
+               layout.css neutralizes the bezel and stretches the console-
+               monitor to fill the workspace, purely in CSS, so this wrapper
+               is the only change needed here. */
+            <div className="surface-face-workspace">
+              <PopulationCenterInterface planet={landedPlanet} />
+            </div>
           ) : playerState?.is_landed ? (
-            /* LANDED STATE: Show Comprehensive Planetary Operations Terminal */
-            <div className="console-monitor planetary-ops-monitor full-width">
-              <div className="monitor-bezel">
-                <div className="bezel-corner tl"></div>
-                <div className="bezel-corner tr"></div>
-                <div className="bezel-corner bl"></div>
-                <div className="bezel-corner br"></div>
-              </div>
+            /* LANDED STATE: Show Comprehensive Planetary Operations Terminal.
+               `.surface-face-workspace` (WO-UI4-SURFACE-MODE) replaces the
+               flight-monitor bezel wrapper (`.console-monitor.planetary-ops-
+               monitor.full-width` + `.monitor-bezel` rivets, cockpit.css) —
+               the same mechanical swap DOCKED already got (WO-UI3-STATION-
+               MODE's `.station-face-workspace`). `.monitor-screen` and
+               everything inside it (CockpitColonyManagement included) is
+               salvaged verbatim, unchanged. */
+            <div className="surface-face-workspace">
               <div className="monitor-screen">
-                <div className="screen-hud-header">PLANETARY OPERATIONS COMMAND</div>
+                <div className="screen-hud-header" role="region" aria-label="Planetary Operations">
+                  <span role="heading" aria-level={2}>PLANETARY OPERATIONS COMMAND</span>
+                </div>
                 <div className="screen-hud-content planetary-ops-content">
                   {(() => {
                     const currentPlanet = planetsInSector?.find((p: any) => p.id === playerState?.current_planet_id);
