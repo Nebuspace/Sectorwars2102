@@ -15,6 +15,7 @@ import SolarSystemViewscreen from '../tactical/SolarSystemViewscreen';
 import PlanetPortPair from '../tactical/PlanetPortPair';
 import NavigationMap from '../tactical/NavigationMap';
 import { chartToNavSectors } from '../tactical/navChartTransform';
+import Galaxy3DRenderer from '../galaxy/Galaxy3DRenderer';
 import QuantumDriveConsole from '../quantum/QuantumDriveConsole';
 import GatewrightPanel from '../gatewright/GatewrightPanel';
 import CommsMailbox from '../comms/CommsMailbox';
@@ -31,6 +32,7 @@ import './game-dashboard.css';
 import './cockpit.css';
 import '../tactical/tactical-layout.css';
 import '../quantum/quantum-drive.css';
+import '../galaxy/styles/galaxy-3d.css';
 
 // Planet type icons (shared by the landed console and the claim ceremony)
 const PLANET_TYPE_ICONS: Record<string, string> = {
@@ -675,6 +677,11 @@ const GameDashboard: React.FC = () => {
   // ship type sees exactly the classic warp graph, no switch.
   const isWarpJumper = currentShip?.type === 'WARP_JUMPER';
   const [navMode, setNavMode] = useState<'graph' | 'quantum'>('graph');
+  // WARP GRAPH chart render mode -- 2D force-graph (NavigationMap, default)
+  // or 3D (Galaxy3DRenderer). Independent of navMode: only meaningful while
+  // navMode==='graph' (QUANTUM DRIVE has its own console, no chart to
+  // toggle) -- WO-UI2-CHART-MONITOR.
+  const [navChartMode, setNavChartMode] = useState<'2d' | '3d'>('2d');
 
   // SOLAR SYSTEM monitor mode (WO-UI2-DECK-MONITORS, was PLANETARY):
   // BODIES (the planet/station list, unchanged) or HAZARDS (sector
@@ -3083,6 +3090,40 @@ const GameDashboard: React.FC = () => {
                     />
                     {/* Destination plot row — sits in the NAV header for all ship types */}
                     <div className="nav-plot-row">
+                      {/* 2D/3D chart view toggle (WO-UI2-CHART-MONITOR) — only
+                          meaningful for the WARP GRAPH page; QUANTUM DRIVE has
+                          its own console with no chart to toggle. Two plain
+                          buttons (not DeckPageTabs) — no second ARIA tablist
+                          superimposed on the graph tabpanel's single
+                          screen-hud-content association. Reuses .nav-plot-btn
+                          verbatim; opacity is the only new (inline) styling,
+                          keeping this in-scope with zero CSS-file edits. */}
+                      {navMode === 'graph' && (
+                        <>
+                          <button
+                            type="button"
+                            className="nav-plot-btn"
+                            style={{ opacity: navChartMode === '2d' ? 1 : 0.45 }}
+                            aria-pressed={navChartMode === '2d'}
+                            aria-label="2D star chart view"
+                            onClick={() => setNavChartMode('2d')}
+                            title="2D star chart"
+                          >
+                            2D
+                          </button>
+                          <button
+                            type="button"
+                            className="nav-plot-btn"
+                            style={{ opacity: navChartMode === '3d' ? 1 : 0.45 }}
+                            aria-pressed={navChartMode === '3d'}
+                            aria-label="3D galaxy view"
+                            onClick={() => setNavChartMode('3d')}
+                            title="3D galaxy view"
+                          >
+                            3D
+                          </button>
+                        </>
+                      )}
                       <input
                         type="number"
                         className="nav-plot-input"
@@ -3171,18 +3212,34 @@ const GameDashboard: React.FC = () => {
                         </div>
                       )}
                       {currentSector && (
-                        <NavigationMap
-                          currentSectorId={currentSector.sector_id}
-                          sectors={mergedNavSectors}
-                          availableMoves={affordableMoveIds}
-                          moveCosts={moveCosts}
-                          onNavigate={handleMove}
-                          width={440}
-                          height={300}
-                          course={autopilot.course?.hops ?? null}
-                          currentHopIndex={autopilot.currentHopIndex}
-                          oneWayEdges={oneWayEdges}
-                        />
+                        navChartMode === '3d' ? (
+                          // Galaxy3DRenderer sources currentSector/availableMoves
+                          // itself via useGame() -- the rendered node set is
+                          // already {current} ∪ {warps} ∪ {tunnels}, the exact
+                          // same reachable domain as 2D's availableMoves, so
+                          // any non-current click is always a valid hop
+                          // (mirrors GalaxyMap.tsx's own onSectorSelect reuse).
+                          // .galaxy-3d-container fills 100% of this flex cell,
+                          // same height:100% chain NavigationMap's own wrapper
+                          // already relies on here -- no extra sizing wrapper.
+                          <Galaxy3DRenderer
+                            className="nav-3d-view"
+                            onSectorSelect={(sector) => handleMove(sector.sector_id)}
+                          />
+                        ) : (
+                          <NavigationMap
+                            currentSectorId={currentSector.sector_id}
+                            sectors={mergedNavSectors}
+                            availableMoves={affordableMoveIds}
+                            moveCosts={moveCosts}
+                            onNavigate={handleMove}
+                            width={440}
+                            height={300}
+                            course={autopilot.course?.hops ?? null}
+                            currentHopIndex={autopilot.currentHopIndex}
+                            oneWayEdges={oneWayEdges}
+                          />
+                        )
                       )}
                       {/* Course summary — total turns + progress; the old
                           ≤6-chip breadcrumb is retired in favor of the
