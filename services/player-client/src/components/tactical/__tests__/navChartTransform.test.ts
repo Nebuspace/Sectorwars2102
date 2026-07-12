@@ -93,7 +93,7 @@ describe('chartToNavSectors', () => {
     expect(infoSpy.mock.calls[0][0]).toContain('150');
   });
 
-  it('includes a frontier id as a stub node with type "frontier" and lists it in frontierIds', () => {
+  it('includes a frontier id as a stub node with type "frontier", linked one-way to its source, and lists it in frontierIds', () => {
     const c = chart(
       [sector(1, { current: true }), sector(2)],
       [{ from: 1, to: 2, kind: 'warp' }],
@@ -104,14 +104,17 @@ describe('chartToNavSectors', () => {
     const stub = result.sectors.find((s) => s.id === 99);
     expect(stub).toBeDefined();
     expect(stub?.type).toBe('frontier');
-    expect(stub?.connected_sectors).toEqual([]);
+    // One-directional spring back to its source (WO-NAV-CHART-POLISH) --
+    // not an empty array anymore.
+    expect(stub?.connected_sectors).toEqual([2]);
+    expect(stub?.depth).toBe(2); // source (2) is depth 1, stub is depth+1
     expect(result.frontierIds).toEqual([99]);
   });
 
-  it('skips frontier stubs when the depth cap excluded part of the known graph (unlinkable)', () => {
-    // Chain 1-2-3, current=1, depth cap 1 excludes sector 3 -- the known
-    // graph is no longer complete, so a frontier id can't be proven to
-    // hang off an included sector and must be skipped.
+  it('skips a frontier stub whose OWN source sector was excluded by the depth cap (unlinkable)', () => {
+    // Chain 1-2-3, current=1, depth cap 1 excludes sector 3 -- frontier id
+    // 99's source (3) didn't survive, so there's no sector to honestly
+    // attach it to.
     const c = chart(
       [sector(1, { current: true }), sector(2), sector(3)],
       [
@@ -125,25 +128,87 @@ describe('chartToNavSectors', () => {
     expect(result.frontierIds).toEqual([]);
   });
 
+  it('includes a frontier stub whose source SURVIVED the depth cap even though an unrelated sector was excluded (per-stub, not all-or-nothing)', () => {
+    // Chain 1-2-3, current=1, depth cap 1 excludes sector 3 (an UNRELATED
+    // sector). A frontier id hanging off sector 2 (which DID survive) must
+    // still render -- the old all-or-nothing heuristic would have skipped
+    // it just because sector 3 was truncated elsewhere in the graph.
+    const c = chart(
+      [sector(1, { current: true }), sector(2), sector(3)],
+      [
+        { from: 1, to: 2, kind: 'warp' },
+        { from: 2, to: 3, kind: 'warp' },
+      ],
+      [{ id: 99, from: 2 }]
+    );
+    const result = chartToNavSectors(c, 1, 1);
+    const stub = result.sectors.find((s) => s.id === 99);
+    expect(stub).toBeDefined();
+    expect(stub?.connected_sectors).toEqual([2]);
+    expect(result.frontierIds).toEqual([99]);
+  });
+
+  it('flags a known->known edge with no reverse entry as one-way, and excludes bidirectional pairs', () => {
+    const c = chart(
+      [sector(1, { current: true }), sector(2), sector(3)],
+      [
+        { from: 1, to: 2, kind: 'warp' }, // one-way
+        { from: 1, to: 3, kind: 'warp' },
+        { from: 3, to: 1, kind: 'warp' }, // bidirectional pair with the above
+      ]
+    );
+    const result = chartToNavSectors(c, 1);
+    expect(result.oneWayEdges).toEqual([{ from: 1, to: 2 }]);
+  });
+
+  it('excludes a one-way edge from oneWayEdges when either endpoint falls outside the BFS+cap', () => {
+    const c = chart(
+      [sector(1, { current: true }), sector(2), sector(3)],
+      [
+        { from: 1, to: 2, kind: 'warp' }, // one-way, both endpoints included
+        { from: 2, to: 3, kind: 'warp' }, // one-way, but 3 is beyond depth cap 1
+      ]
+    );
+    const result = chartToNavSectors(c, 1, 1);
+    expect(result.oneWayEdges).toEqual([{ from: 1, to: 2 }]);
+  });
+
+  it('assigns BFS hop-distance as depth on every included sector, current = 0', () => {
+    const sectors = [1, 2, 3].map((id) => sector(id, { current: id === 1 }));
+    const edges: NavChartEdge[] = [
+      { from: 1, to: 2, kind: 'warp' },
+      { from: 2, to: 3, kind: 'warp' },
+    ];
+    const c = chart(sectors, edges);
+    const result = chartToNavSectors(c, 1);
+    const byId = new Map(result.sectors.map((s) => [s.id, s]));
+    expect(byId.get(1)?.depth).toBe(0);
+    expect(byId.get(2)?.depth).toBe(1);
+    expect(byId.get(3)?.depth).toBe(2);
+  });
+
   it('returns an empty result without throwing for empty/malformed charts', () => {
     expect(chartToNavSectors({ sectors: [], edges: [], frontier: [] }, 1)).toEqual({
       sectors: [],
       frontierIds: [],
       truncated: false,
+      oneWayEdges: [],
     });
     expect(chartToNavSectors(null as unknown as NavChartResponse, 1)).toEqual({
       sectors: [],
       frontierIds: [],
       truncated: false,
+      oneWayEdges: [],
     });
     expect(chartToNavSectors(undefined as unknown as NavChartResponse, 1)).toEqual({
       sectors: [],
       frontierIds: [],
       truncated: false,
+      oneWayEdges: [],
     });
     expect(
       chartToNavSectors({ sectors: undefined, edges: undefined, frontier: undefined } as unknown as NavChartResponse, 1)
-    ).toEqual({ sectors: [], frontierIds: [], truncated: false });
+    ).toEqual({ sectors: [], frontierIds: [], truncated: false, oneWayEdges: [] });
   });
 
   it('respects scannerRange -- a smaller range yields a smaller node set than a larger one', () => {

@@ -9,8 +9,11 @@
  * deep graph is MERGED (never replaces) the existing 1-hop `navSectors`
  * feed built from currentSector + availableMoves, so a fresh player's
  * unvisited-but-adjacent destinations (server-classified as frontier,
- * rendering deferred) never vanish, while a player who has explored
- * further sees rings beyond direct adjacency.
+ * but still directly warpable) never vanish, while a player who has
+ * explored further sees rings beyond direct adjacency. Frontier stubs
+ * with NO existing 1-hop entry now render too (WO-NAV-CHART-POLISH),
+ * as a distinct glyph -- never as a full `circle.node-circle` -- see
+ * "renders a frontier-only id as a distinct glyph" below.
  *
  * Mirrors GalaxyMap.chart.test.tsx's seam: jsdom + react-dom/client
  * createRoot + act(), no RTL, no new deps -- every child component not
@@ -331,12 +334,24 @@ describe('GameDashboard — NAV multi-hop known-graph feed', () => {
     expect(nodeCount()).toBe(4);
   });
 
-  it('never renders a frontier id as a full node (frontier rendering deferred)', async () => {
+  it('never renders a frontier-only id as a full node (circle.node-circle) -- it gets the distinct frontier glyph instead', async () => {
     await mount();
 
     const titles = nodeTitles();
     expect(titles).not.toContain('Sector 999');
     expect(titles.some((t) => t.includes('999'))).toBe(false);
+  });
+
+  it('renders a frontier-only id as a distinct glyph (WO-NAV-CHART-POLISH) -- linked to its source sector', async () => {
+    await mount();
+
+    // CHART_DEEP's frontier stub {id: 999, from: 103} has no colliding
+    // 1-hop entry (only 100/101 are directly warpable) -- it renders as
+    // the dedicated frontier glyph, not a circle.node-circle.
+    const glyph = container.querySelector('[data-testid="frontier-node-999"]');
+    expect(glyph).toBeTruthy();
+    expect(glyph?.tagName.toLowerCase()).toBe('rect');
+    expect(glyph?.classList.contains('frontier-glyph')).toBe(true);
   });
 
   it('preserves the fresh-player 1-hop view unchanged when the deep chart only knows the current sector (MERGE, not replace)', async () => {

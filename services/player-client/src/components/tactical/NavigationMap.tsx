@@ -7,6 +7,12 @@ interface Sector {
   name: string;
   type?: string;
   connected_sectors?: number[];
+  /** BFS hop-distance from the current sector (0 = current), as computed
+   * by navChartTransform's chartToNavSectors. Optional -- callers that
+   * don't source from the deep /nav/chart feed (e.g. course-chain-injected
+   * hops) simply omit it, which degrades gracefully to the pre-existing
+   * flat styling (WO-NAV-CHART-POLISH sub-part a). */
+  depth?: number;
 }
 
 /** Minimal shape NavigationMap needs from a plotted course hop — a
@@ -36,6 +42,13 @@ interface NavigationMapProps {
   course?: CourseHopPoint[] | null;
   /** Index into `course` of the hop currently in progress. */
   currentHopIndex?: number;
+  /**
+   * Known->known directed edges with no reverse counterpart in the source
+   * chart -- genuinely one-way warps/tunnels (WO-NAV-CHART-POLISH sub-part
+   * c, from navChartTransform's `oneWayEdges`). Rendered as a small arrow
+   * near the destination node. Omitted/empty renders nothing extra.
+   */
+  oneWayEdges?: { from: number; to: number }[];
 }
 
 interface Node {
@@ -54,6 +67,19 @@ const MAX_LABEL_CHARS = 14;
 const truncateLabel = (name: string): string =>
   name.length > MAX_LABEL_CHARS ? `${name.slice(0, MAX_LABEL_CHARS - 1)}…` : name;
 
+// Neon depth pass (WO-NAV-CHART-POLISH sub-part a): BFS hop-distance from
+// the current sector maps onto a fixed 5-tier neon gradient (near =
+// brighter cyan, far = dimmer violet), giving the chart a "deep star-
+// chart" read instead of a flat spoke-map. Applied only to AMBIENT nodes/
+// edges (not current, not available, not frontier -- see call sites) so
+// the shipped current/available/course-overlay/frontier styling always
+// wins untouched. `depth` is optional (course-chain-injected hops and the
+// 1-hop navSectors feed's own entries may omit it) -- undefined degrades
+// gracefully to no depth class, i.e. the pre-existing flat styling.
+const MAX_DEPTH_TIER = 5;
+const depthTierClass = (depth: number | undefined): string =>
+  depth == null ? '' : `depth-tier-${Math.min(Math.max(Math.round(depth), 0), MAX_DEPTH_TIER)}`;
+
 const NavigationMap: React.FC<NavigationMapProps> = ({
   currentSectorId,
   sectors,
@@ -63,7 +89,8 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
   width = 600,
   height = 600,
   course = null,
-  currentHopIndex = 0
+  currentHopIndex = 0,
+  oneWayEdges = []
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const [nodes, setNodes] = useState<Node[]>([]);
@@ -362,6 +389,16 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
 
                   const isCurrentConnection = node.id === currentSectorId || connectedId === currentSectorId;
                   const isAvailableConnection = availableMoves.includes(node.id) && availableMoves.includes(connectedId);
+                  const isFrontierConnection = node.sector.type === 'frontier' || connectedNode.sector.type === 'frontier';
+                  // Depth-tier only applies to the ambient bucket -- current/
+                  // available/frontier styling always takes priority.
+                  const edgeDepthClass = !isCurrentConnection && !isAvailableConnection && !isFrontierConnection
+                    ? depthTierClass(
+                        node.sector.depth != null && connectedNode.sector.depth != null
+                          ? Math.min(node.sector.depth, connectedNode.sector.depth)
+                          : undefined
+                      )
+                    : '';
 
                   return (
                     <line
@@ -370,7 +407,7 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
                       y1={node.y}
                       x2={connectedNode.x}
                       y2={connectedNode.y}
-                      className={`connection-line ${isCurrentConnection ? 'current' : ''} ${isAvailableConnection ? 'available' : ''}`}
+                      className={`connection-line ${isCurrentConnection ? 'current' : ''} ${isAvailableConnection ? 'available' : ''} ${isFrontierConnection ? 'frontier' : ''} ${edgeDepthClass}`}
                       stroke={isCurrentConnection ? '#00ff41' : isAvailableConnection ? '#00d9ff' : '#444'}
                       strokeWidth={isCurrentConnection ? 2 : 1}
                       opacity={isCurrentConnection ? 0.8 : isAvailableConnection ? 0.5 : 0.2}
@@ -382,14 +419,98 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
           })}
         </g>
 
+        {/* One-way warp/tunnel arrows (WO-NAV-CHART-POLISH sub-part c) --
+            a small arrow near the destination node for every directed edge
+            with no reverse counterpart in the source chart. Independent
+            layer from the connections above (which stay undirected for
+            layout purposes); renders nothing when oneWayEdges is empty. */}
+        {oneWayEdges.length > 0 && (
+          <g className="direction-arrows" style={{ pointerEvents: 'none' }}>
+            {oneWayEdges.map(edge => {
+              const fromNode = nodes.find(n => n.id === edge.from);
+              const toNode = nodes.find(n => n.id === edge.to);
+              if (!fromNode || !toNode) return null;
+
+              const dx = toNode.x - fromNode.x;
+              const dy = toNode.y - fromNode.y;
+              const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+              const ux = dx / dist;
+              const uy = dy / dist;
+
+              // Pull the arrow tip back off the destination node's own
+              // radius so it doesn't render underneath the node's fill.
+              const destIsCurrent = toNode.id === currentSectorId;
+              const destIsAvailable = availableMoves.includes(toNode.id);
+              const destRadius = getNodeSize(destIsCurrent, destIsAvailable) + 6;
+              const tipX = toNode.x - ux * destRadius;
+              const tipY = toNode.y - uy * destRadius;
+              const angleDeg = Math.atan2(dy, dx) * (180 / Math.PI);
+
+              return (
+                <polygon
+                  key={`arrow-${edge.from}-${edge.to}`}
+                  data-testid={`direction-arrow-${edge.from}-${edge.to}`}
+                  points={`${tipX},${tipY} ${tipX - 9},${tipY - 5} ${tipX - 9},${tipY + 5}`}
+                  className="direction-arrow"
+                  transform={`rotate(${angleDeg}, ${tipX}, ${tipY})`}
+                />
+              );
+            })}
+          </g>
+        )}
+
         {/* Sector nodes */}
         <g className="nodes">
           {nodes.map(node => {
             const isCurrent = node.id === currentSectorId;
             const isAvailable = availableMoves.includes(node.id);
             const isHovered = hoveredNode === node.id;
+
+            // Frontier stub (WO-NAV-CHART-POLISH sub-parts b/d): a
+            // distinct diamond glyph with a shimmer animation, never the
+            // regular node-circle -- reads at a glance as "detected beyond
+            // known space" rather than a fully-known sector. Not
+            // clickable (frontier ids never appear in availableMoves), but
+            // still hoverable for a tooltip + label, reusing the existing
+            // label-display condition below via `isHovered`.
+            if (node.sector.type === 'frontier') {
+              return (
+                <g key={node.id} className="node-group node-group-frontier">
+                  <rect
+                    data-testid={`frontier-node-${node.id}`}
+                    x={node.x - 7}
+                    y={node.y - 7}
+                    width={14}
+                    height={14}
+                    transform={`rotate(45 ${node.x} ${node.y})`}
+                    className="frontier-glyph"
+                    onMouseEnter={() => setHoveredNode(node.id)}
+                    onMouseLeave={() => setHoveredNode(null)}
+                  >
+                    <title>{`${node.sector.name} — detected beyond known space`}</title>
+                  </rect>
+                  {isHovered && (
+                    <text
+                      x={node.x}
+                      y={node.y + 24}
+                      textAnchor="middle"
+                      className="node-label frontier-label"
+                      fontSize="9"
+                      fontWeight="bold"
+                      style={{ pointerEvents: 'none' }}
+                    >
+                      {truncateLabel(node.sector.name)}
+                    </text>
+                  )}
+                </g>
+              );
+            }
+
             const nodeColor = getNodeColor(node.sector, isCurrent, isAvailable);
             const nodeSize = getNodeSize(isCurrent, isAvailable);
+            // Depth-tier only applies to the ambient bucket -- current/
+            // available styling always takes priority (see depthTierClass).
+            const depthClass = (!isCurrent && !isAvailable) ? depthTierClass(node.sector.depth) : '';
 
             return (
               <g key={node.id} className="node-group">
@@ -433,7 +554,7 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
                   fill={nodeColor}
                   stroke={isCurrent ? '#00ff41' : isAvailable ? '#00d9ff' : '#444'}
                   strokeWidth={isCurrent ? 3 : 2}
-                  className={`node-circle ${isAvailable ? 'available' : ''} ${isCurrent ? 'current' : ''} ${isMoving ? 'moving' : ''}`}
+                  className={`node-circle ${isAvailable ? 'available' : ''} ${isCurrent ? 'current' : ''} ${isMoving ? 'moving' : ''} ${depthClass}`}
                   onMouseEnter={() => setHoveredNode(node.id)}
                   onMouseLeave={() => setHoveredNode(null)}
                   onPointerDown={(e) => {
@@ -638,6 +759,10 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
         <div className="instruction-item">
           <span className="instruction-icon" style={{ color: '#6b7280' }}>●</span>
           <span>Out of Range</span>
+        </div>
+        <div className="instruction-item">
+          <span className="instruction-icon" style={{ color: '#e961ff' }}>◆</span>
+          <span>Frontier</span>
         </div>
       </div>
     </div>

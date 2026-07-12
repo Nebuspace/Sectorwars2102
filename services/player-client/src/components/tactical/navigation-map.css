@@ -138,6 +138,79 @@
   opacity: 0.6;
 }
 
+/* ============================================
+   NEON DEPTH PASS — WO-NAV-CHART-POLISH sub-part a.
+   BFS hop-distance from the current sector maps onto
+   a 5-tier neon gradient (near = brighter cyan, far =
+   dimmer violet) so the ambient known-graph reads as a
+   deep star-chart, not a flat spoke-map. Applies only
+   to nodes/edges that are neither current, available,
+   nor frontier (NavigationMap.tsx gates the class) —
+   the shipped current/available/course-overlay/
+   frontier styling always wins untouched.
+   ============================================ */
+.node-circle.depth-tier-1 { fill: #29d3ff; stroke: #29d3ff; }
+.node-circle.depth-tier-2 { fill: #3fb8f5; stroke: #3fb8f5; opacity: 0.92; }
+.node-circle.depth-tier-3 { fill: #6a9bf0; stroke: #6a9bf0; opacity: 0.82; }
+.node-circle.depth-tier-4 { fill: #8b7ef2; stroke: #8b7ef2; opacity: 0.7; }
+.node-circle.depth-tier-5 { fill: #6c4fd4; stroke: #6c4fd4; opacity: 0.55; }
+
+.connection-line.depth-tier-1 { stroke: #29d3ff; opacity: 0.35; }
+.connection-line.depth-tier-2 { stroke: #3fb8f5; opacity: 0.3; }
+.connection-line.depth-tier-3 { stroke: #6a9bf0; opacity: 0.24; }
+.connection-line.depth-tier-4 { stroke: #8b7ef2; opacity: 0.18; }
+.connection-line.depth-tier-5 { stroke: #6c4fd4; opacity: 0.12; }
+
+/* ============================================
+   ONE-WAY WARP ARROWS — WO-NAV-CHART-POLISH sub-part c.
+   Mirrors GalaxyMap.tsx's `direction-arrow` visual
+   language for a directed edge with no reverse
+   counterpart in the source chart.
+   ============================================ */
+.direction-arrow {
+  fill: #00d9ff;
+  opacity: 0.55;
+  filter: drop-shadow(0 0 3px #00d9ff);
+}
+
+/* ============================================
+   FRONTIER STUBS — WO-NAV-CHART-POLISH sub-parts b/d.
+   A shimmering diamond, never a circle, so "detected
+   beyond known space" reads distinctly at a glance from
+   a fully-known sector.
+   ============================================ */
+.frontier-glyph {
+  fill: rgba(233, 97, 255, 0.18);
+  stroke: #e961ff;
+  stroke-width: 1.5;
+  stroke-dasharray: 3, 2;
+  filter: drop-shadow(0 0 5px #e961ff);
+  animation: frontier-shimmer 2.4s ease-in-out infinite;
+}
+
+@keyframes frontier-shimmer {
+  0%, 100% {
+    opacity: 0.55;
+    filter: drop-shadow(0 0 4px #e961ff);
+  }
+  50% {
+    opacity: 1;
+    filter: drop-shadow(0 0 10px #e961ff);
+  }
+}
+
+.connection-line.frontier {
+  stroke: #e961ff;
+  stroke-dasharray: 2, 3;
+  opacity: 0.4;
+  animation: frontier-shimmer 2.4s ease-in-out infinite;
+}
+
+.frontier-label {
+  fill: #e961ff;
+  text-shadow: 0 0 6px #e961ff, 0 0 4px rgba(0, 0, 0, 0.9);
+}
+
 /* Plotted course overlay (ADR-0072 autopilot) — WO-NAV-COURSE-OVERLAY.
    A bright gold polyline + waypoint markers layered above the dim default
    connection lines, distinguishing the plotted route from the ambient
@@ -262,7 +335,9 @@
   .node-glow,
   .current-indicator,
   .course-polyline,
-  .course-hop-marker.current {
+  .course-hop-marker.current,
+  .frontier-glyph,
+  .connection-line.frontier {
     animation: none;
   }
 

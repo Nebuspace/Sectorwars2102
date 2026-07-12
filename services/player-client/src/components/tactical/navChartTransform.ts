@@ -16,12 +16,21 @@ export interface NavNode {
   name: string;
   type?: string;
   connected_sectors: number[];
+  /** BFS hop-distance from the current sector (0 = current). Drives
+   * NavigationMap's neon depth-tier styling (WO-NAV-CHART-POLISH sub-part
+   * a). A frontier stub's depth is its source sector's depth + 1. */
+  depth: number;
 }
 
 export interface NavChartTransformResult {
   sectors: NavNode[];
   frontierIds: number[];
   truncated: boolean;
+  /** Known->known directed edges with no reverse counterpart in
+   * chart.edges -- i.e. genuinely one-way warps/tunnels, filtered to pairs
+   * where both endpoints survived the BFS+cap. Drives NavigationMap's
+   * one-way arrow rendering (WO-NAV-CHART-POLISH sub-part c). */
+  oneWayEdges: { from: number; to: number }[];
 }
 
 const DEFAULT_SCANNER_RANGE = 12;
@@ -40,7 +49,7 @@ export function chartToNavSectors(
   const chartEdges = chart?.edges ?? [];
   const chartFrontier = chart?.frontier ?? [];
   if (!chartSectors.length) {
-    return { sectors: [], frontierIds: [], truncated: false };
+    return { sectors: [], frontierIds: [], truncated: false, oneWayEdges: [] };
   }
 
   const depthCap = Math.min(MAX_SCANNER_RANGE, scannerRange ?? DEFAULT_SCANNER_RANGE);
@@ -108,6 +117,30 @@ export function chartToNavSectors(
   }
   const includedSet = new Set(includedIds);
 
+  // Directed edges among rendered sectors, for one-way-warp arrow rendering
+  // (WO-NAV-CHART-POLISH sub-part c). The adjacency built above is
+  // deliberately undirected (a known sector one hop away is "nearby" for
+  // layout purposes regardless of warp direction, per the comment on
+  // `link` above) -- this is a SEPARATE pass over the raw directed
+  // chart.edges that preserves direction, mirroring GalaxyMap.tsx's
+  // layoutKnownSectors `isOneWay` technique (reverse-key lookup: a pair is
+  // one-way when only ONE direction appears in chart.edges). `kind` is
+  // ignored for this check (a from/to pair with a one-way warp AND a
+  // one-way tunnel running opposite directions would read as bidirectional
+  // -- an acceptable simplification; that configuration is rare and the
+  // failure mode is merely "no arrow drawn", not a wrong one).
+  const rawEdgeKeys = new Set(chartEdges.map((e) => `${e.from}>${e.to}`));
+  const oneWaySeen = new Set<string>();
+  const oneWayEdges: { from: number; to: number }[] = [];
+  for (const e of chartEdges) {
+    if (!includedSet.has(e.from) || !includedSet.has(e.to)) continue;
+    if (rawEdgeKeys.has(`${e.to}>${e.from}`)) continue; // reverse exists -- bidirectional
+    const key = `${e.from}>${e.to}`;
+    if (oneWaySeen.has(key)) continue;
+    oneWaySeen.add(key);
+    oneWayEdges.push({ from: e.from, to: e.to });
+  }
+
   const sectors: NavNode[] = includedIds.map((id) => {
     const s = sectorById.get(id)!;
     const connected = Array.from(adjacency.get(id) ?? []).filter((n) => includedSet.has(n));
@@ -116,43 +149,42 @@ export function chartToNavSectors(
       name: s.name,
       type: s.type,
       connected_sectors: connected,
+      depth: depthOf.get(id) ?? 0,
     };
   });
 
   // Frontier stubs: nav_service.get_chart (services/gameserver/src/services/
   // nav_service.py) guarantees every chart.frontier entry is exactly one hop
   // from the known sector named by its `from` field (WO-NAV-CHART-FRONTIER-
-  // EDGES). That linkage exists in the contract now, but frontier-glyph
-  // RENDERING is still deferred (orchestrator ruling) -- this transform
-  // keeps using the same "was the entire known graph included" heuristic it
-  // used before `from` existed, rather than doing a per-stub BFS attachment
-  // via `from`; that upgrade is left to the WO that actually turns frontier
-  // rendering on, since it changes stub inclusion/positioning behaviour and
-  // deserves its own tests rather than riding in on a contract-compat pass.
+  // EDGES). WO-NAV-CHART-POLISH turns frontier RENDERING on and upgrades
+  // inclusion from the old "was the entire known graph included" heuristic
+  // to a per-stub check: a stub is included whenever ITS OWN `from` sector
+  // survived the BFS+cap above, regardless of whether some UNRELATED known
+  // sector was excluded elsewhere in the graph -- strictly more precise
+  // than the old all-or-nothing gate (which skipped every stub the moment
+  // truncation touched ANY sector, even ones with no bearing on that
+  // stub's linkage). A stub whose `from` was itself excluded is still
+  // skipped -- there is no source sector to honestly attach it to.
   //
-  // The one case we CAN prove safe without a per-stub attachment: when the
-  // BFS+cap above included the ENTIRE known graph (no sector was excluded by
-  // depth or the node ceiling), nav_service's guarantee means every frontier
-  // id is one hop from an INCLUDED known sector -- so it's safe to surface
-  // all of them (with an empty connected_sectors; per-stub positioning still
-  // isn't wired). When some known sectors were excluded, a given frontier id
-  // might only be reachable via an excluded sector, so frontier stubs are
-  // skipped entirely rather than risking a stub attached to the wrong part
-  // of the map ("skip unlinkable stubs gracefully").
+  // connected_sectors: [stub.from] gives the stub a ONE-DIRECTIONAL spring
+  // in NavigationMap's force layout (pulled toward its source; the source
+  // is not pulled back -- see the sim's own per-node connections loop), so
+  // it visually orbits near the known sector that surfaced it without
+  // perturbing the rest of the graph. depth is the source's own depth + 1,
+  // continuing the BFS depth gradient one hop past the known frontier.
   const frontierIds: number[] = [];
-  const allKnownIncluded = includedSet.size === chartSectors.length;
-  if (allKnownIncluded) {
-    for (const stub of chartFrontier) {
-      if (includedSet.has(stub.id)) continue; // defensive: shouldn't happen
-      sectors.push({
-        id: stub.id,
-        name: `Sector ${stub.id}`,
-        type: 'frontier',
-        connected_sectors: [],
-      });
-      frontierIds.push(stub.id);
-    }
+  for (const stub of chartFrontier) {
+    if (includedSet.has(stub.id)) continue; // defensive: shouldn't happen
+    if (!includedSet.has(stub.from)) continue; // unlinkable -- source excluded
+    sectors.push({
+      id: stub.id,
+      name: `Sector ${stub.id}`,
+      type: 'frontier',
+      connected_sectors: [stub.from],
+      depth: (depthOf.get(stub.from) ?? 0) + 1,
+    });
+    frontierIds.push(stub.id);
   }
 
-  return { sectors, frontierIds, truncated };
+  return { sectors, frontierIds, truncated, oneWayEdges };
 }

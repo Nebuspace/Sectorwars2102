@@ -815,7 +815,15 @@ export interface NavChartResponse {
 }
 
 export const navAPI = {
-  getChart: (): Promise<NavChartResponse> => apiRequest('/api/v1/nav/chart'),
+  // `bounded` (WO-NAV-REACH-BACKEND, default false) opts into the server's
+  // scanner-depth-bounded chart (CHART_BOUNDED_DEPTH_CEILING=12) — sectors
+  // beyond the bound are demoted to frontier stubs instead of full nodes.
+  // Omitted/false preserves today's exact unbounded query string
+  // (byte-identical), so any existing caller that doesn't pass it (e.g.
+  // GalaxyMap.tsx's standalone fetch) is untouched (WO-NAV-CHART-POLISH
+  // sub-part e).
+  getChart: (bounded?: boolean): Promise<NavChartResponse> =>
+    apiRequest(`/api/v1/nav/chart${bounded ? '?bounded=true' : ''}`),
 };
 
 // Sector contents — existing read-only endpoints (services/gameserver/src/
