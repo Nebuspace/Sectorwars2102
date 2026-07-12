@@ -70,6 +70,14 @@ NEUTRAL_SAFETY = 0.5
 OBJECTIVE_MIN_TIME = "min_time"
 OBJECTIVE_MIN_RISK = "min_risk"
 
+# Ceiling on the server-computed depth bound for GET /nav/chart?bounded=true
+# (WO-NAV-REACH-BACKEND).  NO-CANON kernel — mirrors the player-client's own
+# navChartTransform.MAX_SCANNER_RANGE (12), which caps its client-side BFS
+# depth the same way.  A player's *effective* scanner range (hull spec +
+# stacked Sensor-upgrade bonus) can in principle exceed this; the ceiling
+# keeps a single bounded-chart BFS from growing arbitrarily large regardless.
+CHART_BOUNDED_DEPTH_CEILING = 12
+
 
 @dataclass
 class HopInfo:
@@ -144,7 +152,7 @@ class NavService:
 
         return known
 
-    def get_chart(self, player: Player) -> Dict:
+    def get_chart(self, player: Player, bounded: bool = False) -> Dict:
         """
         Assemble the player's KNOWN navigation surface for the NAV CHART
         cockpit view (WO-PUX-NAVCHART): every sector in the known graph
@@ -168,6 +176,18 @@ class NavService:
         node, and this keeps repeated calls byte-identical for the same
         known-set).
 
+        *bounded* (WO-NAV-REACH-BACKEND, default False — today's exact
+        unbounded behaviour, byte-identical): when True and the player has
+        a ``current_ship``, ``known_ids`` is narrowed with a server-side
+        DIRECTED BFS (see ``_bound_known_ids``) capped at the player's
+        effective scanner range, so the chart reports only what that ship
+        could actually reach. The depth is always SERVER-computed from the
+        ship, never a client-supplied number — a client skin cannot fake
+        the radius. No ship -> unbounded, unconditionally (preserves the
+        "current sector always included" invariant). Sectors excluded by
+        the bound are demoted to frontier stubs by the unchanged edge/
+        frontier assembly below — see ``_bound_known_ids``'s docstring.
+
         Returns:
           {"sectors": [{"sector_id", "name", "type", "x", "y", "z",
                         "visited", "current"}, ...],
@@ -177,6 +197,9 @@ class NavService:
         known_ids = self.get_known_sector_ids(player)
         if not known_ids:
             return {"sectors": [], "edges": [], "frontier": []}
+
+        if bounded and player.current_ship is not None:
+            known_ids = self._bound_known_ids(player, known_ids)
 
         known_sectors = (
             self.db.query(Sector).filter(Sector.sector_id.in_(known_ids)).all()
@@ -238,6 +261,82 @@ class NavService:
             "edges": edges,
             "frontier": frontier,
         }
+
+    def _bound_known_ids(self, player: Player, known_ids: Set[int]) -> Set[int]:
+        """
+        WO-NAV-REACH-BACKEND: server-side depth bound for ``get_chart``'s
+        ``bounded=True`` path. Only called when ``player.current_ship`` is
+        not None (get_chart's no-ship-is-unbounded guard runs before this).
+
+        The depth is SERVER-COMPUTED from the player's effective scanner
+        range (hull spec + Sensor-upgrade bonus) — never a client-supplied
+        int — via the same Rail-A pattern ``movement_service.py``'s scan()
+        uses (:1461-1475), so a client skin cannot fake the radius.
+
+        Runs a DIRECTED BFS (``_bfs_within_depth``) over the SAME adjacency
+        ``_build_known_graph`` builds for ``plot()`` — respects
+        ``is_bidirectional`` on both warps and tunnels, so a one-way edge is
+        only walkable in its stored direction (the correct "can I actually
+        reach it in N hops" semantic, not a symmetric "is it nearby" one).
+
+        Returns the subset of *known_ids* reachable from
+        ``player.current_sector_id`` within
+        ``min(effective_scanner_range, CHART_BOUNDED_DEPTH_CEILING)`` hops.
+        A known sector excluded by the bound is not deleted from the
+        player's knowledge — it simply falls out of ``known_ids`` for THIS
+        response, so the unchanged ``_assemble_edges_and_frontier`` pass
+        that follows demotes it to a ``{id, from}`` frontier stub instead
+        of a full sector entry. That is strictly MORE informative than the
+        client's current all-known-included heuristic, not a defect.
+        """
+        ship = player.current_ship
+
+        # --- Rail A: effective scanner_range (hull spec + SENSOR upgrade) ---
+        # Mirrors movement_service.py:1461-1475's established pattern.
+        from src.models.ship import ShipSpecification
+        from src.services.ship_upgrade_service import ShipUpgradeService
+
+        spec = (
+            self.db.query(ShipSpecification)
+            .filter(ShipSpecification.type == ship.type)
+            .first()
+        )
+        base_range = spec.scanner_range if spec and spec.scanner_range is not None else 0
+        effective_range = ShipUpgradeService.effective_scanner_range(ship, base_range)
+        depth_cap = min(effective_range, CHART_BOUNDED_DEPTH_CEILING)
+
+        graph, _ = self._build_known_graph(known_ids)
+        return self._bfs_within_depth(graph, player.current_sector_id, depth_cap)
+
+    @staticmethod
+    def _bfs_within_depth(
+        graph: Dict[int, List[Tuple[int, int, bool]]],
+        start_sid: int,
+        depth_cap: int,
+    ) -> Set[int]:
+        """
+        Directed BFS over *graph* (an adjacency shaped like
+        ``_build_known_graph``'s return — sector_id -> list of
+        ``(neighbour_sid, turn_cost, via_tunnel)``, already respecting
+        ``is_bidirectional``) from *start_sid*, capped at *depth_cap* hops.
+
+        Returns the set of sector_ids reachable within the cap, including
+        *start_sid* itself at depth 0 (so the "current sector always
+        included" invariant holds even when *depth_cap* is 0).
+        """
+        reachable: Set[int] = {start_sid}
+        frontier: Set[int] = {start_sid}
+        depth = 0
+        while frontier and depth < depth_cap:
+            next_frontier: Set[int] = set()
+            for sid in frontier:
+                for (neighbour, _cost, _via_tunnel) in graph.get(sid, []):
+                    if neighbour not in reachable:
+                        reachable.add(neighbour)
+                        next_frontier.add(neighbour)
+            frontier = next_frontier
+            depth += 1
+        return reachable
 
     def _assemble_edges_and_frontier(
         self,
