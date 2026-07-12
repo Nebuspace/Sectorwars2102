@@ -628,6 +628,64 @@ def sweep_pending_engagements(db: Session) -> List[Dict[str, Any]]:
     return events
 
 
+def _current_sector_of(db: Session, player: Player) -> Optional[Sector]:
+    """The Sector row for ``player.current_sector_id`` right now -- shared
+    by ``_sweep_one``'s (b) jurisdiction-exit read AND the post-lock
+    re-derive on the ARRIVED branches below, so both always resolve
+    ``player.current_sector_id`` through the identical query shape (WO-
+    NPC-LOCK-ORDER-BATCH mack-gate follow-up: keeps the two in sync by
+    construction rather than by two independently-written queries drifting
+    apart)."""
+    return (
+        db.query(Sector)
+        .filter(Sector.sector_id == player.current_sector_id)
+        .first()
+    )
+
+
+def _lock_offender_player(db: Session, player: Player) -> Optional[Player]:
+    """Re-lock the offender's Player row FOR UPDATE, to be called
+    immediately BEFORE ``_place_squad`` on the ARRIVED-transition path
+    (WO-NPC-LOCK-ORDER-BATCH).
+
+    Previously that path locked the squad's Ship (``_place_squad``) then
+    Sector rows (``_place_squad`` -> ``npc_movement_service.
+    _locked_sectors``) BEFORE ``_maybe_initiate_police_combat`` ->
+    ``npc_attack_player`` locked this same offender Player row --
+    Ship -> Sector -> Player, reversed against the documented
+    "Player -> Station -> Ship -> NPCCharacter -> Sector" convention
+    (npc_movement_service.py:24-25) and against combat_service's own
+    Player-first order (attack_player, attack_npc_ship, npc_attack_player
+    all lock Player before any Ship). A concurrent offender-initiated
+    ``combat_service.attack_npc_ship`` (Player-first, then wants that
+    same officer Ship) — or a concurrent ``movement_service.
+    move_player_to_sector`` (Player-first, then wants that same Sector)
+    — could AB-BA-deadlock against this path. Locking Player here first
+    makes the whole path Player -> Ship -> Sector, matching both.
+
+    ``db.flush()`` first (not naive, mirrors ``npc_movement_service.
+    _locked_sectors``' own precedent): an EARLIER PendingEngagement row
+    swept in this SAME transaction could have left a pending, unflushed
+    mutation on this exact Player row (e.g. branch (b)'s evade_arrest
+    reputation adjustment) that a bare ``.populate_existing()`` would
+    otherwise discard.
+
+    Returns None on the (exceedingly unlikely) race where the player row
+    is gone by the time the lock is taken -- caller degrades to a no-op
+    for this pass, mirroring ``handle_npc_ship_destroyed``'s own
+    ``if sector is not None`` no-op-on-vanished-row idiom. FLUSH-ONLY;
+    the caller owns the commit (this runs inside ``_sweep_one``'s
+    per-row SAVEPOINT)."""
+    db.flush()
+    return (
+        db.query(Player)
+        .filter(Player.id == player.id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+
+
 def _sweep_one(db: Session, engagement: PendingEngagement,
                now: datetime) -> List[Dict[str, Any]]:
     player = (
@@ -662,11 +720,7 @@ def _sweep_one(db: Session, engagement: PendingEngagement,
 
     # (b) Jurisdiction exit fires immediately on boundary cross:
     # squad reverts, −25 evade-arrest (police-forces.md § flee).
-    current_sector = (
-        db.query(Sector)
-        .filter(Sector.sector_id == player.current_sector_id)
-        .first()
-    )
+    current_sector = _current_sector_of(db, player)
     current_jurisdiction = (
         jurisdiction_of(db, current_sector) if current_sector else None
     )
@@ -708,6 +762,28 @@ def _sweep_one(db: Session, engagement: PendingEngagement,
         engagement.npc_squad_ids = [str(npc.id) for npc in squad]
         for npc in squad:
             npc.status = NPCStatus.ENGAGED_PENDING_ARRIVAL
+        # WO-NPC-LOCK-ORDER-BATCH: lock the offender Player BEFORE
+        # _place_squad acquires the squad's Ship/Sector locks — see
+        # _lock_offender_player's docstring for the AB-BA this closes.
+        player = _lock_offender_player(db, player)
+        if player is None:
+            logger.warning(
+                "Engagement %s: offender player %s vanished under lock — "
+                "squad placement skipped this pass",
+                engagement.id, engagement.player_id,
+            )
+            return []
+        # mack-gate follow-up: current_sector was captured UNLOCKED above,
+        # BEFORE the Player lock — re-derive it against the now-FRESH
+        # player.current_sector_id so the pair stays coherent. A player who
+        # moved during the lock-wait (the exact concurrent move_player_to_
+        # sector race this WO defends against) would otherwise leave
+        # _maybe_initiate_police_combat holding a FRESH player against a
+        # STALE sector: _guard_failure's `defender.current_sector_id !=
+        # sector.sector_id` check spuriously mismatches and "attacks first"
+        # silently no-ops, even though _place_squad (below) already places
+        # the squad at the correct, fresh sector.
+        current_sector = _current_sector_of(db, player)
         events = _place_squad(db, engagement, player.current_sector_id)
         engagement.status = EngagementStatus.ARRIVED
         engagement.arrival_sector_id = player.current_sector_id
@@ -718,6 +794,20 @@ def _sweep_one(db: Session, engagement: PendingEngagement,
     # (a) Turn-counter watcher.
     if (engagement.arrival_turn_threshold is not None
             and (player.lifetime_turns_spent or 0) >= engagement.arrival_turn_threshold):
+        # WO-NPC-LOCK-ORDER-BATCH: lock the offender Player BEFORE
+        # _place_squad acquires the squad's Ship/Sector locks — see
+        # _lock_offender_player's docstring for the AB-BA this closes.
+        player = _lock_offender_player(db, player)
+        if player is None:
+            logger.warning(
+                "Engagement %s: offender player %s vanished under lock — "
+                "squad placement skipped this pass",
+                engagement.id, engagement.player_id,
+            )
+            return []
+        # mack-gate follow-up: re-derive current_sector against the
+        # now-FRESH player — see the identical comment in branch (d) above.
+        current_sector = _current_sector_of(db, player)
         events = _place_squad(db, engagement, player.current_sector_id)
         engagement.status = EngagementStatus.ARRIVED
         engagement.arrival_sector_id = player.current_sector_id
