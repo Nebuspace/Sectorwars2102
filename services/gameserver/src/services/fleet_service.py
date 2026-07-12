@@ -619,15 +619,60 @@ class FleetService:
 
     # Fleet Battle Methods
 
+    def _lock_fleets_ascending(self, fleet_ids) -> Dict[UUID, Fleet]:
+        """Lock every Fleet row in one ascending-id pass — deterministic order
+        so concurrent fleet-battle-lifecycle calls sharing a fleet pair can't
+        deadlock (WO-FLEET-BATTLE-LOCKS; mirrors _lock_players_ascending's
+        N-row pattern from WO-FLEET-KILL-LOCK-ORDER / WO-COMBAT-DUAL-LOCK-
+        ORDER — raw UUID `<` comparison order matches Postgres's default UUID
+        ordering, so this is safe against a concurrent same-pair lock attempt
+        regardless of which fleet is "attacker" vs "defender" in each call).
+
+        populate_existing() is required at every call site that reaches this
+        helper: initiate_battle and simulate_battle_round are both entered
+        after their route has already read one or both Fleet rows UNLOCKED
+        on the SAME session (fleets.py's commander-authz / battle-membership
+        checks) — without it, the SELECT ... FOR UPDATE still executes and
+        still acquires the DB-level lock, but returns the STALE pre-lock
+        Python object from the identity map instead of refreshing it,
+        silently defeating the point of locking (see resupply_fleet's
+        established precedent for the same pattern, WO-MONEY-REREAD-
+        SERVICES). Naive here (no upstream flush): neither call site mutates
+        a Fleet row between its route's read and this lock.
+        """
+        locked: Dict[UUID, Fleet] = {}
+        for fid in sorted(fleet_ids):
+            fleet = self.db.query(Fleet).filter(Fleet.id == fid).populate_existing().with_for_update().first()
+            if fleet is not None:
+                locked[fid] = fleet
+        return locked
+
     def initiate_battle(
         self,
         attacker_fleet_id: UUID,
         defender_fleet_id: UUID
     ) -> FleetBattle:
         """Initiate a battle between two fleets."""
-        # Validate fleets
-        attacker = self.db.query(Fleet).filter(Fleet.id == attacker_fleet_id).first()
-        defender = self.db.query(Fleet).filter(Fleet.id == defender_fleet_id).first()
+        # Self-attack guard (WO-FLEET-BATTLE-LOCKS), BEFORE the lock: the
+        # friendly-fire team_id check below only accidentally blocks a fleet
+        # from battling itself (attacker IS defender, so attacker.team_id ==
+        # defender.team_id trivially — UNLESS team_id is None, in which case
+        # `attacker.team_id is not None` is False and a teamless/rogue fleet
+        # slips through unblocked). This is an explicit, load-bearing guard
+        # that closes that gap, not a duplicate — and it belongs ahead of the
+        # lock so a malformed self-attack never pays for a lock acquisition.
+        if attacker_fleet_id == defender_fleet_id:
+            raise ValueError("A fleet cannot initiate battle against itself")
+
+        # Lock BOTH fleet rows, ascending by id, in one pass (WO-FLEET-
+        # BATTLE-LOCKS — the fleet-battle lifecycle never row-locked Fleet
+        # rows, so two near-simultaneous initiate_battle calls sharing one
+        # fleet could both pass the unlocked IN_BATTLE check below and
+        # double-enroll it). See _lock_fleets_ascending for the ordering +
+        # populate_existing rationale.
+        locked_fleets = self._lock_fleets_ascending({attacker_fleet_id, defender_fleet_id})
+        attacker = locked_fleets.get(attacker_fleet_id)
+        defender = locked_fleets.get(defender_fleet_id)
 
         if not attacker or not defender:
             raise ValueError("Invalid fleet IDs")
@@ -658,7 +703,9 @@ class FleetService:
             defender_ships_initial=defender.total_ships
         )
 
-        # Update fleet statuses
+        # Update fleet statuses — safe under the lock acquired above: no
+        # concurrent initiate_battle sharing either fleet can be mid-flight
+        # past its own lock acquisition right now.
         attacker.status = FleetStatus.IN_BATTLE.value
         defender.status = FleetStatus.IN_BATTLE.value
 
@@ -718,8 +765,46 @@ class FleetService:
         if battle.ended_at:
             raise ValueError("Battle has already ended")
 
-        attacker = battle.attacker_fleet
-        defender = battle.defender_fleet
+        # Lock the participating Fleet rows too (WO-FLEET-BATTLE-LOCKS),
+        # ascending by id via the same helper/order as initiate_battle. The
+        # FleetBattle lock above already serializes concurrent round-sims of
+        # THIS battle, but formation/supply are read every round for damage
+        # math (_calculate_formation_bonus), and update_fleet_formation
+        # (fleets.py PATCH /{fleet_id}/formation -> set_fleet_formation) has
+        # NO in-battle guard and NO lock of its own — it's a plain unlocked
+        # UPDATE reachable mid-battle by the fleet commander. Holding
+        # FOR UPDATE here forces that UPDATE to block until this round
+        # commits (a Postgres row lock is contended by ANY writer, not just
+        # another FOR UPDATE reader) -- BUT this protection is BOUNDED, not
+        # whole-round: remove_ship_from_fleet:286 calls self.db.commit()
+        # mid-flight, inside THIS method's own fire loop, the moment a
+        # casualty occurs (_record_ship_casualty -> remove_ship_from_fleet).
+        # That commit releases the FleetBattle lock AND both Fleet locks
+        # acquired here (and expire_on_commit=True expires the loaded
+        # objects) — so a concurrent set_fleet_formation/reinforcement is
+        # blocked only UP TO the first mid-round casualty; after that
+        # commit, the remainder of the round runs unprotected, same as the
+        # pre-existing FleetBattle-lock gap this mirrors. Closing that
+        # (idempotent _end_battle, a casualty flush-only vs. commit
+        # boundary, add_ship/disband TOCTOU) is tracked separately as
+        # WO-FLEET-ROUND-INTEGRITY — not done here.
+        #
+        # Uses the raw FK columns (not the .attacker_fleet/.defender_fleet
+        # relationships) so this doesn't itself trigger an unlocked
+        # relationship load before the lock. populate_existing() is still
+        # required regardless: fleets.py's simulate_battle_round route
+        # (~line 290) already accessed battle.attacker_fleet /
+        # .defender_fleet UNLOCKED on this same session (for its "player has
+        # ships in this battle" check) before calling in here — see
+        # _lock_fleets_ascending for the staleness rationale. Naive (no
+        # upstream flush): nothing mutates either Fleet row between that
+        # route read and this lock.
+        attacker_fleet_id = battle.attacker_fleet_id
+        defender_fleet_id = battle.defender_fleet_id
+        fleet_ids = {fid for fid in (attacker_fleet_id, defender_fleet_id) if fid is not None}
+        locked_fleets = self._lock_fleets_ascending(fleet_ids)
+        attacker = locked_fleets.get(attacker_fleet_id)
+        defender = locked_fleets.get(defender_fleet_id)
 
         # Get active ships (hull > 0, not destroyed)
         attacker_ships = self._get_active_fleet_ships(attacker)

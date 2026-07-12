@@ -546,6 +546,12 @@ class TestSimulateBattleRoundShotsLedger:
 
         battle = make_battle(attacker_fleet=attacker_fleet, defender_fleet=defender_fleet, battle_log=[])
         session._pools[FleetBattle] = [battle]
+        # WO-FLEET-BATTLE-LOCKS: simulate_battle_round now locks the
+        # participating Fleet rows via _lock_fleets_ascending (Fleet.id ==
+        # fid queries) -- seed the Fleet pool so those resolve to the SAME
+        # real objects battle.attacker_fleet/.defender_fleet already point
+        # at, not None.
+        session._pools[Fleet] = [attacker_fleet, defender_fleet]
 
         # Deterministic RNG: every hit-chance roll succeeds (< 0.7), the only
         # possible random.choice target is unambiguous (1 ship per side), and
@@ -602,6 +608,9 @@ class TestSimulateBattleRoundShotsLedger:
 
         battle = make_battle(attacker_fleet=attacker_fleet, defender_fleet=defender_fleet, battle_log=[])
         session._pools[FleetBattle] = [battle]
+        # WO-FLEET-BATTLE-LOCKS: seed the Fleet pool for the new
+        # _lock_fleets_ascending lock (see the sibling test above).
+        session._pools[Fleet] = [attacker_fleet, defender_fleet]
 
         monkeypatch.setattr(fs.random, "random", lambda: 0.1)
         monkeypatch.setattr(fs.random, "uniform", lambda a, b: 1.0)

@@ -30,10 +30,15 @@ business rule at all. This file follows the same established
 one-topic-per-file convention as its four siblings instead of conflating
 two unrelated WOs' scope into one file.
 
-DB-free: a ``MagicMock`` db whose ``Fleet`` query resolves attacker then
-defender in call order (mirrors test_fleet_coordination_combat.py's
-``_fleet_db`` idiom) — ``initiate_battle`` queries ``Fleet`` by id twice,
-attacker first.
+DB-free: a ``MagicMock`` db whose ``Fleet`` query resolves BY THE FILTERED
+ID (not call order) — WO-FLEET-BATTLE-LOCKS changed ``initiate_battle`` to
+lock both fleets via ``_lock_fleets_ascending``, which queries
+``Fleet.id == fid`` in ASCENDING-id order (not attacker-then-defender call
+order — the two random UUIDs sort either way), chained through
+``.populate_existing().with_for_update().first()`` rather than a bare
+``.filter().first()``. ``make_db`` below extracts the literal id off each
+filter condition (mirrors test_fleet_kill_lock_order.py's ``_FakeQuery``
+idiom) so it resolves correctly regardless of acquisition order.
 """
 from __future__ import annotations
 
@@ -61,16 +66,28 @@ def make_fleet(*, team_id, status=FleetStatus.READY.value, sector_id=None, suppl
 
 
 def make_db(attacker, defender):
-    """MagicMock db resolving Fleet queries to attacker then defender, in
-    the exact call order initiate_battle uses (fleet_service.py:629-630)."""
-    db = MagicMock()
-    results = iter([attacker, defender])
+    """MagicMock db resolving Fleet queries BY ID (WO-FLEET-BATTLE-LOCKS'
+    ``_lock_fleets_ascending`` locks ascending-by-id, not attacker-then-
+    defender call order) -- every ``Fleet.id == fid`` filter is answered
+    from a small id-keyed dict regardless of which fleet's lock is
+    acquired first."""
+    fleets_by_id = {attacker.id: attacker, defender.id: defender}
 
     def _query(model, *a, **k):
         q = MagicMock()
-        q.filter.return_value.first.side_effect = lambda: next(results)
+
+        def _filter(cond, *args, **kwargs):
+            fid = getattr(getattr(cond, "right", None), "value", None)
+            locked = MagicMock()
+            locked.populate_existing.return_value.with_for_update.return_value.first.side_effect = (
+                lambda: fleets_by_id.get(fid)
+            )
+            return locked
+
+        q.filter.side_effect = _filter
         return q
 
+    db = MagicMock()
     db.query.side_effect = _query
     return db
 
