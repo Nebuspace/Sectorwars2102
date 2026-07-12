@@ -279,6 +279,81 @@ const CitadelManager: React.FC<CitadelManagerProps> = ({
         </div>
       )}
 
+      {/* Upgrade Section — rendered ABOVE the read-only track/vault stats
+          (WO-UI4-COLONY-CONSOLE) so the primary CTA clears the fold instead
+          of sitting buried behind the ladder + vault gauge (Scroll Law). The
+          level stays visible via the panel header's "Lv N" readout. */}
+      {next && !citadel.is_upgrading && (
+        <div className="citadel-upgrade">
+          <div className="upgrade-info">
+            <span className="upgrade-label">
+              Upgrade to L{next.level} — {next.name}
+            </span>
+            <span className="upgrade-cost">
+              {upgradeCost > 0 ? `${upgradeCost.toLocaleString()} credits` : 'Free'}
+            </span>
+            {next.upgrade_hours > 0 && (
+              <span className="upgrade-time">{next.upgrade_hours}h build time</span>
+            )}
+            {next.resource_cost && Object.keys(next.resource_cost).length > 0 && (
+              <span className="upgrade-resources">
+                {Object.entries(next.resource_cost)
+                  .map(([res, amt]) => `${getIcon(res)} ${getLabel(res)} ${amt.toLocaleString()}`)
+                  .join(' · ')}
+              </span>
+            )}
+            {CITADEL_PREREQS[next.level] && (
+              <span className="upgrade-prereq">⚠ {CITADEL_PREREQS[next.level]}</span>
+            )}
+            <span className="upgrade-gains">
+              Gains: 👥 {compact(next.max_population)} · 🔒 {compact(next.safe_storage)} · ✈️ {next.drone_capacity}
+            </span>
+          </div>
+          <button
+            onClick={handleUpgrade}
+            disabled={actionLoading || !canAffordUpgrade}
+            className="citadel-btn upgrade-btn"
+            title={upgradeDisabledReason}
+          >
+            {!canAffordUpgrade ? 'Insufficient Credits' : 'Upgrade'}
+          </button>
+        </div>
+      )}
+
+      {citadel.is_upgrading && (
+        <div className="citadel-upgrading">
+          <div className="upgrading-header">
+            <span className="upgrading-icon" aria-hidden="true">🏗️</span>
+            <span className="upgrading-label">
+              Constructing {upgradingToName}
+              {upgradingToLevel !== null ? ` (L${upgradingToLevel})` : ''}
+            </span>
+            {upgradeRemainingMs !== null && (
+              <span className="upgrading-countdown" title="Time until construction completes">
+                {formatCountdown(upgradeRemainingMs)} remaining
+              </span>
+            )}
+          </div>
+          {upgradeProgressPct !== null && (
+            <div
+              className="upgrading-bar"
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round(upgradeProgressPct)}
+              aria-label="Citadel construction progress"
+            >
+              <div className="upgrading-fill" style={{ width: `${upgradeProgressPct}%` }} />
+            </div>
+          )}
+          {citadel.upgrade_complete_at && (
+            <div className="upgrading-eta">
+              Completes {new Date(citadel.upgrade_complete_at).toLocaleString()}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* 5-Level Stepped Progression Track */}
       <div className="citadel-track" role="list" aria-label="Citadel progression">
         {CITADEL_TRACK.map((step) => {
@@ -386,78 +461,6 @@ const CitadelManager: React.FC<CitadelManagerProps> = ({
       {/* Credit deposit / withdraw now lives on the Safe tab's unified vault
           (SafeVaultPanel) alongside commodity store/take — one vault, one
           cr-equivalent cap. The gauge above stays as a read-only reference. */}
-
-      {/* Upgrade Section */}
-      {next && !citadel.is_upgrading && (
-        <div className="citadel-upgrade">
-          <div className="upgrade-info">
-            <span className="upgrade-label">
-              Upgrade to L{next.level} — {next.name}
-            </span>
-            <span className="upgrade-cost">
-              {upgradeCost > 0 ? `${upgradeCost.toLocaleString()} credits` : 'Free'}
-            </span>
-            {next.upgrade_hours > 0 && (
-              <span className="upgrade-time">{next.upgrade_hours}h build time</span>
-            )}
-            {next.resource_cost && Object.keys(next.resource_cost).length > 0 && (
-              <span className="upgrade-resources">
-                {Object.entries(next.resource_cost)
-                  .map(([res, amt]) => `${getIcon(res)} ${getLabel(res)} ${amt.toLocaleString()}`)
-                  .join(' · ')}
-              </span>
-            )}
-            {CITADEL_PREREQS[next.level] && (
-              <span className="upgrade-prereq">⚠ {CITADEL_PREREQS[next.level]}</span>
-            )}
-            <span className="upgrade-gains">
-              Gains: 👥 {compact(next.max_population)} · 🔒 {compact(next.safe_storage)} · ✈️ {next.drone_capacity}
-            </span>
-          </div>
-          <button
-            onClick={handleUpgrade}
-            disabled={actionLoading || !canAffordUpgrade}
-            className="citadel-btn upgrade-btn"
-            title={upgradeDisabledReason}
-          >
-            {!canAffordUpgrade ? 'Insufficient Credits' : 'Upgrade'}
-          </button>
-        </div>
-      )}
-
-      {citadel.is_upgrading && (
-        <div className="citadel-upgrading">
-          <div className="upgrading-header">
-            <span className="upgrading-icon" aria-hidden="true">🏗️</span>
-            <span className="upgrading-label">
-              Constructing {upgradingToName}
-              {upgradingToLevel !== null ? ` (L${upgradingToLevel})` : ''}
-            </span>
-            {upgradeRemainingMs !== null && (
-              <span className="upgrading-countdown" title="Time until construction completes">
-                {formatCountdown(upgradeRemainingMs)} remaining
-              </span>
-            )}
-          </div>
-          {upgradeProgressPct !== null && (
-            <div
-              className="upgrading-bar"
-              role="progressbar"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={Math.round(upgradeProgressPct)}
-              aria-label="Citadel construction progress"
-            >
-              <div className="upgrading-fill" style={{ width: `${upgradeProgressPct}%` }} />
-            </div>
-          )}
-          {citadel.upgrade_complete_at && (
-            <div className="upgrading-eta">
-              Completes {new Date(citadel.upgrade_complete_at).toLocaleString()}
-            </div>
-          )}
-        </div>
-      )}
 
       {!next && !citadel.is_upgrading && (
         <div className={`citadel-max-level${atSizeCap && sizeCap < 5 ? ' size-capped' : ''}`}>

@@ -183,14 +183,19 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
 
   // Tab definitions — the active one renders its panel; a glanceable readout
   // appears on each tab so the player keeps the key vital without leaving it.
-  const tabs: { key: ColonyTab; label: string; icon: string }[] = [
-    { key: 'citadel', label: 'Citadel', icon: '⬡' },
-    { key: 'grid', label: 'Grid', icon: '▦' },
-    { key: 'terraform', label: 'Terraform', icon: '🌍' },
-    { key: 'research', label: 'Research', icon: '⟳' },
-    { key: 'production', label: 'Production', icon: '🏭' },
-    { key: 'defense', label: 'Defense', icon: '🛡️' },
-    { key: 'safe', label: 'Safe', icon: '🔐' },
+  // `accent` matches the per-panel accent each tab's own instrument already
+  // carries (CitadelPanel/GridPanel/TerraformPanel/ResearchPanel/ProductionPanel
+  // — Law 5), so the tab bar reads as one console of distinct lit stations
+  // rather than a single flat color, then applied inline as --tab-accent so
+  // cockpit-colony.css can pick it up without a per-tab CSS rule.
+  const tabs: { key: ColonyTab; label: string; icon: string; accent: string }[] = [
+    { key: 'citadel', label: 'Citadel', icon: '⬡', accent: '#fbbf24' },
+    { key: 'grid', label: 'Grid', icon: '▦', accent: '#a78bfa' },
+    { key: 'terraform', label: 'Terraform', icon: '🌍', accent: '#34d399' },
+    { key: 'research', label: 'Research', icon: '⟳', accent: '#22d3ee' },
+    { key: 'production', label: 'Production', icon: '🏭', accent: '#7dd3fc' },
+    { key: 'defense', label: 'Defense', icon: '🛡️', accent: '#f87171' },
+    { key: 'safe', label: 'Safe', icon: '🔐', accent: '#2dd4bf' },
   ];
 
   return (
@@ -203,6 +208,7 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
             role="tab"
             aria-selected={tab === t.key}
             className={`cmc-tab${tab === t.key ? ' active' : ''}`}
+            style={{ '--tab-accent': t.accent } as React.CSSProperties}
             // Switching tabs dismisses the Specialization drawer so its
             // absolute inset:0 overlay can't cover a different tab's panel.
             onClick={() => { setTab(t.key); setShowSpecialization(false); }}
