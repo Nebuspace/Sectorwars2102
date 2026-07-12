@@ -29,6 +29,45 @@ import './pages-ops.css';
 
 const ACCENT = '#FFD700';
 
+// Reputation is clamped server-side to [-800, +800]
+// (faction_service.py: `max(-800, min(800, ...))`) — the bar's fill % is
+// this range normalized to 0-100, never the raw value.
+const REP_MIN = -800;
+const REP_MAX = 800;
+
+// Color-graded per current_level, mirroring RankDisplay.tsx's TIER_COLORS
+// pattern (a Record<level, color> keyed off the backend's own level string,
+// fed straight into a `backgroundColor` style — same shape, different
+// palette). Keys are the ReputationLevel enum values
+// (models/reputation.py) in ascending standing order; a red->gray->green
+// ramp so the bar reads "hostile" to "trusted" at a glance.
+const LEVEL_COLORS: Record<string, string> = {
+  PUBLIC_ENEMY: '#ff1a1a',
+  CRIMINAL: '#ff3b3b',
+  OUTLAW: '#ff5c33',
+  PIRATE: '#ff7a33',
+  SMUGGLER: '#ff9d3d',
+  UNTRUSTWORTHY: '#ffbf47',
+  SUSPICIOUS: '#e0c04d',
+  QUESTIONABLE: '#b8b8b8',
+  NEUTRAL: '#888888',
+  RECOGNIZED: '#8fcf8f',
+  ACKNOWLEDGED: '#6fd28f',
+  TRUSTED: '#4dd68f',
+  RESPECTED: '#2fd98f',
+  VALUED: '#1fe094',
+  HONORED: '#0fe89e',
+  REVERED: '#00f0a8',
+  EXALTED: '#00ff9d',
+};
+
+const repBarColor = (level: string): string => LEVEL_COLORS[level] || '#888888';
+
+const repBarPercent = (value: number): number => {
+  const clamped = Math.max(REP_MIN, Math.min(REP_MAX, value));
+  return ((clamped - REP_MIN) / (REP_MAX - REP_MIN)) * 100;
+};
+
 interface FactionReputationRow {
   faction_id: string;
   faction_name: string;
@@ -128,9 +167,14 @@ const ReputationPage: React.FC = () => {
 
             <div className="mfd-page-section-label">FACTION STANDINGS</div>
             {loadError ? (
-              <div className="mfd-page-warnline">{loadError}</div>
+              <div className="mfd-page-warnline" role="alert">{loadError}</div>
             ) : rows === null ? (
-              <MFDEmpty text="LOADING…" />
+              // Pixel a11y fix: MFDEmpty itself carries no a11y (shared
+              // atoms.tsx, not edited here -- used elsewhere) -- wrap it
+              // locally so the loading state is announced.
+              <div role="status" aria-live="polite">
+                <MFDEmpty text="LOADING…" />
+              </div>
             ) : rows.length === 0 ? (
               <MFDEmpty text="NO FACTION DATA" />
             ) : (
@@ -149,6 +193,19 @@ const ReputationPage: React.FC = () => {
                         TEAM {formatSigned(row.teamValue)} ({formatLevel(row.teamLevel || '')})
                       </span>
                     )}
+                    <div
+                      className="mfd-page-faction-bar"
+                      role="img"
+                      aria-label={`${row.faction_name} standing: ${formatSigned(row.current_value)} of ${REP_MIN} to ${REP_MAX}`}
+                    >
+                      <div
+                        className="mfd-page-faction-bar-fill"
+                        style={{
+                          width: `${repBarPercent(row.current_value)}%`,
+                          backgroundColor: repBarColor(row.current_level),
+                        }}
+                      />
+                    </div>
                   </li>
                 ))}
               </ul>

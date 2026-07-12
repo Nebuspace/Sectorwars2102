@@ -85,6 +85,8 @@ const mockGetRank = vi.fn();
 const mockGetProgress = vi.fn();
 const mockGetMedals = vi.fn();
 const mockGetOwnedPlanets = vi.fn();
+const mockGetTeam = vi.fn();
+const mockGetPermissions = vi.fn();
 
 vi.mock('../../../services/api', () => ({
   factionAPI: {
@@ -99,6 +101,13 @@ vi.mock('../../../services/api', () => ({
     planetary: {
       getOwnedPlanets: (...a: unknown[]) => mockGetOwnedPlanets(...a),
     },
+  },
+  // CREW tab (WO-UI5-DOSSIER) -- mockPlayerState below carries no team_id,
+  // so TeamSummaryTab never actually calls these, but the mock shape is
+  // kept complete/realistic rather than relying on that never changing.
+  teamAPI: {
+    getTeam: (...a: unknown[]) => mockGetTeam(...a),
+    getPermissions: (...a: unknown[]) => mockGetPermissions(...a),
   },
 }));
 
@@ -151,6 +160,7 @@ mockGetMedals.mockResolvedValue({ earned: [], available: [] });
 mockGetOwnedPlanets.mockResolvedValue({ planets: [] });
 
 import StatusBar from '../StatusBar';
+import { SettingsProvider } from '../../../contexts/SettingsContext';
 
 describe('StatusBar — live-mount smoke', () => {
   let container: HTMLElement;
@@ -182,7 +192,9 @@ describe('StatusBar — live-mount smoke', () => {
     await act(async () => {
       root.render(
         <MemoryRouter>
-          <StatusBar />
+          <SettingsProvider>
+            <StatusBar />
+          </SettingsProvider>
         </MemoryRouter>
       );
     });
@@ -203,7 +215,9 @@ describe('StatusBar — live-mount smoke', () => {
     await act(async () => {
       root.render(
         <MemoryRouter>
-          <StatusBar />
+          <SettingsProvider>
+            <StatusBar />
+          </SettingsProvider>
         </MemoryRouter>
       );
     });
@@ -224,7 +238,7 @@ describe('StatusBar — live-mount smoke', () => {
     const tabpanel = container.querySelector('[role="tabpanel"]');
     expect(tabpanel).not.toBeNull();
     const tabs = container.querySelectorAll('[role="tab"]');
-    expect(tabs.length).toBe(6);
+    expect(tabs.length).toBe(7);
     // exactly one tab starts selected (Identity, the default active tab)
     expect(Array.from(tabs).filter((t) => t.getAttribute('aria-selected') === 'true').length).toBe(1);
 
@@ -240,6 +254,43 @@ describe('StatusBar — live-mount smoke', () => {
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
+  // Pixel a11y fix (WO-UI5-DOSSIER gate review): aria-disabled is invalid
+  // on a non-interactive <span> -- the subscription stub must instead carry
+  // an accessible name via aria-label, and stay a pure stub (no PayPal).
+  it('SETTINGS tab: the subscription stub has an accessible name and no aria-disabled', async () => {
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <SettingsProvider>
+            <StatusBar />
+          </SettingsProvider>
+        </MemoryRouter>
+      );
+    });
+    await flush();
+
+    const nameChip = container.querySelector('.sb-name-chip') as HTMLButtonElement;
+    await act(async () => {
+      nameChip.click();
+    });
+    await flush();
+
+    const settingsTab = Array.from(container.querySelectorAll('[role="tab"]')).find(
+      (t) => t.textContent === 'SETTINGS'
+    ) as HTMLButtonElement;
+    await act(async () => {
+      settingsTab.click();
+    });
+    await flush();
+
+    const stub = container.querySelector('.sb-settings-subscription-stub');
+    expect(stub).not.toBeNull();
+    expect(stub?.getAttribute('aria-label')).toBe('Subscription — coming soon');
+    expect(stub?.getAttribute('aria-disabled')).toBeNull();
+
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
   // Pixel a11y REVISE #1 (WCAG 2.1 Level A) — the WAI-ARIA tabs pattern:
   // Left/Right cycle tabs (wrapping), Home/End jump to first/last, and
   // focus follows the newly-active tab (roving tabindex).
@@ -247,7 +298,9 @@ describe('StatusBar — live-mount smoke', () => {
     await act(async () => {
       root.render(
         <MemoryRouter>
-          <StatusBar />
+          <SettingsProvider>
+            <StatusBar />
+          </SettingsProvider>
         </MemoryRouter>
       );
     });
@@ -261,7 +314,7 @@ describe('StatusBar — live-mount smoke', () => {
 
     const tablist = container.querySelector('[role="tablist"]') as HTMLElement;
     const tabs = Array.from(container.querySelectorAll('[role="tab"]')) as HTMLButtonElement[];
-    expect(tabs.length).toBe(6);
+    expect(tabs.length).toBe(7);
 
     const pressKey = async (key: string) => {
       await act(async () => {
@@ -282,10 +335,10 @@ describe('StatusBar — live-mount smoke', () => {
     expect(tabs[1].tabIndex).toBe(0);
     expect(tabs[0].tabIndex).toBe(-1);
 
-    // End: jump straight to the last tab (Settings, index 5).
+    // End: jump straight to the last tab (Settings, index 6).
     await pressKey('End');
-    expect(tabs[5].getAttribute('aria-selected')).toBe('true');
-    expect(document.activeElement).toBe(tabs[5]);
+    expect(tabs[6].getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(tabs[6]);
 
     // ArrowRight wraps from the last tab back to the first.
     await pressKey('ArrowRight');
@@ -294,8 +347,8 @@ describe('StatusBar — live-mount smoke', () => {
 
     // ArrowLeft wraps from the first tab back to the last.
     await pressKey('ArrowLeft');
-    expect(tabs[5].getAttribute('aria-selected')).toBe('true');
-    expect(document.activeElement).toBe(tabs[5]);
+    expect(tabs[6].getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(tabs[6]);
 
     // Home: jump straight back to the first tab.
     await pressKey('Home');
@@ -311,7 +364,9 @@ describe('StatusBar — live-mount smoke', () => {
     await act(async () => {
       root.render(
         <MemoryRouter>
-          <StatusBar />
+          <SettingsProvider>
+            <StatusBar />
+          </SettingsProvider>
         </MemoryRouter>
       );
     });
@@ -342,7 +397,9 @@ describe('StatusBar — live-mount smoke', () => {
     await act(async () => {
       root.render(
         <MemoryRouter>
-          <StatusBar />
+          <SettingsProvider>
+            <StatusBar />
+          </SettingsProvider>
         </MemoryRouter>
       );
     });

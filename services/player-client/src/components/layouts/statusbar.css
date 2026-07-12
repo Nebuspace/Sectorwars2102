@@ -238,18 +238,42 @@
   font-weight: 700;
 }
 
-/* ── Settings tab (placeholder nav-trigger — real popup is WO-UI0-SCALE-LAW) */
+/* ── Settings tab (embedded UI-scale slider — WO-UI5-DOSSIER) ───────────── */
 .sb-settings-tab {
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
-  align-items: flex-start;
+  gap: 0.8rem;
+  align-items: stretch;
 }
 
-.sb-settings-note {
-  font-size: 0.72rem;
+.sb-settings-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.sb-settings-row-control {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.sb-settings-range {
+  flex: 1 1 auto;
+  accent-color: #00d9ff;
+}
+
+/* Deliberate STUB — no PayPal/subscription wiring (payments carve-out,
+   human-gated, out of this WO's scope). */
+.sb-settings-subscription-stub {
+  display: inline-block;
+  width: fit-content;
+  padding: 0.25rem 0.6rem;
+  border: 1px dashed rgba(126, 140, 160, 0.4);
+  border-radius: 3px;
+  font-size: 0.68rem;
   color: var(--color-text-muted, #7e8ca0);
-  margin: 0;
+  cursor: not-allowed;
 }
 
 .sb-settings-link {
@@ -323,6 +347,46 @@
   font-size: 0.65rem;
   color: var(--color-text-muted, #7e8ca0);
   font-style: italic;
+}
+
+/* ── Crew (team summary) tab ─────────────────────────────────────────────── */
+.sb-crew-loading,
+.sb-crew-error {
+  font-size: 0.75rem;
+  color: var(--color-text-muted, #7e8ca0);
+}
+
+.sb-crew-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.sb-crew-name {
+  /* Pixel a11y fix: now an <h2> (was a plain div) -- reset the UA
+     stylesheet's default heading margin so the visual is unchanged. */
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.sb-crew-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+}
+
+.sb-crew-link {
+  color: #00d9ff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-decoration: none;
+  align-self: flex-start;
+}
+
+.sb-crew-link:hover {
+  text-decoration: underline;
 }
 
 /* ── Location dropdown ───────────────────────────────────────────────────── */

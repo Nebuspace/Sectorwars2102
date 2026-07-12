@@ -135,6 +135,31 @@ describe('ReputationPage', () => {
     expect(rows[1].querySelector('.mfd-page-faction-value')?.textContent).toBe('-40');
   });
 
+  it('renders a color-graded standing bar per row, clamped/normalized against the -800..+800 range', async () => {
+    mockGetReputation.mockResolvedValue([
+      makeRow({ faction_id: 'f1', faction_name: 'Terran Federation', current_value: 400, current_level: 'VALUED' }),
+      makeRow({ faction_id: 'f2', faction_name: 'Shadow Syndicate', current_value: -400, current_level: 'SMUGGLER' }),
+      // Above the server's own clamp ceiling -- the bar fill must still clamp to 100%, never overflow.
+      makeRow({ faction_id: 'f3', faction_name: 'Rogue Consortium', current_value: 900, current_level: 'EXALTED' }),
+    ]);
+
+    await mount();
+
+    const rows = container.querySelectorAll('.mfd-page-faction-row');
+    const bar = (i: number) => rows[i].querySelector('.mfd-page-faction-bar-fill') as HTMLElement;
+
+    // 400 on a [-800,800] range -> (400 - -800) / 1600 = 75%.
+    expect(bar(0).style.width).toBe('75%');
+    expect(bar(0).style.backgroundColor).not.toBe('');
+    // -400 -> (-400 - -800) / 1600 = 25%.
+    expect(bar(1).style.width).toBe('25%');
+    // 900 clamps to the 800 ceiling -> 100%, never >100%.
+    expect(bar(2).style.width).toBe('100%');
+
+    // Distinct colors for a hostile vs. a trusted standing (color-graded, not flat).
+    expect(bar(0).style.backgroundColor).not.toBe(bar(1).style.backgroundColor);
+  });
+
   it('shows a loading state before the fetch resolves', async () => {
     let resolveFn: (v: unknown) => void = () => {};
     mockGetReputation.mockReturnValue(new Promise((r) => { resolveFn = r; }));
@@ -147,7 +172,13 @@ describe('ReputationPage', () => {
       );
     });
 
-    expect(container.querySelector('.mfd-empty')?.textContent).toBe('LOADING…');
+    const loadingEmpty = container.querySelector('.mfd-empty');
+    expect(loadingEmpty?.textContent).toBe('LOADING…');
+    // Pixel a11y fix: MFDEmpty itself carries no a11y (shared atom, not
+    // edited) -- ReputationPage wraps it locally so the loading state is
+    // announced.
+    expect(loadingEmpty?.closest('[role="status"]')).not.toBeNull();
+    expect(loadingEmpty?.closest('[aria-live="polite"]')).not.toBeNull();
 
     await act(async () => {
       resolveFn([]);
@@ -166,7 +197,9 @@ describe('ReputationPage', () => {
     mockGetReputation.mockRejectedValue(new Error('Network down'));
     await mount();
 
-    expect(container.querySelector('.mfd-page-warnline')?.textContent).toBe('Network down');
+    const warnline = container.querySelector('.mfd-page-warnline');
+    expect(warnline?.textContent).toBe('Network down');
+    expect(warnline?.getAttribute('role')).toBe('alert');
     expect(container.querySelector('.mfd-page-faction-row')).toBeNull();
   });
 

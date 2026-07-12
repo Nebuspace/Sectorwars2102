@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useGame } from '../../contexts/GameContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
+import { useSettings } from '../../contexts/SettingsContext';
 import LogoutButton from '../auth/LogoutButton';
 import { formatCredits } from '../../utils/formatters';
 import { TurnsIcon } from '../icons/TurnsIcon';
@@ -12,6 +13,7 @@ import { ShipSelector } from '../ships/ShipSelector';
 import { EmbeddedContext } from '../cockpit/EmbeddedContext';
 import ServiceRecordTab from './ServiceRecordTab';
 import ColoniesRosterTab from './ColoniesRosterTab';
+import TeamSummaryTab from './TeamSummaryTab';
 import LocationDropdown from './LocationDropdown';
 import RegionOwnerControls from '../governance/RegionOwnerControls';
 import './statusbar.css';
@@ -33,7 +35,7 @@ import './statusbar.css';
  * LogoutButton) and the same low-turns/bounty/LINK field logic, but is fresh
  * markup/CSS (`sb-*` classes) for the new single-row layout.
  */
-type DossierTab = 'identity' | 'reputation' | 'service' | 'fleet' | 'colonies' | 'settings';
+type DossierTab = 'identity' | 'reputation' | 'service' | 'fleet' | 'colonies' | 'crew' | 'settings';
 
 const DOSSIER_TABS: Array<{ id: DossierTab; label: string }> = [
   { id: 'identity', label: 'IDENTITY' },
@@ -41,6 +43,7 @@ const DOSSIER_TABS: Array<{ id: DossierTab; label: string }> = [
   { id: 'service', label: 'SERVICE RECORD' },
   { id: 'fleet', label: 'FLEET' },
   { id: 'colonies', label: 'COLONIES' },
+  { id: 'crew', label: 'CREW' },
   { id: 'settings', label: 'SETTINGS' },
 ];
 
@@ -87,16 +90,68 @@ const IdentityTab: React.FC = () => {
   );
 };
 
-/* SettingsTab — placeholder nav-trigger only. The real settings popup
- * (UI-scale slider) is WO-UI0-SCALE-LAW's scope; don't over-build here. */
-const SettingsTab: React.FC = () => (
-  <div className="sb-settings-tab">
-    <p className="sb-settings-note">The full settings panel lives on its own page.</p>
-    <Link to="/game/settings" className="sb-settings-link">
-      Open Settings →
-    </Link>
-  </div>
-);
+// UI scale bounds for the embedded slider — mirrors SettingsPage.tsx's own
+// UI_SCALE_MIN/MAX/STEP exactly (SettingsContext.setUiScale clamps to the
+// same [0.6, 1.2] range regardless, so a mismatch here couldn't desync the
+// two controls, but keeping the numbers identical avoids a confusing
+// slider-range difference between the two surfaces).
+const UI_SCALE_MIN = 0.6;
+const UI_SCALE_MAX = 1.2;
+const UI_SCALE_STEP = 0.05;
+
+/* SettingsTab — WO-UI5-DOSSIER: embeds the UI-scale slider directly (was a
+ * placeholder link-out to /game/settings). A lean local echo of
+ * SettingsPage.tsx's Display section, same deliberate-duplication call as
+ * IdentityTab above (SettingsPage is itself a full CockpitInstrument page;
+ * only its one live control is embeddable here, not the page). The
+ * subscription slot is a DELIBERATE STUB — PayPal/subscription wiring is a
+ * payments carve-out (human-gated, out of this WO's scope) — renders a
+ * disabled "coming soon" placeholder, zero PayPal imports/calls. */
+const SettingsTab: React.FC = () => {
+  const { uiScale, setUiScale } = useSettings();
+
+  const handleScaleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const next = parseFloat(e.target.value);
+    if (Number.isFinite(next)) setUiScale(next);
+  };
+
+  const currentPercent = `${Math.round(uiScale * 100)}%`;
+
+  return (
+    <div className="sb-settings-tab">
+      <div className="sb-settings-row">
+        <label htmlFor="sb-ui-scale-range" className="sb-identity-k">
+          UI SCALE
+        </label>
+        <div className="sb-settings-row-control">
+          <input
+            id="sb-ui-scale-range"
+            type="range"
+            className="sb-settings-range"
+            min={UI_SCALE_MIN}
+            max={UI_SCALE_MAX}
+            step={UI_SCALE_STEP}
+            value={uiScale}
+            onChange={handleScaleChange}
+            aria-valuetext={currentPercent}
+          />
+          <span className="sb-identity-v" aria-live="polite">{currentPercent}</span>
+        </div>
+      </div>
+
+      <div className="sb-settings-row sb-settings-subscription">
+        <span className="sb-identity-k">SUBSCRIPTION</span>
+        <span className="sb-settings-subscription-stub" aria-label="Subscription — coming soon">
+          Coming soon
+        </span>
+      </div>
+
+      <Link to="/game/settings" className="sb-settings-link">
+        Open full Settings page →
+      </Link>
+    </div>
+  );
+};
 
 const StatusBar: React.FC = () => {
   const { user } = useAuth();
@@ -283,6 +338,7 @@ const StatusBar: React.FC = () => {
                 </EmbeddedContext.Provider>
               )}
               {activeTab === 'colonies' && <ColoniesRosterTab />}
+              {activeTab === 'crew' && <TeamSummaryTab />}
               {activeTab === 'settings' && <SettingsTab />}
             </div>
           </div>
