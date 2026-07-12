@@ -1,31 +1,204 @@
 /* ============================================
-   TACTICAL MONITOR — cockpit deck-monitor (WO-UI2-TACTICAL-MONITOR)
-   Lives inside the cockpit's TACTICAL monitor (safety-orange CRT chrome,
-   see .tactical-monitor in cockpit.css). Two sections: a pinned CURRENT
-   SECTOR summary (never scrolls) + a scrolling known-sector band list,
-   mirroring comms-mailbox.css's HAILS layout (pinned compose strip +
-   scrolling inbox) for the same "pin summary, scroll the list" shape.
+   TACTICAL MONITOR — cockpit deck-monitor (WO-UI2-DECK-RECONCILE, §05)
+   Two pages: TARGET (sector contacts, rep-colored, ENGAGE/HAIL) and
+   THREAT (law status, mines, hazard readout). Shared by both page
+   components (tactical/pages/TacticalTargetPage.tsx,
+   TacticalThreatPage.tsx), mirroring mfd/pages/pages-ship.css's one-
+   file-for-several-pages convention rather than a file per page.
    ============================================ */
 
-/* The hud-content itself stops scrolling; the sector list scrolls
-   internally so the CURRENT SECTOR summary stays pinned above the fold
-   (Scroll-Law) and the monitor keeps its fixed cockpit footprint. */
-.screen-hud-content.tactical-content {
+/* --- TARGET: contact list --- */
+
+.target-contact-list {
   display: flex;
   flex-direction: column;
-  overflow-y: hidden;
   gap: 0.4rem;
 }
 
-/* --- CURRENT SECTOR: pinned, prominent, the "full picture" section --- */
-
-.tactical-current-section {
-  flex-shrink: 0;
-  padding-bottom: 0.4rem;
-  border-bottom: 1px solid rgba(255, 136, 0, 0.25);
+.target-contact-row {
+  padding: 0.4rem 0.5rem;
+  background: rgba(255, 136, 0, 0.05);
+  border: 1px solid rgba(255, 136, 0, 0.2);
+  border-radius: 4px;
+  transition: background 0.2s ease, border-color 0.2s ease;
 }
 
-.tactical-current-label {
+.target-contact-row:hover {
+  background: rgba(255, 136, 0, 0.09);
+  border-color: rgba(255, 136, 0, 0.35);
+}
+
+.target-contact-main {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.target-contact-name {
+  font-family: 'Courier New', monospace;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+
+.target-contact-name:focus-visible {
+  outline: 1px solid currentColor;
+  outline-offset: 2px;
+}
+
+.target-selected-badge {
+  color: #00d9ff;
+  text-shadow: 0 0 6px rgba(0, 217, 255, 0.7);
+}
+
+.target-npc-badge {
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 0.05rem 0.3rem;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 2px;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+/* Rep-status TEXT tag — ALWAYS visible alongside the name color (WCAG
+   1.4.1, never color-alone; same lesson as the retired threat-band
+   chips). The three tiers reuse the mockup's exact hex triad. */
+.target-rep-tag {
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 0.05rem 0.3rem;
+  border-radius: 2px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+
+.target-rep-red {
+  color: #FF5A6A;
+  background: rgba(255, 90, 106, 0.12);
+}
+
+.target-rep-gray {
+  color: #9AA6B5;
+  background: rgba(154, 166, 181, 0.1);
+}
+
+.target-rep-blue {
+  color: #5FB8FF;
+  background: rgba(95, 184, 255, 0.1);
+}
+
+.target-contact-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.3rem;
+}
+
+.target-action-btn {
+  font-family: 'Courier New', monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 0.2rem 0.55rem;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.target-action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.target-engage-btn {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  color: #ff8080;
+  text-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
+}
+
+.target-engage-btn:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.25);
+}
+
+.target-hail-btn,
+.target-hail-send-btn {
+  background: rgba(0, 217, 255, 0.1);
+  border: 1px solid rgba(0, 217, 255, 0.45);
+  color: #00d9ff;
+}
+
+.target-hail-btn:hover:not(:disabled),
+.target-hail-send-btn:hover:not(:disabled) {
+  background: rgba(0, 217, 255, 0.2);
+}
+
+.target-hail-compose {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  width: 100%;
+}
+
+.target-hail-input {
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  padding: 0 0.4rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.6rem;
+  background: rgba(0, 5, 12, 0.85);
+  border: 1px solid rgba(0, 217, 255, 0.4);
+  border-radius: 3px;
+  color: #eaf6ff;
+  outline: none;
+}
+
+.target-hail-cancel-btn {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 0.9rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.2rem;
+}
+
+.target-result-msg {
+  margin-top: 0.3rem;
+  font-size: 0.6rem;
+  letter-spacing: 0.04em;
+  text-align: right;
+}
+
+.target-result-msg.ok {
+  color: #00ff41;
+}
+
+.target-result-msg.err {
+  color: #ff5a6a;
+}
+
+.target-legend {
+  margin-top: 0.2rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 0.58rem;
+  color: rgba(255, 255, 255, 0.55);
+  letter-spacing: 0.02em;
+  line-height: 1.6;
+}
+
+/* --- THREAT: law status / mines / hazard readout --- */
+
+.threat-section {
+  margin-bottom: 0.7rem;
+}
+
+.threat-section-title {
   font-family: 'Courier New', monospace;
   font-size: 0.6rem;
   font-weight: 700;
@@ -34,127 +207,75 @@
   margin-bottom: 0.3rem;
 }
 
-.tactical-current-row {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
+.threat-law-clean {
+  color: rgba(0, 255, 65, 0.85);
+  font-size: 0.7rem;
 }
 
-.tactical-live-readout {
-  font-family: 'Courier New', monospace;
-  font-size: 0.65rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  color: rgba(255, 255, 255, 0.6);
-}
-
-.tactical-live-readout.tactical-live-active {
+.threat-warnline {
   color: #ffb000;
-  text-shadow: 0 0 6px rgba(255, 176, 0, 0.6);
+  font-size: 0.7rem;
+  text-shadow: 0 0 6px rgba(255, 176, 0, 0.4);
+  margin-bottom: 0.3rem;
 }
 
-/* --- Threat-band chip — the STATUS TRIAD. Text ALWAYS carries the band
-   name alongside color (WCAG — never color alone); HOSTILE and LETHAL
-   intentionally share the same red tier, so the word is what tells them
-   apart, not the color. --- */
-
-.tactical-band-chip {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 0.3rem;
-  padding: 0.15rem 0.5rem;
-  font-family: 'Courier New', monospace;
+.threat-hint {
   font-size: 0.65rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  border-radius: 3px;
-  border: 1px solid currentColor;
-  white-space: nowrap;
-}
-
-.tactical-band-score {
-  font-weight: 400;
-  opacity: 0.75;
-}
-
-.tactical-band-clear {
-  color: #00ff41;
-  background: rgba(0, 255, 65, 0.1);
-  text-shadow: 0 0 6px rgba(0, 255, 65, 0.5);
-}
-
-.tactical-band-caution {
-  color: #ffb000;
-  background: rgba(255, 176, 0, 0.1);
-  text-shadow: 0 0 6px rgba(255, 176, 0, 0.5);
-}
-
-.tactical-band-danger {
-  color: #ef4444;
-  background: rgba(239, 68, 68, 0.12);
-  text-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
-}
-
-.tactical-band-unknown {
   color: rgba(255, 255, 255, 0.5);
-  background: rgba(255, 255, 255, 0.05);
-  border-color: rgba(255, 255, 255, 0.3);
+  font-style: italic;
 }
 
-/* --- Known-sector list: scrolls WITHIN this region only --- */
-
-.tactical-sector-list {
-  flex: 1 1 0;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-}
-
-.tactical-sector-row {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.tactical-sector-summary {
-  width: 100%;
+.threat-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  padding: 0.3rem 0.2rem;
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  text-align: left;
-  transition: background 0.2s ease;
+  gap: 0.4rem;
 }
 
-.tactical-sector-summary:hover {
-  background: rgba(255, 136, 0, 0.06);
-}
-
-.tactical-sector-id {
+.threat-mine-input {
+  width: 60px;
+  height: 22px;
+  padding: 0 0.4rem;
   font-family: 'Courier New', monospace;
   font-size: 0.65rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  color: rgba(255, 255, 255, 0.85);
+  background: rgba(0, 5, 12, 0.85);
+  border: 1px solid rgba(255, 136, 0, 0.4);
+  border-radius: 3px;
+  color: #ffb000;
+  outline: none;
 }
 
-.tactical-contributors {
-  padding: 0 0.2rem 0.4rem 0.6rem;
+.threat-btn {
   font-family: 'Courier New', monospace;
   font-size: 0.6rem;
-  letter-spacing: 0.04em;
-  color: rgba(255, 255, 255, 0.6);
-  display: flex;
-  flex-wrap: wrap;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 0.25rem 0.6rem;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+  background: rgba(255, 136, 0, 0.12);
+  border: 1px solid rgba(255, 136, 0, 0.45);
+  color: #ffb000;
 }
 
-.tactical-contributors-empty {
-  font-style: italic;
-  opacity: 0.7;
+.threat-btn:hover:not(:disabled) {
+  background: rgba(255, 136, 0, 0.22);
+}
+
+.threat-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.threat-msg {
+  margin-top: 0.3rem;
+  font-size: 0.6rem;
+}
+
+.threat-msg.ok {
+  color: #00ff41;
+}
+
+.threat-msg.err {
+  color: #ff5a6a;
 }

@@ -971,16 +971,18 @@
      the solar-system scene above it. CRT line-style, not heavy chrome. */
   border-top: 2px solid rgba(77, 132, 253, 0.28);
   display: grid;
-  /* WO-COCKPIT-ADJ #4: PLANETARY · NAV · COMMS order, ~30/40/30 split.
-     gap:0 so fr units claim all content-box width directly.
-     3:4:3 = 30% / 40% / 30% rendered.
-     .system-monitor gets order:-1 to render first despite DOM order.
-     WO-UI2-TACTICAL-MONITOR appends a 4th 3fr column for TACTICAL
-     (default order:0, DOM-last -- lands after COMMS with no order
-     override needed) -- 3:4:3:3 scales the original three DOWN
-     proportionally (~23%, same ratio preserved among them) rather than
-     resizing any one of them disproportionately. */
-  grid-template-columns: minmax(0, 3fr) minmax(0, 4fr) minmax(0, 3fr) minmax(0, 3fr);
+  /* WO-UI2-DECK-RECONCILE: collapsed back to the CANONICAL 3-monitor deck
+     per cockpit-redesign-v10 §05 -- SOLAR SYSTEM · NAV · TACTICAL, 30% /
+     1fr(~41%) / 29%. The 4th COMMS-monitor column (WO-UI2-TACTICAL-MONITOR's
+     3:4:3:3 widen) is RETIRED here: COMMS' CONTACTS content relocated into
+     TACTICAL[TARGET] and its HAILS/composer moved to the MFD-B COMM lane,
+     so the deck monitor itself (and its grid column) goes away, not just a
+     tab within it. gap:0 so the minmax() tracks claim all content-box width
+     directly. .system-monitor keeps order:-1 to render first (visual col 1)
+     despite being DOM-2nd -- NAV (DOM-1st) lands in col 2, TACTICAL
+     (DOM-3rd, default order:0) lands in col 3 with no order override
+     needed, matching §05's SOLAR SYSTEM · NAV · TACTICAL visual order. */
+  grid-template-columns: minmax(0, 30%) minmax(0, 1fr) minmax(0, 29%);
   grid-template-rows: 1fr;
   gap: 0;
   /* WO-DECK-TIGHTEN: 0.5rem → 0.3rem outer padding — grows panels slightly;
@@ -1060,8 +1062,8 @@
    row 1 only and is squashed to ~1/3 height. Span every row the console
    currently has — harmless at the base single-row layout (row 1/-1 === row 1
    when there's only one row), so no media-query duplication needed. The
-   flying 3-up stack (nav/system/comms-monitor) never carries .full-width and
-   is unaffected. */
+   flying 3-up stack (nav/system/tactical-monitor) never carries .full-width
+   and is unaffected. */
 .console-monitor.full-width {
   grid-row: 1 / -1;
 }
@@ -1361,7 +1363,7 @@
 
 /* WO-COCKPIT-ADJ-0628: SOLAR SYSTEM (formerly PLANETARY, renamed
    WO-UI2-DECK-MONITORS) moves to visual column 1 (left). order:-1 beats
-   the default order:0 on nav-monitor and comms-monitor, so grid
+   the default order:0 on nav-monitor and tactical-monitor, so grid
    auto-placement puts it first without touching HTML order. */
 .system-monitor {
   order: -1;
@@ -1390,12 +1392,14 @@
   pointer-events: none;
 }
 
-/* SOLAR SYSTEM header: label + DeckPageTabs (BODIES/HAZARDS). Same
-   flex-wrap safety as .comms-header-with-modes — the 3fr column is narrow
-   enough that "SOLAR SYSTEM" (longer than the old "PLANETARY") plus a
-   2-tab rail needs to be able to drop the rail to its own row rather than
-   truncate or overflow the header. */
-.system-header-with-modes {
+/* SOLAR SYSTEM + TACTICAL headers: label + DeckPageTabs (SOLAR SYSTEM:
+   SYSTEM/SALVAGE/SIGNALS, was BODIES/HAZARDS; TACTICAL: TARGET/THREAT,
+   WO-UI2-DECK-RECONCILE). Same flex-wrap safety as .comms-header-with-
+   modes — the 29-30% columns are narrow enough that the monitor label
+   plus a multi-tab rail needs to be able to drop the rail to its own row
+   rather than truncate or overflow the header. */
+.system-header-with-modes,
+.tactical-header-with-modes {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1424,37 +1428,50 @@
   row-gap: 2px;
 }
 
-/* Vertical rhythm between HAZARDS page metric groups (hazard / radiation /
-   formations / features / description) — reuses the shipped .hud-label/
-   .hud-value/.hud-bar/.hud-features/.hud-badge content classes verbatim,
-   this is purely a spacing wrapper, not a new content style. */
+/* Vertical rhythm between SOLAR SYSTEM[SYSTEM] hazard-note metric groups
+   (hazard / radiation / description — WO-UI2-DECK-RECONCILE folded these
+   into the SYSTEM page itself, no more standalone HAZARDS page) — reuses
+   the shipped .hud-label/.hud-value/.hud-bar/.hud-features/.hud-badge
+   content classes verbatim, this is purely a spacing wrapper, not a new
+   content style. */
 .system-hazard-metric {
   margin-bottom: 0.6rem;
 }
 
-.comms-monitor .monitor-bezel {
-  border-color: rgba(0, 255, 65, 0.3);
+/* Wrapper for the folded-in hazard note block below the bodies/stations
+   list on SYSTEM (§05: hazards FOLDED IN, not their own page) — a thin
+   divider + label so it reads as a distinct "sensor sweep" section under
+   the object list, not a run-on continuation of it. */
+.system-hazard-fold {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid rgba(147, 51, 234, 0.2);
 }
 
-.comms-monitor .monitor-screen::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  box-shadow: inset 0 0 40px rgba(0, 255, 65, 0.1);
-  pointer-events: none;
+.system-hazard-fold-title {
+  font-family: 'Courier New', monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: rgba(147, 51, 234, 0.75);
+  margin-bottom: 0.4rem;
 }
 
-/* WO-UI2-TACTICAL-MONITOR: the 4th deck-monitor, appended after COMMS
-   (default order:0, DOM-last -- lands in the new 4th grid column with no
-   order override needed). Safety orange identity accent -- deliberately
+/* .comms-monitor frame rules retired WO-UI2-DECK-RECONCILE — the deck
+   COMMS monitor is gone (its CONTACTS relocated into TACTICAL[TARGET],
+   its HAILS/composer moved to the MFD-B COMM lane); CommsMailbox.tsx
+   itself is untouched/orphaned, not deleted, so .comms-header-with-modes
+   below stays live for it. */
+
+/* WO-UI2-TACTICAL-MONITOR / WO-UI2-DECK-RECONCILE: TACTICAL is now the
+   3rd (rightmost, 29%) deck-monitor column, DOM-3rd with default order:0
+   (no override needed). Safety orange identity accent -- deliberately
    NOT the WPN weapons-route accent (#FF4D6D, mfd/RouteRail.tsx) and
-   distinct from NAV cyan / SOLAR SYSTEM purple / COMMS green above, so
-   the monitor's own chrome never reads as "error" or gets confused with
-   the WPN route. The threat-band chips inside it (tactical-monitor.css)
-   carry their own STATUS TRIAD colors independently of this frame accent. */
+   distinct from NAV cyan / SOLAR SYSTEM purple above, so the monitor's
+   own chrome never reads as "error" or gets confused with the WPN route.
+   TARGET's rep-status colors and THREAT's law/hazard readouts (tactical-
+   monitor.css) carry their own semantic colors independently of this
+   frame accent. */
 .tactical-monitor .monitor-bezel {
   border-color: rgba(255, 136, 0, 0.3);
 }
@@ -4997,17 +5014,18 @@
 
 /* ============================================
    ADR-0072 AUTOPILOT — NAV MONITOR PLOT ROW
-   Compact inline destination + PLOT button
-   in the screen-hud-header of the NAV monitor.
+   Compact inline destination + PLOT button, now
+   inside NAV[COURSE]'s own page content (WO-UI2-
+   DECK-RECONCILE moved it out of the shared
+   screen-hud-header — §05 "move the plot-row OUT
+   of the header row").
    ============================================ */
 
-/* The plot row sits inline in the header; flexbox aligns it to the right */
-.nav-plot-row {
+.nav-course-plot-row {
   display: flex;
   align-items: center;
   gap: 0.3rem;
-  margin-left: auto;
-  flex-shrink: 0;
+  flex-wrap: wrap;
 }
 
 /* Numeric sector input — compact CRT styling */
@@ -5080,9 +5098,91 @@
 }
 
 /* ============================================
+   WO-UI2-DECK-RECONCILE — NAV[COURSE] adjacent
+   exits + NAV[CHART] toolbar (§05)
+   ============================================ */
+
+.nav-course-section {
+  margin-bottom: 0.7rem;
+}
+
+.nav-course-section-title {
+  font-family: 'Courier New', monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: rgba(0, 217, 255, 0.75);
+  margin-bottom: 0.3rem;
+}
+
+.nav-exit-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.4rem;
+  margin-bottom: 0.2rem;
+  background: rgba(0, 217, 255, 0.05);
+  border: 1px solid rgba(0, 217, 255, 0.18);
+  border-radius: 3px;
+}
+
+.nav-exit-name {
+  flex: 1;
+  min-width: 0;
+  font-family: 'Courier New', monospace;
+  font-size: 0.68rem;
+  color: #eaf6ff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-exit-cost {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+  font-size: 0.6rem;
+  color: rgba(255, 255, 255, 0.55);
+  white-space: nowrap;
+}
+
+.nav-exit-move-btn {
+  height: 20px;
+  padding: 0 0.5rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  background: rgba(0, 217, 255, 0.1);
+  border: 1px solid rgba(0, 217, 255, 0.45);
+  border-radius: 3px;
+  color: #00d9ff;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.nav-exit-move-btn:hover:not(:disabled) {
+  background: rgba(0, 217, 255, 0.2);
+}
+
+.nav-exit-move-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* CHART's 2D/3D toggle — was inline in the shared header (WO-UI2-CHART-
+   MONITOR); now its own toolbar row at the top of the CHART page content. */
+.nav-chart-toolbar {
+  display: flex;
+  gap: 0.3rem;
+  margin-bottom: 0.4rem;
+}
+
+/* ============================================
    ADR-0072 AUTOPILOT — NAV HEADER BUTTONS
    Standalone engage/abort buttons that live
-   in the nav-plot-row (no helm-btn base).
+   in .nav-course-plot-row (no helm-btn base).
    ============================================ */
 
 /* ENGAGE — cyan, same palette as the plot row */

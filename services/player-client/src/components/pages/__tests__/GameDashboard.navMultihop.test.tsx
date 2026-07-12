@@ -313,10 +313,32 @@ describe('GameDashboard — NAV multi-hop known-graph feed', () => {
     });
   };
 
+  // NAV's DeckPageTabs rail (WO-UI2-DECK-RECONCILE, §05: [COURSE · CHART ·
+  // DRIVE]) defaults to COURSE -- NavigationMap only mounts on CHART now
+  // (the plot row that used to sit in the shared header, always visible
+  // alongside the graph, moved into COURSE's own page content). Every test
+  // in this file exercises the graph/force-layout, so `mount()` switches to
+  // CHART immediately after the initial render, BEFORE the first flush --
+  // this preserves the original mount ordering the "caps rendered nodes"
+  // test's frame-budget comment relies on (NavigationMap's own first
+  // commit still lands on the small pre-chart-fetch graph, exactly as it
+  // did when it was unconditionally visible; the deep chart's data lands
+  // via a later re-render either way).
+  const clickChartTab = async () => {
+    const btn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === 'CHART'
+    );
+    expect(btn, 'expected a CHART tab button').toBeTruthy();
+    await act(async () => {
+      btn!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+  };
+
   const mount = async () => {
     await act(async () => {
       root.render(<GameDashboard />);
     });
+    await clickChartTab();
     await flush();
     await drainRaf();
     await flush();
@@ -409,6 +431,8 @@ describe('GameDashboard — NAV multi-hop known-graph feed', () => {
       root.render(<GameDashboard />);
     });
     await flush();
+    await clickChartTab();
+    await flush();
     await drainRaf();
     await flush();
     await flushTimers();
@@ -440,6 +464,7 @@ describe('GameDashboard — NAV multi-hop known-graph feed', () => {
     await act(async () => {
       root.render(<GameDashboard />);
     });
+    await clickChartTab();
     await flush();
     const frames = await drainRaf();
     await flush();

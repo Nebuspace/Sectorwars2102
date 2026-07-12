@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useGame, type MoveOption, type SpecialFormationSummary } from '../../contexts/GameContext';
 import { useAutopilot } from '../../contexts/AutopilotContext';
@@ -18,8 +18,8 @@ import { chartToNavSectors } from '../tactical/navChartTransform';
 import Galaxy3DRenderer from '../galaxy/Galaxy3DRenderer';
 import QuantumDriveConsole from '../quantum/QuantumDriveConsole';
 import GatewrightPanel from '../gatewright/GatewrightPanel';
-import CommsMailbox from '../comms/CommsMailbox';
 import TacticalMonitor from '../tactical/TacticalMonitor';
+import SolarSalvagePage from '../tactical/pages/SolarSalvagePage';
 import CockpitColonyManagement from '../cockpit/CockpitColonyManagement';
 import DeckPageTabs from '../cockpit/DeckPageTabs';
 import type { ProductionLine } from '../cockpit/ProductionPanel';
@@ -673,22 +673,24 @@ const GameDashboard: React.FC = () => {
     return () => window.clearTimeout(t);
   }, [playerState?.is_landed, playerState?.current_planet_id]);
 
-  // NAV monitor mode: Warp Jumpers get a second mode — the Quantum Drive
-  // console — behind a two-position switch in the NAV header. Every other
-  // ship type sees exactly the classic warp graph, no switch.
+  // NAV monitor mode (WO-UI2-DECK-RECONCILE, §05: [COURSE · CHART · DRIVE]):
+  // COURSE (adjacent-exit MOVE + plotted-course PLOT/ENGAGE, its own page --
+  // was crammed into the shared header), CHART (the astrogation chart, was
+  // "WARP GRAPH"), DRIVE (Warp-Jumper-only quantum console, was "QUANTUM
+  // DRIVE" -- still WJ-gated, non-WJ hulls never see this tab).
   const isWarpJumper = currentShip?.type === 'WARP_JUMPER';
-  const [navMode, setNavMode] = useState<'graph' | 'quantum'>('graph');
-  // WARP GRAPH chart render mode -- 2D force-graph (NavigationMap, default)
-  // or 3D (Galaxy3DRenderer). Independent of navMode: only meaningful while
-  // navMode==='graph' (QUANTUM DRIVE has its own console, no chart to
-  // toggle) -- WO-UI2-CHART-MONITOR.
+  const [navMode, setNavMode] = useState<'course' | 'chart' | 'drive'>('course');
+  // CHART render mode -- 2D force-graph (NavigationMap, default) or 3D
+  // (Galaxy3DRenderer). Independent of navMode: only meaningful while
+  // navMode==='chart' -- WO-UI2-CHART-MONITOR.
   const [navChartMode, setNavChartMode] = useState<'2d' | '3d'>('2d');
 
-  // SOLAR SYSTEM monitor mode (WO-UI2-DECK-MONITORS, was PLANETARY):
-  // BODIES (the planet/station list, unchanged) or HAZARDS (sector
-  // hazard/radiation/formations/features/description — the same
-  // currentSector fields the windshield's HudChips already surface).
-  const [systemPage, setSystemPage] = useState<'bodies' | 'hazards'>('bodies');
+  // SOLAR SYSTEM monitor mode (WO-UI2-DECK-RECONCILE, §05: [SYSTEM ·
+  // SALVAGE · SIGNALS]): SYSTEM (the planet/station list, hazard/radiation
+  // readout folded in -- no more standalone HAZARDS page), SALVAGE (wreck
+  // rows), SIGNALS (discovered formations -- was surfaced on the old
+  // HAZARDS page, now its own tab; was "BODIES"/"HAZARDS").
+  const [systemPage, setSystemPage] = useState<'system' | 'salvage' | 'signals'>('system');
   const [showGatewright, setShowGatewright] = useState(false);
 
   // Region-owner invite/tradedock/governance state + probe RELOCATED to
@@ -696,11 +698,12 @@ const GameDashboard: React.FC = () => {
   // integration) — it now mounts inside StatusBar's LocationDropdown, an
   // ancestor of this component, and is fully self-contained there.
 
-  // Swapping off the Warp Jumper drops back to the warp graph and closes
-  // the Gatewright panel — neither exists without the quantum drive.
+  // Swapping off the Warp Jumper drops back to COURSE and closes the
+  // Gatewright panel — neither the DRIVE page nor Gatewright exist without
+  // the quantum drive.
   useEffect(() => {
     if (!isWarpJumper) {
-      setNavMode('graph');
+      setNavMode('course');
       setShowGatewright(false);
     }
   }, [isWarpJumper]);
@@ -797,12 +800,24 @@ const GameDashboard: React.FC = () => {
 
   // SCAN layer feed (WO-UI2-LIVING-WINDSHIELD): the flight windshield's SCAN
   // toggle (SolarSystemViewscreen-local) renders sector wrecks alongside
-  // special_formations. No context cache exists for wrecks (unlike
-  // planets/stations/ships), so fetch directly -- mirrors the navChart effect
-  // above (cancelled-flag guard, keyed on sector_id) but a failed/absent fetch
+  // special_formations. Also the SOLAR SYSTEM monitor's SALVAGE page (WO-
+  // UI2-DECK-RECONCILE) -- one shared fetch, not two, `refetchSectorWrecks`
+  // exposed so a completed/failed salvage can refresh the list without a
+  // second independent GET. No context cache exists for wrecks (unlike
+  // planets/stations/ships) -- mirrors the navChart effect above
+  // (cancelled-flag guard, keyed on sector_id) but a failed/absent fetch
   // resolves to [] rather than keeping stale data, since a wreck list has no
   // meaningful "last known" fallback across a sector change.
   const [sectorWrecks, setSectorWrecks] = useState<SectorWreck[]>([]);
+  const refetchSectorWrecks = useCallback(() => {
+    if (currentSector?.sector_id == null) {
+      setSectorWrecks([]);
+      return;
+    }
+    sectorAPI.sectorWrecks(currentSector.sector_id)
+      .then((rows) => setSectorWrecks(rows))
+      .catch(() => setSectorWrecks([]));
+  }, [currentSector?.sector_id]);
   useEffect(() => {
     let cancelled = false;
     if (currentSector?.sector_id == null) {
@@ -966,6 +981,30 @@ const GameDashboard: React.FC = () => {
     });
     return costs;
   }, [availableMoves]);
+
+  // NAV[COURSE] adjacent-exit rows (WO-UI2-DECK-RECONCILE, §05: "COURSE:
+  // adjacent exits → MOVE ▸ (1 click = 1 hop)"). One row per 1-hop
+  // destination, warp entries win over a same-sector tunnel entry (mirrors
+  // moveCosts' + navSectors' dedup rule above) -- the destination name
+  // gets a region suffix only when the exit crosses region boundaries,
+  // same display rule navSectors' own destinationName applies.
+  const adjacentExits = useMemo(() => {
+    if (!currentSector) return [] as MoveOption[];
+    const byId = new Map<number, MoveOption>();
+    const nameFor = (move: MoveOption): string => {
+      const showRegion = move.region_id && move.region_id !== currentSector.region_id;
+      return showRegion
+        ? `${move.name} · ${move.region_name}`
+        : move.name;
+    };
+    availableMoves.warps.forEach(warp => {
+      if (!byId.has(warp.sector_id)) byId.set(warp.sector_id, { ...warp, name: nameFor(warp) });
+    });
+    availableMoves.tunnels.forEach(tunnel => {
+      if (!byId.has(tunnel.sector_id)) byId.set(tunnel.sector_id, { ...tunnel, name: nameFor(tunnel) });
+    });
+    return Array.from(byId.values());
+  }, [currentSector, availableMoves]);
 
   // Latch the first real (non-zero) sector_id so the docked/landed canvas
   // scenes seed from it on a COLD load instead of seeding from 0 and then
@@ -3071,213 +3110,233 @@ const GameDashboard: React.FC = () => {
                   <div className="bezel-corner br"></div>
                 </div>
                 <div className="monitor-screen">
-                  {/* NAV header — unified for every hull. DeckPageTabs itself
-                      renders NO rail when fewer than 2 pages are available,
-                      so non-Warp-Jumper hulls (only WARP GRAPH available)
-                      see exactly the prior no-switch layout without a
-                      second branch here. */}
+                  {/* NAV header (WO-UI2-DECK-RECONCILE, §05: [COURSE · CHART ·
+                      DRIVE]) — unified for every hull, no more per-page
+                      plot-row crammed into the shared header (moved into
+                      COURSE's own content below). DRIVE is WJ-gated;
+                      non-Warp-Jumper hulls still see 2 pages (COURSE/CHART),
+                      so the rail always renders regardless of hull type. */}
                   <div className="screen-hud-header nav-header-with-modes">
                     <span>NAV</span>
                     <DeckPageTabs
                       pages={[
-                        { id: 'graph', label: 'WARP GRAPH' },
-                        { id: 'quantum', label: 'QUANTUM DRIVE', available: isWarpJumper },
+                        { id: 'course', label: 'COURSE' },
+                        { id: 'chart', label: 'CHART' },
+                        { id: 'drive', label: 'DRIVE', available: isWarpJumper },
                       ]}
                       activeId={navMode}
-                      onSelect={(id) => setNavMode(id as 'graph' | 'quantum')}
+                      onSelect={(id) => setNavMode(id as 'course' | 'chart' | 'drive')}
                       ariaLabel="NAV display mode"
                       accent="#00d9ff"
                       idBase="nav"
                     />
-                    {/* Destination plot row — sits in the NAV header for all ship types */}
-                    <div className="nav-plot-row">
-                      {/* 2D/3D chart view toggle (WO-UI2-CHART-MONITOR) — only
-                          meaningful for the WARP GRAPH page; QUANTUM DRIVE has
-                          its own console with no chart to toggle. Two plain
-                          buttons (not DeckPageTabs) — no second ARIA tablist
-                          superimposed on the graph tabpanel's single
-                          screen-hud-content association. Reuses .nav-plot-btn
-                          verbatim; opacity is the only new (inline) styling,
-                          keeping this in-scope with zero CSS-file edits. */}
-                      {navMode === 'graph' && (
+                  </div>
+                  <div
+                    className="screen-hud-content"
+                    role="tabpanel"
+                    id={`nav-panel-${navMode}`}
+                    aria-labelledby={`nav-tab-${navMode}`}
+                  >
+                  {navMode === 'drive' ? (
+                    <QuantumDriveConsole onOpenGatewright={() => setShowGatewright(true)} />
+                  ) : !currentSector ? (
+                    <div className="nav-scan-state">
+                      {!navScanTimedOut ? (
                         <>
-                          <button
-                            type="button"
-                            className="nav-plot-btn"
-                            style={{ opacity: navChartMode === '2d' ? 1 : 0.45 }}
-                            aria-pressed={navChartMode === '2d'}
-                            aria-label="2D star chart view"
-                            onClick={() => setNavChartMode('2d')}
-                            title="2D star chart"
-                          >
-                            2D
-                          </button>
-                          <button
-                            type="button"
-                            className="nav-plot-btn"
-                            style={{ opacity: navChartMode === '3d' ? 1 : 0.45 }}
-                            aria-pressed={navChartMode === '3d'}
-                            aria-label="3D galaxy view"
-                            onClick={() => setNavChartMode('3d')}
-                            title="3D galaxy view"
-                          >
-                            3D
+                          <div className="nav-scan-spinner" aria-hidden="true"></div>
+                          <span className="nav-scan-text">SCANNING SECTOR...</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="nav-scan-text warning">SECTOR SCAN TIMED OUT — NO TELEMETRY</span>
+                          <button className="nav-scan-retry" onClick={handleRetryScan}>
+                            ⟳ RETRY SCAN
                           </button>
                         </>
                       )}
-                      <input
-                        type="number"
-                        className="nav-plot-input"
-                        placeholder="SECTOR #"
-                        value={plotTarget}
-                        onChange={(e) => setPlotTarget(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            const id = parseInt(plotTarget, 10);
-                            if (!isNaN(id) && id > 0) autopilot.plotCourse(id);
-                          }
-                        }}
-                        aria-label="Destination sector number"
-                        min={1}
-                      />
-                      <button
-                        className="nav-plot-btn"
-                        disabled={autopilot.status === 'plotting' || !plotTarget || isNaN(parseInt(plotTarget, 10))}
-                        onClick={() => {
-                          const id = parseInt(plotTarget, 10);
-                          if (!isNaN(id) && id > 0) autopilot.plotCourse(id);
-                        }}
-                        title="Plot course to destination sector"
-                      >
-                        {autopilot.status === 'plotting' ? '…' : 'PLOT'}
-                      </button>
-                      {/* Autopilot engage / abort — shown when a course is plotted */}
-                      {autopilot.course && autopilot.status !== 'arrived' && (
-                        autopilot.status === 'engaged' ? (
-                          <button
-                            className="nav-autopilot-abort"
-                            onClick={() => autopilot.abort('manual abort')}
-                            disabled={helmBusy}
-                            aria-disabled={helmBusy}
-                            aria-label={helmBusy ? 'Abort unavailable — helm is busy' : 'Abort autopilot'}
-                            title="Abort autopilot"
-                          >
-                            🛑 ABORT · HOP {autopilot.currentHopIndex + 1}/{autopilot.course.hops.length}{helmBusy ? ' (busy)' : ''}
-                          </button>
-                        ) : (
-                          <button
-                            className="nav-autopilot-engage"
-                            onClick={() => autopilot.engage()}
-                            disabled={helmBusy}
-                            aria-disabled={helmBusy}
-                            aria-label={helmBusy ? 'Autopilot unavailable — helm is busy' : `Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
-                            title={`Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
-                          >
-                            🧭 ENGAGE · {autopilot.course.hops.length} HOP{autopilot.course.hops.length !== 1 ? 'S' : ''}{helmBusy ? ' (busy)' : ''}
-                          </button>
-                        )
-                      )}
                     </div>
-                  </div>
-                  {/* role="tabpanel" only applies when the DeckPageTabs rail
-                      actually renders (isWarpJumper — <2 available pages
-                      means DeckPageTabs returns null and there is no
-                      tablist to associate this region with; Pixel
-                      INACCESSIBLE fix must not dangle aria-labelledby at a
-                      non-Warp-Jumper tab id that was never rendered). */}
-                  <div
-                    className="screen-hud-content"
-                    role={isWarpJumper ? 'tabpanel' : undefined}
-                    id={isWarpJumper ? `nav-panel-${navMode}` : undefined}
-                    aria-labelledby={isWarpJumper ? `nav-tab-${navMode}` : undefined}
-                  >
-                  {isWarpJumper && navMode === 'quantum' ? (
-                    <QuantumDriveConsole onOpenGatewright={() => setShowGatewright(true)} />
-                  ) : (
+                  ) : navMode === 'course' ? (
                     <>
-                      {!currentSector && (
-                        <div className="nav-scan-state">
-                          {!navScanTimedOut ? (
-                            <>
-                              <div className="nav-scan-spinner" aria-hidden="true"></div>
-                              <span className="nav-scan-text">SCANNING SECTOR...</span>
-                            </>
-                          ) : (
-                            <>
-                              <span className="nav-scan-text warning">SECTOR SCAN TIMED OUT — NO TELEMETRY</span>
-                              <button className="nav-scan-retry" onClick={handleRetryScan}>
-                                ⟳ RETRY SCAN
+                      {/* Adjacent exits — 1 click = 1 hop (§05 COURSE). */}
+                      <div className="nav-course-section">
+                        <div className="nav-course-section-title">ADJACENT EXITS</div>
+                        {adjacentExits.length === 0 ? (
+                          <div className="empty-state">No charted exits</div>
+                        ) : (
+                          adjacentExits.map((exit) => (
+                            <div key={exit.sector_id} className="nav-exit-row">
+                              <span className="nav-exit-name">→ {exit.name}</span>
+                              <span className="nav-exit-cost"><TurnsIcon /> {exit.turn_cost}</span>
+                              <button
+                                type="button"
+                                className="nav-exit-move-btn"
+                                onClick={() => handleMove(exit.sector_id)}
+                                disabled={!exit.can_afford}
+                                title={exit.can_afford ? `Move to ${exit.name}` : 'Insufficient turns'}
+                              >
+                                MOVE ▸
                               </button>
-                            </>
+                            </div>
+                          ))
+                        )}
+                      </div>
+
+                      {/* Plotted multi-hop course + PLOT/ENGAGE — relocated
+                          out of the shared header (§05 COURSE: "plotted
+                          course + 🧭 ENGAGE"). */}
+                      <div className="nav-course-section">
+                        <div className="nav-course-section-title">COURSE</div>
+                        <div className="nav-course-plot-row">
+                          <input
+                            type="number"
+                            className="nav-plot-input"
+                            placeholder="SECTOR #"
+                            value={plotTarget}
+                            onChange={(e) => setPlotTarget(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                const id = parseInt(plotTarget, 10);
+                                if (!isNaN(id) && id > 0) autopilot.plotCourse(id);
+                              }
+                            }}
+                            aria-label="Destination sector number"
+                            min={1}
+                          />
+                          <button
+                            className="nav-plot-btn"
+                            disabled={autopilot.status === 'plotting' || !plotTarget || isNaN(parseInt(plotTarget, 10))}
+                            onClick={() => {
+                              const id = parseInt(plotTarget, 10);
+                              if (!isNaN(id) && id > 0) autopilot.plotCourse(id);
+                            }}
+                            title="Plot course to destination sector"
+                          >
+                            {autopilot.status === 'plotting' ? '…' : 'PLOT'}
+                          </button>
+                          {/* Autopilot engage / abort — shown when a course is plotted */}
+                          {autopilot.course && autopilot.status !== 'arrived' && (
+                            autopilot.status === 'engaged' ? (
+                              <button
+                                className="nav-autopilot-abort"
+                                onClick={() => autopilot.abort('manual abort')}
+                                disabled={helmBusy}
+                                aria-disabled={helmBusy}
+                                aria-label={helmBusy ? 'Abort unavailable — helm is busy' : 'Abort autopilot'}
+                                title="Abort autopilot"
+                              >
+                                🛑 ABORT · HOP {autopilot.currentHopIndex + 1}/{autopilot.course.hops.length}{helmBusy ? ' (busy)' : ''}
+                              </button>
+                            ) : (
+                              <button
+                                className="nav-autopilot-engage"
+                                onClick={() => autopilot.engage()}
+                                disabled={helmBusy}
+                                aria-disabled={helmBusy}
+                                aria-label={helmBusy ? 'Autopilot unavailable — helm is busy' : `Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
+                                title={`Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
+                              >
+                                🧭 ENGAGE · {autopilot.course.hops.length} HOP{autopilot.course.hops.length !== 1 ? 'S' : ''}{helmBusy ? ' (busy)' : ''}
+                              </button>
+                            )
                           )}
                         </div>
-                      )}
-                      {currentSector && (
-                        navChartMode === '3d' ? (
-                          // Galaxy3DRenderer sources currentSector/availableMoves
-                          // itself via useGame() -- the rendered node set is
-                          // already {current} ∪ {warps} ∪ {tunnels}, the exact
-                          // same reachable domain as 2D's availableMoves, so
-                          // any non-current click is always a valid hop
-                          // (mirrors GalaxyMap.tsx's own onSectorSelect reuse).
-                          // .galaxy-3d-container fills 100% of this flex cell,
-                          // same height:100% chain NavigationMap's own wrapper
-                          // already relies on here -- no extra sizing wrapper.
-                          <Galaxy3DRenderer
-                            className="nav-3d-view"
-                            onSectorSelect={(sector) => handleMove(sector.sector_id)}
-                          />
-                        ) : (
-                          <NavigationMap
-                            currentSectorId={currentSector.sector_id}
-                            sectors={mergedNavSectors}
-                            availableMoves={affordableMoveIds}
-                            moveCosts={moveCosts}
-                            onNavigate={handleMove}
-                            width={440}
-                            height={300}
-                            course={autopilot.course?.hops ?? null}
-                            currentHopIndex={autopilot.currentHopIndex}
-                            oneWayEdges={oneWayEdges}
-                          />
-                        )
-                      )}
-                      {/* Course summary — total turns + progress; the old
-                          ≤6-chip breadcrumb is retired in favor of the
-                          polyline overlay drawn directly on the map above,
-                          which shows the COMPLETE route regardless of hop
-                          count (WO-NAV-COURSE-OVERLAY). */}
-                      {(() => {
-                        const apCourse = autopilot.course;
-                        const apLastPlot = autopilot.lastPlot;
-                        const hopIdx = autopilot.currentHopIndex;
-                        // Unreachable refusal — show inline warning
-                        if (apLastPlot !== null && apLastPlot.reachable === false) {
-                          const unreach = apLastPlot as import('../../contexts/AutopilotContext').CourseUnreachable;
-                          const nearest = unreach.nearest_known;
-                          return (
-                            <div
-                              className="nav-course-strip nav-course-unreachable"
-                              role="alert"
-                            >
-                              BEYOND CHARTED SPACE — NEAREST KNOWN APPROACH:{' '}
-                              {nearest ? `SECTOR ${nearest.sector_id}` : 'UNKNOWN'}
-                            </div>
-                          );
-                        }
-                        // Reachable course summary — the map draws the route itself
-                        if (apCourse && apCourse.hops.length > 0) {
-                          const legNumber = Math.min(hopIdx + 1, apCourse.hops.length);
-                          return (
-                            <div className="nav-course-strip">
-                              <div className="nav-course-meta" role="status" aria-live="polite">
-                                <TurnsIcon /> {apCourse.total_turns} · LEG {legNumber}/{apCourse.hops.length}
+                        {/* Course summary — total turns + progress; the old
+                            ≤6-chip breadcrumb is retired in favor of the
+                            polyline overlay drawn directly on the CHART page,
+                            which shows the COMPLETE route regardless of hop
+                            count (WO-NAV-COURSE-OVERLAY). */}
+                        {(() => {
+                          const apCourse = autopilot.course;
+                          const apLastPlot = autopilot.lastPlot;
+                          const hopIdx = autopilot.currentHopIndex;
+                          // Unreachable refusal — show inline warning
+                          if (apLastPlot !== null && apLastPlot.reachable === false) {
+                            const unreach = apLastPlot as import('../../contexts/AutopilotContext').CourseUnreachable;
+                            const nearest = unreach.nearest_known;
+                            return (
+                              <div
+                                className="nav-course-strip nav-course-unreachable"
+                                role="alert"
+                              >
+                                BEYOND CHARTED SPACE — NEAREST KNOWN APPROACH:{' '}
+                                {nearest ? `SECTOR ${nearest.sector_id}` : 'UNKNOWN'}
                               </div>
-                            </div>
-                          );
-                        }
-                        return null;
-                      })()}
+                            );
+                          }
+                          // Reachable course summary — CHART draws the route itself
+                          if (apCourse && apCourse.hops.length > 0) {
+                            const legNumber = Math.min(hopIdx + 1, apCourse.hops.length);
+                            return (
+                              <div className="nav-course-strip">
+                                <div className="nav-course-meta" role="status" aria-live="polite">
+                                  <TurnsIcon /> {apCourse.total_turns} · LEG {legNumber}/{apCourse.hops.length}
+                                </div>
+                              </div>
+                            );
+                          }
+                          return null;
+                        })()}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      {/* CHART — the astrogation chart (§05: "window onto the
+                          LIVING ASTROGATION CHART"). 2D/3D toggle relocated
+                          here from the shared header (WO-UI2-CHART-MONITOR's
+                          toggle was already chart-only in behavior, just
+                          header-shared in markup). */}
+                      <div className="nav-chart-toolbar">
+                        <button
+                          type="button"
+                          className="nav-plot-btn"
+                          style={{ opacity: navChartMode === '2d' ? 1 : 0.45 }}
+                          aria-pressed={navChartMode === '2d'}
+                          aria-label="2D star chart view"
+                          onClick={() => setNavChartMode('2d')}
+                          title="2D star chart"
+                        >
+                          2D
+                        </button>
+                        <button
+                          type="button"
+                          className="nav-plot-btn"
+                          style={{ opacity: navChartMode === '3d' ? 1 : 0.45 }}
+                          aria-pressed={navChartMode === '3d'}
+                          aria-label="3D galaxy view"
+                          onClick={() => setNavChartMode('3d')}
+                          title="3D galaxy view"
+                        >
+                          3D
+                        </button>
+                      </div>
+                      {navChartMode === '3d' ? (
+                        // Galaxy3DRenderer sources currentSector/availableMoves
+                        // itself via useGame() -- the rendered node set is
+                        // already {current} ∪ {warps} ∪ {tunnels}, the exact
+                        // same reachable domain as 2D's availableMoves, so
+                        // any non-current click is always a valid hop
+                        // (mirrors GalaxyMap.tsx's own onSectorSelect reuse).
+                        // .galaxy-3d-container fills 100% of this flex cell,
+                        // same height:100% chain NavigationMap's own wrapper
+                        // already relies on here -- no extra sizing wrapper.
+                        <Galaxy3DRenderer
+                          className="nav-3d-view"
+                          onSectorSelect={(sector) => handleMove(sector.sector_id)}
+                        />
+                      ) : (
+                        <NavigationMap
+                          currentSectorId={currentSector.sector_id}
+                          sectors={mergedNavSectors}
+                          availableMoves={affordableMoveIds}
+                          moveCosts={moveCosts}
+                          onNavigate={handleMove}
+                          width={440}
+                          height={300}
+                          course={autopilot.course?.hops ?? null}
+                          currentHopIndex={autopilot.currentHopIndex}
+                          oneWayEdges={oneWayEdges}
+                        />
+                      )}
                     </>
                   )}
                   </div>
@@ -3285,7 +3344,7 @@ const GameDashboard: React.FC = () => {
               </div>
 
               {/* CENTER MONITOR: Solar System (formerly "Planetary Systems",
-                  renamed + given a HAZARDS second page, WO-UI2-DECK-MONITORS) */}
+                  §05 [SYSTEM · SALVAGE · SIGNALS], WO-UI2-DECK-RECONCILE) */}
               <div className="console-monitor system-monitor">
                 <div className="monitor-bezel">
                   <div className="bezel-corner tl"></div>
@@ -3298,11 +3357,12 @@ const GameDashboard: React.FC = () => {
                     <span>SOLAR SYSTEM</span>
                     <DeckPageTabs
                       pages={[
-                        { id: 'bodies', label: 'BODIES' },
-                        { id: 'hazards', label: 'HAZARDS' },
+                        { id: 'system', label: 'SYSTEM' },
+                        { id: 'salvage', label: 'SALVAGE' },
+                        { id: 'signals', label: 'SIGNALS' },
                       ]}
                       activeId={systemPage}
-                      onSelect={(id) => setSystemPage(id as 'bodies' | 'hazards')}
+                      onSelect={(id) => setSystemPage(id as 'system' | 'salvage' | 'signals')}
                       ariaLabel="SOLAR SYSTEM display mode"
                       accent="#9333ea"
                       idBase="system"
@@ -3314,7 +3374,7 @@ const GameDashboard: React.FC = () => {
                     id={`system-panel-${systemPage}`}
                     aria-labelledby={`system-tab-${systemPage}`}
                   >
-                  {systemPage === 'bodies' ? (
+                  {systemPage === 'system' ? (
                     <>
                       {/* Show planets paired with stations (by index) */}
                       {planetsInSector.map((planet, index) => (
@@ -3363,92 +3423,80 @@ const GameDashboard: React.FC = () => {
                           <div className="empty-state">No planetary bodies or stations detected</div>
                         )
                       )}
-                    </>
-                  ) : (
-                    /* HAZARDS page — the same currentSector fields the
-                       windshield's HudChips already surface (hazard/
-                       radiation/formations/features/description), reused
-                       here rather than re-fetched. Always shows the
-                       hazard/radiation readouts (even at 0) so the page
-                       reads as a live sensor sweep, not a conditional
-                       chip. */
-                    !currentSector ? (
-                      <div className="empty-state">No sector telemetry</div>
-                    ) : (
-                      <>
-                        <div className="system-hazard-metric">
-                          <div className="hud-label">⚠️ HAZARD</div>
-                          <div className={`hud-value${currentSector.hazard_level > 0 ? ' danger' : ''}`}>
-                            {currentSector.hazard_level}/10
-                          </div>
-                          <div className="hud-bar">
-                            <div className="hud-bar-fill danger" style={{ width: `${currentSector.hazard_level * 10}%` }}></div>
-                          </div>
-                        </div>
-                        <div className="system-hazard-metric">
-                          <div className="hud-label">☢️ RADIATION</div>
-                          <div className={`hud-value${currentSector.radiation_level > 0 ? ' warning' : ''}`}>
-                            {(currentSector.radiation_level * 100).toFixed(1)}%
-                          </div>
-                          <div className="hud-bar">
-                            <div className="hud-bar-fill warning" style={{ width: `${currentSector.radiation_level * 100}%` }}></div>
-                          </div>
-                        </div>
-                        {currentSector.special_formations && currentSector.special_formations.length > 0 && (
+                      {/* Hazards FOLDED IN — NOT their own page (§05 SYSTEM:
+                          "bodies/stations rows... WITH hazards FOLDED IN").
+                          Same currentSector fields the windshield's HudChips
+                          already surface (hazard/radiation/features/
+                          description); special_formations is deliberately
+                          NOT repeated here — it moved to its own SIGNALS
+                          page below. Always shows the hazard/radiation
+                          readouts (even at 0) so this reads as a live
+                          sensor sweep, not a conditional chip. */}
+                      {currentSector && (
+                        <div className="system-hazard-fold">
+                          <div className="system-hazard-fold-title">SECTOR HAZARDS</div>
                           <div className="system-hazard-metric">
-                            <div className="hud-label">🌀 FORMATIONS</div>
-                            {renderFormationList(currentSector.special_formations)}
-                          </div>
-                        )}
-                        {currentSector.special_features && currentSector.special_features.length > 0 && (
-                          <div className="system-hazard-metric">
-                            <div className="hud-label">ANOMALIES</div>
-                            <div className="hud-features">
-                              {currentSector.special_features.map(feature => (
-                                <span key={feature} className="hud-badge">
-                                  {feature.replace(/_/g, ' ').toUpperCase()}
-                                </span>
-                              ))}
+                            <div className="hud-label">⚠️ HAZARD</div>
+                            <div className={`hud-value${currentSector.hazard_level > 0 ? ' danger' : ''}`}>
+                              {currentSector.hazard_level}/10
+                            </div>
+                            <div className="hud-bar">
+                              <div className="hud-bar-fill danger" style={{ width: `${currentSector.hazard_level * 10}%` }}></div>
                             </div>
                           </div>
-                        )}
-                        {currentSector.description && (
-                          <div className="hud-description-text">{currentSector.description}</div>
-                        )}
-                      </>
+                          <div className="system-hazard-metric">
+                            <div className="hud-label">☢️ RADIATION</div>
+                            <div className={`hud-value${currentSector.radiation_level > 0 ? ' warning' : ''}`}>
+                              {(currentSector.radiation_level * 100).toFixed(1)}%
+                            </div>
+                            <div className="hud-bar">
+                              <div className="hud-bar-fill warning" style={{ width: `${currentSector.radiation_level * 100}%` }}></div>
+                            </div>
+                          </div>
+                          {currentSector.special_features && currentSector.special_features.length > 0 && (
+                            <div className="system-hazard-metric">
+                              <div className="hud-label">NO-TRANSIT NOTES</div>
+                              <div className="hud-features">
+                                {currentSector.special_features.map(feature => (
+                                  <span key={feature} className="hud-badge">
+                                    {feature.replace(/_/g, ' ').toUpperCase()}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {currentSector.description && (
+                            <div className="hud-description-text">{currentSector.description}</div>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  ) : systemPage === 'salvage' ? (
+                    <SolarSalvagePage wrecks={sectorWrecks} onSalvaged={refetchSectorWrecks} />
+                  ) : (
+                    /* SIGNALS — discovered formations → INVESTIGATE (§05).
+                       Shares renderFormationList with the windshield's
+                       FORMATIONS HudChip (same currentSector.
+                       special_formations data + Investigate control). */
+                    !currentSector ? (
+                      <div className="empty-state">No sector telemetry</div>
+                    ) : currentSector.special_formations && currentSector.special_formations.length > 0 ? (
+                      renderFormationList(currentSector.special_formations)
+                    ) : (
+                      <div className="empty-state">No signals or formations charted in this sector</div>
                     )
                   )}
                   </div>
                 </div>
               </div>
 
-              {/* RIGHT MONITOR: COMMS — CONTACTS (sector presence) / HAILS
-                  (player-to-player mailbox). CommsMailbox owns the header
-                  (mode switch + unread badge) and content. */}
-              <div className="console-monitor comms-monitor">
-                <div className="monitor-bezel">
-                  <div className="bezel-corner tl"></div>
-                  <div className="bezel-corner tr"></div>
-                  <div className="bezel-corner bl"></div>
-                  <div className="bezel-corner br"></div>
-                </div>
-                <div className="monitor-screen">
-                  <CommsMailbox
-                    contacts={sectorContacts}
-                    selectedShipId={selectedShipId}
-                    onSelectContact={(c) =>
-                      setSelectedShipId(c?.ship_id ? String(c.ship_id) : null)
-                    }
-                  />
-                </div>
-              </div>
-
-              {/* 4TH MONITOR: TACTICAL — known-graph STATIC threat bands
-                  (GET /nav/threat) + the current sector's LIVE readout
-                  (shipsInSector, the same players_present-derived feed the
-                  COMMS monitor's contact list draws from). TacticalMonitor
-                  owns its own header + content, exactly like CommsMailbox
-                  does for COMMS (WO-UI2-TACTICAL-MONITOR). */}
+              {/* TACTICAL — [TARGET · THREAT] (§05, WO-UI2-DECK-RECONCILE).
+                  The former COMMS monitor's CONTACTS list now lives at
+                  TACTICAL[TARGET] (`sectorContacts`, unchanged merge/feed);
+                  the deck no longer has a standalone COMMS monitor — HAILS/
+                  composer moved to the MFD-B COMM lane. TacticalMonitor owns
+                  its own header + content, same self-contained pattern
+                  CommsMailbox used for COMMS. */}
               <div className="console-monitor tactical-monitor">
                 <div className="monitor-bezel">
                   <div className="bezel-corner tl"></div>
@@ -3458,9 +3506,11 @@ const GameDashboard: React.FC = () => {
                 </div>
                 <div className="monitor-screen">
                   <TacticalMonitor
-                    currentSectorId={currentSector?.sector_id}
-                    currentSectorName={currentSector?.name}
-                    liveShipCount={shipsInSector.length}
+                    contacts={sectorContacts}
+                    selectedShipId={selectedShipId}
+                    onSelectContact={(c) =>
+                      setSelectedShipId(c?.ship_id ? String(c.ship_id) : null)
+                    }
                   />
                 </div>
               </div>

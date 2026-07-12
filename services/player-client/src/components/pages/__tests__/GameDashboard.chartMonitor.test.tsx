@@ -42,12 +42,14 @@ const mockGetMyRegion = vi.fn();
 vi.mock('../../../services/api', () => ({
   navAPI: {
     getChart: (...a: unknown[]) => mockGetChart(...a),
-    // WO-UI2-TACTICAL-MONITOR: the flight TACTICAL monitor's rollup fetch --
-    // not under test here, resolved empty so the mount doesn't reject.
-    getThreat: () => Promise.resolve([]),
   },
   regionOwnerAPI: { getMyRegion: (...a: unknown[]) => mockGetMyRegion(...a) },
   sectorAPI: { sectorWrecks: () => Promise.resolve([]) },
+  // TACTICAL[TARGET]/[THREAT] (WO-UI2-DECK-RECONCILE) only call these from
+  // click handlers / the THREAT page (never mounted -- TACTICAL defaults to
+  // TARGET, not under test here) -- undefined stand-ins are never invoked.
+  combatAPI: undefined,
+  greyStatusAPI: undefined,
 }));
 
 // apiClient -- AutopilotContext's OWN plot POST target (used by the real,
@@ -334,6 +336,10 @@ describe('GameDashboard — NAV chart monitor (/game/map parity, WO-UI2-CHART-MO
 
   it('renders the HERE / IN-RANGE / OUT-OF-RANGE / FRONTIER reach legend', async () => {
     await mount();
+    // NAV[COURSE] is the default page (WO-UI2-DECK-RECONCILE) -- the legend
+    // is NavigationMap's own markup, which only mounts on NAV[CHART].
+    await clickButton('CHART');
+    await settle();
 
     const legend = container.querySelector('.navigation-instructions')?.textContent || '';
     expect(legend).toContain('Here');
@@ -355,8 +361,17 @@ describe('GameDashboard — NAV chart monitor (/game/map parity, WO-UI2-CHART-MO
     await plot(103);
 
     expect(mockPost).toHaveBeenCalledWith('/api/v1/nav/plot', { target_sector_id: 103, objective: 'min_time' });
-    expect(container.querySelector('[data-testid="course-polyline"]')).toBeTruthy();
+    // The course summary (.nav-course-meta) lives on NAV[COURSE] itself
+    // (WO-UI2-DECK-RECONCILE, §05: "plotted course + ENGAGE" is COURSE's own
+    // content) -- read it before switching pages.
     expect(container.querySelector('.nav-course-meta')?.textContent).toContain('3');
+
+    // The polyline overlay + hop waypoint markers are NavigationMap's own
+    // markup, which only mounts on NAV[CHART] -- switch pages to read them.
+    await clickButton('CHART');
+    await settle();
+
+    expect(container.querySelector('[data-testid="course-polyline"]')).toBeTruthy();
     // Both hop waypoint markers rendered, including the chain-injected one
     // (103) with no prior entry in DEFAULT_CHART.
     expect(container.querySelector('[data-testid="course-hop-marker-101"]')).toBeTruthy();
@@ -422,6 +437,10 @@ describe('GameDashboard — NAV chart monitor (/game/map parity, WO-UI2-CHART-MO
 
   it('toggling 2D/3D swaps the chart renderer without unmounting the NAV monitor scaffold', async () => {
     await mount();
+    // The 2D/3D toolbar is NAV[CHART]-only content now (WO-UI2-DECK-
+    // RECONCILE moved it out of the shared header into CHART's own page).
+    await clickButton('CHART');
+    await settle();
 
     const monitorBefore = container.querySelector('.console-monitor.nav-monitor');
     expect(monitorBefore).toBeTruthy();
