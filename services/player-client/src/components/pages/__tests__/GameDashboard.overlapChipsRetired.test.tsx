@@ -31,6 +31,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../../services/api', () => ({
   navAPI: { getChart: vi.fn().mockResolvedValue({ sectors: [], edges: [], frontier: [] }) },
+  // WO-UI2-LIVING-WINDSHIELD: the flight SSV's SCAN-layer wrecks fetch --
+  // not under test here, resolved empty so the mount doesn't reject.
+  sectorAPI: { sectorWrecks: vi.fn().mockResolvedValue([]) },
 }));
 
 vi.mock('react-router-dom', () => ({

@@ -47,6 +47,9 @@ const mockGetMyRegion = vi.fn();
 vi.mock('../../../services/api', () => ({
   navAPI: { getChart: (...a: unknown[]) => mockGetChart(...a) },
   regionOwnerAPI: { getMyRegion: (...a: unknown[]) => mockGetMyRegion(...a) },
+  // WO-UI2-LIVING-WINDSHIELD: the flight SSV's SCAN-layer wrecks fetch --
+  // not under test here, resolved empty so the mount doesn't reject.
+  sectorAPI: { sectorWrecks: () => Promise.resolve([]) },
 }));
 
 // react-router-dom: GameDashboard calls useNavigate() unconditionally at the

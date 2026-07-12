@@ -23,7 +23,7 @@ import DeckPageTabs from '../cockpit/DeckPageTabs';
 import type { ProductionLine } from '../cockpit/ProductionPanel';
 import type { PerColonistRates, ProdRole } from '../cockpit/CoupledColonistSliders';
 import SafeVaultPanel from '../cockpit/SafeVaultPanel';
-import { navAPI, type NavChartResponse } from '../../services/api';
+import { navAPI, type NavChartResponse, sectorAPI, type SectorWreck } from '../../services/api';
 import apiClient from '../../services/apiClient';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { TurnsIcon } from '../icons/TurnsIcon';
@@ -799,6 +799,26 @@ const GameDashboard: React.FC = () => {
       setSelectedShipId(null);
     }
   }, [shipsInSector, selectedShipId]);
+
+  // SCAN layer feed (WO-UI2-LIVING-WINDSHIELD): the flight windshield's SCAN
+  // toggle (SolarSystemViewscreen-local) renders sector wrecks alongside
+  // special_formations. No context cache exists for wrecks (unlike
+  // planets/stations/ships), so fetch directly -- mirrors the navChart effect
+  // above (cancelled-flag guard, keyed on sector_id) but a failed/absent fetch
+  // resolves to [] rather than keeping stale data, since a wreck list has no
+  // meaningful "last known" fallback across a sector change.
+  const [sectorWrecks, setSectorWrecks] = useState<SectorWreck[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    if (currentSector?.sector_id == null) {
+      setSectorWrecks([]);
+      return;
+    }
+    sectorAPI.sectorWrecks(currentSector.sector_id)
+      .then((rows) => { if (!cancelled) setSectorWrecks(rows); })
+      .catch(() => { if (!cancelled) setSectorWrecks([]); });
+    return () => { cancelled = true; };
+  }, [currentSector?.sector_id]);
 
   // NAV map sectors: one node per destination sector. A sector reachable by
   // BOTH a warp and a tunnel used to be listed twice (duplicate React keys in
@@ -2438,6 +2458,9 @@ const GameDashboard: React.FC = () => {
                 onRequestLand={handleLand}
                 onRequestDock={handleDock}
                 selectedShipId={selectedShipId}
+                onSelectShip={setSelectedShipId}
+                wrecks={sectorWrecks}
+                formations={currentSector.special_formations ?? []}
               />
 
               {/* Cockpit frame vignette */}
