@@ -17,6 +17,7 @@ from src.models.team_member import TeamMember, TeamRole
 from src.models.player import Player
 from src.models.message import Message
 from src.models.sector import Sector
+from src.models.fleet import Fleet, FleetStatus
 from src.models.treasury_transaction import TreasuryTransaction
 from src.services.audit_service import AuditService, AuditAction
 
@@ -206,7 +207,80 @@ class TeamService:
         # Check if player is leader
         if team.leader_id != player_id:
             raise ValueError("Only team leader can delete the team")
-        
+
+        # Lock the team's Fleet rows ascending-by-id (mirrors fleet_service's
+        # own _lock_fleets_ascending idiom exactly -- WO-TEAM-DELETE-FLEET-
+        # GUARD) BEFORE any other mutation, making this the FIRST lock this
+        # method acquires (Fleet-before-everything). team_service.py has
+        # never imported fleet_service, and reaching across services for one
+        # locking helper would be a layering smell this codebase doesn't
+        # otherwise have, so the loop is replicated verbatim rather than
+        # borrowed off a FleetService instance. No caller anywhere locks
+        # Team-then-Fleet, so this can't introduce a new AB-BA; the fleet
+        # side of fleet_service.py's documented "FleetBattle -> Fleet ->
+        # Team -> Player" convention is honored for this new edge.
+        #
+        # Closes a griefing exploit, not just an accidental race: without
+        # this, a losing team's leader could delete their own team WHILE
+        # their fleet is IN_BATTLE (delete_team never checked Fleet.status
+        # at all) -- the cascade silently deletes the Fleet row
+        # (Fleet.team_id is ON DELETE CASCADE), SET-NULLing the live
+        # FleetBattle's attacker_fleet_id/defender_fleet_id (that FK is ON
+        # DELETE SET NULL, not RESTRICT), permanently orphaning the battle
+        # and crashing the surviving player's next round-simulate call with
+        # an uncaught AttributeError. Locking here mirrors disband_fleet's
+        # own guard (fleet_service.py:446-447) and closes the TOCTOU in both
+        # interleavings: if this lock wins first, a concurrent
+        # initiate_battle blocks on it and -- once this transaction commits
+        # -- re-selects to find the fleet gone, raising its own clean
+        # "Invalid fleet IDs"; if initiate_battle's lock wins first, this
+        # call blocks until it commits, then re-reads status == IN_BATTLE
+        # and rejects cleanly below.
+        team_fleet_ids = sorted(
+            fleet.id for fleet in
+            self.db.query(Fleet).filter(Fleet.team_id == team_id).all()
+        )
+        for fid in team_fleet_ids:
+            fleet = (
+                self.db.query(Fleet)
+                .filter(Fleet.id == fid)
+                .populate_existing()
+                .with_for_update()
+                .first()
+            )
+            # Short-circuit (mack LOW): raise on the FIRST in-battle fleet
+            # instead of locking every remaining fleet just to run any()
+            # over a fully-materialized list afterward -- no behavior
+            # change, strictly less lock-hold time on a team with several
+            # fleets.
+            if fleet is not None and fleet.status == FleetStatus.IN_BATTLE.value:
+                raise ValueError("Cannot delete team while a fleet is in an active battle")
+
+        # TOCTOU close (mack HIGH): the .all() gather above is an UNLOCKED,
+        # point-in-time snapshot taken BEFORE any lock is held -- a fleet
+        # CREATED for this team after that snapshot was never in
+        # team_fleet_ids, so the loop above never locked or checked it, and
+        # it could still enter IN_BATTLE before this method's own commit.
+        # Close that window with one more query, scoped directly to
+        # team_id + status == IN_BATTLE rather than an id list, placed as
+        # late as possible before the irreversible cascade (nothing between
+        # here and db.delete(team) below touches Fleet, so nothing can
+        # invalidate this check in between). with_for_update() here (not a
+        # bare .first()) means a concurrent initiate_battle mid-flight on
+        # this exact fleet BLOCKS this call rather than racing past it --
+        # once unblocked, this re-evaluates against the now-committed
+        # truth, same as the per-row loop above already does for fleets it
+        # knew about.
+        still_in_battle = (
+            self.db.query(Fleet)
+            .filter(Fleet.team_id == team_id, Fleet.status == FleetStatus.IN_BATTLE.value)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if still_in_battle is not None:
+            raise ValueError("Cannot delete team while a fleet is in an active battle")
+
         # Remove all members' team_id
         self.db.query(Player).filter(Player.team_id == team_id).update({"team_id": None})
 
@@ -597,9 +671,52 @@ class TeamService:
                     priority="urgent"
                 )
             else:
-                # No other members, disband team
-                self.db.delete(team)
-        
+                # No other members -- disband via delete_team (WO-TEAM-
+                # DELETE-FLEET-GUARD-REVISE part 2, cipher CONFIRMED HIGH).
+                # This branch used to call db.delete(team) directly: an
+                # unguarded duplicate of the exact griefing exploit
+                # delete_team was hardened against (no Fleet IN_BATTLE
+                # check at all), and it never nulled
+                # Sector.controlling_team_id / Message.team_id either (the
+                # raw-500 bug WO-TEAM-DELETE-GUARD fixed only in
+                # delete_team). Routing through delete_team ports its FULL
+                # hardening -- the Fleet IN_BATTLE guard + Part-1 TOCTOU
+                # close, Sector/Message cleanup, IntegrityError backstop,
+                # its own DELETE audit log -- atomically, inside
+                # delete_team's own commit.
+                #
+                # delete_team's leader-check (team.leader_id != player_id)
+                # is satisfied here: this branch is reached only when THIS
+                # player IS team.leader_id, and it is never reassigned
+                # except in the new_leader branch above.
+                #
+                # delete_team commits internally, and its own cascade
+                # already (1) deletes this player's OWN TeamMember row
+                # (Team.team_members is cascade="all, delete-orphan" --
+                # the SAME row this method's own self.db.delete(member)
+                # below would otherwise re-target) and (2) nulls this
+                # player's OWN Player.team_id (the bulk
+                # Player.team_id==team_id update matches them -- they are
+                # the team's ONLY remaining member, which is exactly why
+                # this branch was reached). Re-running this method's own
+                # generic member-delete / player.team_id-null / "Member
+                # Left" broadcast / "team.leave" audit log below would (a)
+                # be pure no-op busywork -- there is no other member left
+                # to notify -- and (b) risk touching the `team`/`member`
+                # objects AFTER delete_team's own commit already
+                # expired/cascaded them out from under this session. So
+                # this is a clean early return instead: capture the
+                # room-hop id BEFORE calling delete_team (same
+                # expire-on-commit rationale as the snapshot below), let
+                # delete_team run (a raised ValueError -- e.g. the
+                # IN_BATTLE guard -- propagates straight out exactly like
+                # any other delete_team caller, and nothing in this method
+                # has mutated anything yet), then hop and return.
+                hop_user_id = str(player.user_id)
+                self.delete_team(team.id, player_id)
+                self._schedule_team_hop(hop_user_id, None)
+                return True
+
         # Remove member record
         self.db.delete(member)
 
