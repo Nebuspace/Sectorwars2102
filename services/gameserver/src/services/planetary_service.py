@@ -1783,11 +1783,50 @@ class PlanetaryService:
         if not wanted:
             return {}
 
-        # Lock the besieger (player row) THEN the ship row before mutating — same
-        # lock order combat uses (planet row already held by the caller).
+        # WO-MONEY-STRAGGLER-FLUSHFIRST: flush BEFORE either lock below — this
+        # single flush protects BOTH populate_existing() re-reads that follow:
+        #
+        # (a) Player (besieger, ~:1792): NOT naive-safe after all, despite
+        #     besieger only being READ (current_ship_id) inside THIS
+        #     function. combat_service.attack_planet locks the SAME attacker
+        #     Player row (:2081), then mutates it IN-MEMORY UNFLUSHED
+        #     (spend_turns :2131 -> turns/lifetime_turns_spent; _regen_turns
+        #     :2116; attacker.attack_drones -= :2163) before calling
+        #     settle(planet, db=self.db) (:2174, capture branch) — which
+        #     cascades _step3_power_siege -> advance_siege -> _apply_siege_
+        #     turn -> HERE. In the canonical besiege-then-capture combo
+        #     (planet.siege_attacker_id == attacker.id, gated at
+        #     combat_service.py:3952-3956 for siege_vulnerable), `besieger`
+        #     resolves to the SAME identity-mapped `attacker` object as the
+        #     caller's — a bare populate_existing() on it would DISCARD the
+        #     turn-spend/drone-loss/regen: a repeatable free-assault
+        #     lost-update. (Near-unreachable via the sole live route today —
+        #     the check_and_update_siege pre-hook drains `pending` to 0
+        #     first — but that's a coincidental mitigation, not a structural
+        #     guarantee; same latent-trap class disarmed at the :2513
+        #     turret_count site.)
+        #
+        # (b) Ship (~:1804): advance_siege's multi-turn catch-up loop
+        #     (:1891-1892) re-enters this function once per applied siege
+        #     turn WITHOUT an intervening commit — this session is
+        #     autoflush=False (core/database.py:19). A prior iteration may
+        #     have mutated this same ship's cargo (below) and returned
+        #     without flushing.
+        #
+        # Either populate_existing() re-read is a whole-row refresh from the
+        # DB, not just the columns this function itself touches — flushing
+        # here first persists any pending mutation on EITHER row before its
+        # lock, so the refresh picks it up instead of clobbering it. Same
+        # transaction — the caller still owns the eventual commit — so this
+        # is not a premature commit, only an earlier flush.
+        self.db.flush()
+
+        # Lock the besieger (player row) THEN the ship row before mutating —
+        # same lock order combat uses (planet row already held by the caller).
         besieger = (
             self.db.query(Player)
             .filter(Player.id == attacker_id)
+            .populate_existing()
             .with_for_update()
             .first()
         )
@@ -1799,6 +1838,7 @@ class PlanetaryService:
         ship = (
             self.db.query(Ship)
             .filter(Ship.id == besieger.current_ship_id)
+            .populate_existing()
             .with_for_update()
             .first()
         )

@@ -49,8 +49,14 @@ def make_ship(*, capacity=10_000, contents=None):
 
 
 def _locked_query(result):
-    """A MagicMock .query(...) chain: filter().with_for_update().first() -> result."""
+    """A MagicMock .query(...) chain: filter().populate_existing().with_for_update()
+    .first() -> result. WO-MONEY-STRAGGLER-FLUSHFIRST added .populate_existing()
+    to both locked reads in _skim_siege_stockpiles; populate_existing() is a
+    genuine no-op passthrough here (mirrors reference-retrofit-fake-session-
+    for-update-and-savepoint in agent memory) so it doesn't disturb the
+    existing with_for_update().first() stub."""
     q = MagicMock()
+    q.filter.return_value.populate_existing.return_value = q.filter.return_value
     q.filter.return_value.with_for_update.return_value.first.return_value = result
     return q
 

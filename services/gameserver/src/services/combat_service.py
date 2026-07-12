@@ -2510,9 +2510,25 @@ class CombatService:
             # Attacker Player is already locked above; Player-then-Ship
             # stays the consistent lock order this codebase uses
             # everywhere else a cargo grant follows a Player-row charge.
+            # WO-MONEY-STRAGGLER-FLUSHFIRST: flush BEFORE the locked re-query,
+            # not just add populate_existing(). attacker.current_ship IS this
+            # same identity-mapped Ship row -- _resolve_warp_gate_combat's
+            # turret-return-fire branch above (structurally unreachable today,
+            # WarpGate has no turret_count column, but latent for the day an
+            # Upgrades WO adds one) mutates attacker_ship.combat and
+            # flag_modified()s it, UNFLUSHED (autoflush=False on this
+            # session). A bare .populate_existing() here would re-hydrate
+            # from the row's last-FLUSHED state -- still pre-battle -- and
+            # silently overwrite/discard that pending in-memory combat
+            # mutation, a lost update. Flushing here, immediately before the
+            # query, persists it first so the subsequent locked
+            # populate_existing() read is a no-op / correct rather than a
+            # regression.
+            self.db.flush()
             ship = (
                 self.db.query(Ship)
                 .filter(Ship.id == attacker.current_ship_id, Ship.owner_id == attacker.id)
+                .populate_existing()
                 .with_for_update()
                 .first()
             )
