@@ -395,4 +395,35 @@ describe('SolarSystemViewscreen — interaction wiring (full mount)', () => {
     await mount({ ships: [], wrecks: [], formations: [] });
     expect(container.querySelector('canvas')).not.toBeNull();
   });
+
+  // WO-UI5-CANON-PASS(C): the landedCtx guard (`if (landedPlanetId &&
+  // system?.bodies)`, SolarSystemViewscreen.tsx ~line 7621) had ZERO direct
+  // coverage -- every existing malformed-payload test above mounts the
+  // default `scene="flight"`, which never reaches that branch. landedPlanetId
+  // is deliberately truthy here so the guard's outcome hinges specifically on
+  // `system?.bodies` being falsy (isolates this test's target branch from the
+  // sibling `!landedPlanetId` short-circuit, which is untouched by this fix).
+  it('mounts scene="landed" without throwing when system.bodies is absent (the landedCtx guard holds)', async () => {
+    mockGet.mockResolvedValue({
+      data: {
+        sector_id: SECTOR_ID, sector_type: 'normal',
+        star: { kind: 'G_YELLOW', label: 'Test Star', color: '#ffdd88' },
+        nebula: null, belt: null, bodies: undefined, stations: undefined
+      }
+    });
+    await mount({
+      scene: 'landed',
+      landedPlanetId: 'planet-not-in-system',
+      planetType: 'ROCKY',
+      habitability: 40,
+      citadelLevel: 1,
+      ships: [], wrecks: [], formations: []
+    });
+    // A synchronous throw inside landedCtx/vistaAdaptedInput construction (or
+    // the draw loop) would propagate out of this act() call and fail the
+    // test above -- the canvas assertion is belt-and-suspenders on top of
+    // that implicit "did not throw" proof, same convention as the sibling
+    // flight-scene malformed-payload test above.
+    expect(container.querySelector('canvas')).not.toBeNull();
+  });
 });

@@ -1061,6 +1061,44 @@
   grid-row: 1 / -1;
 }
 
+/* WO-UI5-CANON-PASS(C): shared unscoped base for the DOCKED/LANDED
+   full-width workspace panels (captured follow-up c) — until now
+   `.station-face-workspace` (WO-UI3-STATION-MODE) and
+   `.surface-face-workspace` (WO-UI4-SURFACE-MODE) only existed mode-scoped
+   in game-layout.css (`.game-container.mode-station .station-face-workspace`
+   / `.game-container.mode-surface .surface-face-workspace`, both READ-ONLY
+   reference for this WO), with no bare fallback — a `.station-face-
+   workspace`/`.surface-face-workspace` node rendered without its
+   `.mode-station`/`.mode-surface` ancestor class present would get zero
+   placement styling. This is the shared "load-bearing placement math"
+   game-layout.css's own doc-comment already calls out as identical between
+   the two (grid-column/grid-row span, min-width/min-height/max-height,
+   flex-column fill) plus the "same flat panel background" it also notes —
+   both mode-scoped rules duplicate this ruleset byte-for-byte today.
+   Specificity here is a single class per selector-list branch (0,0,1,0),
+   strictly LOWER than either mode-scoped compound selector (0,0,3,0) — so
+   this base NEVER overrides the mode-scoped rules; whenever `.mode-station`/
+   `.mode-surface` IS present (the only way either class renders today,
+   per GameDashboard.tsx), the mode-scoped rule in game-layout.css wins
+   every property tie and this base is fully redundant-but-inert. It only
+   takes effect as the skeleton for a future bare/unmode-scoped render,
+   closing the gap without changing today's rendered output. */
+.station-face-workspace,
+.surface-face-workspace {
+  position: relative;
+  grid-column: 1 / -1;
+  grid-row: 1 / -1;
+  min-width: 0;
+  min-height: 0;
+  max-height: 100%;
+  padding: 0.25rem;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  background-color: #1a1d24;
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.015) 0%, rgba(0, 0, 0, 0.22) 100%);
+}
+
 /* Monitor bezel */
 .monitor-bezel {
   position: absolute;

@@ -1108,7 +1108,12 @@
   gap: 8px;
 }
 
-.status-bar {
+/* WO-UI5-CANON-PASS(C): scoped to `.service-status` (ServicesVenue.tsx's
+   real, direct-child ancestor of each `.status-bar` service-readout row) so
+   this rule stops colliding at the top level with the unrelated real
+   `.status-bar` components in App.css/statusbar.css/siege-status-monitor.css
+   — see statusbar.css's doc-comment for the full collision history. */
+.service-status .status-bar {
   display: flex;
   align-items: center;
   gap: 8px;

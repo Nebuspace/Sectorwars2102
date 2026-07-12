@@ -9,21 +9,37 @@
    game-layout.css:96-103) — it never needs pointer-events tricks because it
    doesn't overlay the scene; the windshield keeps its own click-through
    above/below this row untouched. */
-/* Selector is `.status-bar.status-bar` (specificity 0,0,2,0), not the bare
-   class — `.status-bar` is a GLOBAL, unscoped collision: App.css (generic
-   8px progress bar), siege-status-monitor.css (siege HP bar), and
-   spacedock.css (unrelated flex row) all declare their OWN `.status-bar`
-   rule. CSS cascades per-PROPERTY on tied specificity + source order, so
-   whichever of those loads LAST wins any property this block doesn't
-   "out-specificity" — confirmed LIVE: siege-status-monitor.css's later-
-   loaded `.status-bar` rule (setting `overflow: hidden`) was clobbering
-   THIS row's own `overflow: visible` below, silently clipping the ENTIRE dossier dropdown
-   body invisible (only the tabs row painted) regardless of anything set on
-   `.sb-dossier-panel`/`.sb-dossier-body`. The doubled class is the standard
-   collision-proof bump — it beats any single-class `.status-bar` rule
-   permanently, regardless of file load order, without renaming this class
-   (which would need a StatusBar.tsx touch, out of this file's scope). */
-.status-bar.status-bar {
+/* Selector is `.game-container .status-bar` (specificity 0,0,2,0 — the same
+   ancestor-scoping convention as `.game-container .game-sidebar` in
+   game-layout.css) — NOT a bare `.status-bar`, and NOT the old
+   `.status-bar.status-bar` specificity-bump hack this pass (WO-UI5-CANON-
+   PASS sub-part C) replaces. `.status-bar` was a GLOBAL, unscoped class-name
+   collision: App.css (a dead 8px progress-bar rule under the landing page's
+   `.terminal-content` "GALAXY STATS" panel — no live element currently
+   renders it, see that rule's own comment), siege-status-monitor.css (a
+   defense-readout bar under `.defense-item`), and spacedock.css (a
+   service-status row under `.service-status`) each also declared their OWN
+   top-level `.status-bar` rule. CSS cascades per-PROPERTY on tied
+   specificity + source order, so whichever of those loaded LAST won any
+   property this block didn't "out-specificity" — confirmed LIVE: siege-
+   status-monitor.css's later-loaded `.status-bar` rule (setting `overflow:
+   hidden`) was clobbering THIS row's own `overflow: visible` below, silently
+   clipping the ENTIRE dossier dropdown body invisible (only the tabs row
+   painted) regardless of anything set on `.sb-dossier-panel`/`.sb-dossier-
+   body`. Properly fixed now instead of re-winning the specificity race: each
+   of the four rules is scoped to the real ancestor its `.status-bar`
+   element actually renders under (confirmed by grepping each usage site).
+   This row's real ancestor is `.game-container` — StatusBar mounts as its
+   DIRECT child (GameLayout.statusBarIntegration.test.tsx pins
+   `.game-container > .status-bar` as the CSS-Grid-placement precondition);
+   the descendant combinator here still only ever matches that one element
+   in practice, same as the sibling `.game-container .game-sidebar` rule
+   above. Scoping makes all four selectors structurally DISJOINT — each only
+   matches `.status-bar` elements nested under its own distinct ancestor
+   class, so none can ever again clobber this row's properties (or vice
+   versa) regardless of specificity ties or file load order — a permanent
+   fix, not a hack, with no rename of this class needed. */
+.game-container .status-bar {
   grid-area: statusbar;
   position: relative;
   z-index: 25;
