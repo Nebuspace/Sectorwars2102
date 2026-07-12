@@ -7,7 +7,7 @@
  * dropdowns + all six dossier tabs) with a representative playerState and
  * assert ZERO console.error output while clicking through every tab, plus
  * that the vitals/REP badge/dropdown a11y roles are actually present in the
- * DOM. Mirrors PlayerVitalsHud.lowTurns.test.tsx's seam (jsdom +
+ * DOM. Mirrors StatusBar.lowTurns.test.tsx's seam (jsdom +
  * react-dom/client createRoot + act(), no RTL in this project) and
  * RankDisplay/RankProgress/MedalShowcase.test.tsx's services/api mock shape.
  */
@@ -20,7 +20,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // "current testing environment is not configured to support act(...)"
 // warning (a harness-level quirk observed baseline-wide in this repo's
 // jsdom+createRoot+act tests -- e.g. RankDisplay.test.tsx,
-// PlayerVitalsHud.lowTurns.test.tsx -- unrelated to any component bug) must
+// StatusBar.lowTurns.test.tsx -- unrelated to any component bug) must
 // be silenced at the source rather than filtered after the fact.
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 

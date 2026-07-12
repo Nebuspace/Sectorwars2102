@@ -13,7 +13,7 @@
  *   - INVITE CONTROL / TRADEDOCK CONSTRUCTION render iff `isRegionOwner`
  *     (`ownedRegionId !== null`)
  * regionOwnerAPI is mocked at the module boundary (not fetch), mirroring the
- * established RegionTradeDockPanel.test.tsx / PlayerVitalsHud.lowTurns.test.tsx
+ * established RegionTradeDockPanel.test.tsx / StatusBar.lowTurns.test.tsx
  * house pattern: createRoot + act(), no RTL.
  */
 import React, { act } from 'react';

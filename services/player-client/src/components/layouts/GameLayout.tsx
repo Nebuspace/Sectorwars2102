@@ -421,8 +421,8 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
               reserved `statusbar` grid-area (game-layout.css:96-103); a
               descendant nested inside .main-viewport/.game-content (both
               position:absolute, out of grid flow) would NOT land there.
-              Supersedes PlayerVitalsHud (unmounted above; file left in
-              place per WO, not deleted). */}
+              Supersedes PlayerVitalsHud (removed — WO-CLEANUP-
+              PLAYERVITALSHUD). */}
           <StatusBar />
 
           {/* Teleprinter (WO-UI1-TELEPRINTER stitch) — same pattern as
