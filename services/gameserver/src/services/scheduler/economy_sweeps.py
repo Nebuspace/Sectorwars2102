@@ -75,12 +75,20 @@ def _run_idle_income_sweep_sync() -> Dict[str, int]:
     ELIGIBILITY — a real player's living ship that carries passive_income:
     owner_id NOT NULL (player-owned), is_npc False, is_destroyed False, and
     ShipUpgradeService.get_passive_income(ship) > 0 (the authoritative amount,
-    read from EQUIPMENT_DEFINITIONS and summed across multiple sources). The
-    owning player's row is locked (with_for_update) before its credits are
-    mutated, ordered ship-row-then-player-row to match the upgrade-service lock
-    discipline (player before ship there; here the ship is the candidate driver,
-    so we lock the ship first, then its owner — both ships and players, so no
-    cross-sweep lock-order conflict with the single-row sweeps above).
+    read from EQUIPMENT_DEFINITIONS and summed across multiple sources).
+
+    LOCK ORDER (Player BEFORE Ship — the canonical Station/Planet -> Player ->
+    Ship -> Sector contract): the candidate scan is a column-only query
+    (Ship.id, Ship.owner_id — no ORM entity hydration, so it never touches the
+    identity map), giving us owner_id up front without locking anything. Each
+    row then locks the OWNER's player row first, then the ship row, matching
+    ship_upgrade_service._get_ship_and_player / mining_service /
+    contraband_service (all Player-before-Ship). Because owner_id came from an
+    UNLOCKED scan, a concurrent transfer could have moved the ship to a
+    different owner in the gap; the freshly-locked ship row's owner_id is
+    re-checked against the locked player before crediting, so a stale-owner
+    race is caught and skipped (picked up correctly by the owner's own
+    candidacy on the next sweep) rather than misdirecting the credit.
 
     CADENCE + MAGNITUDE ARE NO-CANON (ship-systems.md §passive_income is
     📐 Design-only) — daily + the EQUIPMENT_DEFINITIONS figure of 100; flagged
@@ -125,8 +133,8 @@ def _run_idle_income_sweep_sync() -> Dict[str, int]:
         # below is the authoritative gate. equipment_slots is non-empty for any
         # ship that could qualify, so we prefilter on that to keep the candidate
         # list small on a galaxy of mostly-unequipped hulls.
-        candidate_ids = (
-            db.query(Ship.id)
+        candidate_rows = (
+            db.query(Ship.id, Ship.owner_id)
             .filter(
                 Ship.owner_id.isnot(None),
                 Ship.is_npc.is_(False),
@@ -136,16 +144,38 @@ def _run_idle_income_sweep_sync() -> Dict[str, int]:
             .all()
         )
 
-        for (ship_id,) in candidate_ids:
+        for ship_id, candidate_owner_id in candidate_rows:
             try:
+                # Lock order: Player BEFORE Ship (Station/Planet -> Player ->
+                # Ship -> Sector). candidate_owner_id is a point-in-time value
+                # from the unlocked scan above; the freshly-locked ship row's
+                # owner_id is re-confirmed against it below before crediting.
+                player = (
+                    db.query(Player)
+                    .filter(Player.id == candidate_owner_id)
+                    .with_for_update()
+                    .first()
+                )
+                if player is None:
+                    db.rollback()  # orphaned owner_id — skip
+                    continue
+
                 ship = (
                     db.query(Ship)
                     .filter(Ship.id == ship_id)
                     .with_for_update()
                     .first()
                 )
-                if ship is None or ship.is_destroyed or ship.owner_id is None:
-                    db.rollback()  # release row lock; nothing to do
+                if (
+                    ship is None
+                    or ship.is_destroyed
+                    or ship.owner_id is None
+                    or ship.owner_id != player.id
+                ):
+                    # ship.owner_id != player.id means a concurrent transfer
+                    # moved the ship since the unlocked scan — skip; the new
+                    # owner's own candidacy picks it up on a later sweep.
+                    db.rollback()  # release row locks; nothing to do
                     continue
 
                 amount = ShipUpgradeService.get_passive_income(ship)
@@ -161,18 +191,6 @@ def _run_idle_income_sweep_sync() -> Dict[str, int]:
                 if isinstance(last_str, str) and last_str >= today_str:
                     # ISO date strings compare lexicographically == chronologically.
                     db.rollback()
-                    continue
-
-                # Lock the owning player row before mutating its credits, so a
-                # concurrent purchase/grant can't lose this increment.
-                player = (
-                    db.query(Player)
-                    .filter(Player.id == ship.owner_id)
-                    .with_for_update()
-                    .first()
-                )
-                if player is None:
-                    db.rollback()  # orphaned owner_id — skip
                     continue
 
                 player.credits = int(player.credits or 0) + amount
