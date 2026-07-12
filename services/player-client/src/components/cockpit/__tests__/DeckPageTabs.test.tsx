@@ -343,4 +343,38 @@ describe('DeckPageTabs', () => {
     expect(tablist?.classList.contains('deck-tab-rail')).toBe(true);
     expect(tablist?.classList.contains('cmc-tabbar')).toBe(true);
   });
+
+  it('a page WITH its own accent renders that button\'s --tab-accent from page.accent, not the rail accent (WO-UI2-CANON-A-COLONY)', async () => {
+    await mount({
+      pages: [
+        { id: 'citadel', label: 'CITADEL', accent: '#fbbf24' },
+        { id: 'grid', label: 'GRID', accent: '#a78bfa' },
+      ],
+      initialId: 'citadel',
+    });
+
+    const tabs = Array.from(container.querySelectorAll('[role="tab"]')) as HTMLButtonElement[];
+    expect(tabs[0].style.getPropertyValue('--tab-accent')).toBe('#fbbf24');
+    expect(tabs[1].style.getPropertyValue('--tab-accent')).toBe('#a78bfa');
+    // The rail accent (passed as "#00d9ff" by the harness) still resolves at
+    // the wrapper level so rail-scoped CSS keeps working too.
+    const tablist = container.querySelector('[role="tablist"]') as HTMLElement;
+    expect(tablist.style.getPropertyValue('--tab-accent')).toBe('#00d9ff');
+  });
+
+  it('a page WITHOUT its own accent resolves the rail accent on its button (backward-compatible fallback)', async () => {
+    await mount({
+      pages: [
+        { id: 'bodies', label: 'BODIES' },
+        { id: 'hazards', label: 'HAZARDS', accent: '#a78bfa' },
+      ],
+      initialId: 'bodies',
+    });
+
+    const tabs = Array.from(container.querySelectorAll('[role="tab"]')) as HTMLButtonElement[];
+    // No page.accent on 'bodies' — falls back to the rail's accent prop
+    // ("#00d9ff" in the harness), same as every pre-existing caller today.
+    expect(tabs[0].style.getPropertyValue('--tab-accent')).toBe('#00d9ff');
+    expect(tabs[1].style.getPropertyValue('--tab-accent')).toBe('#a78bfa');
+  });
 });

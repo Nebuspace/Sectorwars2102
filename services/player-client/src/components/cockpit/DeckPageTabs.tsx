@@ -36,6 +36,17 @@ export interface DeckPage {
   /** Defaults to true. false excludes the page from the rendered rail
    *  entirely (not shown disabled). */
   available?: boolean;
+  /**
+   * Optional CSS color value for THIS page's own --tab-accent (WO-UI2-
+   * CANON-A-COLONY), overriding the rail's single `accent` prop for just
+   * this button — e.g. CockpitColonyManagement's 7 tabs each carry a
+   * distinct Law-5 accent (citadel amber, grid violet, terraform green…)
+   * rather than one flat rail color. Omitted → the button falls back to
+   * the rail's `accent`, byte-identical to the pre-existing single-accent
+   * behavior (NAV/SOLAR SYSTEM/COMMS and the 3 venue migrations set no
+   * page.accent and must render unchanged).
+   */
+  accent?: string;
 }
 
 interface DeckPageTabsProps {
@@ -140,6 +151,7 @@ const DeckPageTabs: React.FC<DeckPageTabsProps> = ({
             className={`deck-tab-btn${isActive ? ' active' : ''}`}
             aria-selected={isActive}
             tabIndex={index === tabStopIndex ? 0 : -1}
+            style={{ '--tab-accent': page.accent ?? accent } as React.CSSProperties}
             onClick={() => onSelect(page.id)}
             onKeyDown={(event) => handleKeyDown(event, index)}
           >
