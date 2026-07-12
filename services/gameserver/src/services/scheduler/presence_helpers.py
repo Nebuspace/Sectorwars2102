@@ -736,10 +736,29 @@ def _run_presence_sweep_sync() -> Dict[str, int]:
     updated on turn-spend, turn_service.py) within ``PRESENCE_STALE_MINUTES``.
 
     DISCIPLINE: own SessionLocal; xact advisory lock so a 2nd instance skips;
-    candidate query (only non-empty presence lists); per-sector commit + isolated
-    try/except. IDEMPOTENT — re-removing an already-absent player is a no-op, so
-    the lock-releases-on-first-commit property is harmless here. Reads a wall-clock
-    last-seen, mutates only the JSONB list. No migration, no new row.
+    candidate query is COLUMN-ONLY (``Sector.id`` alone, filtered on non-empty
+    presence) — it never loads a full ``Sector`` entity, so nothing here can go
+    stale in this session's identity map by the time the per-sector lock below
+    re-fetches it. Each candidate is then locked with
+    ``.populate_existing().with_for_update()`` (TICKET-PRESENCE-PRUNE-LOCK)
+    RIGHT BEFORE the read-modify-write, mirroring the exact chain shape
+    ``movement_service._update_player_presence`` and ``npc_movement_service``'s
+    roster movers already use on this SAME column (see
+    test_movement_presence_lock_identity_map.py for the identity-map
+    precedent this generalizes) — every writer to ``players_present`` now
+    takes this same row lock before its RMW, so Postgres serializes concurrent
+    writers instead of letting whichever commits last blindly overwrite the
+    other's addition with a stale snapshot (the lost-update this ticket
+    closes). ``.populate_existing()`` is defense-in-depth here specifically —
+    the column-only candidate scan above never caches a stale full entity to
+    begin with, so within THIS function there is nothing for it to refresh
+    today; it is kept to match the house chain shape and to guard a future
+    candidate-query change back to a full-entity SELECT from silently
+    reintroducing the staleness class of bug. Per-sector commit + isolated
+    try/except. IDEMPOTENT — re-removing an already-absent player is a no-op,
+    so the advisory-lock-releases-on-first-commit property is harmless here.
+    Reads a wall-clock last-seen, mutates only the JSONB list. No migration,
+    no new row.
     """
     from datetime import datetime, timezone, timedelta
     from sqlalchemy.orm.attributes import flag_modified
@@ -757,13 +776,37 @@ def _run_presence_sweep_sync() -> Dict[str, int]:
             db.rollback()
             return {"presence_entries_swept": 0, "sectors": 0}
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=PRESENCE_STALE_MINUTES)
-        sectors = (
-            db.query(Sector)
-            .filter(text("jsonb_array_length(players_present) > 0"))
-            .all()
-        )
-        for sec in sectors:
+        # Column-only candidate scan — deliberately selects ONLY Sector.id,
+        # never the full entity, so this query cannot leave a soon-to-be-
+        # stale Sector object cached in this session's identity map (see
+        # the docstring above).
+        candidate_ids = [
+            row[0]
+            for row in (
+                db.query(Sector.id)
+                .filter(text("jsonb_array_length(players_present) > 0"))
+                .all()
+            )
+        ]
+        for sector_pk in candidate_ids:
             try:
+                # Lock RIGHT BEFORE the RMW (TICKET-PRESENCE-PRUNE-LOCK) — a
+                # concurrent presence writer (movement_service.
+                # _update_player_presence, npc_movement_service's roster
+                # movers) takes this SAME .populate_existing().with_for_
+                # update() chain on this SAME row before its own RMW;
+                # Postgres now serializes the two instead of letting a blind
+                # UPDATE from one clobber the other's addition.
+                sec = (
+                    db.query(Sector)
+                    .filter(Sector.id == sector_pk)
+                    .populate_existing()
+                    .with_for_update()
+                    .first()
+                )
+                if sec is None:
+                    db.rollback()
+                    continue
                 entries = list(sec.players_present or [])
                 pids = [
                     e.get("player_id") for e in entries
@@ -795,7 +838,7 @@ def _run_presence_sweep_sync() -> Dict[str, int]:
                 db.rollback()
                 logger.exception(
                     "presence sweep: sector %s failed (loop continues)",
-                    getattr(sec, "id", "?"),
+                    sector_pk,
                 )
         return {"presence_entries_swept": swept, "sectors": sectors_touched}
     finally:
