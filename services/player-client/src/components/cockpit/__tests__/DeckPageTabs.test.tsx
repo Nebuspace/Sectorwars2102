@@ -26,6 +26,7 @@ interface HarnessProps {
   pages: DeckPage[];
   initialId: string;
   onSelectSpy?: (id: string) => void;
+  className?: string;
 }
 
 // Mirrors the real parent contract (GameDashboard NAV/SOLAR SYSTEM,
@@ -36,7 +37,7 @@ interface HarnessProps {
 // isolation.
 const HARNESS_ID_BASE = 'test';
 
-const Harness: React.FC<HarnessProps> = ({ pages, initialId, onSelectSpy }) => {
+const Harness: React.FC<HarnessProps> = ({ pages, initialId, onSelectSpy, className }) => {
   const [activeId, setActiveId] = useState(initialId);
   return (
     <>
@@ -50,6 +51,7 @@ const Harness: React.FC<HarnessProps> = ({ pages, initialId, onSelectSpy }) => {
         ariaLabel="TEST display mode"
         accent="#00d9ff"
         idBase={HARNESS_ID_BASE}
+        className={className}
       />
       <div
         role="tabpanel"
@@ -312,5 +314,33 @@ describe('DeckPageTabs', () => {
     const tabs = Array.from(container.querySelectorAll('[role="tab"]'));
     expect(tabs[1].querySelector('.test-dot')).not.toBeNull();
     expect(tabs[1].textContent).toBe('HAILS');
+  });
+
+  it('with no className supplied, the rail root class is exactly "deck-tab-rail" (backward-compatible)', async () => {
+    await mount({
+      pages: [
+        { id: 'bodies', label: 'BODIES' },
+        { id: 'hazards', label: 'HAZARDS' },
+      ],
+      initialId: 'bodies',
+    });
+
+    const tablist = container.querySelector('[role="tablist"]');
+    expect(tablist?.getAttribute('class')).toBe('deck-tab-rail');
+  });
+
+  it('with a className supplied, the rail root carries BOTH "deck-tab-rail" and the caller class (WO-UI2-DECKTABS-CLASSNAME)', async () => {
+    await mount({
+      pages: [
+        { id: 'bodies', label: 'BODIES' },
+        { id: 'hazards', label: 'HAZARDS' },
+      ],
+      initialId: 'bodies',
+      className: 'cmc-tabbar',
+    });
+
+    const tablist = container.querySelector('[role="tablist"]');
+    expect(tablist?.classList.contains('deck-tab-rail')).toBe(true);
+    expect(tablist?.classList.contains('cmc-tabbar')).toBe(true);
   });
 });

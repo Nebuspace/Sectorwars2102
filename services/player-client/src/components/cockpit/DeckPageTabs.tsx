@@ -58,9 +58,25 @@ interface DeckPageTabsProps {
    * association for screen readers to navigate to).
    */
   idBase: string;
+  /**
+   * Optional caller-supplied class merged ADDITIVELY onto the rail root
+   * (alongside 'deck-tab-rail', never replacing it) so a migrated venue
+   * tablist keeps its per-venue skin (e.g. "cmc-tabbar") while adopting
+   * this rail's shared tab behavior. Root only — never applied to the tab
+   * buttons themselves.
+   */
+  className?: string;
 }
 
-const DeckPageTabs: React.FC<DeckPageTabsProps> = ({ pages, activeId, onSelect, ariaLabel, accent, idBase }) => {
+const DeckPageTabs: React.FC<DeckPageTabsProps> = ({
+  pages,
+  activeId,
+  onSelect,
+  ariaLabel,
+  accent,
+  idBase,
+  className,
+}) => {
   const tabs = pages.filter((p) => p.available !== false);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
@@ -104,7 +120,7 @@ const DeckPageTabs: React.FC<DeckPageTabsProps> = ({ pages, activeId, onSelect, 
 
   return (
     <div
-      className="deck-tab-rail"
+      className={`deck-tab-rail${className ? ' ' + className : ''}`}
       role="tablist"
       aria-label={ariaLabel}
       style={{ '--tab-accent': accent } as React.CSSProperties}
