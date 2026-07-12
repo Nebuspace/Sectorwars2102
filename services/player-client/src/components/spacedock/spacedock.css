@@ -9,6 +9,23 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  /* Positioning context for .station-face-undock (WO-UI3-STATION-MODE) — a
+     fixed corner anchor, independent of whichever venue's own scroll/layout
+     is active underneath. */
+  position: relative;
+}
+
+/* Persistent UNDOCK (WO-UI3-STATION-MODE) — reuses .hub-undock-btn's visual
+   treatment (color/border/font), only adds fixed placement so it survives
+   venue switches (renderActiveVenue swaps its sibling, never this button).
+   z-index sits above ordinary venue content; .black-market-overlay (below,
+   z-index:1000, position:fixed) intentionally still outranks it while that
+   modal is open. */
+.station-face-undock {
+  position: absolute;
+  top: 0.6rem;
+  right: 0.6rem;
+  z-index: 30;
 }
 
 /* ========================================

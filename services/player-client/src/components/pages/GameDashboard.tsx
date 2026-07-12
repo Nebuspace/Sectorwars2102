@@ -659,19 +659,6 @@ const GameDashboard: React.FC = () => {
     setStationTerminal('trade');
   }, [playerState?.current_port_id]);
 
-  // Docked chrome minimize: a few seconds after docking, collapse the
-  // station-bay windshield (low-value scenery) so the station console — the
-  // buy/sell desk + venues, the reason you docked — gets ~85% of the band and
-  // fits without scrolling. Auto-fires once per dock; the player can expand/
-  // re-minimize manually. Resets on undock.
-  const [dockedChromeMin, setDockedChromeMin] = useState(false);
-  useEffect(() => {
-    if (!playerState?.is_docked) { setDockedChromeMin(false); return; }
-    setDockedChromeMin(false); // start expanded so the dock "lands" visibly
-    const t = window.setTimeout(() => setDockedChromeMin(true), 3500);
-    return () => window.clearTimeout(t);
-  }, [playerState?.is_docked, playerState?.current_port_id]);
-
   // Same pattern for the planet-surface scene: a few seconds after landing the
   // low-value surface vista collapses to a thin strip, handing the band to the
   // planetary console (parity with the docked station bay). Resets on liftoff.
@@ -2373,63 +2360,32 @@ const GameDashboard: React.FC = () => {
             );
           })()}
 
-          {/* DOCKED STATE — station bay scene. GLASS LAW: canvas scenery +
-              absolutely-anchored HUD chips ONLY; UNDOCK lives on the helm
-              rail, the trade/SpaceDock instruments stay in the console. */}
+          {/* DOCKED STATE — station face, not a cockpit scene (WO-UI3-
+              STATION-MODE). No SolarSystemViewscreen mount + no windshield-
+              frame vignette here anymore — docked has its own flat identity
+              band (`.station-face-bay-band`, game-layout.css, scoped under
+              `.game-container.mode-station`) instead of a 3D bay canvas.
+              Salvaged verbatim: the ⚓ CLAMPED HudChip (id="baystatus").
+              DROPPED (not resurrected): the bay-minimize-btn/docked-min-bar
+              pair that used to live here — already dead code before this WO
+              (cockpit.css's own `.bay-minimize-btn { display: none
+              !important; }` retired it when WO-INVERTED-L landed; the
+              `.cockpit-mode.docked-min` class it targeted was never applied
+              to any element). Bay minimize/expand is real and live via
+              GameLayout's windshield-minimize/expand toggle (id=151,
+              `--band-h`), which this band collapses/grows with — no new
+              mechanism needed. UNDOCK lives on the helm rail /
+              SpaceDockInterface's persistent frame button, not here. */}
           {playerState?.is_docked && (
-            <>
-              <SolarSystemViewscreen
-                sectorId={sceneSectorId}
-                scene="docked"
-                isSpaceDock={isDockedAtSpaceDock}
-              />
-
-              {/* Cockpit frame vignette */}
-              <div className="windshield-frame">
-                <div className="frame-corner top-left"></div>
-                <div className="frame-corner top-right"></div>
-                <div className="frame-corner bottom-left"></div>
-                <div className="frame-corner bottom-right"></div>
-              </div>
-
-              {/* HUD chips — fixed anchors, never flow layout. The top-left
-                  id="station" chip (station name/type) was RETIRED at the
-                  WO-UI0-STATUSBAR integration step — overlap-defect canvas
-                  chip; its readout now lives in StatusBar's LocationDropdown
-                  (components/layouts/LocationDropdown.tsx), scene-aware and
-                  shown whenever is_docked. */}
+            <div className="station-face-bay-band" role="region" aria-label="Docked station">
+              <span className="station-face-bay-band-name" role="heading" aria-level={2}>
+                {isDockedAtSpaceDock ? '🚀' : '🏪'} DOCKED — {(dockedStation?.name || (isDockedAtSpaceDock ? 'SpaceDock' : 'Trading Station')).toUpperCase()}
+              </span>
               <HudChip id="baystatus" className="top-right" pill={<>⚓ CLAMPED</>}>
                 <div className="hud-label">BAY STATUS</div>
                 <div className="hud-value hud-chip-name hud-chip-ok">CLAMPS ENGAGED</div>
               </HudChip>
-
-              {/* Manual minimize — collapse the bay scenery to give the console
-                  the band (only shown while the bay is expanded). */}
-              <button
-                type="button"
-                className="bay-minimize-btn"
-                onClick={() => setDockedChromeMin(true)}
-                title="Minimize the bay view — expand the station console"
-              >
-                ▴ MINIMIZE BAY
-              </button>
-
-              {/* Collapsed strip (shown only when minimized via CSS): station
-                  identity + expand affordance. */}
-              <div className="docked-min-bar">
-                <span className="docked-min-name">
-                  {isDockedAtSpaceDock ? '🚀' : '🏪'} DOCKED — {(dockedStation?.name || (isDockedAtSpaceDock ? 'SpaceDock' : 'Trading Station')).toUpperCase()}
-                </span>
-                <button
-                  type="button"
-                  className="docked-min-expand"
-                  onClick={() => setDockedChromeMin(false)}
-                  title="Expand the docking-bay view"
-                >
-                  ⤢ EXPAND BAY
-                </button>
-              </div>
-            </>
+            </div>
           )}
 
           {/* SPACE VIEW - Normal flight mode */}
@@ -2551,18 +2507,19 @@ const GameDashboard: React.FC = () => {
 
         {/* CONSOLE - Metal panel with embedded monitors */}
         <div className="cockpit-console">
-          {/* DOCKED STATE: Show SpaceDock or Trading Interface */}
+          {/* DOCKED STATE: the station-face venue workspace (WO-UI3-STATION-
+              MODE) — replaces the flight-monitor bezel wrapper
+              (.console-monitor.trading-monitor.full-width + .monitor-bezel
+              rivets, cockpit.css) with `.station-face-workspace`
+              (game-layout.css, scoped under `.game-container.mode-station`).
+              Everything below the bezel (QuantumRefineryStrip, monitor-
+              screen, tabs, TradingInterface/SpaceDockInterface/venues) is
+              the shipped venue workspace, salvaged verbatim. */}
           {playerState?.is_docked ? (
-            <div className="console-monitor trading-monitor full-width">
+            <div className="station-face-workspace">
               {isWarpJumper && (
                 <QuantumRefineryStrip status={quantumStatus} onRefine={refineQuantumCharge} />
               )}
-              <div className="monitor-bezel">
-                <div className="bezel-corner tl"></div>
-                <div className="bezel-corner tr"></div>
-                <div className="bezel-corner bl"></div>
-                <div className="bezel-corner br"></div>
-              </div>
               <div className="monitor-screen">
                 <div
                   className="screen-hud-header station-venue-header"

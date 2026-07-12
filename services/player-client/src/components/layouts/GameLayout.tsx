@@ -290,8 +290,13 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
   // ── Mode classes (WO-UI0-PERSISTENT-SHELL lane B, ADDITIVE per ruling D3) ─
   // Layered alongside (never replacing) the legacy console-expand/windshield-
   // min/landed-expanded classes above, which still drive the --band-h/
-  // --sidebar-w/--deck-h var math — this class carries no styling of its own
-  // yet. Landed wins over docked, matching today's landed-expanded precedence.
+  // --sidebar-w/--deck-h var math. `mode-station` now carries real styling
+  // (WO-UI3-STATION-MODE, game-layout.css) — it drives the DOCKED "station
+  // face": GameDashboard renders no windshield scene / deck-monitor bezel in
+  // this mode, and the descendant rules there are scoped under
+  // `.game-container.mode-station` so `mode-flight`/`mode-surface` are
+  // structurally untouched. `mode-flight`/`mode-surface` remain hooks only.
+  // Landed wins over docked, matching today's landed-expanded precedence.
   const mode = playerState?.is_landed ? 'mode-surface' : playerState?.is_docked ? 'mode-station' : 'mode-flight';
 
   return (

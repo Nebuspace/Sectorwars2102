@@ -3381,6 +3381,29 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
 
   return (
     <div className="spacedock-interface">
+      {/* Persistent UNDOCK (WO-UI3-STATION-MODE): the hub's own
+          `.hub-undock-btn` (renderHub, above) only exists in the 'hub'
+          venue — every other venue (shipyard/armory/services/mining/
+          gambling/trading/genesis/construction/portoffice/contracts) had NO
+          undock at all. A single instance in the OUTER FRAME, sibling to
+          `renderActiveVenue()`, is reachable from every venue including the
+          hub (the hub's own button still renders too — deliberately not
+          de-duped here, see WO-UI3-STATION-MODE: renderHub's internals are
+          CONCIERGE's region, sequenced after this WO). Reuses
+          `.hub-undock-btn`'s visual treatment; `.station-face-undock`
+          (spacedock.css) only adds the fixed corner placement. */}
+      {onUndock && (
+        <button
+          type="button"
+          className="hub-undock-btn station-face-undock"
+          onClick={onUndock}
+          disabled={helmBusy}
+          aria-label={helmBusy ? 'Undock unavailable — helm is busy' : 'Undock and launch into space'}
+          title="Undock and launch into space"
+        >
+          {helmBusy ? '🚀 LAUNCHING…' : '🚀 UNDOCK & LAUNCH'}
+        </button>
+      )}
       {renderActiveVenue()}
       {renderBlackMarketModal()}
     </div>

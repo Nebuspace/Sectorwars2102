@@ -257,6 +257,68 @@
   --band-h: 65%;
 }
 
+/* STATION FACE (WO-UI3-STATION-MODE): docked stops looking like the cockpit.
+   `mode-station` (GameLayout.tsx) was a real-but-empty hook — this is its
+   first styling. The --band-h/--deck-h/.console-expand/.windshield-min
+   geometry above is SHARED with landed and stays untouched (still governs
+   where the band ends and the deck begins, still lets the player minimize/
+   expand the band) — only WHAT RENDERS inside those regions changes for
+   docked. GameDashboard's DOCKED branch swaps the 3D bay scene
+   (SolarSystemViewscreen scene="docked" + its windshield-frame vignette) for
+   a flat `.station-face-bay-band` identity strip (no canvas — see the
+   invariant proof: docked mounts zero solar-viewscreen nodes), and swaps the
+   flight-monitor bezel wrapper (`.console-monitor.trading-monitor.full-width`
+   + `.monitor-bezel` rivets, cockpit.css) for `.station-face-workspace`.
+   `.station-face-workspace` reproduces ONLY the load-bearing placement math
+   those classes provided inside `.cockpit-console`'s grid (full-width span,
+   flex-column fill) — not their decorative CRT bezel/tint (cockpit.css is
+   out of this WO's file scope) — so `.monitor-screen`/`.screen-hud-header`/
+   `.screen-hud-content`/the venue content inside are UNCHANGED and keep
+   working off their own base (non-`.trading-monitor`-scoped) cockpit.css
+   rules; only the amber cockpit-monitor accent is lost, which is the point.
+   Both rules are scoped under `.game-container.mode-station` so flight/
+   landed are structurally unreachable by them. */
+.game-container.mode-station .station-face-bay-band {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0 1rem;
+  box-sizing: border-box;
+  background: linear-gradient(180deg, rgba(10, 16, 26, 0.96), rgba(6, 10, 16, 0.96));
+}
+
+.game-container.mode-station .station-face-bay-band-name {
+  color: var(--color-primary, #00d9ff);
+  font-family: var(--font-secondary, 'Courier New', monospace);
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-shadow: 0 0 8px rgba(0, 217, 255, 0.5);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.game-container.mode-station .station-face-workspace {
+  position: relative;
+  grid-column: 1 / -1;
+  grid-row: 1 / -1;
+  min-width: 0;
+  min-height: 0;
+  max-height: 100%;
+  padding: 0.25rem;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  background-color: #1a1d24;
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.015) 0%, rgba(0, 0, 0, 0.22) 100%);
+}
+
 /* CENTERED, prominent "Minimize Viewport" button — symmetric to
    .windshield-expand; shown only while the viewport is EXPANDED (grounded +
    windshieldMin=false). Anchored to the BOTTOM of the visual scene band using
