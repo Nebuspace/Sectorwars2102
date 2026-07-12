@@ -4,7 +4,7 @@ import { useGame } from '../../contexts/GameContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useAutopilot } from '../../contexts/AutopilotContext';
 // import { useTheme } from '../../themes/ThemeProvider'; // Available for future use
-import PlayerVitalsHud from './PlayerVitalsHud';
+import StatusBar from './StatusBar';
 import { MFDProvider, useMFD } from '../mfd/MFDContext';
 import MFDScreen from '../mfd/MFDScreen';
 import { SIDEBAR_A, SIDEBAR_B } from '../mfd/sidebarScreens';
@@ -318,7 +318,6 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
               className="main-viewport"
               inert={isInitialLoad}
             >
-              <PlayerVitalsHud />
               {/* Windshield minimize/expand (id=151 + id=151b) — only while
                   docked/landed. Both states show a CENTERED, labeled button.
                   MINIMIZED: "Expand Viewport" near top of the thin 60px band.
@@ -361,6 +360,15 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
               </div>
             )}
           </main>
+
+          {/* StatusBar (WO-UI0-STATUSBAR) — a DIRECT, non-absolute child of
+              .game-container so CSS Grid actually places it into the
+              reserved `statusbar` grid-area (game-layout.css:96-103); a
+              descendant nested inside .main-viewport/.game-content (both
+              position:absolute, out of grid flow) would NOT land there.
+              Supersedes PlayerVitalsHud (unmounted above; file left in
+              place per WO, not deleted). */}
+          <StatusBar />
         </div>
       </div>
     </div>

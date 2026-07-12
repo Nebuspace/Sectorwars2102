@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { useNavigate } from 'react-router-dom';
 import { useGame, type MoveOption } from '../../contexts/GameContext';
 import { useAutopilot } from '../../contexts/AutopilotContext';
 import { useFirstLogin } from '../../contexts/FirstLoginContext';
@@ -19,14 +18,11 @@ import { chartToNavSectors } from '../tactical/navChartTransform';
 import QuantumDriveConsole from '../quantum/QuantumDriveConsole';
 import GatewrightPanel from '../gatewright/GatewrightPanel';
 import CommsMailbox from '../comms/CommsMailbox';
-import CitizenshipBadge from '../governance/CitizenshipBadge';
-import RegionInvitePanel from '../governance/RegionInvitePanel';
-import RegionTradeDockPanel from '../governance/RegionTradeDockPanel';
 import CockpitColonyManagement from '../cockpit/CockpitColonyManagement';
 import type { ProductionLine } from '../cockpit/ProductionPanel';
 import type { PerColonistRates, ProdRole } from '../cockpit/CoupledColonistSliders';
 import SafeVaultPanel from '../cockpit/SafeVaultPanel';
-import { regionOwnerAPI, navAPI, type NavChartResponse } from '../../services/api';
+import { navAPI, type NavChartResponse } from '../../services/api';
 import apiClient from '../../services/apiClient';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { TurnsIcon } from '../icons/TurnsIcon';
@@ -535,7 +531,6 @@ const TerraformHeaderPanel: React.FC<{
 };
 
 const GameDashboard: React.FC = () => {
-  const navigate = useNavigate();
   const {
     playerState,
     currentShip,
@@ -694,63 +689,10 @@ const GameDashboard: React.FC = () => {
   const [navMode, setNavMode] = useState<'graph' | 'quantum'>('graph');
   const [showGatewright, setShowGatewright] = useState(false);
 
-  // Region-owner invite control (WO-IL4). There is no ownership flag on
-  // PlayerState, so probe GET /api/v1/regions/my-region once on mount: 200 =>
-  // this player owns a region (trigger + panel render); 404 => not an owner
-  // (one quiet probe per session, no trigger ever shown). The owned region id
-  // is taken from the probe response and handed to the invite panel.
-  const [ownedRegionId, setOwnedRegionId] = useState<string | null>(null);
-  const [ownedRegionName, setOwnedRegionName] = useState<string | null>(null);
-  // WO-DRIFT-admin-gov-multiregion-owner-500: a 2+-region owner's unscoped
-  // probe now 400s with a pick-list (never a silent guess) — these are the
-  // choices offered until the player picks one via the HUD switcher.
-  const [ownedRegionChoices, setOwnedRegionChoices] = useState<
-    Array<{ id: string; name: string; display_name?: string }>
-  >([]);
-  const [showRegionInvites, setShowRegionInvites] = useState(false);
-  // Region-funded TradeDock construction (WO-TD-RGF-1). Reuses the ownership
-  // probe/state above rather than re-probing — same owner, same region.
-  const [showRegionTradeDock, setShowRegionTradeDock] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const region = await regionOwnerAPI.getMyRegion();
-        if (cancelled || !region?.id) return;
-        setOwnedRegionId(String(region.id));
-        setOwnedRegionName(region.display_name || region.name || null);
-      } catch (err) {
-        if (cancelled) return;
-        const regions = (err as any)?.regions as
-          | Array<{ id: string; name: string; display_name?: string }>
-          | undefined;
-        if ((err as any)?.code === 'ERR_AMBIGUOUS_REGION_OWNER' && regions?.length) {
-          // Multiple owned regions — surface the switcher instead of hiding
-          // ownership entirely.
-          setOwnedRegionChoices(regions);
-          setOwnedRegionId(null);
-          setOwnedRegionName(null);
-          return;
-        }
-        // 404 (not an owner) or a transient error — leave the trigger hidden.
-        setOwnedRegionId(null);
-        setOwnedRegionName(null);
-        setOwnedRegionChoices([]);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const isRegionOwner = ownedRegionId !== null;
-
-  const selectOwnedRegion = (choice: { id: string; name: string; display_name?: string }) => {
-    setOwnedRegionId(choice.id);
-    setOwnedRegionName(choice.display_name || choice.name);
-    setOwnedRegionChoices([]);
-  };
+  // Region-owner invite/tradedock/governance state + probe RELOCATED to
+  // components/governance/RegionOwnerControls.tsx (WO-UI0-STATUSBAR
+  // integration) — it now mounts inside StatusBar's LocationDropdown, an
+  // ancestor of this component, and is fully self-contained there.
 
   // Swapping off the Warp Jumper drops back to the warp graph and closes
   // the Gatewright panel — neither exists without the quantum drive.
@@ -2251,22 +2193,13 @@ const GameDashboard: React.FC = () => {
                 <div className="frame-corner bottom-right"></div>
               </div>
 
-              {/* HUD chips — fixed anchors, never flow layout */}
-              <HudChip id="landed" className="top-left" pill={<>🪐 {landedPlanet?.name || 'Planet'}</>}>
-                <div className="hud-label">LANDED — PLANETARY SURFACE</div>
-                <div className="hud-value hud-chip-name" title={landedPlanet?.name || undefined}>
-                  {getPlanetIcon(landedPlanet?.type)} {landedPlanet?.name || 'Unknown Planet'}
-                </div>
-                <div className="hud-value-secondary">
-                  {landedPlanet?.type?.replace(/_/g, ' ').toUpperCase() || 'UNKNOWN TYPE'}
-                </div>
-                {/* id=152: show the SECTOR on the landed card too (consistent
-                    with the in-flight card's prominent "SECTOR n"). */}
-                <div className="hud-value-secondary">
-                  SECTOR {currentSector ? (currentSector.sector_number || currentSector.sector_id) : '—'}
-                </div>
-              </HudChip>
-
+              {/* HUD chips — fixed anchors, never flow layout. The top-left
+                  id="landed" chip (planet name/type + sector) was RETIRED at
+                  the WO-UI0-STATUSBAR integration step — it was part of the
+                  overlap-defect canvas-chip system; its readouts (planet
+                  name/type, sector number) now live in StatusBar's
+                  LocationDropdown (components/layouts/LocationDropdown.tsx),
+                  which is scene-aware and shows them whenever is_landed. */}
               <HudChip id="owner" className="top-right" pill={<>👤 {ownerText}</>}>
                 <div className="hud-label">👤 OWNER</div>
                 <div className="hud-value hud-chip-name">{ownerText}</div>
@@ -2374,24 +2307,12 @@ const GameDashboard: React.FC = () => {
                 <div className="frame-corner bottom-right"></div>
               </div>
 
-              {/* HUD chips — fixed anchors, never flow layout */}
-              <HudChip
-                id="station"
-                className="top-left"
-                pill={<>{isDockedAtSpaceDock ? '🚀' : '🏪'} {dockedStation?.name || (isDockedAtSpaceDock ? 'SpaceDock' : 'Trading Station')}</>}
-              >
-                <div className="hud-label">
-                  {isDockedAtSpaceDock ? '🚀 DOCKED — SPACEDOCK' : '🏪 DOCKED — STATION'}
-                </div>
-                <div className="hud-value hud-chip-name" title={dockedStation?.name || undefined}>
-                  {dockedStation?.name || (isDockedAtSpaceDock ? 'SpaceDock' : 'Trading Station')}
-                </div>
-                <div className="hud-value-secondary">
-                  {dockedStation?.type?.replace(/_/g, ' ').toUpperCase() ||
-                    (isDockedAtSpaceDock ? 'SPACEDOCK' : 'TRADING STATION')}
-                </div>
-              </HudChip>
-
+              {/* HUD chips — fixed anchors, never flow layout. The top-left
+                  id="station" chip (station name/type) was RETIRED at the
+                  WO-UI0-STATUSBAR integration step — overlap-defect canvas
+                  chip; its readout now lives in StatusBar's LocationDropdown
+                  (components/layouts/LocationDropdown.tsx), scene-aware and
+                  shown whenever is_docked. */}
               <HudChip id="baystatus" className="top-right" pill={<>⚓ CLAMPED</>}>
                 <div className="hud-label">BAY STATUS</div>
                 <div className="hud-value hud-chip-name hud-chip-ok">CLAMPS ENGAGED</div>
@@ -2462,79 +2383,17 @@ const GameDashboard: React.FC = () => {
                 <div className="frame-corner bottom-right"></div>
               </div>
 
-              {/* HUD Overlays */}
-              <HudChip
-                id="location"
-                className="top-left"
-                pill={<>◈ SECTOR {currentSector.sector_number || currentSector.sector_id}</>}
-              >
-                <div className="hud-label">LOCATION</div>
-                <div className="hud-value">
-                  SECTOR {currentSector.sector_number || currentSector.sector_id}
-                </div>
-                {currentSector.region_name && (
-                  <div className="hud-region-name" title={currentSector.region_name}>
-                    {currentSector.region_name}
-                  </div>
-                )}
-                <CitizenshipBadge
-                  regionId={currentSector.region_id}
-                  regionName={currentSector.region_name}
-                />
-                {currentSector.region_id && (
-                  <button
-                    type="button"
-                    className="hud-region-governance-btn"
-                    onClick={() => navigate('/game/governance')}
-                    title="Open regional governance — elections, policies, treaties"
-                  >
-                    ◆ GOVERNANCE
-                  </button>
-                )}
-                {!isRegionOwner && ownedRegionChoices.length > 0 && (
-                  <select
-                    className="hud-region-owner-picker"
-                    defaultValue=""
-                    title="You own multiple regions — pick one to manage"
-                    onChange={(e) => {
-                      const choice = ownedRegionChoices.find((r) => r.id === e.target.value);
-                      if (choice) selectOwnedRegion(choice);
-                    }}
-                  >
-                    <option value="" disabled>
-                      ◆ SELECT REGION TO MANAGE
-                    </option>
-                    {ownedRegionChoices.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {r.display_name || r.name}
-                      </option>
-                    ))}
-                  </select>
-                )}
-                {isRegionOwner && (
-                  <button
-                    type="button"
-                    className="hud-region-invite-btn"
-                    onClick={() => setShowRegionInvites(true)}
-                    title="Manage region invites"
-                  >
-                    ◆ INVITE CONTROL
-                  </button>
-                )}
-                {isRegionOwner && (
-                  <button
-                    type="button"
-                    className="hud-region-tradedock-btn"
-                    onClick={() => setShowRegionTradeDock(true)}
-                    title="Fund region TradeDock construction"
-                  >
-                    ◆ TRADEDOCK CONSTRUCTION
-                  </button>
-                )}
-                <div className="hud-value-secondary">
-                  {currentSector.type ? currentSector.type.replace(/_/g, ' ').toUpperCase() : 'STANDARD'}
-                </div>
-              </HudChip>
+              {/* HUD Overlays. The top-left id="location" chip (sector/
+                  region/CitizenshipBadge + region-owner controls) was
+                  RETIRED at the WO-UI0-STATUSBAR integration step — it was
+                  the overlap-defect canvas-chip system. Its location
+                  readouts (sector number/type, region name, CitizenshipBadge)
+                  now live in StatusBar's LocationDropdown
+                  (components/layouts/LocationDropdown.tsx); its owner
+                  controls (GOVERNANCE / region picker / INVITE CONTROL /
+                  TRADEDOCK CONSTRUCTION + both portal modals) are now
+                  components/governance/RegionOwnerControls.tsx, mounted
+                  inside that same LocationDropdown. */}
 
               {currentSector.hazard_level > 0 && (
                 <HudChip
@@ -3627,42 +3486,10 @@ const GameDashboard: React.FC = () => {
           document.body
         )}
 
-        {/* Region-owner invite control — portal overlay, same shell pattern as
-            the Gatewright panel above. Gated on confirmed region ownership. */}
-        {showRegionInvites && isRegionOwner && ownedRegionId && createPortal(
-          <div
-            className="region-invite-overlay"
-            onClick={() => setShowRegionInvites(false)}
-          >
-            <div className="region-invite-shell" onClick={(e) => e.stopPropagation()}>
-              <RegionInvitePanel
-                regionId={ownedRegionId}
-                regionName={ownedRegionName}
-                onClose={() => setShowRegionInvites(false)}
-              />
-            </div>
-          </div>,
-          document.body
-        )}
-
-        {/* Region-funded TradeDock construction — same portal shell pattern,
-            same ownership gate/state as the invite control above. */}
-        {showRegionTradeDock && isRegionOwner && ownedRegionId && createPortal(
-          <div
-            className="region-tradedock-overlay"
-            onClick={() => setShowRegionTradeDock(false)}
-          >
-            <div className="region-tradedock-shell" onClick={(e) => e.stopPropagation()}>
-              <RegionTradeDockPanel
-                regionId={ownedRegionId}
-                regionName={ownedRegionName}
-                isOwner={isRegionOwner}
-                onClose={() => setShowRegionTradeDock(false)}
-              />
-            </div>
-          </div>,
-          document.body
-        )}
+        {/* Region-owner invite/tradedock portal modals RELOCATED to
+            components/governance/RegionOwnerControls.tsx (WO-UI0-STATUSBAR
+            integration) — it carries its own state + both portals now,
+            mounted inside StatusBar's LocationDropdown. */}
 
         {/* ARIA assistant is mounted globally in GameLayout for all /game routes */}
       </div>

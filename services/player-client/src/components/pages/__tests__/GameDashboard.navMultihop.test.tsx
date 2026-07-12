@@ -34,10 +34,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { NavChartResponse, NavChartSector, NavChartEdge, NavChartFrontier } from '../../../services/api';
 
 // ---------------------------------------------------------------------------
-// services/api -- navAPI.getChart is the fetch under test; regionOwnerAPI is
-// unconditionally probed on mount (GameDashboard:715-745) and must resolve
-// so its own effect doesn't leave a lingering "not an owner" rejection to
-// clean up per test.
+// services/api -- navAPI.getChart is the fetch under test. regionOwnerAPI's
+// probe RELOCATED off GameDashboard to
+// components/governance/RegionOwnerControls.tsx at the WO-UI0-STATUSBAR
+// integration step (it now mounts inside StatusBar's LocationDropdown, an
+// ancestor of GameDashboard) -- kept mocked here defensively even though
+// GameDashboard no longer imports it, since nothing under THIS test's tree
+// mounts RegionOwnerControls either.
 // ---------------------------------------------------------------------------
 const mockGetChart = vi.fn();
 const mockGetMyRegion = vi.fn();

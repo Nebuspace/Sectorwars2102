@@ -1,0 +1,498 @@
+/* StatusBar — the persistent 56px ONE-flex-row status bar (WO-UI0-STATUSBAR
+   sub-part a; cockpit-redesign-v10-RATIFIED.html:496-502: "STATUS BAR (56px,
+   one flex row — overlap structurally impossible)"). SUPERSEDES
+   PlayerVitalsHud's role once mounted at the serial integration step.
+
+   Unlike PlayerVitalsHud (pointer-events: none, floats absolutely over the
+   windshield), the StatusBar is REAL, fully-interactive DOM occupying its
+   own reserved grid row (`grid-area: statusbar`, declared empty at
+   game-layout.css:96-103) — it never needs pointer-events tricks because it
+   doesn't overlay the scene; the windshield keeps its own click-through
+   above/below this row untouched. */
+.status-bar {
+  grid-area: statusbar;
+  position: relative;
+  z-index: 25;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.6rem;
+  height: 56px;
+  min-height: 56px;
+  padding: 0 0.8rem;
+  box-sizing: border-box;
+  background: rgba(0, 10, 16, 0.88);
+  border-top: 1px solid rgba(0, 217, 255, 0.25);
+  border-bottom: 1px solid rgba(0, 217, 255, 0.25);
+  overflow: visible; /* dropdown panels below must escape the row's own box */
+  white-space: nowrap;
+}
+
+/* ── Shared chip button (name / location triggers) ─────────────────────── */
+.sb-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: rgba(0, 217, 255, 0.06);
+  border: 1px solid rgba(0, 217, 255, 0.3);
+  border-radius: 4px;
+  padding: 0.3rem 0.6rem;
+  color: var(--color-text, #c9d4e3);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 14rem;
+}
+
+.sb-chip:hover {
+  background: rgba(0, 217, 255, 0.14);
+  box-shadow: 0 0 8px rgba(0, 217, 255, 0.3);
+}
+
+.sb-chip-icon {
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.sb-chip-caret {
+  font-size: 0.6rem;
+  opacity: 0.7;
+}
+
+/* ── Dropdown panel shell shared by dossier + location ──────────────────── */
+.sb-dossier,
+.sb-location {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.sb-name-chip {
+  color: var(--pilot-color, #00d9ff);
+  text-transform: uppercase;
+}
+
+.sb-name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 8rem;
+}
+
+.sb-location-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 9rem;
+}
+
+.sb-dropdown {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  left: 0;
+  z-index: 40;
+  background: rgba(4, 12, 20, 0.97);
+  border: 1px solid rgba(0, 217, 255, 0.35);
+  border-radius: 6px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55), 0 0 16px rgba(0, 217, 255, 0.15);
+  white-space: normal;
+}
+
+/* Dossier — a FIXED-SIZE tabbed console (Accept #5) so opening it never
+   reflows the row or jumps size between tabs; each tab body scrolls
+   internally instead. */
+.sb-dossier-panel {
+  width: 24rem;
+  max-width: calc(100vw - 2rem);
+}
+
+.sb-dossier-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem;
+  padding: 0.5rem 0.5rem 0;
+  border-bottom: 1px solid rgba(0, 217, 255, 0.2);
+}
+
+.sb-dossier-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px 3px 0 0;
+  color: var(--color-text-muted, #7e8ca0);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 0.35rem 0.5rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.sb-dossier-tab:hover {
+  color: var(--color-text, #c9d4e3);
+}
+
+.sb-dossier-tab.active {
+  color: #00d9ff;
+  border-color: rgba(0, 217, 255, 0.4);
+  border-bottom-color: transparent;
+  background: rgba(0, 217, 255, 0.08);
+}
+
+.sb-dossier-body {
+  height: 18rem;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 0.7rem;
+}
+
+/* ── Identity tab ────────────────────────────────────────────────────────── */
+.sb-identity-name {
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 0.6rem;
+}
+
+.sb-identity-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+}
+
+.sb-identity-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.sb-identity-k {
+  font-size: 0.55rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--color-text-muted, #7e8ca0);
+}
+
+.sb-identity-v {
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+/* ── Settings tab (placeholder nav-trigger — real popup is WO-UI0-SCALE-LAW) */
+.sb-settings-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  align-items: flex-start;
+}
+
+.sb-settings-note {
+  font-size: 0.72rem;
+  color: var(--color-text-muted, #7e8ca0);
+  margin: 0;
+}
+
+.sb-settings-link {
+  color: #00d9ff;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.sb-settings-link:hover {
+  text-decoration: underline;
+}
+
+/* ── Service Record tab (composes RankDisplay + MedalShowcase) ─────────── */
+.sb-service-record {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+/* ── Colonies roster tab ─────────────────────────────────────────────────── */
+.sb-colonies-loading,
+.sb-colonies-error {
+  font-size: 0.75rem;
+  color: var(--color-text-muted, #7e8ca0);
+}
+
+.sb-colonies-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.sb-colonies-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.35rem 0.4rem;
+  border: 1px solid rgba(0, 217, 255, 0.15);
+  border-radius: 4px;
+  font-size: 0.72rem;
+}
+
+.sb-colonies-name {
+  font-weight: 700;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sb-colonies-sector {
+  color: var(--color-text-muted, #7e8ca0);
+}
+
+.sb-colonies-pop {
+  color: var(--color-text-muted, #7e8ca0);
+}
+
+.sb-colonies-siege {
+  color: var(--health-danger, #ef4444);
+  font-weight: 700;
+  font-size: 0.6rem;
+  letter-spacing: 0.05em;
+}
+
+.sb-colonies-footer {
+  margin: 0.6rem 0 0;
+  font-size: 0.65rem;
+  color: var(--color-text-muted, #7e8ca0);
+  font-style: italic;
+}
+
+/* ── Location dropdown ───────────────────────────────────────────────────── */
+.sb-location-panel {
+  width: 20rem;
+  max-width: calc(100vw - 2rem);
+}
+
+.sb-location-header {
+  padding: 0.6rem 0.7rem;
+  border-bottom: 1px solid rgba(0, 217, 255, 0.2);
+}
+
+.sb-location-header-sector {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #00d9ff;
+}
+
+.sb-location-header-region {
+  font-size: 0.65rem;
+  color: var(--color-text-muted, #7e8ca0);
+  letter-spacing: 0.05em;
+}
+
+/* Sector type + docked/landed scene readout — relocated from the deleted
+   canvas-corner HudChips (id="location"/"station"/"landed"). */
+.sb-location-header-type {
+  font-size: 0.6rem;
+  color: var(--color-text-muted, #7e8ca0);
+  letter-spacing: 0.08em;
+  margin-top: 0.15rem;
+}
+
+.sb-location-header-scene {
+  font-size: 0.7rem;
+  font-weight: 600;
+  margin-top: 0.35rem;
+  color: var(--color-text, #c9d4e3);
+}
+
+.sb-location-body {
+  padding: 0.6rem 0.7rem;
+  min-height: 2rem;
+}
+
+/* ── Vitals cluster + REP badge ──────────────────────────────────────────── */
+.sb-vitals {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.9rem;
+  overflow: hidden;
+}
+
+.sb-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.28rem;
+  white-space: nowrap;
+}
+
+.sb-k {
+  font-size: 0.5rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: var(--color-text-muted, #7e8ca0);
+  text-transform: uppercase;
+}
+
+.sb-v {
+  font-size: 0.8rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.3px;
+}
+
+.sb-sub {
+  font-size: 0.7em;
+  font-weight: 600;
+  opacity: 0.6;
+}
+
+.sb-credits {
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--credits-color, #fbbf24);
+  text-shadow: 0 0 8px rgba(251, 191, 36, 0.35);
+}
+
+.sb-turns-stack {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.04rem;
+  line-height: 1;
+}
+
+.sb-turns-count {
+  font-size: 0.8rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* WO-PROG-TURN-VISIBILITY canon threshold (<50) — carried over from
+   PlayerVitalsHud so the scarcity warning isn't silently dropped. */
+.sb-turns-low .sb-k,
+.sb-turns-low .sb-v {
+  color: var(--health-warning, #f59e0b);
+}
+
+.sb-regen {
+  font-size: 0.55rem;
+  font-weight: 700;
+  color: var(--health-good, #10b981);
+  opacity: 0.85;
+}
+
+.sb-drones {
+  border: 1px solid rgba(0, 217, 255, 0.3);
+  border-radius: 3px;
+  padding: 0.1rem 0.45rem;
+  background: rgba(0, 217, 255, 0.05);
+}
+
+.sb-drones .sb-v {
+  display: inline-flex;
+  gap: 0.4rem;
+}
+
+.sb-drone {
+  white-space: nowrap;
+  font-size: 1rem;
+}
+
+.sb-bounty .sb-v {
+  color: var(--health-danger, #ef4444);
+  text-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+}
+
+.sb-link .sb-v {
+  display: inline-block;
+  min-width: 3.2rem;
+  text-align: left;
+}
+
+.sb-link--up .sb-v {
+  color: var(--health-good, #10b981);
+}
+
+.sb-link--reconnecting .sb-v {
+  color: var(--health-warning, #f59e0b);
+  animation: sb-link-pulse 1.2s ease-in-out infinite;
+}
+
+.sb-link--down .sb-v {
+  color: var(--health-danger, #ef4444);
+  text-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+}
+
+@keyframes sb-link-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sb-link--reconnecting .sb-v {
+    animation: none;
+  }
+}
+
+/* REP badge (DECISIONS #9) — always-visible, color-graded off the shipped
+   8-tier `name_color` (Villain #FF0000 → … → Legendary #00FFFF,
+   personal_reputation_service.py), NOT a new 3-band scheme. */
+.sb-rep-badge {
+  flex: 0 0 auto;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0.2rem 0.5rem;
+  border-radius: 3px;
+  color: var(--rep-color, #888888);
+  border: 1px solid color-mix(in srgb, var(--rep-color, #888888) 55%, transparent);
+  background: color-mix(in srgb, var(--rep-color, #888888) 12%, transparent);
+  text-shadow: 0 0 6px color-mix(in srgb, var(--rep-color, #888888) 45%, transparent);
+  white-space: nowrap;
+}
+
+/* ── Right-hand icon controls ────────────────────────────────────────────── */
+.sb-icon-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.8rem;
+  height: 1.8rem;
+  background: transparent;
+  border: 1px solid rgba(0, 217, 255, 0.3);
+  border-radius: 4px;
+  color: var(--color-primary, #00d9ff);
+  font-size: 0.9rem;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.sb-icon-btn:hover {
+  background: rgba(0, 217, 255, 0.12);
+  box-shadow: 0 0 8px rgba(0, 217, 255, 0.4);
+}
+
+.sb-logout-btn {
+  flex: 0 0 auto;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 0.3rem 0.7rem;
+  background: rgba(255, 77, 109, 0.12);
+  color: #ff8da3;
+  border: 1px solid rgba(255, 77, 109, 0.45);
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.sb-logout-btn:hover {
+  background: rgba(255, 77, 109, 0.22);
+  box-shadow: 0 0 10px rgba(255, 77, 109, 0.4);
+}
