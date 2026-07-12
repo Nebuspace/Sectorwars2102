@@ -5,6 +5,8 @@ import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useAutopilot } from '../../contexts/AutopilotContext';
 // import { useTheme } from '../../themes/ThemeProvider'; // Available for future use
 import StatusBar from './StatusBar';
+import Teleprinter from '../aria/Teleprinter';
+import Annunciator from '../hud/Annunciator';
 import { MFDProvider, useMFD } from '../mfd/MFDContext';
 import MFDScreen from '../mfd/MFDScreen';
 import { SIDEBAR_A, SIDEBAR_B } from '../mfd/sidebarScreens';
@@ -286,6 +288,21 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
             playerState?.is_landed && !windshieldMin ? ' landed-expanded' : ''
           }`}
         >
+          {/* Annunciator (WO-UI1-ANNUNCIATOR stitch) — mounted inside a
+              dedicated, non-visual `.windshield-hud-anchor` (game-layout.css)
+              rather than directly inside `.game-content`: that layer spans
+              the FULL container height (out-of-grid-flow, for the
+              inverted-L scene), which would let Annunciator's own
+              `position:absolute; inset:0` overlay technically extend behind
+              the statusbar/teleprinter rows too. The anchor is a real,
+              non-absolute grid child assigned to the already-reserved
+              `windshield` grid-area (game-layout.css:100-104), scoping
+              Annunciator to just that row — "on the glass, never over the
+              status bar," structurally, independent of z-index. */}
+          <div className="windshield-hud-anchor">
+            <Annunciator />
+          </div>
+
           {/* Left console (NEON15): route rail on top, then two MFD
               screens splitting the remaining height. MFDProvider hosts
               page selection/alert state plus the alert wiring effects. */}
@@ -369,6 +386,16 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
               Supersedes PlayerVitalsHud (unmounted above; file left in
               place per WO, not deleted). */}
           <StatusBar />
+
+          {/* Teleprinter (WO-UI1-TELEPRINTER stitch) — same pattern as
+              StatusBar: a DIRECT, non-absolute child of .game-container so
+              CSS Grid places it into the reserved `teleprinter` grid-area
+              (game-layout.css:100-104); teleprinter.css already carries
+              `grid-area: teleprinter` on the component's own root, so no
+              wrapper is needed here (unlike Annunciator, whose root is
+              itself `position:absolute` and can't participate in grid
+              placement on its own). */}
+          <Teleprinter />
         </div>
       </div>
     </div>

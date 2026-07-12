@@ -83,16 +83,17 @@
    values for the Orchestrator's browser-prove tuning. */
 .game-container {
   /* WO-UI0-PERSISTENT-SHELL lane B (ADDITIVE, ruling D3): grid-template-areas
-     names the sidebar/windshield/deck/statusbar/teleprinter slots for the
-     persistent-shell Lane A to consume later. It is INERT today — every
-     current child of this container (.game-sidebar, .game-content) stays
-     `position: absolute` with its own explicit top/left/bottom/width (or
-     inset: 0), so none of them are placed into the grid by browsers (out-of-
-     flow items with no assigned grid-area use the container's own padding
-     box as their containing block, exactly as they did under `display: block`)
-     — switching to `display: grid` changes zero pixels. statusbar/teleprinter
-     are RESERVED + empty this WO (no child assigned to them; their `auto`
-     row tracks collapse to 0 with nothing in them). */
+     names the sidebar/windshield/deck/statusbar/teleprinter slots. `.game-
+     sidebar`/`.game-content` stay `position: absolute` with their own
+     explicit top/left/bottom/width (or inset: 0) — out-of-flow, so they
+     never participate in grid placement (the inverted-L scene deliberately
+     spans the FULL container height, ignoring the grid rows). `statusbar`
+     (StatusBar, WO-UI0-STATUSBAR) and `teleprinter` (Teleprinter,
+     WO-UI1-TELEPRINTER) are now filled by real, non-absolute grid children
+     — their `auto` row tracks size to that content. `windshield` is filled
+     by `.windshield-hud-anchor` (WO-UI1-ANNUNCIATOR stitch, below) — a
+     zero-footprint positioning anchor only, the scene itself is still
+     `.game-content`. */
   display: grid;
   grid-template-columns: var(--sidebar-w) 1fr;
   grid-template-rows: var(--band-h) 1fr auto auto;
@@ -118,6 +119,27 @@
      WO-COCKPIT-ADJ-0628: raised ~26% (38% → 48%) so the bottom panels
      have room to surface primary actions without internal scrolling. */
   --deck-h: 48%;
+}
+
+/* Annunciator windshield-HUD anchor (WO-UI1-ANNUNCIATOR stitch) — a THIN,
+   non-visual grid child assigned to the already-reserved "windshield" grid
+   area. That row is sized by `var(--band-h)` (a fixed %, not `auto`), so
+   placing a real child into it for the first time changes ZERO dimensions
+   — SCENE-NARROWING guardrail holds.
+   Exists ONLY to give <Annunciator/> the `position: relative` ancestor its
+   own `position: absolute; inset: 0` requires (annunciator.css), scoped to
+   JUST the windshield row — deliberately NOT `.game-content` (which spans
+   the FULL container height, out-of-grid-flow, for the inverted-L scene)
+   or the overlay would technically extend behind the statusbar/teleprinter
+   rows too. This keeps Annunciator structurally UNABLE to reach those rows,
+   independent of z-index — "on the glass, never over the status bar."
+   `pointer-events: none` so an empty stretch of this band doesn't swallow
+   scene clicks that should pass through to the canvas beneath — individual
+   Annunciator lamps opt back into pointer-events themselves. */
+.windshield-hud-anchor {
+  grid-area: windshield;
+  position: relative;
+  pointer-events: none;
 }
 
 /* DOCKED / LANDED: the deck fills the FULL right-of-sidebar height (the trade /

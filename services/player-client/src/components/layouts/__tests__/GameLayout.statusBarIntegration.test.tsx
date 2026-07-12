@@ -33,6 +33,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+// jsdom does not implement scrollIntoView; GameLayout now ALSO mounts the
+// real Teleprinter (WO-UI1-TELEPRINTER stitch), which calls it on mount
+// (see Teleprinter.smoke.test.tsx) -- polyfill so it doesn't throw and
+// poison this file's zero-console-error checks. Orthogonal to what this
+// file actually tests (StatusBar's mount), but every real-GameLayout mount
+// is exposed to it now.
+Element.prototype.scrollIntoView = vi.fn();
+
 vi.mock('../../../contexts/AuthContext', () => ({
   useAuth: () => ({ user: { id: 'player-1', username: 'commander' }, logout: vi.fn() }),
 }));

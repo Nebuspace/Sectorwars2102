@@ -43,6 +43,16 @@ import { createRoot } from 'react-dom/client';
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+// jsdom does not implement scrollIntoView; GameLayout now ALSO mounts the
+// real Teleprinter (WO-UI1-TELEPRINTER stitch), which calls it on mount
+// (see Teleprinter.smoke.test.tsx). Without this polyfill Teleprinter
+// throws in jsdom, which React Router's route error boundary catches --
+// replacing this whole file's expected render tree with an error fallback
+// (surfaces as unrelated-looking "expected null not to be null" failures
+// on .viewport-loading-overlay/.game-layout-wrapper). Orthogonal to what
+// this file actually tests (persistent-shell state across navigation).
+Element.prototype.scrollIntoView = vi.fn();
+
 vi.mock('../../../contexts/AuthContext', () => ({
   useAuth: () => ({ user: { id: 'player-1', username: 'commander' }, logout: vi.fn() }),
 }));

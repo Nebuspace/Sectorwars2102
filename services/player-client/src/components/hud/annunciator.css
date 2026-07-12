@@ -1,0 +1,141 @@
+/* Annunciator — windshield HUD overlay (WO-UI1-ANNUNCIATOR sub-part a).
+   SCENE-NARROWING guardrail: position:absolute + inset:0 so the layer
+   contributes ZERO layout size to its parent (the future windshield
+   container) — it never narrows or occludes the full-bleed scene, it only
+   paints over the top-right corner ("the glass," canon "never over the
+   status bar" — that lives in a separate grid area entirely, outside this
+   overlay's positioned ancestor). Non-interactive by default: pointer-events
+   is set inline in Annunciator.tsx (testable without depending on this file
+   loading in the vitest node/jsdom pipeline) and repeated here so the visual
+   contract stays self-documenting if the inline style is ever dropped. */
+.annunciator-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 30; /* matches the HUD z-index band documented in game-layout.css (console:20, HUD:30, edge-toggle:40) */
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-start;
+  gap: 0.4rem;
+  padding: 0.75rem;
+  box-sizing: border-box;
+}
+
+.annunciator-lamp {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.5rem 0.3rem 0.6rem;
+  border-radius: 4px;
+  font: 700 0.68rem/1.2 var(--mono, 'Courier New', monospace);
+  letter-spacing: 0.06em;
+  color: #eef4fb;
+  white-space: nowrap;
+  user-select: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+
+.annunciator-lamp-icon {
+  font-size: 1rem;
+  line-height: 1;
+  display: inline-flex;
+}
+
+.annunciator-lamp-severity {
+  opacity: 0.85;
+}
+
+.annunciator-lamp-label {
+  font-weight: 700;
+}
+
+.annunciator-lamp-ack {
+  margin-left: 0.2rem;
+  padding: 0 0.3rem;
+  background: none;
+  border: none;
+  color: inherit;
+  opacity: 0.75;
+  font-size: 0.75rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.annunciator-lamp-ack:hover {
+  opacity: 1;
+}
+
+/* MASTER WARN — red/fast (canon: combat, siege-on-your-colony, bounty-on-you). */
+.annunciator-lamp--warn {
+  border: 1px solid var(--cockpit-danger, #ff3b4a);
+  background: linear-gradient(135deg, rgba(40, 0, 0, 0.92) 0%, rgba(15, 0, 0, 0.95) 100%);
+  box-shadow: 0 0 14px rgba(255, 59, 74, 0.35), 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+
+/* MASTER CAUTION — amber/slow (canon: hazard >= threshold, grey-flag/fine, low-turns). */
+.annunciator-lamp--caution {
+  border: 1px solid var(--cockpit-warning, #ffb020);
+  background: linear-gradient(135deg, rgba(40, 28, 0, 0.92) 0%, rgba(18, 12, 0, 0.95) 100%);
+  box-shadow: 0 0 12px rgba(255, 176, 32, 0.3), 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+
+/* COMM — info-class, cyan, deliberately NEVER sharing the WARN/CAUTION
+   danger lane (canon, WO-UI1-ANNUNCIATOR GOAL line). */
+.annunciator-lamp--info {
+  border: 1px solid var(--color-primary, #00d9ff);
+  background: linear-gradient(135deg, rgba(0, 20, 28, 0.92) 0%, rgba(0, 10, 14, 0.95) 100%);
+  box-shadow: 0 0 10px rgba(0, 217, 255, 0.28), 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+
+/* Flash → tap-acknowledge → steady-while-true → auto-clear (canon ack
+   semantics). "Fast" WARN vs "slow" CAUTION/INFO durations are canon's own
+   wording, not arbitrary. */
+@keyframes annunciator-pulse-warn {
+  0%, 100% { box-shadow: 0 0 10px rgba(255, 59, 74, 0.35), 0 4px 14px rgba(0, 0, 0, 0.5); }
+  50% { box-shadow: 0 0 24px rgba(255, 59, 74, 0.8), 0 4px 14px rgba(0, 0, 0, 0.5); }
+}
+
+@keyframes annunciator-pulse-caution {
+  0%, 100% { box-shadow: 0 0 8px rgba(255, 176, 32, 0.3), 0 4px 14px rgba(0, 0, 0, 0.5); }
+  50% { box-shadow: 0 0 18px rgba(255, 176, 32, 0.65), 0 4px 14px rgba(0, 0, 0, 0.5); }
+}
+
+@keyframes annunciator-pulse-info {
+  0%, 100% { opacity: 0.82; }
+  50% { opacity: 1; }
+}
+
+.annunciator-lamp--warn.is-flashing {
+  animation: annunciator-pulse-warn 0.6s ease-in-out infinite;
+}
+
+.annunciator-lamp--caution.is-flashing {
+  animation: annunciator-pulse-caution 1.6s ease-in-out infinite;
+}
+
+.annunciator-lamp--info.is-flashing {
+  animation: annunciator-pulse-info 1.6s ease-in-out infinite;
+}
+
+/* Steady-while-true (post-ack, still active) — fully visible, no motion. */
+.annunciator-lamp.is-steady {
+  animation: none;
+}
+
+/* Reduced motion: still fully visible (never dimmed/hidden), just not
+   flashing — Accept #3. Belt-and-suspenders with the JS-level `reducedMotion`
+   class gate in Annunciator.tsx (which already skips adding `.is-flashing`),
+   mirroring the @media convention already used throughout this codebase
+   (statusbar.css, teleprinter.css, mfd.css, etc.). */
+.annunciator-lamp.is-reduced-motion,
+.annunciator-lamp.is-reduced-motion.is-flashing {
+  animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .annunciator-lamp.is-flashing {
+    animation: none;
+  }
+}
