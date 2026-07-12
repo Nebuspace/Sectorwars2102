@@ -903,9 +903,32 @@ class FleetService:
         if team_ids:
             self._lock_teams_ascending(team_ids)
 
-        # Get active ships (hull > 0, not destroyed)
-        attacker_ships = self._get_active_fleet_ships(attacker)
-        defender_ships = self._get_active_fleet_ships(defender)
+        # Get active ships (hull > 0, not destroyed).
+        #
+        # WO-SIMROUND-NONE-GUARD (defense-in-depth): ``attacker`` / ``defender``
+        # can be None here — ``attacker_fleet_id`` / ``defender_fleet_id`` is a
+        # SET-NULL FK, and while WO-TEAM-DELETE-FLEET-GUARD (7da7d306) closed
+        # the known delete_team/leave_team orphan paths, nothing structurally
+        # prevents a FUTURE fleet-delete path (e.g. an admin tool) from
+        # orphaning a fleet mid-battle. ``_get_active_fleet_ships`` does
+        # ``for member in fleet.members`` with no None-check, so an
+        # unconditional call here would raise an uncaught AttributeError — not
+        # a ValueError, so the route's ``except ValueError`` wouldn't catch it,
+        # producing a raw 500. Guard with the SAME ``if fleet else []`` idiom
+        # ``_end_battle`` already uses for this exact case (below) rather than
+        # inventing a new pattern.
+        #
+        # Falling into the existing "no ships left" branch on the next line is
+        # deliberately the RIGHT outcome, not just a crash-avoidance shortcut:
+        # a vanished fleet is indistinguishable, combat-wise, from a fleet
+        # reduced to zero active ships — ``_end_battle`` already resolves that
+        # case correctly (the surviving side wins, or a draw if both are
+        # empty), and it is itself already None-fleet-safe (its own
+        # ``attacker``/``defender`` reads and the ``_apply_battle_loot`` /
+        # status-update calls below it are all guarded). No behavior changes
+        # on the normal both-fleets-present path.
+        attacker_ships = self._get_active_fleet_ships(attacker) if attacker else []
+        defender_ships = self._get_active_fleet_ships(defender) if defender else []
 
         if not attacker_ships or not defender_ships:
             return self._end_battle(battle)

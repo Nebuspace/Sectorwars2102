@@ -624,3 +624,152 @@ class TestAddShipDisbandToctou:
         svc = FleetService(db=session)
 
         assert svc.disband_fleet(uuid4()) is False
+
+
+# --------------------------------------------------------------------------- #
+# (d) WO-SIMROUND-NONE-GUARD -- simulate_battle_round must not crash when a
+# fleet's SET-NULL FK has already gone None (a vanished fleet mid-battle).
+# --------------------------------------------------------------------------- #
+
+class TestSimulateBattleRoundNoneFleetGuard:
+    """Defense-in-depth, not a live regression: WO-TEAM-DELETE-FLEET-GUARD
+    (7da7d306) already closed the KNOWN delete_team/leave_team paths that
+    could orphan a fleet mid-battle. This pins the behavior of the ONE call
+    site inside simulate_battle_round that would otherwise dereference a
+    None fleet (``_get_active_fleet_ships`` does ``for member in
+    fleet.members`` with no None-check) should some FUTURE path (e.g. an
+    admin fleet-delete tool) ever orphan a fleet mid-battle. Pre-fix this
+    raised an uncaught AttributeError -- not a ValueError, so the route's
+    ``except ValueError`` wouldn't catch it, producing a raw 500. Mirrors
+    ``battle.attacker_fleet`` -- the SET-NULL relationship, not the raw FK --
+    to match exactly what a real ORM re-read of an orphaned FleetBattle
+    would see."""
+
+    def _battle_with_vanished_attacker(self):
+        """attacker_fleet_id / attacker_fleet are both None (the fleet row
+        is gone -- SET-NULL already fired); defender is a normal fleet with
+        one live ship."""
+        defender_team = make_team(treasury_credits=500)
+        defender_fleet = make_fleet(team=defender_team)
+        d_ship = make_ship(hull=100, max_hull=100)
+        d_member = make_member(fleet=defender_fleet, ship=d_ship)
+
+        battle = FleetBattle(
+            id=uuid4(),
+            attacker_fleet_id=None,
+            defender_fleet_id=defender_fleet.id,
+            started_at=datetime.utcnow(),
+            phase=BattlePhase.ENGAGEMENT.value,
+            battle_log=[],
+            attacker_damage_dealt=0,
+            defender_damage_dealt=0,
+            total_damage_dealt=0,
+        )
+        battle.attacker_fleet = None
+        battle.defender_fleet = defender_fleet
+
+        session = make_session({
+            FleetBattle: [battle],
+            Fleet: [defender_fleet],
+            Team: [defender_team],
+        })
+        svc = FleetService(db=session)
+        return svc, session, battle, defender_fleet
+
+    def test_none_attacker_fleet_does_not_raise_attributeerror(self):
+        svc, session, battle, defender_fleet = self._battle_with_vanished_attacker()
+
+        # Pre-fix: AttributeError('NoneType' object has no attribute
+        # 'members') from _get_active_fleet_ships(None). Post-fix: the
+        # vanished side resolves to zero active ships, same as an
+        # annihilated fleet, and the round cleanly ends the battle.
+        result = svc.simulate_battle_round(battle.id)
+
+        assert result["battle_ongoing"] is False
+        assert result["battle_id"] == str(battle.id)
+
+    def test_none_attacker_fleet_ends_the_battle_with_defender_as_winner(self):
+        svc, session, battle, defender_fleet = self._battle_with_vanished_attacker()
+
+        svc.simulate_battle_round(battle.id)
+
+        # Attacker has zero strength (no fleet at all) vs. defender's live
+        # ship -- deterministically decisive, matching _end_battle's own
+        # "one side has zero ships" branch (len(defender_ships) > 0 and
+        # len(attacker_ships) == 0 -> defender wins).
+        assert battle.ended_at is not None
+        assert battle.winner == "defender"
+        assert session.commit_count == 1
+
+    def test_none_attacker_fleet_loot_is_a_clean_no_op(self):
+        """_apply_battle_loot's own documented no-op case ("a winner whose
+        opposing fleet/team no longer resolves") -- no credits move, no
+        crash reading a nonexistent attacker team."""
+        svc, session, battle, defender_fleet = self._battle_with_vanished_attacker()
+
+        result = svc.simulate_battle_round(battle.id)
+
+        assert result["credits_looted"] == 0
+        assert not battle.credits_looted  # raw column: None (never set) or 0, never truthy
+
+    def test_none_defender_fleet_symmetric_case(self):
+        """Same guard, opposite side -- defender_fleet_id / defender_fleet
+        both None, attacker has the live ship."""
+        attacker_team = make_team(treasury_credits=500)
+        attacker_fleet = make_fleet(team=attacker_team)
+        a_ship = make_ship(hull=100, max_hull=100)
+        make_member(fleet=attacker_fleet, ship=a_ship)
+
+        battle = FleetBattle(
+            id=uuid4(),
+            attacker_fleet_id=attacker_fleet.id,
+            defender_fleet_id=None,
+            started_at=datetime.utcnow(),
+            phase=BattlePhase.ENGAGEMENT.value,
+            battle_log=[],
+            attacker_damage_dealt=0,
+            defender_damage_dealt=0,
+            total_damage_dealt=0,
+        )
+        battle.attacker_fleet = attacker_fleet
+        battle.defender_fleet = None
+
+        session = make_session({
+            FleetBattle: [battle],
+            Fleet: [attacker_fleet],
+            Team: [attacker_team],
+        })
+        svc = FleetService(db=session)
+
+        result = svc.simulate_battle_round(battle.id)
+
+        assert result["battle_ongoing"] is False
+        assert battle.ended_at is not None
+        assert battle.winner == "attacker"
+
+    def test_both_fleets_none_is_a_draw_not_a_crash(self):
+        """Belt-and-suspenders: even the (currently unreachable, since a
+        battle always has at least one live side to call the route) both-
+        vanished case must not crash -- _end_battle's existing winner logic
+        already resolves 0-vs-0 strength to "draw"."""
+        battle = FleetBattle(
+            id=uuid4(),
+            attacker_fleet_id=None,
+            defender_fleet_id=None,
+            started_at=datetime.utcnow(),
+            phase=BattlePhase.ENGAGEMENT.value,
+            battle_log=[],
+            attacker_damage_dealt=0,
+            defender_damage_dealt=0,
+            total_damage_dealt=0,
+        )
+        battle.attacker_fleet = None
+        battle.defender_fleet = None
+
+        session = make_session({FleetBattle: [battle], Fleet: [], Team: []})
+        svc = FleetService(db=session)
+
+        result = svc.simulate_battle_round(battle.id)
+
+        assert result["battle_ongoing"] is False
+        assert battle.winner == "draw"
