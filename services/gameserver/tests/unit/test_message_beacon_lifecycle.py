@@ -208,6 +208,12 @@ def _beacon(region: SimpleNamespace, sector: SectorModel, **overrides: Any) -> S
         deployer_player_id=uuid.uuid4(), deployer_nickname_at_deploy="Someone",
         message="A message in a bottle.", expiry=None, read_once=False, read_count=0,
         deployed_at=datetime.now(UTC) - timedelta(hours=1), last_read_at=None,
+        # WO-BEACON-LIFECYCLE: default None -- _decay_state() treats a
+        # missing charge as ACTIVE (never DARK by omission). read()/
+        # salvage() both call _rebuild_sector_denorm, which now calls
+        # _decay_state on every row it touches, so every fixture in this
+        # file needs the attribute to exist at all.
+        charge_expires_at=None, last_charged_at=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)

@@ -1,9 +1,11 @@
 """MessageBeacon API routes -- WO-P4-play-beacon-kernel, canon:
-FEATURES/gameplay/message-beacons.md:30, :41-42.
+FEATURES/gameplay/message-beacons.md:30, :41-42. Recharge added by
+WO-BEACON-LIFECYCLE.
 
-- ``POST /beacons/deploy``       -- deploy a beacon at the caller's sector.
-- ``GET  /beacons/{id}/read``    -- read the full message (0 turns).
-- ``POST /beacons/{id}/salvage`` -- remove + refund 250cr (1 turn).
+- ``POST /beacons/deploy``        -- deploy a beacon at the caller's sector.
+- ``GET  /beacons/{id}/read``     -- read the full message (0 turns).
+- ``POST /beacons/{id}/salvage``  -- remove + refund 250cr (1 turn).
+- ``POST /beacons/{id}/recharge`` -- extend a beacon's charge cell, 200cr.
 
 Route owns db.commit() -- message_beacon_service is flush-only throughout.
 """
@@ -26,7 +28,14 @@ router = APIRouter(prefix="/beacons", tags=["beacons"])
 class DeployBeaconRequest(BaseModel):
     sector_id: int
     message: str = Field(..., min_length=1, max_length=500)
-    expiry: str = "never"
+    # WO-BEACON-LIFECYCLE: the expiry-choice menu is retired -- every
+    # deploy now creates one fixed 30-day charge cell (recharge to extend
+    # it), no choice involved. This field is deliberately DROPPED (not
+    # kept-and-ignored) so a legacy request body's stray `expiry` key is
+    # silently ignored by FastAPI's default extra-field handling rather
+    # than accepted-and-honored; message_beacon_service.deploy() itself
+    # still refuses an explicit value if some OTHER future caller invokes
+    # it directly (see its own docstring).
     read_once: bool = False
 
 
@@ -50,13 +59,14 @@ async def deploy_beacon(
     current_player: Player = Depends(get_current_player),
 ) -> Dict[str, Any]:
     """message-beacons.md:30. Debits 5 turns + 500cr + 1 equipment cargo;
-    see message_beacon_service.deploy's docstring for the full validation
-    order (location/docked -> nexus-protected -> rate-limit -> rep-gate ->
-    content-policy -> affordability)."""
+    creates one fixed 30-day charge cell (WO-BEACON-LIFECYCLE -- no expiry
+    choice anymore). See message_beacon_service.deploy's docstring for the
+    full validation order (location/docked -> nexus-protected -> rate-limit
+    -> per-player beacon cap -> rep-gate -> content-policy -> affordability)."""
     try:
         result = message_beacon_service.deploy(
             db, current_player.id, body.sector_id, body.message,
-            expiry=body.expiry, read_once=body.read_once,
+            read_once=body.read_once,
         )
     except BeaconError as exc:
         db.rollback()
@@ -96,6 +106,29 @@ async def salvage_beacon(
     beacon_uuid = _parse_uuid(beacon_id, "beacon_id")
     try:
         result = message_beacon_service.salvage(db, beacon_uuid, current_player.id)
+    except BeaconError as exc:
+        db.rollback()
+        _raise_for(exc)
+    else:
+        db.commit()
+        return result
+
+
+@router.post("/{beacon_id}/recharge")
+async def recharge_beacon(
+    beacon_id: str,
+    db: Session = Depends(get_db),
+    current_player: Player = Depends(get_current_player),
+) -> Dict[str, Any]:
+    """WO-BEACON-LIFECYCLE. Extends a beacon's charge by one 30-day cell
+    for 200cr (no turn cost). Unlike deploy/salvage, presence is NOT
+    strictly required: the beacon's OWNER may recharge remotely (their
+    My Beacons screen), or any player physically present in the beacon's
+    sector may top it up for them. See message_beacon_service.recharge's
+    docstring for the exact auth predicate and lock discipline."""
+    beacon_uuid = _parse_uuid(beacon_id, "beacon_id")
+    try:
+        result = message_beacon_service.recharge(db, beacon_uuid, current_player.id)
     except BeaconError as exc:
         db.rollback()
         _raise_for(exc)

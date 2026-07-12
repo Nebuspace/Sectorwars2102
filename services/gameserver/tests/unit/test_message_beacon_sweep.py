@@ -25,7 +25,6 @@ from types import SimpleNamespace
 from typing import Any, List, Optional
 
 import pytest
-from sqlalchemy.orm.exc import StaleDataError
 
 from src.models.message_beacon import MessageBeacon
 from src.models.multi_account import MultiAccountFlag
@@ -45,6 +44,10 @@ def _match(row: Any, cond: Any) -> bool:
         return row_val is not None and row_val < cond.right.value
     if op_name == "ge":
         return row_val is not None and row_val >= cond.right.value
+    if op_name == "le":
+        # WO-BEACON-LIFECYCLE -- sweep_expired's near-boundary scan
+        # (`charge_expires_at <= now + FADING_WINDOW`).
+        return row_val is not None and row_val <= cond.right.value
     if op_name == "is_not":
         return row_val is not None
     raise NotImplementedError(f"unsupported operator {cond.operator!r}")
@@ -73,18 +76,6 @@ class _FakeQuery:
         return self._matching()
 
 
-class _FakeNestedTxn:
-    """WO-P4 REVISE fix 4 -- stands in for db.begin_nested()'s SAVEPOINT
-    context manager; never suppresses an exception (matches real
-    begin_nested(): rollback-to-savepoint, then re-raise)."""
-
-    def __enter__(self) -> "_FakeNestedTxn":
-        return self
-
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
-        return False
-
-
 class _FakeSession:
     def __init__(
         self, *, sectors=None, regions=None, beacons=None, flags=None,
@@ -97,10 +88,15 @@ class _FakeSession:
         self.deleted: List[Any] = []
         self.flush_calls = 0
         self.lock_calls: List[int] = []
-        # WO-P4 REVISE fix 4 test knob -- beacon ids in this set raise
-        # StaleDataError on delete() (and are removed anyway, simulating a
-        # row a concurrent transaction already deleted/salvaged/read-
-        # once'd out from under this sweep).
+        # REVISE FIX 3 test knob (was: "raise StaleDataError on delete()"
+        # -- superseded by the conditional-DELETE rewrite below): beacon
+        # ids in this set are treated as "no longer matches the WHERE
+        # clause" (rowcount=0) the moment this sweep's conditional delete
+        # reaches them, AND removed from `self.beacons` right then --
+        # simulating a row a concurrent transaction (salvage/read_once/a
+        # revive-by-recharge) already changed/removed between this
+        # sweep's SELECT and its delete, even though the earlier SELECT
+        # still found it.
         self.fail_delete_ids = fail_delete_ids or set()
 
     def query(self, *entities: Any) -> Any:
@@ -117,15 +113,6 @@ class _FakeSession:
             return _FakeQuery(self.flags)
         raise AssertionError(f"unexpected query for {entities!r}")
 
-    def delete(self, obj: Any) -> None:
-        if getattr(obj, "id", None) in self.fail_delete_ids:
-            if obj in self.beacons:
-                self.beacons.remove(obj)
-            raise StaleDataError("simulated concurrent delete")
-        self.deleted.append(obj)
-        if obj in self.beacons:
-            self.beacons.remove(obj)
-
     def flush(self) -> None:
         self.flush_calls += 1
 
@@ -133,12 +120,31 @@ class _FakeSession:
         raise AssertionError("service functions are flush-only -- the scheduler wrapper commits")
 
     def execute(self, statement: Any, params: Optional[dict] = None) -> Any:
-        # WO-P4 REVISE fix 1 -- _lock_sector's pg_advisory_xact_lock call.
-        self.lock_calls.append((params or {}).get("key"))
-        return SimpleNamespace(scalar=lambda: True)
-
-    def begin_nested(self) -> _FakeNestedTxn:
-        return _FakeNestedTxn()
+        params = params or {}
+        if "key" in params:
+            # WO-P4 REVISE fix 1 -- _lock_sector's pg_advisory_xact_lock call.
+            self.lock_calls.append(params.get("key"))
+            return SimpleNamespace(scalar=lambda: True)
+        if "id" in params:
+            # WO-BEACON-LIFECYCLE REVISE FIX 3 -- sweep_expired's
+            # conditional `DELETE ... WHERE id = :id AND expiry < :now`.
+            # Interprets the SAME predicate directly against this fake's
+            # row list -- a beacon whose expiry no longer matches
+            # (revived by a concurrent recharge, or already removed)
+            # yields rowcount=0, exactly like the real conditional
+            # DELETE would; a genuine match is removed and rowcount=1.
+            beacon_id = params["id"]
+            now = params["now"]
+            if beacon_id in self.fail_delete_ids:
+                self.beacons = [b for b in self.beacons if b.id != beacon_id]
+                return SimpleNamespace(rowcount=0)
+            match = next((b for b in self.beacons if b.id == beacon_id), None)
+            if match is None or match.expiry is None or not (match.expiry < now):
+                return SimpleNamespace(rowcount=0)
+            self.beacons.remove(match)
+            self.deleted.append(match)
+            return SimpleNamespace(rowcount=1)
+        raise AssertionError(f"unexpected execute() params: {params!r}")
 
 
 def _region(**overrides: Any) -> SimpleNamespace:
@@ -162,6 +168,13 @@ def _beacon(region: SimpleNamespace, sector: SectorModel, **overrides: Any) -> S
         deployer_player_id=uuid.uuid4(), deployer_nickname_at_deploy="Someone",
         message="A message in a bottle.", expiry=None, read_once=False, read_count=0,
         deployed_at=datetime.now(UTC) - timedelta(hours=1), last_read_at=None,
+        # WO-BEACON-LIFECYCLE: default None -- _decay_state() treats a
+        # missing charge as ACTIVE (never DARK by omission). sweep_expired
+        # now calls _decay_state on every row it touches (both the
+        # unchanged husk-delete loop's denorm rebuild AND the new
+        # near-boundary scan), so every pre-existing fixture in this file
+        # needs this attribute to exist at all, not just a sensible value.
+        charge_expires_at=None, last_charged_at=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -178,10 +191,17 @@ class TestSweepExpired:
         expired = _beacon(region, sector, expiry=_NOW - timedelta(minutes=1))
         not_yet = _beacon(region, sector, expiry=_NOW + timedelta(minutes=1))
         exactly_now = _beacon(region, sector, expiry=_NOW)  # NOT strictly past
-        never_expires = _beacon(region, sector, expiry=None)
+        # WO-BEACON-LIFECYCLE: `expiry=None` is no longer produced by a
+        # live deploy() (every beacon now gets a real hard-delete deadline
+        # -- there's no more "never" choice); this fixture stands in for a
+        # legacy/pre-migration row with no expiry set at all. The sweep's
+        # own SQL guard (`expiry IS NOT NULL`, UNCHANGED by this WO) is
+        # still what's under test here: a NULL expiry is never swept,
+        # defensively, regardless of why it's NULL.
+        no_expiry_set = _beacon(region, sector, expiry=None)
         db = _FakeSession(
             sectors=[sector], regions=[region],
-            beacons=[expired, not_yet, exactly_now, never_expires],
+            beacons=[expired, not_yet, exactly_now, no_expiry_set],
         )
 
         result = svc.sweep_expired(db, now=_NOW)
@@ -191,7 +211,7 @@ class TestSweepExpired:
         assert expired in db.deleted
         assert not_yet in db.beacons
         assert exactly_now in db.beacons
-        assert never_expires in db.beacons  # DoD 9's "never" default is honored
+        assert no_expiry_set in db.beacons  # NULL expiry -- never auto-swept
 
     def test_all_three_expiry_windows_are_swept_once_due(self) -> None:
         """24h / 7d / 30d are just different `expiry` timestamps by the
@@ -246,6 +266,166 @@ class TestSweepExpired:
         db = _FakeSession(sectors=[sector], regions=[region], beacons=[])
         result = svc.sweep_expired(db, now=_NOW)
         assert result == {"expired": 0, "events": []}
+
+    def test_a_zero_charge_dark_beacon_is_excluded_from_the_denorm_and_grace_deleted_after_7d(
+        self,
+    ) -> None:
+        """Falsifiable coverage bullet 2: DARK exclusion + grace-delete.
+        A beacon whose charge ran out exactly 7 days ago sits at its
+        hard-delete deadline (expiry = charge_expires_at + GRACE_PERIOD) --
+        this sweep call is the one that finally removes the husk. Proves
+        both halves in one deploy-to-grave lifecycle: while DARK-but-not-
+        yet-grace-elapsed it would already be excluded from any denorm
+        rebuild (see the FADING/DARK denorm test below); once expiry
+        itself passes, the UNCHANGED husk-delete loop removes the row."""
+        region = _region()
+        sector = _sector(region)
+        charge_expires_at = _NOW - svc.GRACE_PERIOD
+        husk = _beacon(
+            region, sector,
+            charge_expires_at=charge_expires_at,
+            expiry=charge_expires_at + svc.GRACE_PERIOD,  # == _NOW, not yet strictly past
+        )
+        db = _FakeSession(sectors=[sector], regions=[region], beacons=[husk])
+
+        # Not yet swept -- expiry == now, not strictly past.
+        result = svc.sweep_expired(db, now=_NOW)
+        assert result["expired"] == 0
+        assert husk in db.beacons
+
+        # One tick past the grace deadline -- now it's gone.
+        result = svc.sweep_expired(db, now=_NOW + timedelta(seconds=1))
+        assert result["expired"] == 1
+        assert husk not in db.beacons
+
+
+# --- WO-BEACON-LIFECYCLE: decay state + FADING/DARK denorm exclusion ------ #
+
+@pytest.mark.unit
+class TestDecayState:
+    """Falsifiable coverage bullet 6: _decay_state's own boundary math."""
+
+    def test_active_far_from_boundary(self) -> None:
+        beacon = SimpleNamespace(charge_expires_at=_NOW + timedelta(days=20))
+        assert svc._decay_state(beacon, _NOW) == "ACTIVE"
+
+    def test_active_just_outside_the_fading_window(self) -> None:
+        beacon = SimpleNamespace(charge_expires_at=_NOW + svc.FADING_WINDOW + timedelta(seconds=1))
+        assert svc._decay_state(beacon, _NOW) == "ACTIVE"
+
+    def test_fading_at_the_window_boundary(self) -> None:
+        beacon = SimpleNamespace(charge_expires_at=_NOW + svc.FADING_WINDOW)
+        assert svc._decay_state(beacon, _NOW) == "FADING"
+
+    def test_fading_just_before_dark(self) -> None:
+        beacon = SimpleNamespace(charge_expires_at=_NOW + timedelta(seconds=1))
+        assert svc._decay_state(beacon, _NOW) == "FADING"
+
+    def test_dark_at_the_exact_moment_charge_runs_out(self) -> None:
+        beacon = SimpleNamespace(charge_expires_at=_NOW)
+        assert svc._decay_state(beacon, _NOW) == "DARK"
+
+    def test_dark_well_past_charge_expiry(self) -> None:
+        beacon = SimpleNamespace(charge_expires_at=_NOW - timedelta(days=3))
+        assert svc._decay_state(beacon, _NOW) == "DARK"
+
+    def test_missing_charge_expires_at_is_fading_not_dark_not_permanently_active(self) -> None:
+        """REVISE FIX 6 (mack, LOW): a legacy/unmigrated or old-binary-
+        mid-rollout NULL charge is never DARK by omission (_decay_state
+        only claims DARK when it can positively prove the charge ran
+        out) -- but it's also NOT silently immortal-ACTIVE forever
+        anymore. FADING: still visible, but flagged for attention."""
+        beacon = SimpleNamespace(charge_expires_at=None)
+        assert svc._decay_state(beacon, _NOW) == "FADING"
+
+
+@pytest.mark.unit
+class TestFadingDarkDenorm:
+    def test_dark_beacon_excluded_from_the_sector_denorm(self) -> None:
+        region = _region()
+        sector = _sector(region)
+        dark = _beacon(region, sector, charge_expires_at=_NOW - timedelta(days=1))
+        active = _beacon(region, sector, charge_expires_at=_NOW + timedelta(days=20))
+        db = _FakeSession(sectors=[sector], regions=[region], beacons=[dark, active])
+
+        svc._rebuild_sector_denorm(db, region.id, sector.sector_id, now=_NOW)
+
+        ids = {c["id"] for c in sector.message_beacons}
+        assert str(active.id) in ids
+        assert str(dark.id) not in ids
+        assert dark in db.beacons  # the husk row itself still exists
+
+    def test_fading_beacon_carries_the_signal_low_marker_and_state(self) -> None:
+        region = _region()
+        sector = _sector(region)
+        fading = _beacon(region, sector, charge_expires_at=_NOW + svc.FADING_WINDOW)
+        db = _FakeSession(sectors=[sector], regions=[region], beacons=[fading])
+
+        svc._rebuild_sector_denorm(db, region.id, sector.sector_id, now=_NOW)
+
+        cell = sector.message_beacons[0]
+        assert cell["state"] == "FADING"
+        assert cell["signal"] == svc.FADING_SIGNAL_LABEL
+
+    def test_active_beacon_carries_no_signal_key(self) -> None:
+        region = _region()
+        sector = _sector(region)
+        active = _beacon(region, sector, charge_expires_at=_NOW + timedelta(days=20))
+        db = _FakeSession(sectors=[sector], regions=[region], beacons=[active])
+
+        svc._rebuild_sector_denorm(db, region.id, sector.sector_id, now=_NOW)
+
+        cell = sector.message_beacons[0]
+        assert cell["state"] == "ACTIVE"
+        assert "signal" not in cell
+
+
+@pytest.mark.unit
+class TestSweepBoundaryRebuild:
+    """WO-BEACON-LIFECYCLE bullet 5(b): the sweep also rebuilds the denorm
+    for sectors holding a beacon at/near its FADING or DARK boundary, even
+    when nothing in that sector is due for grace-delete (so nothing hits
+    the husk-delete loop above at all)."""
+
+    def test_sweep_rebuilds_a_sector_whose_beacon_just_entered_fading(self) -> None:
+        region = _region()
+        sector = _sector(region)
+        # Deliberately gives it a FAR-future `expiry` (hard-delete deadline
+        # untouched) so the husk-delete loop above never even looks at
+        # this sector -- only the boundary scan should touch it.
+        fading = _beacon(
+            region, sector,
+            charge_expires_at=_NOW + svc.FADING_WINDOW,
+            expiry=_NOW + svc.FADING_WINDOW + svc.GRACE_PERIOD,
+        )
+        db = _FakeSession(sectors=[sector], regions=[region], beacons=[fading])
+
+        result = svc.sweep_expired(db, now=_NOW)
+
+        assert result["expired"] == 0  # nothing grace-deleted
+        assert sector.message_beacons is not None
+        assert sector.message_beacons[0]["state"] == "FADING"
+        expected_key = svc._sector_lock_key(region.id, sector.sector_id)
+        assert expected_key in db.lock_calls  # locked even with no deletion
+
+    def test_sweep_leaves_a_solidly_active_sector_untouched(self) -> None:
+        """A beacon far from any boundary shouldn't cause its sector to be
+        rebuilt at all -- proves the boundary scan is actually SCOPED, not
+        a blanket rebuild-everything pass."""
+        region = _region()
+        sector = _sector(region)
+        active = _beacon(
+            region, sector,
+            charge_expires_at=_NOW + timedelta(days=20),
+            expiry=_NOW + timedelta(days=27),
+        )
+        db = _FakeSession(sectors=[sector], regions=[region], beacons=[active])
+
+        svc.sweep_expired(db, now=_NOW)
+
+        expected_key = svc._sector_lock_key(region.id, sector.sector_id)
+        assert expected_key not in db.lock_calls
+        assert sector.message_beacons is None  # never rebuilt
 
 
 # --- DoD 9: deployer NOT notified ------------------------------------------ #
@@ -358,16 +538,16 @@ class TestSectorLockOnSweep:
 @pytest.mark.unit
 class TestStaleDataDuringSweep:
     def test_one_candidate_already_removed_does_not_crash_or_infinite_loop(self) -> None:
-        """Simulates a concurrent salvage/read_once having already removed
-        ONE due-for-expiry candidate between sweep_expired()'s SELECT and
-        its delete. Without fix 4's per-candidate SAVEPOINT, this
-        StaleDataError would poison the whole session (a failed flush
-        leaves it inactive until rollback), aborting the rest of the sweep
-        batch entirely. Without the savepoint retry loop written to make
-        forward progress, a naive catch-and-continue could also spin
-        forever re-selecting the same still-visible-to-the-fake candidate
-        -- this test's own bounded runtime (pytest's default timeout,
-        if any, aside) is itself evidence that didn't happen."""
+        """Simulates a concurrent salvage/read_once/recharge having
+        already changed or removed ONE due-for-expiry candidate between
+        sweep_expired()'s SELECT and its delete. REVISE FIX 3's
+        conditional `DELETE ... WHERE id = :id AND expiry < :now` simply
+        matches 0 rows for it -- no exception to catch, no SAVEPOINT
+        needed. Without something making forward progress each
+        iteration, a naive catch-and-continue could spin forever
+        re-selecting the same still-visible-to-the-fake candidate -- this
+        test's own bounded runtime is itself evidence that didn't
+        happen."""
         region = _region()
         sector = _sector(region)
         already_gone = _beacon(region, sector, expiry=_NOW - timedelta(minutes=1))

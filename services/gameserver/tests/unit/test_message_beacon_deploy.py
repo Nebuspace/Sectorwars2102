@@ -13,6 +13,13 @@ DoD bullets covered here (see the WO's own numbering):
   10. region_id set on every beacon.
   11. beacon_deployed bus event emitted.
 
+WO-BEACON-LIFECYCLE bullets covered here:
+  1. deploy() rejects "never"/any legacy expiry value -- the expiry-choice
+     menu is retired; every deploy grants exactly one fixed 30-day charge
+     cell (TestExpiryChoiceRetired).
+  4. Per-player global cap of 20 non-DARK beacons enforced at deploy time;
+     DARK husks don't count (TestPerPlayerBeaconCap).
+
 DB-free: a real SQLAlchemy WHERE-clause interpreter (not a scripted mock),
 in the house style of test_contract_service.py / test_contract_escrow.py,
 extended for the new operators this service's queries use (.isnot(None),
@@ -270,6 +277,13 @@ def _beacon(region: SimpleNamespace, sector: SimpleNamespace, **overrides: Any) 
         deployer_player_id=uuid.uuid4(), deployer_nickname_at_deploy="Someone",
         message="pre-existing beacon", expiry=None, read_once=False, read_count=0,
         deployed_at=datetime.now(UTC), last_read_at=None,
+        # WO-BEACON-LIFECYCLE: default None -- _decay_state() treats a
+        # missing charge as ACTIVE (never DARK by omission), so every
+        # PRE-EXISTING fixture in this file that doesn't care about decay
+        # state keeps behaving exactly as it did before this WO (visible
+        # in the denorm, counted by the FIFO cap, etc.) unless a test
+        # explicitly overrides charge_expires_at to exercise decay.
+        charge_expires_at=None, last_charged_at=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -327,7 +341,12 @@ class TestDeployCostsAndDenorm:
         assert beacon.message == "Hello, traveler."
         assert beacon.region_id == region.id  # DoD 10
         assert beacon.sector_id == sector.sector_id
-        assert beacon.expiry is None  # default "never"
+        # WO-BEACON-LIFECYCLE: no more "never" default -- every deploy
+        # grants exactly one fixed 30d charge cell; `expiry` (repurposed
+        # hard-delete deadline) is charge_expires_at + 7d grace.
+        assert beacon.charge_expires_at == beacon.deployed_at + svc.CHARGE_CELL_DURATION
+        assert beacon.expiry == beacon.charge_expires_at + svc.GRACE_PERIOD
+        assert beacon.last_charged_at == beacon.deployed_at
         assert result["id"] == str(beacon.id)
         # Denorm updated (DoD 1's "updates Sector.message_beacons JSONB").
         assert sector.message_beacons is not None
@@ -484,8 +503,12 @@ class TestDailyRateLimit:
         ]
         db = _FakeSession(players=[player], sectors=[sector], regions=[region], beacons=list(five_today))
 
+        # WO-BEACON-LIFECYCLE: no more explicit expiry kwarg -- deploy()
+        # now REJECTS any explicit value (see TestExpiryChoiceRetired
+        # below), so this call omits it entirely to reach the rate-limit
+        # check rather than short-circuiting on invalid_expiry first.
         with pytest.raises(BeaconError, match="ERR_RATE_LIMIT_EXCEEDED"):
-            svc.deploy(db, player.id, sector.sector_id, "6th today", expiry="never")
+            svc.deploy(db, player.id, sector.sector_id, "6th today")
 
     def test_deploys_from_a_prior_day_do_not_count(
         self, safe_security, monkeypatch: pytest.MonkeyPatch,
@@ -527,6 +550,104 @@ class TestDailyRateLimit:
         db = _FakeSession(players=[player], sectors=[sector], regions=[region], beacons=list(real_now_beacons))
         svc.deploy(db, player.id, sector.sector_id, "does not count against the pinned far-future day")
         assert len(db.beacons) == svc.RATE_LIMIT_PER_DAY + 1
+
+
+# --- WO-BEACON-LIFECYCLE: per-player global beacon cap -------------------- #
+# Falsifiable coverage bullet 4: cap-20 enforced on non-DARK count.
+
+@pytest.mark.unit
+class TestPerPlayerBeaconCap:
+    def test_twentieth_active_beacon_blocks_the_twenty_first(
+        self, safe_security, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(svc, "_now", lambda: _NOW)
+        region = _region()
+        sector = _sector(region)
+        player = _player()
+        existing = [
+            _beacon(
+                region, sector, deployer_player_id=player.id,
+                charge_expires_at=_NOW + timedelta(days=10),
+                # Old deployed_at -- keeps these 20 out of the SEPARATE
+                # 5/day rate-limit window so only the cap-20 gate is under
+                # test here.
+                deployed_at=_NOW - timedelta(days=100),
+            )
+            for _ in range(svc.BEACON_CAP_PER_PLAYER)
+        ]
+        db = _FakeSession(players=[player], sectors=[sector], regions=[region], beacons=list(existing))
+        with pytest.raises(BeaconError, match="ERR_BEACON_CAP_REACHED"):
+            svc.deploy(db, player.id, sector.sector_id, "one too many")
+        assert len(db.beacons) == svc.BEACON_CAP_PER_PLAYER  # rejected -- no 21st inserted
+        assert player.credits == 10000  # no partial debit
+
+    def test_dark_beacons_do_not_count_toward_the_cap(
+        self, safe_security, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(svc, "_now", lambda: _NOW)
+        # Region cap raised well above the default per-SECTOR FIFO cap
+        # (10) -- this test crams 21 beacons into one sector to isolate
+        # the per-PLAYER cap-20 gate; without raising it, the unrelated
+        # per-sector FIFO cap would displace beacons down to 10 first.
+        region = _region(trade_bonuses={svc.REGION_BEACON_CAP_KEY: 50})
+        sector = _sector(region)
+        player = _player()
+        dark = [
+            _beacon(
+                region, sector, deployer_player_id=player.id,
+                charge_expires_at=_NOW - timedelta(days=1),  # already DARK
+                deployed_at=_NOW - timedelta(days=100),
+            )
+            for _ in range(svc.BEACON_CAP_PER_PLAYER)
+        ]
+        db = _FakeSession(players=[player], sectors=[sector], regions=[region], beacons=list(dark))
+        svc.deploy(db, player.id, sector.sector_id, "still allowed -- 20 husks don't count")
+        assert len(db.beacons) == svc.BEACON_CAP_PER_PLAYER + 1
+
+    def test_cap_is_global_across_sectors_not_scoped_to_the_deploy_target(
+        self, safe_security, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """message-beacons.md:137 -- "My Beacons" is "across the universe",
+        not per-sector/region. The player's 20 existing beacons sit in a
+        DIFFERENT sector from the one they're now trying to deploy into,
+        proving the count isn't accidentally scoped to the target sector."""
+        monkeypatch.setattr(svc, "_now", lambda: _NOW)
+        region = _region()
+        elsewhere = _sector(region, sector_id=99)
+        target = _sector(region, sector_id=100)
+        player = _player(current_sector_id=100)
+        existing = [
+            _beacon(
+                region, elsewhere, deployer_player_id=player.id,
+                charge_expires_at=_NOW + timedelta(days=10),
+                deployed_at=_NOW - timedelta(days=100),
+            )
+            for _ in range(svc.BEACON_CAP_PER_PLAYER)
+        ]
+        db = _FakeSession(
+            players=[player], sectors=[elsewhere, target], regions=[region], beacons=list(existing),
+        )
+        with pytest.raises(BeaconError, match="ERR_BEACON_CAP_REACHED"):
+            svc.deploy(db, player.id, target.sector_id, "still blocked from a different sector")
+
+    def test_under_cap_deploy_succeeds(self, safe_security, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(svc, "_now", lambda: _NOW)
+        # Same region-cap raise as the sibling test above -- isolates the
+        # per-player cap-20 gate from the unrelated per-sector FIFO cap.
+        region = _region(trade_bonuses={svc.REGION_BEACON_CAP_KEY: 50})
+        sector = _sector(region)
+        player = _player()
+        existing = [
+            _beacon(
+                region, sector, deployer_player_id=player.id,
+                charge_expires_at=_NOW + timedelta(days=10),
+                deployed_at=_NOW - timedelta(days=100),
+            )
+            for _ in range(svc.BEACON_CAP_PER_PLAYER - 1)
+        ]
+        db = _FakeSession(players=[player], sectors=[sector], regions=[region], beacons=list(existing))
+        svc.deploy(db, player.id, sector.sector_id, "the 20th, still under cap")
+        assert len(db.beacons) == svc.BEACON_CAP_PER_PLAYER
 
 
 # --- DoD 7: personal-rep gate ---------------------------------------------- #
@@ -680,6 +801,38 @@ class TestMessageContentPolicy:
         db = _FakeSession(players=[player], sectors=[sector], regions=[region])
         with pytest.raises(BeaconError, match="invalid_expiry"):
             svc.deploy(db, player.id, sector.sector_id, "hi", expiry="3 days")
+
+
+# --- WO-BEACON-LIFECYCLE: the expiry-choice menu is retired --------------- #
+
+@pytest.mark.unit
+class TestExpiryChoiceRetired:
+    """Falsifiable coverage bullet 1: deploy rejects "never" AND every
+    other legacy expiry value -- the player-facing choice is gone, not
+    just the "never" default. No debit on any of these (rejected before
+    the Player lock even validates affordability)."""
+
+    @pytest.mark.parametrize("legacy_value", ["never", "24h", "7d", "30d", "3 days"])
+    def test_any_explicit_expiry_value_is_rejected(self, safe_security, legacy_value) -> None:
+        region = _region()
+        sector = _sector(region)
+        player = _player()
+        db = _FakeSession(players=[player], sectors=[sector], regions=[region])
+        with pytest.raises(BeaconError, match="invalid_expiry"):
+            svc.deploy(db, player.id, sector.sector_id, "hi", expiry=legacy_value)
+        assert db.beacons == []
+        assert player.credits == 10000  # no partial debit
+
+    def test_never_is_no_longer_a_member_of_expiry_choices(self) -> None:
+        assert "never" not in svc.EXPIRY_CHOICES
+
+    def test_omitting_expiry_entirely_succeeds(self, safe_security) -> None:
+        region = _region()
+        sector = _sector(region)
+        player = _player()
+        db = _FakeSession(players=[player], sectors=[sector], regions=[region])
+        svc.deploy(db, player.id, sector.sector_id, "hi")  # does not raise
+        assert len(db.beacons) == 1
 
 
 # --- DoD 11 (deploy half): beacon_deployed bus event ---------------------- #

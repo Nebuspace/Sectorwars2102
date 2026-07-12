@@ -91,12 +91,38 @@ RATE_LIMIT_PER_DAY = 5
 PERSONAL_REP_GATE_MIN = 0
 
 # ── Expiry choices (message-beacons.md:27) ─────────────────────────────────
+# WO-BEACON-LIFECYCLE: the player-facing expiry MENU is retired -- "never"
+# dropped (there IS no more "never": every beacon now runs off a fixed
+# 30-day charge cell, see CHARGE_CELL_DURATION below). deploy() no longer
+# consults this dict to pick a duration; it's kept only because the
+# existing sweep test suite still uses "24h"/"7d"/"30d" as convenient
+# pre-built timedelta literals for constructing raw expiry timestamps on
+# hand-built MessageBeacon test doubles (the sweep's own SQL query doesn't
+# care WHICH duration produced a past `expiry` value, only that it's past).
 EXPIRY_CHOICES: Dict[str, Optional[timedelta]] = {
     "24h": timedelta(hours=24),
     "7d": timedelta(days=7),
     "30d": timedelta(days=30),
-    "never": None,
 }
+
+# ── Charge-cell lifecycle (WO-BEACON-LIFECYCLE, Max-ratified numbers) ──────
+# Every deploy/recharge grants exactly one fixed cell -- no player choice.
+# `charge_expires_at` marks the FADING->DARK boundary; the REPURPOSED
+# `expiry` column (see the model's own docstring) is the separate, later
+# hard-delete deadline the existing sweep already scans.
+CHARGE_CELL_DURATION = timedelta(days=30)
+GRACE_PERIOD = timedelta(days=7)
+# "Fading" begins in the last 15% of a cell (~4.5d) -- dim + a
+# "◊ SIGNAL LOW" marker on the denorm cell, text still readable.
+FADING_WINDOW = CHARGE_CELL_DURATION * 0.15
+FADING_SIGNAL_LABEL = "◊ SIGNAL LOW"
+# A beacon can hold at most 3 stacked cells (90d) of charge ahead of "now".
+MAX_CHARGE_CELLS = 3
+RECHARGE_CREDIT_COST = 200  # per cell
+
+# ── Per-player global beacon cap (message-beacons.md:137 "My Beacons ...
+# across the universe" -- GLOBAL, not per-region) ──────────────────────────
+BEACON_CAP_PER_PLAYER = 20
 
 
 def _now() -> datetime:
@@ -201,19 +227,67 @@ def _sector_cap(region: Region) -> int:
     return max(1, min(MAX_SECTOR_CAP, cap))
 
 
-def _beacon_summary(beacon: MessageBeacon) -> Dict[str, Any]:
+def _decay_state(beacon: MessageBeacon, now: datetime) -> str:
+    """WO-BEACON-LIFECYCLE -- the SINGLE source of truth for a beacon's
+    decay state; never stored as a column, always re-derived from
+    `charge_expires_at` at read time (so it can never drift out of sync
+    with itself the way a cached/duplicated status column could):
+
+      * DARK   -- `now >= charge_expires_at` (the current charge cell ran
+        out). Stops broadcasting / drops from the sector denorm; the row
+        persists as a husk until the REPURPOSED `expiry` column's grace
+        deadline elapses and the existing sweep hard-deletes it.
+      * FADING -- within the last 15% of the current cell
+        (`now >= charge_expires_at - FADING_WINDOW`, ~4.5d). Still fully
+        readable, just dim + carries FADING_SIGNAL_LABEL on the denorm.
+      * ACTIVE -- otherwise.
+
+    `charge_expires_at is None` (REVISE FIX 6, mack LOW): a legacy row
+    this WO's own migration should have backfilled, OR an old-binary
+    insert mid-rolling-deploy (the migration only ever runs once; a
+    pre-migration code path deployed in the same window would still
+    insert NULL here). Never DARK by omission -- a NULL/missing charge
+    is not the same claim as "this beacon's charge definitely ran out",
+    and DARK would hide a possibly-perfectly-fine beacon from the sector
+    view entirely. NOT permanently ACTIVE either, though -- that would
+    let a NULL silently mean "immortal" forever. FADING: still visible
+    in the denorm, but flagged (dim + the low-signal marker) so it gets
+    attention (a recharge, or simply outliving the rollout window and
+    getting a real value on its next natural rebuild) rather than being
+    trusted indefinitely on a column that was never actually set."""
+    if beacon.charge_expires_at is None:
+        return "FADING"
+    if now >= beacon.charge_expires_at:
+        return "DARK"
+    if now >= beacon.charge_expires_at - FADING_WINDOW:
+        return "FADING"
+    return "ACTIVE"
+
+
+def _beacon_summary(beacon: MessageBeacon, now: Optional[datetime] = None) -> Dict[str, Any]:
     """The Sector.message_beacons JSONB denorm entry shape (message-
-    beacons.md:91-100)."""
-    return {
+    beacons.md:91-100), extended with a `state` key (WO-BEACON-LIFECYCLE)
+    for the future client to dim a FADING cell -- DARK cells never reach
+    here at all (the caller filters them out before calling this, see
+    _rebuild_sector_denorm). `signal` only appears on a FADING cell."""
+    now = now or _now()
+    state = _decay_state(beacon, now)
+    summary = {
         "id": str(beacon.id),
         "deployer_nickname": beacon.deployer_nickname_at_deploy,
         "deployed_at": beacon.deployed_at.isoformat() if beacon.deployed_at else None,
         "preview": beacon.message[:60],
         "expiry": beacon.expiry.isoformat() if beacon.expiry else None,
+        "state": state,
     }
+    if state == "FADING":
+        summary["signal"] = FADING_SIGNAL_LABEL
+    return summary
 
 
-def _rebuild_sector_denorm(db: Session, region_id: uuid.UUID, sector_id: int) -> None:
+def _rebuild_sector_denorm(
+    db: Session, region_id: uuid.UUID, sector_id: int, now: Optional[datetime] = None,
+) -> None:
     """Rebuild `Sector.message_beacons` from the live MessageBeacon rows for
     (region_id, sector_id) -- canon's own prescribed reconciliation strategy
     for JSONB/row drift (message-beacons.md:143, "Reconcile from rows;
@@ -222,13 +296,17 @@ def _rebuild_sector_denorm(db: Session, region_id: uuid.UUID, sector_id: int) ->
     that back it. Multi-account HARD-flagged deployers' beacons are
     excluded from the visible list (canon:115, "aren't surfaced in the
     sector-view list") -- their rows still exist (salvageable, readable by
-    direct id) but never appear in the ambient sector view.
+    direct id) but never appear in the ambient sector view. WO-BEACON-
+    LIFECYCLE: DARK beacons are excluded the same way -- "stops
+    broadcasting" (see _decay_state) -- their rows also persist as husks
+    until the grace-period hard-delete.
 
     Looks up the Sector by (region_id, sector_id) -- the compound identity
     this whole subsystem keys on; a sector not found (should not happen for
     a live deploy/salvage/expiry against a real player location) is a
     no-op rather than a crash, matching this codebase's defensive-JSONB-
     denorm convention elsewhere."""
+    now = now or _now()
     sector = (
         db.query(Sector)
         .filter(Sector.region_id == region_id, Sector.sector_id == sector_id)
@@ -244,8 +322,8 @@ def _rebuild_sector_denorm(db: Session, region_id: uuid.UUID, sector_id: int) ->
         .all()
     )
     visible = [
-        _beacon_summary(b) for b in rows
-        if _participation_weight(db, b.deployer_player_id) > 0.0
+        _beacon_summary(b, now) for b in rows
+        if _participation_weight(db, b.deployer_player_id) > 0.0 and _decay_state(b, now) != "DARK"
     ]
     sector.message_beacons = visible
     flag_modified(sector, "message_beacons")
@@ -258,7 +336,15 @@ def _apply_sector_cap(db: Session, region_id: uuid.UUID, sector_id: int, cap: in
     state in one pass. Weight-0 (multi-account-flagged) rows never count
     toward the cap (canon:115, "don't count toward the per-sector cap") and
     are never displaced by this pass -- only real, counted beacons compete
-    for the cap slots."""
+    for the cap slots.
+
+    WO-BEACON-LIFECYCLE, DELIBERATE ASYMMETRY: unlike the denorm (which
+    excludes DARK) and the per-player cap-20 (which excludes DARK), THIS
+    cap still counts a DARK husk. This cap is "how many casings physically
+    litter this sector" (still true of an un-collected husk); the denorm/
+    cap-20 are "what's actively broadcasting/usable" (a DARK beacon
+    genuinely stopped doing that). Not an oversight -- the WO scoped the
+    DARK exclusion explicitly to the other two mechanisms only."""
     rows = (
         db.query(MessageBeacon)
         .filter(MessageBeacon.region_id == region_id, MessageBeacon.sector_id == sector_id)
@@ -291,6 +377,21 @@ def _apply_sector_cap(db: Session, region_id: uuid.UUID, sector_id: int, cap: in
                 "(region=%s sector=%s) -- benign race, continuing",
                 region_id, sector_id,
             )
+
+
+def _player_non_dark_beacon_count(db: Session, player_id: uuid.UUID, now: datetime) -> int:
+    """message-beacons.md:137 -- "My Beacons" shows everything a player has
+    deployed "across the universe": GLOBAL, not per-region (unlike the
+    per-SECTOR FIFO cap above). Same two-pass SHAPE as contract_service.py's
+    _active_player_postings_in_region() (fetch candidate rows, then filter
+    in Python) -- but for a different reason than that sibling's cross-table
+    JOIN: decay state has no SQL column of its own to filter on
+    (_decay_state is the single source of truth, WO-BEACON-LIFECYCLE), so
+    counting runs through that same function rather than re-deriving an
+    equivalent `charge_expires_at > now` SQL predicate that could quietly
+    drift out of sync with it over time."""
+    rows = db.query(MessageBeacon).filter(MessageBeacon.deployer_player_id == player_id).all()
+    return sum(1 for b in rows if _decay_state(b, now) != "DARK")
 
 
 # ── WS broadcast (deploy/salvage only -- see module docstring) ────────────
@@ -346,24 +447,61 @@ def deploy(
     player_id: uuid.UUID,
     sector_id: int,
     message: str,
-    expiry: str = "never",
+    expiry: Optional[str] = None,
     read_once: bool = False,
 ) -> Dict[str, Any]:
     """Deploy a beacon at the player's current sector (message-beacons.md
     :22-35). FLUSH-ONLY -- the route commits.
 
-    Validation order: location/docked state -> nexus-protected sector ->
-    rate limit -> personal-rep gate -> message length -> content-policy
-    filter -> resource affordability. Every check raises BEFORE any
-    mutation -- a rejected deploy never partially debits."""
-    if expiry not in EXPIRY_CHOICES:
+    Validation order: sector exists/has a region -> location/docked state
+    -> nexus-protected sector -> rate limit -> per-player beacon cap ->
+    personal-rep gate -> message length -> content-policy filter ->
+    resource affordability. Every check raises BEFORE any mutation -- a
+    rejected deploy never partially debits.
+
+    WO-BEACON-LIFECYCLE: `expiry` is DEPRECATED -- the player-facing
+    expiry-choice menu is retired; every deploy now creates exactly one
+    fixed CHARGE_CELL_DURATION (30d) charge cell, no choice involved. The
+    parameter is kept (rather than dropped outright) purely as a rejection
+    surface: ANY explicit value -- "never", a legacy "24h"/"7d"/"30d", or
+    anything else -- is refused via the SAME invalid_expiry BeaconError
+    path this always used, so a caller that still thinks it can pick a
+    duration fails loudly instead of silently getting a 30d cell it didn't
+    ask for. The route no longer exposes this field at all
+    (DeployBeaconRequest dropped it); omitting the argument (the default)
+    is the only way to deploy successfully."""
+    if expiry is not None:
         raise BeaconError(
-            f"invalid_expiry: '{expiry}' -- must be one of {sorted(EXPIRY_CHOICES)}"
+            f"invalid_expiry: deploy no longer accepts an expiry choice -- every beacon is "
+            f"now a fixed {CHARGE_CELL_DURATION.days}-day charge cell (recharge to extend it); "
+            f"got {expiry!r}"
         )
 
-    # Lock the player row up front -- every subsequent check reads live
-    # state (turns/credits) off this same locked row, and the eventual
-    # debit happens on it too (mirrors trading.py's dock/buy lock-then-
+    # REVISE FIX 5 (mack, audit): Sector-advisory -> Player-row -> Ship-row
+    # -- this codebase's CANONICAL order for the (Sector, Beacon, Player)
+    # triple (see salvage()/recharge()'s own docstrings for the AB-BA that
+    # order closes) extended here to deploy's (Sector, Player, Ship): a
+    # same-player double-click -- deploying while ALSO recharging/salvaging
+    # a beacon that lives in the SAME sector -- previously risked deploy
+    # holding Player-then-wanting-Sector while recharge/salvage held
+    # Sector-then-wanted-Player, a genuine Postgres-detectable AB-BA.
+    # Deploy has no Beacon ROW to lock yet at this point (it INSERTS a new
+    # one), so this collapses to Sector-then-Player-then-Ship in practice.
+    # The Sector row itself needs only an UNLOCKED read (existence +
+    # region_id) to resolve the advisory-lock key -- acquired here, BEFORE
+    # the Player lock, so it's held for this whole transaction and the
+    # later cap-check/denorm-rebuild section no longer needs to (re-)
+    # acquire it.
+    sector = db.query(Sector).filter(Sector.sector_id == sector_id).first()
+    if sector is None:
+        raise BeaconError(f"Sector {sector_id} not found")
+    if sector.region_id is None:
+        raise BeaconError("Sector has no region assigned -- cannot deploy a beacon here")
+    _lock_sector(db, sector.region_id, sector_id)
+
+    # Lock the player row -- every subsequent check reads live state
+    # (turns/credits) off this same locked row, and the eventual debit
+    # happens on it too (mirrors trading.py's dock/buy lock-then-
     # validate-then-mutate shape). WO-MONEY-REREAD-SERVICES: player was
     # already loaded unlocked by the route's get_current_player dependency
     # on this same session; populate_existing() forces this lock to re-read
@@ -381,12 +519,6 @@ def deploy(
         raise BeaconError("You must be in the sector to deploy a beacon there")
     if player.is_docked:
         raise BeaconError("You cannot deploy a beacon while docked at a station")
-
-    sector = db.query(Sector).filter(Sector.sector_id == sector_id).first()
-    if sector is None:
-        raise BeaconError(f"Sector {sector_id} not found")
-    if sector.region_id is None:
-        raise BeaconError("Sector has no region assigned -- cannot deploy a beacon here")
     if sector.is_nexus_protected:
         raise BeaconError(
             "ERR_NEXUS_PROTECTED_SECTOR: beacons cannot be deployed in a nexus-protected sector"
@@ -410,6 +542,16 @@ def deploy(
     if today_count >= RATE_LIMIT_PER_DAY:
         raise BeaconError(
             f"ERR_RATE_LIMIT_EXCEEDED: {RATE_LIMIT_PER_DAY} beacon deploys per UTC day reached"
+        )
+
+    # WO-BEACON-LIFECYCLE: global per-player beacon cap (message-beacons.md
+    # :137) -- DARK husks don't count (they've stopped broadcasting; a
+    # player shouldn't be blocked from deploying a fresh beacon by old
+    # husks still waiting out their grace-delete window).
+    if _player_non_dark_beacon_count(db, player_id, _now()) >= BEACON_CAP_PER_PLAYER:
+        raise BeaconError(
+            f"ERR_BEACON_CAP_REACHED: you already have {BEACON_CAP_PER_PLAYER} active beacons "
+            "deployed -- salvage one or let one fade before deploying another"
         )
 
     # Personal-rep gate (message-beacons.md:114): Wanted / deeply-negative
@@ -506,8 +648,14 @@ def deploy(
     ship.cargo = cargo
     flag_modified(ship, "cargo")
 
-    expiry_delta = EXPIRY_CHOICES[expiry]
+    # WO-BEACON-LIFECYCLE: every deploy grants exactly one fixed charge
+    # cell, no choice -- charge_expires_at is the FADING->DARK boundary;
+    # the REPURPOSED `expiry` column is the separate, later hard-delete
+    # deadline (charge_expires_at + GRACE_PERIOD) the existing sweep scans
+    # unchanged (see the model's own docstring for why that repurposing
+    # keeps "no new scheduler" true).
     now = _now()
+    charge_expires_at = now + CHARGE_CELL_DURATION
     beacon = MessageBeacon(
         id=uuid.uuid4(),
         region_id=sector.region_id,
@@ -515,7 +663,9 @@ def deploy(
         deployer_player_id=player_id,
         deployer_nickname_at_deploy=player.nickname or player.username,
         message=sanitized_message,
-        expiry=(now + expiry_delta) if expiry_delta is not None else None,
+        expiry=charge_expires_at + GRACE_PERIOD,
+        charge_expires_at=charge_expires_at,
+        last_charged_at=now,
         read_once=read_once,
         deployed_at=now,
     )
@@ -527,13 +677,14 @@ def deploy(
 
     # WO-P4 REVISE fix 1 (mack, CRITICAL): serialize the cap-check +
     # denorm-rebuild section per sector -- see _lock_sector's own
-    # docstring for the exact race this closes. Player-then-Sector stays
-    # the consistent lock order every path in this module uses (Player is
-    # already locked above; salvage()/read()'s read_once branch acquire
-    # this same sector lock AFTER their own Player lock too).
-    _lock_sector(db, sector.region_id, sector_id)
+    # docstring for the exact race this closes. REVISE FIX 5: the sector
+    # advisory lock is now acquired at the TOP of this function (Sector-
+    # first, before Player) and held for the whole transaction -- no
+    # second acquisition needed here (pg_advisory_xact_lock is reentrant/
+    # stacking within one transaction, so a redundant re-call would be
+    # harmless, but removed for clarity since it's genuinely unnecessary).
     _apply_sector_cap(db, sector.region_id, sector_id, cap)
-    _rebuild_sector_denorm(db, sector.region_id, sector_id)
+    _rebuild_sector_denorm(db, sector.region_id, sector_id, now=now)
     db.flush()
 
     _dispatch_event_frame(build_beacon_event("beacon_deployed", beacon))
@@ -547,6 +698,7 @@ def deploy(
         "region_id": str(beacon.region_id),
         "message": beacon.message,
         "expiry": beacon.expiry,
+        "charge_expires_at": beacon.charge_expires_at,
         "read_once": beacon.read_once,
         "deployed_at": beacon.deployed_at,
         "credits": player.credits,
@@ -651,8 +803,37 @@ def salvage(db: Session, beacon_id: uuid.UUID, player_id: uuid.UUID) -> Dict[str
     be IN the beacon's sector -- id-only lookup let a leaked/guessed uuid
     trigger a remote 250cr/1-turn salvage-farm, breaking canon's
     region-isolation (message-beacons.md:120-122). See read()'s own
-    docstring for the anti-oracle rationale (same error either way)."""
-    beacon = _load_beacon(db, beacon_id)
+    docstring for the anti-oracle rationale (same error either way).
+
+    Lock order (WO-BEACON-LIFECYCLE REVISE, mack CRITICAL): Sector-
+    advisory -> Beacon-row -> Player-row -- this codebase's CANONICAL
+    order for this beacon quartet (resource-before-player, coarse-before-
+    fine; the same order sweep_expired() already used, and recharge()
+    now uses too -- see recharge()'s own docstring for the full 4-method
+    order). An UNLOCKED peek resolves the beacon's (region_id, sector_id)
+    first (there's no way to know which sector to lock without it), the
+    sector advisory lock is acquired, THEN the same beacon is re-locked
+    FOR UPDATE (populate_existing() -- the peek left an unlocked instance
+    in this session's identity map), THEN Player. Previously this method
+    locked Player first and only implicitly locked the beacon at
+    db.delete()'s flush -- the reverse of recharge()'s Beacon-then-Player
+    order, which let a same-player salvage/recharge double-click or retry
+    AB-BA deadlock into a raw, uncaught HTTP 500 (caught by neither the
+    StaleData/ObjectDeleted clause nor the route's BeaconError handling).
+    Both methods agreeing on Sector-first closes it."""
+    peek = _load_beacon(db, beacon_id)
+    region_id, sector_id = peek.region_id, peek.sector_id
+    _lock_sector(db, region_id, sector_id)
+
+    beacon = (
+        db.query(MessageBeacon)
+        .filter(MessageBeacon.id == beacon_id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    if beacon is None:
+        raise BeaconNotFoundError(f"Beacon {beacon_id} not found")
 
     # WO-MONEY-REREAD-SERVICES: player was already loaded unlocked by the
     # route's get_current_player dependency on this same session;
@@ -673,7 +854,6 @@ def salvage(db: Session, beacon_id: uuid.UUID, player_id: uuid.UUID) -> Dict[str
             f"you have {player.turns}"
         )
 
-    region_id, sector_id = beacon.region_id, beacon.sector_id
     beacon_id_str = str(beacon.id)
 
     # Build the broadcast frame BEFORE deleting -- once the row is gone,
@@ -684,15 +864,16 @@ def salvage(db: Session, beacon_id: uuid.UUID, player_id: uuid.UUID) -> Dict[str
     turn_service.spend_turns(player, SALVAGE_TURN_COST)
     player.credits = (player.credits or 0) + SALVAGE_CREDIT_REFUND
 
-    # Fix 1: serialize this sector's delete + denorm-rebuild against any
-    # concurrent deploy/salvage/read_once/sweep touching the same sector.
-    _lock_sector(db, region_id, sector_id)
     try:
         db.delete(beacon)
         db.flush()
     except (StaleDataError, ObjectDeletedError):
-        # Fix 4: a concurrent salvage/read_once/sweep already removed this
-        # exact row between our SELECT and this delete.
+        # Defensive residual: with the beacon row now explicitly locked
+        # FOR UPDATE above (rather than only implicitly at this delete),
+        # no concurrent transaction could actually remove it out from
+        # under this specific delete anymore -- kept anyway, matching
+        # this file's own "never let a delete-time surprise escape as a
+        # raw 500" discipline every other locked-delete site here keeps.
         raise BeaconNotFoundError(f"Beacon {beacon_id} not found") from None
     _rebuild_sector_denorm(db, region_id, sector_id)
     db.flush()
@@ -711,6 +892,128 @@ def salvage(db: Session, beacon_id: uuid.UUID, player_id: uuid.UUID) -> Dict[str
     }
 
 
+# ── Recharge ────────────────────────────────────────────────────────────
+
+def recharge(db: Session, beacon_id: uuid.UUID, player_id: uuid.UUID) -> Dict[str, Any]:
+    """WO-BEACON-LIFECYCLE. Top up a beacon's charge by one
+    CHARGE_CELL_DURATION (30d) cell for RECHARGE_CREDIT_COST (200cr);
+    costs no turns. FLUSH-ONLY -- the route commits.
+
+    Auth is DELIBERATELY WIDER than deploy()/salvage()'s strict presence
+    requirement -- the beacon OWNER may recharge remotely (their "My
+    Beacons" screen, message-beacons.md:137), OR any player physically
+    PRESENT in the beacon's sector may top it up. Anyone else gets the
+    SAME anti-oracle 404 read()/salvage() use for a location mismatch (a
+    caller can't distinguish "wrong sector and not the owner" from "no
+    such beacon").
+
+    Lock order (REVISE FIX 2, mack CRITICAL #2b): Sector-advisory ->
+    Beacon-row -> Player-row -- this codebase's CANONICAL order for this
+    beacon quartet (resource-before-player, coarse-before-fine; the same
+    order sweep_expired() already used, and salvage() now uses too --
+    see salvage()'s own docstring for the AB-BA this closed). This
+    method ORIGINALLY acquired the sector lock LAST (right before the
+    denorm rebuild, after Beacon+Player) -- that was backwards against
+    the sweep (Sector-then-Beacon), a second AB-BA. An UNLOCKED peek
+    resolves the beacon's (region_id, sector_id) first (there's no way
+    to know which sector to lock without it), the sector advisory lock
+    is acquired, THEN the same beacon is re-locked FOR UPDATE
+    (populate_existing() -- the peek left an unlocked instance in this
+    session's identity map), THEN Player (also populate_existing() --
+    WO-MONEY-REREAD-SERVICES, get_current_player's route dependency
+    already loaded it unlocked in this same session)."""
+    peek = _load_beacon(db, beacon_id)
+    region_id, sector_id = peek.region_id, peek.sector_id
+    _lock_sector(db, region_id, sector_id)
+
+    beacon = (
+        db.query(MessageBeacon)
+        .filter(MessageBeacon.id == beacon_id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    if beacon is None:
+        raise BeaconNotFoundError(f"Beacon {beacon_id} not found")
+
+    player = (
+        db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
+    )
+    if player is None:
+        raise BeaconError(f"Player {player_id} not found")
+
+    is_owner = beacon.deployer_player_id == player_id
+    is_present = player.current_sector_id == beacon.sector_id
+    if not (is_owner or is_present):
+        raise BeaconNotFoundError(f"Beacon {beacon_id} not found")
+
+    if player.credits < RECHARGE_CREDIT_COST:
+        raise BeaconError(
+            f"insufficient_credits: recharging costs {RECHARGE_CREDIT_COST}cr, "
+            f"you have {player.credits}"
+        )
+
+    now = _now()
+    # REVISE FIX 4 (cipher+mack, corrects a contract bug in the original
+    # pin): STACKING formula -- base off max(charge_expires_at, now), not
+    # min(). A still-alive beacon (charge_expires_at > now) stacks the new
+    # cell ON TOP of its remaining runway (extends further into the
+    # future each recharge); a DARK-but-not-yet-grace-deleted husk or a
+    # missing/legacy charge_expires_at has no runway to stack onto, so it
+    # revives with a FRESH cell from now (max picks "now" over a past or
+    # absent value). This is what makes the 90d/3-cell ceiling below
+    # actually load-bearing -- under the OLD min()-based formula it was
+    # structurally unreachable (flagged, now corrected).
+    base = beacon.charge_expires_at if beacon.charge_expires_at is not None else now
+    base = max(base, now)
+    new_charge_expires_at = base + CHARGE_CELL_DURATION
+
+    # 90d / 3-cell ceiling -- REJECT (no partial-value debit) rather than
+    # clamp, raised BEFORE any mutation. Now genuinely reachable: three
+    # recharges in a row on a beacon that stays active (30d -> 60d -> 90d)
+    # puts the FOURTH exactly at the ceiling; a fifth attempt (or a fourth
+    # arriving before any of the first three cells burn down) is rejected.
+    cap_ceiling = now + (CHARGE_CELL_DURATION * MAX_CHARGE_CELLS)
+    if new_charge_expires_at > cap_ceiling:
+        raise BeaconError(
+            f"ERR_RECHARGE_CAP_REACHED: a beacon can hold at most {MAX_CHARGE_CELLS} charge "
+            "cells of stored charge -- wait for the current cell to run down before recharging again"
+        )
+
+    player.credits -= RECHARGE_CREDIT_COST
+    beacon.charge_expires_at = new_charge_expires_at
+    beacon.last_charged_at = now
+    beacon.expiry = new_charge_expires_at + GRACE_PERIOD
+
+    # Same discipline as every other state-changing mutation in this
+    # file: rebuild the denorm (sector already locked above) so a FADING
+    # cell that just got topped back up to ACTIVE (or a husk revived out
+    # of DARK) is reflected immediately, not just at the next sweep tick.
+    # The sweep's own husk-delete loop is now a CONDITIONAL delete
+    # (REVISE FIX 3, re-verifying `expiry < now` at delete time) -- a
+    # sweep racing this recharge for the SAME row either blocks behind
+    # this transaction's sector/beacon locks (both now Sector-then-Beacon,
+    # no AB-BA) and then finds nothing left to delete once it sees this
+    # commit's extended expiry, or it already lost the race and this
+    # commit simply proceeds -- either way the paid recharge wins, never
+    # a wasted 200cr debit against a beacon that gets swept anyway.
+    _rebuild_sector_denorm(db, region_id, sector_id, now=now)
+    db.flush()
+
+    logger.info(
+        "Player %s recharged beacon %s in sector %s (new charge_expires_at=%s)",
+        player_id, beacon.id, sector_id, new_charge_expires_at,
+    )
+    return {
+        "id": str(beacon.id),
+        "recharge_cost": RECHARGE_CREDIT_COST,
+        "credits": player.credits,
+        "charge_expires_at": beacon.charge_expires_at,
+        "expiry": beacon.expiry,
+        "state": _decay_state(beacon, now),
+    }
+
+
 # ── Expiry sweep ────────────────────────────────────────────────────────
 
 def sweep_expired(db: Session, now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -725,14 +1028,36 @@ def sweep_expired(db: Session, now: Optional[datetime] = None) -> Dict[str, Any]
     `events` to `scheduler._common._broadcast_events` back on the event
     loop. FLUSH-ONLY.
 
-    WO-P4 REVISE fixes 1 + 4 (mack): each candidate's sector is locked
-    (fix 1) before its delete, serializing against a concurrent deploy/
-    salvage/read_once on the same sector; the delete itself runs inside
-    its own SAVEPOINT (fix 4, same "failed flush poisons the whole
-    session" reasoning as _apply_sector_cap) so ONE candidate a
-    concurrent salvage/read_once beat this sweep to doesn't abort the
-    rest of the batch -- that candidate is just skipped, no event/count
-    for it."""
+    WO-P4 REVISE fix 1 (mack): each candidate's sector is locked before
+    its delete, serializing against a concurrent deploy/salvage/read_once
+    on the same sector.
+
+    WO-BEACON-LIFECYCLE REVISE (mack CRITICAL #2a, supersedes the old fix
+    4's SAVEPOINT): the delete itself is now a CONDITIONAL raw SQL
+    `DELETE ... WHERE id = :id AND expiry < :now`, re-verifying the
+    expiry claim at delete time rather than acting on the earlier
+    unlocked SELECT's snapshot -- this is what makes a concurrent
+    recharge() (or salvage/read_once) that beat this sweep to the row
+    survive it: a 0-rowcount result means "no longer matches", skipped,
+    no event/count for it, no exception to catch.
+
+    WO-BEACON-LIFECYCLE widened this sweep with a SECOND pass: beyond the
+    UNCHANGED grace-elapsed hard-delete loop above (still keyed on the
+    REPURPOSED `expiry` column, still "no new scheduler"), it also
+    rebuilds the denorm for every sector holding a beacon at or past its
+    FADING boundary. Decay state is DERIVED (_decay_state), never stored,
+    so nothing else ever notices a beacon quietly crossing ACTIVE->FADING
+    or FADING->DARK on its own -- deploy/salvage/recharge only rebuild the
+    denorm for sectors THEY touch. This periodic pass is what keeps every
+    OTHER sector's denorm from silently drifting stale between explicit
+    beacon actions. Scoped to near/at-boundary rows only (a solidly-ACTIVE
+    beacon's derived state can't have changed since its last rebuild, so
+    touching its sector would be pure waste) -- self-healing every tick
+    (BEACON_EXPIRE_SWEEP_SECONDS, 10 min default) rather than trying to
+    detect "crossed a boundary since the LAST tick" via extra bookkeeping,
+    which would silently miss a transition if a tick were ever skipped
+    (lock contention, a not-yet-due check) instead of just catching it on
+    the next one."""
     now = now or _now()
 
     expired = 0
@@ -749,24 +1074,57 @@ def sweep_expired(db: Session, now: Optional[datetime] = None) -> Dict[str, Any]
             break
 
         region_id, sector_id = candidate.region_id, candidate.sector_id
+        beacon_id = candidate.id
         _lock_sector(db, region_id, sector_id)
         # Build the frame before deleting -- once the row is gone the
         # in-memory instance is expired and its attributes are no longer
         # safely readable (matches salvage()'s own ordering).
         frame = build_beacon_event("beacon_expired", candidate)
-        try:
-            with db.begin_nested():
-                db.delete(candidate)
-                db.flush()
-        except (StaleDataError, ObjectDeletedError):
+
+        # REVISE (mack CRITICAL #2a): CONDITIONAL delete, re-verifying
+        # `expiry < now` AT DELETE TIME via raw SQL -- not an ORM
+        # Session.delete()+flush() acting on the earlier UNLOCKED
+        # snapshot above. A concurrent recharge() can revive this exact
+        # candidate (push its expiry into the future) while THIS sweep is
+        # blocked waiting on the shared sector advisory lock (both agree
+        # on Sector-before-Beacon, see recharge()'s own docstring) --
+        # without the WHERE-reverify, this delete would fire anyway on
+        # stale data and the player's 200cr would have paid for nothing.
+        # A 0-rowcount result means "no longer matches" (revived, or
+        # already removed by a concurrent salvage/read_once) -- skip, not
+        # an error. No SAVEPOINT needed: a plain conditional DELETE
+        # affecting 0 rows never raises, unlike the ORM Session.delete()
+        # version-check this replaces.
+        result = db.execute(
+            text("DELETE FROM message_beacons WHERE id = :id AND expiry < :now"),
+            {"id": beacon_id, "now": now},
+        )
+        if result.rowcount == 0:
             continue
 
         events.append(frame)
         touched_sectors.add((region_id, sector_id))
         expired += 1
 
+    # WO-BEACON-LIFECYCLE: near/at-boundary scan (see docstring above).
+    # `charge_expires_at <= now + FADING_WINDOW` catches exactly the rows
+    # whose derived state is FADING or DARK right now -- a solidly-ACTIVE
+    # row (charge_expires_at further out than that) can't have changed
+    # state since its last rebuild, so it's excluded from the scan.
+    near_boundary = (
+        db.query(MessageBeacon)
+        .filter(
+            MessageBeacon.charge_expires_at.isnot(None),
+            MessageBeacon.charge_expires_at <= now + FADING_WINDOW,
+        )
+        .all()
+    )
+    for beacon in near_boundary:
+        touched_sectors.add((beacon.region_id, beacon.sector_id))
+
     for region_id, sector_id in touched_sectors:
-        _rebuild_sector_denorm(db, region_id, sector_id)
+        _lock_sector(db, region_id, sector_id)
+        _rebuild_sector_denorm(db, region_id, sector_id, now=now)
     db.flush()
 
     return {"expired": expired, "events": events}

@@ -59,8 +59,28 @@ class MessageBeacon(Base):
 
     message = Column(String(500), nullable=False)
 
-    # NULL = never expires (canon default).
+    # WO-BEACON-LIFECYCLE: REPURPOSED. Was "when the beacon auto-removes;
+    # NULL = never expires" (message-beacons.md:74, now stale -- the
+    # expiry-choice menu is retired). Now the HARD-DELETE deadline only --
+    # always `charge_expires_at + GRACE_PERIOD` (message_beacon_service.py)
+    # once a beacon has ever been charged. The existing partial index/sweep
+    # query (`expiry IS NOT NULL AND expiry < now`) is UNCHANGED by this
+    # repurposing on purpose -- that's how the sweep keeps working with no
+    # new scheduler. NULL only for a legacy row that predates this WO and
+    # hasn't been backfilled (should not exist post-migration).
     expiry = Column(DateTime(timezone=True), nullable=True)
+
+    # WO-BEACON-LIFECYCLE additions -- the beacon's decay state (ACTIVE /
+    # FADING / DARK) is DERIVED from `charge_expires_at`, never stored
+    # directly (message_beacon_service._decay_state is the single source of
+    # truth). `charge_expires_at` = when the current 30-day charge cell
+    # reaches DARK; `last_charged_at` = audit timestamp of the most recent
+    # deploy/recharge. Both nullable per this codebase's additive-migration
+    # convention (a legacy pre-migration row would read NULL here, though
+    # this WO's own migration backfills every existing row so none should
+    # remain NULL in practice).
+    charge_expires_at = Column(DateTime(timezone=True), nullable=True)
+    last_charged_at = Column(DateTime(timezone=True), nullable=True)
 
     # 📐 Design-only per canon -- see module docstring.
     read_once = Column(Boolean, nullable=False, default=False, server_default="false")
