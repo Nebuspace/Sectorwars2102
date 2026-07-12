@@ -21,12 +21,25 @@ GET /api/v1/nav/chart
   The depth is never client-supplied — only the ship's own stats drive it.
   No `current_ship` -> `bounded` has no effect (unbounded, same as today).
 
+GET /api/v1/nav/threat
+  Per-sector threat rollup over the player's known graph
+  (WO-UI2-TACTICAL-THREAT-ENDPOINT), STATIC-ONLY — scored from
+  security_level / hazard_level / last_combat recency / region
+  pirate-pressure; see threat_service.py for the formula/weights (all
+  TENTATIVE pending Max's ratification) and the resolved pirate-pressure
+  grounding. Read-only, additive. PLAYER-SCOPED exactly like /nav/chart:
+  same auth dependency, reports ONLY sectors in
+  NavService.get_known_sector_ids(player).
+
 The route handler follows the trading.py pattern:
   - Session = Depends(get_db)  (sync)
   - current_player: Player = Depends(get_current_player)
   - No HTTP errors for game-logic unreachable states — the shape carries
     reachable=False with optional error field per the frozen contract.
 """
+
+import logging
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -36,8 +49,7 @@ from src.auth.dependencies import get_current_player
 from src.core.database import get_db
 from src.models.player import Player
 from src.services.nav_service import NavService
-
-import logging
+from src.services.threat_service import compute_threat_rollup
 
 logger = logging.getLogger(__name__)
 
@@ -125,3 +137,56 @@ async def get_nav_chart(
     """
     nav = NavService(db)
     return nav.get_chart(current_player, bounded=bounded)
+
+
+class ThreatContributorResponse(BaseModel):
+    input: str
+    points: int
+
+
+class ThreatEntryResponse(BaseModel):
+    sector_id: int
+    score: int
+    band: str
+    contributors: List[ThreatContributorResponse]
+
+
+@router.get("/threat", response_model=List[ThreatEntryResponse])
+async def get_nav_threat(
+    db: Session = Depends(get_db),
+    current_player: Player = Depends(get_current_player),
+):
+    """
+    Per-sector threat rollup over the player's known navigation graph
+    (WO-UI2-TACTICAL-THREAT-ENDPOINT).
+
+    [{"sector_id": int, "score": int (0-100, clamped), "band": "CLEAR" |
+      "CAUTION" | "HOSTILE" | "LETHAL", "contributors": [{"input": str,
+      "points": int}, ...]}]
+
+    PLAYER-SCOPED exactly like GET /nav/chart: reuses the SAME
+    `get_current_player` auth dependency, and reports threat ONLY for
+    sectors in the player's known graph (the same
+    `NavService.get_known_sector_ids` assembly `/nav/chart` and `/nav/plot`
+    use) — a player never sees threat data for a sector they don't know.
+    Read-only; mutates nothing.
+
+    STATIC-ONLY: scored from security_level / hazard_level / last_combat
+    recency / region pirate-pressure. Formula/weights are TENTATIVE pending
+    Max's ratification — see threat_service.py's module-top constants
+    block for the full breakdown and the resolved pirate-pressure
+    grounding.
+    """
+    rollup = compute_threat_rollup(db, current_player)
+    return [
+        ThreatEntryResponse(
+            sector_id=entry.sector_id,
+            score=entry.score,
+            band=entry.band,
+            contributors=[
+                ThreatContributorResponse(input=c.input, points=c.points)
+                for c in entry.contributors
+            ],
+        )
+        for entry in rollup
+    ]
