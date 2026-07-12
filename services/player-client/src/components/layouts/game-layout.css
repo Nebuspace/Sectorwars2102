@@ -89,14 +89,28 @@
      never participate in grid placement (the inverted-L scene deliberately
      spans the FULL container height, ignoring the grid rows). `statusbar`
      (StatusBar, WO-UI0-STATUSBAR) and `teleprinter` (Teleprinter,
-     WO-UI1-TELEPRINTER) are now filled by real, non-absolute grid children
-     — their `auto` row tracks size to that content. `windshield` is filled
+     WO-UI1-TELEPRINTER) are now filled by real, non-absolute grid children.
+     `teleprinter`'s row stays an `auto` track (sized to its dynamic content);
+     `statusbar`'s row is pinned to `var(--statusbar-h)` (WO-UI0-SCALE-LAW,
+     see the doc-comment on grid-template-rows below — `auto` there inflated
+     past the row's own real height). `windshield` is filled
      by `.windshield-hud-anchor` (WO-UI1-ANNUNCIATOR stitch, below) — a
      zero-footprint positioning anchor only, the scene itself is still
      `.game-content`. */
   display: grid;
   grid-template-columns: var(--sidebar-w) 1fr;
-  grid-template-rows: var(--band-h) 1fr auto auto;
+  /* WO-UI0-SCALE-LAW: the statusbar row was `auto`, which Chromium's grid
+     auto-track sizing algorithm inflates to ~72px (not the 56px `.status-bar`
+     itself declares) because `.status-bar` sets `overflow: visible` so its
+     dossier/location dropdowns can escape the row box — that escaping
+     scrollable-overflow content gets counted as max-content contribution to
+     the row. Pinning this row to `var(--statusbar-h)` explicitly (rather than
+     `auto`) enforces the 56px the shell already assumes elsewhere (the
+     .game-sidebar/.game-content bottom-edge formula below), reclaiming the
+     ~16px dead seam back to the "sidebar deck" row's `1fr` track. The
+     teleprinter row stays `auto` — its height is genuinely dynamic
+     (minimized strip vs. expanded+focused body), see --teleprinter-h below. */
+  grid-template-rows: var(--band-h) 1fr var(--statusbar-h) auto;
   grid-template-areas:
     "windshield  windshield"
     "sidebar     deck"
