@@ -3,6 +3,7 @@ import { useGame } from '../../contexts/GameContext';
 import { formatCredits } from '../../utils/formatters';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { resourceIcon } from '../../services/resourceCatalog';
+import DeckPageTabs from '../cockpit/DeckPageTabs';
 import './construction-venue.css';
 
 // Use same API URL logic as GameContext for Codespaces compatibility
@@ -1322,24 +1323,21 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
           </p>
         </div>
 
-        <div className="construction-tabs" role="tablist">
-          <button
-            role="tab"
-            aria-selected={activeTab === 'orders'}
-            className={`construction-tab${activeTab === 'orders' ? ' active' : ''}`}
-            onClick={() => setActiveTab('orders')}
-          >
-            📜 Ship Order Book
-          </button>
-          <button
-            role="tab"
-            aria-selected={activeTab === 'builds'}
-            className={`construction-tab${activeTab === 'builds' ? ' active' : ''}`}
-            onClick={() => setActiveTab('builds')}
-          >
-            🛠️ My Builds{activeBuildCount > 0 ? ` (${activeBuildCount})` : ''}
-          </button>
-        </div>
+        <DeckPageTabs
+          pages={[
+            { id: 'orders', label: '📜 Ship Order Book' },
+            {
+              id: 'builds',
+              label: `🛠️ My Builds${activeBuildCount > 0 ? ` (${activeBuildCount})` : ''}`
+            }
+          ]}
+          activeId={activeTab}
+          onSelect={(id) => setActiveTab(id as 'orders' | 'builds')}
+          ariaLabel="Construction view"
+          accent="#00d9ff"
+          idBase="construction"
+          className="construction-tabs"
+        />
 
         {reserveSuccess && (
           <div className="genesis-success-message">
@@ -1348,70 +1346,76 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
           </div>
         )}
 
-        {activeTab === 'orders' && (
-          <div className="construction-orders">
-            {quotesMeta && (quotesMeta.slips || typeof quotesMeta.queue_length === 'number') && (
-              <div className="construction-slip-status">
-                {quotesMeta.slips?.standard && (
-                  <span className="cq-slip-stat">
-                    🛠️ Standard slips: {quotesMeta.slips.standard.in_use}/{quotesMeta.slips.standard.capacity} in use
-                  </span>
-                )}
-                {quotesMeta.slips?.specialized && quotesMeta.slips.specialized.capacity > 0 && (
-                  <span className="cq-slip-stat">
-                    🛸 Specialized slips: {quotesMeta.slips.specialized.in_use}/{quotesMeta.slips.specialized.capacity} in use
-                  </span>
-                )}
-                {typeof quotesMeta.queue_length === 'number' && quotesMeta.queue_length > 0 && (
-                  <span className="cq-slip-stat">⏳ Queue: {quotesMeta.queue_length}</span>
-                )}
-              </div>
-            )}
-            {quotesLoading && !quotes && (
-              <div className="catalog-loading">Pulling slips schedule from the dockmaster...</div>
-            )}
-            {quotesError && !quotesLoading && (
-              <div className="genesis-error-message">
-                <span className="error-icon">❌</span>
-                {quotesError}
-                <button className="action-button" onClick={fetchQuotes}>Retry</button>
-              </div>
-            )}
-            {!quotesError && quotes && (
-              <div className="cq-grid">
-                {quotes.map(renderQuoteCard)}
-                {quotes.length === 0 && (
-                  <p className="section-description">No hulls are quoted at this facility right now.</p>
-                )}
-              </div>
-            )}
-          </div>
-        )}
+        <div
+          role="tabpanel"
+          id={`construction-panel-${activeTab}`}
+          aria-labelledby={`construction-tab-${activeTab}`}
+        >
+          {activeTab === 'orders' && (
+            <div className="construction-orders">
+              {quotesMeta && (quotesMeta.slips || typeof quotesMeta.queue_length === 'number') && (
+                <div className="construction-slip-status">
+                  {quotesMeta.slips?.standard && (
+                    <span className="cq-slip-stat">
+                      🛠️ Standard slips: {quotesMeta.slips.standard.in_use}/{quotesMeta.slips.standard.capacity} in use
+                    </span>
+                  )}
+                  {quotesMeta.slips?.specialized && quotesMeta.slips.specialized.capacity > 0 && (
+                    <span className="cq-slip-stat">
+                      🛸 Specialized slips: {quotesMeta.slips.specialized.in_use}/{quotesMeta.slips.specialized.capacity} in use
+                    </span>
+                  )}
+                  {typeof quotesMeta.queue_length === 'number' && quotesMeta.queue_length > 0 && (
+                    <span className="cq-slip-stat">⏳ Queue: {quotesMeta.queue_length}</span>
+                  )}
+                </div>
+              )}
+              {quotesLoading && !quotes && (
+                <div className="catalog-loading">Pulling slips schedule from the dockmaster...</div>
+              )}
+              {quotesError && !quotesLoading && (
+                <div className="genesis-error-message">
+                  <span className="error-icon">❌</span>
+                  {quotesError}
+                  <button className="action-button" onClick={fetchQuotes}>Retry</button>
+                </div>
+              )}
+              {!quotesError && quotes && (
+                <div className="cq-grid">
+                  {quotes.map(renderQuoteCard)}
+                  {quotes.length === 0 && (
+                    <p className="section-description">No hulls are quoted at this facility right now.</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
-        {activeTab === 'builds' && (
-          <div className="construction-builds">
-            {reservationsLoading && !reservations && (
-              <div className="catalog-loading">Checking the slips for your keels...</div>
-            )}
-            {reservationsError && (
-              <div className="genesis-error-message">
-                <span className="error-icon">❌</span>
-                {reservationsError}
-                <button className="action-button" onClick={fetchReservations}>Retry</button>
-              </div>
-            )}
-            {!reservationsError && reservations && (
-              <>
-                {sortedReservations.map(renderReservationCard)}
-                {reservations.length === 0 && (
-                  <p className="section-description">
-                    No builds on the slips. Reserve a hull from the Ship Order Book to lay your first keel.
-                  </p>
-                )}
-              </>
-            )}
-          </div>
-        )}
+          {activeTab === 'builds' && (
+            <div className="construction-builds">
+              {reservationsLoading && !reservations && (
+                <div className="catalog-loading">Checking the slips for your keels...</div>
+              )}
+              {reservationsError && (
+                <div className="genesis-error-message">
+                  <span className="error-icon">❌</span>
+                  {reservationsError}
+                  <button className="action-button" onClick={fetchReservations}>Retry</button>
+                </div>
+              )}
+              {!reservationsError && reservations && (
+                <>
+                  {sortedReservations.map(renderReservationCard)}
+                  {reservations.length === 0 && (
+                    <p className="section-description">
+                      No builds on the slips. Reserve a hull from the Ship Order Book to lay your first keel.
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Reserve confirmation — balance preview like the shipyard purchase panel */}

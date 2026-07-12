@@ -3,6 +3,7 @@ import { contractsAPI } from '../../services/api';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { formatCredits } from '../../utils/formatters';
 import type { ContractDTO, ContractMineResponse } from '../../types/contract';
+import DeckPageTabs, { type DeckPage } from '../cockpit/DeckPageTabs';
 import './contract-board-venue.css';
 
 // =====================================================================
@@ -93,6 +94,15 @@ interface ContractBoardVenueProps {
 
 type ContractBoardTab = 'board' | 'mine' | 'post';
 type MineSubTab = 'accepted' | 'posted';
+
+// Outer tablist pages — labels are static, unlike the nested My Contracts
+// subtabs (which carry a live count badge), so this is a module constant
+// rather than rebuilt every render.
+const CONTRACT_BOARD_TABS: DeckPage[] = [
+  { id: 'board', label: '📋 Board' },
+  { id: 'mine', label: '📜 My Contracts' },
+  { id: 'post', label: '✉️ Post Contract' },
+];
 
 const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
   stationId,
@@ -522,24 +532,18 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
 
   const renderMineTab = () => (
     <div className="cb-tab-content">
-      <div className="cb-mine-subtabs" role="tablist">
-        <button
-          role="tab"
-          aria-selected={mineSubTab === 'accepted'}
-          className={`cb-tab${mineSubTab === 'accepted' ? ' active' : ''}`}
-          onClick={() => setMineSubTab('accepted')}
-        >
-          📦 Accepted{mine ? ` (${mine.accepted.length})` : ''}
-        </button>
-        <button
-          role="tab"
-          aria-selected={mineSubTab === 'posted'}
-          className={`cb-tab${mineSubTab === 'posted' ? ' active' : ''}`}
-          onClick={() => setMineSubTab('posted')}
-        >
-          📜 Posted{mine ? ` (${mine.posted.length})` : ''}
-        </button>
-      </div>
+      <DeckPageTabs
+        pages={[
+          { id: 'accepted', label: `📦 Accepted${mine ? ` (${mine.accepted.length})` : ''}` },
+          { id: 'posted', label: `📜 Posted${mine ? ` (${mine.posted.length})` : ''}` },
+        ]}
+        activeId={mineSubTab}
+        onSelect={(id) => setMineSubTab(id as MineSubTab)}
+        ariaLabel="My contracts filter"
+        accent="#00d9ff"
+        idBase="cb-mine"
+        className="cb-mine-subtabs"
+      />
       {mineActionError && (
         <div className="genesis-error-message">
           <span className="error-icon">❌</span>
@@ -552,7 +556,12 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
           {mineActionSuccess}
         </div>
       )}
-      <div className="cb-list">
+      <div
+        className="cb-list"
+        role="tabpanel"
+        id={`cb-mine-panel-${mineSubTab}`}
+        aria-labelledby={`cb-mine-tab-${mineSubTab}`}
+      >
         {mineLoading && !mine && <div className="catalog-loading">Opening your contract ledger...</div>}
         {mineError && !mine && (
           <div className="genesis-error-message">
@@ -676,34 +685,22 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
         <h2>📋 Contract Board</h2>
       </div>
 
-      <div className="cb-tabs" role="tablist">
-        <button
-          role="tab"
-          aria-selected={activeTab === 'board'}
-          className={`cb-tab${activeTab === 'board' ? ' active' : ''}`}
-          onClick={() => setActiveTab('board')}
-        >
-          📋 Board
-        </button>
-        <button
-          role="tab"
-          aria-selected={activeTab === 'mine'}
-          className={`cb-tab${activeTab === 'mine' ? ' active' : ''}`}
-          onClick={() => setActiveTab('mine')}
-        >
-          📜 My Contracts
-        </button>
-        <button
-          role="tab"
-          aria-selected={activeTab === 'post'}
-          className={`cb-tab${activeTab === 'post' ? ' active' : ''}`}
-          onClick={() => setActiveTab('post')}
-        >
-          ✉️ Post Contract
-        </button>
-      </div>
+      <DeckPageTabs
+        pages={CONTRACT_BOARD_TABS}
+        activeId={activeTab}
+        onSelect={(id) => setActiveTab(id as ContractBoardTab)}
+        ariaLabel="Contract board section"
+        accent="#00d9ff"
+        idBase="cb"
+        className="cb-tabs"
+      />
 
-      <div className="venue-content-area cb-content-area">
+      <div
+        className="venue-content-area cb-content-area"
+        role="tabpanel"
+        id={`cb-panel-${activeTab}`}
+        aria-labelledby={`cb-tab-${activeTab}`}
+      >
         {activeTab === 'board' && renderBoardTab()}
         {activeTab === 'mine' && renderMineTab()}
         {activeTab === 'post' && renderPostTab()}

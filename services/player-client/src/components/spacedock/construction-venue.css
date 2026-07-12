@@ -34,15 +34,32 @@
   line-height: 1.5;
 }
 
-.construction-tabs {
+/* WO-UI2-CANON-A-CONSTRUCTION: the tablist is now the shared
+   cockpit/DeckPageTabs.tsx rail (role=tablist/tab, roving-tabindex
+   keyboard nav) mounted with className="construction-tabs" so the
+   element carries BOTH `.deck-tab-rail` (base rail chrome, cockpit.css)
+   and `.construction-tabs` (this venue's original underlined-tab skin).
+   Every rule below re-scopes the venue's pre-migration `.construction-tab`
+   / `.construction-tab.active` look onto `.deck-tab-btn` — qualified as
+   `.construction-tabs.deck-tab-rail` / `.construction-tabs .deck-tab-btn`
+   (2-3 classes) so specificity beats the base `.deck-tab-rail` /
+   `.deck-tab-btn` (1 class) regardless of CSS import order, and every
+   base-rail property the venue's skin doesn't want (boxed-pill border,
+   dark fill, uppercase, letter-spacing, bold-by-default, glow) is
+   explicitly reset. Rendered look is unchanged from the hand-rolled
+   tablist this replaced. */
+.construction-tabs.deck-tab-rail {
   display: flex;
   gap: 8px;
   margin-bottom: 16px;
+  border: none;
   border-bottom: 1px solid rgba(0, 217, 255, 0.2);
-  padding-bottom: 8px;
+  border-radius: 0;
+  padding: 0 0 8px;
+  background: none;
 }
 
-.construction-tab {
+.construction-tabs .deck-tab-btn {
   background: transparent;
   border: 1px solid rgba(0, 217, 255, 0.25);
   color: rgba(255, 255, 255, 0.7);
@@ -50,19 +67,23 @@
   border-radius: 4px;
   cursor: pointer;
   font-size: 0.85em;
+  font-weight: normal;
+  letter-spacing: normal;
+  text-transform: none;
   transition: all 0.2s ease;
 }
 
-.construction-tab:hover {
+.construction-tabs .deck-tab-btn:hover {
   border-color: rgba(0, 217, 255, 0.5);
   color: #00d9ff;
 }
 
-.construction-tab.active {
+.construction-tabs .deck-tab-btn.active {
   background: rgba(0, 217, 255, 0.12);
   border-color: rgba(0, 217, 255, 0.6);
   color: #00d9ff;
   font-weight: bold;
+  text-shadow: none;
 }
 
 /* ========================================

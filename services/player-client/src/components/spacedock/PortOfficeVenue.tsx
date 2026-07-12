@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { useGame } from '../../contexts/GameContext';
 import { formatCredits } from '../../utils/formatters';
+import DeckPageTabs from '../cockpit/DeckPageTabs';
 import './port-office-venue.css';
 
 // =====================================================================
@@ -1171,52 +1172,43 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
           </p>
         </div>
 
-        <div className="po-tabs" role="tablist">
-          <button
-            role="tab"
-            aria-selected={activeTab === 'registry'}
-            className={`po-tab${activeTab === 'registry' ? ' active' : ''}`}
-            onClick={() => setActiveTab('registry')}
-          >
-            📋 Registry
-          </button>
-          {isMine && (
-            <button
-              role="tab"
-              aria-selected={activeTab === 'owner'}
-              className={`po-tab${activeTab === 'owner' ? ' active' : ''}`}
-              onClick={() => setActiveTab('owner')}
-            >
-              🏛️ Owner Console
-            </button>
+        <DeckPageTabs
+          pages={[
+            { id: 'registry', label: '📋 Registry' },
+            { id: 'owner', label: '🏛️ Owner Console', available: isMine },
+            { id: 'warroom', label: '⚔️ War Room' }
+          ]}
+          activeId={activeTab}
+          onSelect={(id) => setActiveTab(id as PortOfficeTab)}
+          ariaLabel="Port office view"
+          accent="#00d9ff"
+          idBase="po"
+          className="po-tabs"
+        />
+
+        <div
+          role="tabpanel"
+          id={`po-panel-${activeTab}`}
+          aria-labelledby={`po-tab-${activeTab}`}
+        >
+          {activeTab === 'registry' && (
+            <div className="po-registry">
+              {renderStatusPanel()}
+              {listingError && listing && (
+                <div className="genesis-error-message">
+                  <span className="error-icon">❌</span>
+                  {listingError}
+                  <button className="action-button" onClick={fetchListing}>Retry</button>
+                </div>
+              )}
+              {renderBuySection()}
+            </div>
           )}
-          <button
-            role="tab"
-            aria-selected={activeTab === 'warroom'}
-            className={`po-tab${activeTab === 'warroom' ? ' active' : ''}`}
-            onClick={() => setActiveTab('warroom')}
-          >
-            ⚔️ War Room
-          </button>
+
+          {activeTab === 'owner' && renderOwnerConsole()}
+
+          {activeTab === 'warroom' && renderWarRoom()}
         </div>
-
-        {activeTab === 'registry' && (
-          <div className="po-registry">
-            {renderStatusPanel()}
-            {listingError && listing && (
-              <div className="genesis-error-message">
-                <span className="error-icon">❌</span>
-                {listingError}
-                <button className="action-button" onClick={fetchListing}>Retry</button>
-              </div>
-            )}
-            {renderBuySection()}
-          </div>
-        )}
-
-        {activeTab === 'owner' && renderOwnerConsole()}
-
-        {activeTab === 'warroom' && renderWarRoom()}
       </div>
     </div>
   );

@@ -25,6 +25,12 @@
  *    not a client-side splice — this venue is server-authoritative)
  *  - the Post Contract form's escrow preview is the live sum of payment +
  *    insurance reserve, computed client-side as the user types
+ *  - WO-UI2-CANON-A-CONTRACTBOARD: both hand-rolled tablists (outer
+ *    Board/My Contracts/Post Contract, nested Accepted/Posted) now render
+ *    via the shared DeckPageTabs (components/cockpit/DeckPageTabs.tsx)
+ *    with DISTINCT idBases ("cb" / "cb-mine") — no tab/panel id collides,
+ *    both rails switch independently, and each is wired to its own
+ *    role="tabpanel" region
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -233,5 +239,97 @@ describe('ContractBoardVenue', () => {
     await setInputValue('input[aria-label="Insurance reserve"]', '250');
 
     expect(container.querySelector('.cb-escrow-amount')?.textContent).toBe('₡1,250');
+  });
+
+  describe('DeckPageTabs migration (WO-UI2-CANON-A-CONTRACTBOARD)', () => {
+    it('renders both tablists via DeckPageTabs (deck-tab-rail + venue skin class), with every tab/panel id unique across the two rails', async () => {
+      mockGetBoard.mockResolvedValueOnce([]);
+      mockGetMine.mockResolvedValueOnce({ posted: [], accepted: [CONTRACT_ACCEPTED] });
+
+      await act(async () => {
+        root.render(<ContractBoardVenue {...VENUE_PROPS} />);
+      });
+      await flush();
+
+      // Outer rail: shared behavior class + this venue's own skin class,
+      // both present on the same root (className passthrough, WO-UI2-
+      // DECKTABS-CLASSNAME) — never a replacement of one for the other.
+      const outerRail = container.querySelector('.cb-tabs');
+      expect(outerRail).not.toBeNull();
+      expect(outerRail?.classList.contains('deck-tab-rail')).toBe(true);
+      expect(outerRail?.getAttribute('role')).toBe('tablist');
+
+      await clickButton('My Contracts');
+      await flush();
+
+      const nestedRail = container.querySelector('.cb-mine-subtabs');
+      expect(nestedRail).not.toBeNull();
+      expect(nestedRail?.classList.contains('deck-tab-rail')).toBe(true);
+      expect(nestedRail?.getAttribute('role')).toBe('tablist');
+      // The nested rail is NOT the outer rail's element — two distinct
+      // tablists are live at once (outer + nested-inside-My-Contracts).
+      expect(nestedRail).not.toBe(outerRail);
+
+      const allTabIds = Array.from(container.querySelectorAll('[role="tab"]')).map((t) => t.id);
+      expect(allTabIds.length).toBe(5); // 3 outer + 2 nested
+      expect(new Set(allTabIds).size).toBe(allTabIds.length); // no collisions
+      expect(allTabIds).toEqual(
+        expect.arrayContaining([
+          'cb-tab-board',
+          'cb-tab-mine',
+          'cb-tab-post',
+          'cb-mine-tab-accepted',
+          'cb-mine-tab-posted',
+        ])
+      );
+    });
+
+    it('wires both content regions as aria-linked tabpanels, and the two rails switch independently', async () => {
+      mockGetBoard.mockResolvedValueOnce([]);
+      mockGetMine.mockResolvedValueOnce({ posted: [], accepted: [CONTRACT_ACCEPTED] });
+
+      await act(async () => {
+        root.render(<ContractBoardVenue {...VENUE_PROPS} />);
+      });
+      await flush();
+
+      await clickButton('My Contracts');
+      await flush();
+
+      // Outer tabpanel: cb-panel-mine, aria-labelledby the outer active tab.
+      const outerPanel = container.querySelector('.cb-content-area');
+      expect(outerPanel?.getAttribute('role')).toBe('tabpanel');
+      expect(outerPanel?.id).toBe('cb-panel-mine');
+      expect(outerPanel?.getAttribute('aria-labelledby')).toBe('cb-tab-mine');
+
+      // Nested tabpanel defaults to 'accepted'.
+      let nestedPanel = container.querySelector('.cb-list');
+      expect(nestedPanel?.getAttribute('role')).toBe('tabpanel');
+      expect(nestedPanel?.id).toBe('cb-mine-panel-accepted');
+      expect(nestedPanel?.getAttribute('aria-labelledby')).toBe('cb-mine-tab-accepted');
+      expect(nestedPanel?.textContent).toContain('ACCEPTED');
+
+      // Switching the NESTED rail only moves the nested tabpanel — the
+      // outer tabpanel (still "My Contracts") is untouched, proving the
+      // two rails are independently wired, not sharing state via id clash.
+      await clickButton('Posted');
+      await flush();
+
+      expect(container.querySelector('.cb-content-area')?.id).toBe('cb-panel-mine');
+      nestedPanel = container.querySelector('.cb-list');
+      expect(nestedPanel?.id).toBe('cb-mine-panel-posted');
+      expect(nestedPanel?.getAttribute('aria-labelledby')).toBe('cb-mine-tab-posted');
+      expect(nestedPanel?.textContent).toContain("haven't posted any contracts yet");
+
+      // Now switch the OUTER rail back to Board — the nested rail's own
+      // last-selected subtab state is irrelevant here (Board has none).
+      await clickButton('Board');
+      await flush();
+
+      expect(container.querySelector('.cb-content-area')?.id).toBe('cb-panel-board');
+      expect(container.querySelector('.cb-content-area')?.getAttribute('aria-labelledby')).toBe('cb-tab-board');
+      // The nested rail only exists inside the My Contracts panel.
+      expect(container.querySelector('.cb-mine-subtabs')).toBeNull();
+    });
   });
 });

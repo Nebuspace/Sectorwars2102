@@ -16,15 +16,46 @@
   padding: 0;
 }
 
-.cb-tabs {
+/* Both tablists render via the shared DeckPageTabs (components/cockpit/
+   DeckPageTabs.tsx) — root gets 'deck-tab-rail' PLUS this venue's own
+   class (cb-tabs / cb-mine-subtabs), tab buttons get 'deck-tab-btn'.
+   Every rule below is compounded onto .deck-tab-rail/.deck-tab-btn (never
+   a bare .cb-tabs/.cb-mine-subtabs descendant-only selector for the
+   CONTAINER) so it wins deterministically over cockpit.css's base rail
+   styling regardless of CSS import/bundle order — a plain same-specificity
+   .cb-tabs vs .deck-tab-rail tie would otherwise depend on load order.
+   The button/hover/active rules also explicitly reset font-weight/
+   text-transform/letter-spacing/font-family, which DeckPageTabs' base
+   .deck-tab-btn sets to a bold/uppercase/letter-spaced HUD look this
+   venue never had — left alone, the outer/nested tab labels would render
+   BOARD/MY CONTRACTS in caps instead of the original mixed-case skin. */
+
+.cb-tabs.deck-tab-rail {
   display: flex;
   gap: 4px;
   padding: 10px 16px 0;
+  border: none;
   border-bottom: 1px solid rgba(0, 217, 255, 0.15);
+  border-radius: 0;
+  background: transparent;
   flex-shrink: 0;
 }
 
-.cb-tab {
+.cb-mine-subtabs.deck-tab-rail {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+  border: none;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.cb-tabs .deck-tab-btn,
+.cb-mine-subtabs .deck-tab-btn {
   background: transparent;
   border: 1px solid transparent;
   border-bottom: none;
@@ -33,18 +64,25 @@
   border-radius: 6px 6px 0 0;
   cursor: pointer;
   font-size: 0.85em;
+  font-family: revert;
+  font-weight: normal;
+  text-transform: none;
+  letter-spacing: normal;
   transition: all 0.2s ease;
 }
 
-.cb-tab:hover {
+.cb-tabs .deck-tab-btn:hover,
+.cb-mine-subtabs .deck-tab-btn:hover {
   color: #00d9ff;
   background: rgba(0, 217, 255, 0.08);
 }
 
-.cb-tab.active {
+.cb-tabs .deck-tab-btn.active,
+.cb-mine-subtabs .deck-tab-btn.active {
   color: #00d9ff;
   background: rgba(0, 217, 255, 0.15);
   border-color: rgba(0, 217, 255, 0.3);
+  text-shadow: none;
 }
 
 /* Each tab's own content wrapper fills the (now non-scrolling)
@@ -59,18 +97,13 @@
   padding: 16px;
 }
 
-.cb-toolbar,
-.cb-mine-subtabs {
+.cb-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 12px;
   flex-shrink: 0;
-}
-
-.cb-mine-subtabs {
-  justify-content: flex-start;
 }
 
 .cb-toolbar-count {
