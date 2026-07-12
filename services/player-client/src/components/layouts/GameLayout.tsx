@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useLayoutEffect, useRef, useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useGame } from '../../contexts/GameContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
@@ -213,6 +213,38 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
     setSidebarOpen(!sidebarOpen);
   };
 
+  // ── Deck reflow — reserve the real teleprinter height (WO-UI1-DECK-REFLOW) ─
+  // .game-content/.game-sidebar are absolute overlays bounded by
+  // `calc(var(--statusbar-h) + var(--teleprinter-h))` (game-layout.css) so
+  // the deck/sidebar stop above the statusbar+teleprinter grid rows instead
+  // of extending underneath them. --statusbar-h is a static 56px (StatusBar
+  // never changes size) but Teleprinter genuinely does — minimized strip vs
+  // full body, vh-clamped log, input growing on focus — so it's measured off
+  // the live DOM node rather than reserved at a fixed worst-case (which would
+  // either overlap or permanently waste deck space whenever minimized).
+  // useLayoutEffect (not useEffect) so the first real value lands before the
+  // browser paints — no one-frame flash of the CSS fallback. ResizeObserver
+  // is undefined in this repo's jsdom test env (confirmed: jsdom 29 ships no
+  // implementation), so component tests skip live measurement and just keep
+  // the CSS default — harmless, since jsdom never asserts real geometry.
+  const gameContainerRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const container = gameContainerRef.current;
+    if (!container) return undefined;
+    const teleprinterEl = container.querySelector<HTMLElement>('.teleprinter');
+    if (!teleprinterEl) return undefined;
+
+    const applyHeight = () => {
+      container.style.setProperty('--teleprinter-h', `${teleprinterEl.offsetHeight}px`);
+    };
+    applyHeight();
+
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(applyHeight);
+    observer.observe(teleprinterEl);
+    return () => observer.disconnect();
+  }, []);
+
   // ── Auto-collapse the sidebar on landing (WO 129-B) ──────────────────
   // Landing hands the full band to the planetary console, so the nav rail
   // is dead weight; auto-collapse it on the landing TRANSITION and restore
@@ -280,6 +312,7 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
             .console-collapsed → the edge-toggle hides the console for an
             unobstructed scene (rail-peek retired; logout lives in the HUD). */}
         <div
+          ref={gameContainerRef}
           className={`game-container ${mode}${
             playerState?.is_docked || playerState?.is_landed ? ' console-expand' : ''
           }${sidebarOpen ? '' : ' console-collapsed'}${

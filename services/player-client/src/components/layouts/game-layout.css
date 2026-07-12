@@ -119,6 +119,35 @@
      WO-COCKPIT-ADJ-0628: raised ~26% (38% → 48%) so the bottom panels
      have room to surface primary actions without internal scrolling. */
   --deck-h: 48%;
+  /* WO-UI1-DECK-REFLOW: the "statusbar"/"teleprinter" rows above are REAL
+     grid children (auto-sized to content) — the grid engine already leaves
+     them exactly the room they need by shrinking the "sidebar deck" row's
+     `1fr` track. But `.game-content`/`.game-sidebar` below are absolute
+     overlays that never respected that `1fr` track — they used `inset:0` /
+     `bottom:0` (=the FULL container), extending underneath both rows. These
+     two vars give them the same reservation the grid track already has, so
+     they stop exactly where "sidebar deck" ends.
+     --statusbar-h mirrors StatusBar's own fixed height (statusbar.css:20 —
+     "56px, one flex row" per the ratified spec); CSS-only is correct here,
+     it never changes.
+     --teleprinter-h CANNOT be a static number the same way: Teleprinter's
+     real height swings between its ~34px minimized strip and its full body
+     (mode tabs + a vh-clamped log + an input row that itself grows on
+     focus) — reserving a fixed worst-case would either not be enough (an
+     overlap regression) or overshoot 200+px whenever minimized, freezing
+     the "sidebar deck" row's reclaimed space instead of letting it flow
+     back the way the grid's own `1fr` track already would. So GameLayout
+     measures the real rendered Teleprinter node (ResizeObserver) and writes
+     the live px value here; this default is only a pre-JS/no-JS fallback
+     (a real browser mount overwrites it via useLayoutEffect before the
+     first paint) — sized to the EXPANDED+focused worst case at the 900px
+     reference height (teleprinter.css: strip 34px + root top/bottom
+     border 2px + modes row ~25.6px + vh-clamped log ~154.6px [16vh @900px]
+     + focused input row ~40.8px + body bottom padding ~9.6px ≈ 266px,
+     rounded up) so an under-JS render still reserves ENOUGH rather than
+     too little. */
+  --statusbar-h: 56px;
+  --teleprinter-h: 268px;
 }
 
 /* Annunciator windshield-HUD anchor (WO-UI1-ANNUNCIATOR stitch) — a THIN,
@@ -162,7 +191,10 @@
   position: absolute;
   top: var(--band-h);
   left: 0;
-  bottom: 0;
+  /* WO-UI1-DECK-REFLOW: was `bottom: 0` (the container's FULL height,
+     extending under the statusbar/teleprinter rows below — see the
+     --statusbar-h/--teleprinter-h doc-comment above .game-container). */
+  bottom: calc(var(--statusbar-h) + var(--teleprinter-h));
   width: var(--sidebar-w);
   z-index: 20;
   transition: width 0.3s ease;
@@ -407,7 +439,18 @@
    the document never scrolls (Law 2 — overflow:hidden holds). */
 .game-content {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
+  right: 0;
+  /* WO-UI1-DECK-REFLOW: was `inset: 0` (bottom:0 = the container's FULL
+     height). The deck console + its 3 monitors live inside this box, sized
+     as a % of it (--deck-h) — at the full container height that % ran
+     underneath the statusbar/teleprinter rows below (occluding/clipping
+     the deck's own bottom edge). Bounding bottom here instead makes
+     --deck-h's percentage resolve against the box the deck is actually
+     meant to fill — see the --statusbar-h/--teleprinter-h doc-comment
+     above .game-container. */
+  bottom: calc(var(--statusbar-h) + var(--teleprinter-h));
   /* NO z-index here: a positive z-index would make .game-content a stacking
      context and trap its descendants (console z:20, HUD z:30, edge-toggle z:40)
      beneath the container-level .game-sidebar (z:20). With z:auto the scene's
