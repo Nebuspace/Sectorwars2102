@@ -154,17 +154,25 @@ class NavService:
         sectors one hop beyond a known one.
 
         Read-only, like ``plot()``. Frontier entries carry ONLY a
-        ``sector_id`` — never name, type, or coordinates — so an
-        unexplored neighbour's identity is never leaked through the chart
-        (mirrors course-plotting.md's visit-gated-intelligence invariant:
-        knowing an edge exists is not the same as knowing what's on the
-        other end of it).
+        ``sector_id`` (as ``id``) plus the numeric ``sector_id`` of the ONE
+        known sector that surfaced it (``from``) — never name, type, or
+        coordinates — so an unexplored neighbour's identity is never leaked
+        through the chart (mirrors course-plotting.md's
+        visit-gated-intelligence invariant: knowing an edge exists is not
+        the same as knowing what's on the other end of it). ``from`` exists
+        purely so a client can attach the frontier stub to the known graph
+        it hangs off of; it carries no information about the frontier
+        sector itself. When a frontier sector is reachable from more than
+        one known sector, ``from`` is the SMALLEST known ``sector_id``
+        among them (deterministic — one linkage is enough to attach the
+        node, and this keeps repeated calls byte-identical for the same
+        known-set).
 
         Returns:
           {"sectors": [{"sector_id", "name", "type", "x", "y", "z",
                         "visited", "current"}, ...],
            "edges": [{"from", "to", "kind": "warp"|"tunnel"}, ...],
-           "frontier": [sector_id, ...]}
+           "frontier": [{"id": sector_id, "from": known_sector_id}, ...]}
         """
         known_ids = self.get_known_sector_ids(player)
         if not known_ids:
@@ -221,9 +229,36 @@ class NavService:
             for s in extra:
                 uuid_to_sid[s.id] = s.sector_id
 
+        edges, frontier = self._assemble_edges_and_frontier(
+            warp_rows, tunnel_rows, uuid_to_sid, known_ids
+        )
+
+        return {
+            "sectors": sectors_payload,
+            "edges": edges,
+            "frontier": frontier,
+        }
+
+    def _assemble_edges_and_frontier(
+        self,
+        warp_rows: List[object],
+        tunnel_rows: List[WarpTunnel],
+        uuid_to_sid: Dict[object, int],
+        known_ids: Set[int],
+    ) -> Tuple[List[Dict], List[Dict]]:
+        """
+        Walk *warp_rows* and *tunnel_rows* once each, splitting them into
+        known↔known ``edges`` and known→unknown ``frontier`` stubs.  Factored
+        out of ``get_chart`` purely to keep that method's branch count in
+        check (mccabe C901) — no behaviour beyond what ``get_chart`` used to
+        do inline.  See ``get_chart``'s docstring for the ``frontier``
+        ``{"id", "from"}`` shape and the deterministic-smallest-``from``
+        tie-break.
+        """
         edges: List[Dict] = []
         edge_seen: Set[Tuple[int, int, str]] = set()
-        frontier_ids: Set[int] = set()
+        # frontier_sid -> the smallest known sector_id observed surfacing it.
+        frontier_from: Dict[int, int] = {}
 
         def add_edge(src_sid: int, dst_sid: int, kind: str) -> None:
             key = (src_sid, dst_sid, kind)
@@ -232,37 +267,65 @@ class NavService:
             edge_seen.add(key)
             edges.append({"from": src_sid, "to": dst_sid, "kind": kind})
 
+        def add_frontier(frontier_sid: int, from_sid: int) -> None:
+            existing = frontier_from.get(frontier_sid)
+            if existing is None or from_sid < existing:
+                frontier_from[frontier_sid] = from_sid
+
         for row in warp_rows:
-            src_sid = uuid_to_sid.get(row.source_sector_id)
-            dst_sid = uuid_to_sid.get(row.destination_sector_id)
-            if src_sid is None or dst_sid is None:
-                logger.warning("nav_service.get_chart: unresolved warp endpoint")
-                continue
-            if dst_sid in known_ids:
-                add_edge(src_sid, dst_sid, "warp")
-                if row.is_bidirectional and src_sid != dst_sid:
-                    add_edge(dst_sid, src_sid, "warp")
-            else:
-                frontier_ids.add(dst_sid)
+            self._route_chart_edge(
+                uuid_to_sid.get(row.source_sector_id),
+                uuid_to_sid.get(row.destination_sector_id),
+                "warp",
+                row.is_bidirectional,
+                known_ids,
+                add_edge,
+                add_frontier,
+            )
 
         for tunnel in tunnel_rows:
-            src_sid = uuid_to_sid.get(tunnel.origin_sector_id)
-            dst_sid = uuid_to_sid.get(tunnel.destination_sector_id)
-            if src_sid is None or dst_sid is None:
-                logger.warning("nav_service.get_chart: unresolved tunnel endpoint")
-                continue
-            if dst_sid in known_ids:
-                add_edge(src_sid, dst_sid, "tunnel")
-                if tunnel.is_bidirectional:
-                    add_edge(dst_sid, src_sid, "tunnel")
-            else:
-                frontier_ids.add(dst_sid)
+            self._route_chart_edge(
+                uuid_to_sid.get(tunnel.origin_sector_id),
+                uuid_to_sid.get(tunnel.destination_sector_id),
+                "tunnel",
+                tunnel.is_bidirectional,
+                known_ids,
+                add_edge,
+                add_frontier,
+            )
 
-        return {
-            "sectors": sectors_payload,
-            "edges": edges,
-            "frontier": sorted(frontier_ids),
-        }
+        frontier = [
+            {"id": fid, "from": frontier_from[fid]} for fid in sorted(frontier_from)
+        ]
+        return edges, frontier
+
+    @staticmethod
+    def _route_chart_edge(
+        src_sid: Optional[int],
+        dst_sid: Optional[int],
+        kind: str,
+        bidirectional: bool,
+        known_ids: Set[int],
+        add_edge,
+        add_frontier,
+    ) -> None:
+        """
+        Classify one warp/tunnel row as either a known↔known edge (recorded
+        via *add_edge*, both directions when bidirectional) or a
+        known→unknown frontier stub (recorded via *add_frontier*).  Shared by
+        both the warp and tunnel loops in ``_assemble_edges_and_frontier`` —
+        the two row shapes differ only in field names, resolved by the
+        caller before this is invoked.
+        """
+        if src_sid is None or dst_sid is None:
+            logger.warning("nav_service.get_chart: unresolved %s endpoint", kind)
+            return
+        if dst_sid in known_ids:
+            add_edge(src_sid, dst_sid, kind)
+            if bidirectional and src_sid != dst_sid:
+                add_edge(dst_sid, src_sid, kind)
+        else:
+            add_frontier(dst_sid, src_sid)
 
     def _build_safety_by_sid(self, player: Player) -> Dict[int, Optional[float]]:
         """

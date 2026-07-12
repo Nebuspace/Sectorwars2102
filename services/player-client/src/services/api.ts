@@ -776,9 +776,11 @@ export const resourceAPI = {
 // Navigation — the cockpit NAV CHART's known-graph surface (WO-PUX-NAVCHART).
 // GET /api/v1/nav/chart returns the player's KNOWN sectors (visited ∪
 // corp-shared ∪ current — course-plotting.md), the warp/tunnel edges between
-// them, and id-only frontier stubs for adjacent-but-unknown sectors. Course
-// plotting/engagement itself stays on AutopilotContext's own apiClient.post
-// call to POST /api/v1/nav/plot (unchanged by this WO).
+// them, and id-only frontier stubs (each linked to the known sector that
+// surfaced it, via `from` -- WO-NAV-CHART-FRONTIER-EDGES) for adjacent-but-
+// unknown sectors. Course plotting/engagement itself stays on
+// AutopilotContext's own apiClient.post call to POST /api/v1/nav/plot
+// (unchanged by this WO).
 export interface NavChartSector {
   sector_id: number;
   name: string;
@@ -796,10 +798,20 @@ export interface NavChartEdge {
   kind: 'warp' | 'tunnel';
 }
 
+// A frontier stub carries only the id of the unexplored sector plus the id
+// of the ONE known sector that surfaced it (`from`) -- never name/type/
+// coordinates (WO-NAV-CHART-FRONTIER-EDGES). `from` exists purely so a
+// client can attach the stub to the known graph; it carries no information
+// about the frontier sector itself.
+export interface NavChartFrontier {
+  id: number;
+  from: number;
+}
+
 export interface NavChartResponse {
   sectors: NavChartSector[];
   edges: NavChartEdge[];
-  frontier: number[];
+  frontier: NavChartFrontier[];
 }
 
 export const navAPI = {

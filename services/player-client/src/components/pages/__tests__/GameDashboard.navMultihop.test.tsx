@@ -28,7 +28,7 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { NavChartResponse, NavChartSector, NavChartEdge } from '../../../services/api';
+import type { NavChartResponse, NavChartSector, NavChartEdge, NavChartFrontier } from '../../../services/api';
 
 // ---------------------------------------------------------------------------
 // services/api -- navAPI.getChart is the fetch under test; regionOwnerAPI is
@@ -178,7 +178,7 @@ import GameDashboard from '../GameDashboard';
 function sector(id: number, overrides: Partial<NavChartSector> = {}): NavChartSector {
   return { sector_id: id, name: `Sector ${id}`, type: 'normal', x: id, y: 0, z: 0, visited: true, current: false, ...overrides };
 }
-function chart(sectors: NavChartSector[], edges: NavChartEdge[], frontier: number[] = []): NavChartResponse {
+function chart(sectors: NavChartSector[], edges: NavChartEdge[], frontier: NavChartFrontier[] = []): NavChartResponse {
   return { sectors, edges, frontier };
 }
 
@@ -196,7 +196,7 @@ const CHART_DEEP: NavChartResponse = chart(
     { from: 101, to: 102, kind: 'warp' },
     { from: 102, to: 103, kind: 'warp' },
   ],
-  [999],
+  [{ id: 999, from: 103 }],
 );
 
 // Fresh player: only the current sector is known; sector 101 -- the SAME id
@@ -206,7 +206,7 @@ const CHART_DEEP: NavChartResponse = chart(
 const CHART_FRESH: NavChartResponse = chart(
   [sector(100, { name: 'Sol', current: true })],
   [],
-  [101],
+  [{ id: 101, from: 100 }],
 );
 
 describe('GameDashboard — NAV multi-hop known-graph feed', () => {

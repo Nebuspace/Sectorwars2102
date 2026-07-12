@@ -501,14 +501,14 @@ const GalaxyMap: React.FC = () => {
         {frontier.length > 0 && (
           <div className="frontier-strip" data-testid="frontier-strip">
             <span className="frontier-strip-label">FRONTIER</span>
-            {frontier.map((sectorId) => (
+            {frontier.map((stub) => (
               <span
-                key={`frontier-${sectorId}`}
-                data-testid={`frontier-chip-${sectorId}`}
+                key={`frontier-${stub.id}`}
+                data-testid={`frontier-chip-${stub.id}`}
                 className="frontier-chip"
                 title="Detected beyond known space — fly there to learn more"
               >
-                {sectorId}
+                {stub.id}
               </span>
             ))}
           </div>

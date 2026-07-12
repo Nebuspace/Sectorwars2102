@@ -120,40 +120,37 @@ export function chartToNavSectors(
   });
 
   // Frontier stubs: nav_service.get_chart (services/gameserver/src/services/
-  // nav_service.py:224-259) guarantees every chart.frontier id is exactly
-  // one hop from SOME known sector -- frontier_ids is populated only from
-  // warp/tunnel rows whose source is a known sector. But it does NOT record
-  // *which* known sector surfaced it: chart.edges only carries known<->known
-  // links (add_edge is only called when the destination is itself known);
-  // a known->frontier warp/tunnel row is folded into frontier_ids and
-  // never becomes an edge. So there is no linkage in the /nav/chart
-  // contract to attach a given frontier id to a specific known neighbor
-  // (see report -- WO's "link to the known neighbor that surfaced it"
-  // fallback branch is unreachable with the data this endpoint returns).
+  // nav_service.py) guarantees every chart.frontier entry is exactly one hop
+  // from the known sector named by its `from` field (WO-NAV-CHART-FRONTIER-
+  // EDGES). That linkage exists in the contract now, but frontier-glyph
+  // RENDERING is still deferred (orchestrator ruling) -- this transform
+  // keeps using the same "was the entire known graph included" heuristic it
+  // used before `from` existed, rather than doing a per-stub BFS attachment
+  // via `from`; that upgrade is left to the WO that actually turns frontier
+  // rendering on, since it changes stub inclusion/positioning behaviour and
+  // deserves its own tests rather than riding in on a contract-compat pass.
   //
-  // The one case we CAN prove safe without that linkage: when the BFS+cap
-  // above included the ENTIRE known graph (no sector was excluded by depth
-  // or the node ceiling), nav_service's guarantee means every frontier id
-  // is one hop from an INCLUDED known sector, even though we can't name
-  // which one -- so it's safe to surface all of them (with an empty
-  // connected_sectors, since the specific link is genuinely unknown). When
-  // some known sectors were excluded, a given frontier id might only be
-  // reachable via an excluded sector, and we cannot tell which case we're
-  // in -- so frontier stubs are skipped entirely rather than fabricating a
-  // link or risking a stub floating in the wrong part of the map ("skip
-  // unlinkable stubs gracefully").
+  // The one case we CAN prove safe without a per-stub attachment: when the
+  // BFS+cap above included the ENTIRE known graph (no sector was excluded by
+  // depth or the node ceiling), nav_service's guarantee means every frontier
+  // id is one hop from an INCLUDED known sector -- so it's safe to surface
+  // all of them (with an empty connected_sectors; per-stub positioning still
+  // isn't wired). When some known sectors were excluded, a given frontier id
+  // might only be reachable via an excluded sector, so frontier stubs are
+  // skipped entirely rather than risking a stub attached to the wrong part
+  // of the map ("skip unlinkable stubs gracefully").
   const frontierIds: number[] = [];
   const allKnownIncluded = includedSet.size === chartSectors.length;
   if (allKnownIncluded) {
-    for (const frontierId of chartFrontier) {
-      if (includedSet.has(frontierId)) continue; // defensive: shouldn't happen
+    for (const stub of chartFrontier) {
+      if (includedSet.has(stub.id)) continue; // defensive: shouldn't happen
       sectors.push({
-        id: frontierId,
-        name: `Sector ${frontierId}`,
+        id: stub.id,
+        name: `Sector ${stub.id}`,
         type: 'frontier',
         connected_sectors: [],
       });
-      frontierIds.push(frontierId);
+      frontierIds.push(stub.id);
     }
   }
 

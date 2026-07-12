@@ -199,7 +199,9 @@ class TestKnownSectorsRender:
             assert by_id[sid]["visited"] is True
             assert by_id[sid]["current"] is False
 
-        assert chart["frontier"] == [unknown.sector_id]
+        # v2 is the only known sector whose warp edge leaves known space into
+        # `unknown`, so it is the (only, and therefore deterministic) `from`.
+        assert chart["frontier"] == [{"id": unknown.sector_id, "from": v2.sector_id}]
         assert unknown.sector_id not in got_ids  # frontier sector never appears in "sectors"
 
 
@@ -252,12 +254,69 @@ class TestFrontierNoLeakage:
 
         chart = NavService(db).get_chart(player)
 
-        assert chart["frontier"] == [secret.sector_id]
-        assert all(isinstance(f, int) for f in chart["frontier"])  # bare ints, not dicts
+        assert chart["frontier"] == [{"id": secret.sector_id, "from": current.sector_id}]
+        # `{id, from}` only -- no name/type/coordinate keys leak onto the stub.
+        assert set(chart["frontier"][0].keys()) == {"id", "from"}
         assert secret.sector_id not in {s["sector_id"] for s in chart["sectors"]}
         assert not any(e["to"] == secret.sector_id or e["from"] == secret.sector_id for e in chart["edges"])
         # Defensive: the secret name never appears anywhere in the response.
         assert "TOP SECRET NEBULA" not in repr(chart)
+
+
+# --------------------------------------------------------------------------- #
+# WO-NAV-CHART-FRONTIER-EDGES: frontier `from` linkage, incl. deterministic
+# tie-break when a frontier sector is reachable from >1 known sector.
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.unit
+class TestFrontierFromLinkage:
+    def test_frontier_from_is_a_real_known_neighbor(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        current, v1 = _sector(1), _sector(2)
+        unknown = _sector(99)
+        sectors = [current, v1, unknown]
+
+        known_ids = {current.sector_id, v1.sector_id}
+        _patch_known(monkeypatch, known_ids)
+        _patch_own_visited(monkeypatch, set())
+
+        warp_edges = [_warp_edge(v1, unknown, bidirectional=False)]
+        db = FakeChartSession(sectors=sectors, tunnels=[], warp_edges=warp_edges)
+        player = _player(current_sector_id=current.sector_id)
+
+        chart = NavService(db).get_chart(player)
+
+        assert len(chart["frontier"]) == 1
+        entry = chart["frontier"][0]
+        assert entry["id"] == unknown.sector_id
+        assert entry["from"] in known_ids  # `from` names a REAL known-sector neighbor of `id`
+        assert entry["from"] == v1.sector_id  # the sector whose warp actually surfaced it
+
+    def test_frontier_from_multiple_known_sources_picks_smallest_deterministically(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Two known sectors (ids 5 and 2) both warp out to the same unknown
+        # sector -- `from` must deterministically be the SMALLEST known
+        # sector_id among them (2), not source-row iteration order.
+        hi, lo = _sector(5), _sector(2)
+        unknown = _sector(99)
+        sectors = [hi, lo, unknown]
+
+        known_ids = {hi.sector_id, lo.sector_id}
+        _patch_known(monkeypatch, known_ids)
+        _patch_own_visited(monkeypatch, set())
+
+        # Deliberately ordered so the LARGER sector_id's edge is seen first --
+        # proves the tie-break compares values, not "first writer wins".
+        warp_edges = [
+            _warp_edge(hi, unknown, bidirectional=False),
+            _warp_edge(lo, unknown, bidirectional=False),
+        ]
+        db = FakeChartSession(sectors=sectors, tunnels=[], warp_edges=warp_edges)
+        player = _player(current_sector_id=hi.sector_id)
+
+        chart = NavService(db).get_chart(player)
+
+        assert chart["frontier"] == [{"id": unknown.sector_id, "from": lo.sector_id}]
 
 
 # --------------------------------------------------------------------------- #

@@ -4,7 +4,7 @@
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { chartToNavSectors } from '../navChartTransform';
-import type { NavChartResponse, NavChartSector, NavChartEdge } from '../../../services/api';
+import type { NavChartResponse, NavChartSector, NavChartEdge, NavChartFrontier } from '../../../services/api';
 
 function sector(id: number, overrides: Partial<NavChartSector> = {}): NavChartSector {
   return {
@@ -23,7 +23,7 @@ function sector(id: number, overrides: Partial<NavChartSector> = {}): NavChartSe
 function chart(
   sectors: NavChartSector[],
   edges: NavChartEdge[],
-  frontier: number[] = []
+  frontier: NavChartFrontier[] = []
 ): NavChartResponse {
   return { sectors, edges, frontier };
 }
@@ -97,7 +97,7 @@ describe('chartToNavSectors', () => {
     const c = chart(
       [sector(1, { current: true }), sector(2)],
       [{ from: 1, to: 2, kind: 'warp' }],
-      [99]
+      [{ id: 99, from: 2 }]
     );
     const result = chartToNavSectors(c, 1);
 
@@ -118,7 +118,7 @@ describe('chartToNavSectors', () => {
         { from: 1, to: 2, kind: 'warp' },
         { from: 2, to: 3, kind: 'warp' },
       ],
-      [99]
+      [{ id: 99, from: 3 }]
     );
     const result = chartToNavSectors(c, 1, 1);
     expect(result.sectors.some((s) => s.type === 'frontier')).toBe(false);

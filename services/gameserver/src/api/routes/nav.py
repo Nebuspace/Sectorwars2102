@@ -8,8 +8,10 @@ POST /api/v1/nav/plot
 GET /api/v1/nav/chart
   Return the player's known navigation surface (WO-PUX-NAVCHART) for the
   cockpit NAV CHART page: sectors in the known graph, the warp/tunnel edges
-  between them, and frontier stubs (id-only) for unknown adjacent sectors.
-  Read-only, additive — reuses the same known-graph assembly as /nav/plot.
+  between them, and frontier stubs (id-only, each linked via `from` to the
+  known sector that surfaced it — WO-NAV-CHART-FRONTIER-EDGES) for unknown
+  adjacent sectors. Read-only, additive — reuses the same known-graph
+  assembly as /nav/plot.
 
 The route handler follows the trading.py pattern:
   - Session = Depends(get_db)  (sync)
@@ -91,13 +93,14 @@ async def get_nav_chart(
     {"sectors": [{"sector_id", "name", "type", "x", "y", "z", "visited",
                   "current"}, ...],
      "edges": [{"from", "to", "kind": "warp"|"tunnel"}, ...],
-     "frontier": [sector_id, ...]}
+     "frontier": [{"id": sector_id, "from": known_sector_id}, ...]}
 
     Sectors are the player's known graph (visited ∪ corp-shared ∪ current —
     the same ``get_known_sector_ids`` assembly ``POST /nav/plot`` uses).
-    Frontier entries carry only a bare sector_id — no name/type/contents —
-    for sectors adjacent to known space but not themselves known. Read-only;
-    mutates nothing.
+    Frontier entries carry only a bare sector_id (``id``) plus the numeric
+    ``sector_id`` of the one known sector that surfaced it (``from``) — no
+    name/type/contents of the frontier sector itself — for sectors adjacent
+    to known space but not themselves known. Read-only; mutates nothing.
     """
     nav = NavService(db)
     return nav.get_chart(current_player)

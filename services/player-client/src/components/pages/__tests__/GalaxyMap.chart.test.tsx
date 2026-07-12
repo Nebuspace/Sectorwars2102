@@ -94,7 +94,7 @@ const CHART = {
     { from: 10, to: 11, kind: 'warp' },
     { from: 11, to: 10, kind: 'warp' },
   ],
-  frontier: [999],
+  frontier: [{ id: 999, from: 10 }],
 };
 
 import GalaxyMap from '../GalaxyMap';
