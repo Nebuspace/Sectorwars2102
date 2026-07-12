@@ -974,7 +974,7 @@
   /* WO-COCKPIT-ADJ #4: PLANETARY · NAV · COMMS order, ~30/40/30 split.
      gap:0 so fr units claim all content-box width directly.
      3:4:3 = 30% / 40% / 30% rendered.
-     .planetary-monitor gets order:-1 to render first despite DOM order. */
+     .system-monitor gets order:-1 to render first despite DOM order. */
   grid-template-columns: minmax(0, 3fr) minmax(0, 4fr) minmax(0, 3fr);
   grid-template-rows: 1fr;
   gap: 0;
@@ -1164,6 +1164,52 @@
   position: relative;
 }
 
+/* ============================================
+   DECK TAB RAIL — the ONE shared switchable-page rail (WO-UI2-DECK-
+   MONITORS). Renders inside a screen-hud-header alongside its monitor
+   label. Replaces three hand-copied near-duplicates (NAV's
+   .nav-mode-switch/-btn, COMMS' .comms-mode-switch/-btn, and the new
+   SOLAR SYSTEM switch that would otherwise have been a fourth copy) with
+   one CSS block parameterized by --tab-accent, set inline per monitor by
+   DeckPageTabs.tsx (cockpit/DeckPageTabs.tsx): NAV cyan, SOLAR SYSTEM
+   purple, COMMS green — matching each monitor's own bezel/glow accent.
+   ============================================ */
+.deck-tab-rail {
+  display: inline-flex;
+  gap: 2px;
+  border: 1px solid color-mix(in srgb, var(--tab-accent) 35%, transparent);
+  border-radius: 3px;
+  padding: 1px;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.deck-tab-btn {
+  position: relative;
+  padding: 0.12rem 0.45rem;
+  font-family: inherit;
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  background: transparent;
+  border: none;
+  border-radius: 2px;
+  color: color-mix(in srgb, var(--tab-accent) 55%, transparent);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.deck-tab-btn:hover {
+  color: color-mix(in srgb, var(--tab-accent) 90%, transparent);
+}
+
+.deck-tab-btn.active {
+  background: color-mix(in srgb, var(--tab-accent) 18%, transparent);
+  color: var(--tab-accent);
+  text-shadow: 0 0 8px color-mix(in srgb, var(--tab-accent) 70%, transparent);
+}
+
 /* Screen glow effect */
 .monitor-screen::before {
   content: '';
@@ -1257,26 +1303,27 @@
   pointer-events: none;
 }
 
-/* WO-COCKPIT-ADJ-0628: PLANETARY moves to visual column 1 (left).
-   order:-1 beats the default order:0 on nav-monitor and comms-monitor,
-   so grid auto-placement puts PLANETARY first without touching HTML order. */
-.planetary-monitor {
+/* WO-COCKPIT-ADJ-0628: SOLAR SYSTEM (formerly PLANETARY, renamed
+   WO-UI2-DECK-MONITORS) moves to visual column 1 (left). order:-1 beats
+   the default order:0 on nav-monitor and comms-monitor, so grid
+   auto-placement puts it first without touching HTML order. */
+.system-monitor {
   order: -1;
 }
 
-/* The planetary monitor's content region is a named inline-size container
-   so planet/station pair internals (planet-port-pair.css) can adapt to the
-   monitor's real width instead of the viewport's. */
-.planetary-monitor .screen-hud-content {
+/* The SOLAR SYSTEM monitor's content region is a named inline-size
+   container so planet/station pair internals (planet-port-pair.css) can
+   adapt to the monitor's real width instead of the viewport's. */
+.system-monitor .screen-hud-content {
   container-type: inline-size;
-  container-name: planetary-content;
+  container-name: system-content;
 }
 
-.planetary-monitor .monitor-bezel {
+.system-monitor .monitor-bezel {
   border-color: rgba(147, 51, 234, 0.3);
 }
 
-.planetary-monitor .monitor-screen::after {
+.system-monitor .monitor-screen::after {
   content: '';
   position: absolute;
   top: 0;
@@ -1285,6 +1332,48 @@
   bottom: 0;
   box-shadow: inset 0 0 40px rgba(147, 51, 234, 0.1);
   pointer-events: none;
+}
+
+/* SOLAR SYSTEM header: label + DeckPageTabs (BODIES/HAZARDS). Same
+   flex-wrap safety as .comms-header-with-modes — the 3fr column is narrow
+   enough that "SOLAR SYSTEM" (longer than the old "PLANETARY") plus a
+   2-tab rail needs to be able to drop the rail to its own row rather than
+   truncate or overflow the header. */
+.system-header-with-modes {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+
+/* NAV + COMMS header rules, consolidated here alongside SOLAR SYSTEM's so
+   all 3 monitors' header-with-modes rules have one obvious co-located hook
+   for future overrides (Pixel INCONSISTENT). Both are STILL also defined
+   in their own component CSS (NAV: quantum/quantum-drive.css; COMMS:
+   comms/comms-mailbox.css) — those files import AFTER cockpit.css in
+   GameDashboard.tsx, so their copies still win the cascade today. COMMS'
+   copy is already identical (no behavior change); NAV's copy is missing
+   this flex-wrap/row-gap safety net, so this cockpit.css block does not
+   yet change NAV's live wrap behavior — a follow-up should delete both
+   duplicate copies and make this the sole source of truth. */
+.nav-header-with-modes,
+.comms-header-with-modes {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+
+/* Vertical rhythm between HAZARDS page metric groups (hazard / radiation /
+   formations / features / description) — reuses the shipped .hud-label/
+   .hud-value/.hud-bar/.hud-features/.hud-badge content classes verbatim,
+   this is purely a spacing wrapper, not a new content style. */
+.system-hazard-metric {
+  margin-bottom: 0.6rem;
 }
 
 .comms-monitor .monitor-bezel {
@@ -4825,15 +4914,6 @@
   .vital-bar-fill {
     transition: none;
   }
-}
-
-/* NAV header with an inline plot row (non-Warp-Jumper variant).
-   Mirrors the flex layout of .nav-header-with-modes (quantum-drive.css). */
-.nav-header-with-plot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
 }
 
 /* ============================================

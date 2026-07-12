@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useGame, type PlayerMessage } from '../../contexts/GameContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useAuth } from '../../contexts/AuthContext';
+import DeckPageTabs from '../cockpit/DeckPageTabs';
 import './comms-mailbox.css';
 
 /**
@@ -202,27 +203,32 @@ const CommsMailbox: React.FC<CommsMailboxProps> = ({ contacts, selectedShipId, o
             <span className="comms-unread-badge">({unreadMessageCount})</span>
           )}
         </span>
-        <div className="comms-mode-switch" role="tablist" aria-label="COMMS display mode">
-          <button
-            className={`comms-mode-btn ${mode === 'contacts' ? 'active' : ''}`}
-            role="tab"
-            aria-selected={mode === 'contacts'}
-            onClick={() => setMode('contacts')}
-          >
-            CONTACTS
-          </button>
-          <button
-            className={`comms-mode-btn ${mode === 'hails' ? 'active' : ''}`}
-            role="tab"
-            aria-selected={mode === 'hails'}
-            onClick={() => setMode('hails')}
-          >
-            HAILS
-            {unreadMessageCount > 0 && <span className="comms-mode-dot" aria-hidden="true" />}
-          </button>
-        </div>
+        <DeckPageTabs
+          pages={[
+            { id: 'contacts', label: 'CONTACTS' },
+            {
+              id: 'hails',
+              label: (
+                <>
+                  HAILS
+                  {unreadMessageCount > 0 && <span className="comms-mode-dot" aria-hidden="true" />}
+                </>
+              ),
+            },
+          ]}
+          activeId={mode}
+          onSelect={(id) => setMode(id as 'contacts' | 'hails')}
+          ariaLabel="COMMS display mode"
+          accent="#00ff41"
+          idBase="comms"
+        />
       </div>
-      <div className={`screen-hud-content ${mode === 'hails' ? 'comms-hails-content' : ''}`}>
+      <div
+        className={`screen-hud-content ${mode === 'hails' ? 'comms-hails-content' : ''}`}
+        role="tabpanel"
+        id={`comms-panel-${mode}`}
+        aria-labelledby={`comms-tab-${mode}`}
+      >
         {mode === 'contacts' ? (
           contacts.length > 0 ? (
             <div className="contacts-compact-list">

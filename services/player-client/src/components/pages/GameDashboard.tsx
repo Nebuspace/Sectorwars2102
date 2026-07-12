@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { useGame, type MoveOption } from '../../contexts/GameContext';
+import { useGame, type MoveOption, type SpecialFormationSummary } from '../../contexts/GameContext';
 import { useAutopilot } from '../../contexts/AutopilotContext';
 import { useFirstLogin } from '../../contexts/FirstLoginContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
@@ -19,6 +19,7 @@ import QuantumDriveConsole from '../quantum/QuantumDriveConsole';
 import GatewrightPanel from '../gatewright/GatewrightPanel';
 import CommsMailbox from '../comms/CommsMailbox';
 import CockpitColonyManagement from '../cockpit/CockpitColonyManagement';
+import DeckPageTabs from '../cockpit/DeckPageTabs';
 import type { ProductionLine } from '../cockpit/ProductionPanel';
 import type { PerColonistRates, ProdRole } from '../cockpit/CoupledColonistSliders';
 import SafeVaultPanel from '../cockpit/SafeVaultPanel';
@@ -687,6 +688,12 @@ const GameDashboard: React.FC = () => {
   // ship type sees exactly the classic warp graph, no switch.
   const isWarpJumper = currentShip?.type === 'WARP_JUMPER';
   const [navMode, setNavMode] = useState<'graph' | 'quantum'>('graph');
+
+  // SOLAR SYSTEM monitor mode (WO-UI2-DECK-MONITORS, was PLANETARY):
+  // BODIES (the planet/station list, unchanged) or HAZARDS (sector
+  // hazard/radiation/formations/features/description — the same
+  // currentSector fields the windshield's HudChips already surface).
+  const [systemPage, setSystemPage] = useState<'bodies' | 'hazards'>('bodies');
   const [showGatewright, setShowGatewright] = useState(false);
 
   // Region-owner invite/tradedock/governance state + probe RELOCATED to
@@ -1963,6 +1970,64 @@ const GameDashboard: React.FC = () => {
     }
   };
 
+  // Shared formation-badge-with-Investigate-control list — the windshield's
+  // FORMATIONS HudChip and the SOLAR SYSTEM monitor's HAZARDS page (WO-
+  // UI2-DECK-MONITORS) show the SAME currentSector.special_formations data;
+  // this closure (over investigatedFormationIds/investigatingFormationId/
+  // handleInvestigateFormation) is the one place that logic lives, reused
+  // by both instead of a second hand-copied block.
+  const renderFormationList = (formations: SpecialFormationSummary[]) => (
+    <div className="hud-features">
+      {formations.map(f => {
+        const investigated = investigatedFormationIds.has(f.id);
+        const investigating = investigatingFormationId === f.id;
+        return (
+          <div
+            key={f.id}
+            style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}
+          >
+            <span
+              className={`hud-badge${f.is_discovered ? '' : ' undiscovered'}`}
+              title={f.is_discovered ? f.type?.replace(/_/g, ' ') : 'Unidentified anomaly — scan or explore to reveal'}
+            >
+              {f.is_discovered
+                ? `${(f.name || 'UNNAMED').toUpperCase()}${f.type ? ` · ${f.type.replace(/_/g, ' ').toUpperCase()}` : ''}`
+                : '❔ UNKNOWN ANOMALY'}
+            </span>
+            {f.is_discovered && (
+              <button
+                type="button"
+                onClick={() => handleInvestigateFormation(f.id)}
+                disabled={investigated || investigating}
+                title={investigated
+                  ? 'Already investigated'
+                  : 'Investigate this anomaly for a one-time reward'}
+                style={{
+                  pointerEvents: 'auto',
+                  padding: '0.15rem 0.45rem',
+                  fontSize: '0.6rem',
+                  fontWeight: 700,
+                  letterSpacing: '0.08em',
+                  textTransform: 'uppercase',
+                  fontFamily: "'Courier New', monospace",
+                  borderRadius: '3px',
+                  background: investigated ? 'rgba(120, 130, 150, 0.1)' : 'rgba(0, 217, 255, 0.15)',
+                  border: `1px solid ${investigated ? 'rgba(120, 130, 150, 0.35)' : 'rgba(0, 217, 255, 0.45)'}`,
+                  color: investigated ? 'rgba(180, 190, 210, 0.6)' : '#00d9ff',
+                  textShadow: investigated ? 'none' : '0 0 6px rgba(0, 217, 255, 0.5)',
+                  cursor: (investigated || investigating) ? 'not-allowed' : 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {investigating ? '🔬 …' : investigated ? '✓ INVESTIGATED' : '🔬 INVESTIGATE'}
+              </button>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+
   // If the player needs to complete the first login experience, the FirstLoginContainer
   // component will be shown by the App component, so we don't need to render the dashboard
   if (requiresFirstLogin) {
@@ -2430,58 +2495,12 @@ const GameDashboard: React.FC = () => {
                   pill={<>🌀 {currentSector.special_formations.length}</>}
                 >
                   <div className="hud-label">🌀 FORMATIONS</div>
-                  <div className="hud-features">
-                    {currentSector.special_formations.map(f => {
-                      // WO-UI-ANOMALY: a discovered formation carries an Investigate
-                      // control (one-time reward). Undiscovered → label only, no
-                      // control. Already-investigated this session → disabled.
-                      const investigated = investigatedFormationIds.has(f.id);
-                      const investigating = investigatingFormationId === f.id;
-                      return (
-                        <div
-                          key={f.id}
-                          style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}
-                        >
-                          <span
-                            className={`hud-badge${f.is_discovered ? '' : ' undiscovered'}`}
-                            title={f.is_discovered ? f.type?.replace(/_/g, ' ') : 'Unidentified anomaly — scan or explore to reveal'}
-                          >
-                            {f.is_discovered
-                              ? `${(f.name || 'UNNAMED').toUpperCase()}${f.type ? ` · ${f.type.replace(/_/g, ' ').toUpperCase()}` : ''}`
-                              : '❔ UNKNOWN ANOMALY'}
-                          </span>
-                          {f.is_discovered && (
-                            <button
-                              type="button"
-                              onClick={() => handleInvestigateFormation(f.id)}
-                              disabled={investigated || investigating}
-                              title={investigated
-                                ? 'Already investigated'
-                                : 'Investigate this anomaly for a one-time reward'}
-                              style={{
-                                pointerEvents: 'auto',
-                                padding: '0.15rem 0.45rem',
-                                fontSize: '0.6rem',
-                                fontWeight: 700,
-                                letterSpacing: '0.08em',
-                                textTransform: 'uppercase',
-                                fontFamily: "'Courier New', monospace",
-                                borderRadius: '3px',
-                                background: investigated ? 'rgba(120, 130, 150, 0.1)' : 'rgba(0, 217, 255, 0.15)',
-                                border: `1px solid ${investigated ? 'rgba(120, 130, 150, 0.35)' : 'rgba(0, 217, 255, 0.45)'}`,
-                                color: investigated ? 'rgba(180, 190, 210, 0.6)' : '#00d9ff',
-                                textShadow: investigated ? 'none' : '0 0 6px rgba(0, 217, 255, 0.5)',
-                                cursor: (investigated || investigating) ? 'not-allowed' : 'pointer',
-                                whiteSpace: 'nowrap',
-                              }}
-                            >
-                              {investigating ? '🔬 …' : investigated ? '✓ INVESTIGATED' : '🔬 INVESTIGATE'}
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
+                  {/* WO-UI-ANOMALY: a discovered formation carries an Investigate
+                      control (one-time reward). Undiscovered → label only, no
+                      control. Already-investigated this session → disabled.
+                      Shared with the SOLAR SYSTEM monitor's HAZARDS page
+                      (renderFormationList, WO-UI2-DECK-MONITORS). */}
+                  {renderFormationList(currentSector.special_formations)}
                 </HudChip>
               )}
 
@@ -3051,144 +3070,92 @@ const GameDashboard: React.FC = () => {
                   <div className="bezel-corner br"></div>
                 </div>
                 <div className="monitor-screen">
-                  {isWarpJumper ? (
-                    <div className="screen-hud-header nav-header-with-modes">
-                      <span>NAV</span>
-                      <div className="nav-mode-switch" role="tablist" aria-label="NAV display mode">
-                        <button
-                          className={`nav-mode-btn ${navMode === 'graph' ? 'active' : ''}`}
-                          role="tab"
-                          aria-selected={navMode === 'graph'}
-                          onClick={() => setNavMode('graph')}
-                        >
-                          WARP GRAPH
-                        </button>
-                        <button
-                          className={`nav-mode-btn quantum ${navMode === 'quantum' ? 'active' : ''}`}
-                          role="tab"
-                          aria-selected={navMode === 'quantum'}
-                          onClick={() => setNavMode('quantum')}
-                        >
-                          QUANTUM DRIVE
-                        </button>
-                      </div>
-                      {/* Destination plot row — sits in the NAV header for all ship types */}
-                      <div className="nav-plot-row">
-                        <input
-                          type="number"
-                          className="nav-plot-input"
-                          placeholder="SECTOR #"
-                          value={plotTarget}
-                          onChange={(e) => setPlotTarget(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              const id = parseInt(plotTarget, 10);
-                              if (!isNaN(id) && id > 0) autopilot.plotCourse(id);
-                            }
-                          }}
-                          aria-label="Destination sector number"
-                          min={1}
-                        />
-                        <button
-                          className="nav-plot-btn"
-                          disabled={autopilot.status === 'plotting' || !plotTarget || isNaN(parseInt(plotTarget, 10))}
-                          onClick={() => {
+                  {/* NAV header — unified for every hull. DeckPageTabs itself
+                      renders NO rail when fewer than 2 pages are available,
+                      so non-Warp-Jumper hulls (only WARP GRAPH available)
+                      see exactly the prior no-switch layout without a
+                      second branch here. */}
+                  <div className="screen-hud-header nav-header-with-modes">
+                    <span>NAV</span>
+                    <DeckPageTabs
+                      pages={[
+                        { id: 'graph', label: 'WARP GRAPH' },
+                        { id: 'quantum', label: 'QUANTUM DRIVE', available: isWarpJumper },
+                      ]}
+                      activeId={navMode}
+                      onSelect={(id) => setNavMode(id as 'graph' | 'quantum')}
+                      ariaLabel="NAV display mode"
+                      accent="#00d9ff"
+                      idBase="nav"
+                    />
+                    {/* Destination plot row — sits in the NAV header for all ship types */}
+                    <div className="nav-plot-row">
+                      <input
+                        type="number"
+                        className="nav-plot-input"
+                        placeholder="SECTOR #"
+                        value={plotTarget}
+                        onChange={(e) => setPlotTarget(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
                             const id = parseInt(plotTarget, 10);
                             if (!isNaN(id) && id > 0) autopilot.plotCourse(id);
-                          }}
-                          title="Plot course to destination sector"
-                        >
-                          {autopilot.status === 'plotting' ? '…' : 'PLOT'}
-                        </button>
-                        {/* Autopilot engage / abort — shown when a course is plotted */}
-                        {autopilot.course && autopilot.status !== 'arrived' && (
-                          autopilot.status === 'engaged' ? (
-                            <button
-                              className="nav-autopilot-abort"
-                              onClick={() => autopilot.abort('manual abort')}
-                              disabled={helmBusy}
-                              aria-disabled={helmBusy}
-                              aria-label={helmBusy ? 'Abort unavailable — helm is busy' : 'Abort autopilot'}
-                              title="Abort autopilot"
-                            >
-                              🛑 ABORT · HOP {autopilot.currentHopIndex + 1}/{autopilot.course.hops.length}{helmBusy ? ' (busy)' : ''}
-                            </button>
-                          ) : (
-                            <button
-                              className="nav-autopilot-engage"
-                              onClick={() => autopilot.engage()}
-                              disabled={helmBusy}
-                              aria-disabled={helmBusy}
-                              aria-label={helmBusy ? 'Autopilot unavailable — helm is busy' : `Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
-                              title={`Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
-                            >
-                              🧭 ENGAGE · {autopilot.course.hops.length} HOP{autopilot.course.hops.length !== 1 ? 'S' : ''}{helmBusy ? ' (busy)' : ''}
-                            </button>
-                          )
-                        )}
-                      </div>
+                          }
+                        }}
+                        aria-label="Destination sector number"
+                        min={1}
+                      />
+                      <button
+                        className="nav-plot-btn"
+                        disabled={autopilot.status === 'plotting' || !plotTarget || isNaN(parseInt(plotTarget, 10))}
+                        onClick={() => {
+                          const id = parseInt(plotTarget, 10);
+                          if (!isNaN(id) && id > 0) autopilot.plotCourse(id);
+                        }}
+                        title="Plot course to destination sector"
+                      >
+                        {autopilot.status === 'plotting' ? '…' : 'PLOT'}
+                      </button>
+                      {/* Autopilot engage / abort — shown when a course is plotted */}
+                      {autopilot.course && autopilot.status !== 'arrived' && (
+                        autopilot.status === 'engaged' ? (
+                          <button
+                            className="nav-autopilot-abort"
+                            onClick={() => autopilot.abort('manual abort')}
+                            disabled={helmBusy}
+                            aria-disabled={helmBusy}
+                            aria-label={helmBusy ? 'Abort unavailable — helm is busy' : 'Abort autopilot'}
+                            title="Abort autopilot"
+                          >
+                            🛑 ABORT · HOP {autopilot.currentHopIndex + 1}/{autopilot.course.hops.length}{helmBusy ? ' (busy)' : ''}
+                          </button>
+                        ) : (
+                          <button
+                            className="nav-autopilot-engage"
+                            onClick={() => autopilot.engage()}
+                            disabled={helmBusy}
+                            aria-disabled={helmBusy}
+                            aria-label={helmBusy ? 'Autopilot unavailable — helm is busy' : `Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
+                            title={`Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
+                          >
+                            🧭 ENGAGE · {autopilot.course.hops.length} HOP{autopilot.course.hops.length !== 1 ? 'S' : ''}{helmBusy ? ' (busy)' : ''}
+                          </button>
+                        )
+                      )}
                     </div>
-                  ) : (
-                    <div className="screen-hud-header nav-header-with-plot">
-                      NAV
-                      {/* Destination plot row — non-Warp-Jumper variant */}
-                      <div className="nav-plot-row">
-                        <input
-                          type="number"
-                          className="nav-plot-input"
-                          placeholder="SECTOR #"
-                          value={plotTarget}
-                          onChange={(e) => setPlotTarget(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              const id = parseInt(plotTarget, 10);
-                              if (!isNaN(id) && id > 0) autopilot.plotCourse(id);
-                            }
-                          }}
-                          aria-label="Destination sector number"
-                          min={1}
-                        />
-                        <button
-                          className="nav-plot-btn"
-                          disabled={autopilot.status === 'plotting' || !plotTarget || isNaN(parseInt(plotTarget, 10))}
-                          onClick={() => {
-                            const id = parseInt(plotTarget, 10);
-                            if (!isNaN(id) && id > 0) autopilot.plotCourse(id);
-                          }}
-                          title="Plot course to destination sector"
-                        >
-                          {autopilot.status === 'plotting' ? '…' : 'PLOT'}
-                        </button>
-                        {/* Autopilot engage / abort — shown when a course is plotted */}
-                        {autopilot.course && autopilot.status !== 'arrived' && (
-                          autopilot.status === 'engaged' ? (
-                            <button
-                              className="nav-autopilot-abort"
-                              onClick={() => autopilot.abort('manual abort')}
-                              disabled={helmBusy}
-                              aria-disabled={helmBusy}
-                              aria-label={helmBusy ? 'Abort unavailable — helm is busy' : 'Abort autopilot'}
-                              title="Abort autopilot"
-                            >
-                              🛑 ABORT · HOP {autopilot.currentHopIndex + 1}/{autopilot.course.hops.length}{helmBusy ? ' (busy)' : ''}
-                            </button>
-                          ) : (
-                            <button
-                              className="nav-autopilot-engage"
-                              onClick={() => autopilot.engage()}
-                              disabled={helmBusy}
-                              aria-disabled={helmBusy}
-                              aria-label={helmBusy ? 'Autopilot unavailable — helm is busy' : `Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
-                              title={`Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
-                            >
-                              🧭 ENGAGE · {autopilot.course.hops.length} HOP{autopilot.course.hops.length !== 1 ? 'S' : ''}{helmBusy ? ' (busy)' : ''}
-                            </button>
-                          )
-                        )}
-                      </div>
-                    </div>
-                  )}
-                  <div className="screen-hud-content">
+                  </div>
+                  {/* role="tabpanel" only applies when the DeckPageTabs rail
+                      actually renders (isWarpJumper — <2 available pages
+                      means DeckPageTabs returns null and there is no
+                      tablist to associate this region with; Pixel
+                      INACCESSIBLE fix must not dangle aria-labelledby at a
+                      non-Warp-Jumper tab id that was never rendered). */}
+                  <div
+                    className="screen-hud-content"
+                    role={isWarpJumper ? 'tabpanel' : undefined}
+                    id={isWarpJumper ? `nav-panel-${navMode}` : undefined}
+                    aria-labelledby={isWarpJumper ? `nav-tab-${navMode}` : undefined}
+                  >
                   {isWarpJumper && navMode === 'quantum' ? (
                     <QuantumDriveConsole onOpenGatewright={() => setShowGatewright(true)} />
                   ) : (
@@ -3266,8 +3233,9 @@ const GameDashboard: React.FC = () => {
                 </div>
               </div>
 
-              {/* CENTER MONITOR: Planetary Systems */}
-              <div className="console-monitor planetary-monitor">
+              {/* CENTER MONITOR: Solar System (formerly "Planetary Systems",
+                  renamed + given a HAZARDS second page, WO-UI2-DECK-MONITORS) */}
+              <div className="console-monitor system-monitor">
                 <div className="monitor-bezel">
                   <div className="bezel-corner tl"></div>
                   <div className="bezel-corner tr"></div>
@@ -3275,53 +3243,128 @@ const GameDashboard: React.FC = () => {
                   <div className="bezel-corner br"></div>
                 </div>
                 <div className="monitor-screen">
-                  <div className="screen-hud-header">PLANETARY</div>
-                  <div className="screen-hud-content">
-                  {/* Show planets paired with stations (by index) */}
-                  {planetsInSector.map((planet, index) => (
-                    <PlanetPortPair
-                      key={planet.id}
-                      planet={planet}
-                      station={stationsInSector?.[index] || null}
-                      onLandOnPlanet={handleLand}
-                      onClaimPlanet={handleClaim}
-                      onDockAtStation={handleDock}
-                      isLanded={playerState?.is_landed || false}
-                      isDocked={playerState?.is_docked || false}
+                  <div className="screen-hud-header system-header-with-modes">
+                    <span>SOLAR SYSTEM</span>
+                    <DeckPageTabs
+                      pages={[
+                        { id: 'bodies', label: 'BODIES' },
+                        { id: 'hazards', label: 'HAZARDS' },
+                      ]}
+                      activeId={systemPage}
+                      onSelect={(id) => setSystemPage(id as 'bodies' | 'hazards')}
+                      ariaLabel="SOLAR SYSTEM display mode"
+                      accent="#9333ea"
+                      idBase="system"
                     />
-                  ))}
-                  {/* Show any extra stations not paired with planets */}
-                  {stationsInSector.slice(planetsInSector.length).map((station) => (
-                    <PlanetPortPair
-                      key={station.id}
-                      planet={null}
-                      station={station}
-                      onLandOnPlanet={handleLand}
-                      onDockAtStation={handleDock}
-                      isLanded={playerState?.is_landed || false}
-                      isDocked={playerState?.is_docked || false}
-                    />
-                  ))}
-                  {/* Empty state when neither planets nor stations.
-                      Asteroid fields get a HARVEST trigger; all other empty
-                      sectors get the generic "nothing detected" label. */}
-                  {planetsInSector.length === 0 && stationsInSector.length === 0 && (
-                    currentSector?.type?.toUpperCase() === 'ASTEROID_FIELD' ? (
-                      <div className="planetary-asteroid-state">
-                        <div className="planetary-asteroid-label">⚫ ASTEROID FIELD</div>
-                        <button
-                          className="planetary-harvest-btn"
-                          onClick={handleHarvest}
-                          disabled={helmBusy || harvestBusy}
-                          aria-disabled={helmBusy || harvestBusy}
-                          aria-label={helmBusy ? 'Harvest unavailable — helm is busy' : 'Deploy the mining laser to harvest ore from the asteroid field'}
-                          title="Deploy the mining laser to harvest ore from the asteroid field"
-                        >
-                          {harvestBusy ? '⛏️ MINING…' : helmBusy ? '⛏️ HARVEST (busy)' : '⛏️ HARVEST'}
-                        </button>
-                      </div>
+                  </div>
+                  <div
+                    className="screen-hud-content"
+                    role="tabpanel"
+                    id={`system-panel-${systemPage}`}
+                    aria-labelledby={`system-tab-${systemPage}`}
+                  >
+                  {systemPage === 'bodies' ? (
+                    <>
+                      {/* Show planets paired with stations (by index) */}
+                      {planetsInSector.map((planet, index) => (
+                        <PlanetPortPair
+                          key={planet.id}
+                          planet={planet}
+                          station={stationsInSector?.[index] || null}
+                          onLandOnPlanet={handleLand}
+                          onClaimPlanet={handleClaim}
+                          onDockAtStation={handleDock}
+                          isLanded={playerState?.is_landed || false}
+                          isDocked={playerState?.is_docked || false}
+                        />
+                      ))}
+                      {/* Show any extra stations not paired with planets */}
+                      {stationsInSector.slice(planetsInSector.length).map((station) => (
+                        <PlanetPortPair
+                          key={station.id}
+                          planet={null}
+                          station={station}
+                          onLandOnPlanet={handleLand}
+                          onDockAtStation={handleDock}
+                          isLanded={playerState?.is_landed || false}
+                          isDocked={playerState?.is_docked || false}
+                        />
+                      ))}
+                      {/* Empty state when neither planets nor stations.
+                          Asteroid fields get a HARVEST trigger; all other empty
+                          sectors get the generic "nothing detected" label. */}
+                      {planetsInSector.length === 0 && stationsInSector.length === 0 && (
+                        currentSector?.type?.toUpperCase() === 'ASTEROID_FIELD' ? (
+                          <div className="planetary-asteroid-state">
+                            <div className="planetary-asteroid-label">⚫ ASTEROID FIELD</div>
+                            <button
+                              className="planetary-harvest-btn"
+                              onClick={handleHarvest}
+                              disabled={helmBusy || harvestBusy}
+                              aria-disabled={helmBusy || harvestBusy}
+                              aria-label={helmBusy ? 'Harvest unavailable — helm is busy' : 'Deploy the mining laser to harvest ore from the asteroid field'}
+                              title="Deploy the mining laser to harvest ore from the asteroid field"
+                            >
+                              {harvestBusy ? '⛏️ MINING…' : helmBusy ? '⛏️ HARVEST (busy)' : '⛏️ HARVEST'}
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="empty-state">No planetary bodies or stations detected</div>
+                        )
+                      )}
+                    </>
+                  ) : (
+                    /* HAZARDS page — the same currentSector fields the
+                       windshield's HudChips already surface (hazard/
+                       radiation/formations/features/description), reused
+                       here rather than re-fetched. Always shows the
+                       hazard/radiation readouts (even at 0) so the page
+                       reads as a live sensor sweep, not a conditional
+                       chip. */
+                    !currentSector ? (
+                      <div className="empty-state">No sector telemetry</div>
                     ) : (
-                      <div className="empty-state">No planetary bodies or stations detected</div>
+                      <>
+                        <div className="system-hazard-metric">
+                          <div className="hud-label">⚠️ HAZARD</div>
+                          <div className={`hud-value${currentSector.hazard_level > 0 ? ' danger' : ''}`}>
+                            {currentSector.hazard_level}/10
+                          </div>
+                          <div className="hud-bar">
+                            <div className="hud-bar-fill danger" style={{ width: `${currentSector.hazard_level * 10}%` }}></div>
+                          </div>
+                        </div>
+                        <div className="system-hazard-metric">
+                          <div className="hud-label">☢️ RADIATION</div>
+                          <div className={`hud-value${currentSector.radiation_level > 0 ? ' warning' : ''}`}>
+                            {(currentSector.radiation_level * 100).toFixed(1)}%
+                          </div>
+                          <div className="hud-bar">
+                            <div className="hud-bar-fill warning" style={{ width: `${currentSector.radiation_level * 100}%` }}></div>
+                          </div>
+                        </div>
+                        {currentSector.special_formations && currentSector.special_formations.length > 0 && (
+                          <div className="system-hazard-metric">
+                            <div className="hud-label">🌀 FORMATIONS</div>
+                            {renderFormationList(currentSector.special_formations)}
+                          </div>
+                        )}
+                        {currentSector.special_features && currentSector.special_features.length > 0 && (
+                          <div className="system-hazard-metric">
+                            <div className="hud-label">ANOMALIES</div>
+                            <div className="hud-features">
+                              {currentSector.special_features.map(feature => (
+                                <span key={feature} className="hud-badge">
+                                  {feature.replace(/_/g, ' ').toUpperCase()}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {currentSector.description && (
+                          <div className="hud-description-text">{currentSector.description}</div>
+                        )}
+                      </>
                     )
                   )}
                   </div>

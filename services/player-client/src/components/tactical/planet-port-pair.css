@@ -206,7 +206,7 @@
   animation: pulse-connector 2s ease-in-out infinite;
 }
 
-@container planetary-content (max-width: 26rem) {
+@container system-content (max-width: 26rem) {
   .orbital-connector {
     display: none;
   }

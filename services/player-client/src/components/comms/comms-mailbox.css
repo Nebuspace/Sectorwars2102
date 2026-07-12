@@ -1,8 +1,8 @@
 /* ============================================
    COMMS MAILBOX — CONTACTS / HAILS console
    Lives inside the cockpit's COMMS monitor (green CRT chrome,
-   see .comms-monitor in cockpit.css). Mode switch mirrors the
-   NAV monitor's .nav-mode-switch (quantum-drive.css); hail
+   see .comms-monitor in cockpit.css). Mode switch is the shared
+   cockpit/DeckPageTabs.tsx rail (WO-UI2-DECK-MONITORS); hail
    senders read cyan, read transmissions go dim, unread markers
    glow in --color-primary.
    ============================================ */
@@ -33,41 +33,11 @@
   letter-spacing: 0.1em;
 }
 
-.comms-mode-switch {
-  display: inline-flex;
-  gap: 2px;
-  border: 1px solid rgba(0, 255, 65, 0.35);
-  border-radius: 3px;
-  padding: 1px;
-  background: rgba(0, 0, 0, 0.4);
-}
-
-.comms-mode-btn {
-  position: relative;
-  padding: 0.12rem 0.45rem;
-  font-family: inherit;
-  font-size: 0.5rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  background: transparent;
-  border: none;
-  border-radius: 2px;
-  color: rgba(0, 255, 65, 0.55);
-  cursor: pointer;
-  transition: all 0.2s ease;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.comms-mode-btn:hover {
-  color: rgba(0, 255, 65, 0.9);
-}
-
-.comms-mode-btn.active {
-  background: rgba(0, 255, 65, 0.18);
-  color: #00ff41;
-  text-shadow: 0 0 8px rgba(0, 255, 65, 0.7);
-}
+/* The CONTACTS/HAILS mode switch itself is now the shared DeckPageTabs
+   rail (cockpit.css's .deck-tab-rail/.deck-tab-btn) mounted with a green
+   --tab-accent — WO-UI2-DECK-MONITORS retired .comms-mode-switch/-btn
+   here. Only the unread-pulse dot embedded in the HAILS tab's label
+   remains local, since it's COMMS-specific content, not rail chrome. */
 
 /* Tiny pulse on the HAILS tab while anything is unread */
 .comms-mode-dot {
