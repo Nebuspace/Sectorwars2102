@@ -37,7 +37,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 vi.mock('../../../services/api', () => ({
-  navAPI: { getChart: vi.fn().mockResolvedValue({ sectors: [], edges: [], frontier: [] }) },
+  navAPI: {
+    getChart: vi.fn().mockResolvedValue({ sectors: [], edges: [], frontier: [] }),
+    // WO-UI2-TACTICAL-MONITOR: the flight TACTICAL monitor's rollup fetch --
+    // not under test here, resolved empty so the mount doesn't reject.
+    getThreat: vi.fn().mockResolvedValue([]),
+  },
   sectorAPI: { sectorWrecks: vi.fn().mockResolvedValue([]) },
 }));
 

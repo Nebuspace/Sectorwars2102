@@ -814,6 +814,27 @@ export interface NavChartResponse {
   frontier: NavChartFrontier[];
 }
 
+// GET /api/v1/nav/threat — the cockpit TACTICAL deck-monitor's known-graph
+// STATIC threat rollup (WO-UI2-TACTICAL-MONITOR). One entry per sector in
+// the player's known graph (the exact node-set /nav/chart's `sectors`
+// covers — frontier stubs excluded), each carrying a 0-~86 danger score,
+// a coarse band, and the scored inputs that produced it. STATIC-only by
+// security ruling — this never reflects live remote sector composition
+// (that stays client-side, from currentSector.players_present).
+export type NavThreatBand = 'CLEAR' | 'CAUTION' | 'HOSTILE' | 'LETHAL';
+
+export interface NavThreatContributor {
+  input: 'low_security' | 'hazard' | 'pirate_pressure' | 'recent_combat' | string;
+  points: number;
+}
+
+export interface NavThreatEntry {
+  sector_id: number;
+  score: number;
+  band: NavThreatBand;
+  contributors: NavThreatContributor[];
+}
+
 export const navAPI = {
   // `bounded` (WO-NAV-REACH-BACKEND, default false) opts into the server's
   // scanner-depth-bounded chart (CHART_BOUNDED_DEPTH_CEILING=12) — sectors
@@ -824,6 +845,8 @@ export const navAPI = {
   // sub-part e).
   getChart: (bounded?: boolean): Promise<NavChartResponse> =>
     apiRequest(`/api/v1/nav/chart${bounded ? '?bounded=true' : ''}`),
+  getThreat: (): Promise<NavThreatEntry[]> =>
+    apiRequest('/api/v1/nav/threat'),
 };
 
 // Sector contents — existing read-only endpoints (services/gameserver/src/

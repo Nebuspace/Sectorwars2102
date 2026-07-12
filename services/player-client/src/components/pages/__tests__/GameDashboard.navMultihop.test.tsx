@@ -45,7 +45,12 @@ import type { NavChartResponse, NavChartSector, NavChartEdge, NavChartFrontier }
 const mockGetChart = vi.fn();
 const mockGetMyRegion = vi.fn();
 vi.mock('../../../services/api', () => ({
-  navAPI: { getChart: (...a: unknown[]) => mockGetChart(...a) },
+  navAPI: {
+    getChart: (...a: unknown[]) => mockGetChart(...a),
+    // WO-UI2-TACTICAL-MONITOR: the flight TACTICAL monitor's rollup fetch --
+    // not under test here, resolved empty so the mount doesn't reject.
+    getThreat: () => Promise.resolve([]),
+  },
   regionOwnerAPI: { getMyRegion: (...a: unknown[]) => mockGetMyRegion(...a) },
   // WO-UI2-LIVING-WINDSHIELD: the flight SSV's SCAN-layer wrecks fetch --
   // not under test here, resolved empty so the mount doesn't reject.

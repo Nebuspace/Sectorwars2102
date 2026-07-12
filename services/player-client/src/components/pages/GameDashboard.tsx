@@ -19,6 +19,7 @@ import Galaxy3DRenderer from '../galaxy/Galaxy3DRenderer';
 import QuantumDriveConsole from '../quantum/QuantumDriveConsole';
 import GatewrightPanel from '../gatewright/GatewrightPanel';
 import CommsMailbox from '../comms/CommsMailbox';
+import TacticalMonitor from '../tactical/TacticalMonitor';
 import CockpitColonyManagement from '../cockpit/CockpitColonyManagement';
 import DeckPageTabs from '../cockpit/DeckPageTabs';
 import type { ProductionLine } from '../cockpit/ProductionPanel';
@@ -3438,6 +3439,28 @@ const GameDashboard: React.FC = () => {
                     onSelectContact={(c) =>
                       setSelectedShipId(c?.ship_id ? String(c.ship_id) : null)
                     }
+                  />
+                </div>
+              </div>
+
+              {/* 4TH MONITOR: TACTICAL — known-graph STATIC threat bands
+                  (GET /nav/threat) + the current sector's LIVE readout
+                  (shipsInSector, the same players_present-derived feed the
+                  COMMS monitor's contact list draws from). TacticalMonitor
+                  owns its own header + content, exactly like CommsMailbox
+                  does for COMMS (WO-UI2-TACTICAL-MONITOR). */}
+              <div className="console-monitor tactical-monitor">
+                <div className="monitor-bezel">
+                  <div className="bezel-corner tl"></div>
+                  <div className="bezel-corner tr"></div>
+                  <div className="bezel-corner bl"></div>
+                  <div className="bezel-corner br"></div>
+                </div>
+                <div className="monitor-screen">
+                  <TacticalMonitor
+                    currentSectorId={currentSector?.sector_id}
+                    currentSectorName={currentSector?.name}
+                    liveShipCount={shipsInSector.length}
                   />
                 </div>
               </div>

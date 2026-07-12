@@ -1,0 +1,160 @@
+/* ============================================
+   TACTICAL MONITOR — cockpit deck-monitor (WO-UI2-TACTICAL-MONITOR)
+   Lives inside the cockpit's TACTICAL monitor (safety-orange CRT chrome,
+   see .tactical-monitor in cockpit.css). Two sections: a pinned CURRENT
+   SECTOR summary (never scrolls) + a scrolling known-sector band list,
+   mirroring comms-mailbox.css's HAILS layout (pinned compose strip +
+   scrolling inbox) for the same "pin summary, scroll the list" shape.
+   ============================================ */
+
+/* The hud-content itself stops scrolling; the sector list scrolls
+   internally so the CURRENT SECTOR summary stays pinned above the fold
+   (Scroll-Law) and the monitor keeps its fixed cockpit footprint. */
+.screen-hud-content.tactical-content {
+  display: flex;
+  flex-direction: column;
+  overflow-y: hidden;
+  gap: 0.4rem;
+}
+
+/* --- CURRENT SECTOR: pinned, prominent, the "full picture" section --- */
+
+.tactical-current-section {
+  flex-shrink: 0;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid rgba(255, 136, 0, 0.25);
+}
+
+.tactical-current-label {
+  font-family: 'Courier New', monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: rgba(255, 136, 0, 0.75);
+  margin-bottom: 0.3rem;
+}
+
+.tactical-current-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.tactical-live-readout {
+  font-family: 'Courier New', monospace;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.tactical-live-readout.tactical-live-active {
+  color: #ffb000;
+  text-shadow: 0 0 6px rgba(255, 176, 0, 0.6);
+}
+
+/* --- Threat-band chip — the STATUS TRIAD. Text ALWAYS carries the band
+   name alongside color (WCAG — never color alone); HOSTILE and LETHAL
+   intentionally share the same red tier, so the word is what tells them
+   apart, not the color. --- */
+
+.tactical-band-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  padding: 0.15rem 0.5rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+
+.tactical-band-score {
+  font-weight: 400;
+  opacity: 0.75;
+}
+
+.tactical-band-clear {
+  color: #00ff41;
+  background: rgba(0, 255, 65, 0.1);
+  text-shadow: 0 0 6px rgba(0, 255, 65, 0.5);
+}
+
+.tactical-band-caution {
+  color: #ffb000;
+  background: rgba(255, 176, 0, 0.1);
+  text-shadow: 0 0 6px rgba(255, 176, 0, 0.5);
+}
+
+.tactical-band-danger {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+  text-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
+}
+
+.tactical-band-unknown {
+  color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+/* --- Known-sector list: scrolls WITHIN this region only --- */
+
+.tactical-sector-list {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.tactical-sector-row {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.tactical-sector-summary {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.3rem 0.2rem;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.2s ease;
+}
+
+.tactical-sector-summary:hover {
+  background: rgba(255, 136, 0, 0.06);
+}
+
+.tactical-sector-id {
+  font-family: 'Courier New', monospace;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.tactical-contributors {
+  padding: 0 0.2rem 0.4rem 0.6rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.6);
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.tactical-contributors-empty {
+  font-style: italic;
+  opacity: 0.7;
+}
