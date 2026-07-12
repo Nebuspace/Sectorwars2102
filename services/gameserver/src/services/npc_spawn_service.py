@@ -1220,12 +1220,62 @@ def handle_npc_ship_destroyed(
     # of a separate earlier unlocked query, so two near-simultaneous final
     # kills from the same squad serialize on this row lock rather than both
     # observing the pre-removal npc_character_ids list.
+    #
+    # WO-NPC-KIA-PRESENCE (PRESENCE-TWIN gate, cipher HIGH; mack confirmed
+    # atomicity/non-vacuousness). THREE distinct call chains reach this
+    # re-lock in the SAME request-scoped session — exhaustive caller trace,
+    # not just the two most obvious ones:
+    #
+    #   (a) DIRECT -- combat_service.attack_npc_ship (~:1267) and
+    #       .npc_attack_player (~:1814) each read this SAME Sector row
+    #       UNLOCKED earlier in their own body (feeding a combat-log
+    #       region-snapshot / sector-defenses read) before ever calling
+    #       into this handler.
+    #   (b) POLICE-COMBAT -- npc_engagement_service._sweep_one's ARRIVED
+    #       branch calls _place_squad (places the squad in THIS SAME dest
+    #       sector via npc_movement_service.add_npc_presence, unflushed
+    #       after _locked_sectors' own internal flush point) immediately
+    #       followed, in the SAME uncommitted transaction/savepoint, by
+    #       _maybe_initiate_police_combat -> npc_combat_initiation_service.
+    #       initiate_npc_combat -> CombatService.npc_attack_player --
+    #       which reaches HERE if the squad's officer loses the fight.
+    #   (c) PIRATE-AGGRESSION -- movement_service._maybe_initiate_pirate_
+    #       combat (~:2711, the pirate_aggression sector-entry trigger
+    #       ~:2768) -> the SAME initiate_npc_combat -> npc_attack_player ->
+    #       HERE, when the player kills the pirate that just engaged them.
+    #
+    # (a) and (c) are the plain staleness case -- an earlier unlocked read
+    # (or, for (c), an unlocked attribute touch after _execute_movement's
+    # own prior commit) caches this Sector in the identity map; a bare
+    # .with_for_update() would return that stale copy instead of picking
+    # up a concurrent presence writer's committed change (evades sector-
+    # scan/COMMS). .populate_existing() closes that for all three.
+    #
+    # FLUSH-FIRST, not naive: (b) is the reentrancy that makes the flush
+    # load-bearing. A bare .populate_existing() re-lock on the shared dest
+    # sector would DISCARD the just-placed officer's pending presence
+    # entry (the identical squad-loop self-clobber class of bug
+    # _locked_sectors' own WO-NPC-PRESENCE-TWIN fix closes one level up).
+    # (c) has NO pre-lock Sector mutation of its own -- pirate rosters are
+    # static/seeded (no add_npc_presence call anywhere in
+    # _maybe_initiate_pirate_combat's body) -- so the flush is
+    # covered-but-not-load-bearing there; documented for exhaustiveness,
+    # not because (c) needs it. db.flush() as the first statement of this
+    # locking block persists any such pending pre-lock Sector mutation
+    # (this call's own or an earlier same-session caller's) so the
+    # populate_existing() re-read observes it instead of reverting it --
+    # caller-agnostic by construction, so it covers all three chains (and
+    # any future one) without re-auditing this site per new caller --
+    # mirrors npc_movement_service._locked_sectors' identical precedent
+    # for this exact bug class.
     squad_holding_id = None
     squad_cleared = False
     if sector_id is not None:
+        db.flush()
         sector = (
             db.query(Sector)
             .filter(Sector.sector_id == sector_id)
+            .populate_existing()
             .with_for_update()
             .first()
         )

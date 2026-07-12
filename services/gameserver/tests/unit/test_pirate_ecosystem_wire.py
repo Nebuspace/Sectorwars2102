@@ -89,6 +89,13 @@ def make_db(*, npc, sector=None, holding=None, team_id=None, add_side_effect=Non
             chain.filter.return_value.order_by.return_value.first.return_value = None
         elif model is Sector:
             chain.filter.return_value.first.return_value = sector
+            # WO-NPC-KIA-PRESENCE: handle_npc_ship_destroyed's Sector lock
+            # now chains .populate_existing() before .with_for_update() --
+            # a pure passthrough stub (returns the same filtered-chain
+            # mock) so the existing .with_for_update().first() wiring
+            # below still resolves, matching real SQLAlchemy's own
+            # Query-returns-Query chaining shape.
+            chain.filter.return_value.populate_existing.return_value = chain.filter.return_value
             chain.filter.return_value.with_for_update.return_value.first.return_value = sector
         elif model is PirateHolding:
             chain.filter.return_value.first.return_value = holding
@@ -359,6 +366,8 @@ def test_squad_cleared_reads_the_locked_chain_not_a_stale_unlocked_one():
             chain.filter.return_value.order_by.return_value.first.return_value = None
         elif model is Sector:
             chain.filter.return_value.first.return_value = stale_sector
+            # WO-NPC-KIA-PRESENCE passthrough stub -- see make_db() above.
+            chain.filter.return_value.populate_existing.return_value = chain.filter.return_value
             chain.filter.return_value.with_for_update.return_value.first.return_value = current_sector
         elif model is PirateHolding:
             chain.filter.return_value.first.return_value = holding
