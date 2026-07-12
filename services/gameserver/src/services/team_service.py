@@ -16,6 +16,7 @@ from src.models.team import Team, TeamRecruitmentStatus
 from src.models.team_member import TeamMember, TeamRole
 from src.models.player import Player
 from src.models.message import Message
+from src.models.sector import Sector
 from src.models.treasury_transaction import TreasuryTransaction
 from src.services.audit_service import AuditService, AuditAction
 
@@ -208,10 +209,35 @@ class TeamService:
         
         # Remove all members' team_id
         self.db.query(Player).filter(Player.team_id == team_id).update({"team_id": None})
-        
-        # Delete the team (cascade will handle team_members)
+
+        # Relinquish sector control. Sector.controlling_team_id is a "who
+        # currently holds this" pointer, not team-owned data, but its FK
+        # (unlike Player.team_id / Drone.team_id / PirateKillLog.attacker_team_id
+        # / CargoWreck.original_team_id, all ON DELETE SET NULL) has no
+        # ondelete action -- left unhandled it raises an IntegrityError on
+        # delete. A disbanding team releases its claims same as a leaving
+        # member releases theirs above.
+        self.db.query(Sector).filter(Sector.controlling_team_id == team_id).update(
+            {"controlling_team_id": None}
+        )
+
+        # Detach (don't delete) team chat history. Message.team_id has no
+        # ondelete action either, but message rows are audit-trail data --
+        # messaging.md: "Moderated messages remain in the database ... even
+        # after content removal" -- so nulling team_id clears the FK while
+        # keeping the rows (sender, content, moderation stamps) intact,
+        # same as a direct message with no live recipient still exists.
+        self.db.query(Message).filter(Message.team_id == team_id).update(
+            {"team_id": None}
+        )
+
+        # Delete the team. team_members / TeamReputation / Fleet rows all
+        # cascade via the Team model's own cascade="all, delete-orphan"
+        # relationships (and are mirrored by an ON DELETE CASCADE at the DB
+        # level); Drone.team_id / PirateKillLog.attacker_team_id /
+        # CargoWreck.original_team_id null out via ON DELETE SET NULL.
         self.db.delete(team)
-        
+
         # Audit log
         self.audit_service.log_action(
             user_id=player_id,
@@ -220,8 +246,17 @@ class TeamService:
             resource_id=str(team_id),
             details={"team_name": team.name}
         )
-        
-        self.db.commit()
+
+        try:
+            self.db.commit()
+        except IntegrityError as e:
+            # Belt-and-suspenders: any dependency we haven't accounted for
+            # above surfaces as a clean 4xx instead of an uncaught 500.
+            self.db.rollback()
+            logger.error("delete_team %s hit an unhandled FK dependency: %s", team_id, e)
+            raise ValueError(
+                "Cannot delete team: it still has dependent records that must be resolved first"
+            ) from e
         return True
     
     def get_team_members(self, team_id: uuid.UUID) -> List[Dict[str, Any]]:
