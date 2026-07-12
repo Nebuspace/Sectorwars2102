@@ -271,7 +271,12 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
   // manual toggle isn't fought while the player stays grounded. (Restores the
   // retired green-bar minimize, recomposed for the inverted-L.)
   const grounded = !!(playerState?.is_docked || playerState?.is_landed);
-  const [windshieldMin, setWindshieldMin] = useState(false);
+  // Seeded from `grounded` at mount (not a hardcoded false) so a page
+  // reload while ALREADY docked/landed starts minimized instead of
+  // waiting for a dock/undock EDGE that will never fire (playerState was
+  // already grounded on the very first render). prevGroundedRef below is
+  // seeded the same way, so this does not double-fire the edge-effect.
+  const [windshieldMin, setWindshieldMin] = useState(grounded);
   const prevGroundedRef = React.useRef<boolean>(grounded);
   React.useEffect(() => {
     const g = !!(playerState?.is_docked || playerState?.is_landed);

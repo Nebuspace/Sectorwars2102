@@ -1539,14 +1539,31 @@
   border-color: rgba(255, 176, 0, 0.5);
 }
 
-.trading-content {
+/* Scoped to the docked trading monitor's own screen wrapper (compound
+   selector, no space -- matches only the single element in GameDashboard
+   that carries BOTH classes: <div className="screen-hud-content
+   trading-content">). A bare `.trading-content` selector here used to
+   collide by literal class name with TradingInterface's own top-level
+   content div (TradingInterface.tsx renders <div className=
+   "trading-interface"><div className="trading-header"/>...<div
+   className="trading-content"/></div> as SIBLINGS, not a descendant of
+   this wrapper) -- which is also used standalone outside the cockpit
+   (App.tsx `/trading` route, SpaceDockInterface). Once cockpit.css loads
+   (any GameDashboard mount), the unscoped !important padding:0 leaked
+   onto every other `.trading-content` in the app AND silently defeated
+   trading-interface.css's own purpose-built docked-compaction rule
+   (`.screen-hud-content .trading-interface > .trading-content`, below)
+   for the nested case. Scoping restores both: no more app-wide leak, and
+   the nested TradingInterface content div now gets ITS intended compact
+   padding back instead of being forced to 0. */
+.screen-hud-content.trading-content {
   padding: 0 !important;
   overflow: auto;
   height: 100%;
 }
 
 /* Adjust TradingInterface styles when inside monitor */
-.trading-content .trading-interface {
+.screen-hud-content.trading-content .trading-interface {
   background: transparent !important;
   border: none !important;
   box-shadow: none !important;
@@ -1555,13 +1572,13 @@
   flex-direction: column;
 }
 
-.trading-content .trading-header {
+.screen-hud-content.trading-content .trading-header {
   padding: 0.5rem 0.75rem !important;
   background: transparent !important;
   border-bottom: 1px solid rgba(255, 176, 0, 0.3) !important;
 }
 
-.trading-content .trading-content-inner {
+.screen-hud-content.trading-content .trading-content-inner {
   flex: 1;
   overflow-y: auto;
   padding: 0.75rem;
