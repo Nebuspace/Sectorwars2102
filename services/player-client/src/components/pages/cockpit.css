@@ -1048,6 +1048,19 @@
   border-right: none;
 }
 
+/* WO-UI-FULLWIDTH-GRIDROW: a docked/landed single full-width monitor
+   (.trading-monitor.full-width, .planetary-ops-monitor.full-width) sets
+   grid-column:1/-1 but no grid-row, so under the ≤1024px 3-row flying-stack
+   grid (@media max-width:1024px .cockpit-console, below) it auto-places into
+   row 1 only and is squashed to ~1/3 height. Span every row the console
+   currently has — harmless at the base single-row layout (row 1/-1 === row 1
+   when there's only one row), so no media-query duplication needed. The
+   flying 3-up stack (nav/system/comms-monitor) never carries .full-width and
+   is unaffected. */
+.console-monitor.full-width {
+  grid-row: 1 / -1;
+}
+
 /* Monitor bezel */
 .monitor-bezel {
   position: absolute;
