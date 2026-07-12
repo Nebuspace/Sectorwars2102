@@ -309,6 +309,20 @@
 }
 
 /* ── Vitals cluster + REP badge ──────────────────────────────────────────── */
+/* WO-UIPC-STATUSBAR-VITALS-LAYOUT: `.sb-vitals` already correctly `flex:1 1
+   auto`-grows to consume the row's remaining width (name-chip/location-chip
+   pinned left via their own `flex:0 0 auto`, settings/logout pinned right the
+   same way) — that part of the distribution was never broken. The bug was
+   ONE LEVEL DEEPER: this element's own children (credits/turns/drones/mines/
+   LINK/[bounty]/REP-badge) used the flexbox default `justify-content:
+   flex-start`, so they clustered at THIS box's left edge while the box itself
+   sat wide — present in the DOM, invisible on the right ~60% of the (now
+   much wider) cluster. `space-between` spreads them across the grown width,
+   pinning the REP badge to this cluster's right edge (adjacent to the
+   settings icon) per the ratified row order. Mode-independent: StatusBar's
+   markup/CSS never varied between docked/flight/surface, so this was never a
+   docked-only defect — the orchestrator's docked screenshot just happened to
+   be the observed instance. */
 .sb-vitals {
   position: relative;
   flex: 1 1 auto;
@@ -316,6 +330,7 @@
   display: flex;
   flex-direction: row;
   align-items: center;
+  justify-content: space-between;
   gap: 0.9rem;
   overflow: hidden;
 }
