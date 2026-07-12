@@ -184,12 +184,39 @@ def remove_npc_presence(sector: Sector, npc_id: uuid.UUID) -> None:
 
 def _locked_sectors(db: Session, sector_ids: List[int]) -> Dict[int, Sector]:
     """Lock sector rows in ascending sector_id order (deadlock-safe both
-    against other NPC movers and against the KIA path)."""
+    against other NPC movers and against the KIA path).
+
+    WO-NPC-PRESENCE-TWIN — the NPC-side twin of movement_service.
+    _update_player_presence's identity-map fix: ``move_npc`` already loads
+    origin/dest UNLOCKED earlier (``hop_cost``'s ``_check_direct_warp``
+    Sector reads), so a bare ``.with_for_update()`` re-read here returns the
+    SAME stale cached object instead of picking up a concurrent player move's
+    committed ``players_present`` write. ``.populate_existing()`` below
+    closes that.
+
+    FLUSH-FIRST, not naive: this helper has a THIRD caller besides
+    ``move_npc``/``_relocate_npc`` — npc_engagement_service._place_squad
+    calls this ONCE PER SQUAD OFFICER inside a for-loop, all sharing the
+    SAME ``dest_sector_id`` (the offender's sector) and often the same
+    ``old_sector_id`` too, with no flush between officers. On a session
+    opened autoflush=False (core/database.py:19), officer N's
+    ``add_npc_presence``/``remove_npc_presence`` write is still pending when
+    officer N+1's call re-locks the SAME Sector row — a bare
+    ``.populate_existing()`` would DISCARD officer N's presence write
+    (reverting the squad to whichever officer landed last). Flushing here,
+    immediately before the lock, persists any such pending pre-lock Sector
+    mutation first (this call's own or an earlier same-session caller's) so
+    the populate_existing() re-read observes it instead of reverting it.
+    Mirrors movement_service.py's WO-MONEY-STRAGGLER-NAIVE precedent for the
+    identical class of bug.
+    """
+    db.flush()
     locked: Dict[int, Sector] = {}
     for sid in sorted(set(sector_ids)):
         row = (
             db.query(Sector)
             .filter(Sector.sector_id == sid)
+            .populate_existing()
             .with_for_update()
             .first()
         )
