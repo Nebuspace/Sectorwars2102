@@ -1041,86 +1041,95 @@ class CombatService:
         attack_was_penalty_free = attack_is_penalty_free(attacker, defender)
         defender_is_live_suspect = is_live_suspect(defender)
 
-        # Personal reputation + bounty hooks
+        # Personal reputation + bounty hooks. Deliberately UNWRAPPED — no
+        # module-level try/except here (cipher's friendly-fire gate finding,
+        # WO-CMB-SWALLOW-NARROW). Every call in this block below is a
+        # money-moving ledger mutation (bounty payout, reputation adjust,
+        # grey-flag set) EXCEPT the two dispatch calls explicitly marked
+        # "decorative" below, which are each self-isolated with their OWN
+        # internal try/except (_dispatch_bounty_medals / _emit_bounty_collected
+        # both log-and-swallow internally) and so can never raise out of this
+        # scope regardless of an outer wrapper. A failure in any of the
+        # money-moving calls must now propagate to the caller (attack_player
+        # owns the single commit further below) so the whole attack rolls
+        # back instead of landing a partial reputation/bounty state behind a
+        # log line nobody sees.
         attacked_innocent = False
         killed_escape_pod = False
-        try:
-            from src.services.personal_reputation_service import PersonalReputationService
-            from src.services.bounty_service import BountyService
-            rep_service = PersonalReputationService(self.db)
+        from src.services.personal_reputation_service import PersonalReputationService
+        from src.services.bounty_service import BountyService
+        rep_service = PersonalReputationService(self.db)
 
-            if combat_result["result"] == CombatResult.ATTACKER_VICTORY:
-                # Attacker won — check if defender had bounties
-                bounty_service = BountyService(self.db)
-                bounty_result = bounty_service.collect_bounty(attacker.id, defender.id)
-                if bounty_result.get("total_collected", 0) > 0:
-                    # Bounty paid out — heroic bounty hunting.
-                    rep_service.adjust_reputation(attacker.id, 100, "defeat_bounty_target")
-                    # Medal: combat.bounty_hunter (bounties_collected). Fires only
-                    # on a genuine paying collection, inside this combat unit of
-                    # work; idempotent on the medals side. Defensive dispatch —
-                    # never breaks combat (the hook swallows its own errors).
-                    _dispatch_bounty_medals(self.db, attacker.id)
-                    # Realtime bounty-board push: the "collected" lifecycle event
-                    # (place/cancel already emit "placed"/"cancelled" from the
-                    # route layer). Best-effort + self-isolated — a WS hiccup
-                    # never breaks combat or rolls back the paid bounty.
-                    _emit_bounty_collected(attacker.id, defender.id, bounty_result)
-                elif not bounty_result.get("had_bounty"):
-                    # Target carried NO bounty at all — attacked a genuine
-                    # innocent. Reputation penalty + police "attack_innocent"
-                    # engagement trigger (attacked_innocent gates that below) —
-                    # UNLESS the target is grey and this attacker qualifies for the
-                    # penalty-free exemption (WO-BL), OR the target is a LIVE
-                    # Federation Suspect (WO-CMB-SUSPECT-LIFE-1): bringing a
-                    # flagged aggressor or a wanted suspect to justice is lawful,
-                    # so neither the rep penalty nor the police "attack_innocent"
-                    # routing fires.
-                    if attack_was_penalty_free or defender_is_live_suspect:
-                        if attack_was_penalty_free:
-                            logger.info(
-                                "Grey-flag exemption: player %s killed grey target %s "
-                                "penalty-free (kind=%s) — attack_innocent rep + police "
-                                "skipped (WO-BL)",
-                                attacker.id, defender.id, defender.grey_kind,
-                            )
-                        else:
-                            logger.info(
-                                "Fed-zone/suspect exemption: player %s killed live-"
-                                "suspect target %s penalty-free — attack_innocent rep "
-                                "+ police skipped (WO-CMB-SUSPECT-LIFE-1)",
-                                attacker.id, defender.id,
-                            )
+        if combat_result["result"] == CombatResult.ATTACKER_VICTORY:
+            # Attacker won — check if defender had bounties
+            bounty_service = BountyService(self.db)
+            bounty_result = bounty_service.collect_bounty(attacker.id, defender.id)
+            if bounty_result.get("total_collected", 0) > 0:
+                # Bounty paid out — heroic bounty hunting.
+                rep_service.adjust_reputation(attacker.id, 100, "defeat_bounty_target")
+                # Medal: combat.bounty_hunter (bounties_collected). Fires only
+                # on a genuine paying collection, inside this combat unit of
+                # work; idempotent on the medals side. Defensive dispatch —
+                # never breaks combat (the hook swallows its own errors).
+                _dispatch_bounty_medals(self.db, attacker.id)
+                # Realtime bounty-board push: the "collected" lifecycle event
+                # (place/cancel already emit "placed"/"cancelled" from the
+                # route layer). Best-effort + self-isolated — a WS hiccup
+                # never breaks combat or rolls back the paid bounty.
+                _emit_bounty_collected(attacker.id, defender.id, bounty_result)
+            elif not bounty_result.get("had_bounty"):
+                # Target carried NO bounty at all — attacked a genuine
+                # innocent. Reputation penalty + police "attack_innocent"
+                # engagement trigger (attacked_innocent gates that below) —
+                # UNLESS the target is grey and this attacker qualifies for the
+                # penalty-free exemption (WO-BL), OR the target is a LIVE
+                # Federation Suspect (WO-CMB-SUSPECT-LIFE-1): bringing a
+                # flagged aggressor or a wanted suspect to justice is lawful,
+                # so neither the rep penalty nor the police "attack_innocent"
+                # routing fires.
+                if attack_was_penalty_free or defender_is_live_suspect:
+                    if attack_was_penalty_free:
+                        logger.info(
+                            "Grey-flag exemption: player %s killed grey target %s "
+                            "penalty-free (kind=%s) — attack_innocent rep + police "
+                            "skipped (WO-BL)",
+                            attacker.id, defender.id, defender.grey_kind,
+                        )
                     else:
-                        rep_service.adjust_reputation(attacker.id, -100, "attack_innocent")
-                        attacked_innocent = True
-                        # Aggressing on a GOOD-STANDING player marks the ATTACKER
-                        # grey for 1h: good-standing players may now hunt them
-                        # penalty-free. Only good-standing victims trigger this —
-                        # gunning down an already-grey/outlaw player is its own
-                        # (separate) consequence, not a fresh open-season mark. MAX
-                        # rule applied inside set_grey (never shortens a longer grey).
-                        if defender_was_good_standing:
-                            GreyFlagService(self.db).set_grey(
-                                attacker, GREY_KIND_PLAYER_ATTACK
-                            )
-                # else: had_bounty True but total_collected == 0 — the target
-                # was a known criminal whose head this hunter had ALREADY turned
-                # in (system bounty deduped by the claims ledger). Killing a
-                # criminal you've already claimed is neither heroic nor innocent-
-                # slaughter: apply NEITHER +100 nor -100, and do NOT set
-                # attacked_innocent (no police "attack_innocent" routing).
-                # Check if the DESTROYED defender ship was an escape pod —
-                # evaluated against the pre-destruction snapshot, not
-                # defender.current_ship (which is now the post-kill pod).
-                if defender_pre_destruction_type == ShipType.ESCAPE_POD:
-                    rep_service.adjust_reputation(attacker.id, -500, "kill_escape_pod")
-                    killed_escape_pod = True
-            elif combat_result["result"] == CombatResult.DEFENDER_VICTORY:
-                # Defender successfully defended — reputation boost
-                rep_service.adjust_reputation(defender.id, 50, "defend_against_attacker")
-        except Exception as e:
-            logger.error("Failed reputation/bounty hooks after combat: %s", e)
+                        logger.info(
+                            "Fed-zone/suspect exemption: player %s killed live-"
+                            "suspect target %s penalty-free — attack_innocent rep "
+                            "+ police skipped (WO-CMB-SUSPECT-LIFE-1)",
+                            attacker.id, defender.id,
+                        )
+                else:
+                    rep_service.adjust_reputation(attacker.id, -100, "attack_innocent")
+                    attacked_innocent = True
+                    # Aggressing on a GOOD-STANDING player marks the ATTACKER
+                    # grey for 1h: good-standing players may now hunt them
+                    # penalty-free. Only good-standing victims trigger this —
+                    # gunning down an already-grey/outlaw player is its own
+                    # (separate) consequence, not a fresh open-season mark. MAX
+                    # rule applied inside set_grey (never shortens a longer grey).
+                    if defender_was_good_standing:
+                        GreyFlagService(self.db).set_grey(
+                            attacker, GREY_KIND_PLAYER_ATTACK
+                        )
+            # else: had_bounty True but total_collected == 0 — the target
+            # was a known criminal whose head this hunter had ALREADY turned
+            # in (system bounty deduped by the claims ledger). Killing a
+            # criminal you've already claimed is neither heroic nor innocent-
+            # slaughter: apply NEITHER +100 nor -100, and do NOT set
+            # attacked_innocent (no police "attack_innocent" routing).
+            # Check if the DESTROYED defender ship was an escape pod —
+            # evaluated against the pre-destruction snapshot, not
+            # defender.current_ship (which is now the post-kill pod).
+            if defender_pre_destruction_type == ShipType.ESCAPE_POD:
+                rep_service.adjust_reputation(attacker.id, -500, "kill_escape_pod")
+                killed_escape_pod = True
+        elif combat_result["result"] == CombatResult.DEFENDER_VICTORY:
+            # Defender successfully defended — reputation boost
+            rep_service.adjust_reputation(defender.id, 50, "defend_against_attacker")
 
         # Suspect / Wanted lifecycle (police-forces.md + ranking.md). The
         # ranking lane only DISPLAYS these flags; combat SETS them, keyed off
