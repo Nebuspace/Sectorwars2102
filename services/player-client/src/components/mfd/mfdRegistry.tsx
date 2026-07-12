@@ -1,10 +1,21 @@
 /**
- * mfdRegistry — the ten MFD page definitions, decoupled from screens.
+ * mfdRegistry — the six MFD page definitions, decoupled from screens.
  *
  * Pages are lazy chunks so a faulting or heavy page never taxes the
  * console shell. Accents reuse the NAV_ITEMS palette (Law-5 system
  * colors). Predicates receive the memoized MFDSnapshot and must stay
  * pure + synchronous.
+ *
+ * WO-UI2-DECK-RECONCILE dropped four entries down to the ratified MFD
+ * slate (canon §05: "A: STAT · CRGO · QTM — B: POS · COMM"):
+ *   - threat-readiness  → MOVED to the deck TACTICAL monitor's [THREAT] page
+ *   - salvage           → MOVED to the deck SOLAR SYSTEM monitor's [SALVAGE] page
+ *   - turn-economy, reputation → already-dead entries (WO-PLAYERINFO id=147
+ *     dropped their sidebar softkeys; nothing referenced them since)
+ * The ReputationPage and SalvagePage/ThreatPage/TurnEconomyPage COMPONENTS
+ * are untouched — only the registry entries are gone. ReputationPage is
+ * still reused directly by components/player/PlayerInfo.tsx's dossier
+ * reputation tab.
  */
 
 import React from 'react';
@@ -41,22 +52,6 @@ export const MFD_PAGES: Record<MFDPageId, MFDPageDef> = {
     status: 'shipped',
     Component: React.lazy(() => import('./pages/CargoPage')),
   },
-  'turn-economy': {
-    id: 'turn-economy',
-    title: 'TURN ECONOMY',
-    softLabel: 'TURN',
-    accent: '#00FF7F',
-    status: 'shipped',
-    Component: React.lazy(() => import('./pages/TurnEconomyPage')),
-  },
-  'threat-readiness': {
-    id: 'threat-readiness',
-    title: 'THREAT READINESS',
-    softLabel: 'THRT',
-    accent: '#FF4D6D',
-    status: 'shipped',
-    Component: React.lazy(() => import('./pages/ThreatPage')),
-  },
   'quantum-drive': {
     id: 'quantum-drive',
     title: 'QUANTUM DRIVE',
@@ -91,25 +86,9 @@ export const MFD_PAGES: Record<MFDPageId, MFDPageDef> = {
     title: 'COMMS / CREW',
     softLabel: 'COMM',
     accent: '#00FF7F',
-    status: 'partial',
+    status: 'shipped',
     Component: React.lazy(() => import('./pages/CommsCrewPage')),
     alertChannel: 'new-message',
-  },
-  'reputation': {
-    id: 'reputation',
-    title: 'REPUTATION',
-    softLabel: 'REP',
-    accent: '#FFD700',
-    status: 'shipped',
-    Component: React.lazy(() => import('./pages/ReputationPage')),
-  },
-  'salvage': {
-    id: 'salvage',
-    title: 'SALVAGE',
-    softLabel: 'SALV',
-    accent: '#9EC5FF',
-    status: 'shipped',
-    Component: React.lazy(() => import('./pages/SalvagePage')),
   },
 };
 
