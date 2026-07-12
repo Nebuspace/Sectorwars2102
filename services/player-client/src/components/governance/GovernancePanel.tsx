@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useGame } from '../../contexts/GameContext';
 import { governanceAPI } from '../../services/api';
 import type { Election, MembershipStatus, Policy, Treaty } from '../../types/governance';
-import GameLayout from '../layouts/GameLayout';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import EmptyState from '../common/EmptyState';
 import LoadingState from '../common/LoadingState';
@@ -15,11 +14,9 @@ import './governance-panel.css';
    frame keeps its identity across loading/error/empty/tab states and never
    remounts mid-session (mirrors TeamManager's CrewShell). */
 const GovShell: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <GameLayout>
-    <CockpitInstrument title="REGIONAL GOVERNANCE" accent="#00D9FF" subtitle="CIVIC OPERATIONS">
-      {children}
-    </CockpitInstrument>
-  </GameLayout>
+  <CockpitInstrument title="REGIONAL GOVERNANCE" accent="#00D9FF" subtitle="CIVIC OPERATIONS">
+    {children}
+  </CockpitInstrument>
 );
 
 type GovTab = 'elections' | 'policies' | 'treaties';

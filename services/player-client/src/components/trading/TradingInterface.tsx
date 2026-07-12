@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useGame, StationSlips } from '../../contexts/GameContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
-import GameLayout from '../layouts/GameLayout';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import { StationClassBadge, getTraderPersonality } from '../common/stationIdentity';
 import { formatCredits } from '../../utils/formatters';
@@ -18,11 +17,9 @@ import './trading-interface.css';
    is a standalone route; embedded usage (GameDashboard docked monitor,
    SpaceDockInterface) stays bare via Fragment. */
 const TradeLedgerShell: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
-  <GameLayout>
-    <CockpitInstrument title="TRADE LEDGER" accent="#FFB000" subtitle="COMMODITY EXCHANGE">
-      {children}
-    </CockpitInstrument>
-  </GameLayout>
+  <CockpitInstrument title="TRADE LEDGER" accent="#FFB000" subtitle="COMMODITY EXCHANGE">
+    {children}
+  </CockpitInstrument>
 );
 
 interface Resource {

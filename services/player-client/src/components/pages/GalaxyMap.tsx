@@ -2,7 +2,6 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useGame } from '../../contexts/GameContext';
 import { useAutopilot, CoursePlot } from '../../contexts/AutopilotContext';
 import { navAPI, sectorAPI, NavChartResponse } from '../../services/api';
-import GameLayout from '../layouts/GameLayout';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import Galaxy3DRenderer from '../galaxy/Galaxy3DRenderer';
 import ErrorBoundary from '../common/ErrorBoundary';
@@ -302,7 +301,6 @@ const GalaxyMap: React.FC = () => {
   );
 
   return (
-    <GameLayout>
       <CockpitInstrument title="NAV CHART" accent="#00D9FF" subtitle="GALACTIC CARTOGRAPHY">
       <div className="galaxy-map-container">
         <div className="map-header">
@@ -586,7 +584,6 @@ const GalaxyMap: React.FC = () => {
         )}
       </div>
       </CockpitInstrument>
-    </GameLayout>
   );
 };
 

@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useGame } from '../../contexts/GameContext';
-import GameLayout from '../layouts/GameLayout';
 import { EmbeddedContext } from '../cockpit/EmbeddedContext';
 import { ShipSelector } from '../ships/ShipSelector';
 import { PlanetManager } from '../planetary/PlanetManager';
@@ -70,7 +69,6 @@ const IdentitySection: React.FC = () => {
 const PlayerInfo: React.FC = () => {
   const [tab, setTab] = useState<PiTab>('identity');
   return (
-    <GameLayout>
       <div className="player-info">
         <div className="pi-tabs" role="tablist" aria-label="Player info sections">
           {TABS.map((t) => (
@@ -101,7 +99,6 @@ const PlayerInfo: React.FC = () => {
           )}
         </div>
       </div>
-    </GameLayout>
   );
 };
 
