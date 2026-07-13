@@ -235,7 +235,7 @@ const CommsCrewPage: React.FC = () => {
 
   return (
     <div className="mfd-page-ops">
-      <MFDPageHeader title="COMMS / CREW" accent={ACCENT} status="shipped" />
+      <MFDPageHeader title="COMMS / CREW" accent={ACCENT} status="shipped" showTitle={false} />
       <MFDPageBody scrollKey="comms-crew">
         <MFDField label="UPLINK" value={isConnected ? 'LINK OK' : 'LINK DOWN'} accent={isConnected} />
         <MFDField label="UNREAD" value={unreadMessageCount ?? '—'} />

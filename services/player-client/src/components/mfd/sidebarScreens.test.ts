@@ -13,6 +13,14 @@ describe('sidebarScreens — WO-UI1-CHROME-COMPLETE (ARIA absorbed into the tele
     expect(SIDEBAR_B.systemLabel).toBe('MFD-B');
   });
 
+  // WO-UI0-SHELL-TRANSPLANT integration cleanup (item 1) applied the D8
+  // NAV→POS softkey-label rename in mfdRegistry.tsx: canon §05 L578 calls
+  // the MFD-B slate "POS · COMM", and the softkey label text now matches.
+  it('D8 NAV→POS softkey-label rename is applied -- MFD-B slate reads POS · COMM (canon §05 L578)', () => {
+    expect(MFD_PAGES['nav-position'].softLabel).toBe('POS');
+    expect(MFD_PAGES['comms-crew'].softLabel).toBe('COMM');
+  });
+
   it('SIDEBAR_A is unchanged by this WO -- STAT / CRGO / QTM', () => {
     expect(SIDEBAR_A.pageIds).toEqual(['vessel-status', 'cargo', 'quantum-drive']);
   });

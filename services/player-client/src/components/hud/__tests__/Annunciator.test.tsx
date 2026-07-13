@@ -157,9 +157,13 @@ describe('Annunciator', () => {
     render();
   };
 
-  const bulb = (id: 'warn' | 'caut') => container.querySelector(`.annunciator-bulb.${id}`) as HTMLButtonElement;
+  const bulb = (id: 'warn' | 'caut') => container.querySelector(`.bulb.${id}`) as HTMLButtonElement;
   const seg = (label: string) =>
-    Array.from(container.querySelectorAll('.annunciator-seg')).find((el) => el.textContent === label) as HTMLButtonElement;
+    Array.from(container.querySelectorAll('.seg')).find((el) => el.textContent === label) as HTMLButtonElement;
+  // Any of the 3 bare lit-classes cockpit-shell.css defines (WO-UI0-SHELL-
+  // TRANSPLANT) -- a segment is "lit" iff it carries exactly one of these.
+  const LIT_CLASSES = ['live', 'livec', 'livecm'];
+  const litClassOf = (el: HTMLElement) => LIT_CLASSES.find((c) => el.classList.contains(c));
 
   // ---- always-mounted strip -----------------------------------------------
 
@@ -168,17 +172,32 @@ describe('Annunciator', () => {
     expect(container.querySelector('[data-testid="annunciator-strip"]')).not.toBeNull();
     expect(bulb('warn')).not.toBeNull();
     expect(bulb('caut')).not.toBeNull();
-    expect(container.querySelectorAll('.annunciator-seg')).toHaveLength(5);
+    expect(container.querySelectorAll('.seg')).toHaveLength(5);
     expect(['HAZARD', 'LAW', 'THREAT', 'TURNS', 'COMM']).toEqual(
-      Array.from(container.querySelectorAll('.annunciator-seg')).map((el) => el.textContent)
+      Array.from(container.querySelectorAll('.seg')).map((el) => el.textContent)
     );
-    // Idle -- no lamp carries the live/on/ack state classes.
-    expect(container.querySelectorAll('.is-live')).toHaveLength(0);
+    // Idle -- no lamp carries a live/on/ack state class.
+    expect(container.querySelectorAll('.live, .livec, .livecm')).toHaveLength(0);
     expect(bulb('warn').classList.contains('on')).toBe(false);
     expect(bulb('caut').classList.contains('on')).toBe(false);
 
     const overlay = container.querySelector('[data-testid="annunciator-overlay"]') as HTMLElement;
     expect(overlay.style.pointerEvents).toBe('none');
+  });
+
+  it('WO-UI0-SHELL-TRANSPLANT: emits the BARE artifact classnames, not the retired prefixed set', async () => {
+    await flush();
+    const strip = container.querySelector('[data-testid="annunciator-strip"]') as HTMLElement;
+    expect(strip.classList.contains('annun')).toBe(true);
+    expect(container.querySelectorAll('.lamp')).toHaveLength(2);
+    expect(container.querySelectorAll('.bulb')).toHaveLength(2);
+    expect(container.querySelectorAll('.segs')).toHaveLength(1);
+    expect(container.querySelectorAll('.seg')).toHaveLength(5);
+    // The retired WAVE-2 prefixed classnames must be entirely gone from the strip.
+    expect(container.querySelectorAll('.annunciator-strip, .annunciator-bulb, .annunciator-seg, .annunciator-segs, .annunciator-lamp-group')).toHaveLength(0);
+    // `.annunciator-overlay` is NOT a bare artifact class -- it's this app's
+    // own scene-narrowing wrapper, deliberately kept (see annunciator.css).
+    expect(container.querySelector('.annunciator-overlay')).not.toBeNull();
   });
 
   it('Pixel-gate: role/aria-live are ALWAYS present (idle included), not toggled on activation', async () => {
@@ -212,8 +231,9 @@ describe('Annunciator', () => {
     render();
     await flush();
 
-    expect(seg('THREAT').classList.contains('is-live')).toBe(true);
-    expect(seg('THREAT').classList.contains('annunciator-seg--warn')).toBe(true);
+    // THREAT is warn-severity -- bare lit class is `.live` (red), matching
+    // the ratified prototype's own THREAT seg class (RATIFIED.html:1208).
+    expect(seg('THREAT').classList.contains('live')).toBe(true);
     expect(bulb('warn').classList.contains('on')).toBe(true);
   });
 
@@ -221,7 +241,7 @@ describe('Annunciator', () => {
     mockWsState = { ...mockWsState, npcCombatSignal: 1, lastNpcCombatInitiated: { defender_id: 'someone-else' } };
     render();
     await flush();
-    expect(seg('THREAT').classList.contains('is-live')).toBe(false);
+    expect(litClassOf(seg('THREAT'))).toBeUndefined();
     expect(bulb('warn').classList.contains('on')).toBe(false);
   });
 
@@ -229,12 +249,12 @@ describe('Annunciator', () => {
     mockWsState = { ...mockWsState, npcCombatSignal: 1, lastNpcCombatInitiated: { defender_id: 'player-1' } };
     render();
     await flush();
-    expect(seg('THREAT').classList.contains('is-live')).toBe(true);
+    expect(seg('THREAT').classList.contains('live')).toBe(true);
 
     await act(async () => {
       vi.advanceTimersByTime(15000);
     });
-    expect(seg('THREAT').classList.contains('is-live')).toBe(false);
+    expect(litClassOf(seg('THREAT'))).toBeUndefined();
     expect(bulb('warn').classList.contains('on')).toBe(false);
   });
 
@@ -257,7 +277,7 @@ describe('Annunciator', () => {
     await flush();
 
     expect(bulb('warn').classList.contains('on')).toBe(true);
-    expect(container.querySelectorAll('.is-live')).toHaveLength(0); // no segment lit
+    expect(container.querySelectorAll('.live, .livec, .livecm')).toHaveLength(0); // no segment lit
   });
 
   it('BOUNTY: bounty_total > 0 lights the WARN bulb (no segment of its own)', async () => {
@@ -266,19 +286,27 @@ describe('Annunciator', () => {
     await flush();
 
     expect(bulb('warn').classList.contains('on')).toBe(true);
-    expect(container.querySelectorAll('.is-live')).toHaveLength(0);
+    expect(container.querySelectorAll('.live, .livec, .livecm')).toHaveLength(0);
   });
 
   // ---- HAZARD segment (caution) + analysis card ---------------------------
 
-  it('HAZARD: lights the caution segment when sector hazard_level > 0', async () => {
-    mockGameState = { ...mockGameState, currentSector: { name: 'Sol', hazard_level: 3, radiation_level: 0.1 } };
+  it('HAZARD (NIT n1): lights the caution segment when sector hazard_level >= 5', async () => {
+    mockGameState = { ...mockGameState, currentSector: { name: 'Sol', hazard_level: 5, radiation_level: 0.1 } };
     render();
     await flush();
 
-    expect(seg('HAZARD').classList.contains('is-live')).toBe(true);
-    expect(seg('HAZARD').classList.contains('annunciator-seg--caution')).toBe(true);
+    expect(seg('HAZARD').classList.contains('livec')).toBe(true);
     expect(bulb('caut').classList.contains('on')).toBe(true);
+  });
+
+  it('HAZARD (NIT n1): does NOT light below the 5 threshold (supersedes the prior sub-part\'s > 0)', async () => {
+    mockGameState = { ...mockGameState, currentSector: { name: 'Sol', hazard_level: 4, radiation_level: 0.1 } };
+    render();
+    await flush();
+
+    expect(litClassOf(seg('HAZARD'))).toBeUndefined();
+    expect(bulb('caut').classList.contains('on')).toBe(false);
   });
 
   it('HAZARD: click opens the self-contained analysis card with real sector data', async () => {
@@ -366,15 +394,22 @@ describe('Annunciator', () => {
 
   // ---- LAW segment (caution, grey-flag/fine) ------------------------------
 
-  it('LAW: greyStatus.isGrey lights the caution segment and the CAUT bulb (not WARN)', async () => {
+  it('LAW (NIT n5): renders the WARN-red .live class (demo rendered-truth) while still feeding the CAUT bulb, not WARN', async () => {
     mockGetGreyStatus.mockResolvedValue({ isGrey: true, kind: 'player_attack', greyUntil: null, remainingSeconds: 300, clearFineCredits: 500 });
     remountFresh();
     await flush();
 
-    expect(seg('LAW').classList.contains('is-live')).toBe(true);
-    expect(seg('LAW').classList.contains('annunciator-seg--caution')).toBe(true);
+    // Visual: matches the ratified prototype's own renderBand() literally
+    // (RATIFIED.html:1207, `.seg ${G.fine>0?'live':''}"`) -- red, not amber.
+    expect(seg('LAW').classList.contains('live')).toBe(true);
+    expect(seg('LAW').classList.contains('livec')).toBe(false);
+    // Logical: LAW still only ever contributes to the CAUT bulb (caution-
+    // severity for master-bulb/aria purposes) -- the doc-gap's BOOLEAN side
+    // is unchanged, only the segment's own CSS class moved (see
+    // useAnnunciatorState.ts's doc-comment).
     expect(bulb('caut').classList.contains('on')).toBe(true);
     expect(bulb('warn').classList.contains('on')).toBe(false);
+    expect(seg('LAW').getAttribute('role')).toBe('status'); // caution-tier a11y, unchanged
   });
 
   it('LAW: click requests the deck TACTICAL[THREAT] page', async () => {
@@ -394,14 +429,14 @@ describe('Annunciator', () => {
     mockGameState = { ...mockGameState, playerState: { id: 'player-1', turns: 12 } };
     render();
     await flush();
-    expect(seg('TURNS').classList.contains('is-live')).toBe(true);
+    expect(seg('TURNS').classList.contains('livec')).toBe(true);
   });
 
   it('TURNS: no lamp at or above the 50-turn threshold', async () => {
     mockGameState = { ...mockGameState, playerState: { id: 'player-1', turns: 50 } };
     render();
     await flush();
-    expect(seg('TURNS').classList.contains('is-live')).toBe(false);
+    expect(litClassOf(seg('TURNS'))).toBeUndefined();
   });
 
   it('TURNS: click narrates the live turn count via ariaFeed (no deck/MFD navigation)', async () => {
@@ -428,10 +463,11 @@ describe('Annunciator', () => {
     await flush();
 
     const commSeg = seg('COMM');
-    expect(commSeg.classList.contains('is-live')).toBe(true);
-    expect(commSeg.classList.contains('annunciator-seg--info')).toBe(true);
-    expect(commSeg.classList.contains('annunciator-seg--warn')).toBe(false);
-    expect(commSeg.classList.contains('annunciator-seg--caution')).toBe(false);
+    // COMM is info-severity -- bare lit class is `.livecm` (cyan), never
+    // the warn/caution danger-lane classes.
+    expect(commSeg.classList.contains('livecm')).toBe(true);
+    expect(commSeg.classList.contains('live')).toBe(false);
+    expect(commSeg.classList.contains('livec')).toBe(false);
     // COMM never feeds either master bulb ("never sharing the danger lane").
     expect(bulb('warn').classList.contains('on')).toBe(false);
     expect(bulb('caut').classList.contains('on')).toBe(false);
@@ -441,7 +477,7 @@ describe('Annunciator', () => {
     mockWsState = { ...mockWsState, newMessageSignal: 1, lastNewMessage: { message_id: 'msg-2', delivery: ['inbox'] } };
     render();
     await flush();
-    expect(seg('COMM').classList.contains('is-live')).toBe(false);
+    expect(litClassOf(seg('COMM'))).toBeUndefined();
   });
 
   it('COMM: does NOT raise for an urgent hail (its own modal owns that surface)', async () => {
@@ -452,7 +488,7 @@ describe('Annunciator', () => {
     };
     render();
     await flush();
-    expect(seg('COMM').classList.contains('is-live')).toBe(false);
+    expect(litClassOf(seg('COMM'))).toBeUndefined();
   });
 
   it('COMM: click marks the hail read AND opens the comms panel (both MFD screenIds, harmless no-op on the unregistered one)', async () => {
@@ -469,13 +505,14 @@ describe('Annunciator', () => {
     });
     expect(markMessageRead).toHaveBeenCalledWith('msg-4');
     // Clears immediately (no dwell needed once acted on).
-    expect(seg('COMM').classList.contains('is-live')).toBe(false);
+    expect(litClassOf(seg('COMM'))).toBeUndefined();
   });
 
   // ---- master bulb ack lifecycle (flash -> ack -> steady -> auto-clear) --
 
   it('MASTER CAUTION: tap-acknowledge stops the flash but stays visible; auto-clears once the predicate resolves', async () => {
-    mockGameState = { ...mockGameState, currentSector: { name: 'Sol', hazard_level: 4, radiation_level: 0 } };
+    // hazard_level:6 -- above NIT n1's >=5 threshold (4 no longer triggers, see the dedicated boundary test above).
+    mockGameState = { ...mockGameState, currentSector: { name: 'Sol', hazard_level: 6, radiation_level: 0 } };
     render();
     await flush();
 
@@ -486,7 +523,7 @@ describe('Annunciator', () => {
     expect(bulb('caut').classList.contains('ack')).toBe(true);
     expect(bulb('caut').classList.contains('on')).toBe(false);
     // Segment itself is untouched by the master ack -- still shows live.
-    expect(seg('HAZARD').classList.contains('is-live')).toBe(true);
+    expect(seg('HAZARD').classList.contains('livec')).toBe(true);
 
     mockGameState = { ...mockGameState, currentSector: { name: 'Sol', hazard_level: 0, radiation_level: 0 } };
     render();
@@ -537,12 +574,12 @@ describe('Annunciator', () => {
   // ---- a11y ----------------------------------------------------------------
 
   it('every button carries an aria-label naming the segment/bulb and its live state', async () => {
-    mockGameState = { ...mockGameState, currentSector: { name: 'Sol', hazard_level: 3, radiation_level: 0 } };
+    mockGameState = { ...mockGameState, currentSector: { name: 'Sol', hazard_level: 5, radiation_level: 0 } };
     render();
     await flush();
 
     expect(seg('HAZARD').getAttribute('aria-label')).toContain('HAZARD');
-    expect(seg('HAZARD').getAttribute('aria-label')).toContain('hazard level 3');
+    expect(seg('HAZARD').getAttribute('aria-label')).toContain('hazard level 5');
     expect(bulb('caut').getAttribute('aria-label')).toContain('Master caution');
     expect(bulb('caut').getAttribute('aria-label')).toContain('active');
     expect(seg('LAW').getAttribute('aria-label')).toContain('LAW');

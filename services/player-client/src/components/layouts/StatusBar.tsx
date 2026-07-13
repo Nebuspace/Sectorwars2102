@@ -1,10 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useGame } from '../../contexts/GameContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useSettings } from '../../contexts/SettingsContext';
-import LogoutButton from '../auth/LogoutButton';
 import { formatCredits } from '../../utils/formatters';
 import { TurnsIcon } from '../icons/TurnsIcon';
 import { MineIcon } from '../icons/MineIcon';
@@ -19,21 +18,36 @@ import RegionOwnerControls from '../governance/RegionOwnerControls';
 import './statusbar.css';
 
 /**
- * StatusBar — the persistent 56px one-flex-row status bar
+ * StatusBar — the persistent one-flex-row status bar
  * (WO-UI0-STATUSBAR; audit/design-briefs/cockpit-redesign-v10-RATIFIED.html:
- * 496-502). SUPERSEDES PlayerVitalsHud's role — mounted into GameLayout's
- * reserved `statusbar` grid row at the serial integration step, which also
- * retired PlayerVitalsHud's mount and GameDashboard's three overlap-defect
- * canvas chips (their location context relocated into LocationDropdown; see
- * that file's own doc-comment).
+ * 496-502, 438-449). SUPERSEDES PlayerVitalsHud's role — mounted into
+ * GameLayout's `.stage` grid row 1 at the serial integration step, which
+ * also retired PlayerVitalsHud's mount and GameDashboard's three overlap-
+ * defect canvas chips (their location context relocated into
+ * LocationDropdown; see that file's own doc-comment).
+ *
+ * WO-UI0-SHELL-TRANSPLANT Leaf L1: re-emitted onto the shared shell
+ * primitives cockpit-shell.css defines (`.sbar`/`.chip`/`.vit`/`.grow`/
+ * `.repb`, artifact lines 438-449) — the root carries BOTH `sbar` (the
+ * shell's row skin: flex/gap/padding/background/border-bottom) and
+ * `status-bar` (a stable structural hook other files still query — see
+ * that class's own rule comment below). Content-bearing `sb-*` classes
+ * that cockpit-shell has no equivalent for (dossier/location dropdown
+ * shells, turns-regen stack, drone/link/bounty color states, credits'
+ * gold highlight) are KEPT as compound classes alongside the shell ones.
  *
  * Row order (left→right), matching the ratified brief exactly:
- *   [👤 name ▾ dossier] · [◉ location ▾] · vitals + REP badge · [⚙] · [⏻]
+ *   [👤 name ▾ dossier] · [◉ location ▾] · grow · vitals + REP badge ·
+ *   [⚙] · [⏻]
  *
  * Evolved from PlayerVitalsHud.tsx: reuses its data primitives (formatCredits,
- * TurnsIcon, MineIcon, useGame().playerState, useWebSocket().linkStatus,
- * LogoutButton) and the same low-turns/bounty/LINK field logic, but is fresh
- * markup/CSS (`sb-*` classes) for the new single-row layout.
+ * TurnsIcon, MineIcon, useGame().playerState, useWebSocket().linkStatus)
+ * and the same low-turns/bounty/LINK field logic. [⏻] logout is now a
+ * compact `.chip` calling `useAuth().logout()` + `navigate('/')` directly
+ * (the same two calls LogoutButton.tsx makes) rather than mounting that
+ * shared component — LogoutButton's own full-width `.logout-button` skin
+ * is built for UserProfile.tsx's sidebar context, not a chip-sized icon
+ * button; LogoutButton.tsx itself is untouched and still owns that use.
  */
 type DossierTab = 'identity' | 'reputation' | 'service' | 'fleet' | 'colonies' | 'crew' | 'settings';
 
@@ -167,9 +181,19 @@ const SettingsTab: React.FC<{ idPrefix?: string }> = ({ idPrefix = '' }) => {
 };
 
 const StatusBar: React.FC = () => {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const { playerState } = useGame();
   const { linkStatus } = useWebSocket();
+  const navigate = useNavigate();
+
+  // [⏻] compact chip (nit c) — same two calls LogoutButton.tsx makes,
+  // inlined here instead of mounting that component (its shared
+  // `.logout-button` skin is built for UserProfile.tsx's full-width
+  // sidebar context, not this row's icon-sized chip).
+  const handleLogout = () => {
+    logout();
+    navigate('/');
+  };
 
   const [dossierOpen, setDossierOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<DossierTab>('identity');
@@ -329,18 +353,32 @@ const StatusBar: React.FC = () => {
         ? 'Uplink lost — reconnecting'
         : 'Uplink down';
 
+  // REP badge (nit a) — tier + SIGNED personal_reputation, e.g. "Trusted
+  // +250" (artifact: "LAWFUL +300"). NOT tier-only (the prior content).
+  // Fixed green (`.repb`, cockpit-shell.css) per the artifact -- supersedes
+  // the earlier per-tier `--rep-color` grading this badge used to carry;
+  // flagged in the report as a visible behavior change worth a second look.
   const repTier = playerState?.reputation_tier || 'Neutral';
-  const repColor = playerState?.name_color || '#888888';
+  const personalRep = playerState?.personal_reputation ?? 0;
+  const repSign = personalRep >= 0 ? '+' : '';
 
   return (
-    <div className="status-bar">
-      {/* [👤 name ▾] — dossier dropdown */}
+    <div className="sbar status-bar">
+      {/* [👤 name ▾] — dossier dropdown. `.chip.who` (cockpit-shell.css)
+          already appends " ▾" via ::after -- no manual caret span here
+          (LocationDropdown's OWN trigger, out of this leaf's scope, now
+          re-classed to `.chip.loc` the same way -- WO-UI0-SHELL-TRANSPLANT
+          integration cleanup item 4). Pilot name-color is an inline style,
+          not a class rule --
+          `.chip.who`'s own `color` (2 classes) would otherwise always beat
+          a bare single-class `.sb-name-chip` rule regardless of CSS load
+          order. */}
       <div className="sb-dossier" ref={dossierRef}>
         <button
           type="button"
           ref={nameChipRef}
-          className="sb-chip sb-name-chip"
-          style={{ '--pilot-color': playerState?.name_color || '#00D9FF' } as React.CSSProperties}
+          className="chip who sb-chip sb-name-chip"
+          style={{ color: playerState?.name_color || '#00D9FF' }}
           onClick={() => setDossierOpen((o) => !o)}
           aria-haspopup="dialog"
           aria-expanded={dossierOpen}
@@ -348,7 +386,6 @@ const StatusBar: React.FC = () => {
         >
           <span className="sb-chip-icon" aria-hidden="true">👤</span>
           <span className="sb-name-text">{user?.username || '—'}</span>
-          <span className="sb-chip-caret" aria-hidden="true">▾</span>
         </button>
         {dossierOpen && (
           <div id="sb-dossier-menu" className="sb-dropdown sb-dossier-panel" role="dialog" aria-label="Player dossier">
@@ -402,17 +439,31 @@ const StatusBar: React.FC = () => {
         )}
       </div>
 
-      {/* [◉ location ▾] — RegionOwnerControls (sub-part b) wired in at integration */}
+      {/* [◉ location ▾] — RegionOwnerControls (sub-part b) wired in at
+          integration. LocationDropdown owns its own trigger/panel markup
+          (a sibling leaf's file, out of this WO's scope) — now carries
+          `.chip.loc` (WO-UI0-SHELL-TRANSPLANT integration cleanup item 4). */}
       <LocationDropdown>
         <RegionOwnerControls />
       </LocationDropdown>
 
-      {/* vitals + REP badge */}
+      {/* Pushes the vitals + right-hand icon chips to the row's right edge
+          (artifact `.grow`, cockpit-shell.css: `flex:1`) — a real spacer,
+          not the vitals cluster itself doing the growing (that job used to
+          live on `.sb-vitals`; see that class's own trimmed rule below). */}
+      <span className="grow" aria-hidden="true" />
+
+      {/* vitals + REP badge. `.sb-vitals` is now `display:contents` (see
+          its CSS) -- a pure DOM grouping node (GameLayout.
+          statusBarIntegration.test.tsx still queries its presence as the
+          "StatusBar's vitals cluster exists" pin) whose `.vit` children lay
+          out as direct flex items of `.sbar` itself, picking up that row's
+          own `gap`. */}
       <div className="sb-vitals">
-        <span className="sb-stat sb-credits" title="Credits">
+        <span className="vit sb-stat sb-credits" title="Credits">
           {formatCredits(playerState?.credits)}
         </span>
-        <span className={lowTurns ? 'sb-stat sb-turns-low' : 'sb-stat'} title={turnsTitle}>
+        <span className={`vit sb-stat${lowTurns ? ' sb-turns-low' : ''}`} title={turnsTitle}>
           <span className="sb-k"><TurnsIcon size="0.8rem" /></span>
           <span className="sb-v sb-turns-stack">
             <span className="sb-turns-count">
@@ -422,33 +473,42 @@ const StatusBar: React.FC = () => {
             {regenPerHr > 0 && <span className="sb-regen">+{Math.round(regenPerHr)}/hr</span>}
           </span>
         </span>
-        <span className="sb-stat sb-drones" title="Attack / Defense drones (current ship)">
-          <span className="sb-k">DRONES</span>
-          <span className="sb-v">
-            <span className="sb-drone" title="Attack drones">⚔ {playerState?.attack_drones ?? 0}</span>
-            <span className="sb-drone" title="Defense drones">🛡 {playerState?.defense_drones ?? 0}</span>
+        <span className="vit sb-stat sb-drones">
+          <span
+            className="sb-drone"
+            title="Attack drones"
+            aria-label={`Attack drones ${playerState?.attack_drones ?? 0}`}
+          >
+            <span aria-hidden="true">⚔</span> <b>{playerState?.attack_drones ?? 0}</b>
+          </span>
+          <span
+            className="sb-drone"
+            title="Defense drones"
+            aria-label={`Defense drones ${playerState?.defense_drones ?? 0}`}
+          >
+            <span aria-hidden="true">🛡</span> <b>{playerState?.defense_drones ?? 0}</b>
           </span>
         </span>
-        <span className="sb-stat" title="Mines">
+        <span className="vit sb-stat" title="Mines">
           <span className="sb-k"><MineIcon size="0.8rem" /></span>
-          <span className="sb-v">{playerState?.mines ?? 0}</span>
+          <b>{playerState?.mines ?? 0}</b>
         </span>
-        <span className={`sb-stat sb-link sb-link--${linkStatus}`} title={linkTitle}>
+        <span className={`vit sb-stat sb-link sb-link--${linkStatus}`} title={linkTitle}>
           <span className="sb-k">LINK</span>
           <span className="sb-v">{linkLabel}</span>
         </span>
         {bounty > 0 && (
-          <span className="sb-stat sb-bounty" title="Bounty on your head">
+          <span className="vit sb-stat sb-bounty" title="Bounty on your head">
             <span className="sb-k">BOUNTY</span>
             <span className="sb-v">{formatCredits(bounty)}</span>
           </span>
         )}
         <span
-          className="sb-rep-badge"
-          style={{ '--rep-color': repColor } as React.CSSProperties}
+          className="vit repb"
           title={`Reputation tier: ${repTier}`}
+          aria-label={`Reputation: ${repTier} ${repSign}${personalRep}`}
         >
-          {repTier}
+          {repTier} {repSign}{personalRep}
         </span>
       </div>
 
@@ -456,12 +516,14 @@ const StatusBar: React.FC = () => {
           is a popup, not a place"). Right-anchored (`.sb-settings-popup`
           overrides `.sb-dropdown`'s default left:0) since this trigger sits
           at the row's far-right edge — a left-anchored panel would overflow
-          the viewport. */}
+          the viewport. Plain `.chip` (artifact: `<button class="chip">⚙
+          </button>`) -- the old fixed-size `.sb-icon-btn` square skin is
+          retired, superseded by `.chip`'s own box-model. */}
       <div className="sb-settings-popover" ref={settingsRef}>
         <button
           type="button"
           ref={settingsTriggerRef}
-          className="sb-icon-btn sb-settings-btn"
+          className="chip sb-settings-btn"
           onClick={() => setSettingsOpen((o) => !o)}
           aria-haspopup="dialog"
           aria-expanded={settingsOpen}
@@ -485,8 +547,20 @@ const StatusBar: React.FC = () => {
         )}
       </div>
 
-      {/* [⏻] logout */}
-      <LogoutButton className="sb-logout-btn" />
+      {/* [⏻] logout (nit c) — a compact `.chip` (artifact: `<button
+          class="chip">⏻</button>`), not the old full-width LogoutButton
+          strip. Calls the same logout()+navigate('/') LogoutButton.tsx
+          uses; that shared component is untouched and still owns
+          UserProfile.tsx's full-width use. */}
+      <button
+        type="button"
+        className="chip sb-logout-chip"
+        onClick={handleLogout}
+        aria-label="Log out"
+        title="Log out"
+      >
+        ⏻
+      </button>
     </div>
   );
 };

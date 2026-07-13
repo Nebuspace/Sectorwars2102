@@ -100,7 +100,7 @@ describe('TacticalMonitor', () => {
   it('renders TARGET as the default page, with the header + a 2-tab rail', async () => {
     await mount();
 
-    const header = container.querySelector('.screen-hud-header span')!;
+    const header = container.querySelector('.mhead .mtitle')!;
     expect(header.textContent).toBe('TACTICAL');
 
     const tabs = Array.from(container.querySelectorAll('.deck-tab-rail .deck-tab-btn')).map((b) => b.textContent);
@@ -110,6 +110,38 @@ describe('TacticalMonitor', () => {
     expect(container.querySelector('.target-contact-list')).toBeTruthy();
     expect(container.textContent).toContain('Vega');
     expect(container.querySelector('.threat-section')).toBeNull();
+  });
+
+  // ---- WO-UI0-SHELL-TRANSPLANT (Leaf L3): re-emitted monitor anatomy -----
+
+  it('anatomy: .mon > .mhead(.mtitle+.hsub) + .mbody + bottom .skrow, softkeys relocated out of the header, roving tabindex intact', async () => {
+    await mount();
+
+    const mon = container.querySelector('.mon.tactical-monitor')!;
+    expect(mon).toBeTruthy();
+
+    // Exactly 3 direct children, in DOM order: header, body, then the
+    // softkey row LAST (artifact monTac(): `.mon` > `.mhead` + `.mbody` +
+    // bottom `.skrow`).
+    const children = Array.from(mon.children).map((el) => el.className);
+    expect(children).toEqual(['mhead', 'mbody', 'skrow']);
+
+    const mtitle = mon.querySelector('.mhead .mtitle')!;
+    expect(mtitle.textContent).toBe('TACTICAL');
+    const hsub = mon.querySelector('.mhead .hsub')!;
+    expect(hsub.textContent).toBe('1 CONTACT'); // the seeded single contact
+
+    // The tablist lives in the bottom .skrow now, NOT the header.
+    expect(mon.querySelector('.mhead [role="tablist"]')).toBeNull();
+    const skrow = mon.querySelector('.skrow')!;
+    const rail = skrow.querySelector('[role="tablist"].deck-tab-rail')!;
+    expect(rail).toBeTruthy();
+
+    // Roving tabindex (SoftkeyRail.tsx, untouched) still wired through the
+    // relocated rail: exactly the active tab is a tab stop.
+    const tabs = Array.from(rail.querySelectorAll('[role="tab"]')) as HTMLButtonElement[];
+    expect(tabs.map((t) => t.getAttribute('aria-selected'))).toEqual(['true', 'false']);
+    expect(tabs.map((t) => t.tabIndex)).toEqual([0, -1]);
   });
 
   it('switches to THREAT on tab click, unmounting TARGET content', async () => {
@@ -139,7 +171,7 @@ describe('TacticalMonitor', () => {
 
   it('sets tabpanel id/aria-labelledby to match the active page', async () => {
     await mount();
-    let panel = container.querySelector('.screen-hud-content[role="tabpanel"]')!;
+    let panel = container.querySelector('.mbody[role="tabpanel"]')!;
     expect(panel.id).toBe('tactical-panel-target');
     expect(panel.getAttribute('aria-labelledby')).toBe('tactical-tab-target');
 
@@ -147,7 +179,7 @@ describe('TacticalMonitor', () => {
     await click(threatTab);
     await flush();
 
-    panel = container.querySelector('.screen-hud-content[role="tabpanel"]')!;
+    panel = container.querySelector('.mbody[role="tabpanel"]')!;
     expect(panel.id).toBe('tactical-panel-threat');
     expect(panel.getAttribute('aria-labelledby')).toBe('tactical-tab-threat');
   });

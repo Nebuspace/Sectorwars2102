@@ -214,18 +214,18 @@ describe('GameDashboard — flying deck collapsed to 3 monitors (WO-UI2-DECK-REC
   it('renders EXACTLY 3 flying deck-monitors: SOLAR SYSTEM, NAV, TACTICAL — no COMMS monitor', async () => {
     await mount();
 
-    const monitors = container.querySelectorAll('.console-monitor');
+    const monitors = container.querySelectorAll('.mon');
     expect(monitors.length).toBe(3);
-    expect(container.querySelector('.console-monitor.system-monitor')).toBeTruthy();
-    expect(container.querySelector('.console-monitor.nav-monitor')).toBeTruthy();
-    expect(container.querySelector('.console-monitor.tactical-monitor')).toBeTruthy();
-    expect(container.querySelector('.console-monitor.comms-monitor')).toBeNull();
+    expect(container.querySelector('.mon.system-monitor')).toBeTruthy();
+    expect(container.querySelector('.mon.nav-monitor')).toBeTruthy();
+    expect(container.querySelector('.mon.tactical-monitor')).toBeTruthy();
+    expect(container.querySelector('.mon.comms-monitor')).toBeNull();
   });
 
   it('SOLAR SYSTEM: SYSTEM page folds hazard/radiation/no-transit notes into the bodies list (not a separate page)', async () => {
     await mount();
 
-    const solar = container.querySelector('.console-monitor.system-monitor')!;
+    const solar = container.querySelector('.mon.system-monitor')!;
     const tabs = Array.from(solar.querySelectorAll('.deck-tab-btn')).map((b) => b.textContent);
     expect(tabs).toEqual(['SYSTEM', 'SALVAGE', 'SIGNALS']);
 
@@ -242,7 +242,7 @@ describe('GameDashboard — flying deck collapsed to 3 monitors (WO-UI2-DECK-REC
 
   it('SOLAR SYSTEM: SIGNALS page shows discovered formations with INVESTIGATE (moved off the old HAZARDS page)', async () => {
     await mount();
-    const solar = container.querySelector('.console-monitor.system-monitor')!;
+    const solar = container.querySelector('.mon.system-monitor')!;
     await clickTab('SIGNALS');
 
     expect(solar.textContent).toContain('WHISPER CLOUD');
@@ -256,7 +256,7 @@ describe('GameDashboard — flying deck collapsed to 3 monitors (WO-UI2-DECK-REC
     // The SCAN-layer fetch fires once on mount regardless of active tab.
     expect(mockSectorWrecks).toHaveBeenCalledTimes(1);
 
-    const solar = container.querySelector('.console-monitor.system-monitor')!;
+    const solar = container.querySelector('.mon.system-monitor')!;
     await clickTab('SALVAGE');
 
     expect(solar.querySelector('.solar-salvage-wreck-row')?.textContent).toContain('Light Freighter');
@@ -265,7 +265,7 @@ describe('GameDashboard — flying deck collapsed to 3 monitors (WO-UI2-DECK-REC
   it('NAV: COURSE page lists adjacent exits with MOVE wired to moveToSector (1 click = 1 hop)', async () => {
     await mount();
 
-    const nav = container.querySelector('.console-monitor.nav-monitor')!;
+    const nav = container.querySelector('.mon.nav-monitor')!;
     const tabs = Array.from(nav.querySelectorAll('.deck-tab-btn')).map((b) => b.textContent);
     expect(tabs).toEqual(['COURSE', 'CHART']); // non-Warp-Jumper hull -- no DRIVE tab
 
@@ -278,7 +278,7 @@ describe('GameDashboard — flying deck collapsed to 3 monitors (WO-UI2-DECK-REC
 
   it('NAV: CHART page is a separate tab and the graph is not visible on COURSE', async () => {
     await mount();
-    const nav = container.querySelector('.console-monitor.nav-monitor')!;
+    const nav = container.querySelector('.mon.nav-monitor')!;
     expect(nav.querySelector('[data-testid="navmap-stub"]')).toBeNull();
 
     await clickTab('CHART');
@@ -296,7 +296,7 @@ describe('GameDashboard — flying deck collapsed to 3 monitors (WO-UI2-DECK-REC
     });
     await mount();
 
-    const tactical = container.querySelector('.console-monitor.tactical-monitor')!;
+    const tactical = container.querySelector('.mon.tactical-monitor')!;
     expect(tactical.textContent).toContain('TACTICAL');
     expect(tactical.querySelector('.target-contact-list')).toBeTruthy();
     expect(tactical.textContent).toContain('Vega');
@@ -304,7 +304,37 @@ describe('GameDashboard — flying deck collapsed to 3 monitors (WO-UI2-DECK-REC
 
   it('SOLAR SYSTEM column renders the full monitor name with no ellipsis-clipping class regression', async () => {
     await mount();
-    const label = container.querySelector('.console-monitor.system-monitor .screen-hud-header span')!;
+    const label = container.querySelector('.mon.system-monitor .mhead .mtitle')!;
     expect(label.textContent).toBe('SOLAR SYSTEM');
+  });
+
+  // ---- WO-UI0-SHELL-TRANSPLANT (Leaf L3): re-emitted monitor anatomy -----
+
+  it('NAV + SOLAR SYSTEM: .mon > .mhead(.mtitle+.hsub) + .mbody + bottom .skrow, with live hsub sub-status', async () => {
+    await mount();
+
+    for (const [selector, title, hsub] of [
+      ['.mon.nav-monitor', 'NAV', '1 CHARTED EXIT'],
+      ['.mon.system-monitor', 'SOLAR SYSTEM', 'Sol'],
+    ] as const) {
+      const mon = container.querySelector(selector)!;
+      expect(mon, `expected ${selector}`).toBeTruthy();
+
+      const children = Array.from(mon.children).map((el) => el.className);
+      expect(children, `${selector} direct children`).toEqual(['mhead', 'mbody', 'skrow']);
+
+      expect(mon.querySelector('.mhead .mtitle')!.textContent).toBe(title);
+      expect(mon.querySelector('.mhead .hsub')!.textContent).toBe(hsub);
+
+      // Softkeys relocated out of the header to the bottom .skrow.
+      expect(mon.querySelector('.mhead [role="tablist"]')).toBeNull();
+      const rail = mon.querySelector('.skrow [role="tablist"].deck-tab-rail')!;
+      expect(rail, `${selector} .skrow tablist`).toBeTruthy();
+
+      // Roving tabindex intact post-relocation.
+      const tabs = Array.from(rail.querySelectorAll('[role="tab"]')) as HTMLButtonElement[];
+      expect(tabs.filter((t) => t.tabIndex === 0).length).toBe(1);
+      expect(tabs.filter((t) => t.tabIndex === -1).length).toBe(tabs.length - 1);
+    }
   });
 });

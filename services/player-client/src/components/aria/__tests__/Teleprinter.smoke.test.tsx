@@ -67,6 +67,28 @@ const SEED_ARIA_MESSAGES = [
     timestamp: '2026-01-01T00:00:02.000Z',
     isNarration: true as const,
   },
+  // n2 (WO-UI0-SHELL-TRANSPLANT leaf L4) regression pair — a server-pushed
+  // narration `ts` (aria_narration_service's tz-aware `created_at.isoformat()`,
+  // '+00:00'-suffixed) arriving BEFORE a client-sourced 'Z'-suffixed one, both
+  // rounding to the SAME epoch millisecond (Date.parse truncates beyond ms).
+  // The pre-fix raw-string `.localeCompare` always ranked 'Z' (0x5A) above any
+  // digit, so it would have buried this array's true-latest ('narr-3', 'Z')
+  // behind 'narr-2' ('+00:00') regardless of arrival order. See toEpoch's own
+  // doc-comment in Teleprinter.tsx.
+  {
+    id: 'narr-2',
+    type: 'ai' as const,
+    content: 'Hull integrity nominal.',
+    timestamp: '2026-01-01T00:00:10.500123+00:00',
+    isNarration: true as const,
+  },
+  {
+    id: 'narr-3',
+    type: 'ai' as const,
+    content: 'Arrival: Sector 12.',
+    timestamp: '2026-01-01T00:00:10.500Z',
+    isNarration: true as const,
+  },
 ];
 
 vi.mock('../../../contexts/WebSocketContext', () => ({
@@ -218,9 +240,11 @@ describe('Teleprinter — live-mount smoke', () => {
     await pressEnter(input);
   };
 
-  /** Types + Enter-submits via the ticker's own compact input. */
+  /** Types + Enter-submits via the ticker's own compact input (`.tin`,
+   *  WO-UI0-SHELL-TRANSPLANT leaf L4 re-class — cockpit-shell.css's
+   *  phosphor-green input; distinct from `#tp-body`'s own `.tp-input`). */
   const submitViaTicker = async (text: string) => {
-    const input = container.querySelector('.tp-ticker-input') as HTMLInputElement;
+    const input = container.querySelector('.tin') as HTMLInputElement;
     await setInput(input, text);
     await pressEnter(input);
   };
@@ -250,6 +274,22 @@ describe('Teleprinter — live-mount smoke', () => {
     expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith(
       expect.objectContaining({ behavior: 'smooth', block: 'nearest' })
     );
+
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it('n2: .tline shows the chronologically-latest entry, not whichever timestamp format string-sorts highest (WO-UI0-SHELL-TRANSPLANT leaf L4)', async () => {
+    await act(async () => {
+      root.render(<ControlledTeleprinter />);
+    });
+    await flush();
+
+    // narr-2 ('+00:00'-suffixed) and narr-3 ('Z'-suffixed) tie at the same
+    // epoch millisecond; narr-3 is later in SEED_ARIA_MESSAGES (the true-
+    // latest arrival). A raw-string compare would have ranked narr-2 ('Z'
+    // sorts above any digit at their divergent 4th fractional character)
+    // as "later" and shown its content instead — see toEpoch's doc-comment.
+    expect(container.querySelector('.tline')?.textContent).toBe('Arrival: Sector 12.');
 
     expect(errorSpy).not.toHaveBeenCalled();
   });
@@ -532,7 +572,7 @@ describe('Teleprinter — live-mount smoke', () => {
 
   // ── THREE DISPLAY MODES (WO-UI1-CHROME-COMPLETE) ────────────────────────
   describe('display modes — ticker / mid-panel / full-overlay', () => {
-    it('ticker renders the single amber-line form: ▸ ARIA ✎ <line> + input + [XMIT] [◫ PANEL] [▲ LOG]', async () => {
+    it('ticker renders the single amber-line form re-classed onto cockpit-shell.css (WO-UI0-SHELL-TRANSPLANT leaf L4): .glyph + .tline + .telerow[.tin + 3x.tkey]', async () => {
       ariaFeed.appendNav('Standing by, Commander.');
 
       await act(async () => {
@@ -540,17 +580,20 @@ describe('Teleprinter — live-mount smoke', () => {
       });
       await flush();
 
+      expect(container.querySelector('.teleprinter')?.className).toContain('tele');
       expect(container.querySelector('.teleprinter')?.className).toContain('tp-ticker');
       const row = container.querySelector('.tp-ticker-row');
       expect(row).not.toBeNull();
-      expect(row?.querySelector('.tp-ticker-glyph')?.textContent).toBe('▸');
-      expect(row?.querySelector('.tp-ticker-label')?.textContent).toBe('ARIA');
-      expect(row?.querySelector('.tp-ticker-pencil')?.textContent).toBe('✎');
-      expect(row?.querySelector('.tp-ticker-line')?.textContent).toContain('Standing by, Commander.');
-      expect(row?.querySelector('.tp-ticker-input')).not.toBeNull();
-      expect(row?.querySelector('.tp-ticker-xmit')?.textContent).toBe('XMIT');
-      expect(row?.querySelector('.tp-ticker-panel')?.textContent).toContain('PANEL');
-      expect(row?.querySelector('.tp-ticker-log')?.textContent).toContain('LOG');
+      expect(row?.querySelector('.glyph')?.textContent).toBe('▸ ARIA');
+      expect(row?.querySelector('.tline')?.textContent).toContain('Standing by, Commander.');
+      // .telerow (cockpit-shell.css: display:contents outside the artifact's
+      // own aria=2 mode) wraps the input + 3 keys.
+      const telerow = row?.querySelector('.telerow');
+      expect(telerow).not.toBeNull();
+      expect(telerow?.querySelector('.tin')).not.toBeNull();
+      expect(telerow?.querySelector('.tkey.tp-ticker-xmit')?.textContent).toBe('XMIT');
+      expect(telerow?.querySelector('.tkey.tp-ticker-panel')?.textContent).toContain('PANEL');
+      expect(telerow?.querySelector('.tkey.tp-ticker-log')?.textContent).toContain('LOG');
 
       expect(errorSpy).not.toHaveBeenCalled();
     });
@@ -725,7 +768,7 @@ describe('Teleprinter — live-mount smoke', () => {
       await submitViaTicker('what is my hull status');
       expect(mockSendARIAMessage).toHaveBeenCalledWith('what is my hull status', undefined, 'trading');
 
-      expect((container.querySelector('.tp-ticker-input') as HTMLInputElement).value).toBe('');
+      expect((container.querySelector('.tin') as HTMLInputElement).value).toBe('');
       expect(errorSpy).not.toHaveBeenCalled();
     });
   });

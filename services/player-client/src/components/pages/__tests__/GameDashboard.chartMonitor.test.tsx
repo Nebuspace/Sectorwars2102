@@ -442,7 +442,7 @@ describe('GameDashboard — NAV chart monitor (/game/map parity, WO-UI2-CHART-MO
     await clickButton('CHART');
     await settle();
 
-    const monitorBefore = container.querySelector('.console-monitor.nav-monitor');
+    const monitorBefore = container.querySelector('.mon.nav-monitor');
     expect(monitorBefore).toBeTruthy();
     expect(container.querySelector('.navigation-map-wrapper')).toBeTruthy();
     expect(container.querySelector('[data-testid="galaxy-3d-stub"]')).toBeFalsy();
@@ -450,14 +450,14 @@ describe('GameDashboard — NAV chart monitor (/game/map parity, WO-UI2-CHART-MO
     await clickButton('3D');
     await flush();
 
-    expect(container.querySelector('.console-monitor.nav-monitor')).toBe(monitorBefore);
+    expect(container.querySelector('.mon.nav-monitor')).toBe(monitorBefore);
     expect(container.querySelector('[data-testid="galaxy-3d-stub"]')).toBeTruthy();
     expect(container.querySelector('.navigation-map-wrapper')).toBeFalsy();
 
     await clickButton('2D');
     await settle();
 
-    expect(container.querySelector('.console-monitor.nav-monitor')).toBe(monitorBefore);
+    expect(container.querySelector('.mon.nav-monitor')).toBe(monitorBefore);
     expect(container.querySelector('.navigation-map-wrapper')).toBeTruthy();
     expect(container.querySelector('[data-testid="galaxy-3d-stub"]')).toBeFalsy();
   });

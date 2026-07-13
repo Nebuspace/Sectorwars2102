@@ -200,13 +200,53 @@ describe('StatusBar — live-mount smoke', () => {
     });
     await flush();
 
-    expect(container.querySelector('.status-bar')).not.toBeNull();
+    // Root carries both the shell's `sbar` skin class and the stable
+    // `status-bar` structural hook (WO-UI0-SHELL-TRANSPLANT Leaf L1).
+    expect(container.querySelector('.sbar.status-bar')).not.toBeNull();
     expect(container.querySelector('.sb-credits')?.textContent).toContain('125,000');
     expect(container.querySelector('.sb-drones')).not.toBeNull();
     expect(container.querySelector('.sb-link')).not.toBeNull();
-    expect(container.querySelector('.sb-rep-badge')?.textContent).toBe('Trusted');
+    // REP badge (nit a): tier + SIGNED personal_reputation, not tier-only.
+    expect(container.querySelector('.repb')?.textContent).toBe('Trusted +250');
     expect(container.querySelector('.sb-name-chip')).not.toBeNull();
     expect(container.querySelector('.sb-location-chip')).not.toBeNull();
+
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  // WO-UI0-SHELL-TRANSPLANT Leaf L1 -- re-emitted onto the artifact's own
+  // classnames (cockpit-redesign-v10-RATIFIED.html:438-449).
+  it('re-emits onto .chip/.vit/.grow/.repb -- real vitals only, no shield, plain compact chips for settings/logout', async () => {
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <SettingsProvider>
+            <StatusBar />
+          </SettingsProvider>
+        </MemoryRouter>
+      );
+    });
+    await flush();
+
+    expect(container.querySelector('.chip.who')).not.toBeNull();
+    expect(container.querySelector('.grow')).not.toBeNull();
+    expect(container.querySelector('.sb-vitals')).not.toBeNull();
+
+    // credits, turns, drones (combined ⚔/🛡), mines, LINK, REP -- bounty_total
+    // is 0 in this mock so the conditional BOUNTY chip doesn't render.
+    expect(container.querySelectorAll('.vit').length).toBe(6);
+
+    // No shield vital anywhere -- there is no such player vital (nit b).
+    expect(container.textContent).not.toMatch(/shield/i);
+
+    // [⚙]/[⏻] are plain compact `.chip`s now, not the old fixed-size
+    // `.sb-icon-btn` square skin or the full-width LogoutButton strip.
+    expect(container.querySelector('.sb-settings-btn.chip')).not.toBeNull();
+    const logoutChip = container.querySelector('.sb-logout-chip.chip') as HTMLButtonElement;
+    expect(logoutChip).not.toBeNull();
+    expect(logoutChip.getAttribute('aria-label')).toBe('Log out');
+    // LogoutButton.tsx's shared full-width skin is not rendered in this row.
+    expect(container.querySelector('.logout-button')).toBeNull();
 
     expect(errorSpy).not.toHaveBeenCalled();
   });

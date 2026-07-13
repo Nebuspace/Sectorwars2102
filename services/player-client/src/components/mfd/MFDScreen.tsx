@@ -25,8 +25,16 @@ import './mfd.css';
 // The rail itself now lives in common/SoftkeyRail.tsx (WO-UI0-SHELL-
 // TRANSPLANT, register D7) — this screen still owns which of its visible
 // pages become keys (the 5-slot cap) and how each key looks (disabled-in-
-// place for an unavailable-but-visible page, the alert badge), exactly as
+// place for an unavailable-but-visible page, the alert state), exactly as
 // mfd/MFDSoftkeyRail.tsx did before the consolidation.
+//
+// WO-UI0-SHELL-TRANSPLANT Leaf L2: alert used to render as a pulsing
+// `.mfd-key-badge` dot baked into the label; the artifact's `.skey` frame
+// (cockpit-shell.css) has no badge concept — alert is now the WHOLE key
+// going `.amberlit` (same `hasAlert(id) && !isActive` condition, just a
+// different visual expression). The itemClassName closure in the render
+// below owns that class, not this pure builder — see the `alertedPageIds`
+// set there.
 export const MAX_SOFTKEYS = 5;
 
 export const buildSoftkeyItems = (
@@ -42,12 +50,7 @@ export const buildSoftkeyItems = (
     const alerted = hasAlert(def.id) && !isActive;
     return {
       key: def.id,
-      label: (
-        <>
-          {def.softLabel}
-          {alerted ? <span className="mfd-key-badge" aria-hidden="true" /> : null}
-        </>
-      ),
+      label: def.softLabel,
       selected: isActive,
       disabled: !available,
       onSelect: () => onSelect(def.id),
@@ -55,6 +58,33 @@ export const buildSoftkeyItems = (
       ariaLabel: alerted ? `${def.title} — alert` : def.title,
     };
   });
+
+// Artifact fixed-5-slot look (cockpit-redesign-v10 renderMFDs, L1330/L1332):
+// real keys, then disabled middot `·` blanks filling to MAX_SOFTKEYS. A
+// blank is NOT the same thing as a disabled real key above (an
+// unavailable-but-visible page still IS a page, just greyed) — a blank
+// represents no page at all, pure visual padding so every MFD unit always
+// shows exactly 5 slots. Kept as its own pure step (not folded into
+// buildSoftkeyItems) so the two concerns stay independently testable.
+// `disabled: true` reuses SoftkeyRail's existing disabled-item support
+// (already skipped by arrow-nav, already natively un-focusable via the
+// `disabled` HTML attribute — never announced as an interactive tab).
+export const BLANK_SOFTKEY_LABEL = '·'; // artifact's middot filler glyph
+
+export const padSoftkeyItems = (items: SoftkeyRailItem[]): SoftkeyRailItem[] => {
+  if (items.length >= MAX_SOFTKEYS) return items;
+  const blanks: SoftkeyRailItem[] = [];
+  for (let i = items.length; i < MAX_SOFTKEYS; i++) {
+    blanks.push({
+      key: `blank-${i}`,
+      label: BLANK_SOFTKEY_LABEL,
+      selected: false,
+      disabled: true,
+      onSelect: () => undefined,
+    });
+  }
+  return [...items, ...blanks];
+};
 
 // Design A graft: ONE memoized snapshot per screen render, so predicate
 // evaluation never tears between softkeys.
@@ -131,24 +161,28 @@ const MFDScreen: React.FC<{ config: MFDScreenConfig }> = ({ config }) => {
 
   const ActivePage = activeDef.Component;
 
+  // Alert-highlight set for the itemClassName closure below — same
+  // `hasAlert(id) && id !== active` condition buildSoftkeyItems uses for
+  // its ariaLabel suffix, kept in sync by sharing the inputs (visiblePages/
+  // activePageId/hasAlert), not by duplicating the boolean itself.
+  const alertedPageIds = new Set(
+    visiblePages.filter((def) => def.id !== activePageId && hasAlert(def.id)).map((def) => def.id),
+  );
+
   return (
     <section
-      className="mfd-screen"
+      className="mfd"
       style={{ '--mfd-accent': activeDef.accent } as React.CSSProperties}
       aria-label={`${config.systemLabel} multi-function display`}
     >
-      <span className="mfd-rivet mfd-rivet-tl" aria-hidden="true" />
-      <span className="mfd-rivet mfd-rivet-tr" aria-hidden="true" />
-      <span className="mfd-rivet mfd-rivet-bl" aria-hidden="true" />
-      <span className="mfd-rivet mfd-rivet-br" aria-hidden="true" />
-      <span className="mfd-system-label">{config.systemLabel}</span>
       {/* Persistent live region: announces page swaps to assistive tech.
           Must live OUTSIDE the remounting page tree — fresh live regions
           are not reliably announced; content changes in a stable one are. */}
       <span className="mfd-visually-hidden" aria-live="polite">
         {`${config.systemLabel}: ${activeDef.title}`}
       </span>
-      <div className="mfd-viewport" role="tabpanel" aria-label={activeDef.title}>
+      <div className="scr" role="tabpanel" aria-label={activeDef.title}>
+        <b className="mfd-unit-title">{config.systemLabel} · {activeDef.title}</b>
         <MFDPageBoundary resetKey={activePageId}>
           <Suspense fallback={<MFDPageSkeleton />}>
             <ActivePage />
@@ -156,13 +190,20 @@ const MFDScreen: React.FC<{ config: MFDScreenConfig }> = ({ config }) => {
         </MFDPageBoundary>
       </div>
       <SoftkeyRail
-        items={buildSoftkeyItems(visiblePages, snapshot, activePageId, hasAlert, (pageId) => {
-          userTouchedRef.current = true;
-          selectPage(config.screenId, pageId);
-        })}
+        items={padSoftkeyItems(
+          buildSoftkeyItems(visiblePages, snapshot, activePageId, hasAlert, (pageId) => {
+            userTouchedRef.current = true;
+            selectPage(config.screenId, pageId);
+          }),
+        )}
         ariaLabel={`${config.systemLabel} pages`}
-        railClassName="mfd-softkey-rail"
-        itemClassName={() => 'mfd-key'}
+        railClassName="skrow"
+        itemClassName={(item) => {
+          let cls = 'skey';
+          if (item.selected) cls += ' lit';
+          if (alertedPageIds.has(item.key as MFDPageId)) cls += ' amberlit';
+          return cls;
+        }}
         accentVar="--mfd-key-accent"
         activateOnArrow={false}
         homeEnd={false}

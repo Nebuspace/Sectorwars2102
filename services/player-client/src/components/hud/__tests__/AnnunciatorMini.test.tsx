@@ -75,7 +75,9 @@ describe('AnnunciatorMini', () => {
     requestTacticalPageSpy = vi.spyOn(deckNavBus, 'requestTacticalPage');
     mockGameState = {
       playerState: { id: 'player-1', turns: 500, bounty_total: 0 },
-      currentSector: { name: 'Sol', hazard_level: 3, radiation_level: 0 },
+      // WO-UI0-SHELL-TRANSPLANT NIT n1: HAZARD now needs hazard_level >= 5
+      // (was > 0) -- see useAnnunciatorState.ts's HAZARD_ACTIVE_THRESHOLD.
+      currentSector: { name: 'Sol', hazard_level: 5, radiation_level: 0 },
       markMessageRead,
     };
     container = document.createElement('div');
@@ -84,6 +86,19 @@ describe('AnnunciatorMini', () => {
     render();
     await flush();
   });
+
+  /** Fresh unmount + remount -- the LAW poll only fires on the mount-time
+   * effect (mirrors Annunciator.test.tsx's own remountFresh). */
+  const remountFresh = async () => {
+    act(() => {
+      root.unmount();
+    });
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    render();
+    await flush();
+  };
 
   afterEach(() => {
     act(() => {
@@ -104,9 +119,21 @@ describe('AnnunciatorMini', () => {
     expect(segs).toEqual(['HAZ', 'LAW', 'THR', 'TRN', 'COM']);
   });
 
-  it('HAZARD (caution): live sector hazard lights the HAZ segment and the caution bulb', () => {
+  it('WO-UI0-SHELL-TRANSPLANT: bulbs/segments ALSO carry the bare artifact classes (color comes from cockpit-shell.css)', () => {
+    // Companion classes, not a swap -- see AnnunciatorMini.tsx's own
+    // doc-comment for why the mini variant keeps its size-override classes
+    // alongside the bare ones instead of adopting them outright.
+    expect(container.querySelectorAll('.bulb.annunciator-mini-bulb')).toHaveLength(2);
+    expect(container.querySelectorAll('.seg.annunciator-mini-seg')).toHaveLength(5);
+    expect(container.querySelector('.segs.annunciator-mini-segs')).not.toBeNull();
+    // The mini variant never adopts `.annun` itself -- that's an absolute-
+    // overlay contract, the opposite of this inline-row component.
+    expect(container.querySelector('.annun')).toBeNull();
+  });
+
+  it('HAZARD (caution): live sector hazard (>= 5, NIT n1) lights the HAZ segment amber and the caution bulb', () => {
     const hazSeg = Array.from(container.querySelectorAll('.annunciator-mini-seg')).find((el) => el.textContent === 'HAZ')!;
-    expect(hazSeg.classList.contains('is-live')).toBe(true);
+    expect(hazSeg.classList.contains('livec')).toBe(true);
     expect(container.querySelectorAll('.annunciator-mini-bulb')[1].classList.contains('on')).toBe(true);
   });
 
@@ -116,6 +143,16 @@ describe('AnnunciatorMini', () => {
       lawSeg.click();
     });
     expect(requestTacticalPageSpy).toHaveBeenCalledWith('threat');
+  });
+
+  it('LAW (NIT n5): renders the WARN-red .live class, same as the full strip -- shared segLitClass()', async () => {
+    mockGetGreyStatus.mockResolvedValue({ isGrey: true, kind: 'player_attack', greyUntil: null, remainingSeconds: 300, clearFineCredits: 500 });
+    await remountFresh();
+
+    const lawSeg = Array.from(container.querySelectorAll('.annunciator-mini-seg')).find((el) => el.textContent === 'LAW')!;
+    expect(lawSeg.classList.contains('live')).toBe(true);
+    expect(lawSeg.classList.contains('livec')).toBe(false);
+    expect(container.querySelectorAll('.annunciator-mini-bulb')[1].classList.contains('on')).toBe(true); // still the CAUT bulb
   });
 
   it('every bulb/segment carries an aria-label', () => {

@@ -1,61 +1,45 @@
-/* StatusBar — the persistent 56px ONE-flex-row status bar (WO-UI0-STATUSBAR
-   sub-part a; cockpit-redesign-v10-RATIFIED.html:496-502: "STATUS BAR (56px,
-   one flex row — overlap structurally impossible)"). SUPERSEDES
+/* StatusBar — the persistent one-flex-row status bar (WO-UI0-STATUSBAR
+   sub-part a; cockpit-redesign-v10-RATIFIED.html:438-449, 496-502: "STATUS
+   BAR — one flex row — overlap structurally impossible"). SUPERSEDES
    PlayerVitalsHud's role once mounted at the serial integration step.
 
-   Unlike PlayerVitalsHud (pointer-events: none, floats absolutely over the
-   windshield), the StatusBar is REAL, fully-interactive DOM occupying its
-   own reserved grid row (`grid-area: statusbar`, declared empty at
-   game-layout.css:96-103) — it never needs pointer-events tricks because it
-   doesn't overlay the scene; the windshield keeps its own click-through
-   above/below this row untouched. */
+   WO-UI0-SHELL-TRANSPLANT Leaf L1: re-emitted onto cockpit-shell.css's
+   `.sbar` shell primitive — that rule now owns this row's flex/gap/padding/
+   background/border-bottom geometry (auto-placed into `.stage` grid row 1
+   by DOM order, see GameLayout.tsx's own mount-site comment; no `grid-area`
+   needed any more, that was the PRE-transplant grid's own named-area
+   mechanism and is dead weight now). This rule is trimmed to the bits
+   `.sbar` doesn't cover: the dropdown-escape mechanism below. */
 /* Selector is `.game-container .status-bar` (specificity 0,0,2,0 — the same
    ancestor-scoping convention as `.game-container .game-sidebar` in
-   game-layout.css) — NOT a bare `.status-bar`, and NOT the old
-   `.status-bar.status-bar` specificity-bump hack this pass (WO-UI5-CANON-
-   PASS sub-part C) replaces. `.status-bar` was a GLOBAL, unscoped class-name
-   collision: App.css (a dead 8px progress-bar rule under the landing page's
-   `.terminal-content` "GALAXY STATS" panel — no live element currently
-   renders it, see that rule's own comment), siege-status-monitor.css (a
-   defense-readout bar under `.defense-item`), and spacedock.css (a
-   service-status row under `.service-status`) each also declared their OWN
-   top-level `.status-bar` rule. CSS cascades per-PROPERTY on tied
-   specificity + source order, so whichever of those loaded LAST won any
-   property this block didn't "out-specificity" — confirmed LIVE: siege-
-   status-monitor.css's later-loaded `.status-bar` rule (setting `overflow:
-   hidden`) was clobbering THIS row's own `overflow: visible` below, silently
-   clipping the ENTIRE dossier dropdown body invisible (only the tabs row
-   painted) regardless of anything set on `.sb-dossier-panel`/`.sb-dossier-
-   body`. Properly fixed now instead of re-winning the specificity race: each
-   of the four rules is scoped to the real ancestor its `.status-bar`
-   element actually renders under (confirmed by grepping each usage site).
-   This row's real ancestor is `.game-container` — StatusBar mounts as its
-   DIRECT child (GameLayout.statusBarIntegration.test.tsx pins
-   `.game-container > .status-bar` as the CSS-Grid-placement precondition);
-   the descendant combinator here still only ever matches that one element
-   in practice, same as the sibling `.game-container .game-sidebar` rule
-   above. Scoping makes all four selectors structurally DISJOINT — each only
-   matches `.status-bar` elements nested under its own distinct ancestor
-   class, so none can ever again clobber this row's properties (or vice
-   versa) regardless of specificity ties or file load order — a permanent
-   fix, not a hack, with no rename of this class needed. */
+   game-layout.css) — NOT a bare `.status-bar`. `.status-bar` was a GLOBAL,
+   unscoped class-name collision: App.css (a dead 8px progress-bar rule
+   under the landing page's `.terminal-content` "GALAXY STATS" panel — no
+   live element currently renders it, see that rule's own comment),
+   siege-status-monitor.css (a defense-readout bar under `.defense-item`),
+   and spacedock.css (a service-status row under `.service-status`) each
+   also declare their OWN top-level `.status-bar` rule — ancestor-scoping
+   keeps this one structurally disjoint from all three regardless of
+   specificity ties or file load order (confirmed by grepping each usage
+   site; full incident history preserved in git blame on this file).
+
+   The root ALSO keeps the bare `status-bar` classname (alongside `sbar`)
+   as a stable structural hook: GameLayout.statusBarIntegration.test.tsx
+   (a sibling file, out of this leaf's scope) pins `.game-container >
+   .status-bar` as the CSS-Grid auto-placement precondition, and
+   StatusBar.tsx's own tests query it too. */
 .game-container .status-bar {
-  grid-area: statusbar;
   position: relative;
-  z-index: 25;
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 0.6rem;
-  height: 56px;
-  min-height: 56px;
-  padding: 0 0.8rem;
-  box-sizing: border-box;
-  background: rgba(0, 10, 16, 0.88);
-  border-top: 1px solid rgba(0, 217, 255, 0.25);
-  border-bottom: 1px solid rgba(0, 217, 255, 0.25);
-  overflow: visible; /* dropdown panels below must escape the row's own box */
-  white-space: nowrap;
+  z-index: 25; /* stacks the dropdown panels above `.band`'s own paint-
+    containment stacking context -- cockpit-shell.css sets `contain: paint`
+    on that later DOM-order sibling, which forces a new stacking context;
+    without an explicit z-index here this row's `position:relative` alone
+    (z-index:auto) would paint BEHIND it, burying every dropdown under the
+    ambient scene. Not covered by `.sbar` (no z-index/position in that
+    shell rule at all) -- kept, not superseded. */
+  overflow: visible; /* dropdown panels below must escape the row's own box
+    (`.sbar` doesn't set overflow either -- default visible, but explicit
+    here documents the intent and survives if that ever changes). */
 }
 
 /* ── Shared chip button (name / location triggers) ─────────────────────── */
@@ -86,10 +70,11 @@
   line-height: 1;
 }
 
-.sb-chip-caret {
-  font-size: 0.6rem;
-  opacity: 0.7;
-}
+/* `.sb-chip-caret` retired (WO-UI0-SHELL-TRANSPLANT integration cleanup
+   item 4) — both chip triggers that used it (name, location) now render
+   `.chip.who`/`.chip.loc` (cockpit-shell.css), whose own `::after` rule
+   supplies the " ▾" caret; the manual span is gone from both, so this
+   rule had no remaining consumer (grep-confirmed). */
 
 /* ── Dropdown panel shell shared by dossier + location ──────────────────── */
 .sb-dossier,
@@ -98,8 +83,12 @@
   flex: 0 0 auto;
 }
 
+/* Pilot name color is bound as an inline `style` on the element itself
+   (StatusBar.tsx) now, not via this class -- `.chip.who` (cockpit-shell.css,
+   2 classes) would otherwise always beat a bare single-class color rule
+   here regardless of CSS load order. text-transform doesn't collide with
+   anything `.chip.who` sets, so it stays a plain class rule. */
 .sb-name-chip {
-  color: var(--pilot-color, #00d9ff);
   text-transform: uppercase;
 }
 
@@ -143,19 +132,26 @@
      reusing that var (now permanently unset — nothing writes it anymore)
      would under-cap this dropdown far below the room actually available.
      Replaced with a conservative viewport-relative cap (statusbar's own
-     ~3.5rem height + this dropdown's 0.4rem top-anchor gap + a margin) —
-     NOT re-derived against #root's `zoom: var(--ui-scale)` rescaling the
-     original --teleprinter-h approach was careful about (this file's own
-     lane, not WO-UI0-SHELL-TRANSPLANT's — flagged for the StatusBar leaf
-     to tighten with a scale-law-correct formula if the conservative cap
-     proves too generous/short in the Orchestrator's live pass).
-     `display:flex` + `overflow:hidden` here (NOT `.sb-dropdown`, shared
-     with `.sb-location-panel`) turns this into "cap the whole panel, let
-     the body absorb the shrink" — see `.sb-dossier-body`'s `flex: 0 1
-     18rem` below, which keeps the ORIGINAL fixed 18rem size whenever
-     there's room and only shrinks (never grows) when there isn't, so the
-     "never reflows between tabs" contract above still holds at both sizes. */
-  max-height: calc(100vh - 4.5rem);
+     ~3.5rem height + this dropdown's 0.4rem top-anchor gap + a margin).
+     WO-UI0-SHELL-TRANSPLANT Leaf L1 (StatusBar) tightening: swapped the
+     raw `100vh` for `var(--svh)` (index.css) -- `#root` applies `zoom:
+     var(--ui-scale)`, so a bare `vh` used INSIDE it resolves against the
+     UNZOOMED real viewport and is then re-scaled by zoom (at 80% UI scale,
+     `100vh` renders ~80% of the true viewport, under-capping this panel);
+     `--svh` (`100vh / var(--ui-scale, 1)`) is the codebase's own
+     established compensation for exactly this (see index.css's own
+     `--svh`/`--svh1` doc-comment and every other in-#root full-height
+     surface that already uses it). The `4.5rem` arithmetic itself was
+     already correct for the top-row position (statusbar height + anchor
+     gap + margin, independent of row order) -- only the unit needed the
+     fix. `display:flex` + `overflow:hidden` here (NOT `.sb-dropdown`,
+     shared with `.sb-location-panel`) turns this into "cap the whole
+     panel, let the body absorb the shrink" — see `.sb-dossier-body`'s
+     `flex: 0 1 18rem` below, which keeps the ORIGINAL fixed 18rem size
+     whenever there's room and only shrinks (never grows) when there
+     isn't, so the "never reflows between tabs" contract above still
+     holds at both sizes. */
+  max-height: calc(var(--svh) - 4.5rem);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -438,30 +434,23 @@
 }
 
 /* ── Vitals cluster + REP badge ──────────────────────────────────────────── */
-/* WO-UIPC-STATUSBAR-VITALS-LAYOUT: `.sb-vitals` already correctly `flex:1 1
-   auto`-grows to consume the row's remaining width (name-chip/location-chip
-   pinned left via their own `flex:0 0 auto`, settings/logout pinned right the
-   same way) — that part of the distribution was never broken. The bug was
-   ONE LEVEL DEEPER: this element's own children (credits/turns/drones/mines/
-   LINK/[bounty]/REP-badge) used the flexbox default `justify-content:
-   flex-start`, so they clustered at THIS box's left edge while the box itself
-   sat wide — present in the DOM, invisible on the right ~60% of the (now
-   much wider) cluster. `space-between` spreads them across the grown width,
-   pinning the REP badge to this cluster's right edge (adjacent to the
-   settings icon) per the ratified row order. Mode-independent: StatusBar's
-   markup/CSS never varied between docked/flight/surface, so this was never a
-   docked-only defect — the orchestrator's docked screenshot just happened to
-   be the observed instance. */
+/* WO-UI0-SHELL-TRANSPLANT Leaf L1 retarget: this element is NO LONGER the
+   flex-growing region that pushes the vitals to the row's right edge --
+   the artifact's own `.grow` spacer (cockpit-shell.css: `flex:1`, rendered
+   as a real element in StatusBar.tsx immediately before this div) does
+   that job now, matching the artifact's flat row structure. `.sb-vitals`
+   is kept purely as a DOM grouping node -- GameLayout.
+   statusBarIntegration.test.tsx (a sibling file, out of this leaf's scope)
+   still queries `.sb-vitals`'s presence as its "StatusBar's own vitals
+   cluster is present" pin. `display: contents` removes it from the box
+   tree entirely, so its `.vit` children lay out as DIRECT flex items of
+   `.sbar` itself and pick up that row's own `gap` -- no nested flex
+   context to reconcile with the shell's. (Supersedes the prior WO-UIPC-
+   STATUSBAR-VITALS-LAYOUT fix, whose `flex:1 1 auto` + `justify-content:
+   space-between` mechanism this retargeting replaces outright, not just
+   relocates -- see git history for that incident's own detail.) */
 .sb-vitals {
-  position: relative;
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.9rem;
-  overflow: hidden;
+  display: contents;
 }
 
 .sb-stat {
@@ -492,7 +481,12 @@
   opacity: 0.6;
 }
 
-.sb-credits {
+/* Compound `.vit.sb-credits` (2 classes), not bare `.sb-credits` -- both
+   selectors are on the SAME element, and a bare single class here would
+   TIE `.vit`'s own bare `color:#9FB4CC` (cockpit-shell.css) on specificity,
+   leaving the winner dependent on CSS bundle/load order. The compound form
+   deterministically outranks it regardless. */
+.vit.sb-credits {
   font-size: 0.82rem;
   font-weight: 700;
   line-height: 1;
@@ -528,16 +522,17 @@
   opacity: 0.85;
 }
 
+/* No more "DRONES" .sb-k label wrapper (artifact target has none — just
+   the two glyph+value pairs) -- the layout properties `.sb-drones .sb-v`
+   used to provide move onto this element directly. */
 .sb-drones {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
   border: 1px solid rgba(0, 217, 255, 0.3);
   border-radius: 3px;
   padding: 0.1rem 0.45rem;
   background: rgba(0, 217, 255, 0.05);
-}
-
-.sb-drones .sb-v {
-  display: inline-flex;
-  gap: 0.4rem;
 }
 
 .sb-drone {
@@ -581,22 +576,23 @@
   }
 }
 
-/* REP badge (DECISIONS #9) — always-visible, color-graded off the shipped
-   8-tier `name_color` (Villain #FF0000 → … → Legendary #00FFFF,
-   personal_reputation_service.py), NOT a new 3-band scheme. */
-.sb-rep-badge {
-  flex: 0 0 auto;
-  font-size: 0.6rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+/* REP badge (DECISIONS #9) — WO-UI0-SHELL-TRANSPLANT Leaf L1 nit (a): now
+   plain `.vit.repb` (cockpit-shell.css: fixed `color: var(--grn)`), tier +
+   SIGNED personal_reputation content (StatusBar.tsx), NOT tier-only. This
+   SUPERSEDES the per-tier `name_color` grading (Villain #FF0000 → …
+   Legendary #00FFFF) the badge previously carried under this same
+   DECISIONS-#9 slot — a real, visible behavior change flagged in this
+   leaf's own report for a second look, not a silent regression. No rule
+   needed here any more; `.repb` alone covers it. */
+
+/* REP badge uppercase (WO-UI0-SHELL-TRANSPLANT integration cleanup item 5)
+   — the artifact shows the tier in caps ("LAWFUL +300"); StatusBar.tsx
+   renders the raw `reputation_tier` string Title-case ("Trusted +250") for
+   app-wide consistency with how tier names read elsewhere. Visual-only
+   CSS transform, NOT a data/string change — compound `.vit.repb` (2
+   classes) so it doesn't leak onto any other `.vit` badge. */
+.vit.repb {
   text-transform: uppercase;
-  padding: 0.2rem 0.5rem;
-  border-radius: 3px;
-  color: var(--rep-color, #888888);
-  border: 1px solid color-mix(in srgb, var(--rep-color, #888888) 55%, transparent);
-  background: color-mix(in srgb, var(--rep-color, #888888) 12%, transparent);
-  text-shadow: 0 0 6px color-mix(in srgb, var(--rep-color, #888888) 45%, transparent);
-  white-space: nowrap;
 }
 
 /* ── Settings popover ([⚙] — WO-UI1-CHROME-COMPLETE) ─────────────────────── */
@@ -622,68 +618,18 @@
 }
 
 /* ── Right-hand icon controls ────────────────────────────────────────────── */
-.sb-icon-btn {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.8rem;
-  height: 1.8rem;
-  background: transparent;
-  border: 1px solid rgba(0, 217, 255, 0.3);
-  border-radius: 4px;
-  color: var(--color-primary, #00d9ff);
-  font-size: 0.9rem;
-  text-decoration: none;
-  cursor: pointer;
-}
+/* [⚙]/[⏻] are now plain `.chip` (artifact: `<button class="chip">⚙
+   </button>` / `<button class="chip">⏻</button>`) -- the fixed-size square
+   `.sb-icon-btn` skin these used to share is RETIRED, superseded by
+   `.chip`'s own box-model. `sb-settings-btn`/`sb-logout-chip` stay as bare
+   identifier hooks (tests target them) with zero rules of their own now.
 
-.sb-icon-btn:hover {
-  background: rgba(0, 217, 255, 0.12);
-  box-shadow: 0 0 8px rgba(0, 217, 255, 0.4);
-}
-
-/* DEFECT FIX (orchestrator, stage): LogoutButton.tsx renders the SHARED
-   `.logout-button` class (auth.css) — `width: 100%; text-align: left;`,
-   built for its OTHER context (a full-width sidebar/menu item, see
-   UserProfile.tsx). `.sb-logout-btn` (below) sets `flex: 0 0 auto` but,
-   pre-fix, never set its own `width` — so `.logout-button`'s `width: 100%`
-   applied UNCHALLENGED (no property collision to resolve; only one rule
-   declared `width` at all, so cascade/source-order was never actually in
-   play). With flex-basis:auto (from the `flex` shorthand) deferring to that
-   100%-of-container width, and flex-shrink:0 refusing to shrink from it,
-   the button exploded to ~the full row width, starving the sibling
-   `.sb-vitals` (`flex: 1 1 auto; min-width: 0`, collapses on demand) down
-   to 0 — the credits/turns/drones/mines/REP cluster went invisible.
-   Two-part fix: (1) explicit `width: auto` + a hard `max-width` cap
-   overrides the leaked 100% regardless of source order — same-specificity
-   contest, don't rely on which stylesheet happens to load last;
-   (2) `.status-bar` ancestor-scoping bumps this selector's specificity
-   past `.logout-button`'s bare 0,1,0 outright (belt-and-suspenders,
-   deterministic regardless of any future CSS import reorder — the exact
-   fragility this file's own top-of-file comment already documents for the
-   `.status-bar` selector itself; same lesson applied here). LogoutButton.tsx
-   is shared with UserProfile.tsx (its OWN, unrelated, correct full-width
-   use) — fixed here in the status-bar context only, component untouched. */
-.status-bar .sb-logout-btn {
-  flex: 0 0 auto;
-  width: auto;
-  max-width: 6rem;
-  font-size: 0.6rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  text-align: center;
-  padding: 0.3rem 0.7rem;
-  background: rgba(255, 77, 109, 0.12);
-  color: #ff8da3;
-  border: 1px solid rgba(255, 77, 109, 0.45);
-  border-radius: 4px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.sb-logout-btn:hover {
-  background: rgba(255, 77, 109, 0.22);
-  box-shadow: 0 0 10px rgba(255, 77, 109, 0.4);
-}
+   [⏻] logout is ALSO no longer LogoutButton.tsx's shared `.logout-button`
+   strip (nit c) -- StatusBar.tsx now calls the same logout()+navigate('/')
+   directly from a plain `.chip` button, so the width-explosion defect this
+   file used to carry a whole fix+regression-pin for (LogoutButton's
+   `.logout-button` rule sets `width: 100%`, built for UserProfile.tsx's
+   sidebar context, leaking into this row) cannot recur here -- that class
+   is simply never rendered in this component any more. See git history
+   for that incident's own detail; StatusBar.vitalsDistribution.test.ts's
+   pin was rewritten accordingly rather than left asserting dead CSS. */

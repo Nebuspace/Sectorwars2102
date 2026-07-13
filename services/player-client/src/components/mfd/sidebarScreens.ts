@@ -22,6 +22,12 @@ export const SIDEBAR_A: MFDScreenConfig = {
 // WO-UI1-CHROME-COMPLETE dropped ARIA — absorbed into the teleprinter
 // (components/aria/Teleprinter.tsx carries the ADR-0072 grammar + free-
 // chat directly now). MFD-B slate == [POS, COMM] per canon §05 L578.
+//
+// WO-UI0-SHELL-TRANSPLANT integration cleanup (item 1) applied the D8
+// NAV→POS softkey LABEL rename to match this canon line exactly:
+// 'nav-position' now carries `softLabel: 'POS'` in mfdRegistry.tsx (see
+// sidebarScreens.test.ts). The page id itself ('nav-position') is
+// unaffected — only the displayed 4-char key abbreviation.
 export const SIDEBAR_B: MFDScreenConfig = {
   screenId: 'sidebar-b', systemLabel: 'MFD-B', defaultPageId: 'nav-position',
   pageIds: ['nav-position', 'comms-crew'],

@@ -1,96 +1,56 @@
 /* ============================================================
-   MFD CONSOLE FRAMEWORK — NEON15
-   Modern flat LCD in a riveted bezel. Crisp 1px accent border,
-   faint 2px pixel grid. NO phosphor radial glow, NO scanline
-   sweep — these screens are a generation newer than the lower
-   console monitors. Everything is .mfd-* namespaced (Law-2).
+   MFD CONSOLE FRAMEWORK — page-body interior (NEON15)
+   WO-UI0-SHELL-TRANSPLANT Leaf L2: the SHELL/FRAME rules that used to
+   live here (bezel housing, corner rivets, system-label overlay, CRT
+   viewport glass, softkey rail + key buttons) are RETIRED — that
+   geometry is now owned by cockpit-shell.css's `.mfd`/`.scr`/`.skrow`/
+   `.skey` (the ratified artifact, audit/design-briefs/cockpit-redesign-
+   v10-RATIFIED.html), rendered by MFDScreen.tsx. Everything below this
+   point is PAGE-BODY interior — the content each page (mfd/pages/*.tsx,
+   via atoms.tsx) renders INSIDE `.scr`, unchanged by the transplant.
    ============================================================ */
 
-/* ---------- Screen housing (bezel) ---------- */
-
-.mfd-screen {
-  --mfd-accent: #00d9ff;
-  --mfd-glass: #04090f;
-  --mfd-key-h: 26px;
-
-  position: relative;
+/* Structural addendum, not a cockpit-shell.css override (that file is
+   the untouched artifact baseline — do not modify it): `.scr` itself
+   declares no `display`, but the page-body-interior contract just below
+   (`.mfd-page-header` natural-height + `.mfd-page-body` flex:1 1 0
+   scrollable) needs a flex-column ancestor with min-height:0 to size
+   correctly — MFDPageBoundary renders a bare Fragment, so those two
+   land as direct `.scr` children. Scoped to the two-class `.mfd .scr`
+   selector so it always wins over cockpit-shell.css's bare `.scr`
+   regardless of CSS import order, and it adds properties that file
+   never declares — no property collision, no visual override. */
+.mfd .scr {
   display: flex;
   flex-direction: column;
-  flex: 1 1 0;
   min-height: 0;
-  background: linear-gradient(#23262e, #15171c);
-  border: 1px solid #0c0e12;
-  border-radius: 6px;
-  padding: 16px 8px 8px;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 2px 6px rgba(0, 0, 0, 0.5);
-  font-family: 'Courier New', monospace;
 }
 
-.mfd-system-label {
-  position: absolute;
-  top: 3px;
-  left: 14px;
-  font-size: 0.5rem;
-  font-weight: 700;
-  letter-spacing: 0.25em;
-  color: rgba(170, 185, 205, 0.55);
-  z-index: 2;
-  user-select: none;
-}
-
-/* Bezel corner rivets — cockpit idiom scaled to 7px */
-.mfd-rivet {
-  position: absolute;
-  width: 7px;
-  height: 7px;
-  background: radial-gradient(circle, #5a6070 0%, #3a3f4a 100%);
-  border: 1px solid #1a1d24;
-  border-radius: 50%;
-  box-shadow:
-    inset 0 1px 1px rgba(255, 255, 255, 0.2),
-    0 1px 2px rgba(0, 0, 0, 0.6);
-  z-index: 2;
-}
-
-.mfd-rivet-tl { top: 4px; left: 4px; }
-.mfd-rivet-tr { top: 4px; right: 4px; }
-.mfd-rivet-bl { bottom: 4px; left: 4px; }
-.mfd-rivet-br { bottom: 4px; right: 4px; }
-
-/* ---------- Viewport glass ---------- */
-
-.mfd-viewport {
-  position: relative;
-  flex: 1 1 0;
+/* `.mfd` itself is the direct grid item inside `.mfdcol`'s `1fr 1fr` row
+   template (cockpit-shell.css's base rule + game-layout.css's `auto 1fr
+   1fr` override for the RouteRail row) — a grid item's default
+   min-height:auto refuses to shrink below its content's natural size, so
+   without an explicit 0 it can grow past its allotted row instead of
+   scrolling internally. game-layout.css used to supply this via
+   `.mfdcol .mfd-screen { flex: 1 1 0; min-height: 0; }`, keyed to the OLD
+   root class this leaf retires (that file is out of this leaf's scope,
+   so it can't be updated to the new class name here) — `flex: 1 1 0` was
+   already dead weight there regardless (`.mfdcol` is `display: grid`, not
+   flex; `flex` has no effect on a grid item), so only `min-height: 0`
+   needs restoring, and it lands here instead. */
+.mfd {
   min-height: 0;
-  display: flex;
-  flex-direction: column;
-  background: var(--mfd-glass);
-  border: 1px solid var(--mfd-accent);
-  border-radius: 3px;
-  overflow: hidden;
 }
 
-/* Faint 2px pixel grid — the only texture this glass gets */
-.mfd-viewport::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background-image:
-    repeating-linear-gradient(
-      0deg,
-      rgba(255, 255, 255, 0.015) 0 1px,
-      transparent 1px 2px
-    ),
-    repeating-linear-gradient(
-      90deg,
-      rgba(255, 255, 255, 0.015) 0 1px,
-      transparent 1px 2px
-    );
-  pointer-events: none;
-  z-index: 1;
+/* Keyboard-focus visibility: cockpit-shell.css's `.skey` (the ratified,
+   do-not-modify baseline) defines no `:focus-visible` rule — the
+   artifact is a mouse-driven demo. MFD's softkey rail is real keyboard-
+   navigable UI (roving tabindex, common/SoftkeyRail.tsx), so this
+   restores the outline the old `.mfd-key:focus-visible` rule provided,
+   as a supplemental rule in THIS file rather than editing the frozen one. */
+.skey:focus-visible {
+  outline: 1px solid var(--mfd-key-accent, #3fd2ec);
+  outline-offset: 1px;
 }
 
 /* ---------- Page header — thin LED line ---------- */
@@ -211,85 +171,19 @@
   border-radius: 3px;
 }
 
-/* ---------- Softkey rail ---------- */
-
-.mfd-softkey-rail {
-  display: flex;
-  gap: 4px;
-  margin-top: 6px;
-  flex-shrink: 0;
-}
-
-.mfd-key {
-  --mfd-key-accent: var(--mfd-accent);
-
-  position: relative;
-  flex: 1 1 0;
-  min-width: 0;
-  height: var(--mfd-key-h);
-  padding: 0 2px;
-  font-family: inherit;
-  font-size: 0.6rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  color: var(--mfd-key-accent);
-  background: linear-gradient(#1c1f26, #12141a);
-  border: 1px solid rgba(120, 135, 155, 0.3);
-  border-radius: 3px;
-  cursor: pointer;
-  /* Press feel: 90ms ease-out release; :active overrides to a 40ms depress */
-  transition:
-    transform 90ms ease-out,
-    box-shadow 90ms ease-out,
-    background-color 90ms ease-out,
-    color 90ms ease-out;
-}
-
-.mfd-key:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--mfd-key-accent) 50%, transparent);
-}
-
-.mfd-key:focus-visible {
-  outline: 1px solid var(--mfd-key-accent);
-  outline-offset: 1px;
-}
-
-.mfd-key:active:not(:disabled) {
-  transition-duration: 40ms;
-  transform: translateY(1px);
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.7);
-}
-
-/* Active page key is INVERTED — accent-filled face, dark text */
-.mfd-key[aria-selected='true'] {
-  background: var(--mfd-key-accent);
-  border-color: var(--mfd-key-accent);
-  color: #06080c;
-  text-shadow: none;
-}
-
-.mfd-key:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
-
-/* Alert badge — pulsing dot on a non-visible page's softkey */
-.mfd-key-badge {
-  position: absolute;
-  top: 3px;
-  right: 4px;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #ffb000;
-  box-shadow: 0 0 4px rgba(255, 176, 0, 0.8);
-  animation: mfd-badge-pulse 1.2s ease-in-out infinite;
-}
-
-@keyframes mfd-badge-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
-}
+/* ---------- Softkey rail: RETIRED ----------
+   `.mfd-softkey-rail`/`.mfd-key`/`.mfd-key-badge` (+ its pulse keyframe)
+   used to own this geometry; superseded by cockpit-shell.css's `.skrow`/
+   `.skey`/`.skey.lit`/`.skey.amberlit`, rendered directly by
+   MFDScreen.tsx's SoftkeyRail call (WO-UI0-SHELL-TRANSPLANT Leaf L2).
+   The `.skey:focus-visible` supplement lives above, next to `.mfd .scr`.
+   One disclosed behavior change: `.mfd-key` used to tint each key by its
+   OWN page's accent color (`--mfd-key-accent: var(--mfd-accent)`, e.g.
+   QTM purple, CARGO light-blue); the ratified `.skey`/`.skey.lit`/
+   `.skey.amberlit` classes are uniform-colored (no per-key accent read)
+   — matches the artifact's own renderMFDs exactly (no inline per-key
+   style there either), so this is intentional artifact-fidelity, not an
+   oversight. */
 
 /* ---------- PAGE FAULT (boundary UI) ---------- */
 
@@ -387,9 +281,13 @@
 /* ---------- Reduced motion: everything collapses ---------- */
 
 @media (prefers-reduced-motion: reduce) {
-  .mfd-screen *,
-  .mfd-screen *::before,
-  .mfd-screen *::after {
+  /* Selector updated from `.mfd-screen` to `.mfd` (WO-UI0-SHELL-TRANSPLANT
+     Leaf L2 root-class rename) — still needed for the page-body-interior
+     animations that remain in this file (.mfd-fault-title's blink,
+     .mfd-skeleton-line's breathe). */
+  .mfd *,
+  .mfd *::before,
+  .mfd *::after {
     transition: none !important;
     animation: none !important;
   }

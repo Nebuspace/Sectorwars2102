@@ -34,7 +34,7 @@ const CargoPage: React.FC = () => {
   if (!currentShip) {
     return (
       <>
-        <MFDPageHeader title="CARGO BAY" accent={ACCENT} status="shipped" />
+        <MFDPageHeader title="CARGO BAY" accent={ACCENT} status="shipped" showTitle={false} />
         <MFDPageBody scrollKey="cargo">
           <MFDEmpty text="NO ACTIVE VESSEL" />
         </MFDPageBody>
@@ -65,7 +65,7 @@ const CargoPage: React.FC = () => {
 
   return (
     <>
-      <MFDPageHeader title="CARGO BAY" accent={ACCENT} status="shipped" />
+      <MFDPageHeader title="CARGO BAY" accent={ACCENT} status="shipped" showTitle={false} />
       <MFDPageBody scrollKey="cargo">
         <div className="mfd-page-fields">
           <MFDField label="HOLD" value={holdValue} accent />

@@ -29,6 +29,19 @@ import './tactical-monitor.css';
  * subscribes to the small module-level bus in services/deckNavBus.ts
  * rather than threading a prop through GameDashboard (out of this WO's
  * scope, and would restructure the deck for a single consumer).
+ *
+ * WO-UI0-SHELL-TRANSPLANT (Leaf L3): this component now owns its FULL
+ * `.mon` block (artifact `monTac()` — `.mon` > `.mhead`(.mtitle + .hsub) +
+ * `.mbody` + a bottom `.skrow`) instead of just the header+content pair a
+ * GameDashboard-owned `.console-monitor`/`.monitor-bezel`/`.monitor-screen`
+ * wrapper used to supply — GameDashboard now renders `<TacticalMonitor
+ * .../>` directly with no wrapper divs of its own, the same way NAV/SOLAR
+ * SYSTEM render their own `.mon` block inline. The TARGET/THREAT softkeys
+ * moved from the header to the bottom `.skrow`; the header's `.hsub` shows
+ * a live contact count (mirrors NAV's "N CHARTED EXITS" sub-status — the
+ * artifact's own `monTac()` hardcodes the literal string "CONTACTS", but a
+ * live count is truer to this monitor's real telemetry and costs nothing
+ * extra, matching NAV's sibling pattern).
  */
 
 export type { TacticalContact };
@@ -55,9 +68,24 @@ const TacticalMonitor: React.FC<TacticalMonitorProps> = ({ contacts, selectedShi
   }, [tacticalPageRequest]);
 
   return (
-    <>
-      <div className="screen-hud-header tactical-header-with-modes">
-        <span>TACTICAL</span>
+    <div className="mon tactical-monitor">
+      <div className="mhead">
+        <span className="mtitle">TACTICAL</span>
+        <span className="hsub">{contacts.length} CONTACT{contacts.length === 1 ? '' : 'S'}</span>
+      </div>
+      <div
+        className="mbody"
+        role="tabpanel"
+        id={`tactical-panel-${page}`}
+        aria-labelledby={`tactical-tab-${page}`}
+      >
+        {page === 'target' ? (
+          <TacticalTargetPage contacts={contacts} selectedShipId={selectedShipId} onSelectContact={onSelectContact} />
+        ) : (
+          <TacticalThreatPage />
+        )}
+      </div>
+      <div className="skrow">
         <DeckPageTabs
           pages={[
             { id: 'target', label: 'TARGET' },
@@ -70,19 +98,7 @@ const TacticalMonitor: React.FC<TacticalMonitorProps> = ({ contacts, selectedShi
           idBase="tactical"
         />
       </div>
-      <div
-        className="screen-hud-content"
-        role="tabpanel"
-        id={`tactical-panel-${page}`}
-        aria-labelledby={`tactical-tab-${page}`}
-      >
-        {page === 'target' ? (
-          <TacticalTargetPage contacts={contacts} selectedShipId={selectedShipId} onSelectContact={onSelectContact} />
-        ) : (
-          <TacticalThreatPage />
-        )}
-      </div>
-    </>
+    </div>
   );
 };
 

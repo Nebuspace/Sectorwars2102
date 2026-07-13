@@ -31,7 +31,7 @@ const QuantumPage: React.FC = () => {
   if (!quantumStatus) {
     return (
       <>
-        <MFDPageHeader title="QUANTUM DRIVE" accent={ACCENT} status="partial" />
+        <MFDPageHeader title="QUANTUM DRIVE" accent={ACCENT} status="partial" showTitle={false} />
         <MFDPageBody scrollKey="quantum-drive">
           <MFDInsufficient text="QUANTUM TELEMETRY OFFLINE" />
         </MFDPageBody>
@@ -45,7 +45,7 @@ const QuantumPage: React.FC = () => {
 
   return (
     <>
-      <MFDPageHeader title="QUANTUM DRIVE" accent={ACCENT} status="partial" />
+      <MFDPageHeader title="QUANTUM DRIVE" accent={ACCENT} status="partial" showTitle={false} />
       <MFDPageBody scrollKey="quantum-drive">
         <div className="mfd-page-fields">
           <MFDField

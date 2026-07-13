@@ -1,164 +1,56 @@
-/* Annunciator — windshield HUD overlay, SLIM LAMP STRIP form (WO-UI1-CHROME-
-   COMPLETE). SCENE-NARROWING guardrail: position:absolute + inset:0 so the
-   layer contributes ZERO layout size to its parent (GameLayout's `.band` —
+/* Annunciator — windshield HUD overlay (WO-UI0-SHELL-TRANSPLANT leaf L5).
+   The strip/lamp/seg/bulb GEOMETRY + COLORS are now owned by
+   layouts/cockpit-shell.css (`.annun`/`.lamp`/`.bulb`/`.segs`/`.seg` — the
+   ratified prototype's own bare classnames, imported alongside this file by
+   both Annunciator.tsx and AnnunciatorMini.tsx). This file keeps only what
+   cockpit-shell.css doesn't cover:
+     1. `.annunciator-overlay` — this app's own scene-narrowing/z-index
+        wrapper (no artifact equivalent; the demo has no portaled scene
+        underneath its band to guard against).
+     2. `.annunciator-card*` — the HazardAnalysisCard dialog (item 6 of
+        WO-UI1-CHROME-COMPLETE; the ratified prototype's own hazInfo() just
+        narrates via the teleprinter, no card, so there is no bare class to
+        adopt here).
+     3. `.annunciator-mini-*` — AnnunciatorMini's SIZE-only overrides
+        (written as `.bulb.annunciator-mini-bulb` / `.seg.annunciator-mini-
+        seg` compound selectors so they out-specificity cockpit-shell.css's
+        bare single-class rules regardless of import order — see
+        AnnunciatorMini.tsx's own doc-comment for why the mini variant
+        can't just adopt the bare classes outright). */
+
+/* SCENE-NARROWING guardrail: position:absolute + inset:0 so the layer
+   contributes ZERO layout size to its parent (GameLayout's `.band` —
    WO-UI0-SHELL-TRANSPLANT, supersedes the retired `.windshield-hud-anchor`)
    — it never narrows or occludes the scene portaled into that same `.band`.
    Non-interactive by default: pointer-events is set inline in
    Annunciator.tsx (testable without depending on this file loading in the
    vitest node/jsdom pipeline) and repeated here so the visual contract
-   stays self-documenting if the inline style is ever dropped. */
+   stays self-documenting if the inline style is ever dropped. No longer
+   flex-centers its content -- `.annun` (cockpit-shell.css) self-positions
+   via its own position:absolute;top:5%;left:50%;transform, resolved
+   against THIS wrapper's box (which exactly matches `.band`'s box, being
+   inset:0) -- so this wrapper is now purely a positioning/pointer-events/
+   z-index passthrough layer, not a layout container. */
 .annunciator-overlay {
   position: absolute;
   inset: 0;
   pointer-events: none;
   z-index: 30; /* matches the HUD z-index band documented in game-layout.css (console:20, HUD:30, edge-toggle:40) --
   fragile: this only wins over the portaled .cockpit-windshield scene (z:1) because nothing under it currently sets z-index>=30; revisit if that ever changes. */
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-start;
-  padding: 0.5rem 0.75rem 0;
-  box-sizing: border-box;
-}
-
-/* [WARN] · HAZARD LAW THREAT TURNS COMM · [CAUT] -- one slim horizontal
-   strip, top-center on the glass (RATIFIED.html:64 -- `.annun { top:5%;
-   left:50%; transform:translateX(-50%); }`), reproduced here via normal
-   flex centering (the overlay itself is already centered content). */
-.annunciator-strip {
-  pointer-events: none;
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  font: 700 0.68rem/1 var(--mono, 'Courier New', monospace);
-  letter-spacing: 0.06em;
-}
-
-.annunciator-lamp-group {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.15rem;
-}
-
-/* MASTER bulbs -- blank rounded rectangles (canon: no icon, no text INSIDE
-   the button; the WARN/CAUT label sits below), ack-only (click silences the
-   flash while the underlying condition stays true; never navigates -- there
-   is no single "owning surface" for an aggregate). */
-.annunciator-bulb {
-  pointer-events: auto;
-  width: 3rem;
-  height: 1.4rem;
-  border-radius: 4px;
-  border: 1px solid #0a0f17;
-  background: linear-gradient(180deg, #232e3e, #151e2b);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.13),
-    inset 0 -2px 4px rgba(0, 0, 0, 0.53);
-  cursor: pointer;
-  padding: 0;
-}
-
-.annunciator-bulb-label {
-  color: #6c7e96;
-  font-size: 0.58rem;
-  letter-spacing: 0.08em;
-}
-
-.annunciator-bulb.warn.on {
-  background: linear-gradient(180deg, #7a1622, #4a0d15);
-  box-shadow: 0 0 16px rgba(255, 59, 74, 0.6), 0 0 4px rgba(255, 59, 74, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.16);
-  animation: annunciator-flash 0.6s steps(2, start) infinite;
-}
-
-.annunciator-bulb.warn.ack {
-  background: linear-gradient(180deg, #5a1620, #3a0d13);
-  box-shadow: 0 0 8px rgba(255, 59, 74, 0.33);
-}
-
-.annunciator-bulb.caut.on {
-  background: linear-gradient(180deg, #7a5a10, #4a360a);
-  box-shadow: 0 0 14px rgba(255, 176, 32, 0.53), inset 0 1px 0 rgba(255, 255, 255, 0.16);
-  animation: annunciator-flash 1.6s steps(2, start) infinite;
-}
-
-.annunciator-bulb.caut.ack {
-  background: linear-gradient(180deg, #5a430d, #3a2b08);
-  box-shadow: 0 0 7px rgba(255, 176, 32, 0.33);
-}
-
-@keyframes annunciator-flash {
-  50% {
-    filter: brightness(0.4);
-  }
-}
-
-/* SEGMENTS -- HAZARD·LAW·THREAT·TURNS·COMM. IDLE = barely-visible dark
-   chip (canon visual form); LIT = colorized by severity. Pure click-
-   through + state indicator, no per-segment ack. */
-.annunciator-segs {
-  display: flex;
-  gap: 0.3rem;
-}
-
-.annunciator-seg {
-  pointer-events: auto;
-  font: inherit;
-  font-size: 0.6rem;
-  letter-spacing: 0.08em;
-  color: #5a6b82;
-  border: 1px solid #1a2634;
-  border-radius: 3px;
-  padding: 0.2rem 0.55rem;
-  background: #0b121c;
-  cursor: pointer;
-}
-
-.annunciator-seg--warn.is-live {
-  color: #ffd9de;
-  border-color: var(--cockpit-danger, #ff3b4a);
-  background: #2a1218;
-  text-shadow: 0 0 6px rgba(255, 90, 106, 0.6);
-  animation: annunciator-flash-soft 0.9s steps(2, start) infinite;
-}
-
-.annunciator-seg--caution.is-live {
-  color: #ffedc2;
-  border-color: var(--cockpit-warning, #ffb020);
-  background: #2a2010;
-  text-shadow: 0 0 6px rgba(255, 176, 0, 0.6);
-  animation: annunciator-flash-soft 1.6s steps(2, start) infinite;
-}
-
-/* COMM -- info-class, cyan, deliberately NEVER sharing the WARN/CAUTION
-   danger lane (canon, WO-UI1-ANNUNCIATOR GOAL line). */
-.annunciator-seg--info.is-live {
-  color: #bdebfa;
-  border-color: var(--color-primary, #00d9ff);
-  background: #0e2a3a;
-  text-shadow: 0 0 7px rgba(63, 210, 236, 0.67);
-  animation: annunciator-flash-soft 1.8s steps(2, start) infinite;
-}
-
-@keyframes annunciator-flash-soft {
-  50% {
-    opacity: 0.55;
-  }
-}
-
-/* Reduced motion: still fully visible (never dimmed/hidden), just not
-   flashing -- Accept #3 (carried over from the prior sub-part). */
-@media (prefers-reduced-motion: reduce) {
-  .annunciator-bulb,
-  .annunciator-seg {
-    animation: none !important;
-  }
 }
 
 /* ── Hazard analysis card (item 6: HAZARD→"the analysis card") ──────────── */
 .annunciator-card {
   pointer-events: auto;
-  margin-top: 0.5rem;
+  position: absolute;
+  /* Clears `.annun`'s own box (top:5% + ~2rem of bulb+label height at
+     typical viewport sizes) so the card never overlaps the strip above it
+     -- see Annunciator.tsx's doc-comment for why this can no longer be a
+     simple in-flow margin-top now that `.annun` is absolutely positioned
+     (out of any flex flow) rather than a sibling flex item. */
+  top: 3.2rem;
+  left: 50%;
+  transform: translateX(-50%);
   width: min(22rem, 90%);
   border: 1px solid var(--cockpit-warning, #ffb020);
   border-radius: 6px;
@@ -233,7 +125,13 @@
 /* ── AnnunciatorMini (item 7: monitor-header variant) ────────────────────
    Inline row, NOT an absolute overlay -- meant to sit inside a header's
    own flex layout (see AnnunciatorMini.tsx's doc-comment for its intended
-   station/surface-header consumers, not yet built). */
+   station/surface-header consumers, not yet built, and for why it keeps
+   these SIZE-only compound-selector overrides instead of adopting the bare
+   `.bulb`/`.seg` classes outright -- their cockpit-shell.css geometry is
+   baked to the FULL strip's size). Every color/state rule (idle, warn.on,
+   caut.ack, seg.live/livec/livecm, ...) is intentionally ABSENT below --
+   those come from cockpit-shell.css for free via the bare `.bulb`/`.seg`
+   class each element also carries (AnnunciatorMini.tsx). */
 .annunciator-mini {
   display: inline-flex;
   align-items: center;
@@ -242,79 +140,37 @@
   letter-spacing: 0.05em;
 }
 
-.annunciator-mini-bulb {
+.bulb.annunciator-mini-bulb {
   width: 1.1rem;
   height: 0.85rem;
   border-radius: 3px;
-  border: 1px solid #0a0f17;
-  background: linear-gradient(180deg, #232e3e, #151e2b);
-  color: #6c7e96;
   font-size: 0.5rem;
   line-height: 0.8rem;
   text-align: center;
-  cursor: pointer;
-  padding: 0;
 }
 
-.annunciator-mini-bulb.warn.on {
-  background: linear-gradient(180deg, #7a1622, #4a0d15);
-  color: #ffd9de;
-  box-shadow: 0 0 8px rgba(255, 59, 74, 0.6);
-  animation: annunciator-flash 0.6s steps(2, start) infinite;
-}
-
-.annunciator-mini-bulb.warn.ack {
-  background: linear-gradient(180deg, #5a1620, #3a0d13);
-  color: #ffd9de;
-}
-
-.annunciator-mini-bulb.caut.on {
-  background: linear-gradient(180deg, #7a5a10, #4a360a);
-  color: #ffedc2;
-  box-shadow: 0 0 7px rgba(255, 176, 32, 0.53);
-  animation: annunciator-flash 1.6s steps(2, start) infinite;
-}
-
-.annunciator-mini-bulb.caut.ack {
-  background: linear-gradient(180deg, #5a430d, #3a2b08);
-  color: #ffedc2;
-}
-
-.annunciator-mini-segs {
-  display: flex;
+.segs.annunciator-mini-segs {
   gap: 0.18rem;
 }
 
-.annunciator-mini-seg {
-  color: #5a6b82;
-  border: 1px solid #1a2634;
-  border-radius: 2px;
+.seg.annunciator-mini-seg {
+  font-size: 0.55rem;
   padding: 0.1rem 0.3rem;
-  background: #0b121c;
-  font: inherit;
-  cursor: pointer;
+  border-radius: 2px;
 }
 
-.annunciator-mini-seg--warn.is-live {
-  color: #ffd9de;
-  border-color: var(--cockpit-danger, #ff3b4a);
-  background: #2a1218;
-}
-
-.annunciator-mini-seg--caution.is-live {
-  color: #ffedc2;
-  border-color: var(--cockpit-warning, #ffb020);
-  background: #2a2010;
-}
-
-.annunciator-mini-seg--info.is-live {
-  color: #bdebfa;
-  border-color: var(--color-primary, #00d9ff);
-  background: #0e2a3a;
-}
-
+/* Reduced motion: cockpit-shell.css's own `@media (prefers-reduced-motion:
+   reduce){ .bulb{animation:none!important;} }` already covers both bulb
+   variants (full + mini, since both carry the bare `.bulb` class). It does
+   NOT cover `.seg.livecm` (COMM/cyan is the only lit segment class with an
+   animation in the ratified baseline -- `.seg.live`/`.seg.livec` are static
+   there, a deliberate rendered-demo-truth change from this build's prior
+   WARN/CAUTION segment flash, flagged in the WO-UI0-SHELL-TRANSPLANT
+   report) -- so COMM keeps its own explicit override here to preserve the
+   "reduced motion: never flashing" a11y contract (Accept #3, carried over
+   from the prior sub-part) for the one segment class that still animates. */
 @media (prefers-reduced-motion: reduce) {
-  .annunciator-mini-bulb {
+  .seg.livecm {
     animation: none !important;
   }
 }

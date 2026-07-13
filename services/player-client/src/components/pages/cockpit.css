@@ -987,14 +987,24 @@
      3:4:3:3 widen) is RETIRED here: COMMS' CONTACTS content relocated into
      TACTICAL[TARGET] and its HAILS/composer moved to the MFD-B COMM lane,
      so the deck monitor itself (and its grid column) goes away, not just a
-     tab within it. gap:0 so the minmax() tracks claim all content-box width
-     directly. .system-monitor keeps order:-1 to render first (visual col 1)
-     despite being DOM-2nd -- NAV (DOM-1st) lands in col 2, TACTICAL
+     tab within it. .system-monitor keeps order:-1 to render first (visual
+     col 1) despite being DOM-2nd -- NAV (DOM-1st) lands in col 2, TACTICAL
      (DOM-3rd, default order:0) lands in col 3 with no order override
-     needed, matching §05's SOLAR SYSTEM · NAV · TACTICAL visual order. */
+     needed, matching §05's SOLAR SYSTEM · NAV · TACTICAL visual order.
+     WO-UI0-SHELL-TRANSPLANT (Leaf L3): gap:0 -> 0.5rem. Each monitor used
+     to be a `.console-monitor` with its own 0.25rem padding + a hairline
+     `border-right` divider (cockpit.css, retired below) providing the
+     inter-monitor gutter; the artifact's `.mon` (cockpit-shell.css) is a
+     fully self-bordered box instead (border on all 4 sides, no padding of
+     its own), so that gutter now has to come from the grid gap, matching
+     the artifact's own `.deck { gap:.6em }`. Safe for the docked/landed
+     single full-width monitor (`.station-face-workspace`/`.surface-face-
+     workspace`, `grid-column:1/-1`) -- gap only renders BETWEEN tracks
+     that hold multiple items, and that single spanning item is alone in
+     every track it touches. */
   grid-template-columns: minmax(0, 30%) minmax(0, 1fr) minmax(0, 29%);
   grid-template-rows: 1fr;
-  gap: 0;
+  gap: 0.5rem;
   /* WO-DECK-TIGHTEN: 0.5rem → 0.3rem outer padding — grows panels slightly;
      3fr/4fr/3fr ratio untouched. */
   padding: 0.3rem;
@@ -1235,12 +1245,21 @@
 /* ============================================
    DECK TAB RAIL — the ONE shared switchable-page rail (WO-UI2-DECK-
    MONITORS). Renders inside a screen-hud-header alongside its monitor
-   label. Replaces three hand-copied near-duplicates (NAV's
-   .nav-mode-switch/-btn, COMMS' .comms-mode-switch/-btn, and the new
-   SOLAR SYSTEM switch that would otherwise have been a fourth copy) with
-   one CSS block parameterized by --tab-accent, set inline per monitor by
-   DeckPageTabs.tsx (cockpit/DeckPageTabs.tsx): NAV cyan, SOLAR SYSTEM
-   purple, COMMS green — matching each monitor's own bezel/glow accent.
+   label (still true for the 6 non-flight-monitor call sites: station-
+   venue tabs, colony-management tabs). Replaces three hand-copied
+   near-duplicates (NAV's .nav-mode-switch/-btn, COMMS' .comms-mode-
+   switch/-btn, and the new SOLAR SYSTEM switch that would otherwise have
+   been a fourth copy) with one CSS block parameterized by --tab-accent,
+   set inline per monitor by DeckPageTabs.tsx (cockpit/DeckPageTabs.tsx):
+   NAV cyan, SOLAR SYSTEM purple, COMMS green — matching each monitor's
+   own bezel/glow accent.
+   WO-UI0-SHELL-TRANSPLANT (Leaf L3): the 3 FLIGHT deck-monitors (NAV,
+   SOLAR SYSTEM, TACTICAL) moved this same rail out of their header to a
+   bottom `.skrow` instead — see the `.skrow .deck-tab-rail`/`.deck-tab-
+   btn` restyle below `.deck-tab-btn.active`, which re-skins (not
+   rewrites — DeckPageTabs.tsx/SoftkeyRail.tsx are untouched, still the
+   single shared rail) this same rendered DOM as the artifact's wide
+   `.lit`-cyan raised keys for just those 3 callers.
    ============================================ */
 .deck-tab-rail {
   display: inline-flex;
@@ -1276,6 +1295,66 @@
   background: color-mix(in srgb, var(--tab-accent) 18%, transparent);
   color: var(--tab-accent);
   text-shadow: 0 0 8px color-mix(in srgb, var(--tab-accent) 70%, transparent);
+}
+
+/* WO-UI0-SHELL-TRANSPLANT (Leaf L3): `.skrow`-scoped restyle of the SAME
+   `.deck-tab-rail`/`.deck-tab-btn` DOM the 3 flight deck-monitors already
+   render (DeckPageTabs.tsx is frozen — the WO forbids rewriting the
+   shared rail) so it reads as the artifact's wide `.lit`-cyan raised
+   softkeys instead of the small bordered header chip the base rules
+   above still render for the other 6 DeckPageTabs call sites (station-
+   venue tabs, colony-management tabs) that keep their header placement.
+   Property values are byte-copied from cockpit-shell.css's own
+   `.skey`/`.skey.lit` rules (the untouched artifact baseline) so the
+   re-skin matches the artifact exactly; `.active` (DeckPageTabs' real
+   selected-state class) stands in for the artifact's `.lit`. Deliberately
+   a flat cyan lit glow for all 3 monitors, not each monitor's own
+   --tab-accent (cyan/purple/orange) — the artifact's `.skey.lit` is a
+   single global color, and :hover below is left to fall through to the
+   base `.deck-tab-btn:hover` rule above (still per-monitor tinted), which
+   the artifact doesn't define a softkey hover state for at all. */
+.skrow .deck-tab-rail {
+  display: flex;
+  flex: 1;
+  width: 100%;
+  gap: 0.35em;
+  border: none;
+  padding: 0;
+  background: none;
+}
+
+.skrow .deck-tab-btn {
+  flex: 1;
+  padding: 0.55em 0;
+  font-size: 0.6em;
+  letter-spacing: 0.08em;
+  text-align: center;
+  color: #7e93ac;
+  border: 1px solid #0a101a;
+  border-radius: 5px;
+  background: linear-gradient(180deg, #28344655, #1a2332 45%, #131b28);
+  box-shadow:
+    inset 0 1px 0 #ffffff1e,
+    inset 0 -2px 5px #00000090,
+    0 2px 3px #00000066;
+  text-shadow: 0 1px 2px #000a;
+  transition: transform 0.06s, box-shadow 0.12s, color 0.12s;
+}
+
+.skrow .deck-tab-btn:active {
+  transform: translateY(1px);
+}
+
+.skrow .deck-tab-btn.active {
+  color: #eaf8ff;
+  background: linear-gradient(180deg, #1f455c, #153348 50%, #102a3d);
+  box-shadow:
+    inset 0 1px 0 #ffffff30,
+    inset 0 -2px 6px #00000070,
+    0 0 14px #3fd2ec55,
+    0 0 3px #3fd2ecaa,
+    0 2px 3px #00000066;
+  text-shadow: 0 0 9px #3fd2ece0;
 }
 
 /* Screen glow effect */
@@ -1355,21 +1434,14 @@
   box-shadow: 0 0 12px rgba(0, 217, 255, 0.3);
 }
 
-/* Specific monitor styling */
-.nav-monitor .monitor-bezel {
-  border-color: rgba(0, 217, 255, 0.3);
-}
-
-.nav-monitor .monitor-screen::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  box-shadow: inset 0 0 40px rgba(0, 217, 255, 0.1);
-  pointer-events: none;
-}
+/* Specific monitor styling.
+   WO-UI0-SHELL-TRANSPLANT (Leaf L3) RETIRED `.nav-monitor .monitor-bezel`
+   and `.nav-monitor .monitor-screen::after` (a cyan inset glow keyed off
+   the `.monitor-bezel`/`.monitor-screen` frame divs) here — NAV re-emits
+   as `.mon.nav-monitor` now (GameDashboard.tsx), which never renders a
+   `.monitor-bezel`/`.monitor-screen` descendant, so both compounds were
+   permanently dead. `.system-monitor`/`.tactical-monitor` carry the same
+   retirement below, at their own former bezel/glow rules. */
 
 /* WO-COCKPIT-ADJ-0628: SOLAR SYSTEM (formerly PLANETARY, renamed
    WO-UI2-DECK-MONITORS) moves to visual column 1 (left). order:-1 beats
@@ -1381,42 +1453,23 @@
 
 /* The SOLAR SYSTEM monitor's content region is a named inline-size
    container so planet/station pair internals (planet-port-pair.css) can
-   adapt to the monitor's real width instead of the viewport's. */
-.system-monitor .screen-hud-content {
+   adapt to the monitor's real width instead of the viewport's.
+   WO-UI0-SHELL-TRANSPLANT (Leaf L3): retargeted from `.screen-hud-content`
+   to `.mbody` — SOLAR SYSTEM's content wrapper class, live consumer is
+   `@container system-content` in tactical/planet-port-pair.css. */
+.system-monitor .mbody {
   container-type: inline-size;
   container-name: system-content;
 }
 
-.system-monitor .monitor-bezel {
-  border-color: rgba(147, 51, 234, 0.3);
-}
-
-.system-monitor .monitor-screen::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  box-shadow: inset 0 0 40px rgba(147, 51, 234, 0.1);
-  pointer-events: none;
-}
-
-/* SOLAR SYSTEM + TACTICAL headers: label + DeckPageTabs (SOLAR SYSTEM:
-   SYSTEM/SALVAGE/SIGNALS, was BODIES/HAZARDS; TACTICAL: TARGET/THREAT,
-   WO-UI2-DECK-RECONCILE). Same flex-wrap safety as .comms-header-with-
-   modes — the 29-30% columns are narrow enough that the monitor label
-   plus a multi-tab rail needs to be able to drop the rail to its own row
-   rather than truncate or overflow the header. */
-.system-header-with-modes,
-.tactical-header-with-modes {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-  row-gap: 2px;
-}
+/* WO-UI0-SHELL-TRANSPLANT (Leaf L3) RETIRED `.system-monitor .monitor-
+   bezel`/`.monitor-screen::after` (purple inset glow) and the combined
+   `.system-header-with-modes, .tactical-header-with-modes` rule below
+   this comment — both monitors re-emit as `.mon.system-monitor` /
+   `.mon.tactical-monitor` now, with their softkey rail relocated out of
+   the header to a bottom `.skrow` (`.mhead` no longer holds a multi-tab
+   rail needing the flex-wrap/row-gap safety net that rule provided), so
+   every selector in it was permanently dead. */
 
 /* NAV + COMMS header rules, consolidated here alongside SOLAR SYSTEM's so
    all 3 monitors' header-with-modes rules have one obvious co-located hook
@@ -1427,8 +1480,14 @@
    copy is already identical (no behavior change); NAV's copy is missing
    this flex-wrap/row-gap safety net, so this cockpit.css block does not
    yet change NAV's live wrap behavior — a follow-up should delete both
-   duplicate copies and make this the sole source of truth. */
-.nav-header-with-modes,
+   duplicate copies and make this the sole source of truth.
+   WO-UI0-SHELL-TRANSPLANT (Leaf L3): NAV dropped out of this selector —
+   `.mhead` no longer holds a rail to wrap (moved to `.skrow`), so
+   `.nav-header-with-modes` is permanently dead here; the still-live
+   duplicate copy in quantum/quantum-drive.css is now ALSO fully dead
+   (out of this WO's file scope — flagged, not touched). COMMS stays: its
+   own duplicate in comms/comms-mailbox.css is still the live copy for
+   CommsMailbox.tsx's still-orphaned (unmounted, undeleted) markup. */
 .comms-header-with-modes {
   display: flex;
   align-items: center;
@@ -1475,27 +1534,18 @@
 
 /* WO-UI2-TACTICAL-MONITOR / WO-UI2-DECK-RECONCILE: TACTICAL is now the
    3rd (rightmost, 29%) deck-monitor column, DOM-3rd with default order:0
-   (no override needed). Safety orange identity accent -- deliberately
-   NOT the WPN weapons-route accent (#FF4D6D, mfd/RouteRail.tsx) and
-   distinct from NAV cyan / SOLAR SYSTEM purple above, so the monitor's
-   own chrome never reads as "error" or gets confused with the WPN route.
-   TARGET's rep-status colors and THREAT's law/hazard readouts (tactical-
-   monitor.css) carry their own semantic colors independently of this
-   frame accent. */
-.tactical-monitor .monitor-bezel {
-  border-color: rgba(255, 136, 0, 0.3);
-}
-
-.tactical-monitor .monitor-screen::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  box-shadow: inset 0 0 40px rgba(255, 136, 0, 0.1);
-  pointer-events: none;
-}
+   (no override needed). Its orange DeckPageTabs accent (`accent="#FF8800"`,
+   TacticalMonitor.tsx) -- deliberately NOT the WPN weapons-route accent
+   (#FF4D6D, mfd/RouteRail.tsx) and distinct from NAV cyan / SOLAR SYSTEM
+   purple -- still tints the base `.deck-tab-btn:hover` rule above via
+   --tab-accent; TARGET's rep-status colors and THREAT's law/hazard
+   readouts (tactical-monitor.css) carry their own semantic colors
+   independently of it either way.
+   WO-UI0-SHELL-TRANSPLANT (Leaf L3) RETIRED `.tactical-monitor .monitor-
+   bezel`/`.monitor-screen::after` (the orange inset glow this comment
+   used to also justify) here — TACTICAL re-emits as `.mon.tactical-
+   monitor` now (TacticalMonitor.tsx), which never renders a `.monitor-
+   bezel`/`.monitor-screen` descendant. */
 
 /* Monitor scrollbar */
 .monitor-screen::-webkit-scrollbar {
@@ -1621,9 +1671,14 @@
     grid-template-columns: minmax(0, 3fr) minmax(0, 4fr) minmax(0, 3fr);
   }
 
-  .nav-monitor .monitor-screen NavigationMap {
-    width: 360px !important;
-  }
+  /* WO-UI0-SHELL-TRANSPLANT (Leaf L3): the `.nav-monitor .monitor-screen
+     NavigationMap { width: 360px !important; }` rule formerly here was
+     ALREADY dead pre-this-WO — `NavigationMap` is a React component name,
+     not a real CSS type selector, so it never matched any DOM node (a
+     genuine class selector, e.g. `.navigation-map-wrapper`, would have
+     been needed). `.monitor-screen` no longer even renders under
+     `.nav-monitor` post-migration, so removed outright rather than
+     retargeted — there was no live behavior to preserve. */
 }
 
 @media (max-width: 1024px) {
@@ -5305,8 +5360,9 @@
 
 /* ============================================
    ADR-0072 AUTOPILOT — COURSE STRIP
-   Rendered below the warp graph inside
-   .screen-hud-content. Must fit without
+   Rendered below the warp graph inside NAV's
+   .mbody (WO-UI0-SHELL-TRANSPLANT Leaf L3, was
+   .screen-hud-content). Must fit without
    overflow at 1710x947 and 1440x707.
    ============================================ */
 

@@ -1,6 +1,7 @@
 import React from 'react';
-import { useAnnunciatorState, type MasterBulb, type Segment } from './useAnnunciatorState';
+import { useAnnunciatorState, segLitClass, type MasterBulb, type Segment } from './useAnnunciatorState';
 import HazardAnalysisCard from './HazardAnalysisCard';
+import '../layouts/cockpit-shell.css';
 import './annunciator.css';
 
 /**
@@ -30,6 +31,30 @@ import './annunciator.css';
  * flight-deck header) where it would just duplicate the always-visible
  * strip for no canon-specified reason. Wiring it into a future station/
  * surface header is a one-line import once that header exists.
+ *
+ * WO-UI0-SHELL-TRANSPLANT (leaf L5): bulbs/segments carry the BARE artifact
+ * classes (`.bulb`/`.seg`) ALONGSIDE their existing `.annunciator-mini-*`
+ * companions — NOT a straight swap like the full strip's Annunciator.tsx.
+ * The artifact has no "mini" variant of its own to map onto, and `.bulb`/
+ * `.seg`'s cockpit-shell.css geometry is baked to the FULL strip's size
+ * (3.4em/1.7em bulbs) — applying it bare would defeat "compact monitor-
+ * header variant" entirely. So this file keeps `.annunciator-mini-bulb`/
+ * `.annunciator-mini-seg` as SIZE-only overrides (font-size/dimensions/
+ * padding, no color) written as `.bulb.annunciator-mini-bulb`/
+ * `.seg.annunciator-mini-seg` compound selectors in annunciator.css — that
+ * 2-class specificity beats the bare single-class cockpit-shell.css rule
+ * regardless of stylesheet import order (no fragile load-order bet), while
+ * every color/state rule (`.bulb.warn.on`, `.seg.live`, `.seg.livec`,
+ * `.seg.livecm`, the ack states) still comes from cockpit-shell.css for
+ * free via the shared bare class — zero duplicated color CSS. `.annun`
+ * itself (position:absolute;top:5%;left:50%;transform — an OVERLAY
+ * contract) is deliberately NOT reused here at all: this component is an
+ * inline row meant to sit inside a header's own flex layout, the exact
+ * opposite contract, so `.annunciator-mini` (unchanged, not a bare target —
+ * no artifact equivalent exists) stays the root class. `segLitClass()`
+ * (useAnnunciatorState.ts) is shared with Annunciator.tsx so LAW's NIT n5
+ * override (WARN-red `.live`, not its own caution `.livec`) can't drift
+ * between the two views.
  */
 
 const MASTER_LABEL: Record<MasterBulb['id'], string> = { WARN: 'W', CAUT: 'C' };
@@ -40,7 +65,7 @@ const MiniBulb: React.FC<{ bulb: MasterBulb; reducedMotion: boolean }> = ({ bulb
   return (
     <button
       type="button"
-      className={['annunciator-mini-bulb', severityClass, stateClass].filter(Boolean).join(' ')}
+      className={['bulb', 'annunciator-mini-bulb', severityClass, stateClass].filter(Boolean).join(' ')}
       onClick={bulb.ack}
       aria-label={bulb.ariaLabel}
       role={bulb.active ? (bulb.id === 'WARN' ? 'alert' : 'status') : undefined}
@@ -66,7 +91,7 @@ const MINI_SEGMENT_LABEL: Record<Segment['id'], string> = {
 const MiniSegment: React.FC<{ segment: Segment }> = ({ segment }) => (
   <button
     type="button"
-    className={['annunciator-mini-seg', `annunciator-mini-seg--${segment.severity}`, segment.active ? 'is-live' : ''].filter(Boolean).join(' ')}
+    className={['seg', 'annunciator-mini-seg', segment.active ? segLitClass(segment) : ''].filter(Boolean).join(' ')}
     onClick={segment.onActivate}
     aria-label={segment.ariaLabel}
     title={segment.title}
@@ -84,7 +109,7 @@ const AnnunciatorMini: React.FC = () => {
   return (
     <div className="annunciator-mini" data-testid="annunciator-mini">
       <MiniBulb bulb={warn} reducedMotion={reducedMotion} />
-      <div className="annunciator-mini-segs">
+      <div className="segs annunciator-mini-segs">
         {segments.map((segment) => (
           <MiniSegment key={segment.id} segment={segment} />
         ))}

@@ -28,21 +28,35 @@ import { ariaFeed } from '../mfd/ariaFeedStore';
  * are pure state indicators + navigators (no per-segment ack — only the
  * two master bulbs silence a flash; segments always reflect live state).
  *
- * DOC-GAP surfaced during this build (flagged, not silently resolved): the
- * ratified prototype's OWN `renderBand()` gives the LAW segment the
- * WARN-red `.seg.live` CSS class when `G.fine>0` (RATIFIED.html:1207), but
- * its OWN `lampState()` boolean literally two lines above computes
+ * DOC-GAP surfaced during the original build (flagged, not silently
+ * resolved — status UPDATED below, not re-litigated): the ratified
+ * prototype's OWN `renderBand()` gives the LAW segment the WARN-red
+ * `.seg.live` CSS class when `G.fine>0` (RATIFIED.html:1207), but its OWN
+ * `lampState()` boolean literally two lines above computes
  * `caut = sec.hazard>=5 || G.fine>0 || G.turns<50` (RATIFIED.html:1198) —
  * i.e. the SAME prototype file classifies grey-flag/fine as a CAUTION-tier
  * condition for the master bulb while visually coloring the LAW segment as
  * if it were WARN-tier. The prose canon (persistent-chrome tree L513-515:
  * "CAUTION lamp (amber/slow: hazard, low-turns, fine)"; WO-UI1-ANNUNCIATOR
  * GOAL: "MASTER CAUTION (amber/slow: hazard≥threshold, grey-flag/fine,
- * low-turns)") and THIS WO's own Accept criterion (e) ("CAUTION on
- * grey-flag/fine") both agree with the BOOLEAN, not the CSS class. Built to
- * the boolean + this WO's explicit Accept text (LAW = caution-severity,
- * amber) — the prototype's `.seg.live` class on LAW is the outlier and
- * should be treated as a typo in the demo file, not a second canon.
+ * low-turns)") and the original WO's own Accept criterion (e) ("CAUTION on
+ * grey-flag/fine") both agree with the BOOLEAN, not the CSS class — this
+ * build originally went with the boolean for BOTH the master-bulb feed AND
+ * the segment's own visual class (LAW rendered caution-amber throughout).
+ *
+ * WO-UI0-SHELL-TRANSPLANT (leaf L5) NIT n5 changed HALF of that: the shell
+ * transplant's rule is "the demo's rendered truth wins by construction" for
+ * cosmetic classnames, so LAW's SEGMENT now emits the demo's literal
+ * `.seg.live` (red) class when active — see `segLitClass()` below, which
+ * special-cases LAW to the WARN-tier lit class regardless of its own
+ * `severity` field. The BOOLEAN side of the doc-gap is UNCHANGED and still
+ * resolved per the original reasoning: LAW keeps `severity: 'caution'`
+ * (feeds the CAUT master bulb, not WARN; drives `role="status"`/
+ * `aria-live="polite"` for a11y — WCAG 4.1.3 state-not-color-alone), and
+ * `lawActive` still only ever contributes to `cautionLevel`, never
+ * `warnLevel`. The doc-gap itself — whether prose canon should be revised
+ * to match the prototype's own visual choice — is staged for Max
+ * separately, not resolved by this leaf.
  *
  * Triggers (REUSE, not invention — every field below already exists):
  *   THREAT (warn)    — the shipped COMBAT event lamp, unchanged: WebSocket-
@@ -56,9 +70,13 @@ import { ariaFeed } from '../mfd/ariaFeedStore';
  *                       player-menu Colonies roster), `.some(p=>p.underSiege)`.
  *   bounty (warn, no segment) — playerState.bounty_total > 0, the SAME
  *                       field + threshold StatusBar.tsx's BOUNTY chip uses.
- *   HAZARD (caution)  — currentSector.hazard_level > 0 (unchanged from the
- *                       prior sub-part — GameDashboard's retiring HAZARD
- *                       chip's own condition).
+ *   HAZARD (caution)  — currentSector.hazard_level >= 5 (WO-UI0-SHELL-
+ *                       TRANSPLANT NIT n1 — supersedes the prior sub-part's
+ *                       `> 0`, which mirrored GameDashboard's retiring
+ *                       HAZARD chip; the two are now DELIBERATELY divergent,
+ *                       this hook follows the ratified prototype's own
+ *                       lampState() threshold instead, see
+ *                       HAZARD_ACTIVE_THRESHOLD below).
  *   LAW (caution)     — polled greyStatusAPI.getStatus() (the EXACT call
  *                       ThreatPage.tsx/TacticalThreatPage.tsx already make),
  *                       `.isGrey`.
@@ -105,6 +123,27 @@ export interface Segment {
   title: string;
 }
 
+// Bare artifact lit-classes (cockpit-shell.css, WO-UI0-SHELL-TRANSPLANT):
+// `.seg.live` = red (warn-tier), `.seg.livec` = amber (caution-tier),
+// `.seg.livecm` = cyan (info/comm-tier). Shared by Annunciator.tsx AND
+// AnnunciatorMini.tsx so the two views can never drift on which class a
+// given segment lights up with.
+const SEG_LIT_CLASS: Record<LampSeverity, 'live' | 'livec' | 'livecm'> = {
+  warn: 'live',
+  caution: 'livec',
+  info: 'livecm',
+};
+
+/** NIT n5 (rendered-demo-truth wins, see the doc-gap note above): LAW is
+ * `severity: 'caution'` for every LOGICAL purpose (feeds the CAUT master
+ * bulb, gets the caution a11y role) but the ratified prototype's own
+ * renderBand() visually lights its segment with the WARN-red `.seg.live`
+ * class (RATIFIED.html:1207) — special-cased here rather than in either
+ * consuming component, so both stay byte-identical. */
+export function segLitClass(segment: Segment): 'live' | 'livec' | 'livecm' {
+  return segment.id === 'LAW' ? 'live' : SEG_LIT_CLASS[segment.severity];
+}
+
 export interface AnnunciatorState {
   warn: MasterBulb;
   caution: MasterBulb;
@@ -115,9 +154,13 @@ export interface AnnunciatorState {
   currentSector: Sector | null;
 }
 
-// GameDashboard's retiring HAZARD chip triggers on `hazard_level > 0`
-// (GameDashboard.tsx) — reused verbatim rather than inventing a new number.
-const HAZARD_ACTIVE_THRESHOLD = 0;
+// WO-UI0-SHELL-TRANSPLANT NIT n1: the ratified prototype's OWN lampState()
+// (RATIFIED.html:1198-1201, `caut = sec.hazard>=5 || G.fine>0 || G.turns<50`)
+// is the rendered-demo-truth this transplant adopts for BOTH the HAZARD
+// segment's own lit state and its contribution to the CAUT master bulb —
+// supersedes the prior sub-part's `> 0` (which mirrored GameDashboard's
+// retiring HAZARD chip; the two thresholds are now intentionally different).
+const HAZARD_ACTIVE_THRESHOLD = 5;
 
 // turns.md "Low-turn warning UI hints when the pool is below thresholds
 // (design: <50)" — the exact threshold TurnEconomyPage.tsx already ships
@@ -303,7 +346,7 @@ export function useAnnunciatorState(): AnnunciatorState {
     commMessageIdRef.current = lastNewMessage.message_id || null;
   }
 
-  const hazardActive = !!currentSector && currentSector.hazard_level > HAZARD_ACTIVE_THRESHOLD;
+  const hazardActive = !!currentSector && currentSector.hazard_level >= HAZARD_ACTIVE_THRESHOLD;
   const turnsActive = !!playerState && playerState.turns < LOW_TURNS_THRESHOLD;
   const bountyActive = !!playerState && (playerState.bounty_total ?? 0) > 0;
 

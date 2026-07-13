@@ -82,6 +82,13 @@
  * which of `.tp-ticker-row` / `.tp-body` is visible) — the component tree
  * is never conditionally unmounted, so mode/input/scroll state all
  * survive a display-mode switch.
+ *
+ * WO-UI0-SHELL-TRANSPLANT (leaf L4) re-classes the ticker row onto the
+ * artifact's `.tele/.glyph/.tline/.telerow/.tin/.tkey` (cockpit-shell.css)
+ * — see teleprinter.css's own header for the skin-ownership split and the
+ * `.midlog`/`.telelog` mapping onto the mid-panel/full-overlay body. Pure
+ * re-class + one data-correctness fix (`toEpoch` below); the grammar/modes/
+ * a11y this header documents are untouched.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
@@ -138,6 +145,25 @@ const inMode = (entry: FeedEntry, target: TeleprinterMode): boolean => {
     default:
       return !entry.isNav && !entry.isNarration;
   }
+};
+
+/** Chronological key for the merge sort (n2, WO-UI0-SHELL-TRANSPLANT leaf
+ *  L4) — a live ticker was observed stuck on an older line while a newer
+ *  "Arrival: Sector N" nav entry already existed. Root cause: the two
+ *  timestamp sources are NOT string-comparable. Client entries (both
+ *  ariaMessages' `new Date().toISOString()` fallback and every ariaFeedStore
+ *  nav line) are 'Z'-suffixed ('...123Z'); server-pushed narration `ts`
+ *  (aria_narration_service.NarrationLine.to_payload, `created_at.isoformat()`
+ *  on a tz-aware UTC datetime) is '+00:00'-suffixed microseconds
+ *  ('...123456+00:00'). 'Z' (0x5A) sorts ABOVE any digit in a lexicographic
+ *  compare, so `.localeCompare` on the raw strings biases every 'Z' entry
+ *  "later" than a same-instant '+00:00' one regardless of the real order —
+ *  exactly the kind of same-second race a busy ticker hits constantly.
+ *  `Date.parse` normalizes both offset notations to the same epoch ms. */
+const toEpoch = (ts?: string): number => {
+  if (!ts) return 0;
+  const parsed = Date.parse(ts);
+  return Number.isNaN(parsed) ? 0 : parsed;
 };
 
 const MODES: Array<{ id: TeleprinterMode; label: string }> = [
@@ -214,7 +240,7 @@ const Teleprinter: React.FC<TeleprinterProps> = ({ displayMode, onDisplayModeCha
   // with the local offline-fallback echoes.
   const merged = useMemo<FeedEntry[]>(() => {
     const all: FeedEntry[] = [...ariaMessages, ...navMessages, ...localEchoes];
-    all.sort((a, b) => (a.timestamp ?? '').localeCompare(b.timestamp ?? ''));
+    all.sort((a, b) => toEpoch(a.timestamp) - toEpoch(b.timestamp));
     return all;
   }, [ariaMessages, navMessages, localEchoes]);
 
@@ -516,51 +542,56 @@ const Teleprinter: React.FC<TeleprinterProps> = ({ displayMode, onDisplayModeCha
   const openOverlay = useCallback(() => onDisplayModeChange('full-overlay'), [onDisplayModeChange]);
 
   return (
-    <div className={`teleprinter tp-${displayMode}`} data-testid="teleprinter">
-      {/* ── TICKER — one amber-on-dark row (visual-form steer). Always in
-          the DOM (CSS display-toggled, never unmounted) so a half-typed
+    <div className={`teleprinter tele tp-${displayMode}`} data-testid="teleprinter">
+      {/* ── TICKER — one amber-on-dark row (visual-form steer), re-classed
+          onto the artifact's cockpit-shell.css primitives (WO-UI0-SHELL-
+          TRANSPLANT leaf L4): .glyph/.tline live directly in the row;
+          .telerow wraps the input + 3 keys (cockpit-shell's .telerow is
+          `display:contents` outside the artifact's own aria=2 mode, so it's
+          a purely organizational wrapper here — zero layout change). Always
+          in the DOM (CSS display-toggled, never unmounted) so a half-typed
           command survives a switch to mid-panel/full-overlay and back. ── */}
       <div className="tp-ticker-row" role="group" aria-label="ARIA teleprinter ticker">
-        <span className="tp-ticker-glyph" aria-hidden="true">▸</span>
-        <span className="tp-ticker-label">ARIA</span>
-        <span className="tp-ticker-pencil" aria-hidden="true">✎</span>
-        <span className="tp-ticker-line" aria-live="polite">{latestLine}</span>
+        <span className="glyph" aria-hidden="true">▸ ARIA</span>
+        <span className="tline" aria-live="polite">{latestLine}</span>
         {!isConnected && <span className="tp-ticker-offline">UPLINK OFFLINE</span>}
-        <input
-          type="text"
-          className="tp-ticker-input"
-          value={tickerInputValue}
-          onChange={(e) => setTickerInputValue(e.target.value)}
-          onKeyDown={handleTickerKeyDown}
-          placeholder="speak to the ship — try: help"
-          maxLength={MAX_MESSAGE_LENGTH}
-          aria-label="Send command or message to ARIA"
-        />
-        <button
-          type="button"
-          className="tp-ticker-btn tp-ticker-xmit"
-          onClick={submitTicker}
-          disabled={!tickerInputValue.trim()}
-          aria-label="Transmit"
-        >
-          XMIT
-        </button>
-        <button
-          type="button"
-          className="tp-ticker-btn tp-ticker-panel"
-          onClick={openMidPanel}
-          aria-label="Open teleprinter mid-panel"
-        >
-          ◫ PANEL
-        </button>
-        <button
-          type="button"
-          className="tp-ticker-btn tp-ticker-log"
-          onClick={openOverlay}
-          aria-label="Open teleprinter transcript overlay"
-        >
-          ▲ LOG
-        </button>
+        <div className="telerow">
+          <input
+            type="text"
+            className="tin"
+            value={tickerInputValue}
+            onChange={(e) => setTickerInputValue(e.target.value)}
+            onKeyDown={handleTickerKeyDown}
+            placeholder="speak to the ship — try: help"
+            maxLength={MAX_MESSAGE_LENGTH}
+            aria-label="Send command or message to ARIA"
+          />
+          <button
+            type="button"
+            className="tkey tp-ticker-xmit"
+            onClick={submitTicker}
+            disabled={!tickerInputValue.trim()}
+            aria-label="Transmit"
+          >
+            XMIT
+          </button>
+          <button
+            type="button"
+            className="tkey tp-ticker-panel"
+            onClick={openMidPanel}
+            aria-label="Open teleprinter mid-panel"
+          >
+            ◫ PANEL
+          </button>
+          <button
+            type="button"
+            className="tkey tp-ticker-log"
+            onClick={openOverlay}
+            aria-label="Open teleprinter transcript overlay"
+          >
+            ▲ LOG
+          </button>
+        </div>
       </div>
 
       {/* ── mid-panel / full-overlay body — narration/dialogue/CMD tabs +
@@ -568,7 +599,16 @@ const Teleprinter: React.FC<TeleprinterProps> = ({ displayMode, onDisplayModeCha
           except for the CMD grammar wiring above and the two display-
           mode controls below. Never conditionally unmounted (accept
           #4/#5's state-preservation contract). ── */}
-      <div id="tp-body" className="tp-body">
+      {/* `telelog` (full-overlay only) borrows cockpit-shell.css's transcript-
+          panel skin (warm-olive background, position:absolute/bottom:100%
+          "opens upward", border-top) — see teleprinter.css's own comment for
+          why the open-height is driven by `tp-full-overlay` rather than the
+          artifact's `.stage.tele-open` (an ancestor class outside this leaf's
+          file lane). */}
+      <div
+        id="tp-body"
+        className={`tp-body${displayMode === 'full-overlay' ? ' telelog' : ''}`}
+      >
         <div className="tp-body-header">
           <div
             className="tp-modes"
@@ -618,7 +658,7 @@ const Teleprinter: React.FC<TeleprinterProps> = ({ displayMode, onDisplayModeCha
 
         <div
           id="tp-log"
-          className={`tp-log tp-log-${mode}`}
+          className={`tp-log tp-log-${mode}${displayMode === 'mid-panel' ? ' midlog' : ''}`}
           role="log"
           aria-live="polite"
           aria-labelledby={`tp-mode-tab-${mode}`}

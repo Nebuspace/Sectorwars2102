@@ -107,6 +107,21 @@
   height: 16em;
 }
 
+/* Annunciator station/surface flip (WO-UI0-SHELL-TRANSPLANT integration
+   cleanup, item 3) — same trap i as the `.band` rules just above:
+   cockpit-shell.css's `.stage[data-mode=station] .annun`/`[data-mode=
+   surface] .annun` rule (top:auto; bottom:8%, ported verbatim from the
+   source artifact's vanilla-JS demo) never matches here because GameLayout
+   applies the CLASS `.mode-station`/`.mode-surface` to `.game-container`,
+   never a `[data-mode]` attribute — it stays permanently inert. This
+   class-selector equivalent is what actually flips the annunciator to the
+   bottom on docking/landing (artifact-parity). */
+.game-container.mode-station .annun,
+.game-container.mode-surface .annun {
+  top: auto;
+  bottom: 8%;
+}
+
 /* `.band`/`.deck` are ALWAYS-PRESENT slots (GameLayout) that GameDashboard
    conditionally portals its real content into (ShellContext.ts); every
    OTHER /game/* route leaves both empty. pointer-events:none so an empty

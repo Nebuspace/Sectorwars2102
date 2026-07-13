@@ -285,7 +285,7 @@ describe('GameDashboard — deck content mounts exactly once under a real GameLa
     // TACTICAL is always mounted; NAV defaults to its COURSE page
     // (NavigationMap only renders under the CHART tab, WO-UI2-DECK-
     // RECONCILE) — switch to CHART so NavigationMap actually mounts.
-    expect(container.querySelector('.deck .console-monitor.tactical-monitor')).not.toBeNull();
+    expect(container.querySelector('.deck .mon.tactical-monitor')).not.toBeNull();
     expect(tacticalMountCount).toBe(1);
     expect(navMapMountCount).toBe(0);
 

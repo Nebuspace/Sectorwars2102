@@ -1,6 +1,23 @@
-/* Teleprinter — ARIA narration/dialogue/command box for the shell's
-   reserved `teleprinter` grid slot (WO-UI1-TELEPRINTER sub-part a;
-   game-layout.css:99-103 names the row).
+/* Teleprinter — ARIA narration/dialogue/command box, auto-placed into the
+   `.stage`/`.game-container` shell grid's 3rd row (WO-UI0-SHELL-TRANSPLANT
+   moved the shell off named grid-template-areas to DOM-order auto-
+   placement — GameLayout.tsx owns that placement now, not this file; see
+   its own comment).
+
+   SKIN OWNERSHIP (WO-UI0-SHELL-TRANSPLANT leaf L4): the ticker row's warm
+   olive-black identity — `.tele` (root, background/border/padding/font-
+   size), `.glyph` (▸ ARIA), `.tline` (latest line), `.telerow` (input+keys
+   wrapper), `.tin` (phosphor-green input), `.tkey` (×3 keys) — is OWNED by
+   cockpit-shell.css (the v10 artifact's own CSS, transplanted verbatim).
+   This file supplies only what that shell CSS can't: layout-critical
+   overrides cockpit-shell's ancestor-gated rules can't reach without
+   touching GameLayout.tsx (out of this leaf's file lane — see the
+   `.midlog`/`.telelog` overrides below), plus the handful of properties
+   (min-width for ellipsis truncation, disabled-state opacity, a focus
+   ring) the artifact's static demo never needed. Everything NOT owned by
+   the artifact's class inventory — the mid-panel/full-overlay body's mode
+   tabs, log, and secondary input — is WAVE-2's own richer design and keeps
+   its pre-existing skin untouched.
 
    THREE display modes (WO-UI1-CHROME-COMPLETE, cockpit-redesign-v10 §05
    L624): ticker / mid-panel / full-overlay, selected by the root's
@@ -34,7 +51,6 @@
    intended design, not a bug. */
 
 .teleprinter {
-  grid-area: teleprinter;
   --tp-cyan: #00d9ff;
   --tp-violet: #7b2fff;
   --tp-amber: #ffb000;
@@ -42,58 +58,54 @@
   z-index: 22;
   display: flex;
   flex-direction: column;
-  background: rgba(0, 8, 14, 0.9);
-  border-top: 1px solid rgba(0, 217, 255, 0.25);
-  border-bottom: 1px solid rgba(0, 217, 255, 0.25);
-  font-family: 'Courier New', monospace;
   box-sizing: border-box;
   overflow: hidden; /* overridden for tp-full-overlay below */
 }
 
-/* ── TICKER — one amber-on-dark row: ▸ ARIA ✎ <latest line> + inline
-   command input + [XMIT] [◫ PANEL] [▲ LOG]. Hidden outside tp-ticker. ── */
+/* `.tele` (cockpit-shell.css) supplies the warm olive-black shell identity:
+   background #0A0D08, border-top/bottom, padding, font-size, gap, and
+   align-items:center. align-items:center is written for the artifact's
+   flat single-row `#tele`; this root stays a COLUMN (`.tp-ticker-row` /
+   `#tp-body` are CSS-display-toggled siblings, never both visible at once)
+   and needs align-items:stretch so `#tp-body` keeps filling the full
+   width — overridden here deterministically (3-class compound beats the
+   bare `.tele` rule's specificity regardless of CSS import order). */
+.teleprinter.tele {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+/* Non-interactive here — WAVE-2 never wired the artifact's click-to-expand
+   gesture onto glyph/tline (out of this classname-re-emit leaf's scope),
+   so don't advertise one via `.tele .glyph`'s inherited cursor:pointer. */
+.teleprinter.tele .glyph {
+  cursor: default;
+}
+
+/* ── TICKER — one row: ▸ ARIA + latest line + [.telerow: input + 3 keys].
+   Hidden outside tp-ticker. cockpit-shell.css owns .glyph/.tline/.telerow/
+   .tin/.tkey's own skin (color/background/border/font/spacing) — this
+   file supplies only layout (row visibility, offline badge, ellipsis
+   min-width, disabled affordance) that class inventory doesn't cover. ── */
 .tp-ticker-row {
   display: none;
   align-items: center;
   gap: 0.5rem;
   width: 100%;
   min-height: 34px;
-  padding: 0.3rem 0.7rem;
   box-sizing: border-box;
-  color: var(--tp-amber);
 }
 
 .teleprinter.tp-ticker .tp-ticker-row {
   display: flex;
 }
 
-.tp-ticker-glyph {
-  flex-shrink: 0;
-  font-size: 0.75rem;
-}
-
-.tp-ticker-label {
-  flex-shrink: 0;
-  font-weight: 700;
-  font-size: 0.68rem;
-  letter-spacing: 0.14em;
-  text-shadow: 0 0 6px rgba(255, 176, 0, 0.5);
-}
-
-.tp-ticker-pencil {
-  flex-shrink: 0;
-  font-size: 0.7rem;
-  opacity: 0.8;
-}
-
-.tp-ticker-line {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: 0.72rem;
-  color: rgba(255, 200, 120, 0.9);
+.tline {
+  min-width: 0; /* required for flex:1 + overflow:hidden + text-overflow:
+                   ellipsis to actually truncate inside a flex row — flex
+                   items default to min-width:auto (never shrink below
+                   content size), which silently defeats the ellipsis
+                   cockpit-shell.css's .tline already sets without this. */
 }
 
 .tp-ticker-offline {
@@ -104,54 +116,35 @@
   color: #ff4d6d;
 }
 
-.tp-ticker-input {
+/* .telerow (cockpit-shell.css) is `display:contents` outside the artifact's
+   own aria=2 mode — a purely organizational wrapper here, zero layout
+   effect; its input+3 keys behave as direct flex children of the ticker
+   row exactly as before this re-class. */
+.tin {
   flex: 1 1 220px;
   min-width: 120px;
-  font-family: inherit;
-  font-size: 0.68rem;
-  letter-spacing: 0.03em;
-  padding: 0.24rem 0.45rem;
-  background: rgba(10, 6, 0, 0.85);
-  color: var(--tp-amber);
-  border: 1px solid rgba(255, 176, 0, 0.35);
-  border-radius: 0;
-  caret-color: var(--tp-amber);
   box-sizing: border-box;
+  /* color/background/border/padding/border-radius/font: cockpit-shell.css's
+     .tin (phosphor green #7CE6A0) — do NOT re-add an amber override here
+     (n4, WO-UI0-SHELL-TRANSPLANT leaf L4). */
 }
 
-.tp-ticker-input::placeholder {
-  color: rgba(255, 176, 0, 0.4);
-}
-
-.tp-ticker-input:focus {
+.tin:focus {
   outline: none;
   border-color: var(--tp-amber);
   box-shadow: 0 0 8px rgba(255, 176, 0, 0.35);
 }
 
-.tp-ticker-btn {
+.tkey {
   flex-shrink: 0;
-  font-family: inherit;
-  font-size: 0.58rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  padding: 0.26rem 0.5rem;
-  background: rgba(255, 176, 0, 0.08);
-  color: var(--tp-amber);
-  border: 1px solid rgba(255, 176, 0, 0.45);
-  border-radius: 0;
-  cursor: pointer;
-  text-transform: uppercase;
   white-space: nowrap;
-  transition: background 90ms ease-out, box-shadow 90ms ease-out;
+  /* color/background/border/padding/font-size/letter-spacing/box-shadow/
+     :active: cockpit-shell.css's .tkey. Disabled affordance below is this
+     component's own addition — the artifact's static demo never needed
+     one. */
 }
 
-.tp-ticker-btn:hover:not(:disabled) {
-  background: rgba(255, 176, 0, 0.2);
-  box-shadow: 0 0 8px rgba(255, 176, 0, 0.4);
-}
-
-.tp-ticker-btn:disabled {
+.tkey:disabled {
   opacity: 0.35;
   cursor: not-allowed;
 }
@@ -272,6 +265,23 @@
   border-top-color: rgba(255, 176, 0, 0.3);
 }
 
+/* ── mid-panel content box — cockpit-shell.css's `.midlog` is display:none
+   + order:-1 by default, gated behind `.stage[data-aria="2"]` (an ancestor
+   attribute GameLayout.tsx would need to set — out of this leaf's file
+   lane). Drive visibility off this component's OWN `tp-mid-panel` root
+   modifier instead; keep WAVE-2's existing header→log→input reading order
+   (order:0) rather than the artifact's order:-1 log-on-top, since the
+   header here still owns the mode tabs the artifact's single-log demo
+   never had. 3-class compound for deterministic precedence over
+   cockpit-shell's `.tele .midlog` (2 classes) regardless of CSS import
+   order. `#tp-log` only carries the `midlog` class in mid-panel mode (see
+   Teleprinter.tsx), so this never fights `.tp-log`'s own display:flex in
+   ticker/full-overlay. ── */
+.teleprinter.tp-mid-panel .midlog {
+  display: flex;
+  order: 0;
+}
+
 .tp-line {
   font-size: 0.68rem;
   line-height: 1.5;
@@ -389,14 +399,20 @@
   overflow: visible;
 }
 
-.tp-full-overlay .tp-body {
-  position: absolute;
-  bottom: 100%;
-  left: 0;
-  right: 0;
-  background: rgba(0, 8, 14, 0.97);
-  border-top: 1px solid rgba(0, 217, 255, 0.35);
-  box-shadow: 0 -12px 32px rgba(0, 0, 0, 0.6);
+/* `#tp-body` carries `.telelog` only in full-overlay (see Teleprinter.tsx).
+   cockpit-shell.css's `.telelog` supplies position:absolute/bottom:100%/
+   left:right:0/background #0A0D08F5/border-top/transition/z-index
+   unconditionally (retiring this file's old duplicate rgba(0,8,14,.97)
+   background + rgba(0,217,255,.35) border-top — cockpit-shell now owns
+   that identity). Its OPEN height is gated behind `.stage.tele-open` (same
+   out-of-lane ancestor problem as `.midlog` above) — override height/
+   overflow off `tp-full-overlay` instead. height:auto (not the artifact's
+   fixed 16em) because this panel holds the mode tabs + display controls +
+   input row around the log, not just a single `.lines` box — `#tp-log`'s
+   own max-height clamp (below) still bounds/scrolls the transcript. */
+.teleprinter.tp-full-overlay .telelog {
+  height: auto;
+  overflow: visible;
 }
 
 .tp-full-overlay .tp-log {

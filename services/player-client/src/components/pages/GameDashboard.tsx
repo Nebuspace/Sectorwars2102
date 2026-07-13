@@ -3133,42 +3133,29 @@ const GameDashboard: React.FC = () => {
           ) : (
             <>
               {/* LEFT MONITOR: Navigation */}
-              <div className="console-monitor nav-monitor">
-                <div className="monitor-bezel">
-                  <div className="bezel-corner tl"></div>
-                  <div className="bezel-corner tr"></div>
-                  <div className="bezel-corner bl"></div>
-                  <div className="bezel-corner br"></div>
+              <div className="mon nav-monitor">
+                {/* NAV header (WO-UI2-DECK-RECONCILE, §05: [COURSE · CHART ·
+                    DRIVE]) — unified for every hull, no more per-page
+                    plot-row crammed into the shared header (moved into
+                    COURSE's own content below). DRIVE is WJ-gated;
+                    non-Warp-Jumper hulls still see 2 pages (COURSE/CHART),
+                    so the rail always renders regardless of hull type.
+                    WO-UI0-SHELL-TRANSPLANT (Leaf L3): the page-switch
+                    softkeys moved out of this header to a bottom `.skrow`
+                    (artifact `monNav()`) — the header now shows only the
+                    monitor title + a live "N CHARTED EXIT(S)" sub-status,
+                    reusing the same `adjacentExits` COURSE already reads. */}
+                <div className="mhead">
+                  <span className="mtitle">NAV</span>
+                  <span className="hsub">{adjacentExits.length} CHARTED EXIT{adjacentExits.length === 1 ? '' : 'S'}</span>
                 </div>
-                <div className="monitor-screen">
-                  {/* NAV header (WO-UI2-DECK-RECONCILE, §05: [COURSE · CHART ·
-                      DRIVE]) — unified for every hull, no more per-page
-                      plot-row crammed into the shared header (moved into
-                      COURSE's own content below). DRIVE is WJ-gated;
-                      non-Warp-Jumper hulls still see 2 pages (COURSE/CHART),
-                      so the rail always renders regardless of hull type. */}
-                  <div className="screen-hud-header nav-header-with-modes">
-                    <span>NAV</span>
-                    <DeckPageTabs
-                      pages={[
-                        { id: 'course', label: 'COURSE' },
-                        { id: 'chart', label: 'CHART' },
-                        { id: 'drive', label: 'DRIVE', available: isWarpJumper },
-                      ]}
-                      activeId={navMode}
-                      onSelect={(id) => setNavMode(id as 'course' | 'chart' | 'drive')}
-                      ariaLabel="NAV display mode"
-                      accent="#00d9ff"
-                      idBase="nav"
-                    />
-                  </div>
-                  <div
-                    className="screen-hud-content"
-                    role="tabpanel"
-                    id={`nav-panel-${navMode}`}
-                    aria-labelledby={`nav-tab-${navMode}`}
-                  >
-                  {navMode === 'drive' ? (
+                <div
+                  className="mbody"
+                  role="tabpanel"
+                  id={`nav-panel-${navMode}`}
+                  aria-labelledby={`nav-tab-${navMode}`}
+                >
+                {navMode === 'drive' ? (
                     <QuantumDriveConsole onOpenGatewright={() => setShowGatewright(true)} />
                   ) : !currentSector ? (
                     <div className="nav-scan-state">
@@ -3370,42 +3357,41 @@ const GameDashboard: React.FC = () => {
                       )}
                     </>
                   )}
-                  </div>
+                </div>
+                <div className="skrow">
+                  <DeckPageTabs
+                    pages={[
+                      { id: 'course', label: 'COURSE' },
+                      { id: 'chart', label: 'CHART' },
+                      { id: 'drive', label: 'DRIVE', available: isWarpJumper },
+                    ]}
+                    activeId={navMode}
+                    onSelect={(id) => setNavMode(id as 'course' | 'chart' | 'drive')}
+                    ariaLabel="NAV display mode"
+                    accent="#00d9ff"
+                    idBase="nav"
+                  />
                 </div>
               </div>
 
               {/* CENTER MONITOR: Solar System (formerly "Planetary Systems",
                   §05 [SYSTEM · SALVAGE · SIGNALS], WO-UI2-DECK-RECONCILE) */}
-              <div className="console-monitor system-monitor">
-                <div className="monitor-bezel">
-                  <div className="bezel-corner tl"></div>
-                  <div className="bezel-corner tr"></div>
-                  <div className="bezel-corner bl"></div>
-                  <div className="bezel-corner br"></div>
+              <div className="mon system-monitor">
+                {/* WO-UI0-SHELL-TRANSPLANT (Leaf L3): header now shows only
+                    the title + the live sector name as its sub-status; the
+                    SYSTEM/SALVAGE/SIGNALS softkeys moved to a bottom
+                    `.skrow` (artifact `monSys()`). */}
+                <div className="mhead">
+                  <span className="mtitle">SOLAR SYSTEM</span>
+                  <span className="hsub">{currentSector?.name ?? '—'}</span>
                 </div>
-                <div className="monitor-screen">
-                  <div className="screen-hud-header system-header-with-modes">
-                    <span>SOLAR SYSTEM</span>
-                    <DeckPageTabs
-                      pages={[
-                        { id: 'system', label: 'SYSTEM' },
-                        { id: 'salvage', label: 'SALVAGE' },
-                        { id: 'signals', label: 'SIGNALS' },
-                      ]}
-                      activeId={systemPage}
-                      onSelect={(id) => setSystemPage(id as 'system' | 'salvage' | 'signals')}
-                      ariaLabel="SOLAR SYSTEM display mode"
-                      accent="#9333ea"
-                      idBase="system"
-                    />
-                  </div>
-                  <div
-                    className="screen-hud-content"
-                    role="tabpanel"
-                    id={`system-panel-${systemPage}`}
-                    aria-labelledby={`system-tab-${systemPage}`}
-                  >
-                  {systemPage === 'system' ? (
+                <div
+                  className="mbody"
+                  role="tabpanel"
+                  id={`system-panel-${systemPage}`}
+                  aria-labelledby={`system-tab-${systemPage}`}
+                >
+                {systemPage === 'system' ? (
                     <>
                       {/* Show planets paired with stations (by index) */}
                       {planetsInSector.map((planet, index) => (
@@ -3517,7 +3503,20 @@ const GameDashboard: React.FC = () => {
                       <div className="empty-state">No signals or formations charted in this sector</div>
                     )
                   )}
-                  </div>
+                </div>
+                <div className="skrow">
+                  <DeckPageTabs
+                    pages={[
+                      { id: 'system', label: 'SYSTEM' },
+                      { id: 'salvage', label: 'SALVAGE' },
+                      { id: 'signals', label: 'SIGNALS' },
+                    ]}
+                    activeId={systemPage}
+                    onSelect={(id) => setSystemPage(id as 'system' | 'salvage' | 'signals')}
+                    ariaLabel="SOLAR SYSTEM display mode"
+                    accent="#9333ea"
+                    idBase="system"
+                  />
                 </div>
               </div>
 
@@ -3527,24 +3526,17 @@ const GameDashboard: React.FC = () => {
                   the deck no longer has a standalone COMMS monitor — HAILS/
                   composer moved to the MFD-B COMM lane. TacticalMonitor owns
                   its own header + content, same self-contained pattern
-                  CommsMailbox used for COMMS. */}
-              <div className="console-monitor tactical-monitor">
-                <div className="monitor-bezel">
-                  <div className="bezel-corner tl"></div>
-                  <div className="bezel-corner tr"></div>
-                  <div className="bezel-corner bl"></div>
-                  <div className="bezel-corner br"></div>
-                </div>
-                <div className="monitor-screen">
-                  <TacticalMonitor
-                    contacts={sectorContacts}
-                    selectedShipId={selectedShipId}
-                    onSelectContact={(c) =>
-                      setSelectedShipId(c?.ship_id ? String(c.ship_id) : null)
-                    }
-                  />
-                </div>
-              </div>
+                  CommsMailbox used for COMMS. WO-UI0-SHELL-TRANSPLANT (Leaf
+                  L3): TacticalMonitor now renders its OWN full `.mon` block
+                  (artifact `monTac()`) — no wrapper divs needed here, same
+                  as NAV/SOLAR SYSTEM rendering their own `.mon` above. */}
+              <TacticalMonitor
+                contacts={sectorContacts}
+                selectedShipId={selectedShipId}
+                onSelectContact={(c) =>
+                  setSelectedShipId(c?.ship_id ? String(c.ship_id) : null)
+                }
+              />
             </>
           )}
         </div>

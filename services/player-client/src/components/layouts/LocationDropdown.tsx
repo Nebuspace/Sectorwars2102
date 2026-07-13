@@ -99,17 +99,24 @@ const LocationDropdown: React.FC<LocationDropdownProps> = ({ children }) => {
 
   return (
     <div className="sb-location" ref={containerRef}>
+      {/* [◉ location ▾] — WO-UI0-SHELL-TRANSPLANT integration cleanup (item
+          4): re-classed to `.chip.loc` (cockpit-shell.css) to match the
+          artifact, same pattern StatusBar.tsx's `.chip.who` name chip
+          already uses. `.chip.loc::after` supplies the " ▾" caret -- no
+          manual caret span here. `sb-chip`/`sb-location-chip` stay as
+          compound modifiers (sb-chip supplies gap/padding geometry still
+          shared with the name chip; sb-location-chip is a content hook for
+          future per-chip overrides). */}
       <button
         type="button"
         ref={triggerRef}
-        className="sb-chip sb-location-chip"
+        className="chip loc sb-chip sb-location-chip"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
         aria-controls="sb-location-panel"
       >
         <span className="sb-chip-icon" aria-hidden="true">◉</span>
         <span className="sb-location-text">{sectorLabel}</span>
-        <span className="sb-chip-caret" aria-hidden="true">▾</span>
       </button>
       {open && (
         <div

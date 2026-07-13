@@ -71,7 +71,7 @@ export const MFD_PAGES: Record<MFDPageId, MFDPageDef> = {
   'nav-position': {
     id: 'nav-position',
     title: 'NAV / POSITION',
-    softLabel: 'NAV',
+    softLabel: 'POS',
     accent: '#00D9FF',
     status: 'shipped',
     Component: React.lazy(() => import('./pages/NavPositionPage')),

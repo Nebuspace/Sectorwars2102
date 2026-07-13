@@ -81,7 +81,7 @@ const HazardAnalysisCard: React.FC<HazardAnalysisCardProps> = ({ sector, onClose
             </div>
           )}
           {sector.description && <p className="annunciator-card-description">{sector.description}</p>}
-          <p className="annunciator-card-note">Lamp grammar: CAUTION lights above zero · click to acknowledge.</p>
+          <p className="annunciator-card-note">Lamp grammar: CAUTION lights at hazard 5+ · click to acknowledge.</p>
         </div>
       ) : (
         <div className="annunciator-card-body">

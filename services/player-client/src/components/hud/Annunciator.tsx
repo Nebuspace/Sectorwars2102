@@ -1,6 +1,7 @@
 import React, { useRef } from 'react';
-import { useAnnunciatorState, type MasterBulb, type Segment } from './useAnnunciatorState';
+import { useAnnunciatorState, segLitClass, type MasterBulb, type Segment } from './useAnnunciatorState';
 import HazardAnalysisCard from './HazardAnalysisCard';
+import '../layouts/cockpit-shell.css';
 import './annunciator.css';
 
 /**
@@ -17,6 +18,22 @@ import './annunciator.css';
  * — unlike the prior sub-part, which only rendered a chip when active — so
  * the strip reads as a persistent instrument, not a conditional toast rail.
  *
+ * WO-UI0-SHELL-TRANSPLANT (leaf L5): the DOM now emits the artifact's own
+ * BARE classnames (`.annun`/`.lamp`/`.bulb`/`.segs`/`.seg`) instead of the
+ * prior sub-part's `.annunciator-*` prefixed set — cockpit-shell.css (the
+ * transplant's untouched CSS baseline, imported alongside this file's own
+ * annunciator.css) now owns the strip's geometry AND severity/state colors
+ * (`.bulb.warn.on`, `.seg.live` etc) 1:1 from the ratified prototype;
+ * annunciator.css keeps only what cockpit-shell.css doesn't cover — the
+ * `.annunciator-overlay` scene-narrowing wrapper (below) and the
+ * HazardAnalysisCard dialog skin. The outer `.annunciator-overlay` wrapper
+ * (NOT a bare artifact class — this app's own scene-narrowing/z-index
+ * contract, no demo equivalent) stays; `.annun` self-positions inside it via
+ * cockpit-shell.css's own `position:absolute;top:5%;left:50%;
+ * transform:translateX(-50%)`, so the wrapper no longer needs its own
+ * flex-centering for the strip (kept only for the hazard card, which gets
+ * its own absolute placement below the strip in annunciator.css).
+ *
  * Two ack-able MASTER bulbs (WARN red/fast, CAUTION amber/slow) flank five
  * click-through SEGMENTS (HAZARD·LAW·THREAT·TURNS·COMM) that are pure state
  * indicators + navigators — only the bulbs silence a flash; segments always
@@ -26,9 +43,10 @@ import './annunciator.css';
  *
  * All trigger/lifecycle/navigation logic lives in useAnnunciatorState.ts
  * (shared with AnnunciatorMini.tsx) — see that file's doc-comment for the
- * full state-source table, the doc-gap this build surfaced (LAW's CSS
- * class vs. boolean disagreement in the ratified prototype itself), and the
- * click-through mechanism per lamp.
+ * full state-source table, the LAW CSS-class-vs-boolean doc-gap (now
+ * resolved for the CLASS side by NIT n5, `segLitClass()`; the underlying
+ * canon question is still staged for Max), and the click-through mechanism
+ * per lamp.
  *
  * Overlay contract (SCENE-NARROWING guardrail), unchanged from the prior
  * sub-part: the wrapper's pointer-events:none is set INLINE (testable in
@@ -62,23 +80,26 @@ const roleFor = (severity: 'warn' | 'caution' | 'info' | 'WARN' | 'CAUT'): 'aler
 const ariaLiveFor = (severity: 'warn' | 'caution' | 'info' | 'WARN' | 'CAUT'): 'assertive' | 'polite' =>
   severity === 'warn' || severity === 'WARN' ? 'assertive' : 'polite';
 
+/* Bare artifact markup (RATIFIED.html:1204/1212): a blank `.bulb` button —
+ * no icon, no text INSIDE it — followed by its WARN/CAUT label as a plain
+ * text sibling inside `.lamp` (cockpit-shell.css styles that text via
+ * `.lamp`'s own inherited font-size/color/letter-spacing, no dedicated
+ * label class needed). */
 const MasterBulbButton: React.FC<{ bulb: MasterBulb; reducedMotion: boolean }> = ({ bulb, reducedMotion }) => {
   const severityClass = bulb.id === 'WARN' ? 'warn' : 'caut';
   const stateClass = bulb.active ? (bulb.flashing && !reducedMotion ? 'on' : 'ack') : '';
   return (
-    <div className="annunciator-lamp-group">
+    <div className="lamp">
       <button
         type="button"
-        className={['annunciator-bulb', severityClass, stateClass].filter(Boolean).join(' ')}
+        className={['bulb', severityClass, stateClass].filter(Boolean).join(' ')}
         onClick={bulb.ack}
         aria-label={bulb.ariaLabel}
         role={roleFor(bulb.id)}
         aria-live={ariaLiveFor(bulb.id)}
         style={{ pointerEvents: 'auto' }}
       />
-      <span className="annunciator-bulb-label" aria-hidden="true">
-        {MASTER_LABEL[bulb.id]}
-      </span>
+      {MASTER_LABEL[bulb.id]}
     </div>
   );
 };
@@ -87,7 +108,7 @@ const SegmentButton = React.forwardRef<HTMLButtonElement, { segment: Segment }>(
   <button
     ref={ref}
     type="button"
-    className={['annunciator-seg', `annunciator-seg--${segment.severity}`, segment.active ? 'is-live' : ''].filter(Boolean).join(' ')}
+    className={['seg', segment.active ? segLitClass(segment) : ''].filter(Boolean).join(' ')}
     onClick={segment.onActivate}
     aria-label={segment.ariaLabel}
     title={segment.title}
@@ -117,9 +138,9 @@ const Annunciator: React.FC = () => {
 
   return (
     <div className="annunciator-overlay" style={{ pointerEvents: 'none' }} data-testid="annunciator-overlay">
-      <div className="annunciator-strip" data-testid="annunciator-strip">
+      <div className="annun" data-testid="annunciator-strip">
         <MasterBulbButton bulb={warn} reducedMotion={reducedMotion} />
-        <div className="annunciator-segs">
+        <div className="segs">
           {segments.map((segment) => (
             <SegmentButton key={segment.id} segment={segment} ref={segment.id === 'HAZARD' ? hazardButtonRef : undefined} />
           ))}
