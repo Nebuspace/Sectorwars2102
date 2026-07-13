@@ -222,17 +222,19 @@ describe('CommsCrewPage — MFD-B COMM', () => {
   });
 });
 
-describe('mfdRegistry / sidebarScreens -- WO-UI2-DECK-RECONCILE migration', () => {
-  it('drops threat-readiness, salvage, turn-economy, reputation and keeps the ratified 6-page slate', async () => {
+describe('mfdRegistry / sidebarScreens -- WO-UI2-DECK-RECONCILE / WO-UI1-CHROME-COMPLETE migrations', () => {
+  it('drops threat-readiness, salvage, turn-economy, reputation, aria-terminal and keeps the ratified 5-page slate', async () => {
     const { MFD_PAGES } = await import('../mfdRegistry');
 
     expect(Object.keys(MFD_PAGES).sort()).toEqual(
-      ['aria-terminal', 'cargo', 'comms-crew', 'nav-position', 'quantum-drive', 'vessel-status'].sort()
+      ['cargo', 'comms-crew', 'nav-position', 'quantum-drive', 'vessel-status'].sort()
     );
     expect((MFD_PAGES as Record<string, unknown>)['threat-readiness']).toBeUndefined();
     expect((MFD_PAGES as Record<string, unknown>)['salvage']).toBeUndefined();
     expect((MFD_PAGES as Record<string, unknown>)['turn-economy']).toBeUndefined();
     expect((MFD_PAGES as Record<string, unknown>)['reputation']).toBeUndefined();
+    // WO-UI1-CHROME-COMPLETE: ARIA absorbed into the teleprinter.
+    expect((MFD_PAGES as Record<string, unknown>)['aria-terminal']).toBeUndefined();
   });
 
   it('MFD-B COMM is no longer flagged partial -- ships as a real, working page', async () => {
@@ -243,7 +245,8 @@ describe('mfdRegistry / sidebarScreens -- WO-UI2-DECK-RECONCILE migration', () =
   it('SIDEBAR_A (MFD-A) matches the ratified slate STAT / CRGO / QTM -- THRT and SALV dropped', async () => {
     const { SIDEBAR_A, SIDEBAR_B } = await import('../sidebarScreens');
     expect(SIDEBAR_A.pageIds).toEqual(['vessel-status', 'cargo', 'quantum-drive']);
-    // MFD-B untouched by this WO -- POS / ARIA / COMM.
-    expect(SIDEBAR_B.pageIds).toEqual(['nav-position', 'aria-terminal', 'comms-crew']);
+    // WO-UI1-CHROME-COMPLETE: MFD-B slate == [POS, COMM] -- ARIA absorbed
+    // into the teleprinter (canon §05 L578).
+    expect(SIDEBAR_B.pageIds).toEqual(['nav-position', 'comms-crew']);
   });
 });

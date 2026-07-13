@@ -104,6 +104,20 @@ vi.mock('../../../contexts/AutopilotContext', () => ({
   useAutopilot: () => ({ status: 'idle', course: null, pauseReason: null }),
 }));
 
+// WO-UI1-CHROME-COMPLETE: Annunciator now polls greyStatusAPI.getStatus()
+// (LAW) and planetaryAPI.getOwnedPlanets() (siege) on mount -- resolved
+// inert here (mirrors ThreatPage.test.tsx / TacticalMonitor.test.tsx's own
+// greyStatusAPI mock convention) so this passive structural-mount proof
+// doesn't hit a real, unmocked apiRequest/fetch call.
+vi.mock('../../../services/api', () => ({
+  greyStatusAPI: {
+    getStatus: () => Promise.resolve({ isGrey: false, kind: null, greyUntil: null, remainingSeconds: 0, clearFineCredits: null }),
+  },
+  planetaryAPI: {
+    getOwnedPlanets: () => Promise.resolve({ planets: [] }),
+  },
+}));
+
 vi.mock('../../mfd/RouteRail', () => ({ default: () => <div data-testid="route-rail-stub" /> }));
 vi.mock('../../mfd/MFDScreen', () => ({ default: () => <div data-testid="mfd-screen-stub" /> }));
 vi.mock('../../ranking/MedalToast', () => ({ default: () => null }));
@@ -122,8 +136,14 @@ vi.mock('../../aria/Teleprinter', async (importOriginal) => {
     React.useEffect(() => {
       teleprinterMountCount++;
     }, []);
+    // WO-UI1-CHROME-COMPLETE: Teleprinter is now a controlled component
+    // (displayMode owned by its parent, mirroring GameLayout's real
+    // teleprinterDisplayMode state) -- forward real state so the REAL,
+    // unmocked component underneath behaves exactly as it does in
+    // production, not with undefined props.
+    const [displayMode, setDisplayMode] = React.useState<'ticker' | 'mid-panel' | 'full-overlay'>('ticker');
     const Real = actual.default;
-    return <Real />;
+    return <Real displayMode={displayMode} onDisplayModeChange={setDisplayMode} />;
   };
   return { ...actual, default: Spy };
 });

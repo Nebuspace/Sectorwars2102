@@ -1,8 +1,41 @@
 /**
- * Teleprinter — the ARIA narration/dialogue box for the shell's reserved
- * `teleprinter` grid slot (WO-UI1-TELEPRINTER sub-part a;
- * game-layout.css:99-103 names the row, empty until the serial stitch that
- * also lands ANNUNCIATOR).
+ * Teleprinter — the ARIA narration/dialogue/command box for the shell's
+ * reserved `teleprinter` grid slot (WO-UI1-TELEPRINTER sub-part a;
+ * game-layout.css:99-103 names the row).
+ *
+ * WO-UI1-CHROME-COMPLETE lands the three pieces the original stitch
+ * deliberately left for later (see the file's own prior header):
+ *   1. ADR-0072 GRAMMAR WIRING — the CMD channel (and the ticker's own
+ *      compact input, see below) now PARSE + EXECUTE the command grammar
+ *      client-side (dock/undock/land/lift off/set course to N/engage/
+ *      abort/status/help — cockpit-redesign-v10 §05 L506) instead of
+ *      just echoing. Unrecognized input falls through to the existing
+ *      ARIA free-chat (sendARIAMessage) unchanged — this is deterministic
+ *      client-side dispatch, NOT a new AI-safety surface; the WS
+ *      free-chat path is untouched.
+ *   2. THREE display modes (ticker / mid-panel / full-overlay), replacing
+ *      the old binary minimize/expand — controlled by the parent
+ *      (GameLayout owns `displayMode`, mirrors its existing windshield-
+ *      min pattern) because mid-panel also drives the MFD-B→MFD-A fold,
+ *      a decision GameLayout must see to swap which MFDScreen configs it
+ *      renders.
+ *   3. ARIA ABSORPTION — the MFD-B `aria-terminal` page is retired
+ *      (mfdRegistry.tsx/sidebarScreens.ts/mfdTypes.ts); this component is
+ *      now the only place free-chat + commands live. AriaTerminalPage.tsx
+ *      stays on disk, unregistered (same retirement pattern as
+ *      ThreatPage/SalvagePage, WO-UI2-DECK-RECONCILE).
+ *
+ * TICKER FORM (visual-form steer, mid-build, relayed from Max via the
+ * orchestrator): the compact mode is ONE amber-on-dark row —
+ * `▸ ARIA ✎ <latest event>` + an inline command input + [XMIT] [◫ PANEL]
+ * [▲ LOG] — not the old click-anywhere-to-expand strip. XMIT dispatches
+ * through the SAME grammar-first path as the CMD tab (item 1); PANEL/LOG
+ * jump straight to mid-panel/full-overlay. This is a deliberate,
+ * sanctioned exception to the shipped ARIA cyan/violet convention
+ * (teleprinter.css header) — amber, matching the v10 prototype's
+ * teleprinter demo palette, scoped to JUST the ticker row; mid-panel/
+ * full-overlay keep the existing narration=violet/dialogue=cyan/
+ * command-echo=amber tab convention untouched.
  *
  * REUSES the existing ARIA plumbing verbatim — no new transport:
  *   - useWebSocket().ariaMessages / sendARIAMessage / isConnected — the WS
@@ -16,43 +49,60 @@
  *     (ariaFeed.appendUserEcho, isNav:true type:'user') that never touch the
  *     WS pipe. Identical merge idiom to AriaTerminalPage.tsx's
  *     mergedMessages (ariaMessages + navMessages, timestamp-sorted).
+ *   - useGame() / useAutopilot() — the SAME station/planet/course actions
+ *     GameDashboard's manual helm buttons and AriaTerminalPage's grammar
+ *     already dispatch to; nothing reimplemented here.
  *
- * The merged stream is a natural 3-way partition, which IS this component's
- * three modes (no new message shape invented):
+ * The merged stream is a natural 3-way partition, which IS the mid-panel/
+ * full-overlay CONTENT mode (independent of the ticker/mid-panel/full-
+ * overlay DISPLAY mode above — no new message shape invented):
  *   - narration    — isNarration (server catalog events) OR local isNav
- *                    ai-lines (autopilot transitions). Ambient prose, read-
- *                    primary; "every event, every lamp spoken in prose."
+ *                    ai-lines (autopilot transitions, command replies).
+ *                    Ambient prose, read-primary; "every event, every
+ *                    lamp spoken in prose."
  *   - dialogue     — plain conversational turns (neither isNav nor
  *                    isNarration): aria_response + free player chat.
  *   - command-echo — local isNav user-lines (ariaFeed.appendUserEcho), the
- *                    terse "YOU>" echo for intercepted grammar-style input
- *                    that never round-trips the WS pipe.
+ *                    terse "YOU>" echo for intercepted grammar-style
+ *                    input (typed via either the ticker's own input or
+ *                    the CMD tab's input).
  *
  * Input behavior is mode-aware but stays on the SAME two existing calls:
- * command-echo submits via ariaFeed.appendUserEcho (local, offline-safe,
- * mirrors AriaTerminalPage's tryNavCommand echo); narration/dialogue submit
- * via sendARIAMessage (which itself already appends the user's line into
- * ariaMessages on success — see WebSocketContext.tsx:380-396), falling back
- * to a component-local "pinned" echo (Pixel a11y REVISE #2) if the WS send
- * fails, tagged with the mode active at submit time so the line stays
- * visible in the tab the player typed it into — never silently dropped,
- * and never vanishing into an unrelated tab.
+ * command-echo (+ the ticker's input) tries the ADR-0072 grammar first,
+ * falling through to sendARIAMessage exactly like narration/dialogue;
+ * narration/dialogue submit via sendARIAMessage directly (which itself
+ * already appends the user's line into ariaMessages on success — see
+ * WebSocketContext.tsx:380-396), falling back to a component-local
+ * "pinned" echo (Pixel a11y REVISE #2) if the WS send fails, tagged with
+ * the mode active at submit time so the line stays visible in the tab the
+ * player typed it into — never silently dropped, and never vanishing into
+ * an unrelated tab.
  *
- * NOT built here (left to later sub-parts / the stitch): ADR-0072 grammar
- * interception (plot/goto/engage/abort — AutopilotContext), MFD-B fold
- * (sub-part c), and mounting into GameLayout (the serial stitch step).
- *
- * Minimize is CSS-only (`.tp-minimized` toggles `.tp-body`'s display) — the
- * component tree is never conditionally unmounted, so mode/input/scroll
- * state all survive a minimize/restore cycle.
+ * Minimize/expand is CSS-only (the root's `tp-<displayMode>` class toggles
+ * which of `.tp-ticker-row` / `.tp-body` is visible) — the component tree
+ * is never conditionally unmounted, so mode/input/scroll state all
+ * survive a display-mode switch.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
 import { useWebSocket } from '../../contexts/WebSocketContext';
+import { useGame } from '../../contexts/GameContext';
+import { useAutopilot } from '../../contexts/AutopilotContext';
 import { ariaFeed, useAriaFeed } from '../mfd/ariaFeedStore';
 import './teleprinter.css';
 
+/** Content-channel tab, independent of the display-mode axis below. */
 export type TeleprinterMode = 'narration' | 'dialogue' | 'command-echo';
+
+/** Display-mode axis (cockpit-redesign-v10 §05 L624): how much of the
+ *  cockpit the teleprinter occupies. `mid-panel` also drives the MFD-B→
+ *  MFD-A fold in GameLayout — controlled from there, not owned locally. */
+export type TeleprinterDisplayMode = 'ticker' | 'mid-panel' | 'full-overlay';
+
+interface TeleprinterProps {
+  displayMode: TeleprinterDisplayMode;
+  onDisplayModeChange: (mode: TeleprinterDisplayMode) => void;
+}
 
 /** A feed entry — either a WS ariaMessages item, a local ariaFeedStore
  *  NavMessage, or a component-local offline-fallback echo. Mirrors
@@ -115,14 +165,41 @@ const sanitizeInput = (input: string): string => {
   return sanitized.slice(0, MAX_MESSAGE_LENGTH);
 };
 
-const Teleprinter: React.FC = () => {
+// ── ADR-0072 command grammar (cockpit-redesign-v10 §05 L506) ──────────────
+// engage/abort/plot/goto ported verbatim from AriaTerminalPage.tsx's
+// tryNavCommand (the terminal this component absorbs); dock/undock/land/
+// lift-off/status/help are new, filling out the full canon grammar.
+const RE_DOCK = /^dock$/i;
+const RE_UNDOCK = /^undock$/i;
+const RE_LAND = /^land$/i;
+const RE_LIFTOFF = /^(lift[\s-]?off)$/i;
+const RE_STATUS = /^status$/i;
+const RE_HELP = /^help$/i;
+const RE_ENGAGE = /^(engage|engage autopilot)$/i;
+const RE_ABORT = /^(abort|all stop)$/i;
+const RE_PLOT_COURSE =
+  /^(plot|lay in|set)\s+(a\s+)?(course|route)\s*(to|for)?\s*#?(\d+)$/i;
+const RE_GOTO = /^(goto|navigate to)\s+#?(\d+)$/i;
+
+const Teleprinter: React.FC<TeleprinterProps> = ({ displayMode, onDisplayModeChange }) => {
   const { ariaMessages, sendARIAMessage, isConnected } = useWebSocket();
   const { navMessages, conversationId } = useAriaFeed();
+  const {
+    playerState,
+    currentSector,
+    stationsInSector,
+    planetsInSector,
+    dockAtStation,
+    undockFromStation,
+    landOnPlanet,
+    leavePlanet,
+  } = useGame();
+  const { plotCourse, engage, abort: autopilotAbort } = useAutopilot();
 
   const [mode, setMode] = useState<TeleprinterMode>('narration');
-  const [minimized, setMinimized] = useState(false);
   const [inputValue, setInputValue] = useState('');
   const [inputFocused, setInputFocused] = useState(false);
+  const [tickerInputValue, setTickerInputValue] = useState('');
   // Offline-fallback echoes (Pixel a11y REVISE #2) — component-local, never
   // sent anywhere, pinned to the mode active when sendARIAMessage failed.
   const [localEchoes, setLocalEchoes] = useState<FeedEntry[]>([]);
@@ -155,6 +232,174 @@ const Teleprinter: React.FC = () => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, [filtered]);
 
+  // ── ADR-0072 command grammar intercept ────────────────────────────────
+  // Returns true if the input was a recognized command (echoed + executed
+  // locally — never reaches the WS). Returns false so the caller falls
+  // through to the existing ARIA free-chat.
+  const tryCommand = useCallback((raw: string): boolean => {
+    const trimmed = raw.trim();
+
+    if (RE_DOCK.test(trimmed)) {
+      ariaFeed.appendUserEcho(trimmed);
+      if (playerState?.is_docked) {
+        ariaFeed.appendNav('Already docked, Commander.');
+        return true;
+      }
+      const station = stationsInSector[0];
+      if (!station) {
+        ariaFeed.appendNav('No station in this sector to dock at.');
+        return true;
+      }
+      autopilotAbort('manual helm action');
+      dockAtStation(station.id)
+        .then((result: { full?: boolean; detail?: string } | undefined) => {
+          ariaFeed.appendNav(
+            result?.full
+              ? (result.detail || 'All docking slips are occupied — queued.')
+              : `Docked at ${station.name}, Commander.`
+          );
+        })
+        .catch(() => ariaFeed.appendNav('Docking sequence failed.'));
+      return true;
+    }
+
+    if (RE_UNDOCK.test(trimmed)) {
+      ariaFeed.appendUserEcho(trimmed);
+      if (!playerState?.is_docked) {
+        ariaFeed.appendNav('Not docked, Commander.');
+        return true;
+      }
+      autopilotAbort('manual helm action');
+      undockFromStation()
+        .then(() => ariaFeed.appendNav('Undocked. Clear of the berth.'))
+        .catch(() => ariaFeed.appendNav('Undocking failed.'));
+      return true;
+    }
+
+    if (RE_LAND.test(trimmed)) {
+      ariaFeed.appendUserEcho(trimmed);
+      if (playerState?.is_landed) {
+        ariaFeed.appendNav('Already landed, Commander.');
+        return true;
+      }
+      const planet = planetsInSector[0];
+      if (!planet) {
+        ariaFeed.appendNav('No planet in this sector to land on.');
+        return true;
+      }
+      autopilotAbort('manual helm action');
+      landOnPlanet(planet.id)
+        .then(() => ariaFeed.appendNav(`Landed on ${planet.name}, Commander.`))
+        .catch(() => ariaFeed.appendNav('Landing sequence failed.'));
+      return true;
+    }
+
+    if (RE_LIFTOFF.test(trimmed)) {
+      ariaFeed.appendUserEcho(trimmed);
+      if (!playerState?.is_landed) {
+        ariaFeed.appendNav('Not landed, Commander.');
+        return true;
+      }
+      autopilotAbort('manual helm action');
+      leavePlanet()
+        .then(() => ariaFeed.appendNav('Lifted off. Clear of the surface.'))
+        .catch(() => ariaFeed.appendNav('Lift-off failed.'));
+      return true;
+    }
+
+    if (RE_ENGAGE.test(trimmed)) {
+      ariaFeed.appendUserEcho(trimmed);
+      engage();
+      return true;
+    }
+
+    if (RE_ABORT.test(trimmed)) {
+      ariaFeed.appendUserEcho(trimmed);
+      autopilotAbort('teleprinter command');
+      return true;
+    }
+
+    if (RE_STATUS.test(trimmed)) {
+      ariaFeed.appendUserEcho(trimmed);
+      const sectorName = currentSector?.name || `Sector ${playerState?.current_sector_id ?? '?'}`;
+      const posture = playerState?.is_docked ? 'DOCKED' : playerState?.is_landed ? 'LANDED' : 'IN FLIGHT';
+      ariaFeed.appendNav(
+        `Status: ${sectorName} — ${posture}. ${playerState?.turns ?? 0} turns, ${playerState?.credits ?? 0} credits banked.`
+      );
+      return true;
+    }
+
+    if (RE_HELP.test(trimmed)) {
+      ariaFeed.appendUserEcho(trimmed);
+      ariaFeed.appendNav(
+        'Commands: dock · undock · land · lift off · set course to N · engage · abort · status · help.'
+      );
+      return true;
+    }
+
+    // set course to N / plot / lay in / goto — ported verbatim from
+    // AriaTerminalPage.tsx's tryNavCommand.
+    let sectorId: number | null = null;
+    const mPlot = trimmed.match(RE_PLOT_COURSE);
+    const mGoto = trimmed.match(RE_GOTO);
+    if (mPlot) {
+      sectorId = parseInt(mPlot[5], 10);
+    } else if (mGoto) {
+      sectorId = parseInt(mGoto[2], 10);
+    }
+
+    if (sectorId !== null && !Number.isNaN(sectorId)) {
+      ariaFeed.appendUserEcho(trimmed);
+      plotCourse(sectorId).catch(() => {
+        ariaFeed.appendNav('No such sector on any chart I can read.');
+      });
+      return true;
+    }
+
+    return false;
+  }, [
+    playerState,
+    currentSector,
+    stationsInSector,
+    planetsInSector,
+    dockAtStation,
+    undockFromStation,
+    landOnPlanet,
+    leavePlanet,
+    autopilotAbort,
+    engage,
+    plotCourse,
+  ]);
+
+  // Shared dispatch: grammar first, ARIA free-chat fallback — used by both
+  // the CMD tab's input and the ticker's own compact input (visual-form
+  // steer), so XMIT means the same thing in either place.
+  const dispatchLine = useCallback((sanitized: string, fallbackPinnedMode: TeleprinterMode) => {
+    if (tryCommand(sanitized)) return;
+
+    const success = sendARIAMessage(sanitized, conversationId ?? undefined, 'trading');
+    if (success) {
+      if (!conversationId) {
+        ariaFeed.setConversationId(`conv_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`);
+      }
+    } else {
+      // Offline fallback — a typed line must never silently vanish, and
+      // (Pixel a11y REVISE #2) must stay visible in the mode the player
+      // was actually typing into.
+      setLocalEchoes((prev) => [
+        ...prev,
+        {
+          id: `tp-offline-${Date.now()}-${prev.length}`,
+          type: 'user',
+          content: sanitized,
+          timestamp: new Date().toISOString(),
+          pinnedMode: fallbackPinnedMode,
+        },
+      ]);
+    }
+  }, [tryCommand, sendARIAMessage, conversationId]);
+
+  // ── tp-body input (narration/dialogue/CMD tabs) ────────────────────────
   const submit = useCallback(() => {
     const raw = inputValue.trim();
     if (!raw) return;
@@ -165,9 +410,7 @@ const Teleprinter: React.FC = () => {
     }
 
     if (mode === 'command-echo') {
-      // Terse local echo, never touches the WS pipe — matches
-      // AriaTerminalPage's tryNavCommand echo for intercepted commands.
-      ariaFeed.appendUserEcho(sanitized);
+      dispatchLine(sanitized, 'command-echo');
     } else {
       const success = sendARIAMessage(sanitized, conversationId ?? undefined, 'trading');
       if (success) {
@@ -175,9 +418,6 @@ const Teleprinter: React.FC = () => {
           ariaFeed.setConversationId(`conv_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`);
         }
       } else {
-        // Offline fallback — a typed line must never silently vanish, and
-        // (Pixel a11y REVISE #2) must stay visible in the mode the player
-        // was actually typing into, not jump to command-echo.
         setLocalEchoes((prev) => [
           ...prev,
           {
@@ -191,7 +431,7 @@ const Teleprinter: React.FC = () => {
       }
     }
     setInputValue('');
-  }, [inputValue, mode, sendARIAMessage, conversationId]);
+  }, [inputValue, mode, dispatchLine, sendARIAMessage, conversationId]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -201,6 +441,32 @@ const Teleprinter: React.FC = () => {
       }
     },
     [submit]
+  );
+
+  // ── Ticker's own compact input (visual-form steer) — always grammar-
+  // first, exactly like the CMD tab; unrecognized text falls through to
+  // free-chat, pinned to command-echo so it lands in the CMD tab once the
+  // player expands. ────────────────────────────────────────────────────
+  const submitTicker = useCallback(() => {
+    const raw = tickerInputValue.trim();
+    if (!raw) return;
+    const sanitized = sanitizeInput(raw);
+    if (!sanitized) {
+      setTickerInputValue('');
+      return;
+    }
+    dispatchLine(sanitized, 'command-echo');
+    setTickerInputValue('');
+  }, [tickerInputValue, dispatchLine]);
+
+  const handleTickerKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        submitTicker();
+      }
+    },
+    [submitTicker]
   );
 
   const placeholder =
@@ -240,50 +506,114 @@ const Teleprinter: React.FC = () => {
     modeTabRefs.current[nextIndex]?.focus();
   }, [mode]);
 
-  return (
-    <div className={`teleprinter${minimized ? ' tp-minimized' : ''}`} data-testid="teleprinter">
-      {/* Always-visible strip: doubles as the minimize/restore toggle and
-          keeps the latest line visible unscrolled whether expanded or not
-          (accept #1/#4). */}
-      <button
-        type="button"
-        className="tp-strip-toggle"
-        onClick={() => setMinimized((m) => !m)}
-        aria-expanded={!minimized}
-        aria-controls="tp-body"
-        title={minimized ? 'Expand teleprinter' : 'Minimize teleprinter'}
-      >
-        <span className="tp-glyph" aria-hidden="true">{minimized ? '▸' : '▾'}</span>
-        <span className="tp-strip-label">ARIA</span>
-        <span className="tp-strip-line">{latestLine}</span>
-        {!isConnected && <span className="tp-strip-offline">UPLINK OFFLINE</span>}
-      </button>
+  // ── Display-mode controls ──────────────────────────────────────────────
+  const collapseToTicker = useCallback(() => onDisplayModeChange('ticker'), [onDisplayModeChange]);
+  const toggleOverlay = useCallback(
+    () => onDisplayModeChange(displayMode === 'full-overlay' ? 'mid-panel' : 'full-overlay'),
+    [displayMode, onDisplayModeChange]
+  );
+  const openMidPanel = useCallback(() => onDisplayModeChange('mid-panel'), [onDisplayModeChange]);
+  const openOverlay = useCallback(() => onDisplayModeChange('full-overlay'), [onDisplayModeChange]);
 
-      {/* Never conditionally unmounted — minimize is a pure CSS toggle on
-          the parent's class (accept #4: preserve state, no remount). */}
-      <div id="tp-body" className="tp-body">
-        <div
-          className="tp-modes"
-          role="tablist"
-          aria-label="Teleprinter mode"
-          onKeyDown={handleModeTablistKeyDown}
+  return (
+    <div className={`teleprinter tp-${displayMode}`} data-testid="teleprinter">
+      {/* ── TICKER — one amber-on-dark row (visual-form steer). Always in
+          the DOM (CSS display-toggled, never unmounted) so a half-typed
+          command survives a switch to mid-panel/full-overlay and back. ── */}
+      <div className="tp-ticker-row" role="group" aria-label="ARIA teleprinter ticker">
+        <span className="tp-ticker-glyph" aria-hidden="true">▸</span>
+        <span className="tp-ticker-label">ARIA</span>
+        <span className="tp-ticker-pencil" aria-hidden="true">✎</span>
+        <span className="tp-ticker-line" aria-live="polite">{latestLine}</span>
+        {!isConnected && <span className="tp-ticker-offline">UPLINK OFFLINE</span>}
+        <input
+          type="text"
+          className="tp-ticker-input"
+          value={tickerInputValue}
+          onChange={(e) => setTickerInputValue(e.target.value)}
+          onKeyDown={handleTickerKeyDown}
+          placeholder="speak to the ship — try: help"
+          maxLength={MAX_MESSAGE_LENGTH}
+          aria-label="Send command or message to ARIA"
+        />
+        <button
+          type="button"
+          className="tp-ticker-btn tp-ticker-xmit"
+          onClick={submitTicker}
+          disabled={!tickerInputValue.trim()}
+          aria-label="Transmit"
         >
-          {MODES.map((m, i) => (
+          XMIT
+        </button>
+        <button
+          type="button"
+          className="tp-ticker-btn tp-ticker-panel"
+          onClick={openMidPanel}
+          aria-label="Open teleprinter mid-panel"
+        >
+          ◫ PANEL
+        </button>
+        <button
+          type="button"
+          className="tp-ticker-btn tp-ticker-log"
+          onClick={openOverlay}
+          aria-label="Open teleprinter transcript overlay"
+        >
+          ▲ LOG
+        </button>
+      </div>
+
+      {/* ── mid-panel / full-overlay body — narration/dialogue/CMD tabs +
+          log + input, unchanged from the prior single "expanded" state
+          except for the CMD grammar wiring above and the two display-
+          mode controls below. Never conditionally unmounted (accept
+          #4/#5's state-preservation contract). ── */}
+      <div id="tp-body" className="tp-body">
+        <div className="tp-body-header">
+          <div
+            className="tp-modes"
+            role="tablist"
+            aria-label="Teleprinter mode"
+            onKeyDown={handleModeTablistKeyDown}
+          >
+            {MODES.map((m, i) => (
+              <button
+                key={m.id}
+                type="button"
+                role="tab"
+                id={`tp-mode-tab-${m.id}`}
+                ref={(el) => { modeTabRefs.current[i] = el; }}
+                aria-selected={mode === m.id}
+                aria-controls="tp-log"
+                tabIndex={mode === m.id ? 0 : -1}
+                className={`tp-mode-btn tp-mode-${m.id}${mode === m.id ? ' active' : ''}`}
+                onClick={() => setMode(m.id)}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="tp-display-controls">
             <button
-              key={m.id}
               type="button"
-              role="tab"
-              id={`tp-mode-tab-${m.id}`}
-              ref={(el) => { modeTabRefs.current[i] = el; }}
-              aria-selected={mode === m.id}
-              aria-controls="tp-log"
-              tabIndex={mode === m.id ? 0 : -1}
-              className={`tp-mode-btn tp-mode-${m.id}${mode === m.id ? ' active' : ''}`}
-              onClick={() => setMode(m.id)}
+              className="tp-display-btn tp-display-overlay-toggle"
+              onClick={toggleOverlay}
+              aria-label={displayMode === 'full-overlay' ? 'Collapse to mid-panel' : 'Expand to transcript overlay'}
+              title={displayMode === 'full-overlay' ? 'Collapse to mid-panel' : 'Expand to transcript overlay'}
             >
-              {m.label}
+              {displayMode === 'full-overlay' ? '▾' : '⤢'}
             </button>
-          ))}
+            <button
+              type="button"
+              className="tp-display-btn tp-display-ticker-toggle"
+              onClick={collapseToTicker}
+              aria-label="Collapse to ticker"
+              title="Collapse to ticker"
+            >
+              ▾ TICKER
+            </button>
+          </div>
         </div>
 
         <div

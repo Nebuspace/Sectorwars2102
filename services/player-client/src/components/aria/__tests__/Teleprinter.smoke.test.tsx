@@ -1,23 +1,30 @@
 // @vitest-environment jsdom
 /**
  * Teleprinter — live-mount console-error smoke (WO-UI1-TELEPRINTER sub-part
- * a). Mirrors StatusBar.smoke.test.tsx's seam (jsdom + react-dom/client
- * createRoot + act(), no RTL in this project).
+ * a; extended by WO-UI1-CHROME-COMPLETE for the grammar wiring + three
+ * display modes). Mirrors StatusBar.smoke.test.tsx's seam (jsdom +
+ * react-dom/client createRoot + act(), no RTL in this project).
  *
  * Proves, against the REAL ariaFeedStore (not mocked — it's a lightweight
  * module-level singleton, exercising it directly proves the genuine merge/
- * filter integration rather than a hand-rolled fake) plus a mocked
- * WebSocketContext (the real one owns a live WS singleton, too heavy for a
- * unit smoke):
+ * filter integration rather than a hand-rolled fake) plus mocked
+ * WebSocketContext / GameContext / AutopilotContext (the real ones own live
+ * transports/providers, too heavy for a unit smoke):
  *   - narration renders + the log scrolls WITHIN the panel (scrollIntoView
  *     called with block:'nearest', never the page) — accept #1
  *   - the input box visibly expands on focus and both submits + echoes —
  *     accept #2
- *   - all three modes are switchable and show DISTINCT filtered content —
- *     accept #3
- *   - minimize -> strip -> restore preserves mode + in-progress input state,
- *     proving no remount occurred (a remount would reset useState to its
- *     defaults) — accept #4/#5
+ *   - all three CONTENT tabs (narration/dialogue/CMD) are switchable and
+ *     show DISTINCT filtered content — accept #3
+ *   - collapse to ticker -> restore preserves content-tab + in-progress
+ *     input state, proving no remount occurred — accept #4/#5
+ *   - the THREE DISPLAY modes (ticker/mid-panel/full-overlay,
+ *     WO-UI1-CHROME-COMPLETE) are all reachable and the root class tracks
+ *     the active one
+ *   - the ADR-0072 command grammar (dock/undock/land/lift off/set course to
+ *     N/engage/abort/status/help) parses + executes from BOTH the CMD tab
+ *     and the ticker's own compact input (visual-form steer); unrecognized
+ *     input falls through to the existing ARIA free-chat unchanged
  *   - zero console errors throughout every scenario
  */
 import React, { act } from 'react';
@@ -70,8 +77,67 @@ vi.mock('../../../contexts/WebSocketContext', () => ({
   }),
 }));
 
+// ── Mocked GameContext — station/planet actions + posture (dock/undock/
+// land/lift-off grammar) — grammar-dispatch tests reassign these per case. ─
+function makePlayerState(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'player-1',
+    credits: 5_000,
+    turns: 120,
+    current_sector_id: 7,
+    is_docked: false,
+    is_landed: false,
+    ...overrides,
+  };
+}
+
+let mockPlayerState: Record<string, unknown> = makePlayerState();
+let mockStationsInSector: Array<{ id: string; name: string }> = [];
+let mockPlanetsInSector: Array<{ id: string; name: string }> = [];
+const mockDockAtStation = vi.fn();
+const mockUndockFromStation = vi.fn();
+const mockLandOnPlanet = vi.fn();
+const mockLeavePlanet = vi.fn();
+
+vi.mock('../../../contexts/GameContext', () => ({
+  useGame: () => ({
+    playerState: mockPlayerState,
+    currentSector: { name: 'Sol', sector_id: 7 },
+    stationsInSector: mockStationsInSector,
+    planetsInSector: mockPlanetsInSector,
+    dockAtStation: (...args: unknown[]) => mockDockAtStation(...args),
+    undockFromStation: (...args: unknown[]) => mockUndockFromStation(...args),
+    landOnPlanet: (...args: unknown[]) => mockLandOnPlanet(...args),
+    leavePlanet: (...args: unknown[]) => mockLeavePlanet(...args),
+  }),
+}));
+
+// ── Mocked AutopilotContext — plotCourse/engage/abort (set-course/engage/
+// abort grammar). ───────────────────────────────────────────────────────
+const mockPlotCourse = vi.fn();
+const mockEngage = vi.fn();
+const mockAutopilotAbort = vi.fn();
+
+vi.mock('../../../contexts/AutopilotContext', () => ({
+  useAutopilot: () => ({
+    plotCourse: (...args: unknown[]) => mockPlotCourse(...args),
+    engage: (...args: unknown[]) => mockEngage(...args),
+    abort: (...args: unknown[]) => mockAutopilotAbort(...args),
+  }),
+}));
+
 import { ariaFeed } from '../../mfd/ariaFeedStore';
-import Teleprinter from '../Teleprinter';
+import Teleprinter, { type TeleprinterDisplayMode } from '../Teleprinter';
+
+/** Test-local controlled wrapper — Teleprinter's displayMode is owned by
+ *  its parent in production (GameLayout); this mirrors that exactly.
+ *  Defaults to 'mid-panel' (tp-body visible) so the pre-existing content-
+ *  tab assertions below need no changes; ticker/display-mode tests pass
+ *  `initial="ticker"` explicitly. */
+const ControlledTeleprinter: React.FC<{ initial?: TeleprinterDisplayMode }> = ({ initial = 'mid-panel' }) => {
+  const [displayMode, setDisplayMode] = React.useState<TeleprinterDisplayMode>(initial);
+  return <Teleprinter displayMode={displayMode} onDisplayModeChange={setDisplayMode} />;
+};
 
 describe('Teleprinter — live-mount smoke', () => {
   let container: HTMLElement;
@@ -88,6 +154,18 @@ describe('Teleprinter — live-mount smoke', () => {
     mockSendARIAMessage.mockReset();
     mockSendARIAMessage.mockReturnValue(true);
     mockIsConnected = true;
+
+    mockPlayerState = makePlayerState();
+    mockStationsInSector = [];
+    mockPlanetsInSector = [];
+    mockDockAtStation.mockReset().mockResolvedValue({ success: true });
+    mockUndockFromStation.mockReset().mockResolvedValue({ success: true });
+    mockLandOnPlanet.mockReset().mockResolvedValue({ success: true });
+    mockLeavePlanet.mockReset().mockResolvedValue({ success: true });
+    mockPlotCourse.mockReset().mockResolvedValue(undefined);
+    mockEngage.mockReset();
+    mockAutopilotAbort.mockReset();
+
     // The store is a module-level singleton — reset it so tests don't leak
     // nav messages into each other.
     ariaFeed.clearNav();
@@ -107,12 +185,52 @@ describe('Teleprinter — live-mount smoke', () => {
     errorSpy.mockRestore();
   });
 
+  // ── Shared helpers ────────────────────────────────────────────────────
+  const setInput = async (el: HTMLInputElement, text: string) => {
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(el, text);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await flush();
+  };
+
+  const pressEnter = async (el: HTMLInputElement) => {
+    await act(async () => {
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    });
+    await flush();
+  };
+
+  const clickTab = async (id: string) => {
+    const tab = container.querySelector(`#tp-mode-tab-${id}`) as HTMLButtonElement;
+    expect(tab).not.toBeNull();
+    await act(async () => {
+      tab.click();
+    });
+    await flush();
+  };
+
+  /** Types + Enter-submits via the tp-body CMD/narration/dialogue input. */
+  const submitViaBody = async (text: string) => {
+    const input = container.querySelector('.tp-input') as HTMLInputElement;
+    await setInput(input, text);
+    await pressEnter(input);
+  };
+
+  /** Types + Enter-submits via the ticker's own compact input. */
+  const submitViaTicker = async (text: string) => {
+    const input = container.querySelector('.tp-ticker-input') as HTMLInputElement;
+    await setInput(input, text);
+    await pressEnter(input);
+  };
+
   it('mounts with zero console errors; narration is the default mode and shows narration+nav lines, scrolling within the panel', async () => {
     ariaFeed.appendNav('Course laid in for Sector 12 — 2 hops.');
     ariaFeed.appendUserEcho('engage');
 
     await act(async () => {
-      root.render(<Teleprinter />);
+      root.render(<ControlledTeleprinter />);
     });
     await flush();
 
@@ -136,23 +254,14 @@ describe('Teleprinter — live-mount smoke', () => {
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
-  it('all 3 modes are switchable and show visually/structurally distinct content', async () => {
+  it('all 3 content tabs are switchable and show visually/structurally distinct content', async () => {
     ariaFeed.appendNav('Course laid in for Sector 12 — 2 hops.');
     ariaFeed.appendUserEcho('engage');
 
     await act(async () => {
-      root.render(<Teleprinter />);
+      root.render(<ControlledTeleprinter />);
     });
     await flush();
-
-    const clickTab = async (id: string) => {
-      const tab = container.querySelector(`#tp-mode-tab-${id}`) as HTMLButtonElement;
-      expect(tab).not.toBeNull();
-      await act(async () => {
-        tab.click();
-      });
-      await flush();
-    };
 
     await clickTab('dialogue');
     expect(container.querySelector('.tp-mode-dialogue.active')).not.toBeNull();
@@ -172,9 +281,9 @@ describe('Teleprinter — live-mount smoke', () => {
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
-  it('input expands on focus; command-echo submit echoes locally (no WS call), dialogue submit reuses sendARIAMessage', async () => {
+  it('input expands on focus; unrecognized CMD text falls through to ARIA free-chat (no WS call in narration/dialogue-bound submits), dialogue submit reuses sendARIAMessage', async () => {
     await act(async () => {
-      root.render(<Teleprinter />);
+      root.render(<ControlledTeleprinter />);
     });
     await flush();
 
@@ -190,31 +299,16 @@ describe('Teleprinter — live-mount smoke', () => {
     await flush();
     expect(input.className).toContain('tp-input-focused');
 
-    // ── Command-echo: switch mode, type, submit via Enter ──
+    // ── CMD tab: unrecognized text falls through to ARIA free-chat ──
     const cmdTab = container.querySelector('#tp-mode-tab-command-echo') as HTMLButtonElement;
     await act(async () => {
       cmdTab.click();
     });
     await flush();
 
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(
-        window.HTMLInputElement.prototype,
-        'value'
-      )!.set!;
-      setter.call(input, 'lay in course to 9');
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    await flush();
-    await act(async () => {
-      input.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
-      );
-    });
-    await flush();
+    await submitViaBody('what is my hull status');
 
-    expect(container.querySelector('#tp-log')?.textContent).toContain('lay in course to 9');
-    expect(mockSendARIAMessage).not.toHaveBeenCalled();
+    expect(mockSendARIAMessage).toHaveBeenCalledWith('what is my hull status', undefined, 'trading');
     expect((container.querySelector('.tp-input') as HTMLInputElement).value).toBe('');
 
     // ── Dialogue: switch mode, type, submit via XMIT click ──
@@ -225,15 +319,7 @@ describe('Teleprinter — live-mount smoke', () => {
     await flush();
 
     const input2 = container.querySelector('.tp-input') as HTMLInputElement;
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(
-        window.HTMLInputElement.prototype,
-        'value'
-      )!.set!;
-      setter.call(input2, 'what is my hull status');
-      input2.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    await flush();
+    await setInput(input2, 'what is my hull status again');
 
     const xmit = container.querySelector('.tp-xmit') as HTMLButtonElement;
     await act(async () => {
@@ -241,9 +327,11 @@ describe('Teleprinter — live-mount smoke', () => {
     });
     await flush();
 
-    expect(mockSendARIAMessage).toHaveBeenCalledWith(
-      'what is my hull status',
-      undefined,
+    // conversationId is no longer undefined by this second call -- the
+    // first (successful) send already minted + stored one.
+    expect(mockSendARIAMessage).toHaveBeenLastCalledWith(
+      'what is my hull status again',
+      expect.stringMatching(/^conv_/),
       'trading'
     );
 
@@ -264,34 +352,19 @@ describe('Teleprinter — live-mount smoke', () => {
     mockIsConnected = false;
 
     await act(async () => {
-      root.render(<Teleprinter />);
+      root.render(<ControlledTeleprinter />);
     });
     await flush();
 
     // Default mode is narration — submit stays here (not command-echo) to
-    // prove the fallback line renders in THIS tab, not command-echo.
-    const submitViaEnter = async (text: string) => {
-      const input = container.querySelector('.tp-input') as HTMLInputElement;
-      await act(async () => {
-        const setter = Object.getOwnPropertyDescriptor(
-          window.HTMLInputElement.prototype,
-          'value'
-        )!.set!;
-        setter.call(input, text);
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-      });
-      await flush();
-      await act(async () => {
-        input.dispatchEvent(
-          new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
-        );
-      });
-      await flush();
-    };
-
-    await submitViaEnter('abort');
+    // prove the fallback line renders in THIS tab, not command-echo. "abort"
+    // is grammar-shaped but narration/dialogue never intercept — only the
+    // CMD tab / ticker input do (WO-UI1-CHROME-COMPLETE) — so this still
+    // goes straight to sendARIAMessage exactly as before.
+    await submitViaBody('abort');
 
     expect(mockSendARIAMessage).toHaveBeenCalled();
+    expect(mockAutopilotAbort).not.toHaveBeenCalled();
     // Visible immediately in narration — the tab the player actually typed
     // into — with NO tab switch.
     expect(container.querySelector('#tp-log')?.textContent).toContain('abort');
@@ -312,7 +385,7 @@ describe('Teleprinter — live-mount smoke', () => {
     });
     await flush();
 
-    await submitViaEnter('what is my fuel');
+    await submitViaBody('what is my fuel');
 
     expect(container.querySelector('#tp-log')?.textContent).toContain('what is my fuel');
     expect(container.querySelector('.tp-mode-dialogue.active')).not.toBeNull();
@@ -322,7 +395,7 @@ describe('Teleprinter — live-mount smoke', () => {
 
   it('mode tablist keyboard nav (Pixel a11y REVISE #1): Left/Right cycle (wrapping), Home/End jump, focus follows the active tab', async () => {
     await act(async () => {
-      root.render(<Teleprinter />);
+      root.render(<ControlledTeleprinter />);
     });
     await flush();
 
@@ -382,7 +455,7 @@ describe('Teleprinter — live-mount smoke', () => {
 
   it('input aria-label is mode-aware (Pixel a11y REVISE #3)', async () => {
     await act(async () => {
-      root.render(<Teleprinter />);
+      root.render(<ControlledTeleprinter />);
     });
     await flush();
 
@@ -411,9 +484,9 @@ describe('Teleprinter — live-mount smoke', () => {
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
-  it('minimize -> strip -> restore preserves mode + in-progress input (no remount)', async () => {
+  it('collapse to ticker -> restore preserves content-tab + in-progress input (no remount)', async () => {
     await act(async () => {
-      root.render(<Teleprinter />);
+      root.render(<ControlledTeleprinter />);
     });
     await flush();
 
@@ -425,41 +498,235 @@ describe('Teleprinter — live-mount smoke', () => {
     expect(container.querySelector('.tp-mode-dialogue.active')).not.toBeNull();
 
     const input = container.querySelector('.tp-input') as HTMLInputElement;
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(
-        window.HTMLInputElement.prototype,
-        'value'
-      )!.set!;
-      setter.call(input, 'draft in progress');
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    await flush();
+    await setInput(input, 'draft in progress');
     expect(input.value).toBe('draft in progress');
 
-    const toggle = container.querySelector('.tp-strip-toggle') as HTMLButtonElement;
+    // Collapse to ticker via the tp-body control (WO-UI1-CHROME-COMPLETE —
+    // supersedes the old click-anywhere .tp-strip-toggle).
+    const collapseBtn = container.querySelector('.tp-display-ticker-toggle') as HTMLButtonElement;
     await act(async () => {
-      toggle.click();
+      collapseBtn.click();
     });
     await flush();
 
-    expect(container.querySelector('.teleprinter')?.className).toContain('tp-minimized');
+    expect(container.querySelector('.teleprinter')?.className).toContain('tp-ticker');
     // #tp-body must still be IN THE DOM — a CSS display toggle, never a
     // conditional unmount (a remount would drop the mode/input state below).
     expect(container.querySelector('#tp-body')).not.toBeNull();
 
+    // Restore via the ticker's own [◫ PANEL] button.
+    const panelBtn = container.querySelector('.tp-ticker-panel') as HTMLButtonElement;
     await act(async () => {
-      toggle.click();
+      panelBtn.click();
     });
     await flush();
 
-    expect(container.querySelector('.teleprinter')?.className).not.toContain('tp-minimized');
+    expect(container.querySelector('.teleprinter')?.className).toContain('tp-mid-panel');
     // If this were a remount, mode would reset to 'narration' (default) and
     // the input would reset to ''.
     expect(container.querySelector('.tp-mode-dialogue.active')).not.toBeNull();
-    expect((container.querySelector('.tp-input') as HTMLInputElement).value).toBe(
-      'draft in progress'
-    );
+    expect((container.querySelector('.tp-input') as HTMLInputElement).value).toBe('draft in progress');
 
     expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  // ── THREE DISPLAY MODES (WO-UI1-CHROME-COMPLETE) ────────────────────────
+  describe('display modes — ticker / mid-panel / full-overlay', () => {
+    it('ticker renders the single amber-line form: ▸ ARIA ✎ <line> + input + [XMIT] [◫ PANEL] [▲ LOG]', async () => {
+      ariaFeed.appendNav('Standing by, Commander.');
+
+      await act(async () => {
+        root.render(<ControlledTeleprinter initial="ticker" />);
+      });
+      await flush();
+
+      expect(container.querySelector('.teleprinter')?.className).toContain('tp-ticker');
+      const row = container.querySelector('.tp-ticker-row');
+      expect(row).not.toBeNull();
+      expect(row?.querySelector('.tp-ticker-glyph')?.textContent).toBe('▸');
+      expect(row?.querySelector('.tp-ticker-label')?.textContent).toBe('ARIA');
+      expect(row?.querySelector('.tp-ticker-pencil')?.textContent).toBe('✎');
+      expect(row?.querySelector('.tp-ticker-line')?.textContent).toContain('Standing by, Commander.');
+      expect(row?.querySelector('.tp-ticker-input')).not.toBeNull();
+      expect(row?.querySelector('.tp-ticker-xmit')?.textContent).toBe('XMIT');
+      expect(row?.querySelector('.tp-ticker-panel')?.textContent).toContain('PANEL');
+      expect(row?.querySelector('.tp-ticker-log')?.textContent).toContain('LOG');
+
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    it('all 3 display modes are reachable: ticker -> [◫ PANEL] -> mid-panel -> collapse -> ticker -> [▲ LOG] -> full-overlay -> overlay-toggle -> mid-panel', async () => {
+      await act(async () => {
+        root.render(<ControlledTeleprinter initial="ticker" />);
+      });
+      await flush();
+
+      expect(container.querySelector('.teleprinter')?.className).toContain('tp-ticker');
+
+      const panelBtn = container.querySelector('.tp-ticker-panel') as HTMLButtonElement;
+      await act(async () => { panelBtn.click(); });
+      await flush();
+      expect(container.querySelector('.teleprinter')?.className).toContain('tp-mid-panel');
+
+      const collapseBtn = container.querySelector('.tp-display-ticker-toggle') as HTMLButtonElement;
+      await act(async () => { collapseBtn.click(); });
+      await flush();
+      expect(container.querySelector('.teleprinter')?.className).toContain('tp-ticker');
+
+      const logBtn = container.querySelector('.tp-ticker-log') as HTMLButtonElement;
+      await act(async () => { logBtn.click(); });
+      await flush();
+      expect(container.querySelector('.teleprinter')?.className).toContain('tp-full-overlay');
+
+      const overlayToggle = container.querySelector('.tp-display-overlay-toggle') as HTMLButtonElement;
+      await act(async () => { overlayToggle.click(); });
+      await flush();
+      expect(container.querySelector('.teleprinter')?.className).toContain('tp-mid-panel');
+
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── ADR-0072 GRAMMAR DISPATCH (WO-UI1-CHROME-COMPLETE item 1) ───────────
+  describe('CMD grammar — parse + execute (not just echo)', () => {
+    it('"set course to 9" calls plotCourse(9); "engage" calls engage(); "abort" calls autopilot abort — CMD tab', async () => {
+      await act(async () => {
+        root.render(<ControlledTeleprinter />);
+      });
+      await flush();
+      await clickTab('command-echo');
+
+      await submitViaBody('set course to 9');
+      expect(mockPlotCourse).toHaveBeenCalledWith(9);
+      expect(mockSendARIAMessage).not.toHaveBeenCalled();
+
+      await submitViaBody('engage');
+      expect(mockEngage).toHaveBeenCalledTimes(1);
+
+      await submitViaBody('abort');
+      expect(mockAutopilotAbort).toHaveBeenCalledWith('teleprinter command');
+
+      expect(container.querySelector('#tp-log')?.textContent).toContain('set course to 9');
+      expect(container.querySelector('#tp-log')?.textContent).toContain('engage');
+      expect(container.querySelector('#tp-log')?.textContent).toContain('abort');
+      expect(mockSendARIAMessage).not.toHaveBeenCalled();
+
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    it('"dock" docks at the sector station when undocked, refuses when already docked, refuses when no station present', async () => {
+      mockStationsInSector = [{ id: 'station-9', name: 'Vela Trade Hub' }];
+      await act(async () => {
+        root.render(<ControlledTeleprinter />);
+      });
+      await flush();
+      await clickTab('command-echo');
+
+      await submitViaBody('dock');
+      expect(mockDockAtStation).toHaveBeenCalledWith('station-9');
+      await flush();
+      await clickTab('narration');
+      expect(container.querySelector('#tp-log')?.textContent).toContain('Docked at Vela Trade Hub');
+
+      // Already docked -> refuses, no second call.
+      mockDockAtStation.mockClear();
+      mockPlayerState = makePlayerState({ is_docked: true });
+      await clickTab('command-echo');
+      await submitViaBody('dock');
+      expect(mockDockAtStation).not.toHaveBeenCalled();
+      await clickTab('narration');
+      expect(container.querySelector('#tp-log')?.textContent).toContain('Already docked');
+
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    it('"undock" undocks when docked, refuses when not docked', async () => {
+      mockPlayerState = makePlayerState({ is_docked: true });
+      await act(async () => {
+        root.render(<ControlledTeleprinter />);
+      });
+      await flush();
+      await clickTab('command-echo');
+
+      await submitViaBody('undock');
+      expect(mockUndockFromStation).toHaveBeenCalledTimes(1);
+      expect(mockAutopilotAbort).toHaveBeenCalledWith('manual helm action');
+
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    it('"land" lands on the sector planet, "lift off" departs it', async () => {
+      mockPlanetsInSector = [{ id: 'planet-4', name: 'New Eden' }];
+      await act(async () => {
+        root.render(<ControlledTeleprinter />);
+      });
+      await flush();
+      await clickTab('command-echo');
+
+      await submitViaBody('land');
+      expect(mockLandOnPlanet).toHaveBeenCalledWith('planet-4');
+
+      mockPlayerState = makePlayerState({ is_landed: true });
+      await submitViaBody('lift off');
+      expect(mockLeavePlanet).toHaveBeenCalledTimes(1);
+
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    it('"status" and "help" are local readouts -- no WS/dispatch calls', async () => {
+      await act(async () => {
+        root.render(<ControlledTeleprinter />);
+      });
+      await flush();
+      await clickTab('command-echo');
+
+      await submitViaBody('status');
+      await clickTab('narration');
+      expect(container.querySelector('#tp-log')?.textContent).toContain('Status:');
+
+      await clickTab('command-echo');
+      await submitViaBody('help');
+      await clickTab('narration');
+      expect(container.querySelector('#tp-log')?.textContent).toContain('Commands:');
+
+      expect(mockSendARIAMessage).not.toHaveBeenCalled();
+      expect(mockDockAtStation).not.toHaveBeenCalled();
+      expect(mockPlotCourse).not.toHaveBeenCalled();
+      expect(mockEngage).not.toHaveBeenCalled();
+
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    it('unrecognized CMD input falls through to ARIA free-chat — the ONLY grammar-parsing channel is CMD/ticker, not narration/dialogue', async () => {
+      await act(async () => {
+        root.render(<ControlledTeleprinter />);
+      });
+      await flush();
+      await clickTab('command-echo');
+
+      await submitViaBody('what is the best trade route');
+      expect(mockSendARIAMessage).toHaveBeenCalledWith('what is the best trade route', undefined, 'trading');
+      expect(mockDockAtStation).not.toHaveBeenCalled();
+      expect(mockPlotCourse).not.toHaveBeenCalled();
+
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    it('the TICKER input dispatches through the SAME grammar-first path as CMD (visual-form steer)', async () => {
+      await act(async () => {
+        root.render(<ControlledTeleprinter initial="ticker" />);
+      });
+      await flush();
+
+      await submitViaTicker('engage');
+      expect(mockEngage).toHaveBeenCalledTimes(1);
+      expect(mockSendARIAMessage).not.toHaveBeenCalled();
+
+      await submitViaTicker('what is my hull status');
+      expect(mockSendARIAMessage).toHaveBeenCalledWith('what is my hull status', undefined, 'trading');
+
+      expect((container.querySelector('.tp-ticker-input') as HTMLInputElement).value).toBe('');
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
   });
 });

@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import DeckPageTabs from '../cockpit/DeckPageTabs';
 import TacticalTargetPage, { type TacticalContact } from './pages/TacticalTargetPage';
 import TacticalThreatPage from './pages/TacticalThreatPage';
+import { useTacticalPageRequest } from '../../hooks/useDeckNav';
 import './tactical-monitor.css';
 
 /**
@@ -18,6 +19,16 @@ import './tactical-monitor.css';
  * calling it (nav.py's endpoint itself is untouched and simply goes
  * dormant). TACTICAL is back to being the 3rd of exactly 3 flight
  * deck-monitors, per §05.
+ *
+ * WO-UI1-CHROME-COMPLETE (item 6, MINIMAL shared-nav wiring, flagged in
+ * the STATUS report): the annunciator's LAW/THREAT lamps (Annunciator.tsx,
+ * mounted in GameLayout.tsx) click-through to this monitor's own softkey
+ * page. There is no existing shared nav context between GameLayout and the
+ * deck (TacticalMonitor's `page` is a local useState, deliberately —
+ * WO-UI2-DECK-RECONCILE's "one selection grammar" convention), so this
+ * subscribes to the small module-level bus in services/deckNavBus.ts
+ * rather than threading a prop through GameDashboard (out of this WO's
+ * scope, and would restructure the deck for a single consumer).
  */
 
 export type { TacticalContact };
@@ -32,6 +43,16 @@ interface TacticalMonitorProps {
 
 const TacticalMonitor: React.FC<TacticalMonitorProps> = ({ contacts, selectedShipId, onSelectContact }) => {
   const [page, setPage] = useState<'target' | 'threat'>('target');
+
+  // Annunciator LAW→THREAT / THREAT→TARGET click-through (see the
+  // deckNavBus import doc-comment above). Fires on every distinct
+  // requestId, including a repeat click on the page already shown, and
+  // picks up a request that latched while this monitor was unmounted
+  // (docked/landed — TACTICAL only renders in flight mode).
+  const tacticalPageRequest = useTacticalPageRequest();
+  useEffect(() => {
+    if (tacticalPageRequest) setPage(tacticalPageRequest.page);
+  }, [tacticalPageRequest]);
 
   return (
     <>

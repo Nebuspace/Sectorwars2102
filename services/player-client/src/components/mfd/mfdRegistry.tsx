@@ -1,21 +1,28 @@
 /**
- * mfdRegistry — the six MFD page definitions, decoupled from screens.
+ * mfdRegistry — the five MFD page definitions, decoupled from screens.
  *
  * Pages are lazy chunks so a faulting or heavy page never taxes the
  * console shell. Accents reuse the NAV_ITEMS palette (Law-5 system
  * colors). Predicates receive the memoized MFDSnapshot and must stay
  * pure + synchronous.
  *
- * WO-UI2-DECK-RECONCILE dropped four entries down to the ratified MFD
- * slate (canon §05: "A: STAT · CRGO · QTM — B: POS · COMM"):
+ * WO-UI1-CHROME-COMPLETE dropped 'aria-terminal' — ARIA is absorbed into
+ * the teleprinter (components/aria/Teleprinter.tsx), which now carries
+ * the ADR-0072 grammar + free-chat directly, landing the ratified MFD
+ * slate (canon §05 L578: "A: STAT · CRGO · QTM — B: POS · COMM", no ARIA
+ * tab). AriaTerminalPage.tsx is untouched on disk — dead code, same
+ * retirement pattern as the entries below.
+ *
+ * WO-UI2-DECK-RECONCILE previously dropped four entries down to that same
+ * ratified slate:
  *   - threat-readiness  → MOVED to the deck TACTICAL monitor's [THREAT] page
  *   - salvage           → MOVED to the deck SOLAR SYSTEM monitor's [SALVAGE] page
  *   - turn-economy, reputation → already-dead entries (WO-PLAYERINFO id=147
  *     dropped their sidebar softkeys; nothing referenced them since)
- * The ReputationPage and SalvagePage/ThreatPage/TurnEconomyPage COMPONENTS
- * are untouched — only the registry entries are gone. ReputationPage is
- * still reused directly by components/player/PlayerInfo.tsx's dossier
- * reputation tab.
+ * The ReputationPage, SalvagePage/ThreatPage/TurnEconomyPage, and
+ * AriaTerminalPage COMPONENTS are all untouched — only the registry
+ * entries are gone. ReputationPage is still reused directly by
+ * components/player/PlayerInfo.tsx's dossier reputation tab.
  */
 
 import React from 'react';
@@ -71,15 +78,6 @@ export const MFD_PAGES: Record<MFDPageId, MFDPageDef> = {
     // Autopilot pauses are a navigation event; ARIA terminal already
     // carries the aria-event channel (one channel per page).
     alertChannel: 'autopilot-pause',
-  },
-  'aria-terminal': {
-    id: 'aria-terminal',
-    title: 'ARIA TERMINAL',
-    softLabel: 'ARIA',
-    accent: '#7B2FFF',
-    status: 'shipped',
-    Component: React.lazy(() => import('./pages/AriaTerminalPage')),
-    alertChannel: 'aria-event',
   },
   'comms-crew': {
     id: 'comms-crew',

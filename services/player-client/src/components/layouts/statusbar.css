@@ -595,6 +595,28 @@
   white-space: nowrap;
 }
 
+/* ── Settings popover ([⚙] — WO-UI1-CHROME-COMPLETE) ─────────────────────── */
+/* Same shell idiom as `.sb-dossier`/`.sb-location` above (position:relative
+   anchor for an absolutely-positioned `.sb-dropdown` child). */
+.sb-settings-popover {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+/* Right-anchored — overrides `.sb-dropdown`'s default `left:0`. This
+   trigger sits at the row's far-right edge (last icon before [⏻]); a
+   left-anchored panel would run off the viewport. Content is short and
+   fixed (one slider + a subscription stub + a link), so unlike
+   `.sb-dossier-panel` this doesn't need the teleprinter-height clamp —
+   simplicity over matching a pattern that doesn't apply here. */
+.sb-settings-popup {
+  right: 0;
+  left: auto;
+  width: 16rem;
+  max-width: calc(100vw - 2rem);
+  padding: 0.7rem;
+}
+
 /* ── Right-hand icon controls ────────────────────────────────────────────── */
 .sb-icon-btn {
   flex: 0 0 auto;
@@ -617,12 +639,37 @@
   box-shadow: 0 0 8px rgba(0, 217, 255, 0.4);
 }
 
-.sb-logout-btn {
+/* DEFECT FIX (orchestrator, stage): LogoutButton.tsx renders the SHARED
+   `.logout-button` class (auth.css) — `width: 100%; text-align: left;`,
+   built for its OTHER context (a full-width sidebar/menu item, see
+   UserProfile.tsx). `.sb-logout-btn` (below) sets `flex: 0 0 auto` but,
+   pre-fix, never set its own `width` — so `.logout-button`'s `width: 100%`
+   applied UNCHALLENGED (no property collision to resolve; only one rule
+   declared `width` at all, so cascade/source-order was never actually in
+   play). With flex-basis:auto (from the `flex` shorthand) deferring to that
+   100%-of-container width, and flex-shrink:0 refusing to shrink from it,
+   the button exploded to ~the full row width, starving the sibling
+   `.sb-vitals` (`flex: 1 1 auto; min-width: 0`, collapses on demand) down
+   to 0 — the credits/turns/drones/mines/REP cluster went invisible.
+   Two-part fix: (1) explicit `width: auto` + a hard `max-width` cap
+   overrides the leaked 100% regardless of source order — same-specificity
+   contest, don't rely on which stylesheet happens to load last;
+   (2) `.status-bar` ancestor-scoping bumps this selector's specificity
+   past `.logout-button`'s bare 0,1,0 outright (belt-and-suspenders,
+   deterministic regardless of any future CSS import reorder — the exact
+   fragility this file's own top-of-file comment already documents for the
+   `.status-bar` selector itself; same lesson applied here). LogoutButton.tsx
+   is shared with UserProfile.tsx (its OWN, unrelated, correct full-width
+   use) — fixed here in the status-bar context only, component untouched. */
+.status-bar .sb-logout-btn {
   flex: 0 0 auto;
+  width: auto;
+  max-width: 6rem;
   font-size: 0.6rem;
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
+  text-align: center;
   padding: 0.3rem 0.7rem;
   background: rgba(255, 77, 109, 0.12);
   color: #ff8da3;

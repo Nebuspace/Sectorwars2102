@@ -48,4 +48,38 @@ describe('statusbar.css — vitals cluster distribution', () => {
     const dossierLocationBlock = ruleBlock('.sb-dossier,\n.sb-location');
     expect(dossierLocationBlock).toMatch(/flex:\s*0\s+0\s+auto\s*;/);
   });
+
+  // DEFECT FIX (orchestrator, stage) — LogoutButton renders the SHARED
+  // `.logout-button` class (auth.css: `width: 100%`, built for its OTHER
+  // context, UserProfile.tsx's full-width sidebar item). Pre-fix,
+  // `.sb-logout-btn` set `flex: 0 0 auto` but never its OWN `width`, so
+  // that 100% applied unchallenged: flex-basis:auto deferred to it,
+  // flex-shrink:0 refused to shrink from it, and LOGOUT exploded to ~the
+  // full row (measured live: 1414.41px @1440 via a headless-Chromium
+  // static-CSS-isolation proof against the real stylesheet, reproducing
+  // the exact orchestrator-reported number), starving the sibling
+  // `.sb-vitals` (flex:1 1 auto; min-width:0, tested above) down to 0px —
+  // same real-Chromium proof measured it collapsing to exactly 0. This is
+  // the SOURCE-level regression pin (see file-header rationale); the full
+  // pixel proof is Playwright/Chromium-only, not re-creatable in jsdom.
+  it('.sb-logout-btn: LOGOUT is bounded, not a full-width strip (the fixed defect)', () => {
+    const block = ruleBlock('.status-bar .sb-logout-btn');
+    // Explicit width override — must NOT be missing (that was the actual
+    // bug: no width declaration here at all let auth.css's 100% win by
+    // default, no cascade contest required).
+    expect(block).toMatch(/width:\s*auto\s*;/);
+    // A hard ceiling, independent of any future auth.css change to
+    // `.logout-button`'s own width value.
+    expect(block).toMatch(/max-width:\s*6rem\s*;/);
+    // Still flex:0 0 auto (grow:0 -- LOGOUT never grows to consume slack
+    // from a shrinking `.sb-vitals` either).
+    expect(block).toMatch(/flex:\s*0\s+0\s+auto\s*;/);
+  });
+
+  it('.sb-logout-btn: selector is `.status-bar`-ancestor-scoped, outranking auth.css\'s bare `.logout-button` (0,1,0) regardless of stylesheet load order', () => {
+    expect(css).toMatch(/\.status-bar \.sb-logout-btn \{/);
+    // The old bare (unscoped) selector must be gone, not just shadowed by
+    // a duplicate rule later in the cascade.
+    expect(css).not.toMatch(/\n\.sb-logout-btn \{/);
+  });
 });

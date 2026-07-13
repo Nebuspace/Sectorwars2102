@@ -433,4 +433,110 @@ describe('StatusBar — live-mount smoke', () => {
 
     expect(errorSpy).not.toHaveBeenCalled();
   });
+
+  // WO-UI1-CHROME-COMPLETE — [⚙] gear opens a settings POPUP (canon L502:
+  // "settings is a popup, not a place"), not the old /game/settings
+  // nav-link. Real SettingsProvider (not mocked) so dragging the slider
+  // provably drives the SAME `--ui-scale` root variable that scales the
+  // whole cockpit -- not a mocked stand-in for setUiScale.
+  it('[⚙] opens a settings popup with a working UI-scale slider that scales the whole cockpit', async () => {
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <SettingsProvider>
+            <StatusBar />
+          </SettingsProvider>
+        </MemoryRouter>
+      );
+    });
+    await flush();
+
+    const gearBtn = container.querySelector('.sb-settings-btn') as HTMLButtonElement;
+    expect(gearBtn.tagName).toBe('BUTTON'); // not an <a>/Link to /game/settings anymore
+    expect(gearBtn.getAttribute('aria-haspopup')).toBe('dialog');
+    expect(gearBtn.getAttribute('aria-expanded')).toBe('false');
+    expect(gearBtn.getAttribute('aria-controls')).toBe('sb-settings-popup');
+
+    await act(async () => {
+      gearBtn.click();
+    });
+    await flush();
+
+    expect(gearBtn.getAttribute('aria-expanded')).toBe('true');
+    const panel = container.querySelector('#sb-settings-popup[role="dialog"][aria-label="Settings"]');
+    expect(panel).not.toBeNull();
+    // Focus moves into the panel on open (mirrors the dossier/location idiom).
+    expect(document.activeElement).toBe(panel);
+
+    const slider = panel!.querySelector('input[type="range"]') as HTMLInputElement;
+    expect(slider).not.toBeNull();
+    // Accessible label: a <label htmlFor> pointing at this exact input id.
+    const label = panel!.querySelector('label[for="popup-sb-ui-scale-range"]');
+    expect(label).not.toBeNull();
+    expect(label?.textContent).toBe('UI SCALE');
+    expect(slider.id).toBe('popup-sb-ui-scale-range');
+
+    expect(slider.value).toBe('1');
+    expect(document.documentElement.style.getPropertyValue('--ui-scale')).toBe('1');
+
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(slider, '0.8');
+      slider.dispatchEvent(new Event('input', { bubbles: true }));
+      slider.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+
+    // setUiScale fired for real -- the same #root zoom variable moved.
+    expect(document.documentElement.style.getPropertyValue('--ui-scale')).toBe('0.8');
+    expect(panel!.textContent).toContain('80%');
+
+    // Esc closes and returns focus to the trigger.
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    await flush();
+
+    expect(gearBtn.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('#sb-settings-popup')).toBeNull();
+    expect(document.activeElement).toBe(gearBtn);
+
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  // The dossier's own SETTINGS tab is a deliberate mirror (WO's call), not
+  // a regression -- both surfaces render the same slider, distinguished by
+  // idPrefix so their ids never collide even if both are open at once.
+  it('dossier SETTINGS tab is unregressed alongside the new [⚙] popup', async () => {
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <SettingsProvider>
+            <StatusBar />
+          </SettingsProvider>
+        </MemoryRouter>
+      );
+    });
+    await flush();
+
+    const nameChip = container.querySelector('.sb-name-chip') as HTMLButtonElement;
+    await act(async () => {
+      nameChip.click();
+    });
+    await flush();
+
+    const settingsTab = Array.from(container.querySelectorAll('[role="tab"]')).find(
+      (t) => t.textContent === 'SETTINGS'
+    ) as HTMLButtonElement;
+    await act(async () => {
+      settingsTab.click();
+    });
+    await flush();
+
+    const dossierSlider = container.querySelector('#sb-ui-scale-range') as HTMLInputElement;
+    expect(dossierSlider).not.toBeNull();
+    expect(container.querySelector('#popup-sb-ui-scale-range')).toBeNull(); // gear popup not open here
+
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
 });

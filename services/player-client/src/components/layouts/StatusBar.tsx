@@ -106,9 +106,22 @@ const UI_SCALE_STEP = 0.05;
  * only its one live control is embeddable here, not the page). The
  * subscription slot is a DELIBERATE STUB — PayPal/subscription wiring is a
  * payments carve-out (human-gated, out of this WO's scope) — renders a
- * disabled "coming soon" placeholder, zero PayPal imports/calls. */
-const SettingsTab: React.FC = () => {
+ * disabled "coming soon" placeholder, zero PayPal imports/calls.
+ *
+ * WO-UI1-CHROME-COMPLETE: also mounts inside the [⚙] gear's OWN popup (see
+ * StatusBar's `sb-settings-popover` below) — the canonical home per
+ * cockpit-redesign-v10-RATIFIED.html:502 ("settings is a popup, not a
+ * place"). The dossier's SETTINGS tab stays too (a mirror, not a
+ * regression — the WO's call). Since both surfaces can independently be
+ * open at once (the dossier's outside-click dismissal only fires on
+ * `mousedown`, so a keyboard user tabbing from the name-chip to the gear
+ * without a click can have BOTH open simultaneously), `idPrefix` keeps the
+ * slider's `id`/`htmlFor` pair unique per mount — two same-id inputs would
+ * otherwise both exist in the DOM at once, an invalid-HTML footgun even
+ * though each input's own onChange still fires correctly either way. */
+const SettingsTab: React.FC<{ idPrefix?: string }> = ({ idPrefix = '' }) => {
   const { uiScale, setUiScale } = useSettings();
+  const rangeId = `${idPrefix}sb-ui-scale-range`;
 
   const handleScaleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const next = parseFloat(e.target.value);
@@ -120,12 +133,12 @@ const SettingsTab: React.FC = () => {
   return (
     <div className="sb-settings-tab">
       <div className="sb-settings-row">
-        <label htmlFor="sb-ui-scale-range" className="sb-identity-k">
+        <label htmlFor={rangeId} className="sb-identity-k">
           UI SCALE
         </label>
         <div className="sb-settings-row-control">
           <input
-            id="sb-ui-scale-range"
+            id={rangeId}
             type="range"
             className="sb-settings-range"
             min={UI_SCALE_MIN}
@@ -168,6 +181,17 @@ const StatusBar: React.FC = () => {
   // Pixel a11y REVISE #1 — one ref per rendered tab button (roving
   // tabindex target for keyboard nav + the open-focus destination).
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  // WO-UI1-CHROME-COMPLETE — [⚙] settings popover. Same shell idiom as the
+  // dossier/location dropdowns above: own container/trigger/panel refs,
+  // independent outside-click + Escape dismissal, focus-in-on-open /
+  // focus-back-on-close (the panel itself is the focus target, mirroring
+  // LocationDropdown's convention — a single-slider popup has no obvious
+  // "first tab" the way the dossier does).
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsRef = useRef<HTMLDivElement>(null);
+  const settingsTriggerRef = useRef<HTMLButtonElement>(null);
+  const settingsPanelRef = useRef<HTMLDivElement>(null);
 
   // Dismiss on outside click / Escape — this panel sits over the
   // click-through windshield, so a stray click elsewhere must close it
@@ -214,6 +238,39 @@ const StatusBar: React.FC = () => {
     // activeTab intentionally excluded — read only on the open edge above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dossierOpen]);
+
+  // Settings popover — outside-click / Escape dismissal (same pattern as
+  // the dossier's own effect above, independent state).
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const handlePointer = (e: MouseEvent) => {
+      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
+        setSettingsOpen(false);
+      }
+    };
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSettingsOpen(false);
+    };
+    document.addEventListener('mousedown', handlePointer);
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('mousedown', handlePointer);
+      document.removeEventListener('keydown', handleKey);
+    };
+  }, [settingsOpen]);
+
+  // Settings popover — focus moves into the panel on open, returns to the
+  // trigger on close (mirrors the dossier's wasDossierOpenRef edge-detection
+  // idiom so it never steals focus on initial mount).
+  const wasSettingsOpenRef = useRef(false);
+  useEffect(() => {
+    if (settingsOpen && !wasSettingsOpenRef.current) {
+      settingsPanelRef.current?.focus();
+    } else if (!settingsOpen && wasSettingsOpenRef.current) {
+      settingsTriggerRef.current?.focus();
+    }
+    wasSettingsOpenRef.current = settingsOpen;
+  }, [settingsOpen]);
 
   // Pixel a11y REVISE #1 — WAI-ARIA tabs pattern keyboard nav: Left/Right
   // cycle tabs (wrapping), Home/End jump to first/last; each moves BOTH the
@@ -395,10 +452,38 @@ const StatusBar: React.FC = () => {
         </span>
       </div>
 
-      {/* [⚙] settings — quick-access icon; placeholder nav-trigger, real popup is WO-UI0-SCALE-LAW */}
-      <Link to="/game/settings" className="sb-icon-btn sb-settings-btn" aria-label="Settings" title="Settings">
-        ⚙
-      </Link>
+      {/* [⚙] settings — popup (WO-UI1-CHROME-COMPLETE; canon L502 "settings
+          is a popup, not a place"). Right-anchored (`.sb-settings-popup`
+          overrides `.sb-dropdown`'s default left:0) since this trigger sits
+          at the row's far-right edge — a left-anchored panel would overflow
+          the viewport. */}
+      <div className="sb-settings-popover" ref={settingsRef}>
+        <button
+          type="button"
+          ref={settingsTriggerRef}
+          className="sb-icon-btn sb-settings-btn"
+          onClick={() => setSettingsOpen((o) => !o)}
+          aria-haspopup="dialog"
+          aria-expanded={settingsOpen}
+          aria-controls="sb-settings-popup"
+          aria-label="Settings"
+          title="Settings"
+        >
+          ⚙
+        </button>
+        {settingsOpen && (
+          <div
+            id="sb-settings-popup"
+            ref={settingsPanelRef}
+            tabIndex={-1}
+            className="sb-dropdown sb-settings-popup"
+            role="dialog"
+            aria-label="Settings"
+          >
+            <SettingsTab idPrefix="popup-" />
+          </div>
+        )}
+      </div>
 
       {/* [⏻] logout */}
       <LogoutButton className="sb-logout-btn" />

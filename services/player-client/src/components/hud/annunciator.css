@@ -1,13 +1,11 @@
-/* Annunciator — windshield HUD overlay (WO-UI1-ANNUNCIATOR sub-part a).
-   SCENE-NARROWING guardrail: position:absolute + inset:0 so the layer
-   contributes ZERO layout size to its parent (the future windshield
-   container) — it never narrows or occludes the full-bleed scene, it only
-   paints over the top-right corner ("the glass," canon "never over the
-   status bar" — that lives in a separate grid area entirely, outside this
-   overlay's positioned ancestor). Non-interactive by default: pointer-events
-   is set inline in Annunciator.tsx (testable without depending on this file
-   loading in the vitest node/jsdom pipeline) and repeated here so the visual
-   contract stays self-documenting if the inline style is ever dropped. */
+/* Annunciator — windshield HUD overlay, SLIM LAMP STRIP form (WO-UI1-CHROME-
+   COMPLETE). SCENE-NARROWING guardrail: position:absolute + inset:0 so the
+   layer contributes ZERO layout size to its parent (GameLayout's
+   .windshield-hud-anchor) — it never narrows or occludes the full-bleed
+   scene. Non-interactive by default: pointer-events is set inline in
+   Annunciator.tsx (testable without depending on this file loading in the
+   vitest node/jsdom pipeline) and repeated here so the visual contract
+   stays self-documenting if the inline style is ever dropped. */
 .annunciator-overlay {
   position: absolute;
   inset: 0;
@@ -15,127 +13,306 @@
   z-index: 30; /* matches the HUD z-index band documented in game-layout.css (console:20, HUD:30, edge-toggle:40) */
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: center;
   justify-content: flex-start;
-  gap: 0.4rem;
-  padding: 0.75rem;
+  padding: 0.5rem 0.75rem 0;
   box-sizing: border-box;
 }
 
-.annunciator-lamp {
-  pointer-events: auto;
+/* [WARN] · HAZARD LAW THREAT TURNS COMM · [CAUT] -- one slim horizontal
+   strip, top-center on the glass (RATIFIED.html:64 -- `.annun { top:5%;
+   left:50%; transform:translateX(-50%); }`), reproduced here via normal
+   flex centering (the overlay itself is already centered content). */
+.annunciator-strip {
+  pointer-events: none;
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.3rem 0.5rem 0.3rem 0.6rem;
-  border-radius: 4px;
-  font: 700 0.68rem/1.2 var(--mono, 'Courier New', monospace);
+  gap: 0.6rem;
+  font: 700 0.68rem/1 var(--mono, 'Courier New', monospace);
   letter-spacing: 0.06em;
-  color: #eef4fb;
-  white-space: nowrap;
-  user-select: none;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
 }
 
-.annunciator-lamp-icon {
-  font-size: 1rem;
-  line-height: 1;
-  display: inline-flex;
+.annunciator-lamp-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
 }
 
-.annunciator-lamp-severity {
-  opacity: 0.85;
+/* MASTER bulbs -- blank rounded rectangles (canon: no icon, no text INSIDE
+   the button; the WARN/CAUT label sits below), ack-only (click silences the
+   flash while the underlying condition stays true; never navigates -- there
+   is no single "owning surface" for an aggregate). */
+.annunciator-bulb {
+  pointer-events: auto;
+  width: 3rem;
+  height: 1.4rem;
+  border-radius: 4px;
+  border: 1px solid #0a0f17;
+  background: linear-gradient(180deg, #232e3e, #151e2b);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.13),
+    inset 0 -2px 4px rgba(0, 0, 0, 0.53);
+  cursor: pointer;
+  padding: 0;
 }
 
-.annunciator-lamp-label {
-  font-weight: 700;
+.annunciator-bulb-label {
+  color: #6c7e96;
+  font-size: 0.58rem;
+  letter-spacing: 0.08em;
 }
 
-.annunciator-lamp-ack {
-  margin-left: 0.2rem;
-  padding: 0 0.3rem;
-  background: none;
-  border: none;
-  color: inherit;
-  opacity: 0.75;
-  font-size: 0.75rem;
-  line-height: 1;
+.annunciator-bulb.warn.on {
+  background: linear-gradient(180deg, #7a1622, #4a0d15);
+  box-shadow: 0 0 16px rgba(255, 59, 74, 0.6), 0 0 4px rgba(255, 59, 74, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  animation: annunciator-flash 0.6s steps(2, start) infinite;
+}
+
+.annunciator-bulb.warn.ack {
+  background: linear-gradient(180deg, #5a1620, #3a0d13);
+  box-shadow: 0 0 8px rgba(255, 59, 74, 0.33);
+}
+
+.annunciator-bulb.caut.on {
+  background: linear-gradient(180deg, #7a5a10, #4a360a);
+  box-shadow: 0 0 14px rgba(255, 176, 32, 0.53), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  animation: annunciator-flash 1.6s steps(2, start) infinite;
+}
+
+.annunciator-bulb.caut.ack {
+  background: linear-gradient(180deg, #5a430d, #3a2b08);
+  box-shadow: 0 0 7px rgba(255, 176, 32, 0.33);
+}
+
+@keyframes annunciator-flash {
+  50% {
+    filter: brightness(0.4);
+  }
+}
+
+/* SEGMENTS -- HAZARD·LAW·THREAT·TURNS·COMM. IDLE = barely-visible dark
+   chip (canon visual form); LIT = colorized by severity. Pure click-
+   through + state indicator, no per-segment ack. */
+.annunciator-segs {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.annunciator-seg {
+  pointer-events: auto;
+  font: inherit;
+  font-size: 0.6rem;
+  letter-spacing: 0.08em;
+  color: #5a6b82;
+  border: 1px solid #1a2634;
+  border-radius: 3px;
+  padding: 0.2rem 0.55rem;
+  background: #0b121c;
   cursor: pointer;
 }
 
-.annunciator-lamp-ack:hover {
-  opacity: 1;
+.annunciator-seg--warn.is-live {
+  color: #ffd9de;
+  border-color: var(--cockpit-danger, #ff3b4a);
+  background: #2a1218;
+  text-shadow: 0 0 6px rgba(255, 90, 106, 0.6);
+  animation: annunciator-flash-soft 0.9s steps(2, start) infinite;
 }
 
-/* MASTER WARN — red/fast (canon: combat, siege-on-your-colony, bounty-on-you). */
-.annunciator-lamp--warn {
-  border: 1px solid var(--cockpit-danger, #ff3b4a);
-  background: linear-gradient(135deg, rgba(40, 0, 0, 0.92) 0%, rgba(15, 0, 0, 0.95) 100%);
-  box-shadow: 0 0 14px rgba(255, 59, 74, 0.35), 0 4px 14px rgba(0, 0, 0, 0.5);
+.annunciator-seg--caution.is-live {
+  color: #ffedc2;
+  border-color: var(--cockpit-warning, #ffb020);
+  background: #2a2010;
+  text-shadow: 0 0 6px rgba(255, 176, 0, 0.6);
+  animation: annunciator-flash-soft 1.6s steps(2, start) infinite;
 }
 
-/* MASTER CAUTION — amber/slow (canon: hazard >= threshold, grey-flag/fine, low-turns). */
-.annunciator-lamp--caution {
-  border: 1px solid var(--cockpit-warning, #ffb020);
-  background: linear-gradient(135deg, rgba(40, 28, 0, 0.92) 0%, rgba(18, 12, 0, 0.95) 100%);
-  box-shadow: 0 0 12px rgba(255, 176, 32, 0.3), 0 4px 14px rgba(0, 0, 0, 0.5);
-}
-
-/* COMM — info-class, cyan, deliberately NEVER sharing the WARN/CAUTION
+/* COMM -- info-class, cyan, deliberately NEVER sharing the WARN/CAUTION
    danger lane (canon, WO-UI1-ANNUNCIATOR GOAL line). */
-.annunciator-lamp--info {
-  border: 1px solid var(--color-primary, #00d9ff);
-  background: linear-gradient(135deg, rgba(0, 20, 28, 0.92) 0%, rgba(0, 10, 14, 0.95) 100%);
-  box-shadow: 0 0 10px rgba(0, 217, 255, 0.28), 0 4px 14px rgba(0, 0, 0, 0.5);
+.annunciator-seg--info.is-live {
+  color: #bdebfa;
+  border-color: var(--color-primary, #00d9ff);
+  background: #0e2a3a;
+  text-shadow: 0 0 7px rgba(63, 210, 236, 0.67);
+  animation: annunciator-flash-soft 1.8s steps(2, start) infinite;
 }
 
-/* Flash → tap-acknowledge → steady-while-true → auto-clear (canon ack
-   semantics). "Fast" WARN vs "slow" CAUTION/INFO durations are canon's own
-   wording, not arbitrary. */
-@keyframes annunciator-pulse-warn {
-  0%, 100% { box-shadow: 0 0 10px rgba(255, 59, 74, 0.35), 0 4px 14px rgba(0, 0, 0, 0.5); }
-  50% { box-shadow: 0 0 24px rgba(255, 59, 74, 0.8), 0 4px 14px rgba(0, 0, 0, 0.5); }
-}
-
-@keyframes annunciator-pulse-caution {
-  0%, 100% { box-shadow: 0 0 8px rgba(255, 176, 32, 0.3), 0 4px 14px rgba(0, 0, 0, 0.5); }
-  50% { box-shadow: 0 0 18px rgba(255, 176, 32, 0.65), 0 4px 14px rgba(0, 0, 0, 0.5); }
-}
-
-@keyframes annunciator-pulse-info {
-  0%, 100% { opacity: 0.82; }
-  50% { opacity: 1; }
-}
-
-.annunciator-lamp--warn.is-flashing {
-  animation: annunciator-pulse-warn 0.6s ease-in-out infinite;
-}
-
-.annunciator-lamp--caution.is-flashing {
-  animation: annunciator-pulse-caution 1.6s ease-in-out infinite;
-}
-
-.annunciator-lamp--info.is-flashing {
-  animation: annunciator-pulse-info 1.6s ease-in-out infinite;
-}
-
-/* Steady-while-true (post-ack, still active) — fully visible, no motion. */
-.annunciator-lamp.is-steady {
-  animation: none;
+@keyframes annunciator-flash-soft {
+  50% {
+    opacity: 0.55;
+  }
 }
 
 /* Reduced motion: still fully visible (never dimmed/hidden), just not
-   flashing — Accept #3. Belt-and-suspenders with the JS-level `reducedMotion`
-   class gate in Annunciator.tsx (which already skips adding `.is-flashing`),
-   mirroring the @media convention already used throughout this codebase
-   (statusbar.css, teleprinter.css, mfd.css, etc.). */
-.annunciator-lamp.is-reduced-motion,
-.annunciator-lamp.is-reduced-motion.is-flashing {
-  animation: none !important;
+   flashing -- Accept #3 (carried over from the prior sub-part). */
+@media (prefers-reduced-motion: reduce) {
+  .annunciator-bulb,
+  .annunciator-seg {
+    animation: none !important;
+  }
+}
+
+/* ── Hazard analysis card (item 6: HAZARD→"the analysis card") ──────────── */
+.annunciator-card {
+  pointer-events: auto;
+  margin-top: 0.5rem;
+  width: min(22rem, 90%);
+  border: 1px solid var(--cockpit-warning, #ffb020);
+  border-radius: 6px;
+  background: linear-gradient(180deg, rgba(18, 14, 4, 0.97) 0%, rgba(10, 8, 2, 0.98) 100%);
+  color: #eef4fb;
+  font: 500 0.75rem/1.4 var(--mono, 'Courier New', monospace);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+}
+
+.annunciator-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0.7rem;
+  border-bottom: 1px solid rgba(255, 176, 32, 0.3);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.annunciator-card-close {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.85rem;
+  opacity: 0.75;
+}
+
+.annunciator-card-close:hover {
+  opacity: 1;
+}
+
+.annunciator-card-body {
+  padding: 0.6rem 0.7rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.annunciator-card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #a8bdd4;
+}
+
+.annunciator-card-features {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.annunciator-card-badge {
+  border: 1px solid rgba(255, 176, 32, 0.35);
+  border-radius: 3px;
+  padding: 0.1rem 0.4rem;
+  font-size: 0.62rem;
+  letter-spacing: 0.05em;
+}
+
+.annunciator-card-description {
+  color: #a8bdd4;
+  margin: 0;
+}
+
+.annunciator-card-note {
+  color: #ffc64d;
+  margin: 0;
+  font-size: 0.66rem;
+}
+
+/* ── AnnunciatorMini (item 7: monitor-header variant) ────────────────────
+   Inline row, NOT an absolute overlay -- meant to sit inside a header's
+   own flex layout (see AnnunciatorMini.tsx's doc-comment for its intended
+   station/surface-header consumers, not yet built). */
+.annunciator-mini {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font: 700 0.58rem/1 var(--mono, 'Courier New', monospace);
+  letter-spacing: 0.05em;
+}
+
+.annunciator-mini-bulb {
+  width: 1.1rem;
+  height: 0.85rem;
+  border-radius: 3px;
+  border: 1px solid #0a0f17;
+  background: linear-gradient(180deg, #232e3e, #151e2b);
+  color: #6c7e96;
+  font-size: 0.5rem;
+  line-height: 0.8rem;
+  text-align: center;
+  cursor: pointer;
+  padding: 0;
+}
+
+.annunciator-mini-bulb.warn.on {
+  background: linear-gradient(180deg, #7a1622, #4a0d15);
+  color: #ffd9de;
+  box-shadow: 0 0 8px rgba(255, 59, 74, 0.6);
+  animation: annunciator-flash 0.6s steps(2, start) infinite;
+}
+
+.annunciator-mini-bulb.warn.ack {
+  background: linear-gradient(180deg, #5a1620, #3a0d13);
+  color: #ffd9de;
+}
+
+.annunciator-mini-bulb.caut.on {
+  background: linear-gradient(180deg, #7a5a10, #4a360a);
+  color: #ffedc2;
+  box-shadow: 0 0 7px rgba(255, 176, 32, 0.53);
+  animation: annunciator-flash 1.6s steps(2, start) infinite;
+}
+
+.annunciator-mini-bulb.caut.ack {
+  background: linear-gradient(180deg, #5a430d, #3a2b08);
+  color: #ffedc2;
+}
+
+.annunciator-mini-segs {
+  display: flex;
+  gap: 0.18rem;
+}
+
+.annunciator-mini-seg {
+  color: #5a6b82;
+  border: 1px solid #1a2634;
+  border-radius: 2px;
+  padding: 0.1rem 0.3rem;
+  background: #0b121c;
+  font: inherit;
+  cursor: pointer;
+}
+
+.annunciator-mini-seg--warn.is-live {
+  color: #ffd9de;
+  border-color: var(--cockpit-danger, #ff3b4a);
+  background: #2a1218;
+}
+
+.annunciator-mini-seg--caution.is-live {
+  color: #ffedc2;
+  border-color: var(--cockpit-warning, #ffb020);
+  background: #2a2010;
+}
+
+.annunciator-mini-seg--info.is-live {
+  color: #bdebfa;
+  border-color: var(--color-primary, #00d9ff);
+  background: #0e2a3a;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .annunciator-lamp.is-flashing {
-    animation: none;
+  .annunciator-mini-bulb {
+    animation: none !important;
   }
 }

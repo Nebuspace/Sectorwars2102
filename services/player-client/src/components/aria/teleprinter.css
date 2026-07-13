@@ -1,22 +1,37 @@
-/* Teleprinter — ARIA narration/dialogue box for the shell's reserved
-   `teleprinter` grid slot (WO-UI1-TELEPRINTER sub-part a;
-   game-layout.css:99-103 names the row — this rule fills it in, but
-   GameLayout does not mount the component until the serial stitch that
-   also lands ANNUNCIATOR).
+/* Teleprinter — ARIA narration/dialogue/command box for the shell's
+   reserved `teleprinter` grid slot (WO-UI1-TELEPRINTER sub-part a;
+   game-layout.css:99-103 names the row).
 
-   Palette follows the shipped ARIA convention (mfd/pages/pages-ops.css'
-   .mfd-page-aria: cyan #00D9FF / violet #7B2FFF), not the HTML prototype's
-   amber demo palette — the real component is the canon here. A third
-   accent (amber, already used codebase-wide for warnings/alerts, e.g.
-   .mfd-page-aria-rate) marks the command-echo channel so all three modes
-   are colour-distinct at a glance:
+   THREE display modes (WO-UI1-CHROME-COMPLETE, cockpit-redesign-v10 §05
+   L624): ticker / mid-panel / full-overlay, selected by the root's
+   `tp-<mode>` class (GameLayout owns the state, see Teleprinter.tsx's
+   header comment). Ticker and the mid-panel/full-overlay body are BOTH
+   always in the DOM — display-toggled, never conditionally unmounted, so
+   in-progress input/scroll state survives a mode switch (accept #4/#5).
+
+   Palette: the mid-panel/full-overlay tabs follow the shipped ARIA
+   convention (mfd/pages/pages-ops.css' .mfd-page-aria: cyan #00D9FF /
+   violet #7B2FFF), not the HTML prototype's amber demo palette:
      narration     — violet (ARIA's own ambient/event channel)
      dialogue      — cyan   (conversational turns, ARIA + player)
      command-echo  — amber  (terse local command echoes)
+   The TICKER row is a deliberate, sanctioned exception (visual-form
+   steer, mid-build) — amber-on-dark, matching the v10 prototype's
+   teleprinter demo palette, scoped to JUST that one row.
 
    Prominent but NOT a tall deck monitor: the log body is height-clamped
    and scrolls WITHIN itself (accept #1) — the document/page never scrolls,
-   and the panel never grows tall enough to compete with the deck. */
+   and mid-panel never grows tall enough to compete with the deck.
+   full-overlay is the deliberate exception — it visually expands UPWARD
+   over the band, but does so via #tp-body detaching to position:absolute
+   (see the full-overlay block below), which removes it from the grid
+   track-sizing algorithm entirely: the teleprinter grid ROW's own
+   footprint stays pinned to the ticker row's height in every mode, so
+   entering/leaving full-overlay never reflows the band/deck/sidebar
+   (canon constraint: "overlay mode never reflows siblings"). Mid-panel,
+   by contrast, DELIBERATELY grows the grid row (band+deck shrink
+   slightly, game-layout.css's .tp-mid-panel rule) — that reflow is the
+   intended design, not a bug. */
 
 .teleprinter {
   grid-area: teleprinter;
@@ -32,58 +47,56 @@
   border-bottom: 1px solid rgba(0, 217, 255, 0.25);
   font-family: 'Courier New', monospace;
   box-sizing: border-box;
-  overflow: hidden; /* this component never contributes body/page overflow */
+  overflow: hidden; /* overridden for tp-full-overlay below */
 }
 
-/* ── Strip — always visible, doubles as minimize/restore toggle. Keeps the
-   latest line readable unscrolled whether expanded or minimized (accept
-   #1 + #4's "strip"). ─────────────────────────────────────────────────── */
-.tp-strip-toggle {
-  display: flex;
+/* ── TICKER — one amber-on-dark row: ▸ ARIA ✎ <latest line> + inline
+   command input + [XMIT] [◫ PANEL] [▲ LOG]. Hidden outside tp-ticker. ── */
+.tp-ticker-row {
+  display: none;
   align-items: center;
-  gap: 0.6rem;
+  gap: 0.5rem;
   width: 100%;
   min-height: 34px;
-  padding: 0.35rem 0.8rem;
-  background: transparent;
-  border: none;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-  text-align: left;
+  padding: 0.3rem 0.7rem;
   box-sizing: border-box;
+  color: var(--tp-amber);
 }
 
-.tp-strip-toggle:hover {
-  background: rgba(0, 217, 255, 0.06);
+.teleprinter.tp-ticker .tp-ticker-row {
+  display: flex;
 }
 
-.tp-glyph {
+.tp-ticker-glyph {
   flex-shrink: 0;
-  color: var(--tp-cyan);
   font-size: 0.75rem;
 }
 
-.tp-strip-label {
+.tp-ticker-label {
   flex-shrink: 0;
   font-weight: 700;
   font-size: 0.68rem;
   letter-spacing: 0.14em;
-  color: var(--tp-violet);
-  text-shadow: 0 0 6px rgba(123, 47, 255, 0.5);
+  text-shadow: 0 0 6px rgba(255, 176, 0, 0.5);
 }
 
-.tp-strip-line {
-  flex: 1 1 0;
+.tp-ticker-pencil {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  opacity: 0.8;
+}
+
+.tp-ticker-line {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
   font-size: 0.72rem;
-  color: rgba(220, 235, 255, 0.85);
+  color: rgba(255, 200, 120, 0.9);
 }
 
-.tp-strip-offline {
+.tp-ticker-offline {
   flex-shrink: 0;
   font-size: 0.58rem;
   font-weight: 700;
@@ -91,9 +104,61 @@
   color: #ff4d6d;
 }
 
-/* ── Body — mode tabs + log + input. Minimize is a pure CSS display toggle
-   (never a conditional unmount), so React state (mode, input draft, scroll
-   position) survives a minimize/restore cycle untouched. ───────────────── */
+.tp-ticker-input {
+  flex: 1 1 220px;
+  min-width: 120px;
+  font-family: inherit;
+  font-size: 0.68rem;
+  letter-spacing: 0.03em;
+  padding: 0.24rem 0.45rem;
+  background: rgba(10, 6, 0, 0.85);
+  color: var(--tp-amber);
+  border: 1px solid rgba(255, 176, 0, 0.35);
+  border-radius: 0;
+  caret-color: var(--tp-amber);
+  box-sizing: border-box;
+}
+
+.tp-ticker-input::placeholder {
+  color: rgba(255, 176, 0, 0.4);
+}
+
+.tp-ticker-input:focus {
+  outline: none;
+  border-color: var(--tp-amber);
+  box-shadow: 0 0 8px rgba(255, 176, 0, 0.35);
+}
+
+.tp-ticker-btn {
+  flex-shrink: 0;
+  font-family: inherit;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 0.26rem 0.5rem;
+  background: rgba(255, 176, 0, 0.08);
+  color: var(--tp-amber);
+  border: 1px solid rgba(255, 176, 0, 0.45);
+  border-radius: 0;
+  cursor: pointer;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transition: background 90ms ease-out, box-shadow 90ms ease-out;
+}
+
+.tp-ticker-btn:hover:not(:disabled) {
+  background: rgba(255, 176, 0, 0.2);
+  box-shadow: 0 0 8px rgba(255, 176, 0, 0.4);
+}
+
+.tp-ticker-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* ── Body — mode tabs + controls + log + input. Hidden in ticker mode
+   (pure CSS display toggle, never a conditional unmount), so React state
+   (mode, input draft, scroll position) survives a display-mode switch. ── */
 .tp-body {
   display: flex;
   flex-direction: column;
@@ -101,15 +166,22 @@
   min-height: 0;
 }
 
-.tp-minimized .tp-body {
+.teleprinter.tp-ticker .tp-body {
   display: none;
 }
 
-/* ── Mode tabs — three colour-distinct, switchable channels. ───────────── */
+.tp-body-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+
+/* ── Mode tabs — three colour-distinct, switchable content channels. ──── */
 .tp-modes {
   display: flex;
   gap: 0.35rem;
-  margin-bottom: 0.35rem;
 }
 
 .tp-mode-btn {
@@ -147,9 +219,37 @@
   box-shadow: 0 0 8px rgba(255, 176, 0, 0.3);
 }
 
+/* ── Display-mode controls — collapse to ticker / swap mid-panel↔overlay,
+   the tp-body-side counterpart to the ticker's [◫ PANEL] [▲ LOG]. ────── */
+.tp-display-controls {
+  display: flex;
+  gap: 0.3rem;
+  flex-shrink: 0;
+}
+
+.tp-display-btn {
+  font-family: inherit;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 0.2rem 0.45rem;
+  background: transparent;
+  color: rgba(180, 220, 240, 0.7);
+  border: 1px solid rgba(180, 220, 240, 0.3);
+  border-radius: 0;
+  cursor: pointer;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.tp-display-btn:hover {
+  color: #dce6f2;
+  border-color: rgba(220, 235, 255, 0.5);
+}
+
 /* ── Log — scrolls WITHIN this panel only; the page never scrolls (accept
-   #1). Height-clamped so an expanded teleprinter stays "prominent, not a
-   tall deck monitor." ──────────────────────────────────────────────────── */
+   #1). Height-clamped so mid-panel stays "prominent, not a tall deck
+   monitor"; full-overlay widens the clamp (below). ────────────────────── */
 .tp-log {
   display: flex;
   flex-direction: column;
@@ -276,6 +376,31 @@
 .tp-xmit:disabled {
   opacity: 0.35;
   cursor: not-allowed;
+}
+
+/* ── FULL-OVERLAY — #tp-body detaches to position:absolute and grows
+   upward from the ticker row (canon: "expands upward as overlay").
+   Detaching it removes it from the grid track-sizing algorithm entirely,
+   so the teleprinter grid ROW's own footprint (this element's own box)
+   stays pinned to the ticker row's height — entering/leaving full-overlay
+   can never reflow the band/deck/sidebar. overflow:visible is scoped to
+   ONLY this modifier; ticker/mid-panel keep the base overflow:hidden. ── */
+.teleprinter.tp-full-overlay {
+  overflow: visible;
+}
+
+.tp-full-overlay .tp-body {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  background: rgba(0, 8, 14, 0.97);
+  border-top: 1px solid rgba(0, 217, 255, 0.35);
+  box-shadow: 0 -12px 32px rgba(0, 0, 0, 0.6);
+}
+
+.tp-full-overlay .tp-log {
+  max-height: clamp(280px, 40vh, 460px);
 }
 
 @media (prefers-reduced-motion: reduce) {

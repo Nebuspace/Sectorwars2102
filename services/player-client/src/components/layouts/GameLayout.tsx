@@ -5,11 +5,11 @@ import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useAutopilot } from '../../contexts/AutopilotContext';
 // import { useTheme } from '../../themes/ThemeProvider'; // Available for future use
 import StatusBar from './StatusBar';
-import Teleprinter from '../aria/Teleprinter';
+import Teleprinter, { type TeleprinterDisplayMode } from '../aria/Teleprinter';
 import Annunciator from '../hud/Annunciator';
 import { MFDProvider, useMFD } from '../mfd/MFDContext';
 import MFDScreen from '../mfd/MFDScreen';
-import { SIDEBAR_A, SIDEBAR_B } from '../mfd/sidebarScreens';
+import { SIDEBAR_A, SIDEBAR_B, SIDEBAR_A_FOLDED } from '../mfd/sidebarScreens';
 import { ariaFeed } from '../mfd/ariaFeedStore';
 import RouteRail from '../mfd/RouteRail';
 import MedalToast from '../ranking/MedalToast';
@@ -36,7 +36,7 @@ interface GameLayoutProps {
 const MFDAlertWiring: React.FC = () => {
   const { raiseAlert } = useMFD();
   const { ariaMessages } = useWebSocket();
-  const { status, course, pauseReason } = useAutopilot();
+  const { status, course, pauseReason, lastPlot } = useAutopilot();
   const { unreadMessageCount, playerState, currentSector, stationsInSector } = useGame();
 
   const prevAriaCount = React.useRef(ariaMessages.length);
@@ -72,6 +72,37 @@ const MFDAlertWiring: React.FC = () => {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, raiseAlert]);
+
+  // WO-UI1-CHROME-COMPLETE: plot-result narration (ADR-0072 §B3), ported
+  // from the retired AriaTerminalPage.tsx's pendingPlotRef/lastPlot effect
+  // but WIDENED to fire on every lastPlot transition rather than only ones
+  // the teleprinter itself issued — `plotCourse` is a shared AutopilotContext
+  // call with multiple callers (Teleprinter's "set course to N" grammar,
+  // the NAV deck's COURSE tab, GalaxyMap.tsx), and this effect lives in the
+  // ALWAYS-mounted MFDAlertWiring (same reasoning as the status-transition
+  // effect above it: transitions must never be lost to softkey/page state).
+  // ref-diffed so it fires on TRANSITIONS only, never on mount/remount.
+  const prevLastPlotRef = React.useRef(lastPlot);
+  React.useEffect(() => {
+    const prev = prevLastPlotRef.current;
+    prevLastPlotRef.current = lastPlot;
+    if (lastPlot === prev || lastPlot === null || lastPlot === undefined) return;
+
+    if (lastPlot.reachable) {
+      const hopCount = lastPlot.hops?.length ?? 0;
+      ariaFeed.appendNav(
+        `Course laid in for Sector ${lastPlot.target_sector_id} — ${hopCount} charted hop${hopCount !== 1 ? 's' : ''}, ${lastPlot.total_turns} turns. Say engage, or use the helm.`
+      );
+    } else if (lastPlot.reachable === false) {
+      if (lastPlot.nearest_known) {
+        ariaFeed.appendNav(
+          `Sector ${lastPlot.target_sector_id} is beyond my charts. Nearest charted approach is Sector ${lastPlot.nearest_known.sector_id}. Fly the frontier and I will learn the route.`
+        );
+      } else {
+        ariaFeed.appendNav('No such sector on any chart I can read.');
+      }
+    }
+  }, [lastPlot]);
 
   const prevUnread = React.useRef(unreadMessageCount);
   React.useEffect(() => {
@@ -144,6 +175,13 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
   const { playerState, isLoading, isRefreshing, refreshPlayerState } = useGame();
   // const { currentTheme } = useTheme(); // Available for future use
   const [sidebarOpen, setSidebarOpen] = useState(true);
+
+  // ── Teleprinter display mode (WO-UI1-CHROME-COMPLETE) ─────────────────
+  // Owned here (not inside Teleprinter) because 'mid-panel' also drives
+  // which MFD-A config the sidebar renders (the MFD-B→MFD-A fold, below)
+  // — a decision GameLayout must see, mirroring the existing
+  // windshieldMin controlled-from-parent pattern in this same file.
+  const [teleprinterDisplayMode, setTeleprinterDisplayMode] = useState<TeleprinterDisplayMode>('ticker');
 
   // ── Scroll contract (Law 2) ──────────────────────────────────────────
   // On /game routes the DOCUMENT never scrolls: the shell locks html/body
@@ -218,15 +256,32 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
   // `calc(var(--statusbar-h) + var(--teleprinter-h))` (game-layout.css) so
   // the deck/sidebar stop above the statusbar+teleprinter grid rows instead
   // of extending underneath them. --statusbar-h is a static 56px (StatusBar
-  // never changes size) but Teleprinter genuinely does — minimized strip vs
-  // full body, vh-clamped log, input growing on focus — so it's measured off
-  // the live DOM node rather than reserved at a fixed worst-case (which would
-  // either overlap or permanently waste deck space whenever minimized).
+  // never changes size) but Teleprinter genuinely does — ticker strip vs
+  // mid-panel body, vh-clamped log, input growing on focus — so it's measured
+  // off the live DOM node rather than reserved at a fixed worst-case (which
+  // would either overlap or permanently waste deck space whenever ticker).
   // useLayoutEffect (not useEffect) so the first real value lands before the
   // browser paints — no one-frame flash of the CSS fallback. ResizeObserver
   // is undefined in this repo's jsdom test env (confirmed: jsdom 29 ships no
   // implementation), so component tests skip live measurement and just keep
   // the CSS default — harmless, since jsdom never asserts real geometry.
+  //
+  // WO-UI1-CHROME-COMPLETE guard: while full-overlay is active, #tp-body
+  // detaches to position:absolute (teleprinter.css) specifically so it does
+  // NOT contribute to `.teleprinter`'s own box height — but `offsetHeight`
+  // still reads whatever real box results, so without this guard a real
+  // browser would read a near-zero collapsed height there (correct — the
+  // grid row's footprint must stay pinned) while any residual measurement
+  // noise mid-transition could otherwise flash `--teleprinter-h`. Skipping
+  // the write entirely while full-overlay is active keeps the deck/sidebar
+  // pinned to whatever they last measured (ticker/mid-panel), matching the
+  // canon constraint "overlay mode never reflows siblings" — the ref (not
+  // the closed-over state) so this always-once effect reads the LIVE mode.
+  const teleprinterDisplayModeRef = useRef<TeleprinterDisplayMode>(teleprinterDisplayMode);
+  React.useEffect(() => {
+    teleprinterDisplayModeRef.current = teleprinterDisplayMode;
+  }, [teleprinterDisplayMode]);
+
   const gameContainerRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const container = gameContainerRef.current;
@@ -235,6 +290,7 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
     if (!teleprinterEl) return undefined;
 
     const applyHeight = () => {
+      if (teleprinterDisplayModeRef.current === 'full-overlay') return;
       container.style.setProperty('--teleprinter-h', `${teleprinterEl.offsetHeight}px`);
     };
     applyHeight();
@@ -329,8 +385,20 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
             windshieldMin && grounded ? ' windshield-min' : ''
           }${
             playerState?.is_landed && !windshieldMin ? ' landed-expanded' : ''
+          }${
+            teleprinterDisplayMode === 'mid-panel' ? ' tp-mid-panel' : ''
           }`}
         >
+          {/* MFDProvider (WO-UI1-CHROME-COMPLETE): hoisted from around just
+              `<aside>` to wrap the windshield anchor too — Annunciator's
+              COMM lamp click-through needs useMFD().selectPage to open the
+              MFD-B comms page (item 6). MFDProvider renders ZERO DOM of its
+              own (a bare context-provider pair around `children`), so
+              widening its scope changes NOTHING about the grid: both
+              `.windshield-hud-anchor` and `<aside>` stay exactly the same
+              direct-grid-child siblings they were, at the same DOM depth —
+              this is a pure React-tree move, not a layout change. */}
+          <MFDProvider>
           {/* Annunciator (WO-UI1-ANNUNCIATOR stitch) — mounted inside a
               dedicated, non-visual `.windshield-hud-anchor` (game-layout.css)
               rather than directly inside `.game-content`: that layer spans
@@ -346,16 +414,25 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
             <Annunciator />
           </div>
 
-          {/* Left console (NEON15): route rail on top, then two MFD
-              screens splitting the remaining height. MFDProvider hosts
-              page selection/alert state plus the alert wiring effects. */}
+          {/* Left console (NEON15): route rail on top, then the MFD
+              screen(s) splitting the remaining height. MFDProvider (above)
+              hosts page selection/alert state plus the alert wiring
+              effects. WO-UI1-CHROME-COMPLETE: while the teleprinter is
+              mid-panel, MFD-B folds into MFD-A's rail (canon §05 L624) —
+              render the SINGLE merged config (SIDEBAR_A_FOLDED, a distinct
+              screenId, see its own doc-comment for why) instead of the
+              normal pair; MFD-B doesn't mount at all while folded. */}
           <aside className={`game-sidebar hud-panel ${sidebarOpen ? 'open' : 'closed'}`}>
-            <MFDProvider>
-              <RouteRail />
-              <MFDScreen config={SIDEBAR_A} />
-              <MFDScreen config={SIDEBAR_B} />
-              <MFDAlertWiring />
-            </MFDProvider>
+            <RouteRail />
+            {teleprinterDisplayMode === 'mid-panel' ? (
+              <MFDScreen config={SIDEBAR_A_FOLDED} />
+            ) : (
+              <>
+                <MFDScreen config={SIDEBAR_A} />
+                <MFDScreen config={SIDEBAR_B} />
+              </>
+            )}
+            <MFDAlertWiring />
           </aside>
 
           <main className="game-content" aria-busy={isInitialLoad}>
@@ -420,6 +497,7 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
               </div>
             )}
           </main>
+          </MFDProvider>
 
           {/* StatusBar (WO-UI0-STATUSBAR) — a DIRECT, non-absolute child of
               .game-container so CSS Grid actually places it into the
@@ -437,8 +515,13 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
               `grid-area: teleprinter` on the component's own root, so no
               wrapper is needed here (unlike Annunciator, whose root is
               itself `position:absolute` and can't participate in grid
-              placement on its own). */}
-          <Teleprinter />
+              placement on its own). displayMode is CONTROLLED from here
+              (WO-UI1-CHROME-COMPLETE) — see teleprinterDisplayMode's own
+              doc-comment for why (the MFD-B fold above needs to see it). */}
+          <Teleprinter
+            displayMode={teleprinterDisplayMode}
+            onDisplayModeChange={setTeleprinterDisplayMode}
+          />
         </div>
       </div>
     </div>

@@ -257,6 +257,21 @@
   --band-h: 65%;
 }
 
+/* TELEPRINTER MID-PANEL (WO-UI1-CHROME-COMPLETE, canon §05 L624: "band+deck
+   shrink slightly"): the deck already shrinks automatically — the
+   teleprinter's own grid row is `auto`-sized and mid-panel's taller
+   #tp-body (teleprinter.css) grows that row, which the "sidebar deck" 1fr
+   track absorbs by shrinking (CSS Grid track-sizing math, no extra rule
+   needed). This rule only carries the EXPLICIT band-shrink half of that
+   sentence, scoped to flight only — mid-panel is the flight-default
+   teleprinter mode (canon: "flight is the default state"); docked/landed
+   already hand the deck the full remaining height via .console-expand, so
+   a band-shrink there would just eat into the thin windshield-min bar or
+   the bespoke landed-expanded landmass tuning for no real benefit. */
+.game-container.mode-flight.tp-mid-panel {
+  --band-h: 18%;
+}
+
 /* STATION FACE (WO-UI3-STATION-MODE): docked stops looking like the cockpit.
    `mode-station` (GameLayout.tsx) was a real-but-empty hook — this is its
    first styling. The --band-h/--deck-h/.console-expand/.windshield-min

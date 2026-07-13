@@ -41,12 +41,18 @@ vi.mock('../../../contexts/GameContext', () => ({
 }));
 
 import TacticalMonitor, { type TacticalContact } from '../TacticalMonitor';
+import { requestTacticalPage, __resetDeckNavBusForTests } from '../../../services/deckNavBus';
 
 describe('TacticalMonitor', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
+    // deckNavBus is a real module-level singleton (no mock) -- reset its
+    // latched request between tests so an earlier test's requestTactical
+    // Page() call can't leak into a later one via `getLatestTacticalPage
+    // Request()`'s pending-request pickup.
+    __resetDeckNavBusForTests();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -144,5 +150,41 @@ describe('TacticalMonitor', () => {
     panel = container.querySelector('.screen-hud-content[role="tabpanel"]')!;
     expect(panel.id).toBe('tactical-panel-threat');
     expect(panel.getAttribute('aria-labelledby')).toBe('tactical-tab-threat');
+  });
+
+  // ---- WO-UI1-CHROME-COMPLETE: annunciator LAW/THREAT click-through -------
+
+  it('deckNavBus: a requestTacticalPage("threat") call flips the softkey to THREAT while mounted', async () => {
+    await mount();
+    expect(container.querySelector('.threat-section')).toBeNull();
+
+    await act(async () => {
+      requestTacticalPage('threat');
+    });
+    await flush();
+
+    expect(container.querySelector('.threat-section')).toBeTruthy();
+    expect(container.querySelector('.target-contact-list')).toBeNull();
+  });
+
+  it('deckNavBus: a request that latched BEFORE mount is picked up on mount (docked/landed click, then fly)', async () => {
+    requestTacticalPage('threat');
+    await mount();
+
+    expect(container.querySelector('.threat-section')).toBeTruthy();
+  });
+
+  it('deckNavBus: requestTacticalPage("target") flips back to TARGET', async () => {
+    requestTacticalPage('threat');
+    await mount();
+    expect(container.querySelector('.threat-section')).toBeTruthy();
+
+    await act(async () => {
+      requestTacticalPage('target');
+    });
+    await flush();
+
+    expect(container.querySelector('.target-contact-list')).toBeTruthy();
+    expect(container.querySelector('.threat-section')).toBeNull();
   });
 });
