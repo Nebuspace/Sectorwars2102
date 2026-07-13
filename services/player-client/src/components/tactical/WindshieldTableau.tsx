@@ -402,6 +402,27 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
     travelTo(pos, objectId);
   }, [travelTo]);
 
+  // FIX C (Max: "no longer able to right click anywhere and travel there") --
+  // right-click ANYWHERE in the tableau glides the ship straight to that
+  // point. Reuses the SAME travelTo() every other glide entry point uses
+  // (left-click popups, a SOLAR row's APPROACH) -- heading/burning/flight-
+  // context wiring is identical, not forked. `null` objectId (no specific
+  // body/station targeted) matches travelTo's own "no glide target" idiom
+  // (star/ship/wreck/formation clicks already do the same). No context
+  // MENU (Travel/Inspect/Select, the old canvas's idiom) -- Max asked for
+  // direct travel only; a menu is a separate future ask. preventDefault
+  // suppresses the native browser menu.
+  const handleContextMenu = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const el = containerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const xPct = Math.min(100, Math.max(0, ((e.clientX - rect.left) / rect.width) * 100));
+    const yPct = Math.min(100, Math.max(0, ((e.clientY - rect.top) / rect.height) * 100));
+    travelTo({ xPct, yPct }, null);
+  }, [travelTo]);
+
   const popupStyle = useMemo((): React.CSSProperties | null => {
     if (!popup || !containerRef.current) return { left: 8, top: 8 };
     const rect = containerRef.current.getBoundingClientRect();
@@ -537,7 +558,7 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
   const selectedPos = selectedShip ? otherPresencePosition(String(selectedShip.ship_id)) : null;
 
   return (
-    <div ref={containerRef} className="ssv-tableau">
+    <div ref={containerRef} className="ssv-tableau" onContextMenu={handleContextMenu}>
       <div className={`scene space${hasNebula ? ' nebula' : ''}${hasHazard ? ' hazard' : ''}`}>
         <div className="stars" />
 

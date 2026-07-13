@@ -438,6 +438,70 @@ describe('WindshieldTableau', () => {
     }
   });
 
+  // ---- FIX C (Max: "no longer able to right click anywhere and travel
+  // there"): right-click (contextmenu) anywhere in the tableau glides the
+  // ship to that exact point -- reuses travelTo, no forked glide, no
+  // context menu.
+  for (const sectorId of [SECTOR_ID, SECTOR_ID + 1]) {
+    it(`right-click (contextmenu) at sector ${sectorId} glides the ship to that exact point and prevents the native menu`, async () => {
+      await mount({ sectorId });
+      const tableau = container.querySelector('.ssv-tableau') as HTMLElement;
+      const shipBefore = container.querySelector('.shipmk') as HTMLElement;
+      const fromXPct = parseFloat(shipBefore.style.left);
+      const fromYPct = parseFloat(shipBefore.style.top);
+
+      // Mocked containerRef rect (this file's own beforeEach): 800x400, origin (0,0).
+      const clientX = 600;
+      const clientY = 100;
+      const expectedXPct = (clientX / 800) * 100; // 75
+      const expectedYPct = (clientY / 400) * 100; // 25
+
+      const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX, clientY });
+      const preventDefaultSpy = vi.spyOn(event, 'preventDefault');
+      await act(async () => { tableau.dispatchEvent(event); });
+
+      expect(preventDefaultSpy).toHaveBeenCalled(); // (a) native menu suppressed
+
+      const shipAfter = container.querySelector('.shipmk') as HTMLElement;
+      expect(parseFloat(shipAfter.style.left)).toBeCloseTo(expectedXPct); // (b) glides to the exact clicked pct point
+      expect(parseFloat(shipAfter.style.top)).toBeCloseTo(expectedYPct);
+      expect(shipAfter.className).toContain('burning');
+
+      // (c) heading points at the clicked point, aspect-corrected (bandAspect
+      // =0.5 for this file's own 800x400 mock -- same formula FIX B's own test uses).
+      const dxPct = expectedXPct - fromXPct;
+      const dyPct = expectedYPct - fromYPct;
+      const expectedHdg = (Math.atan2(dyPct * 0.5, dxPct) * 180) / Math.PI;
+      const hdg = parseFloat(shipAfter.style.getPropertyValue('--hdg'));
+      expect(Math.abs(hdg - expectedHdg)).toBeLessThan(0.6);
+    });
+  }
+
+  it('right-clicking does not open a popup or a context menu -- direct travel only (Max\'s words, no menu this round)', async () => {
+    await mount();
+    const tableau = container.querySelector('.ssv-tableau') as HTMLElement;
+    const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 400, clientY: 200 });
+    await act(async () => { tableau.dispatchEvent(event); });
+    expect(container.querySelector('.ssv-popup')).toBeNull();
+  });
+
+  it('right-clicking ON a body glides the ship there too (not special-cased -- the container handler fires on bubble)', async () => {
+    await mount();
+    const planetBtn = container.querySelector('.pl') as HTMLButtonElement;
+    const targetXPct = parseFloat(planetBtn.style.left);
+    const targetYPct = parseFloat(planetBtn.style.top);
+    const rect = planetBtn.getBoundingClientRect(); // mocked to the same 800x400 origin(0,0) rect
+    const clientX = (targetXPct / 100) * rect.width;
+    const clientY = (targetYPct / 100) * rect.height;
+
+    const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX, clientY });
+    await act(async () => { planetBtn.dispatchEvent(event); });
+
+    const shipAfter = container.querySelector('.shipmk') as HTMLElement;
+    expect(parseFloat(shipAfter.style.left)).toBeCloseTo(targetXPct);
+    expect(parseFloat(shipAfter.style.top)).toBeCloseTo(targetYPct);
+  });
+
   it('.shipmk burns while autopilot is engaged (inter-sector transit), independent of any local click', async () => {
     autopilotStatus = 'engaged';
     await mount();
