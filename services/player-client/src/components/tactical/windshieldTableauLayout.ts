@@ -266,69 +266,17 @@ export function safeOrbitRadii(
 }
 
 /** T0-1 (Max live-catch, sector 1): the fraction of a body's primary X
- *  spread (orbitRankT * rightPctPerAu*ORBIT_AU_MAX below) that phase_deg is
+ *  spread (orbitT * rightPctPerAu*ORBIT_AU_MAX below) that phase_deg is
  *  ALSO allowed to contribute, as a small SECONDARY horizontal wiggle —
  *  Max's ruling in his own words: "primarily vertical + secondary
  *  horizontal, but must NEVER zero out the horizontal spread." Deliberately
  *  ONE-SIDED (see orbitalPosition's `(cos+1)/2` remap below, always >=0) —
  *  a signed +/- wiggle could subtract enough from a body at the smallest
- *  orbit_au (rank≈0) to push it PAST the star itself when phase lands in
+ *  orbit_au (orbitT≈0) to push it PAST the star itself when phase lands in
  *  the left hemisphere, reopening the exact collapse this WO exists to
- *  close. One-sided keeps every body at or beyond its own baseline "how far
- *  out" position, never behind it.
- *
- *  REVISE (T0-1 hardening, lead's adversarial-sweep ruling): sized well
- *  BELOW the smallest possible gap between two ADJACENT ranks so the
- *  wiggle can never erode a rank-pair's separation below the accept
- *  threshold — celestial_service.py's own MAX_BODIES=9 ceiling means the
- *  tightest realistic rank gap is 1/(9-1)=12.5% of xSpreadPct; 0.03 leaves
- *  a >6x margin (worst-case wiggle divergence between two adjacent bodies
- *  is 2*0.03=6% of xSpreadPct, well under that 12.5% gap). */
-const X_SECONDARY_WIGGLE_FRACTION = 0.03;
-
-/** T0-1 hardening (lead's adversarial-sweep ruling): the ORIGINAL fix
- *  normalized a body's orbit_au against the FIXED GLOBAL [ORBIT_AU_MIN,
- *  ORBIT_AU_MAX] contract range — correct for realistic, spread-out orbit_au
- *  data (sector 1's own repro: 0.25-0.94, nearly the full range), but an
- *  exhaustive adversarial sweep surfaced a DIFFERENT collapse: if every
- *  body in a system happens to share nearly the SAME orbit_au (e.g. all
- *  clustered near ORBIT_AU_MAX, or literally identical), the fixed-range
- *  orbitT term is nearly IDENTICAL for all of them too — right back to
- *  relying on the weak secondary phase wiggle alone, which (deliberately
- *  small per its own doc-comment above) can't span the required 50%
- *  x-range on its own, and collapses further still if phases are ALSO
- *  clustered.
- *
- *  Fix: normalize by RANK among the system's own siblings (sorted by
- *  orbit_au ascending, ties broken by slot for a stable order) instead of
- *  by raw orbit_au value against the fixed contract range. Rank always
- *  spans the FULL [0,1] range for N>1 bodies REGARDLESS of how tightly
- *  their raw orbit_au values cluster — even bodies with LITERALLY IDENTICAL
- *  orbit_au land at different (adjacent) ranks via the slot tie-break — so
- *  the primary X differentiator can never collapse, independent of both
- *  the orbit_au distribution AND the phase distribution. Relative order is
- *  still orbit_au-driven (a real "further out = further right" reading),
- *  just rescaled to always fill the available room instead of being
- *  compressed by how close together the actual orbit_au values in THIS
- *  system happen to be. */
-export function bodyOrbitRanks(bodies: SystemBody[]): Map<number, number> {
-  const sorted = [...bodies].sort((a, b) => a.orbit_au - b.orbit_au || a.slot - b.slot);
-  const n = sorted.length;
-  const ranks = new Map<number, number>();
-  sorted.forEach((b, i) => ranks.set(b.slot, n > 1 ? i / (n - 1) : 0.5));
-  return ranks;
-}
-
-/** Station analog of bodyOrbitRanks — SystemStation carries no `slot` field,
- *  so station_id (always present, always unique within a system) is the
- *  stable tie-break instead. */
-export function stationOrbitRanks(stations: SystemStation[]): Map<string, number> {
-  const sorted = [...stations].sort((a, b) => a.orbit_au - b.orbit_au || a.station_id.localeCompare(b.station_id));
-  const n = sorted.length;
-  const ranks = new Map<string, number>();
-  sorted.forEach((s, i) => ranks.set(s.station_id, n > 1 ? i / (n - 1) : 0.5));
-  return ranks;
-}
+ *  close. One-sided keeps every body at or beyond its own orbit_au's
+ *  baseline "how far out" position, never behind it. */
+const X_SECONDARY_WIGGLE_FRACTION = 0.15;
 
 /** Real orbit_au + phase_deg → a STATIC %-position on the star's orbital
  *  plane. No `t` term — zero system-level animation at rest (Max #4).
@@ -536,10 +484,25 @@ export function selfRestingAnchor(sectorId: number): PctPoint {
 }
 
 /** Heading in degrees (CSS `--hdg`) from a previous position toward a new
- *  one, for the `.shipmk` rotate(var(--hdg)) transform. */
-export function headingDeg(from: PctPoint, to: PctPoint): number {
+ *  one, for the `.shipmk` rotate(var(--hdg)) transform.
+ *
+ *  FIX B (Max live-playtest): `xPct`/`yPct` are %-of-width and %-of-height
+ *  respectively — NOT interchangeable px units — so `atan2` on the raw %
+ *  deltas only gives the correct ON-SCREEN angle if the container happens
+ *  to be SQUARE. The flight-mode band is ~4.3:1 wide-short (~1440x335px),
+ *  so a %-space delta that looks "diagonal" is actually much steeper on
+ *  screen (the same %-of-height delta covers far fewer real px than the
+ *  same %-of-width delta) — the ship pointed too vertical relative to its
+ *  true visual travel direction. `bandAspect` (heightPx/widthPx, defaults
+ *  to 1 = the old square-container assumption, for callers without real
+ *  geometry) rescales the y-term back into the same px-equivalent units as
+ *  x before the atan2, so the reported heading matches what the ship
+ *  visually does on screen. */
+export function headingDeg(from: PctPoint, to: PctPoint, bandAspect = 1): number {
   if (from.xPct === to.xPct && from.yPct === to.yPct) return 0;
-  return (Math.atan2(to.yPct - from.yPct, to.xPct - from.xPct) * 180) / Math.PI;
+  const dxPct = to.xPct - from.xPct;
+  const dyPct = to.yPct - from.yPct;
+  return (Math.atan2(dyPct * bandAspect, dxPct) * 180) / Math.PI;
 }
 
 /** A single hazard band's arc geometry (fraction-of-orbit radius + sweep),

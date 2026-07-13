@@ -278,6 +278,43 @@ describe('headingDeg', () => {
   it('points down (90deg) when moving due +y', () => {
     expect(headingDeg({ xPct: 0, yPct: 0 }, { xPct: 0, yPct: 10 })).toBeCloseTo(90);
   });
+
+  // ---- FIX B (Max live-playtest): aspect-correct the heading so the ship
+  // faces its ACTUAL visual travel direction. %-deltas are % of DIFFERENT
+  // axes (width vs height) -- on the ~4.3:1 wide-short flight band, atan2 on
+  // the raw %s over-steepens the angle (points too vertical).
+
+  const REAL_BAND_WIDTH_PX = 1440;
+  const REAL_BAND_HEIGHT_PX = 334.7; // 18.5em flight-rest, this file's own convention
+  const REAL_BAND_ASPECT = REAL_BAND_HEIGHT_PX / REAL_BAND_WIDTH_PX;
+
+  it('aspect-corrects: equal on-screen PX right+down reads ~45deg (not the %-distorted steeper angle), at real band px dims', () => {
+    const pxDelta = 100; // arbitrary equal px in both directions
+    const from = { xPct: 10, yPct: 40 };
+    const to = {
+      xPct: from.xPct + (pxDelta / REAL_BAND_WIDTH_PX) * 100,
+      yPct: from.yPct + (pxDelta / REAL_BAND_HEIGHT_PX) * 100,
+    };
+    const corrected = headingDeg(from, to, REAL_BAND_ASPECT);
+    expect(corrected).toBeCloseTo(45, 1);
+
+    // The OLD (default bandAspect=1, no aspect correction) angle for the
+    // exact same %-space delta is measurably STEEPER -- proves this is a
+    // real behavioral fix, not a no-op refactor.
+    const uncorrected = headingDeg(from, to);
+    expect(uncorrected).toBeGreaterThan(corrected + 10); // ~76.9deg vs 45deg
+  });
+
+  it('directly right / directly below stay ~0deg / ~90deg regardless of bandAspect (axis-aligned moves are aspect-independent)', () => {
+    expect(headingDeg({ xPct: 0, yPct: 0 }, { xPct: 10, yPct: 0 }, REAL_BAND_ASPECT)).toBeCloseTo(0);
+    expect(headingDeg({ xPct: 0, yPct: 0 }, { xPct: 0, yPct: 10 }, REAL_BAND_ASPECT)).toBeCloseTo(90);
+  });
+
+  it('defaults to the old square-container behavior (bandAspect=1) when omitted -- callers without real geometry (or mid-mount, before bandBox is measured) are unaffected', () => {
+    const from = { xPct: 0, yPct: 0 };
+    const to = { xPct: 10, yPct: 7 };
+    expect(headingDeg(from, to)).toBeCloseTo(headingDeg(from, to, 1));
+  });
 });
 
 describe('nebulaArcs / debrisArc', () => {

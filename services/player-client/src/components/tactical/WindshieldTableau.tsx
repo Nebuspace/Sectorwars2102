@@ -330,13 +330,19 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
     setHeading(0);
   }, [system, sectorId, lastDockedStationId, lastLandedPlanetId, star, safeRadiiPlanets, safeRadiiStations]);
 
+  // FIX B: real band aspect (heightPx/widthPx) so headingDeg converts %-space
+  // deltas into the same px-equivalent units before computing the angle --
+  // see that function's own doc-comment. Falls back to 1 (square, the old
+  // behavior) before bandBox is measured, matching headingDeg's own default.
+  const bandAspect = useMemo(() => (bandBox ? bandBox.heightPx / bandBox.widthPx : 1), [bandBox]);
+
   const travelTo = useCallback((target: PctPoint, objectId: string | null = null) => {
     const from = shipPosRef.current ?? target;
-    setHeading(headingDeg(from, target));
+    setHeading(headingDeg(from, target, bandAspect));
     setShipPos(target);
     setLocalBurn(true);
     setGlideTargetId(objectId);
-  }, []);
+  }, [bandAspect]);
 
   const burning = localBurn || autopilot.status === 'engaged';
 
@@ -624,13 +630,23 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
         )}
 
         {/* planets + their moons */}
-        {(system?.bodies ?? []).map((body, idx) => {
+        {(system?.bodies ?? []).map((body) => {
           const pos = bodyPosition(star, body, safeRadiiPlanets);
           const sizeEm = bodySizeEm(body);
           const moons = moonOrbits(sectorId, body);
           const isReal = body.real && body.planet_id;
+          // FIX A (Max live-playtest): decorative (non-real) bodies used to
+          // show a fabricated `PROCEDURAL-${sectorId}-${idx}` designation,
+          // discarding the REAL corpus name the server already generates for
+          // every body slot (celestial_service.py's own generate_skeleton/
+          // generate_system: `b["name"] = name_for_body(...)`, only
+          // OVERWRITTEN — never cleared — for slots that get a real planet
+          // merged over them). `name` here already carries that real value
+          // (with a defensive `slot-N` fallback for the never-observed case
+          // it's somehow empty) — use it directly for every body, real or
+          // decorative, instead of fabricating a designation the server
+          // already solved.
           const name = body.name || `slot-${body.slot}`;
-          const label = isReal ? name : `PROCEDURAL-${sectorId}-${idx}`;
           return (
             <button
               key={`body-${body.slot}`}
@@ -650,7 +666,7 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
                 transform: 'translate(-50%,-50%)',
                 background: `hsl(${body.palette.hue}, ${body.palette.sat}%, 45%)`,
               }}
-              aria-label={label}
+              aria-label={name}
               onClick={() =>
                 isReal
                   ? openPopup(
@@ -660,14 +676,14 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
                       body.planet_id as string
                     )
                   : openPopup(
-                      { kind: 'procedural', designation: label, typeName: body.kind.replace(/_/g, ' '), sizeDesc: `SIZE CLASS ${body.size_class}` },
-                      label,
+                      { kind: 'procedural', designation: name, typeName: body.kind.replace(/_/g, ' '), sizeDesc: `SIZE CLASS ${body.size_class}` },
+                      name,
                       pos
                     )
               }
             >
               <span className={`pltag${isReal && body.habitability ? '' : ' dim'}`}>
-                {isReal ? name : label}{isReal && !body.habitability ? ' ◦' : ''}
+                {name}{isReal && !body.habitability ? ' ◦' : ''}
               </span>
               {moons.map((m, mi) => (
                 <span

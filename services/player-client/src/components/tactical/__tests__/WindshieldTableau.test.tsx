@@ -181,6 +181,33 @@ describe('WindshieldTableau', () => {
     expect(objTags).toContain('TEST ANOMALY');
   });
 
+  // ---- FIX A (Max live-playtest): decorative bodies show their REAL corpus
+  // name (celestial_service.py's own name_for_body -- serialized on EVERY
+  // body slot, real or decorative), not a fabricated `PROCEDURAL-N-idx`
+  // designation that discarded it.
+  it('a decorative (non-real) body with a server-provided name shows that REAL name -- never a fabricated PROCEDURAL-<sector>-<idx> designation', async () => {
+    const namedDecorative = { ...PROCEDURAL_PLANET, name: 'Kelvara Drift' };
+    mockGet.mockResolvedValue({ data: { ...TEST_SYSTEM, bodies: [REAL_PLANET, namedDecorative] } });
+    await mount();
+
+    const tags = Array.from(container.querySelectorAll('.pltag')).map((el) => el.textContent);
+    expect(tags).toContain('Kelvara Drift');
+    expect(tags.some((t) => t?.startsWith('PROCEDURAL-'))).toBe(false);
+
+    const planetBtn = Array.from(container.querySelectorAll('.pl')).find(
+      (el) => el.getAttribute('aria-label') === 'Kelvara Drift'
+    );
+    expect(planetBtn).toBeTruthy();
+
+    // The popup designation matches too -- clicking opens a card titled with
+    // the real name, not the fabricated one ('procedural' kind renders its
+    // designation verbatim, no .toUpperCase() -- unlike the 'planet'/'star'
+    // cases, see renderPopupContent's own switch).
+    await act(async () => { (planetBtn as HTMLButtonElement).click(); });
+    const title = container.querySelector('.ssv-popup-title');
+    expect(title?.textContent).toBe('Kelvara Drift');
+  });
+
   it('SCAN-gates wrecks and undiscovered formations behind scanActive', async () => {
     const undiscovered: SpecialFormationSummary = { ...TEST_FORMATION, id: 'f2', is_discovered: false, name: null, type: null };
     await mount({ scanActive: false, wrecks: [TEST_WRECK], formations: [undiscovered] });
@@ -374,6 +401,41 @@ describe('WindshieldTableau', () => {
     expect(shipAfter.style.top).not.toBe(topBefore);
     expect(shipAfter.className).toContain('burning');
     expect(shipAfter.style.getPropertyValue('--hdg')).toMatch(/deg$/);
+  });
+
+  // ---- FIX B (Max live-playtest): ship heading is aspect-corrected to the
+  // REAL measured band px dims (this file's own mocked containerRef rect,
+  // 800x400 -> bandAspect=0.5), not the raw %-space angle.
+  it('ship heading is aspect-corrected to the measured band px dims, not the raw %-space angle', async () => {
+    await mount();
+    const shipBefore = container.querySelector('.shipmk') as HTMLElement;
+    const fromXPct = parseFloat(shipBefore.style.left);
+    const fromYPct = parseFloat(shipBefore.style.top);
+
+    const planetBtn = container.querySelector('.pl') as HTMLButtonElement;
+    const toXPct = parseFloat(planetBtn.style.left);
+    const toYPct = parseFloat(planetBtn.style.top);
+
+    await act(async () => { planetBtn.click(); });
+
+    const shipAfter = container.querySelector('.shipmk') as HTMLElement;
+    const hdg = parseFloat(shipAfter.style.getPropertyValue('--hdg'));
+
+    // Mocked containerRef rect in this file's own beforeEach: 800x400 ->
+    // bandAspect = heightPx/widthPx = 0.5.
+    const dxPct = toXPct - fromXPct;
+    const dyPct = toYPct - fromYPct;
+    const expectedCorrected = (Math.atan2(dyPct * 0.5, dxPct) * 180) / Math.PI;
+    const expectedUncorrected = (Math.atan2(dyPct, dxPct) * 180) / Math.PI;
+
+    // --hdg is toFixed(0) in the component -- tolerate the resulting <=0.5deg rounding.
+    expect(Math.abs(hdg - expectedCorrected)).toBeLessThan(0.6);
+    // Only meaningfully differ from the uncorrected angle when neither delta
+    // is exactly 0 (axis-aligned moves are aspect-independent by construction,
+    // per headingDeg's own pure-math tests) -- guards against a vacuous pass.
+    if (dxPct !== 0 && dyPct !== 0) {
+      expect(Math.abs(hdg - expectedUncorrected)).toBeGreaterThan(0.5);
+    }
   });
 
   it('.shipmk burns while autopilot is engaged (inter-sector transit), independent of any local click', async () => {
