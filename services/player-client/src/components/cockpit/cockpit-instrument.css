@@ -26,30 +26,29 @@
 }
 
 /* WO-UIPC-COCKPIT-CONTENT-REGION (supersedes the WO-UIPC-COCKPITINSTRUMENT-
-   OCCLUSION padding hack below, same clearance values, different mechanism):
-   Max ruled a TRUE bounded grid column, not an observably-equivalent padding
-   offset. Every standalone /game/* route wraps <GameLayout><CockpitInstrument>,
-   making .instrument-monitor a DIRECT child of .main-viewport (game-layout.css).
-   GameLayout's two fixed overlays -- the MFD sidebar rail (.game-sidebar,
-   position:absolute, z-index:20) and the always-on HUD bar
-   (.player-vitals-hud, position:absolute, z-index:30) -- aren't reserved
-   space in .main-viewport's flow, so the frame rendered straight underneath
+   OCCLUSION padding hack below, same clearance values, different mechanism).
+   Every standalone /game/* route wraps <GameLayout><CockpitInstrument>,
+   making .instrument-monitor a DIRECT child of .main-viewport
+   (game-layout.css). `.main-viewport` sits inside `.game-content`
+   (WO-UI0-SHELL-TRANSPLANT: a position:absolute box spanning `.stage`'s
+   band+teleprinter+lower rows, full width, BEHIND them in paint/hit-test
+   order — game-layout.css's own doc-comment) — the MFD rail (`.mfdcol`,
+   inside `.lower`) and the status bar aren't reserved space in
+   `.main-viewport`'s own flow, so the frame renders straight underneath
    both on every standalone route (confirmed live at 1440x900: GalaxyMap,
    TeamManager, GovernancePanel, CombatInterface, PlanetManager, ShipSelector,
    TradingInterface, RankingPage, SettingsPage).
    position:absolute + explicit left/top/right/bottom (NOT padding) carves a
    GENUINE bounded box -- .instrument-monitor's own border-box now starts at
-   x=var(--sidebar-w), not x=0-with-inset-content -- while staying entirely
-   local to this element: .main-viewport stays position:relative (game-layout.css,
-   UNTOUCHED) as the positioning context, exactly like .game-sidebar/.cockpit-console
-   already use position:absolute off that same context. This is deliberately
-   NOT a `.game-container { display:grid }` restructure -- .main-viewport is
-   SHARED with GameDashboard's own windshield/scene canvas, which is
-   INTENTIONALLY full-bleed behind the rail (the inverted-L peek-through,
-   game-layout.css's own doc comments) -- narrowing the shared shell would
-   narrow the scene too and break that design. Scoping the bounded box to
-   THIS element only (still via the CHILD combinator) keeps CMD byte-identical
-   while every other route gets a genuine column.
+   x=19% (the SAME fixed left-column width `.lower{grid-template-columns:
+   19% 81%}`, cockpit-shell.css, gives `.mfdcol` — was `var(--sidebar-w)`,
+   retired along with the rest of the old absolute-sidebar geometry; the
+   post-transplant `.mfdcol` has no player-collapsible width anymore, see
+   game-layout.css's `.mfdcol` doc-comment, so a literal percentage is the
+   correct replacement, not a var-reference to something that no longer
+   varies) -- while staying entirely local to this element: .main-viewport
+   stays position:relative (game-layout.css, UNTOUCHED) as the positioning
+   context.
    Scoped via the CHILD combinator, not a bare `.instrument-monitor` rule,
    so EMBEDDED usages are structurally excluded: ShipSelector/PlanetManager
    render bare (no GameLayout) inside PlayerInfo's HANGAR/COLONIES tabs --
@@ -59,17 +58,15 @@
    Fragment, "TradeLedgerShell" doc comment). Only a DIRECT .main-viewport
    child -- i.e. the GameLayout-wrapped standalone-route case -- matches.
    Clearance values unchanged from the padding-hack version (proven-live):
-   left reads the SAME --sidebar-w custom prop the rail is sized from
-   (inherited from .game-container, auto-collapses to 0 with
-   .console-collapsed, no extra JS/state); top is a fixed rem clearance (no
-   shared --hud-h var exists to read -- 3.4rem measured live against the
-   HUD's ~50px/3.1rem rendered height, +0.3rem margin). Right/bottom flush
-   to the viewport edge; the frame's own 0.4rem bezel padding (base rule,
-   untouched) still insets its actual content from this new box's edges. */
+   top is a fixed rem clearance (no shared --hud-h var exists to read --
+   3.4rem measured live against the HUD's ~50px/3.1rem rendered height,
+   +0.3rem margin). Right/bottom flush to the viewport edge; the frame's own
+   0.4rem bezel padding (base rule, untouched) still insets its actual
+   content from this new box's edges. */
 .main-viewport > .instrument-monitor {
   position: absolute;
   top: 3.4rem;
-  left: var(--sidebar-w);
+  left: 19%;
   right: 0;
   bottom: 0;
   width: auto;

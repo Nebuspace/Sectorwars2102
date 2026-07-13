@@ -37,15 +37,23 @@
    ============================================ */
 
 .cockpit-windshield {
-  /* WO-INVERTED-L: the SINGLE full-bleed scene canvas. Fills the whole
-     dashboard (= the whole container) and sits at the BACK (z:1); the opaque
-     console overlays its bottom-left, so the visible scene reads as the
-     inverted-L (full-width top band + right column). No longer a fixed top
-     band and no flex-basis collapse — the band is just the part of this
-     full-bleed scene above the console, ~--band-h tall. */
+  /* WO-UI0-SHELL-TRANSPLANT: portaled directly into `.band` (GameLayout,
+     ShellContext.ts) now, superseding WO-INVERTED-L's "single full-bleed
+     scene behind the console" model — `.band` IS the scene's box now, sized
+     per-mode by cockpit-shell.css/game-layout.css, not this element itself.
+     position:absolute + inset:0 is UNCHANGED (still correct — `.band` is
+     `position:relative`, so this fills it edge to edge, trap (ii): scene
+     canvas bbox == .band bbox) but no longer implies "the whole dashboard
+     container"; z:1 still just needs to sit under Annunciator (z:30,
+     annunciator.css) within `.band`'s own stacking. `.band` sets
+     `pointer-events: none` by default (an empty band on non-GameDashboard
+     routes must click through to the page underneath) — opt back into
+     `auto` here since THIS route's scene is always real, interactive
+     content. */
   position: absolute;
   inset: 0;
   z-index: 1;
+  pointer-events: auto;
   overflow: hidden;
   background: #000;
   /* Let the scene fill the full bleed (was centered for the small band). */
@@ -941,22 +949,24 @@
    ============================================ */
 
 .cockpit-console {
-  /* DECK (id=149 REDEFINED — Max's exact layout): the instrument strip at the
-     BOTTOM, spanning the FULL width RIGHT of the narrow sidebar (left:
-     --sidebar-w → right:0). The 3 monitors (NAV warp-graph + course PLOT ·
-     PLANETARY · COMMS) lay out side-by-side in a WIDE 3-up grid with a real row
-     height (grid-template-rows:1fr → each .monitor-screen fills, no header-only
-     collapse). Scene shows in the right-of-sidebar area ABOVE this deck = the ⌐.
-     Docked/landed raise the top to fill the full right-of-sidebar height (the
-     container's --deck-h goes full under .console-expand). */
-  position: absolute;
-  left: var(--sidebar-w);
-  right: 0;
-  top: calc(100% - var(--deck-h));
-  bottom: 0;
+  /* DECK (WO-UI0-SHELL-TRANSPLANT, supersedes id=149's absolute-overlay
+     geometry): portaled directly into `.deck` (GameLayout, ShellContext.ts)
+     now — a plain grid cell (`.game-container .deck`, game-layout.css) that
+     hands this element the full cell in both axes, so width/height:100%
+     replaces the old left/right/top/bottom var math entirely. The 3
+     monitors (NAV warp-graph + course PLOT · PLANETARY · COMMS) still lay
+     out side-by-side in this element's OWN internal 3-up grid (unchanged
+     below) — `.deck`'s own template is a bare 1fr/1fr single cell
+     (game-layout.css), so this nested grid is what actually splits the 3
+     monitors, exactly as it always did. `.deck` sets `pointer-events: none`
+     by default (an empty deck on non-GameDashboard routes must click
+     through to the page underneath) — opt back into `auto` here since this
+     route's console is always real, interactive content. */
+  width: 100%;
+  height: 100%;
   z-index: 20;
   box-sizing: border-box;
-  transition: left 0.3s ease, top 0.3s ease;
+  pointer-events: auto;
   /* OPAQUE CRT backing — explicit background-COLOR (not only a gradient, which
      is background-image and leaves background-color transparent → read as a
      void, id=149). Subtle translucent sheen→shade overlay for the metal feel. */

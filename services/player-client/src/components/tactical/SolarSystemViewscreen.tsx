@@ -1530,8 +1530,10 @@ export function drawScene(
   // fall on-screen instead of the left arc clipping the cap. Small seeded
   // jitter keeps systems from sharing one fixed skeleton.
   const starX = w * 0.54 + (anchorRng() - 0.5) * 2 * (w * 0.03);
-  // h is the VISIBLE scene height (container clips to calc(100% - var(--deck-h))),
-  // so h/2 lands at the visual centre regardless of the deck-h setting.
+  // h is the full `.band` height now (WO-UI0-SHELL-TRANSPLANT: the
+  // container is 100% of its portaled-into `.band` parent, no deck-overlap
+  // clip left to account for — solar-system-viewscreen.css), so h/2 lands
+  // at the visual centre.
   const starY = h / 2 + (anchorRng() - 0.5) * 2 * (h * 0.04);
   const margin = 14;
   // Cap orbital extent so the outermost ellipse stays fully on-screen on BOTH

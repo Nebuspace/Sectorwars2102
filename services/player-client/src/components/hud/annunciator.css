@@ -1,8 +1,9 @@
 /* Annunciator — windshield HUD overlay, SLIM LAMP STRIP form (WO-UI1-CHROME-
    COMPLETE). SCENE-NARROWING guardrail: position:absolute + inset:0 so the
-   layer contributes ZERO layout size to its parent (GameLayout's
-   .windshield-hud-anchor) — it never narrows or occludes the full-bleed
-   scene. Non-interactive by default: pointer-events is set inline in
+   layer contributes ZERO layout size to its parent (GameLayout's `.band` —
+   WO-UI0-SHELL-TRANSPLANT, supersedes the retired `.windshield-hud-anchor`)
+   — it never narrows or occludes the scene portaled into that same `.band`.
+   Non-interactive by default: pointer-events is set inline in
    Annunciator.tsx (testable without depending on this file loading in the
    vitest node/jsdom pipeline) and repeated here so the visual contract
    stays self-documenting if the inline style is ever dropped. */
@@ -10,7 +11,8 @@
   position: absolute;
   inset: 0;
   pointer-events: none;
-  z-index: 30; /* matches the HUD z-index band documented in game-layout.css (console:20, HUD:30, edge-toggle:40) */
+  z-index: 30; /* matches the HUD z-index band documented in game-layout.css (console:20, HUD:30, edge-toggle:40) --
+  fragile: this only wins over the portaled .cockpit-windshield scene (z:1) because nothing under it currently sets z-index>=30; revisit if that ever changes. */
   display: flex;
   flex-direction: column;
   align-items: center;

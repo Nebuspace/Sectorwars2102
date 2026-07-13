@@ -34,9 +34,10 @@ import './annunciator.css';
  * sub-part: the wrapper's pointer-events:none is set INLINE (testable in
  * this project's node/jsdom vitest environment, which does not process CSS
  * imports) and repeated in annunciator.css; position:absolute/inset:0 so it
- * contributes zero layout size to its parent (GameLayout's
- * `.windshield-hud-anchor`); only interactive chrome (lamp buttons, the
- * hazard card) opts back into pointer-events.
+ * contributes zero layout size to its parent (GameLayout's `.band` —
+ * WO-UI0-SHELL-TRANSPLANT, supersedes the retired `.windshield-hud-anchor`);
+ * only interactive chrome (lamp buttons, the hazard card) opts back into
+ * pointer-events.
  */
 
 const MASTER_LABEL: Record<MasterBulb['id'], string> = { WARN: 'WARN', CAUT: 'CAUT' };

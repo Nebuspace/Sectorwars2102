@@ -232,7 +232,7 @@ describe('GameShellRoute + GameLayout — persistent shell across navigation', (
     await act(async () => {
       toggleBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
-    expect(container.querySelector('.game-sidebar.closed')).not.toBeNull();
+    expect(container.querySelector('.game-container.console-collapsed')).not.toBeNull();
 
     // ── Phase 3: navigate to the sibling route ──
     await act(async () => {
@@ -249,7 +249,7 @@ describe('GameShellRoute + GameLayout — persistent shell across navigation', (
     expect(medalToastMountCount).toBe(1);
 
     // (2) the manual sidebar-collapse survived the navigation.
-    expect(container.querySelector('.game-sidebar.closed')).not.toBeNull();
+    expect(container.querySelector('.game-container.console-collapsed')).not.toBeNull();
 
     // (1) the loading latch survived the navigation: even if isLoading
     // flips true again post-nav, hasLoadedOnce (GameLayout-internal state

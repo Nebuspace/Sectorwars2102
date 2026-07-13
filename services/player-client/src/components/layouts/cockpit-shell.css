@@ -24,11 +24,24 @@
    artifact's :root (its 6-hue shell palette), which was correctly excluded as
    page-chrome. Defined here SCOPED TO THE HOST ONLY (not :root) so they can't
    clobber player-client's existing token system -- confirmed via grep of
-   services/player-client/src/**/*.css that none of these 6 names are defined
-   or referenced anywhere else in the app today (zero collision, zero value
-   delta to reconcile). Values copied byte-exact from the artifact's :root
-   (source lines 4-7). --uiscale intentionally NOT bound here (SettingsContext
-   binding is the shell-lane's job per the original WO). */
+   every .css file under services/player-client/src (recursively) that none
+   of these 6 names are defined or referenced anywhere else in the app today
+   (zero collision, zero value delta to reconcile). Values copied byte-exact
+   from the artifact's :root (source lines 4-7). --uiscale intentionally NOT
+   bound here (SettingsContext binding is the shell-lane's job per the
+   original WO). */
+/* BUILD-BLOCKING FIX (WO-UI0-SHELL-TRANSPLANT, wording-only -- zero change
+   to any rule/selector/value below in this "untouched diff baseline"): the
+   ADAPTATION (d) comment above used to spell its recursive-glob reference
+   with two consecutive asterisks immediately followed by a slash-asterisk
+   pair -- that four-character run itself contains a slash-asterisk-CLOSE
+   token, which closed that comment block early. postcss's lenient error
+   recovery hid this; lightningcss (what `vite build`'s CSS minifier
+   actually uses) does not recover, and fails the WHOLE bundle with
+   "Unexpected end of input" the instant this file is imported anywhere.
+   Confirmed latent pre-this-WO: nothing imported this file before
+   GameLayout.tsx did (WO-UI0-SHELL-TRANSPLANT), so no build ever reached
+   it before now. */
 .stage, .game-container {
   --uiscale:1;
   --line:#1D2938; --mono:ui-monospace,'SF Mono','Cascadia Code',Menlo,monospace;

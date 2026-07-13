@@ -19,10 +19,13 @@ import './annunciator.css';
  * panorama header — both owned by WO-UI3-STATION-MODE / WO-UI3-SURFACE-
  * MODE, neither built yet in this tree (no DockingSequence.tsx or surface
  * panorama header component exists to receive a one-line `<AnnunciatorMini
- * />` drop-in). GameLayout's existing `.windshield-hud-anchor` mount
- * already keeps the FULL strip visible across all three modes (mode
- * classes only resize --band-h, the windshield grid area itself persists),
- * so there is no current gap this needs to fill — it is built ready, not
+ * />` drop-in). GameLayout's `.band` mount (WO-UI0-SHELL-TRANSPLANT —
+ * supersedes the retired `.windshield-hud-anchor`) already keeps the FULL
+ * strip visible across all three modes (mode classes now resize `.band`'s
+ * own height directly — cockpit-shell.css + game-layout.css's
+ * `.mode-station .band`/`.mode-surface .band` — the band itself persists
+ * across all three, just at a different fixed height per mode), so there
+ * is no current gap this needs to fill — it is built ready, not
  * force-mounted into an unrelated file (e.g. TacticalMonitor.tsx's own
  * flight-deck header) where it would just duplicate the always-visible
  * strip for no canon-specified reason. Wiring it into a future station/

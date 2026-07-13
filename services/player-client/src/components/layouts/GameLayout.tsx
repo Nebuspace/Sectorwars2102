@@ -1,4 +1,4 @@
-import React, { useLayoutEffect, useRef, useState } from 'react';
+import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useGame } from '../../contexts/GameContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
@@ -18,8 +18,9 @@ import WelcomeBackToast from '../auth/WelcomeBackToast';
 import NpcCombatBanner from '../combat/NpcCombatBanner';
 import FirstSessionObjectives from '../onboarding/FirstSessionObjectives';
 import { useFirstSession } from '../onboarding/useFirstSession';
-import { ShellPresenceContext, useShellPresent } from './ShellContext';
+import { ShellPresenceContext, useShellPresent, ShellSlotsContext } from './ShellContext';
 import './game-layout.css';
+import './cockpit-shell.css';
 import '../../styles/themes/cockpit-animations.css';
 import '../../styles/themes/cockpit-components.css';
 
@@ -179,8 +180,8 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
   // ── Teleprinter display mode (WO-UI1-CHROME-COMPLETE) ─────────────────
   // Owned here (not inside Teleprinter) because 'mid-panel' also drives
   // which MFD-A config the sidebar renders (the MFD-B→MFD-A fold, below)
-  // — a decision GameLayout must see, mirroring the existing
-  // windshieldMin controlled-from-parent pattern in this same file.
+  // — a decision GameLayout must see (same "owned at the top, threaded down
+  // as a controlled prop" shape sidebarOpen/toggleSidebar already use).
   const [teleprinterDisplayMode, setTeleprinterDisplayMode] = useState<TeleprinterDisplayMode>('ticker');
 
   // ── Scroll contract (Law 2) ──────────────────────────────────────────
@@ -251,55 +252,56 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
     setSidebarOpen(!sidebarOpen);
   };
 
-  // ── Deck reflow — reserve the real teleprinter height (WO-UI1-DECK-REFLOW) ─
-  // .game-content/.game-sidebar are absolute overlays bounded by
-  // `calc(var(--statusbar-h) + var(--teleprinter-h))` (game-layout.css) so
-  // the deck/sidebar stop above the statusbar+teleprinter grid rows instead
-  // of extending underneath them. --statusbar-h is a static 56px (StatusBar
-  // never changes size) but Teleprinter genuinely does — ticker strip vs
-  // mid-panel body, vh-clamped log, input growing on focus — so it's measured
-  // off the live DOM node rather than reserved at a fixed worst-case (which
-  // would either overlap or permanently waste deck space whenever ticker).
-  // useLayoutEffect (not useEffect) so the first real value lands before the
-  // browser paints — no one-frame flash of the CSS fallback. ResizeObserver
-  // is undefined in this repo's jsdom test env (confirmed: jsdom 29 ships no
-  // implementation), so component tests skip live measurement and just keep
-  // the CSS default — harmless, since jsdom never asserts real geometry.
-  //
-  // WO-UI1-CHROME-COMPLETE guard: while full-overlay is active, #tp-body
-  // detaches to position:absolute (teleprinter.css) specifically so it does
-  // NOT contribute to `.teleprinter`'s own box height — but `offsetHeight`
-  // still reads whatever real box results, so without this guard a real
-  // browser would read a near-zero collapsed height there (correct — the
-  // grid row's footprint must stay pinned) while any residual measurement
-  // noise mid-transition could otherwise flash `--teleprinter-h`. Skipping
-  // the write entirely while full-overlay is active keeps the deck/sidebar
-  // pinned to whatever they last measured (ticker/mid-panel), matching the
-  // canon constraint "overlay mode never reflows siblings" — the ref (not
-  // the closed-over state) so this always-once effect reads the LIVE mode.
-  const teleprinterDisplayModeRef = useRef<TeleprinterDisplayMode>(teleprinterDisplayMode);
-  React.useEffect(() => {
-    teleprinterDisplayModeRef.current = teleprinterDisplayMode;
-  }, [teleprinterDisplayMode]);
-
-  const gameContainerRef = useRef<HTMLDivElement>(null);
+  // ── Shell slots (WO-UI0-SHELL-TRANSPLANT) — `.band`/`.deck` portal targets ─
+  // REVISION (adversarial-review catch, Mack): a callback-ref-driven
+  // `useState<HTMLDivElement | null>(null)` makes `bandEl` null on GameLayout's
+  // OWN first render, non-null from the second. A consumer that does
+  // `bandEl ? createPortal(node, bandEl) : node` at ONE JSX position sees the
+  // element TYPE at that position flip (a plain host element -> a
+  // ReactPortal) across that transition — React does not preserve identity
+  // across a type change, so it unmounts the whole inline subtree and mounts
+  // a fresh one through the portal. Empirically reproduced in plain React
+  // (mount count 1->2, unmount 0->1, no StrictMode needed) — for
+  // GameDashboard's `.cockpit-console` this meant NavigationMap/
+  // TacticalMonitor (both carry real mount-effects) mounted inline once,
+  // then got torn down and rebuilt through the portal, on EVERY session
+  // start.
+  // FIX: create the target nodes EAGERLY via a `useState` LAZY INITIALIZER
+  // (`document.createElement`), which runs synchronously during THIS
+  // component's very first render, before any descendant (including
+  // `{children}`) has rendered at all. `bandEl`/`deckEl` are therefore
+  // non-null from the FIRST render everywhere down the tree — a consumer's
+  // `bandEl ? createPortal(...) : ...` ternary sees the SAME branch (the
+  // portal one) on every render, in production, with the type at that JSX
+  // position never changing -- no remount. The nodes aren't yet attached to
+  // the visible DOM at creation time; a `useLayoutEffect` below appends each
+  // into its real grid slot exactly once, in the SAME synchronous pre-paint
+  // window React already uses to build any portaled content into them (a
+  // portal's children are constructed during the normal commit regardless
+  // of whether the target itself is yet attached to `document`), so there is
+  // no visible flash either. The inline fallback in GameDashboard.tsx stays
+  // — it's still correct and necessary for the case these vars are
+  // genuinely, permanently null (every GameDashboard.*.test.tsx mocks
+  // GameLayout out entirely, so `useShellSlots()` there returns
+  // ShellSlotsContext's `{bandEl: null, deckEl: null}` default and NEVER
+  // transitions — no flip risk in that case either, by construction).
+  const [bandEl] = useState<HTMLDivElement>(() => document.createElement('div'));
+  const [deckEl] = useState<HTMLDivElement>(() => document.createElement('div'));
+  const bandSlotRef = useRef<HTMLDivElement>(null);
+  const deckSlotRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
-    const container = gameContainerRef.current;
-    if (!container) return undefined;
-    const teleprinterEl = container.querySelector<HTMLElement>('.teleprinter');
-    if (!teleprinterEl) return undefined;
-
-    const applyHeight = () => {
-      if (teleprinterDisplayModeRef.current === 'full-overlay') return;
-      container.style.setProperty('--teleprinter-h', `${teleprinterEl.offsetHeight}px`);
-    };
-    applyHeight();
-
-    if (typeof ResizeObserver === 'undefined') return undefined;
-    const observer = new ResizeObserver(applyHeight);
-    observer.observe(teleprinterEl);
-    return () => observer.disconnect();
-  }, []);
+    const slot = bandSlotRef.current;
+    if (!slot) return undefined;
+    slot.appendChild(bandEl);
+    return () => { slot.removeChild(bandEl); };
+  }, [bandEl]);
+  useLayoutEffect(() => {
+    const slot = deckSlotRef.current;
+    if (!slot) return undefined;
+    slot.appendChild(deckEl);
+    return () => { slot.removeChild(deckEl); };
+  }, [deckEl]);
+  const shellSlots = useMemo(() => ({ bandEl, deckEl }), [bandEl, deckEl]);
 
   // ── Auto-collapse the sidebar on landing (WO 129-B) ──────────────────
   // Landing hands the full band to the planetary console, so the nav rail
@@ -317,42 +319,19 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
     }
   }, [playerState?.is_landed]);
 
-  // ── Windshield minimize / expand (id=151) ────────────────────────────
-  // Docked/landed hand the lower area to the station/colony console, so AUTO-
-  // minimize the windshield band on the dock/land EDGE — shrinking --band-h at
-  // the container so the helm + sidebar + deck rise and the console gets the
-  // reclaimed vertical space (SCROLL LAW) — and restore it on the undock/
-  // lift-off edge. A manual toggle (button in the band) lets the player expand
-  // the scene back at will. Keyed off the edge (ref), not every render, so the
-  // manual toggle isn't fought while the player stays grounded. (Restores the
-  // retired green-bar minimize, recomposed for the inverted-L.)
-  const grounded = !!(playerState?.is_docked || playerState?.is_landed);
-  // Seeded from `grounded` at mount (not a hardcoded false) so a page
-  // reload while ALREADY docked/landed starts minimized instead of
-  // waiting for a dock/undock EDGE that will never fire (playerState was
-  // already grounded on the very first render). prevGroundedRef below is
-  // seeded the same way, so this does not double-fire the edge-effect.
-  const [windshieldMin, setWindshieldMin] = useState(grounded);
-  const prevGroundedRef = React.useRef<boolean>(grounded);
-  React.useEffect(() => {
-    const g = !!(playerState?.is_docked || playerState?.is_landed);
-    if (g !== prevGroundedRef.current) {
-      setWindshieldMin(g); // minimize on dock/land, restore on undock/lift-off
-      prevGroundedRef.current = g;
-    }
-  }, [playerState?.is_docked, playerState?.is_landed]);
-  const toggleWindshield = () => setWindshieldMin((m) => !m);
-
-  // ── Mode classes (WO-UI0-PERSISTENT-SHELL lane B, ADDITIVE per ruling D3) ─
-  // Layered alongside (never replacing) the legacy console-expand/windshield-
-  // min/landed-expanded classes above, which still drive the --band-h/
-  // --sidebar-w/--deck-h var math. `mode-station` now carries real styling
-  // (WO-UI3-STATION-MODE, game-layout.css) — it drives the DOCKED "station
-  // face": GameDashboard renders no windshield scene / deck-monitor bezel in
-  // this mode, and the descendant rules there are scoped under
-  // `.game-container.mode-station` so `mode-flight`/`mode-surface` are
-  // structurally untouched. `mode-flight`/`mode-surface` remain hooks only.
-  // Landed wins over docked, matching today's landed-expanded precedence.
+  // ── Mode classes (WO-UI0-PERSISTENT-SHELL lane B, ADDITIVE per ruling D3;
+  // WO-UI0-SHELL-TRANSPLANT: `.mode-station`/`.mode-surface` are now ALSO
+  // the band-height selector cockpit-shell.css's `.band` rules key off —
+  // see game-layout.css's `.mode-station .band`/`.mode-surface .band`) ────
+  // `mode-station` carries real styling (WO-UI3-STATION-MODE, game-layout.css)
+  // — it drives the DOCKED "station face": GameDashboard renders no windshield
+  // scene / deck-monitor bezel in this mode, and the descendant rules there
+  // are scoped under `.game-container.mode-station` so `mode-flight`/
+  // `mode-surface` are structurally untouched. Landed wins over docked
+  // (unchanged precedence). The old manual windshield-minimize/expand toggle
+  // (id=151) is RETIRED here — the guardrail it served (narrow-preserving a
+  // full-bleed scene) is retired too; the band is now a fixed-height row per
+  // mode (cockpit-shell.css), not a player-resizable one.
   const mode = playerState?.is_landed ? 'mode-surface' : playerState?.is_docked ? 'mode-station' : 'mode-flight';
 
   return (
@@ -377,63 +356,43 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
             console fill the lower area (right viewport column collapses);
             .console-collapsed → the edge-toggle hides the console for an
             unobstructed scene (rail-peek retired; logout lives in the HUD). */}
+        {/* WO-UI0-SHELL-TRANSPLANT: `.game-container` IS the `.stage` grid
+            host now (cockpit-shell.css targets `.stage, .game-container`
+            with the same rule — an ALSO-selector, not a rename, see that
+            file's own ADAPTATION(a) comment). Single-column grid, 4 rows
+            (auto/auto/auto/1fr): StatusBar / `.band` / Teleprinter / `.lower`
+            — SLOT DESIGN: none of these carry a `.sbar`/`.tele` classname
+            themselves (that's the leaf lanes' reclass, per the WO — the
+            shell CSS's `.sbar`/`.tele` rules stay inert until then); they
+            land in their rows purely by DOM-order auto-placement. `.band`/
+            `.lower > .deck` are real, empty, ref-published grid slots
+            GameDashboard portals its windshield/console into (ShellSlots
+            below); `.main-viewport`'s `{children}` (every /game/* route)
+            stays a DIRECT, position:absolute grid child sized to rows 2-4
+            via explicit `grid-row` (game-layout.css) — excluded from the
+            auto-placement count (an abspos grid item with an explicit
+            grid-row never consumes an auto-placed row), so it does NOT
+            shift StatusBar/band/Teleprinter/lower off their intended rows
+            despite being first in this JSX. */}
         <div
-          ref={gameContainerRef}
           className={`game-container ${mode}${
             playerState?.is_docked || playerState?.is_landed ? ' console-expand' : ''
           }${sidebarOpen ? '' : ' console-collapsed'}${
-            windshieldMin && grounded ? ' windshield-min' : ''
-          }${
-            playerState?.is_landed && !windshieldMin ? ' landed-expanded' : ''
-          }${
             teleprinterDisplayMode === 'mid-panel' ? ' tp-mid-panel' : ''
           }`}
         >
-          {/* MFDProvider (WO-UI1-CHROME-COMPLETE): hoisted from around just
-              `<aside>` to wrap the windshield anchor too — Annunciator's
-              COMM lamp click-through needs useMFD().selectPage to open the
-              MFD-B comms page (item 6). MFDProvider renders ZERO DOM of its
-              own (a bare context-provider pair around `children`), so
-              widening its scope changes NOTHING about the grid: both
-              `.windshield-hud-anchor` and `<aside>` stay exactly the same
-              direct-grid-child siblings they were, at the same DOM depth —
-              this is a pure React-tree move, not a layout change. */}
+          {/* MFDProvider (WO-UI1-CHROME-COMPLETE, widened again here) wraps
+              the ENTIRE `.stage` content now — Annunciator (inside `.band`)
+              and the MFD screens (inside `.lower .mfdcol`) both still need
+              useMFD(), and MFDProvider renders ZERO DOM of its own (a bare
+              context-provider pair), so widening its scope changes NOTHING
+              about the grid: every one of these stays exactly the same
+              direct `.game-container` grid-item child it would be without
+              the provider wrapping it — same precedent as the last widening
+              (see git history). ShellSlotsContext publishes the band/deck
+              portal targets to whatever renders as `{children}`. */}
           <MFDProvider>
-          {/* Annunciator (WO-UI1-ANNUNCIATOR stitch) — mounted inside a
-              dedicated, non-visual `.windshield-hud-anchor` (game-layout.css)
-              rather than directly inside `.game-content`: that layer spans
-              the FULL container height (out-of-grid-flow, for the
-              inverted-L scene), which would let Annunciator's own
-              `position:absolute; inset:0` overlay technically extend behind
-              the statusbar/teleprinter rows too. The anchor is a real,
-              non-absolute grid child assigned to the already-reserved
-              `windshield` grid-area (game-layout.css:100-104), scoping
-              Annunciator to just that row — "on the glass, never over the
-              status bar," structurally, independent of z-index. */}
-          <div className="windshield-hud-anchor">
-            <Annunciator />
-          </div>
-
-          {/* Left console (NEON15): route rail on top, then the MFD
-              screen(s) splitting the remaining height. MFDProvider (above)
-              hosts page selection/alert state plus the alert wiring
-              effects. WO-UI1-CHROME-COMPLETE: while the teleprinter is
-              mid-panel, MFD-B folds into MFD-A's rail (canon §05 L624) —
-              render the SINGLE merged config (SIDEBAR_A_FOLDED, a distinct
-              screenId, see its own doc-comment for why) instead of the
-              normal pair; MFD-B doesn't mount at all while folded. */}
-          <aside className={`game-sidebar hud-panel ${sidebarOpen ? 'open' : 'closed'}`}>
-            <RouteRail />
-            {teleprinterDisplayMode === 'mid-panel' ? (
-              <MFDScreen config={SIDEBAR_A_FOLDED} />
-            ) : (
-              <>
-                <MFDScreen config={SIDEBAR_A} />
-                <MFDScreen config={SIDEBAR_B} />
-              </>
-            )}
-            <MFDAlertWiring />
-          </aside>
+          <ShellSlotsContext.Provider value={shellSlots}>
 
           <main className="game-content" aria-busy={isInitialLoad}>
             {/* Sidebar toggle, relocated from the deleted top header to the
@@ -450,38 +409,18 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
             {/* Children render UNCONDITIONALLY — never unmounted by a
                 background refresh (see cockpit-stability note above).
                 During the initial-load overlay the viewport is `inert`
-                so its controls can't be tab-focused underneath. */}
+                so its controls can't be tab-focused underneath. For
+                GameDashboard specifically, its real content is portaled
+                out of this box into `.band`/`.deck` below (ShellSlots) —
+                what renders HERE for that route is residual chrome only
+                (alerts/modals, all position:fixed/portaled-to-body,
+                indifferent to where this box sits). Every OTHER /game/*
+                route (GalaxyMap, TeamManager, ...) renders its real page
+                content here unchanged. */}
             <div
               className="main-viewport"
               inert={isInitialLoad}
             >
-              {/* Windshield minimize/expand (id=151 + id=151b) — only while
-                  docked/landed. Both states show a CENTERED, labeled button.
-                  MINIMIZED: "Expand Viewport" near top of the thin 60px band.
-                  EXPANDED: "Minimize Viewport" centered-bottom of the scene
-                  band (uses --band-h via .windshield-minimize). */}
-              {grounded && windshieldMin && (
-                <button
-                  type="button"
-                  className="windshield-expand"
-                  onClick={toggleWindshield}
-                  aria-label="Expand viewport"
-                  title="Expand the viewport"
-                >
-                  ⤢ Expand Viewport
-                </button>
-              )}
-              {grounded && !windshieldMin && (
-                <button
-                  type="button"
-                  className="windshield-minimize"
-                  onClick={toggleWindshield}
-                  aria-label="Minimize viewport"
-                  title="Minimize viewport — give the console more room"
-                >
-                  ▾ MINIMIZE VIEWPORT
-                </button>
-              )}
               {children}
             </div>
             {isInitialLoad && (
@@ -497,31 +436,82 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
               </div>
             )}
           </main>
-          </MFDProvider>
 
           {/* StatusBar (WO-UI0-STATUSBAR) — a DIRECT, non-absolute child of
-              .game-container so CSS Grid actually places it into the
-              reserved `statusbar` grid-area (game-layout.css:96-103); a
-              descendant nested inside .main-viewport/.game-content (both
-              position:absolute, out of grid flow) would NOT land there.
-              Supersedes PlayerVitalsHud (removed — WO-CLEANUP-
-              PLAYERVITALSHUD). */}
+              .game-container/.stage, auto-placed into grid row 1. Supersedes
+              PlayerVitalsHud (removed — WO-CLEANUP-PLAYERVITALSHUD). */}
           <StatusBar />
 
-          {/* Teleprinter (WO-UI1-TELEPRINTER stitch) — same pattern as
-              StatusBar: a DIRECT, non-absolute child of .game-container so
-              CSS Grid places it into the reserved `teleprinter` grid-area
-              (game-layout.css:100-104); teleprinter.css already carries
-              `grid-area: teleprinter` on the component's own root, so no
-              wrapper is needed here (unlike Annunciator, whose root is
-              itself `position:absolute` and can't participate in grid
-              placement on its own). displayMode is CONTROLLED from here
-              (WO-UI1-CHROME-COMPLETE) — see teleprinterDisplayMode's own
-              doc-comment for why (the MFD-B fold above needs to see it). */}
+          {/* `.band` (WO-UI0-SHELL-TRANSPLANT) — the ambient scene row,
+              auto-placed into grid row 2. Height is a fixed em value per
+              mode (cockpit-shell.css `.band` base + game-layout.css's
+              `.mode-station .band`/`.mode-surface .band`) — no longer
+              player-resizable (the old windshield-minimize/expand toggle
+              is retired, see the `mode` doc-comment above). Annunciator
+              (WO-UI1-ANNUNCIATOR) mounts directly inside it as a NORMAL React
+              child (unaffected by the eager-portal-target fix below — it's
+              never conditionally portaled, so it never hits the type-flip
+              bug that motivated it) — `.band` is already `position:relative`
+              (cockpit-shell.css), exactly the ancestor Annunciator's own
+              `position:absolute; inset:0` overlay needs; retires the old
+              `.windshield-hud-anchor` wrapper. `bandSlotRef` is this row's
+              OWN grid-cell node — the eagerly-created `bandEl` (above) is
+              appended into it via `useLayoutEffect`, not rendered as a
+              normal JSX child, so it sits alongside Annunciator without
+              React ever trying to reconcile it (React only manages nodes it
+              itself rendered; a manually-`appendChild`'d node is invisible
+              to that reconciliation and is never touched by it as long as
+              this row's OWN JSX children list — just `<Annunciator/>` —
+              stays stable, which it does). */}
+          <div className="band" ref={bandSlotRef}>
+            <Annunciator />
+          </div>
+
+          {/* Teleprinter (WO-UI1-TELEPRINTER stitch) — a DIRECT, non-
+              absolute child of .game-container/.stage, auto-placed into
+              grid row 3. displayMode is CONTROLLED from here (WO-UI1-
+              CHROME-COMPLETE) — see teleprinterDisplayMode's own doc-comment
+              for why (the MFD-B fold below needs to see it). */}
           <Teleprinter
             displayMode={teleprinterDisplayMode}
             onDisplayModeChange={setTeleprinterDisplayMode}
           />
+
+          {/* `.lower` (WO-UI0-SHELL-TRANSPLANT) — MFD column + instrument
+              deck, auto-placed into grid row 4 (the `1fr` row — everything
+              else is a fixed/content-sized row, this one absorbs whatever
+              height is left). `.mfdcol` RELOCATES the old absolute
+              `<aside>` sidebar's content here: RouteRail still tops it
+              (unretired — its own retirement is Phase-5-last, gated behind
+              deck-monitors this WO doesn't build, not this WO's call), then
+              the MFD screen(s) split the rest — the `.folded` modifier
+              switches `.mfdcol`'s row template (game-layout.css) between
+              hosting 2 screens vs. the single mid-panel-folded config, same
+              branch as before. `deckSlotRef` is this cell's OWN grid node —
+              the eagerly-created `deckEl` (above) is appended into it via
+              `useLayoutEffect`, the same manually-attached-node pattern
+              `.band`/`bandEl` uses (this cell has zero normal JSX children
+              of its own, so there's nothing for React to ever conflict
+              with). GameDashboard's console portals its 3-monitor/
+              station-face/surface-face content into `deckEl`. */}
+          <div className="lower">
+            <aside className={teleprinterDisplayMode === 'mid-panel' ? 'mfdcol folded' : 'mfdcol'}>
+              <RouteRail />
+              {teleprinterDisplayMode === 'mid-panel' ? (
+                <MFDScreen config={SIDEBAR_A_FOLDED} />
+              ) : (
+                <>
+                  <MFDScreen config={SIDEBAR_A} />
+                  <MFDScreen config={SIDEBAR_B} />
+                </>
+              )}
+              <MFDAlertWiring />
+            </aside>
+            <div className="deck" ref={deckSlotRef} />
+          </div>
+
+          </ShellSlotsContext.Provider>
+          </MFDProvider>
         </div>
       </div>
     </div>

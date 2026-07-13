@@ -4,6 +4,7 @@ import { useGame, type MoveOption, type SpecialFormationSummary } from '../../co
 import { useAutopilot } from '../../contexts/AutopilotContext';
 import { useFirstLogin } from '../../contexts/FirstLoginContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
+import { useShellSlots } from '../layouts/ShellContext';
 // import { useTheme } from '../../themes/ThemeProvider'; // Available for future use
 import TradingInterface from '../trading/TradingInterface';
 import SpaceDockInterface from '../spacedock/SpaceDockInterface';
@@ -601,6 +602,17 @@ const GameDashboard: React.FC = () => {
   const [investigatedFormationIds, setInvestigatedFormationIds] = useState<Set<string>>(new Set());
   const [investigatingFormationId, setInvestigatingFormationId] = useState<string | null>(null);
   const [investigateResult, setInvestigateResult] = useState<any>(null);
+
+  // Shell portal targets (WO-UI0-SHELL-TRANSPLANT): GameLayout's `.band`/
+  // `.deck` slots, published via context. `bandEl`/`deckEl` are null until
+  // GameLayout mounts them (or if this component is ever rendered without a
+  // real GameLayout ancestor, e.g. the GameDashboard.*.test.tsx suite, which
+  // mocks GameLayout out entirely) -- the two portal sites below fall back
+  // to rendering their content INLINE (exactly where it always rendered) in
+  // that case, so those tests keep seeing the identical DOM shape they
+  // always have; in production the very next commit after GameLayout's
+  // callback-refs fire portals correctly, same commit as first paint.
+  const { bandEl, deckEl } = useShellSlots();
 
   // Ghost-on-approach for the HUD glass chips: they are pointer-events:none
   // (clicks pass through to the scene), so :hover can never fire on them.
@@ -2276,7 +2288,15 @@ const GameDashboard: React.FC = () => {
           </div>
         )}
 
-        {/* WINDSHIELD - Full immersive viewport with HUD overlays */}
+        {/* WINDSHIELD - Full immersive viewport with HUD overlays.
+            WO-UI0-SHELL-TRANSPLANT: portaled into GameLayout's `.band` slot
+            (falls back to inline if bandEl isn't published yet — see the
+            bandEl/deckEl doc-comment above). TWO changes only in this whole
+            file per the WO: this IIFE wrap and the matching one around
+            .cockpit-console below — none of the JSX between the open/close
+            tags of either is touched. */}
+        {(() => {
+        const windshieldNode = (
         <div className="cockpit-windshield" ref={windshieldRef}>
           {/* LANDED STATE — planet-surface vista scene. GLASS LAW: the band
               hosts canvas scenery + absolutely-anchored HUD chips ONLY. The
@@ -2418,10 +2438,13 @@ const GameDashboard: React.FC = () => {
               (cockpit.css's own `.bay-minimize-btn { display: none
               !important; }` retired it when WO-INVERTED-L landed; the
               `.cockpit-mode.docked-min` class it targeted was never applied
-              to any element). Bay minimize/expand is real and live via
-              GameLayout's windshield-minimize/expand toggle (id=151,
-              `--band-h`), which this band collapses/grows with — no new
-              mechanism needed. UNDOCK lives on the helm rail /
+              to any element). GameLayout's manual windshield-minimize/
+              expand toggle (id=151, `--band-h`) this band used to
+              collapse/grow with is ITSELF retired (WO-UI0-SHELL-TRANSPLANT
+              — the band is now a fixed 8.5em height in station mode,
+              cockpit-shell.css/game-layout.css, not a player-resizable
+              one) — no minimize/expand affordance applies to this band
+              anymore, by design. UNDOCK lives on the helm rail /
               SpaceDockInterface's persistent frame button, not here. */}
           {playerState?.is_docked && (
             <div className="station-face-bay-band" role="region" aria-label="Docked station">
@@ -2551,8 +2574,16 @@ const GameDashboard: React.FC = () => {
             </>
           )}
         </div>
+        );
+        return bandEl ? createPortal(windshieldNode, bandEl) : windshieldNode;
+        })()}
 
-        {/* CONSOLE - Metal panel with embedded monitors */}
+        {/* CONSOLE - Metal panel with embedded monitors.
+            WO-UI0-SHELL-TRANSPLANT: portaled into GameLayout's `.deck` slot
+            (falls back to inline if deckEl isn't published yet — see the
+            bandEl/deckEl doc-comment above). */}
+        {(() => {
+        const consoleNode = (
         <div className="cockpit-console">
           {/* DOCKED STATE: the station-face venue workspace (WO-UI3-STATION-
               MODE) — replaces the flight-monitor bezel wrapper
@@ -3517,6 +3548,9 @@ const GameDashboard: React.FC = () => {
             </>
           )}
         </div>
+        );
+        return deckEl ? createPortal(consoleNode, deckEl) : consoleNode;
+        })()}
 
         {/* Colonist transfer quantity modal — portal escapes the cockpit stacking context */}
         {transferModal && landedPlanet && createPortal(

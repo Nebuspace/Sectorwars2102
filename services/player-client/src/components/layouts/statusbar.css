@@ -133,25 +133,29 @@
 .sb-dossier-panel {
   width: 24rem;
   max-width: calc(100vw - 2rem);
-  /* WO-UI-DOSSIER-DROPDOWN-FIT: cap the panel to the room genuinely
-     available below the statusbar row, down to the TRUE viewport bottom.
-     The grid's only row between statusbar and that edge is teleprinter's
-     (game-layout.css: `grid-template-rows: var(--band-h) 1fr
-     var(--statusbar-h) auto`, teleprinter last) — so that gap is exactly
-     `--teleprinter-h`, minus this dropdown's own 0.4rem top-anchor gap
-     (`.sb-dropdown`'s `top: calc(100% + 0.4rem)`, above). `--teleprinter-h`
-     is a LIVE, ResizeObserver-measured px value (GameLayout.tsx) already in
-     the SAME zoomed coordinate space #root's descendants render in — reuse
-     it directly rather than a raw `vh`, which would resolve against the
-     TRUE viewport and then get re-scaled by #root's `zoom: var(--ui-scale)`
-     (shrinks at <1, clips at >1 — confirmed live at both 0.6 and 1.2).
+  /* WO-UI-DOSSIER-DROPDOWN-FIT (STRUCTURAL UPDATE, WO-UI0-SHELL-TRANSPLANT):
+     the `--teleprinter-h`-based cap this used is RETIRED — that formula
+     depended on the OLD grid row order (statusbar THIRD, teleprinter LAST,
+     so "room below statusbar" == exactly teleprinter's own height). The
+     new `.stage` grid puts the status bar FIRST (game-layout.css) — the
+     room below it down to the viewport bottom is now band+teleprinter+
+     lower combined, dramatically MORE than teleprinter's ~268px alone, so
+     reusing that var (now permanently unset — nothing writes it anymore)
+     would under-cap this dropdown far below the room actually available.
+     Replaced with a conservative viewport-relative cap (statusbar's own
+     ~3.5rem height + this dropdown's 0.4rem top-anchor gap + a margin) —
+     NOT re-derived against #root's `zoom: var(--ui-scale)` rescaling the
+     original --teleprinter-h approach was careful about (this file's own
+     lane, not WO-UI0-SHELL-TRANSPLANT's — flagged for the StatusBar leaf
+     to tighten with a scale-law-correct formula if the conservative cap
+     proves too generous/short in the Orchestrator's live pass).
      `display:flex` + `overflow:hidden` here (NOT `.sb-dropdown`, shared
      with `.sb-location-panel`) turns this into "cap the whole panel, let
      the body absorb the shrink" — see `.sb-dossier-body`'s `flex: 0 1
      18rem` below, which keeps the ORIGINAL fixed 18rem size whenever
      there's room and only shrinks (never grows) when there isn't, so the
      "never reflows between tabs" contract above still holds at both sizes. */
-  max-height: calc(var(--teleprinter-h, 268px) - 0.4rem);
+  max-height: calc(100vh - 4.5rem);
   display: flex;
   flex-direction: column;
   overflow: hidden;

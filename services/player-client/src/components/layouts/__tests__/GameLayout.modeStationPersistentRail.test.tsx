@@ -14,9 +14,9 @@
  * unconditionally for all three modes — so this asserts it stays mounted
  * docked exactly as it does flying.
  *
- * Harness mirrors GameLayout.windshieldMinStateDriven.test.tsx exactly
- * (GameLayout itself is the SUT, unmocked; RouteRail/MFDScreen/toast-banner
- * children stubbed as irrelevant chrome; `<div/>` stands in for
+ * Harness mirrors the other GameLayout.*.test.tsx files' proven seam
+ * exactly (GameLayout itself is the SUT, unmocked; RouteRail/MFDScreen/
+ * toast-banner children stubbed as irrelevant chrome; `<div/>` stands in for
  * GameDashboard — this file is scoped to GameLayout's OWN shell, not what
  * GameDashboard renders inside it, which is covered separately by
  * GameDashboard.dockedStationFace.test.tsx).

@@ -9,11 +9,11 @@
  * a lit softkey under a screen" convention, with no shared nav context
  * governing which softkey is active. The annunciator's LAW/THREAT lamps
  * (Annunciator.tsx) live in GameLayout.tsx, well outside TacticalMonitor's
- * own subtree (TacticalMonitor mounts inside GameDashboard, itself inside
- * `.game-content`, a SIBLING of the windshield-hud-anchor Annunciator lives
- * in) — there is no ancestor/descendant relationship to thread a prop or
- * context selector through without restructuring the deck, which this WO's
- * scope explicitly forbids ("don't restructure the deck").
+ * own subtree (TacticalMonitor mounts inside GameDashboard's console, itself
+ * portaled into `.deck`, a SIBLING of the `.band` Annunciator lives in —
+ * WO-UI0-SHELL-TRANSPLANT) — there is no ancestor/descendant relationship to
+ * thread a prop or context selector through without restructuring the deck,
+ * which this WO's scope explicitly forbids ("don't restructure the deck").
  *
  * This mirrors the SAME module-level pub/sub idiom already shipped in
  * services/resourceCatalog.ts + hooks/useResourceCatalog.ts (a plain

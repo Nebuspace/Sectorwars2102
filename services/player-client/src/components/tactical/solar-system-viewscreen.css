@@ -7,14 +7,16 @@
 .solar-viewscreen-container {
   position: relative;
   width: 100%;
-  /* Clip the canvas to the VISIBLE scene area only: the console (deck) overlays
-     the bottom portion of the full-bleed windshield. Using the inherited
-     --deck-h variable (defined on .game-container) ensures the canvas height
-     tracks the visible area in every mode — flight (52%), docked/landed expanded
-     (20%), minimized (60px). Without this, getBoundingClientRect() returns the
-     FULL windshield height (900px at 1440×900), and starY = h*0.5 lands at the
-     deck boundary rather than the scene centre. */
-  height: calc(100% - var(--deck-h));
+  /* WO-UI0-SHELL-TRANSPLANT: `.cockpit-windshield` (this element's parent)
+     is now portaled directly into `.band`, a container sized to EXACTLY the
+     visible scene area for the current mode (cockpit-shell.css's `.band`
+     base + game-layout.css's `.mode-station .band`/`.mode-surface .band`)
+     — there is no deck overlap left to clip away, so this is simply 100%
+     of that box. The old `calc(100% - var(--deck-h))` clip existed only
+     because the pre-transplant windshield spanned band+deck combined; that
+     combined box no longer exists (the deck is a separate `.stage` row
+     now, see game-layout.css). */
+  height: 100%;
   overflow: hidden;
   background: #040711;
 }

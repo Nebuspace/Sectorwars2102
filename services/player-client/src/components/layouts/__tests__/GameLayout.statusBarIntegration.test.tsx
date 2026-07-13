@@ -5,10 +5,11 @@
  * Pins the two structural facts the integration step is FOR:
  *   1. `<StatusBar/>` renders as a DIRECT, non-absolute child of
  *      `.game-container` (`.game-container > .status-bar`) — the precondition
- *      for CSS Grid to actually place it into the reserved `statusbar`
- *      grid-area (game-layout.css:96-103; a descendant nested inside
- *      `.main-viewport`/`.game-content`, both `position:absolute`, would NOT
- *      land there — see GameLayout.tsx's own mount-site comment).
+ *      for CSS Grid to actually auto-place it into row 1 of the `.stage`
+ *      grid (cockpit-shell.css / game-layout.css, WO-UI0-SHELL-TRANSPLANT; a
+ *      descendant nested inside `.main-viewport`/`.game-content`, itself
+ *      `position:absolute`, would NOT land there — see GameLayout.tsx's own
+ *      mount-site comment).
  *   2. `.player-vitals-hud` no longer renders anywhere — PlayerVitalsHud's
  *      mount was retired (superseded by StatusBar), so vitals aren't
  *      duplicated.
@@ -128,10 +129,13 @@ describe('GameLayout — StatusBar integration', () => {
     const directChild = container.querySelector('.game-container > .status-bar');
     expect(directChild).not.toBeNull();
 
-    // Sibling of the sidebar/content, not nested inside either (both of
-    // which are position:absolute and thus excluded from grid placement).
+    // Sibling of the shell's other top-level slots (WO-UI0-SHELL-TRANSPLANT:
+    // `.band`/`.lower` supersede the old absolute `.game-sidebar`), not
+    // nested inside `.game-content` (position:absolute and thus excluded
+    // from grid auto-placement).
     const gameContainer = container.querySelector('.game-container');
-    expect(gameContainer?.querySelector(':scope > .game-sidebar')).not.toBeNull();
+    expect(gameContainer?.querySelector(':scope > .band')).not.toBeNull();
+    expect(gameContainer?.querySelector(':scope > .lower')).not.toBeNull();
     expect(gameContainer?.querySelector(':scope > .game-content')).not.toBeNull();
     expect(gameContainer?.querySelector(':scope > .status-bar')).not.toBeNull();
 

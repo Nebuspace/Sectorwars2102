@@ -8,18 +8,19 @@
  *      `.game-container` (`.game-container > .teleprinter`) — same
  *      precondition as StatusBar (game-layout.css:100-104's reserved
  *      `teleprinter` grid-area only fills for a real, non-absolute child).
- *   2. `<Annunciator/>` renders INSIDE the new `.windshield-hud-anchor`
- *      wrapper (a real, non-absolute grid child assigned `grid-area:
- *      windshield`) — NOT inside `.game-content` (which spans the FULL
- *      container height, out-of-grid-flow, for the inverted-L scene; an
- *      Annunciator mounted there would technically extend behind the
- *      statusbar/teleprinter rows too). Confirming Annunciator is absent
- *      from `.game-content`'s subtree entirely is the SCENE-NARROWING
- *      structural check: jsdom has no real layout engine (getBoundingClientRect
- *      always reads zeros), so "the overlay does not change `.game-content`'s
- *      box" is proven by the overlay not being IN that box's subtree at all
- *      — a stronger guarantee than a zeroed layout diff would be. The
- *      Orchestrator's 1440×900 Playwright pass is the pixel-geometry proof.
+ *   2. `<Annunciator/>` renders INSIDE `.band` (WO-UI0-SHELL-TRANSPLANT — a
+ *      real, non-absolute grid child, auto-placed into `.stage` row 2;
+ *      supersedes the retired `.windshield-hud-anchor`) — NOT inside
+ *      `.game-content` (which spans band+teleprinter+lower, position:
+ *      absolute, out-of-grid-flow; an Annunciator mounted there would
+ *      technically extend behind the status bar too). Confirming
+ *      Annunciator is absent from `.game-content`'s subtree entirely is the
+ *      SCENE-NARROWING structural check: jsdom has no real layout engine
+ *      (getBoundingClientRect always reads zeros), so "the overlay does not
+ *      change `.game-content`'s box" is proven by the overlay not being IN
+ *      that box's subtree at all — a stronger guarantee than a zeroed
+ *      layout diff would be. The Orchestrator's 1440×900 Playwright pass is
+ *      the pixel-geometry proof.
  *   3. Both mount EXACTLY ONCE across an unrelated GameLayout re-render (a
  *      children-slot swap) — no remount/re-flash. Proven via `vi.mock`'s
  *      `importOriginal` partial-mock: the REAL Teleprinter/Annunciator still
@@ -206,7 +207,7 @@ describe('GameLayout — Teleprinter + Annunciator stitch', () => {
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
-  it('mounts Annunciator inside .windshield-hud-anchor (a direct .game-container grid child), never inside .game-content', async () => {
+  it('mounts Annunciator inside .band (a direct .game-container grid child), never inside .game-content', async () => {
     await act(async () => {
       root.render(
         <MemoryRouter>
@@ -218,9 +219,9 @@ describe('GameLayout — Teleprinter + Annunciator stitch', () => {
     });
 
     const gameContainer = container.querySelector('.game-container');
-    expect(gameContainer?.querySelector(':scope > .windshield-hud-anchor')).not.toBeNull();
+    expect(gameContainer?.querySelector(':scope > .band')).not.toBeNull();
     expect(
-      container.querySelector('.windshield-hud-anchor [data-testid="annunciator-overlay"]')
+      container.querySelector('.band [data-testid="annunciator-overlay"]')
     ).not.toBeNull();
 
     // SCENE-NARROWING structural check: Annunciator is entirely ABSENT from
