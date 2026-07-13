@@ -491,8 +491,8 @@ const StatusBar: React.FC = () => {
         <span className="vit sb-stat sb-credits" title="Credits">
           {formatCredits(playerState?.credits)}
         </span>
-        <span className={`vit sb-stat${lowTurns ? ' sb-turns-low' : ''}`} title={turnsTitle}>
-          <span className="sb-k"><TurnsIcon size="0.8rem" /></span>
+        <span className={`vit sb-stat sb-turns${lowTurns ? ' sb-turns-low' : ''}`} title={turnsTitle}>
+          <span className="sb-k"><TurnsIcon /></span>
           <span className="sb-v sb-turns-stack">
             <span className="sb-turns-count">
               {turnsNow.toLocaleString()}
@@ -517,8 +517,8 @@ const StatusBar: React.FC = () => {
             <span aria-hidden="true">🛡</span> <b>{playerState?.defense_drones ?? 0}</b>
           </span>
         </span>
-        <span className="vit sb-stat" title="Mines">
-          <span className="sb-k"><MineIcon size="0.8rem" /></span>
+        <span className="vit sb-stat sb-mines" title="Mines">
+          <span className="sb-k"><MineIcon /></span>
           <b>{playerState?.mines ?? 0}</b>
         </span>
         <span className={`vit sb-stat sb-link sb-link--${linkStatus}`} title={linkTitle}>

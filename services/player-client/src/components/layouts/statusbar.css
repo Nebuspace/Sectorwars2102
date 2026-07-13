@@ -485,9 +485,20 @@
    selectors are on the SAME element, and a bare single class here would
    TIE `.vit`'s own bare `color:#9FB4CC` (cockpit-shell.css) on specificity,
    leaving the winner dependent on CSS bundle/load order. The compound form
-   deterministically outranks it regardless. */
+   deterministically outranks it regardless.
+
+   WO-UI-STATUSBAR-VITALS value hierarchy (Max playtest #27): CREDITS +
+   TURNS are the PRIMARY vitals -- bumped one size step above the secondary
+   tier (drones/mines/LINK, unchanged below) so they read as the headline
+   numbers rather than smaller than the mine count. 1.02rem is ~1.16x
+   `.vit.sb-mines b`'s 0.88rem (both measured against the SAME 16px root,
+   independent of the ambient `.sbar`/`.game-container` vw-scaled em chain
+   the ex-mines bare `<b>` used to drift with -- see that rule's own
+   comment). `.sb-turns-count` below is bumped to the identical 1.02rem so
+   the two primary values read as one size, not two independently-tuned
+   ones. */
 .vit.sb-credits {
-  font-size: 0.82rem;
+  font-size: 1.02rem;
   font-weight: 700;
   line-height: 1;
   color: var(--credits-color, #fbbf24);
@@ -503,9 +514,20 @@
 }
 
 .sb-turns-count {
-  font-size: 0.8rem;
+  font-size: 1.02rem;
   font-weight: 700;
   line-height: 1;
+}
+
+/* Turns icon (WO-UI-STATUSBAR-VITALS): scopes `.sb-k`'s font-size to match
+   `.sb-turns-count` exactly, compound so LINK/BOUNTY's OWN `.sb-k` (a text
+   caption, not an icon slot -- see StatusBar.tsx) is untouched. TurnsIcon
+   is unsized in the JSX now (defaults to `size="1em"`, its own documented
+   usage), so the icon's box -- AND its baked-in `vertical-align:-0.125em`
+   baseline correction, itself font-size-relative -- both scale off this
+   rule instead of a hardcoded rem that couldn't track a value-size change. */
+.vit.sb-turns .sb-k {
+  font-size: 1.02rem;
 }
 
 /* WO-PROG-TURN-VISIBILITY canon threshold (<50) — carried over from
@@ -538,6 +560,37 @@
 .sb-drone {
   white-space: nowrap;
   font-size: 1rem;
+}
+
+/* Mines value (WO-UI-STATUSBAR-VITALS): the `<b>` here previously had NO
+   dedicated rule -- it fell through to `.vit b`'s bare color/weight
+   (cockpit-shell.css) and, for font-size, all the way to the ambient
+   `.sbar`/`.game-container` chain (the vw-scaled em-root, `.stage,
+   .game-container { font-size: calc(clamp(10px,1.05vw,15px) *
+   var(--uiscale)) }`), which is why it read LARGER than credits/turns'
+   own fixed-rem values at some viewport widths and was the literal
+   complaint (Max playtest #27: "smaller than the number of mines"). Given
+   an explicit rem matching the OTHER established vital-value rules
+   (`.vit.sb-credits`, `.sb-turns-count`, `.sb-v`, `.sb-drone` — all
+   rem-based, none vw-drifting) rather than resized: 0.88rem reproduces the
+   PRE-existing ~14.11px reading at the reference 1440x900 viewport almost
+   exactly (0.88rem = 14.08px) -- "stays at current scale" per the WO, just
+   off a stable root-rem instead of an accidental vw-scaled inheritance.
+   `line-height: 1` matches every other vital-value rule (`.vit.sb-credits`,
+   `.sb-turns-count`, `.sb-v`) -- absent here before, so the box height
+   used to run ~1.13x the font-size, throwing off the icon/numeral height
+   match below. */
+.vit.sb-mines b {
+  font-size: 0.88rem;
+  line-height: 1;
+}
+
+/* Mines icon: same `.sb-k` font-size-scoping idiom as `.vit.sb-turns .sb-k`
+   above -- MineIcon is unsized in the JSX (defaults to `size="1em"`),
+   inheriting this so its box (and font-size-relative baseline correction)
+   track the mines value's own 0.88rem. */
+.vit.sb-mines .sb-k {
+  font-size: 0.88rem;
 }
 
 .sb-bounty .sb-v {
