@@ -66,6 +66,12 @@
   border-left: 2px solid #9333ea;
 }
 
+/* In transit (flying) — mirrors .station-section.inactive below; the row's
+   action becomes the shared .act.armed HALT chip instead of LAND/APPROACH. */
+.planet-section.inactive {
+  opacity: 0.6;
+}
+
 .planet-icon {
   font-size: 1rem;   /* ~1 line-height so icon sits flush beside the name */
   flex-shrink: 0;
@@ -186,6 +192,13 @@
   display: flex;
   gap: 0.3rem;
   font-size: 0.65rem;
+}
+
+/* Row action button (LAND/CLAIM/APPROACH/HALT ▸) — shared cockpit-shell.css
+   `.act`/`.act.armed`; never let it get crushed by the flex-1 details block. */
+.planet-section > .act,
+.station-section > .act {
+  flex-shrink: 0;
 }
 
 .planet-stats .stat {

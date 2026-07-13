@@ -59,9 +59,21 @@ vi.mock('../../planetary/PopulationCenterInterface', () => ({ default: () => <di
 // controlled prop as a data attribute so this file can prove GameDashboard
 // forwards its lifted state correctly, without needing SSV's real canvas
 // draw loop (that's SolarSystemViewscreen.livingWindshield.test.tsx's job).
+// Kept even though this file's flight-only fixtures never mount it (still
+// owns the 'landed' scene) -- harmless, and future-proof if a fixture adds
+// a landed case.
 vi.mock('../../tactical/SolarSystemViewscreen', () => ({
   default: (props: { scanActive?: boolean }) => (
     <div data-testid="ssv-stub" data-scan-active={String(!!props.scanActive)} />
+  ),
+}));
+// WO-UI2-WINDSHIELD-TABLEAU: the flight-mode mount is now WindshieldTableau,
+// not SolarSystemViewscreen -- same prop-capturing idiom, same scanActive
+// controlled prop, so the SCAN wiring assertion below still proves the
+// SAME shared state (not a second independent flag).
+vi.mock('../../tactical/WindshieldTableau', () => ({
+  default: (props: { scanActive?: boolean }) => (
+    <div data-testid="windshield-tableau-stub" data-scan-active={String(!!props.scanActive)} />
   ),
 }));
 vi.mock('../../tactical/PlanetPortPair', () => ({ default: () => <div /> }));
@@ -310,8 +322,8 @@ describe('GameDashboard — locrow + HudChip retirement + SCAN relocation (WO-UI
     const glassScanBtn = Array.from(windshield.querySelectorAll('button')).find((b) => b.textContent?.includes('SCAN'));
     expect(glassScanBtn).toBeUndefined();
 
-    // SSV starts with scanActive=false.
-    const ssv = container.querySelector('[data-testid="ssv-stub"]')!;
+    // The windshield tableau starts with scanActive=false.
+    const ssv = container.querySelector('[data-testid="windshield-tableau-stub"]')!;
     expect(ssv.getAttribute('data-scan-active')).toBe('false');
 
     // The SOLAR SYSTEM monitor's SYSTEM page owns the button as a `.act`.

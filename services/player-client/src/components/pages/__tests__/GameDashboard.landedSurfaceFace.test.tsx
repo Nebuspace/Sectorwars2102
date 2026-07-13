@@ -70,6 +70,14 @@ const solarSystemViewscreenMock = vi.fn((_props?: unknown) => <div data-testid="
 vi.mock('../../tactical/SolarSystemViewscreen', () => ({
   default: (props: unknown) => solarSystemViewscreenMock(props),
 }));
+// WO-UI2-WINDSHIELD-TABLEAU: flight-mode mount is now WindshieldTableau, not
+// SolarSystemViewscreen — trackable (same idiom as solarSystemViewscreenMock
+// above) so the "flight still mounts something, landed doesn't" regression
+// guard below can assert the RIGHT component for its mode.
+const windshieldTableauMock = vi.fn((_props?: unknown) => <div data-testid="windshield-tableau-mock" />);
+vi.mock('../../tactical/WindshieldTableau', () => ({
+  default: (props: unknown) => windshieldTableauMock(props),
+}));
 vi.mock('../../tactical/PlanetPortPair', () => ({ default: () => <div /> }));
 vi.mock('../../quantum/QuantumDriveConsole', () => ({ default: () => <div /> }));
 vi.mock('../../gatewright/GatewrightPanel', () => ({ default: () => <div /> }));
@@ -265,14 +273,14 @@ describe('GameDashboard — landed keeps the vista, bezel-swaps the deck (WO-UI4
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
-  it('flight (not docked, not landed): SolarSystemViewscreen still mounts — no regression', async () => {
+  it('flight (not docked, not landed): WindshieldTableau still mounts — no regression (WO-UI2-WINDSHIELD-TABLEAU: was SolarSystemViewscreen)', async () => {
     gameState = makeGameState();
     await act(async () => {
       root.render(<GameDashboard />);
     });
 
-    expect(solarSystemViewscreenMock).toHaveBeenCalled();
-    expect(container.querySelector('[data-testid="ssv-mock"]')).not.toBeNull();
+    expect(windshieldTableauMock).toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="windshield-tableau-mock"]')).not.toBeNull();
     expect(container.querySelector('.surface-face-workspace')).toBeNull();
 
     expect(errorSpy).not.toHaveBeenCalled();

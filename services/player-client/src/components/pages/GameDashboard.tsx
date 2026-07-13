@@ -12,6 +12,7 @@ import PortOfficeVenue from '../spacedock/PortOfficeVenue';
 import ContractBoardVenue from '../spacedock/ContractBoardVenue';
 import PopulationCenterInterface from '../planetary/PopulationCenterInterface';
 import SolarSystemViewscreen from '../tactical/SolarSystemViewscreen';
+import WindshieldTableau from '../tactical/WindshieldTableau';
 import PlanetPortPair from '../tactical/PlanetPortPair';
 import NavigationMap from '../tactical/NavigationMap';
 import { chartToNavSectors } from '../tactical/navChartTransform';
@@ -580,6 +581,15 @@ const GameDashboard: React.FC = () => {
 
   const autopilot = useAutopilot();
 
+  // WO-UI2-WINDSHIELD-TABLEAU item 3 — the SOLAR SYSTEM page's per-body rows
+  // (PlanetPortPair + the asteroid-field HARVEST row) need the same "in
+  // transit" signal the locrow's 🛑 ALL STOP chip already reads (below,
+  // `autopilot.status === 'engaged'`) so a body's row shows HALT instead of
+  // its normal action while a course is under way. `handleHalt` mirrors the
+  // locrow chip's own onClick exactly (`autopilot.abort('all stop')`).
+  const flying = autopilot.status === 'engaged';
+  const handleHalt = () => autopilot.abort('all stop');
+
   const { requiresFirstLogin } = useFirstLogin();
   const { sectorPlayers } = useWebSocket();
 
@@ -1052,6 +1062,15 @@ const GameDashboard: React.FC = () => {
       ? planetsInSector?.find((p: any) => p.id === playerState?.current_planet_id) || null
       : null
   ), [playerState?.is_landed, playerState?.current_planet_id, planetsInSector]);
+
+  // WO-UI2-WINDSHIELD-TABLEAU (Max refinement 5b): "undock emerges at the
+  // host's position" — a ref that survives the landed/docked→flight unmount
+  // boundary (GameDashboard itself never unmounts across that transition,
+  // unlike WindshieldTableau which remounts fresh each time) so the
+  // tableau's next flight-mode mount can seed the ship marker AT the planet
+  // it just lifted off from, instead of a generic seeded resting anchor.
+  const lastLandedPlanetIdRef = useRef<string | null>(null);
+  if (landedPlanet?.id) lastLandedPlanetIdRef.current = landedPlanet.id;
 
   const isLandedPlanetMine = !!(landedPlanet && playerState && landedPlanet.owner_id === playerState.id);
 
@@ -1773,6 +1792,11 @@ const GameDashboard: React.FC = () => {
       : null
   ), [playerState?.is_docked, playerState?.current_port_id, stationsInSector]);
 
+  // WO-UI2-WINDSHIELD-TABLEAU (Max refinement 5b) — see the matching
+  // lastLandedPlanetIdRef comment above; same idiom, the docked host.
+  const lastDockedStationIdRef = useRef<string | null>(null);
+  if (dockedStation?.id) lastDockedStationIdRef.current = dockedStation.id;
+
   // Determine if player is docked at a SpaceDock (has special services like genesis_dealer)
   const isDockedAtSpaceDock = useMemo(() => {
     if (!playerState?.is_docked || !playerState?.current_port_id || !stationsInSector) {
@@ -2437,26 +2461,19 @@ const GameDashboard: React.FC = () => {
           {/* SPACE VIEW - Normal flight mode */}
           {!playerState?.is_docked && !playerState?.is_landed && currentSector && (
             <>
-              {/* Space viewport - edge to edge */}
-              <SolarSystemViewscreen
+              {/* Space viewport - edge to edge. WO-UI2-WINDSHIELD-TABLEAU:
+                  the flight-mode windshield-band scene is now the static DOM
+                  tableau (Max, live-playtest #4), not SolarSystemViewscreen's
+                  canvas orrery — SolarSystemViewscreen itself is untouched
+                  and still owns the 'docked'/'landed' mounts below. See
+                  WindshieldTableau.tsx's file header for the verify-first
+                  note on why 'flight' scene there is now unreachable dead
+                  code rather than an edited path. */}
+              <WindshieldTableau
                 sectorId={currentSector.sector_id}
-                sectorType={currentSector.type?.toLowerCase() || 'normal'}
-                sectorName={currentSector.name}
                 hazardLevel={currentSector.hazard_level}
-                radiationLevel={currentSector.radiation_level}
-                stations={stationsInSector}
                 planets={planetsInSector}
                 ships={shipsInSector}
-                onEntityClick={(entity) => {
-                  // Legacy fallback viewport only (SectorViewport): the
-                  // procedural scene now opens an info popup on click and
-                  // routes actions through onRequestLand/onRequestDock.
-                  if (entity.type === 'planet') {
-                    handleLand(entity.id);
-                  } else if (entity.type === 'station') {
-                    handleDock(entity.id);
-                  }
-                }}
                 onRequestLand={handleLand}
                 onRequestDock={handleDock}
                 selectedShipId={selectedShipId}
@@ -2464,6 +2481,8 @@ const GameDashboard: React.FC = () => {
                 wrecks={sectorWrecks}
                 formations={currentSector.special_formations ?? []}
                 scanActive={scanActive}
+                lastDockedStationId={lastDockedStationIdRef.current}
+                lastLandedPlanetId={lastLandedPlanetIdRef.current}
               />
 
               {/* Cockpit frame vignette */}
@@ -3406,18 +3425,27 @@ const GameDashboard: React.FC = () => {
                         </button>
                       </div>
                       {/* Show planets paired with stations (by index) */}
-                      {planetsInSector.map((planet, index) => (
-                        <PlanetPortPair
-                          key={planet.id}
-                          planet={planet}
-                          station={stationsInSector?.[index] || null}
-                          onLandOnPlanet={handleLand}
-                          onClaimPlanet={handleClaim}
-                          onDockAtStation={handleDock}
-                          isLanded={playerState?.is_landed || false}
-                          isDocked={playerState?.is_docked || false}
-                        />
-                      ))}
+                      {planetsInSector.map((planet, index) => {
+                        const station = stationsInSector?.[index] || null;
+                        return (
+                          <PlanetPortPair
+                            key={planet.id}
+                            planet={planet}
+                            station={station}
+                            onLandOnPlanet={handleLand}
+                            onClaimPlanet={handleClaim}
+                            onDockAtStation={handleDock}
+                            // Per-body "here" match (demo L1348 `G.at===o.id`) —
+                            // NOT the old sector-wide isLanded/isDocked broadcast,
+                            // which marked every row landed/docked whenever the
+                            // player was at ANY body in a multi-planet sector.
+                            isLanded={playerState?.current_planet_id === planet.id}
+                            isDocked={!!station && playerState?.current_port_id === station.id}
+                            flying={flying}
+                            onHalt={handleHalt}
+                          />
+                        );
+                      })}
                       {/* Show any extra stations not paired with planets */}
                       {stationsInSector.slice(planetsInSector.length).map((station) => (
                         <PlanetPortPair
@@ -3426,8 +3454,10 @@ const GameDashboard: React.FC = () => {
                           station={station}
                           onLandOnPlanet={handleLand}
                           onDockAtStation={handleDock}
-                          isLanded={playerState?.is_landed || false}
-                          isDocked={playerState?.is_docked || false}
+                          isLanded={false}
+                          isDocked={playerState?.current_port_id === station.id}
+                          flying={flying}
+                          onHalt={handleHalt}
                         />
                       ))}
                       {/* Empty state when neither planets nor stations.
@@ -3437,16 +3467,31 @@ const GameDashboard: React.FC = () => {
                         currentSector?.type?.toUpperCase() === 'ASTEROID_FIELD' ? (
                           <div className="planetary-asteroid-state">
                             <div className="planetary-asteroid-label">⚫ ASTEROID FIELD</div>
-                            <button
-                              className="planetary-harvest-btn"
-                              onClick={handleHarvest}
-                              disabled={helmBusy || harvestBusy}
-                              aria-disabled={helmBusy || harvestBusy}
-                              aria-label={helmBusy ? 'Harvest unavailable — helm is busy' : 'Deploy the mining laser to harvest ore from the asteroid field'}
-                              title="Deploy the mining laser to harvest ore from the asteroid field"
-                            >
-                              {harvestBusy ? '⛏️ MINING…' : helmBusy ? '⛏️ HARVEST (busy)' : '⛏️ HARVEST'}
-                            </button>
+                            {flying ? (
+                              // Demo L1352 field-row branch: here?HARVEST:(flying?HALT:APPROACH) —
+                              // under burn, the row offers HALT instead of HARVEST (same
+                              // autopilot.abort('all stop') the locrow ALL STOP chip uses).
+                              <button
+                                type="button"
+                                className="act armed"
+                                onClick={handleHalt}
+                                aria-label="Halt — abort autopilot and hold position"
+                                title="Under burn — halt before harvesting"
+                              >
+                                🛑 HALT ▸
+                              </button>
+                            ) : (
+                              <button
+                                className="planetary-harvest-btn"
+                                onClick={handleHarvest}
+                                disabled={helmBusy || harvestBusy}
+                                aria-disabled={helmBusy || harvestBusy}
+                                aria-label={helmBusy ? 'Harvest unavailable — helm is busy' : 'Deploy the mining laser to harvest ore from the asteroid field'}
+                                title="Deploy the mining laser to harvest ore from the asteroid field"
+                              >
+                                {harvestBusy ? '⛏️ MINING…' : helmBusy ? '⛏️ HARVEST (busy)' : '⛏️ HARVEST'}
+                              </button>
+                            )}
                           </div>
                         ) : (
                           <div className="empty-state">No planetary bodies or stations detected</div>

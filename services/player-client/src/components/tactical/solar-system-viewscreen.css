@@ -165,3 +165,145 @@
    which skins it with the shared artifact `.act` class (cockpit-shell.css)
    instead of this bespoke `.ssv-scan-toggle` rule. Dead, zero remaining
    consumers — see SolarSystemViewscreen.tsx's own SCAN-toggle comment. */
+
+/* ============================================================
+   WINDSHIELD TABLEAU (WO-UI2-WINDSHIELD-TABLEAU) — static DOM scene
+   composition for WindshieldTableau.tsx, replacing the flight-mode canvas
+   orrery with the ratified demo's "sliver" composition. Classes are
+   demo-verbatim (RATIFIED.html L43-60, L107-131, L294-303) but SCOPED
+   under `.ssv-tableau` (this component's root): cockpit-shell.css's own
+   header comment excludes scene-content classes from the shell lane on
+   purpose ("Scene-content sections... are intentionally EXCLUDED — those
+   belong to later content lanes"), confirmed empty of .scene/.sun/.pl/
+   .obj/.shipmk/... on this WO's verify-first grep — so this is that scene-
+   content lane's home, per the coordinator's redirect (do not edit
+   cockpit-shell.css). Scoping under `.ssv-tableau` (rather than emitting
+   these short, generic names bare/global) avoids leaking .obj/.other/.sun
+   etc. into the wider app cascade while keeping every DOM node's class
+   string demo-identical.
+   ============================================================ */
+
+.ssv-tableau { position: absolute; inset: 0; }
+.ssv-tableau .scene { position: absolute; inset: 0; }
+.ssv-tableau .scene.space {
+  background: radial-gradient(ellipse 60% 90% at 70% 20%, #12365233, transparent 60%),
+              linear-gradient(180deg, #0A1526, #060B14);
+}
+.ssv-tableau .scene.space.nebula {
+  background: radial-gradient(ellipse 80% 100% at 50% 30%, #3A1D5433, transparent 70%),
+              radial-gradient(ellipse 50% 70% at 25% 60%, #16405A44, transparent 60%),
+              linear-gradient(180deg, #0D1122, #060B14);
+}
+.ssv-tableau .scene.space.hazard {
+  background: radial-gradient(ellipse 70% 90% at 60% 30%, #4A1B1633, transparent 60%),
+              linear-gradient(180deg, #160D12, #060B14);
+}
+
+/* PURE-CSS starfield — fixed, zero JS/randomness, so a resize only rescales
+   the layer instead of re-rolling star positions (Max addendum #2,
+   live-playtest #8: stars used to jump on every browser resize because the
+   canvas painter re-randomized them per render). Demo-verbatim, first child
+   of the scene (RATIFIED.html L51-55). */
+.ssv-tableau .stars {
+  position: absolute; inset: 0;
+  background-image:
+    radial-gradient(1px 1px at 12% 22%, #cfe6ff 60%, transparent),
+    radial-gradient(1px 1px at 32% 68%, #9fc0e8 60%, transparent),
+    radial-gradient(1.5px 1.5px at 55% 30%, #fff 60%, transparent),
+    radial-gradient(1px 1px at 71% 75%, #cfe6ff 60%, transparent),
+    radial-gradient(1px 1px at 86% 18%, #9fc0e8 60%, transparent),
+    radial-gradient(1.5px 1.5px at 44% 84%, #e8f3ff 60%, transparent),
+    radial-gradient(1px 1px at 92% 55%, #fff 60%, transparent),
+    radial-gradient(1px 1px at 6% 80%, #9fc0e8 60%, transparent);
+}
+
+.ssv-tableau .sun { position: absolute; border-radius: 50%; z-index: 1; }
+.ssv-tableau .orbit { position: absolute; border: 1px dashed #1B324755; border-radius: 50%; z-index: 0; }
+.ssv-tableau .belt { position: absolute; border: 3px dotted #4A3B2A66; border-radius: 50%; z-index: 0; }
+
+.ssv-tableau .pl { position: absolute; border-radius: 50%; z-index: 2; cursor: pointer; box-shadow: inset -4px -5px 10px #00000099; border: none; padding: 0; }
+.ssv-tableau .pl:hover,
+.ssv-tableau button.obj:hover .glyphbox { outline: 1px solid #3FD2EC66; outline-offset: 3px; }
+.ssv-tableau .pl:focus-visible,
+.ssv-tableau button.obj:focus-visible,
+.ssv-tableau .anom:focus-visible { outline: 1px solid #3FD2EC; outline-offset: 2px; }
+.ssv-tableau .pltag {
+  pointer-events: none; position: absolute; transform: translate(-50%, .4em);
+  top: 100%; left: 50%; white-space: nowrap; background: #0A141FD8; border: 1px solid #1E3348;
+  border-radius: 4px; padding: .1em .45em; color: #BFE9F5; font-size: .55em; letter-spacing: .06em;
+}
+.ssv-tableau .pltag.dim { color: #6E8298; }
+
+.ssv-tableau .obj {
+  position: absolute; display: flex; flex-direction: column; align-items: center; gap: .3em;
+  color: #BFE9F5; font-size: .7em; letter-spacing: .08em; background: none; border: none; cursor: pointer;
+}
+.ssv-tableau .glyphbox { border: 1px solid #2A4A62; border-radius: 8px; padding: .5em .8em; background: #0C1826CC; font-size: 1.6em; }
+.ssv-tableau .objtag { pointer-events: none; background: #0A141FDD; border: 1px solid #1E3348; border-radius: 4px; padding: .15em .5em; }
+
+.ssv-tableau .shipmk {
+  position: absolute; z-index: 5; color: #BDEFFB; font-size: 1.1em; text-shadow: 0 0 10px #3FD2ECCC;
+  transition: left 11.6s ease-in-out, top 11.6s ease-in-out;
+  transform: translate(-50%, -50%) rotate(var(--hdg, 0deg)); pointer-events: none;
+}
+.ssv-tableau .shipmk::after {
+  content: ""; display: none; position: absolute; right: 92%; top: 50%; transform: translateY(-50%);
+  width: 1.25em; height: .3em; border-radius: 2px; filter: blur(.4px);
+  background: linear-gradient(270deg, #FFD27ACC, #FF7A5A99 40%, transparent);
+}
+.ssv-tableau .shipmk.burning::after { display: block; animation: ssv-thrust .22s steps(2, start) infinite; }
+@keyframes ssv-thrust { 50% { opacity: .55; width: 1.05em; } }
+
+.ssv-tableau .anom {
+  position: absolute; z-index: 2; color: #C9B8F5; opacity: .5; font-size: 1.2em; cursor: pointer;
+  text-shadow: 0 0 12px #9B7BFFAA; animation: ssv-shimmer 2.4s ease-in-out infinite; background: none; border: none;
+}
+@keyframes ssv-shimmer { 50% { opacity: .15; } }
+
+.ssv-tableau .other {
+  position: absolute; z-index: 3; color: #8FB8D8; font-size: .85em; text-shadow: 0 0 8px #8FB8D866;
+  cursor: pointer; transform: translate(-50%, -50%); background: none; border: none;
+}
+.ssv-tableau .other .pltag { font-size: .62em; color: #7FA3C0; }
+.ssv-tableau .other:hover { color: #CFE8FA; }
+
+/* Moon child-orbits (Max refinement 5a): system-level bodies stay FIXED but
+   a planet's own moons keep slow, local, parent-anchored motion. A rotating
+   0x0 wrapper centered on the planet + a dot translated out by the orbit
+   radius — pure CSS, so it dies for free under reduced-motion below. */
+.ssv-tableau .moon-orbit {
+  position: absolute; left: 50%; top: 50%; width: 0; height: 0;
+  animation-name: ssv-moon-spin; animation-timing-function: linear; animation-iteration-count: infinite;
+}
+.ssv-tableau .moon-orbit.ccw { animation-direction: reverse; }
+.ssv-tableau .moon-dot {
+  position: absolute; width: .3em; height: .3em; border-radius: 50%;
+  background: rgba(215, 215, 230, 0.9); box-shadow: 0 0 .3em rgba(215, 215, 230, .5);
+  transform: translate(-50%, -50%);
+}
+@keyframes ssv-moon-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+.ssv-tableau .reticle { position: absolute; z-index: 4; width: 3.4em; height: 3.4em; transform: translate(-50%, -50%); pointer-events: none; }
+.ssv-tableau .reticle::before {
+  content: ""; position: absolute; inset: 0; border: 1px solid #FF9AA5; border-radius: 50%;
+  box-shadow: 0 0 12px #FF5A6A66; animation: ssv-retspin 3.2s linear infinite;
+  -webkit-mask: conic-gradient(#000 0 55deg, transparent 55deg 90deg, #000 90deg 145deg, transparent 145deg 180deg, #000 180deg 235deg, transparent 235deg 270deg, #000 270deg 325deg, transparent 325deg);
+  mask: conic-gradient(#000 0 55deg, transparent 55deg 90deg, #000 90deg 145deg, transparent 145deg 180deg, #000 180deg 235deg, transparent 235deg 270deg, #000 270deg 325deg, transparent 325deg);
+}
+.ssv-tableau .reticle::after {
+  content: ""; position: absolute; left: 50%; top: 50%; width: .4em; height: .4em; transform: translate(-50%, -50%);
+  border: 1px solid #FF9AA5; box-shadow: 0 0 8px #FF5A6A88;
+}
+@keyframes ssv-retspin { to { transform: rotate(360deg); } }
+
+/* Nebula/debris hazard bands — blurred SVG ARCS along the star's orbital
+   plane (WO composition step 2: "not rings"), not floating blobs. */
+.ssv-tableau .hazard-arcs { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ssv-tableau .shipmk { transition: none; }
+  .ssv-tableau .shipmk.burning::after { animation: none; }
+  .ssv-tableau .anom { animation: none; }
+  .ssv-tableau .moon-orbit { animation: none; }
+  .ssv-tableau .reticle::before { animation: none; }
+}

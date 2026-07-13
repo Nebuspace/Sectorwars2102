@@ -44,8 +44,18 @@ interface PlanetPortPairProps {
   onLandOnPlanet: (planetId: string) => void;
   onClaimPlanet?: (planetId: string) => void;
   onDockAtStation?: (stationId: string) => void;
+  /** True when the player's CURRENT position matches THIS planet specifically
+   *  (not a sector-wide broadcast — see WO-UI2-WINDSHIELD-TABLEAU item 3). */
   isLanded?: boolean;
+  /** True when the player's CURRENT position matches THIS station specifically. */
   isDocked?: boolean;
+  /** True while autopilot is under burn (`autopilot.status === 'engaged'`) —
+   *  mirrors the demo's row state machine (cockpit-redesign-v10 L1349-1352):
+   *  here ? DOCK/LAND/HARVEST : (flying ? HALT : APPROACH). */
+  flying?: boolean;
+  /** Aborts the in-progress course — same autopilot.abort('all stop') the
+   *  glass locrow's 🛑 ALL STOP chip already calls. */
+  onHalt?: () => void;
 }
 
 const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
@@ -55,7 +65,9 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
   onClaimPlanet,
   onDockAtStation,
   isLanded = false,
-  isDocked = false
+  isDocked = false,
+  flying = false,
+  onHalt
 }) => {
   // Planet type icons
   const planetTypeIcons: { [key: string]: string } = {
@@ -103,7 +115,7 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
 
   const handlePlanetClick = () => {
-    if (!planet || isLanded) return;
+    if (!planet || isLanded || flying) return;
     // Capture narrowed values for the deferred onConfirm closure
     const targetPlanet = planet;
 
@@ -133,7 +145,7 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
 
   const handleStationClick = (e: React.MouseEvent) => {
     e.stopPropagation(); // Prevent planet click
-    if (!station || !onDockAtStation || isDocked) return;
+    if (!station || !onDockAtStation || isDocked || flying) return;
     // Capture narrowed values for the deferred onConfirm closure
     const targetStation = station;
     const dockAtStation = onDockAtStation;
@@ -147,13 +159,42 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
 
   const ownerDisplay = planet ? (planet.owner_name || (planet.owner_id ? 'Claimed' : null)) : null;
 
+  const handleHalt = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onHalt?.();
+  };
+
+  // Row action label — mirrors the demo's monSys() state machine exactly
+  // (cockpit-redesign-v10 L1349-1352): here ? DOCK/LAND ▸ : (flying ?
+  // 🛑 HALT ▸ : APPROACH ▸). "here" (isLanded/isDocked) is a per-body id
+  // match, not the old sector-wide broadcast.
+  const planetAction: { label: string; onClick: (e: React.MouseEvent) => void; armed: boolean; ariaLabel: string } | null =
+    !planet ? null : flying
+      ? { label: '🛑 HALT ▸', onClick: handleHalt, armed: true, ariaLabel: 'Halt — abort autopilot and hold position' }
+      : isLanded
+        ? { label: '🛬 LAND ▸', onClick: (e) => { e.stopPropagation(); handlePlanetClick(); }, armed: false, ariaLabel: `Land on ${planet.name}` }
+        : isPlanetUnclaimed && onClaimPlanet
+          ? { label: '🚩 CLAIM ▸', onClick: (e) => { e.stopPropagation(); handlePlanetClick(); }, armed: false, ariaLabel: `Claim ${planet.name}` }
+          : { label: '🧭 APPROACH ▸', onClick: (e) => { e.stopPropagation(); handlePlanetClick(); }, armed: false, ariaLabel: `Approach ${planet.name}` };
+
+  const stationOperational = station?.status?.toLowerCase() === 'operational';
+  const stationAction: { label: string; onClick: (e: React.MouseEvent) => void; armed: boolean; ariaLabel: string } | null =
+    !station || !onDockAtStation ? null : flying
+      ? { label: '🛑 HALT ▸', onClick: handleHalt, armed: true, ariaLabel: 'Halt — abort autopilot and hold position' }
+      : !stationOperational
+        ? null
+        : isDocked
+          ? { label: '⚓ DOCK ▸', onClick: handleStationClick, armed: false, ariaLabel: `Dock at ${station.name}` }
+          : { label: '🧭 APPROACH ▸', onClick: handleStationClick, armed: false, ariaLabel: `Approach ${station.name}` };
+
   return (
     <div className="planet-port-pair">
       {/* Planet Section - Clickable (only show if planet exists) */}
       {planet && (
         <div
-          className={`planet-section ${!isLanded ? 'clickable' : 'landed'} ${isPlanetUnclaimed ? 'unclaimed' : ''}`}
-          onClick={handlePlanetClick}
+          className={`planet-section ${flying ? 'inactive' : !isLanded ? 'clickable' : 'landed'} ${isPlanetUnclaimed ? 'unclaimed' : ''}`}
+          aria-disabled={flying}
+          onClick={flying ? undefined : handlePlanetClick}
         >
           <div className="planet-details">
             {/* icon + name always on ONE line — icon scaled to line-height */}
@@ -185,6 +226,21 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
               )}
             </div>
           </div>
+          {/* Row action (WO-UI2-WINDSHIELD-TABLEAU item 3, demo L1350) —
+              here?LAND/CLAIM:(flying?HALT:APPROACH). Reuses the shared
+              `.act`/`.act.armed` idiom (cockpit-shell.css) already used by
+              the SENSOR SWEEP + hazard-analysis rows on this same monitor. */}
+          {planetAction && (
+            <button
+              type="button"
+              className={`act${planetAction.armed ? ' armed' : ''}`}
+              onClick={planetAction.onClick}
+              aria-label={planetAction.ariaLabel}
+              title={planetAction.ariaLabel}
+            >
+              {planetAction.label}
+            </button>
+          )}
         </div>
       )}
 
@@ -194,8 +250,9 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
       {/* Station Section - Clickable if exists */}
       {station && (
         <div
-          className={`station-section ${!isDocked && station.status.toLowerCase() === 'operational' ? 'clickable' : 'inactive'}`}
-          onClick={handleStationClick}
+          className={`station-section ${!isDocked && !flying && stationOperational ? 'clickable' : 'inactive'}`}
+          aria-disabled={flying}
+          onClick={flying ? undefined : handleStationClick}
         >
           <div className="station-details">
             <div className="station-name-line">
@@ -213,7 +270,7 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
                 </span>
                 <span className="station-name">{station.name}</span>
                 <span className="station-status">
-                  {station.status.toLowerCase() === 'operational' ? '🟢' : '🔴'}
+                  {stationOperational ? '🟢' : '🔴'}
                 </span>
               </div>
               {stationOwnerDisplay && <span className="station-owner">{stationOwnerDisplay}</span>}
@@ -233,6 +290,20 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
               <span className="station-type">{station.type.replace(/_/g, ' ')}</span>
             </div>
           </div>
+          {/* Row action (WO-UI2-WINDSHIELD-TABLEAU item 3, demo L1349) —
+              here?DOCK:(flying?HALT:APPROACH). null while non-operational
+              AND not flying (nothing to approach/halt at a dead station). */}
+          {stationAction && (
+            <button
+              type="button"
+              className={`act${stationAction.armed ? ' armed' : ''}`}
+              onClick={stationAction.onClick}
+              aria-label={stationAction.ariaLabel}
+              title={stationAction.ariaLabel}
+            >
+              {stationAction.label}
+            </button>
+          )}
         </div>
       )}
 

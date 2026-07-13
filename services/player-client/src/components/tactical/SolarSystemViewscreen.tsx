@@ -77,24 +77,24 @@ const VistaForceThrowDev: React.FC | null = import.meta.env.DEV
 // Contract types (mirror the /sectors/{id}/system response shape)
 // ---------------------------------------------------------------------------
 
-interface SystemStarSecondary {
+export interface SystemStarSecondary {
   kind: string;
   color: string;
 }
 
-interface SystemStar {
+export interface SystemStar {
   kind: string;
   label: string;
   color: string;
   secondary?: SystemStarSecondary | null;
 }
 
-interface SystemNebula {
+export interface SystemNebula {
   hue: number;
   density: number;
 }
 
-interface SystemBelt {
+export interface SystemBelt {
   inner_au: number;
   outer_au: number;
 }
@@ -102,19 +102,19 @@ interface SystemBelt {
 /** Collision-debris ring: two worlds that collided long ago, their wreck
  *  spread into a belt encircling the orbital plane. An annulus like the
  *  asteroid belt (reddish). Cosmetic only — non-clickable. */
-interface SystemDebris {
+export interface SystemDebris {
   inner_au: number;
   outer_au: number;
   hue: number;
 }
 
 /** Habitable zone band (inner/outer in normalized orbit-AU space). */
-interface SystemHabitableZone {
+export interface SystemHabitableZone {
   inner_au: number;
   outer_au: number;
 }
 
-interface SystemBody {
+export interface SystemBody {
   slot: number;
   orbit_au: number;
   kind: string;
@@ -140,7 +140,7 @@ interface SystemBody {
   formation_status?: string;
 }
 
-interface SystemStation {
+export interface SystemStation {
   station_id: string;
   name: string;
   type: string;
@@ -148,7 +148,7 @@ interface SystemStation {
   phase_deg: number;
 }
 
-interface SystemSnapshot {
+export interface SystemSnapshot {
   sector_id: number;
   sector_type: string;
   star: SystemStar | null;
@@ -279,7 +279,7 @@ export interface HitTarget {
 }
 
 /** Sector ship presence (subset of players_present the dashboard passes). */
-interface ShipPresence {
+export interface ShipPresence {
   player_id?: string;
   user_id?: string;
   username?: string;
@@ -304,7 +304,7 @@ interface ShipPresence {
  *  archetype field. Traders are further graded by notoriety so a paladin can
  *  tell an honest merchant (green) from a shady one (amber) or a notorious
  *  smuggler (orange) at a glance. */
-function shipFaction(s: ShipPresence): { key: string; color: string; label: string; lawful: boolean } {
+export function shipFaction(s: ShipPresence): { key: string; color: string; label: string; lawful: boolean } {
   if (!s.is_npc) return { key: 'pilot', color: '#00d9ff', label: 'PILOT', lawful: false };
   const arch = (s.archetype || '').toUpperCase();
   const tp = (s.ship_type || '').toUpperCase();
@@ -417,7 +417,7 @@ function moonPlanePos(
 // Star rendering
 // ---------------------------------------------------------------------------
 
-const STAR_RADIUS_FACTOR: Record<string, number> = {
+export const STAR_RADIUS_FACTOR: Record<string, number> = {
   M_DWARF: 0.05,
   K_ORANGE: 0.06,
   G_YELLOW: 0.07,
