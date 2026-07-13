@@ -229,14 +229,23 @@ describe('GameShellRoute + GameLayout — persistent shell across navigation', (
     // (the sidebar-collapse toggle this proof used to drive is retired,
     // WO-UI5-RETIREMENT+GLASS -- teleprinterDisplayMode is the only
     // remaining piece of GameLayout-owned, user-triggerable local state to
-    // prove survives the nav). The ticker row's "▲ LOG" key
-    // (`.tp-ticker-log`) is always in the DOM and calls
-    // `onDisplayModeChange('full-overlay')`, which GameLayout mirrors onto
-    // the Teleprinter root as `tp-full-overlay`.
-    const overlayBtn = container.querySelector('.tp-ticker-log') as HTMLButtonElement;
-    expect(overlayBtn).not.toBeNull();
+    // prove survives the nav). The single mode toggle (WO-UI-MAX-BATCH-1,
+    // `.tp-mode-toggle`) cycles ticker->mid-panel->full-overlay->ticker --
+    // two clicks from ticker to reach full-overlay: the ticker row's own
+    // instance (`.tkey.tp-mode-toggle`) fires `onDisplayModeChange('mid-
+    // panel')`, then the now-visible `#tp-body` instance
+    // (`.tp-display-btn.tp-mode-toggle`) fires `onDisplayModeChange('full-
+    // overlay')`, which GameLayout mirrors onto the Teleprinter root as
+    // `tp-full-overlay`.
+    const tickerToggle = container.querySelector('.tkey.tp-mode-toggle') as HTMLButtonElement;
+    expect(tickerToggle).not.toBeNull();
     await act(async () => {
-      overlayBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      tickerToggle.dispatchEvent(new MouseEvent('click', { bubbles: true })); // ticker -> mid-panel
+    });
+    const bodyToggle = container.querySelector('.tp-display-btn.tp-mode-toggle') as HTMLButtonElement;
+    expect(bodyToggle).not.toBeNull();
+    await act(async () => {
+      bodyToggle.dispatchEvent(new MouseEvent('click', { bubbles: true })); // mid-panel -> full-overlay
     });
     expect(container.querySelector('[data-testid="teleprinter"].tp-full-overlay')).not.toBeNull();
 

@@ -33,7 +33,8 @@
  * have that survive the nav, without needing the real (API-backed) MFD page
  * content components. Teleprinter is the REAL, unmocked component (same
  * seam as GameLayout.teleprinterDisplayModes.test.tsx) — mid-panel is
- * entered via a real click on its own [◫ PANEL] control, exactly as a
+ * entered via a real click on its own single mode-toggle control
+ * (WO-UI-MAX-BATCH-1's `.tp-mode-toggle`, ticker->mid-panel), exactly as a
  * player would. Annunciator/the toast-banner children are stubbed as
  * irrelevant chrome (matches every sibling GameLayout test).
  */
@@ -238,8 +239,8 @@ describe('GameLayout — shell-slots portal + MFDProvider/teleprinterDisplayMode
     });
     expect(mfdB()?.getAttribute('data-active-page')).toBe('comms-crew');
 
-    // ── Set teleprinter -> mid-panel via its own real [◫ PANEL] control ──
-    const panelBtn = container.querySelector('.tp-ticker-panel') as HTMLButtonElement;
+    // ── Set teleprinter -> mid-panel via its own real single mode toggle ──
+    const panelBtn = container.querySelector('.tkey.tp-mode-toggle') as HTMLButtonElement;
     expect(panelBtn).not.toBeNull();
     await act(async () => {
       panelBtn.click();
@@ -289,14 +290,24 @@ describe('GameLayout — shell-slots portal + MFDProvider/teleprinterDisplayMode
     expect(container.querySelector('.game-container')?.className).toContain('tp-mid-panel');
 
     // Collapse back out of mid-panel and confirm the COMM selection itself
-    // (not just the fold) survived underneath it the whole time.
-    const collapseBtn = container.querySelector('.tp-display-ticker-toggle') as HTMLButtonElement;
+    // (not just the fold) survived underneath it the whole time. The strict
+    // 3-state cycle (WO-UI-MAX-BATCH-1) has no direct mid-panel->ticker
+    // jump any more -- two clicks: mid-panel -> full-overlay -> ticker.
+    let collapseBtn = container.querySelector('.tp-display-btn.tp-mode-toggle') as HTMLButtonElement;
     await act(async () => {
-      collapseBtn.click();
+      collapseBtn.click(); // mid-panel -> full-overlay
     });
     await act(async () => {
       await new Promise((r) => setTimeout(r, 0));
     });
+    collapseBtn = container.querySelector('.tp-display-btn.tp-mode-toggle') as HTMLButtonElement;
+    await act(async () => {
+      collapseBtn.click(); // full-overlay -> ticker
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(container.querySelector('.teleprinter')?.className).toContain('tp-ticker');
     expect(mfdB()?.getAttribute('data-active-page')).toBe('comms-crew');
 
     expect(errorSpy).not.toHaveBeenCalled();

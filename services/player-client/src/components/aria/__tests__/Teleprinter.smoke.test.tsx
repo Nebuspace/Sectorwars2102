@@ -18,9 +18,11 @@
  *     show DISTINCT filtered content — accept #3
  *   - collapse to ticker -> restore preserves content-tab + in-progress
  *     input state, proving no remount occurred — accept #4/#5
- *   - the THREE DISPLAY modes (ticker/mid-panel/full-overlay,
- *     WO-UI1-CHROME-COMPLETE) are all reachable and the root class tracks
- *     the active one
+ *   - the THREE DISPLAY modes (ticker/mid-panel/full-overlay) are all
+ *     reachable via the SINGLE 3-state mode toggle (WO-UI-MAX-BATCH-1,
+ *     ticker->mid-panel->full-overlay->ticker, wrapping), whose label +
+ *     aria-pressed always track the current mode, and the root class
+ *     tracks the active one
  *   - the ADR-0072 command grammar (dock/undock/land/lift off/set course to
  *     N/engage/abort/status/help) parses + executes from BOTH the CMD tab
  *     and the ticker's own compact input (visual-form steer); unrecognized
@@ -541,11 +543,18 @@ describe('Teleprinter — live-mount smoke', () => {
     await setInput(input, 'draft in progress');
     expect(input.value).toBe('draft in progress');
 
-    // Collapse to ticker via the tp-body control (WO-UI1-CHROME-COMPLETE —
-    // supersedes the old click-anywhere .tp-strip-toggle).
-    const collapseBtn = container.querySelector('.tp-display-ticker-toggle') as HTMLButtonElement;
+    // Collapse to ticker via the tp-body mode toggle (WO-UI-MAX-BATCH-1's
+    // strict ticker->mid-panel->full-overlay->ticker cycle has no direct
+    // mid-panel->ticker jump any more — two clicks: mid-panel -> full-
+    // overlay -> ticker).
+    let bodyToggle = container.querySelector('.tp-display-btn.tp-mode-toggle') as HTMLButtonElement;
     await act(async () => {
-      collapseBtn.click();
+      bodyToggle.click(); // mid-panel -> full-overlay
+    });
+    await flush();
+    bodyToggle = container.querySelector('.tp-display-btn.tp-mode-toggle') as HTMLButtonElement;
+    await act(async () => {
+      bodyToggle.click(); // full-overlay -> ticker
     });
     await flush();
 
@@ -554,10 +563,10 @@ describe('Teleprinter — live-mount smoke', () => {
     // conditional unmount (a remount would drop the mode/input state below).
     expect(container.querySelector('#tp-body')).not.toBeNull();
 
-    // Restore via the ticker's own [◫ PANEL] button.
-    const panelBtn = container.querySelector('.tp-ticker-panel') as HTMLButtonElement;
+    // Restore via the ticker's own single mode toggle.
+    const tickerToggle = container.querySelector('.tkey.tp-mode-toggle') as HTMLButtonElement;
     await act(async () => {
-      panelBtn.click();
+      tickerToggle.click(); // ticker -> mid-panel
     });
     await flush();
 
@@ -570,9 +579,9 @@ describe('Teleprinter — live-mount smoke', () => {
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
-  // ── THREE DISPLAY MODES (WO-UI1-CHROME-COMPLETE) ────────────────────────
+  // ── THREE DISPLAY MODES + SINGLE MODE TOGGLE (WO-UI-MAX-BATCH-1) ────────
   describe('display modes — ticker / mid-panel / full-overlay', () => {
-    it('ticker renders the single amber-line form re-classed onto cockpit-shell.css (WO-UI0-SHELL-TRANSPLANT leaf L4): .glyph + .tline + .telerow[.tin + 3x.tkey]', async () => {
+    it('ticker renders the single amber-line form re-classed onto cockpit-shell.css (WO-UI0-SHELL-TRANSPLANT leaf L4): .glyph + .tline + .telerow[.tin + XMIT + mode toggle]', async () => {
       ariaFeed.appendNav('Standing by, Commander.');
 
       await act(async () => {
@@ -587,44 +596,50 @@ describe('Teleprinter — live-mount smoke', () => {
       expect(row?.querySelector('.glyph')?.textContent).toBe('▸ ARIA');
       expect(row?.querySelector('.tline')?.textContent).toContain('Standing by, Commander.');
       // .telerow (cockpit-shell.css: display:contents outside the artifact's
-      // own aria=2 mode) wraps the input + 3 keys.
+      // own aria=2 mode) wraps the input + XMIT + the single mode toggle
+      // (order XMIT->mode toggle, matching the old XMIT->PANEL->LOG order).
       const telerow = row?.querySelector('.telerow');
       expect(telerow).not.toBeNull();
       expect(telerow?.querySelector('.tin')).not.toBeNull();
       expect(telerow?.querySelector('.tkey.tp-ticker-xmit')?.textContent).toBe('XMIT');
-      expect(telerow?.querySelector('.tkey.tp-ticker-panel')?.textContent).toContain('PANEL');
-      expect(telerow?.querySelector('.tkey.tp-ticker-log')?.textContent).toContain('LOG');
+      const modeToggle = telerow?.querySelector('.tkey.tp-mode-toggle');
+      expect(modeToggle?.textContent).toBe('TICKER');
+      expect(modeToggle?.getAttribute('aria-pressed')).toBe('false');
 
       expect(errorSpy).not.toHaveBeenCalled();
     });
 
-    it('all 3 display modes are reachable: ticker -> [◫ PANEL] -> mid-panel -> collapse -> ticker -> [▲ LOG] -> full-overlay -> overlay-toggle -> mid-panel', async () => {
+    it('the single mode toggle cycles ticker -> mid-panel -> full-overlay -> ticker (wrapping); label + aria-pressed always track the CURRENT mode', async () => {
       await act(async () => {
         root.render(<ControlledTeleprinter initial="ticker" />);
       });
       await flush();
 
       expect(container.querySelector('.teleprinter')?.className).toContain('tp-ticker');
+      let toggle = container.querySelector('.tkey.tp-mode-toggle') as HTMLButtonElement;
+      expect(toggle.textContent).toBe('TICKER');
+      expect(toggle.getAttribute('aria-pressed')).toBe('false');
 
-      const panelBtn = container.querySelector('.tp-ticker-panel') as HTMLButtonElement;
-      await act(async () => { panelBtn.click(); });
+      await act(async () => { toggle.click(); }); // ticker -> mid-panel
       await flush();
       expect(container.querySelector('.teleprinter')?.className).toContain('tp-mid-panel');
+      let bodyToggle = container.querySelector('.tp-display-btn.tp-mode-toggle') as HTMLButtonElement;
+      expect(bodyToggle.textContent).toBe('PANEL');
+      expect(bodyToggle.getAttribute('aria-pressed')).toBe('true');
 
-      const collapseBtn = container.querySelector('.tp-display-ticker-toggle') as HTMLButtonElement;
-      await act(async () => { collapseBtn.click(); });
-      await flush();
-      expect(container.querySelector('.teleprinter')?.className).toContain('tp-ticker');
-
-      const logBtn = container.querySelector('.tp-ticker-log') as HTMLButtonElement;
-      await act(async () => { logBtn.click(); });
+      await act(async () => { bodyToggle.click(); }); // mid-panel -> full-overlay
       await flush();
       expect(container.querySelector('.teleprinter')?.className).toContain('tp-full-overlay');
+      bodyToggle = container.querySelector('.tp-display-btn.tp-mode-toggle') as HTMLButtonElement;
+      expect(bodyToggle.textContent).toBe('LOG');
+      expect(bodyToggle.getAttribute('aria-pressed')).toBe('true');
 
-      const overlayToggle = container.querySelector('.tp-display-overlay-toggle') as HTMLButtonElement;
-      await act(async () => { overlayToggle.click(); });
+      await act(async () => { bodyToggle.click(); }); // full-overlay -> ticker (wraps)
       await flush();
-      expect(container.querySelector('.teleprinter')?.className).toContain('tp-mid-panel');
+      expect(container.querySelector('.teleprinter')?.className).toContain('tp-ticker');
+      toggle = container.querySelector('.tkey.tp-mode-toggle') as HTMLButtonElement;
+      expect(toggle.textContent).toBe('TICKER');
+      expect(toggle.getAttribute('aria-pressed')).toBe('false');
 
       expect(errorSpy).not.toHaveBeenCalled();
     });

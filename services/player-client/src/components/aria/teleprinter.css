@@ -149,6 +149,26 @@
   cursor: not-allowed;
 }
 
+/* ── Mode toggle — the SINGLE 3-state display-mode control
+   (WO-UI-MAX-BATCH-1, ticker→panel→log→ticker), replacing the old FOUR
+   jump buttons split across two locations (ticker's [◫ PANEL]/[▲ LOG] +
+   tp-body's [⤢]/[▾ TICKER]). Two DOM instances share this class — one
+   `.tkey` (ticker row, amber tkey skin), one `.tp-display-btn` (tp-body
+   header, styled below) — never both visible at once (CSS display-
+   toggle), so the player sees exactly one. Label text always names the
+   CURRENT mode (Teleprinter.tsx's DISPLAY_MODE_LABEL). `aria-pressed` is
+   true whenever the teleprinter is expanded past ticker — structurally
+   this is ALWAYS false on the ticker-row instance (it's only rendered
+   visible while `displayMode==='ticker'`, the one state where pressed
+   can't be true) and ALWAYS true on the tp-body instance (only visible
+   in mid-panel/full-overlay); only the latter ever needs pressed-state
+   styling, hence a single tp-display-btn-scoped rule below. */
+.tp-display-btn.tp-mode-toggle[aria-pressed='true'] {
+  border-color: var(--tp-cyan);
+  color: var(--tp-cyan);
+  box-shadow: 0 0 6px rgba(0, 217, 255, 0.3);
+}
+
 /* ── Body — mode tabs + controls + log + input. Hidden in ticker mode
    (pure CSS display toggle, never a conditional unmount), so React state
    (mode, input draft, scroll position) survives a display-mode switch. ── */

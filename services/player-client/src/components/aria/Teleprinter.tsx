@@ -27,15 +27,32 @@
  *
  * TICKER FORM (visual-form steer, mid-build, relayed from Max via the
  * orchestrator): the compact mode is ONE amber-on-dark row —
- * `▸ ARIA ✎ <latest event>` + an inline command input + [XMIT] [◫ PANEL]
- * [▲ LOG] — not the old click-anywhere-to-expand strip. XMIT dispatches
- * through the SAME grammar-first path as the CMD tab (item 1); PANEL/LOG
- * jump straight to mid-panel/full-overlay. This is a deliberate,
- * sanctioned exception to the shipped ARIA cyan/violet convention
- * (teleprinter.css header) — amber, matching the v10 prototype's
- * teleprinter demo palette, scoped to JUST the ticker row; mid-panel/
- * full-overlay keep the existing narration=violet/dialogue=cyan/
+ * `▸ ARIA ✎ <latest event>` + an inline command input + [XMIT] + a single
+ * mode-toggle button — not the old click-anywhere-to-expand strip. XMIT
+ * dispatches through the SAME grammar-first path as the CMD tab (item 1).
+ * This is a deliberate, sanctioned exception to the shipped ARIA cyan/
+ * violet convention (teleprinter.css header) — amber, matching the v10
+ * prototype's teleprinter demo palette, scoped to JUST the ticker row;
+ * mid-panel/full-overlay keep the existing narration=violet/dialogue=cyan/
  * command-echo=amber tab convention untouched.
+ *
+ * DISPLAY-MODE CONTROL (WO-UI-MAX-BATCH-1, Max's authoritative ruling
+ * #11/12 — supersedes the WAVE-2/CHROME-COMPLETE two-button-per-location
+ * design above and below): a SINGLE 3-state toggle (ticker→mid-panel→
+ * full-overlay→ticker, `DISPLAY_MODE_CYCLE`/`cycleDisplayMode` below)
+ * replaces what used to be FOUR separate jump buttons split across two
+ * locations — the ticker's own [◫ PANEL]/[▲ LOG] and `#tp-body`'s
+ * [⤢ overlay-toggle]/[▾ TICKER]. The toggle's label always names the
+ * CURRENT mode (TICKER/PANEL/LOG) and `aria-pressed` reflects "expanded"
+ * (true whenever displayMode isn't 'ticker'). It renders as TWO DOM
+ * instances — one inside the ticker row's `.telerow` (after XMIT, same
+ * slot the old PANEL/LOG pair occupied), one inside `#tp-body`'s
+ * `.tp-display-controls` (replacing the old overlay/ticker toggle pair)
+ * — sharing the exact same cycle/label logic; the ticker/mid-panel CSS
+ * display-toggle means only ONE is ever visible to the player at a time,
+ * so from the player's perspective there is exactly one control. Mid-
+ * panel's own composition correction (the band no longer shrinking) lives
+ * in game-layout.css's own comment, not here.
  *
  * REUSES the existing ARIA plumbing verbatim — no new transport:
  *   - useWebSocket().ariaMessages / sendARIAMessage / isConnected — the WS
@@ -171,6 +188,21 @@ const MODES: Array<{ id: TeleprinterMode; label: string }> = [
   { id: 'dialogue', label: 'DIALOGUE' },
   { id: 'command-echo', label: 'CMD' },
 ];
+
+/** The single 3-state display-mode cycle (WO-UI-MAX-BATCH-1) — ticker →
+ *  mid-panel → full-overlay → ticker, one step per click, wrapping. Order
+ *  matches Max's authoritative wording (ticker/PANEL/LOG). */
+const DISPLAY_MODE_CYCLE: TeleprinterDisplayMode[] = ['ticker', 'mid-panel', 'full-overlay'];
+
+/** User-facing labels for the toggle — "the label shows the CURRENT
+ *  mode" (Max's wording). Internal state/CSS class names are unchanged
+ *  ('mid-panel'/'full-overlay') to avoid an unrelated cross-file rename;
+ *  only the visible/announced text uses Max's PANEL/LOG vocabulary. */
+const DISPLAY_MODE_LABEL: Record<TeleprinterDisplayMode, string> = {
+  ticker: 'TICKER',
+  'mid-panel': 'PANEL',
+  'full-overlay': 'LOG',
+};
 
 const MAX_MESSAGE_LENGTH = 4000;
 
@@ -532,14 +564,17 @@ const Teleprinter: React.FC<TeleprinterProps> = ({ displayMode, onDisplayModeCha
     modeTabRefs.current[nextIndex]?.focus();
   }, [mode]);
 
-  // ── Display-mode controls ──────────────────────────────────────────────
-  const collapseToTicker = useCallback(() => onDisplayModeChange('ticker'), [onDisplayModeChange]);
-  const toggleOverlay = useCallback(
-    () => onDisplayModeChange(displayMode === 'full-overlay' ? 'mid-panel' : 'full-overlay'),
-    [displayMode, onDisplayModeChange]
+  // ── Display-mode control — single 3-state toggle (WO-UI-MAX-BATCH-1) ───
+  const nextDisplayMode = useMemo(
+    () => DISPLAY_MODE_CYCLE[(DISPLAY_MODE_CYCLE.indexOf(displayMode) + 1) % DISPLAY_MODE_CYCLE.length],
+    [displayMode]
   );
-  const openMidPanel = useCallback(() => onDisplayModeChange('mid-panel'), [onDisplayModeChange]);
-  const openOverlay = useCallback(() => onDisplayModeChange('full-overlay'), [onDisplayModeChange]);
+  const cycleDisplayMode = useCallback(
+    () => onDisplayModeChange(nextDisplayMode),
+    [nextDisplayMode, onDisplayModeChange]
+  );
+  const modeToggleAriaLabel = `Teleprinter display: ${DISPLAY_MODE_LABEL[displayMode]}. Activate to switch to ${DISPLAY_MODE_LABEL[nextDisplayMode]}.`;
+  const modeToggleTitle = `${DISPLAY_MODE_LABEL[displayMode]} — click for ${DISPLAY_MODE_LABEL[nextDisplayMode]}`;
 
   return (
     <div className={`teleprinter tele tp-${displayMode}`} data-testid="teleprinter">
@@ -577,28 +612,22 @@ const Teleprinter: React.FC<TeleprinterProps> = ({ displayMode, onDisplayModeCha
           </button>
           <button
             type="button"
-            className="tkey tp-ticker-panel"
-            onClick={openMidPanel}
-            aria-label="Open teleprinter mid-panel"
+            className="tkey tp-mode-toggle"
+            onClick={cycleDisplayMode}
+            aria-pressed={displayMode !== 'ticker'}
+            aria-label={modeToggleAriaLabel}
+            title={modeToggleTitle}
           >
-            ◫ PANEL
-          </button>
-          <button
-            type="button"
-            className="tkey tp-ticker-log"
-            onClick={openOverlay}
-            aria-label="Open teleprinter transcript overlay"
-          >
-            ▲ LOG
+            {DISPLAY_MODE_LABEL[displayMode]}
           </button>
         </div>
       </div>
 
       {/* ── mid-panel / full-overlay body — narration/dialogue/CMD tabs +
           log + input, unchanged from the prior single "expanded" state
-          except for the CMD grammar wiring above and the two display-
-          mode controls below. Never conditionally unmounted (accept
-          #4/#5's state-preservation contract). ── */}
+          except for the CMD grammar wiring above and the single mode-
+          toggle control below (WO-UI-MAX-BATCH-1). Never conditionally
+          unmounted (accept #4/#5's state-preservation contract). ── */}
       {/* `telelog` (full-overlay only) borrows cockpit-shell.css's transcript-
           panel skin (warm-olive background, position:absolute/bottom:100%
           "opens upward", border-top) — see teleprinter.css's own comment for
@@ -637,21 +666,13 @@ const Teleprinter: React.FC<TeleprinterProps> = ({ displayMode, onDisplayModeCha
           <div className="tp-display-controls">
             <button
               type="button"
-              className="tp-display-btn tp-display-overlay-toggle"
-              onClick={toggleOverlay}
-              aria-label={displayMode === 'full-overlay' ? 'Collapse to mid-panel' : 'Expand to transcript overlay'}
-              title={displayMode === 'full-overlay' ? 'Collapse to mid-panel' : 'Expand to transcript overlay'}
+              className="tp-display-btn tp-mode-toggle"
+              onClick={cycleDisplayMode}
+              aria-pressed={displayMode !== 'ticker'}
+              aria-label={modeToggleAriaLabel}
+              title={modeToggleTitle}
             >
-              {displayMode === 'full-overlay' ? '▾' : '⤢'}
-            </button>
-            <button
-              type="button"
-              className="tp-display-btn tp-display-ticker-toggle"
-              onClick={collapseToTicker}
-              aria-label="Collapse to ticker"
-              title="Collapse to ticker"
-            >
-              ▾ TICKER
+              {DISPLAY_MODE_LABEL[displayMode]}
             </button>
           </div>
         </div>

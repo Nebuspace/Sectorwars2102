@@ -20,10 +20,12 @@
    sizing. This file (an untouched-baseline sibling) only adds what that
    shared rule can't: flex-growth inside `.game-layout`'s flex column, the
    `.mode-station`/`.mode-surface` band-height overrides (trap i), the
-   em-root SCALE-LAW retarget (below), the mid-panel band-shrink hook, and
-   the `.game-content`/`.lower`/`.deck`/`.mfdcol` geometry the portal-based
-   transplant needs but the artifact's own bare markup never had to solve
-   (traps ii/iv — see each rule's own comment below). */
+   em-root SCALE-LAW retarget (below), the MID-PANEL BAND CORRECTION
+   comment (below — `.band` is deliberately left un-overridden in mid-
+   panel, WO-UI-MAX-BATCH-1), and the `.game-content`/`.lower`/`.deck`/
+   `.mfdcol` geometry the portal-based transplant needs but the artifact's
+   own bare markup never had to solve (traps ii/iv — see each rule's own
+   comment below). */
 .game-container {
   flex: 1;
 }
@@ -92,47 +94,33 @@ div.game-container {
   height: 16em;
 }
 
-/* MID-PANEL BAND-SHRINK HOOK (WO-UI0-VERTICAL-COMPOSITION) — the artifact
-   (cockpit-redesign-v10-RATIFIED.html L306-318, `.stage[data-aria="2"]
-   .band { height:12.5em }`) bills its ARIA center-panel mode as a flat
-   3em tithe off `.band`'s own rest height (15.5em → 12.5em) — the BAND
-   pays a small, fixed share, and the grid's lone `1fr` row (`.lower`)
-   absorbs everything else the teleprinter's growth costs. That artifact
-   rule targets `[data-aria="2"]` (a vanilla-JS demo attribute GameLayout
-   never sets — same dead-selector trap as `[data-mode]` above); the real
-   host toggles a CLASS instead (`tp-mid-panel`, added to `.game-container`
-   at GameLayout.tsx:382 the instant `teleprinterDisplayMode==='mid-panel'`
-   — already pinned by GameLayout.teleprinterDisplayModes.test.tsx, whose
-   own doc-comment calls this "the band-shrink hook, game-layout.css").
-   That hook was NEVER WRITTEN until now: with no rule reacting to
-   `.tp-mid-panel`, `.band` stayed exactly at its per-mode height on entry
-   (verified empirically — 232.5px in EITHER ticker or mid-panel, zero
-   delta) and the teleprinter's growth (tp-log's clamped height becoming
-   visible) landed 100% on `.lower`'s `1fr` row instead of being shared —
-   the inverse of the artifact's "band pays its small share too" design.
-   FIX: apply the SAME 3em tithe against whichever mode-height is currently
-   active (flight's un-overridden 15.5em base is cockpit-shell.css's own
-   `.band` rule, so the bare `.tp-mid-panel .band` selector below handles
-   it) — station 8.5em→5.5em, surface 16em→13em. Both mode-scoped variants
-   need FOUR compounded classes (`.game-container.mode-station.tp-mid-panel
-   .band`, 0,4,0) to deterministically outrank BOTH this file's own
-   3-class `.mode-station .band` rule (0,3,0) AND the bare 3-class
-   `.tp-mid-panel .band` rule below (also 0,3,0 — a same-specificity tie
-   with `.mode-station .band` when both classes are present together,
-   which a docked/landed player WITH the teleprinter open in mid-panel
-   hits routinely) regardless of source order — same compound-specificity
-   idiom the mode-station/mode-surface band rules above already use. */
-.game-container.tp-mid-panel .band {
-  height: 12.5em;
-}
-
-.game-container.mode-station.tp-mid-panel .band {
-  height: 5.5em;
-}
-
-.game-container.mode-surface.tp-mid-panel .band {
-  height: 13em;
-}
+/* MID-PANEL BAND CORRECTION (WO-UI-MAX-BATCH-1, Max's authoritative
+   ruling #11/12) — SUPERSEDES WO-UI0-VERTICAL-COMPOSITION's own "MID-
+   PANEL BAND-SHRINK HOOK", which billed panel mode a flat 3em tithe off
+   `.band`'s rest height (artifact parity, cockpit-redesign-v10-
+   RATIFIED.html L306-318: `.stage[data-aria="2"] .band { height:12.5em }`
+   — flight 15.5em→12.5em, station 8.5em→5.5em, surface 16em→13em, via
+   `.game-container.tp-mid-panel .band` + two mode-scoped 4-class
+   compounds). Max's correction: "THE BAND PAYS NOTHING" — panel mode
+   ("squishes the LOWER PANELS downward", ~4 ARIA lines + input) must
+   leave `.band`'s rect at EXACTLY its per-mode rest height in every
+   display mode, ticker or panel; the ENTIRE cost of the teleprinter's
+   mid-panel growth must land on `.lower`'s `1fr` row instead.
+   FIX: the three tithe rules are DELETED — `.band` now falls straight
+   through to the untouched `.mode-station .band`/`.mode-surface .band`
+   rules above (or cockpit-shell.css's bare `.band` base for flight),
+   unconditionally, regardless of `.tp-mid-panel`. No new CSS is needed to
+   make `.lower` absorb the growth: `.game-container`'s own
+   `auto auto auto 1fr` track list (StatusBar/`.band`/Teleprinter/
+   `.lower`, cockpit-shell.css) already guarantees it structurally — CSS
+   Grid sizes every `auto` track to its own max-content contribution
+   FIRST (the teleprinter's row grows from the ticker's single compact
+   line to the full mid-panel body: tabs + ~4-line log + input), THEN
+   hands 100% of whatever height remains to the lone `1fr` track. This is
+   exactly the PRE-WO-UI0-VERTICAL-COMPOSITION behavior that WO's own
+   comment (now removed) documented as the "bug" it was fixing — Max's
+   ruling here is that behavior was actually the intended design; the
+   artifact's own flat-tithe demo was not. */
 
 /* Annunciator station/surface flip (WO-UI0-SHELL-TRANSPLANT integration
    cleanup, item 3) — same trap i as the `.band` rules just above:
