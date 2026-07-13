@@ -18,10 +18,14 @@ import {
   headingDeg,
   nebulaArcs,
   debrisArc,
+  safeOrbitRadii,
   DECORATIVE_RING_RADII,
   MOON_DOT_MIN_EM,
   MOON_DOT_MAX_EM,
   STAR_MIN_SIZE_VS_LARGEST_PLANET,
+  BODY_SIZE_EM_MAX,
+  ORBIT_AU_MAX,
+  type BandGeometry,
 } from '../windshieldTableauLayout';
 import type { SystemBody, SystemStation } from '../SolarSystemViewscreen';
 
@@ -288,5 +292,114 @@ describe('nebulaArcs / debrisArc', () => {
   it('debrisArc centers on the ring midpoint radius', () => {
     const arc = debrisArc({ inner_au: 0.4, outer_au: 0.8 });
     expect(arc.rFrac).toBeCloseTo(0.6);
+  });
+});
+
+// ---- T1-A (Max live-playtest): every body/station must stay in-band -------
+
+describe('safeOrbitRadii / orbitalPosition(safeRadii) — T1-A in-band invariant', () => {
+  // A representative WIDE-SHORT band, computed from the real flight-mode
+  // formula this component actually renders into at 1440x900 (cockpit-
+  // shell.css `.band{--band-h-flight:18.5em}` + game-layout.css's
+  // `div.game-container{font-size:calc(clamp(10px,0.3vw+1.53vh,24px)*var(--uiscale))}`
+  // resolved at 1440x900, uiscale=1: 0.3*14.4 + 1.53*9 = 18.09px root em,
+  // band height = 18.5 * 18.09 ~= 334.7px; band width = the full stage
+  // width, ~1440px (the band row has no column split — game-layout.css's
+  // `.lower{grid-template-columns:19% 81%}` split only applies one row
+  // down). A second, TIGHTER geometry (ARIA-2 panel mode, 12.5em) is swept
+  // too below, so this isn't tuned to one specific height.
+  const FLIGHT_BAND: BandGeometry = { widthPx: 1440, heightPx: 334.7, remPx: 18.09 };
+  const ARIA2_BAND: BandGeometry = { widthPx: 1440, heightPx: 226.1, remPx: 18.09 }; // 12.5em
+
+  // Any actual body/station footprint this component ever renders — the
+  // same ceiling WindshieldTableau.tsx passes (its own OBJECT_FOOTPRINT_EM_MAX).
+  const MAX_OBJECT_EM = 3.2;
+
+  it('the footprint ceiling used below stays a superset of BODY_SIZE_EM_MAX (drift guard)', () => {
+    expect(MAX_OBJECT_EM).toBeGreaterThanOrEqual(BODY_SIZE_EM_MAX);
+  });
+
+  const STEP_AU = 0.02;
+  const STEP_DEG = 2;
+
+  function assertInBand(band: BandGeometry, sectorSamples: number[], emWidth = MAX_OBJECT_EM, emHeight = emWidth) {
+    const halfObjXPct = ((emWidth / 2) * band.remPx / band.widthPx) * 100;
+    const halfObjYPct = ((emHeight / 2) * band.remPx / band.heightPx) * 100;
+    for (const sectorId of sectorSamples) {
+      const star = starAnchor(sectorId, null);
+      const radii = safeOrbitRadii(star, band, emWidth, emHeight);
+      for (let au = 0.2; au <= ORBIT_AU_MAX + 1e-9; au += STEP_AU) {
+        for (let deg = 0; deg < 360; deg += STEP_DEG) {
+          const pos = orbitalPosition(star, au, deg, radii);
+          // The FULL rendered rect (center +/- half footprint) must stay
+          // inside [0,100]% on both axes -- not just the center point.
+          expect(pos.xPct - halfObjXPct).toBeGreaterThanOrEqual(-1e-6);
+          expect(pos.xPct + halfObjXPct).toBeLessThanOrEqual(100 + 1e-6);
+          expect(pos.yPct - halfObjYPct).toBeGreaterThanOrEqual(-1e-6);
+          expect(pos.yPct + halfObjYPct).toBeLessThanOrEqual(100 + 1e-6);
+        }
+      }
+    }
+  }
+
+  it('every (orbit_au, phase_deg) in the live contract range stays fully in-band, across a spread of sectors, at the flight-mode band height', () => {
+    assertInBand(FLIGHT_BAND, [1, 2, 5, 9, 21, 40, 77]); // 21 = the live symptom sector; 77 = the WindshieldTableau.test.tsx fixture sector
+  }, 20_000);
+
+  it('also holds at the tighter ARIA-2 panel-mode band height (12.5em) -- the fix isn\'t tuned to one specific height', () => {
+    assertInBand(ARIA2_BAND, [1, 21, 77]);
+  }, 20_000);
+
+  // ---- station-scale footprint (WindshieldTableau.tsx's own
+  // STATION_FOOTPRINT_EM_WIDTH_MAX/HEIGHT_MAX) — a MUCH wider margin than a
+  // planet disc needs, which surfaced a real edge case a live Playwright
+  // proof caught: at cos(phase_deg)=0 (or sin=0) the per-quadrant radius
+  // contributes NOTHING to that axis, so a star anchored close to an edge
+  // (starAnchor's own 9-14% left range) can itself sit inside a wide
+  // object's margin — no radius scaling fixes that, only orbitalPosition's
+  // final xMinPct/xMaxPct/yMinPct/yMaxPct hard clamp does (SafeOrbitRadii's
+  // own doc-comment). Sweeps sectors 0-40 (not just the same handful above)
+  // specifically to hit a spread of starAnchor's own xPct/yPct rolls,
+  // including ones close to its floor. */
+  it('holds at station-scale footprint margins too (20em wide x 5em tall) -- the star-anchor-inside-the-margin edge case a live proof caught', () => {
+    const sectors = Array.from({ length: 41 }, (_, i) => i); // 0..40
+    assertInBand(FLIGHT_BAND, sectors, 20, 5);
+  }, 20_000);
+
+  it('an out-of-contract orbit_au beyond ORBIT_AU_MAX is defensively clamped, not extrapolated past the safe box', () => {
+    const star = starAnchor(21, null);
+    const radii = safeOrbitRadii(star, FLIGHT_BAND, MAX_OBJECT_EM);
+    const atCeiling = orbitalPosition(star, ORBIT_AU_MAX, 0, radii);
+    const beyond = orbitalPosition(star, ORBIT_AU_MAX + 5, 0, radii); // absurd stray value
+    expect(beyond).toEqual(atCeiling);
+  });
+
+  it('without safeRadii, orbitalPosition is byte-identical to the pre-T1-A unclamped math (decorative callers, and any caller before a real band is measured, are unaffected)', () => {
+    const star = starAnchor(3, null);
+    const withoutRadii = orbitalPosition(star, 0.5, 40);
+    const rx = 0.5 * 80; // AU_SEMI_X_PCT
+    const ry = 0.5 * 120; // AU_SEMI_Y_PCT
+    const rad = (40 * Math.PI) / 180;
+    expect(withoutRadii.xPct).toBeCloseTo(star.xPct + Math.cos(rad) * rx);
+    expect(withoutRadii.yPct).toBeCloseTo(star.yPct + Math.sin(rad) * ry);
+  });
+
+  it('bodyPosition/stationPosition forward safeRadii through to orbitalPosition unchanged', () => {
+    const star = starAnchor(21, null);
+    const radii = safeOrbitRadii(star, FLIGHT_BAND, MAX_OBJECT_EM);
+    const body = { slot: 0, orbit_au: 0.6, kind: 'TERRAN', size_class: 4, palette: { hue: 0, sat: 0 }, rings: false, moons: 0, phase_deg: 200, real: true, planet_id: 'p', name: 'X' };
+    const station = { station_id: 's', name: 'S', type: 'trading_post', orbit_au: 0.6, phase_deg: 200 };
+    expect(bodyPosition(star, body, radii)).toEqual(orbitalPosition(star, body.orbit_au, body.phase_deg, radii));
+    expect(stationPosition(star, station, radii)).toEqual(orbitalPosition(star, station.orbit_au, station.phase_deg, radii));
+  });
+
+  it('degrades to zero radius (never negative) for a direction with no usable room', () => {
+    // A star pinned at the very edge with a huge footprint eats all the room.
+    const tinyBand: BandGeometry = { widthPx: 50, heightPx: 50, remPx: 18 };
+    const radii = safeOrbitRadii({ xPct: 1, yPct: 1, sizeEm: 4 }, tinyBand, MAX_OBJECT_EM);
+    expect(radii.leftPctPerAu).toBe(0);
+    expect(radii.upPctPerAu).toBe(0);
+    expect(radii.rightPctPerAu).toBeGreaterThanOrEqual(0);
+    expect(radii.downPctPerAu).toBeGreaterThanOrEqual(0);
   });
 });

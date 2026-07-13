@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import apiClient from '../../services/apiClient';
 import { useAutopilot } from '../../contexts/AutopilotContext';
 import { useWindshieldFlight } from '../../contexts/WindshieldFlightContext';
@@ -14,6 +14,7 @@ import { shipFaction } from './SolarSystemViewscreen';
 import {
   AU_SEMI_X_PCT,
   AU_SEMI_Y_PCT,
+  BODY_SIZE_EM_MAX,
   beltStyle,
   bodyPosition,
   bodySizeEm,
@@ -23,10 +24,12 @@ import {
   moonOrbits,
   nebulaArcs,
   otherPresencePosition,
+  safeOrbitRadii,
   scanPosition,
   selfRestingAnchor,
   starAnchor,
   stationPosition,
+  type BandGeometry,
   type HazardArc,
   type PctPoint,
   type StarAnchor,
@@ -135,6 +138,44 @@ export interface WindshieldTableauProps {
 const POPUP_W = 232;
 const POPUP_H = 158;
 
+/** T1-A: a `.pl` planet disc's own rendered footprint — its `.pltag` label
+ *  is position:absolute (escapes `.pl`'s own layout box, see solar-system-
+ *  viewscreen.css), so the button's own bounding rect never exceeds
+ *  BODY_SIZE_EM_MAX regardless of the planet's name. A small buffer above
+ *  it covers box-shadow/outline paint that doesn't affect layout but is
+ *  worth a little slack against sub-pixel rounding. */
+const PLANET_FOOTPRINT_EM_MAX = BODY_SIZE_EM_MAX + 0.2;
+
+/** T1-A: a `.obj` station's own rendered footprint — UNLIKE `.pl`, `.obj`
+ *  is `display:flex;flex-direction:column` with its `.objtag` NAME LABEL as
+ *  a normal-flow child (not position:absolute), so the button's own
+ *  bounding rect genuinely GROWS WIDER with the station's name length (nothing
+ *  constrains `.obj`'s own width, so the label never wraps either) — a
+ *  live-measured T1-A proof (zero-footprint Playwright harness, see this
+ *  WO's own report) found ~28px base + ~7.4px/char at this module's own
+ *  reference remPx (18.09px, 1440x900 flight-mode band). The 38-char name
+ *  this codebase's own WindshieldTableau.test.tsx already exercises as its
+ *  real long-name precedent ("Trade Hub Capelworks Expansion Complex" —
+ *  that test's own WO-TABLEAU-TUNE #25 citation) predicts ~17.1em; 20em
+ *  gives that a comfortable buffer. HEIGHT stays ~constant regardless of
+ *  name length (the label never wraps) — the live proof measured ~4.25em;
+ *  5em gives that buffer too.
+ *
+ *  This is a best-effort, empirically-grounded ceiling, NOT a mathematical
+ *  guarantee for an arbitrarily long name — coordinate math alone can't
+ *  bound an unbounded-width flex child; a true hard guarantee needs a CSS-
+ *  side max-width/wrap constraint on `.objtag`, which is out of this WO's
+ *  lane (solar-system-viewscreen.css is a concurrent lane) — flagged in
+ *  this WO's own report rather than edited here. */
+const STATION_FOOTPRINT_EM_WIDTH_MAX = 20;
+const STATION_FOOTPRINT_EM_HEIGHT_MAX = 5;
+
+/** Fallback px-per-1em if getComputedStyle can't resolve one yet (e.g. a
+ *  jsdom test environment with no real CSS cascade) — the codebase's own
+ *  nominal default em-root (windshieldTableauLayout.ts's MOON_DOT_*
+ *  comment cites the same convention). */
+const DEFAULT_REM_PX = 16;
+
 interface PopupState {
   key: string;
   meta: HitMeta;
@@ -172,6 +213,31 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
   lastLandedPlanetId = null,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // T1-A: real measured band geometry (`.ssv-tableau`'s own rect, 100% of
+  // `.band`) — the ONE thing safeOrbitRadii needs that this component alone
+  // can supply (the layout module stays DOM-free). Measured synchronously
+  // via useLayoutEffect (so it's set before the FIRST paint, well before
+  // `system`'s async fetch resolves and bodies actually render) and kept
+  // live via ResizeObserver — flight mode's own band height can change
+  // mid-mount (18.5em rest <-> 12.5em ARIA-2 panel, cockpit-shell.css) even
+  // though WindshieldTableau itself doesn't remount for that.
+  const [bandBox, setBandBox] = useState<BandGeometry | null>(null);
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const measure = () => {
+      const rect = el.getBoundingClientRect();
+      const remPx = parseFloat(getComputedStyle(el).fontSize) || DEFAULT_REM_PX;
+      setBandBox({ widthPx: rect.width, heightPx: rect.height, remPx });
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   const [system, setSystem] = useState<StaticSystem | null>(null);
   const [fetchFailed, setFetchFailed] = useState(false);
   const [popup, setPopup] = useState<PopupState | null>(null);
@@ -210,6 +276,21 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
     () => starAnchor(sectorId, system?.star ?? null, system?.bodies ?? []),
     [sectorId, system?.star, system?.bodies]
   );
+  // T1-A: undefined until the container's real geometry is measured (first
+  // paint only) — orbitalPosition's own `!safeRadii` branch covers that
+  // brief gap with the pre-T1-A unclamped math, harmlessly, since no body
+  // renders until `system` resolves anyway (well after this is set). Two
+  // SEPARATE radii sets — planets don't need the much-wider station margin
+  // (see STATION_FOOTPRINT_EM_WIDTH_MAX's own doc-comment), so sharing one
+  // would needlessly crush the planet sliver's spread.
+  const safeRadiiPlanets = useMemo(
+    () => (bandBox ? safeOrbitRadii(star, bandBox, PLANET_FOOTPRINT_EM_MAX) : undefined),
+    [star, bandBox]
+  );
+  const safeRadiiStations = useMemo(
+    () => (bandBox ? safeOrbitRadii(star, bandBox, STATION_FOOTPRINT_EM_WIDTH_MAX, STATION_FOOTPRINT_EM_HEIGHT_MAX) : undefined),
+    [star, bandBox]
+  );
   const rings = useMemo(() => decorativeRings(star), [star]);
   const belt = useMemo(() => (system?.belt ? beltStyle(star) : null), [star, system?.belt]);
   const hazeArcs = useMemo(() => (system?.nebula ? nebulaArcs(sectorId) : []), [sectorId, system?.nebula]);
@@ -238,16 +319,16 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
     let anchor: PctPoint | null = null;
     if (lastDockedStationId) {
       const st = system.stations.find((s) => s.station_id === lastDockedStationId);
-      if (st) anchor = stationPosition(star, st);
+      if (st) anchor = stationPosition(star, st, safeRadiiStations);
     }
     if (!anchor && lastLandedPlanetId) {
       const b = system.bodies.find((bb) => bb.planet_id === lastLandedPlanetId);
-      if (b) anchor = bodyPosition(star, b);
+      if (b) anchor = bodyPosition(star, b, safeRadiiPlanets);
     }
     if (!anchor) anchor = selfRestingAnchor(sectorId);
     setShipPos(anchor);
     setHeading(0);
-  }, [system, sectorId, lastDockedStationId, lastLandedPlanetId, star]);
+  }, [system, sectorId, lastDockedStationId, lastLandedPlanetId, star, safeRadiiPlanets, safeRadiiStations]);
 
   const travelTo = useCallback((target: PctPoint, objectId: string | null = null) => {
     const from = shipPosRef.current ?? target;
@@ -275,16 +356,16 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
     const { objectId } = flight.pendingApproach;
     const bodyMatch = system.bodies.find((b) => b.real && b.planet_id === objectId);
     if (bodyMatch) {
-      travelTo(bodyPosition(star, bodyMatch), objectId);
+      travelTo(bodyPosition(star, bodyMatch, safeRadiiPlanets), objectId);
       return;
     }
     const stationMatch = system.stations.find((s) => s.station_id === objectId);
     if (stationMatch) {
-      travelTo(stationPosition(star, stationMatch), objectId);
+      travelTo(stationPosition(star, stationMatch, safeRadiiStations), objectId);
     }
     // Unresolvable (stale id from a since-changed sector) — no-op, matches
     // the context's own documented "no-op if the id can't be resolved".
-  }, [flight.pendingApproach, system, star, travelTo]);
+  }, [flight.pendingApproach, system, star, safeRadiiPlanets, safeRadiiStations, travelTo]);
 
   // A row/locrow ALL STOP click (flight.allStop()) bumps stopSignal; freeze
   // the glide at its LIVE on-screen spot (not the target it was heading
@@ -544,7 +625,7 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
 
         {/* planets + their moons */}
         {(system?.bodies ?? []).map((body, idx) => {
-          const pos = bodyPosition(star, body);
+          const pos = bodyPosition(star, body, safeRadiiPlanets);
           const sizeEm = bodySizeEm(body);
           const moons = moonOrbits(sectorId, body);
           const isReal = body.real && body.planet_id;
@@ -558,6 +639,15 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
               style={{
                 left: `${pos.xPct}%`, top: `${pos.yPct}%`,
                 width: `${sizeEm}em`, height: `${sizeEm}em`,
+                // T1-A: the demo (RATIFIED.html L1222) centers `.pl` on its
+                // own %-anchor via this same transform, matching every
+                // sibling object (.sun/.obj/.other below) — WindshieldTableau
+                // had dropped it, so a body's box was anchored by its
+                // TOP-LEFT corner instead of its center, silently biasing
+                // every rendered disc a further half-diameter down-right of
+                // its intended position (compounding the out-of-band overflow
+                // this WO fixes, not just decorative).
+                transform: 'translate(-50%,-50%)',
                 background: `hsl(${body.palette.hue}, ${body.palette.sat}%, 45%)`,
               }}
               aria-label={label}
@@ -605,7 +695,7 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
 
         {/* stations */}
         {(system?.stations ?? []).map((st) => {
-          const pos = stationPosition(star, st);
+          const pos = stationPosition(star, st, safeRadiiStations);
           return (
             <button
               key={`station-${st.station_id}`}

@@ -221,6 +221,72 @@ describe('WindshieldTableau', () => {
     expect(lefts[1] - lefts[0]).toBeGreaterThan(0.32); // > MOON_DOT_MAX_EM
   });
 
+  // ---- T1-A (Max live-playtest): a body clipping off the band's bottom
+  // edge, "PROCEDURAL-21-6" hugging the top edge — bodies/stations must stay
+  // fully inside the band's [0,100]%x[0,100]% rect. windshieldTableauLayout
+  // .test.ts already exhaustively sweeps the pure math; this proves the
+  // WIRING — that the real component actually measures its container and
+  // threads safeRadii through bodyPosition/stationPosition on every render
+  // path, not just that the library function exists unused. Bodies below
+  // are deliberately picked at orbit_au near ORBIT_AU_MAX and phase_deg
+  // values that overflowed hugely under the pre-T1-A symmetric math (see
+  // that test file's own header for the measured -66%..+158% range).
+  const EXTREME_BODIES = [
+    { slot: 0, orbit_au: 0.95, kind: 'TERRAN', size_class: 10, palette: { hue: 0, sat: 0 }, rings: false, moons: 0, phase_deg: 250, real: true, planet_id: 'edge-1', name: 'Edge One' },
+    { slot: 1, orbit_au: 0.95, kind: 'GAS_GIANT', size_class: 10, palette: { hue: 0, sat: 0 }, rings: false, moons: 0, phase_deg: 90, real: false }, // straight "below" the star -- old ry ceiling was 114
+    { slot: 2, orbit_au: 0.9, kind: 'ICE', size_class: 10, palette: { hue: 0, sat: 0 }, rings: false, moons: 0, phase_deg: 20, real: true, planet_id: 'edge-3', name: 'Edge Three' },
+  ];
+  const EXTREME_STATION = { station_id: 'edge-station', name: 'Edge Station', type: 'trading_post', orbit_au: 0.95, phase_deg: 270 }; // straight "above" the star
+
+  function assertEveryObjectInBand(el: HTMLElement, widthPx: number, heightPx: number) {
+    // jsdom applies no real CSS cascade under vitest (css:false, see
+    // vitest.config.ts) so getComputedStyle(...).fontSize resolves empty ->
+    // WindshieldTableau.tsx's own DEFAULT_REM_PX fallback (16) is what's
+    // actually in play here, mirrored below. Two separate footprint
+    // ceilings, mirroring WindshieldTableau.tsx's own PLANET_FOOTPRINT_EM_MAX
+    // / STATION_FOOTPRINT_EM_WIDTH/HEIGHT_MAX split -- a `.obj` station's
+    // own name label is a normal-flow flex child (unlike `.pl`'s
+    // position:absolute `.pltag`), so it needs a much wider margin (see
+    // that constant's own doc-comment for the live-measured derivation).
+    const REM_PX = 16;
+    const check = (selector: string, emWidth: number, emHeight: number) => {
+      const halfXPct = ((emWidth / 2) * REM_PX / widthPx) * 100;
+      const halfYPct = ((emHeight / 2) * REM_PX / heightPx) * 100;
+      const objects = Array.from(el.querySelectorAll(selector)) as HTMLElement[];
+      for (const obj of objects) {
+        const left = parseFloat(obj.style.left);
+        const top = parseFloat(obj.style.top);
+        expect(left - halfXPct).toBeGreaterThanOrEqual(-0.01);
+        expect(left + halfXPct).toBeLessThanOrEqual(100.01);
+        expect(top - halfYPct).toBeGreaterThanOrEqual(-0.01);
+        expect(top + halfYPct).toBeLessThanOrEqual(100.01);
+      }
+      return objects.length;
+    };
+    const count = check('.pl', 2.6, 2.6) + check('.obj', 20, 5);
+    expect(count).toBeGreaterThan(0);
+  }
+
+  it('keeps every body AND station fully inside the measured band rect at 3 seeded sectors with varied body counts, even at orbit_au near the ceiling (T1-A)', async () => {
+    for (const [sectorId, bodies] of [
+      [21, EXTREME_BODIES],           // the live symptom sector, all 3 extreme bodies
+      [104, [EXTREME_BODIES[0]]],     // a different sector, single body
+      [205, EXTREME_BODIES.slice(0, 2)], // a third sector, 2 bodies
+    ] as const) {
+      mockGet.mockResolvedValue({
+        data: { ...TEST_SYSTEM, sector_id: sectorId, bodies, stations: [EXTREME_STATION] },
+      });
+      await mount({ sectorId });
+      assertEveryObjectInBand(container, 800, 400); // mocked containerRef rect, this file's own beforeEach
+    }
+  });
+
+  it('.pl is centered on its own %-anchor via transform:translate(-50%,-50%) — matching .sun/.obj/.other, the demo (RATIFIED.html L1222), and the T1-A fix\'s own margin math', async () => {
+    await mount();
+    const planetBtn = container.querySelector('.pl') as HTMLElement;
+    expect(planetBtn.style.transform).toBe('translate(-50%,-50%)');
+  });
+
   it('the star renders unmistakably larger than every planet — at least 3x the largest planet\'s diameter (WO-TABLEAU-TUNE #18)', async () => {
     await mount();
     const sun = container.querySelector('.sun') as HTMLElement;
