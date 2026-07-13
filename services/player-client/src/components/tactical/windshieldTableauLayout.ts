@@ -132,6 +132,12 @@ export function beltStyle(star: StarAnchor): { xPct: number; yPct: number; wPct:
  *  network can never blow past the computed safe box either. */
 export const ORBIT_AU_MAX = 0.95;
 
+/** orbit_au never goes BELOW this either (celestial_service.py's own
+ *  `rng.uniform(0.2, 0.95)` floor) — orbitalPosition's T0-1 X-axis model
+ *  (below) normalizes a body's orbit_au into this [ORBIT_AU_MIN,
+ *  ORBIT_AU_MAX] range to drive its horizontal "how far out" position. */
+export const ORBIT_AU_MIN = 0.2;
+
 /** Real measured band geometry — WindshieldTableau.tsx's own containerRef
  *  rect (`.ssv-tableau`, 100% of `.band`) + its resolved font-size (every
  *  em value in this module, including bodySizeEm/star.sizeEm, is relative
@@ -180,6 +186,12 @@ export interface BandGeometry {
  *  in play), so orbitalPosition never has a seam/discontinuity switching
  *  between them. */
 export interface SafeOrbitRadii {
+  /** Retained for its own correctness (still asserted directly by
+   *  windshieldTableauLayout.test.ts) but NO LONGER what drives a body's X
+   *  position — see orbitalPosition's own T0-1 doc-comment for why a
+   *  cos-sign-branched left/right radius pair collapses bodies onto the
+   *  star whenever every body's phase lands in the left hemisphere while
+   *  the star sits far-left (leftPctPerAu≈0 by construction there). */
   leftPctPerAu: number;
   rightPctPerAu: number;
   upPctPerAu: number;
@@ -253,6 +265,71 @@ export function safeOrbitRadii(
   };
 }
 
+/** T0-1 (Max live-catch, sector 1): the fraction of a body's primary X
+ *  spread (orbitRankT * rightPctPerAu*ORBIT_AU_MAX below) that phase_deg is
+ *  ALSO allowed to contribute, as a small SECONDARY horizontal wiggle —
+ *  Max's ruling in his own words: "primarily vertical + secondary
+ *  horizontal, but must NEVER zero out the horizontal spread." Deliberately
+ *  ONE-SIDED (see orbitalPosition's `(cos+1)/2` remap below, always >=0) —
+ *  a signed +/- wiggle could subtract enough from a body at the smallest
+ *  orbit_au (rank≈0) to push it PAST the star itself when phase lands in
+ *  the left hemisphere, reopening the exact collapse this WO exists to
+ *  close. One-sided keeps every body at or beyond its own baseline "how far
+ *  out" position, never behind it.
+ *
+ *  REVISE (T0-1 hardening, lead's adversarial-sweep ruling): sized well
+ *  BELOW the smallest possible gap between two ADJACENT ranks so the
+ *  wiggle can never erode a rank-pair's separation below the accept
+ *  threshold — celestial_service.py's own MAX_BODIES=9 ceiling means the
+ *  tightest realistic rank gap is 1/(9-1)=12.5% of xSpreadPct; 0.03 leaves
+ *  a >6x margin (worst-case wiggle divergence between two adjacent bodies
+ *  is 2*0.03=6% of xSpreadPct, well under that 12.5% gap). */
+const X_SECONDARY_WIGGLE_FRACTION = 0.03;
+
+/** T0-1 hardening (lead's adversarial-sweep ruling): the ORIGINAL fix
+ *  normalized a body's orbit_au against the FIXED GLOBAL [ORBIT_AU_MIN,
+ *  ORBIT_AU_MAX] contract range — correct for realistic, spread-out orbit_au
+ *  data (sector 1's own repro: 0.25-0.94, nearly the full range), but an
+ *  exhaustive adversarial sweep surfaced a DIFFERENT collapse: if every
+ *  body in a system happens to share nearly the SAME orbit_au (e.g. all
+ *  clustered near ORBIT_AU_MAX, or literally identical), the fixed-range
+ *  orbitT term is nearly IDENTICAL for all of them too — right back to
+ *  relying on the weak secondary phase wiggle alone, which (deliberately
+ *  small per its own doc-comment above) can't span the required 50%
+ *  x-range on its own, and collapses further still if phases are ALSO
+ *  clustered.
+ *
+ *  Fix: normalize by RANK among the system's own siblings (sorted by
+ *  orbit_au ascending, ties broken by slot for a stable order) instead of
+ *  by raw orbit_au value against the fixed contract range. Rank always
+ *  spans the FULL [0,1] range for N>1 bodies REGARDLESS of how tightly
+ *  their raw orbit_au values cluster — even bodies with LITERALLY IDENTICAL
+ *  orbit_au land at different (adjacent) ranks via the slot tie-break — so
+ *  the primary X differentiator can never collapse, independent of both
+ *  the orbit_au distribution AND the phase distribution. Relative order is
+ *  still orbit_au-driven (a real "further out = further right" reading),
+ *  just rescaled to always fill the available room instead of being
+ *  compressed by how close together the actual orbit_au values in THIS
+ *  system happen to be. */
+export function bodyOrbitRanks(bodies: SystemBody[]): Map<number, number> {
+  const sorted = [...bodies].sort((a, b) => a.orbit_au - b.orbit_au || a.slot - b.slot);
+  const n = sorted.length;
+  const ranks = new Map<number, number>();
+  sorted.forEach((b, i) => ranks.set(b.slot, n > 1 ? i / (n - 1) : 0.5));
+  return ranks;
+}
+
+/** Station analog of bodyOrbitRanks — SystemStation carries no `slot` field,
+ *  so station_id (always present, always unique within a system) is the
+ *  stable tie-break instead. */
+export function stationOrbitRanks(stations: SystemStation[]): Map<string, number> {
+  const sorted = [...stations].sort((a, b) => a.orbit_au - b.orbit_au || a.station_id.localeCompare(b.station_id));
+  const n = sorted.length;
+  const ranks = new Map<string, number>();
+  sorted.forEach((s, i) => ranks.set(s.station_id, n > 1 ? i / (n - 1) : 0.5));
+  return ranks;
+}
+
 /** Real orbit_au + phase_deg → a STATIC %-position on the star's orbital
  *  plane. No `t` term — zero system-level animation at rest (Max #4).
  *
@@ -260,11 +337,34 @@ export function safeOrbitRadii(
  *  a real band has been measured), this is byte-identical to the original
  *  symmetric AU_SEMI_X_PCT/AU_SEMI_Y_PCT math — unchanged so decorativeRings/
  *  beltStyle's own visual-consistency-with-real-bodies intent (their own
- *  doc-comments) and every pre-T1-A test stay exactly as they were. With
- *  `safeRadii` (WindshieldTableau.tsx's real bodyPosition/stationPosition
- *  calls, once it has measured its own container), the per-quadrant radii
- *  replace the symmetric ones and orbit_au is defensively clamped to
- *  ORBIT_AU_MAX — see safeOrbitRadii's own doc-comment for why. */
+ *  doc-comments) and every pre-T1-A test stay exactly as they were.
+ *
+ *  With `safeRadii`, Y stays the T1-A mechanism unchanged (phase-DOMINANT,
+ *  orbit_au-scaled: `sin(phase) * au * up/downPctPerAu` — Max: "vertical
+ *  spread is fine"). X is REDESIGNED (T0-1, live-caught at sector 1): the
+ *  old cos-sign-branched left/right radius pair put phase in charge of X
+ *  too, and Max's own ruling anchors the star FAR-LEFT permanently (chosen
+ *  deliberately over a centered orrery — not up for renegotiation here), so
+ *  `leftPctPerAu` is essentially always ~0 by construction. Whenever every
+ *  body in a system happened to share a left-hemisphere phase (sector 1's
+ *  live data: all 6 bodies), the old formula collapsed every one of them
+ *  onto the star's own xPct regardless of how different their orbit_au
+ *  was — 6 distinct orbits read as "one planet" in a 96px-wide pile.
+ *
+ *  X is now driven PRIMARILY by orbit_au itself — a "right-sweeping fan":
+ *  further out = further right, monotonic, phase-independent — using the
+ *  SAME proven-safe rightward room the star's far-left anchor always has
+ *  (`rightPctPerAu * ORBIT_AU_MAX`, i.e. safeOrbitRadii's own T1-A-proven
+ *  in-band ceiling), so two different orbit_au values can never land at the
+ *  same X regardless of phase. Phase only adds the small, ONE-SIDED
+ *  secondary wiggle above — real "along the orbit" horizontal texture that
+ *  can never zero the primary spread back out. `leftPctPerAu` and the
+ *  cos-sign branch are gone from the X formula entirely (kept on
+ *  SafeOrbitRadii itself only for its own correctness/tests — see that
+ *  interface's own doc-comment). orbit_au is still defensively clamped to
+ *  [ORBIT_AU_MIN, ORBIT_AU_MAX] — see those constants' own doc-comments —
+ *  and the SAME final xMinPct/xMaxPct/yMinPct/yMaxPct hard clamp from T1-A
+ *  still backstops both axes. */
 export function orbitalPosition(
   star: StarAnchor,
   orbitAu: number,
@@ -279,17 +379,21 @@ export function orbitalPosition(
     const ry = orbitAu * AU_SEMI_Y_PCT;
     return { xPct: star.xPct + cos * rx, yPct: star.yPct + sin * ry };
   }
-  const au = Math.min(Math.abs(orbitAu), ORBIT_AU_MAX);
-  const rx = au * (cos >= 0 ? safeRadii.rightPctPerAu : safeRadii.leftPctPerAu);
+  const au = Math.min(Math.max(Math.abs(orbitAu), ORBIT_AU_MIN), ORBIT_AU_MAX);
+  // X: primary term is a monotonic function of orbit_au alone (the
+  // right-sweeping fan) + a small one-sided phase wiggle. Y: unchanged
+  // T1-A mechanism (phase-dominant, orbit_au-scaled).
+  const orbitT = (au - ORBIT_AU_MIN) / (ORBIT_AU_MAX - ORBIT_AU_MIN);
+  const xSpreadPct = safeRadii.rightPctPerAu * ORBIT_AU_MAX;
+  const xWigglePct = ((cos + 1) / 2) * xSpreadPct * X_SECONDARY_WIGGLE_FRACTION;
   const ry = au * (sin >= 0 ? safeRadii.downPctPerAu : safeRadii.upPctPerAu);
   // Final hard clamp — see SafeOrbitRadii's own xMinPct/xMaxPct/yMinPct/
-  // yMaxPct doc-comment for why this is needed even after the per-quadrant
-  // radius scaling above (the star's own raw anchor can itself sit inside
-  // a wide object's margin at cos=0/sin=0, where the radius contributes
-  // nothing). A no-op whenever the un-clamped result already lands inside
-  // the safe box, which is the common case for every planet and most
-  // stations.
-  const xPct = Math.min(Math.max(star.xPct + cos * rx, safeRadii.xMinPct), safeRadii.xMaxPct);
+  // yMaxPct doc-comment for why this is needed even after the primary/
+  // secondary terms above (the star's own raw anchor can itself sit inside
+  // a wide object's margin, where neither term guarantees clearance on its
+  // own). A no-op whenever the un-clamped result already lands inside the
+  // safe box, which is the common case for every planet and most stations.
+  const xPct = Math.min(Math.max(star.xPct + orbitT * xSpreadPct + xWigglePct, safeRadii.xMinPct), safeRadii.xMaxPct);
   const yPct = Math.min(Math.max(star.yPct + sin * ry, safeRadii.yMinPct), safeRadii.yMaxPct);
   return { xPct, yPct };
 }

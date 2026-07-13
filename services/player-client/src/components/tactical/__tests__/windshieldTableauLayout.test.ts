@@ -403,3 +403,104 @@ describe('safeOrbitRadii / orbitalPosition(safeRadii) — T1-A in-band invariant
     expect(radii.downPctPerAu).toBeGreaterThanOrEqual(0);
   });
 });
+
+// ---- T0-1 (Max live-catch, sector 1): bodies must stay DISTINCT, not just
+// in-band -- the hole T1-A's own review missed. All-left-hemisphere-phase
+// data collapsed onto the far-left-anchored star's own xPct regardless of
+// orbit_au (leftPctPerAu~=0 by construction there); fixed by making X
+// primarily orbit_au-driven (see orbitalPosition's own T0-1 doc-comment).
+
+describe('T0-1 — bodies stay DISTINCT and SPREAD, not just in-band (sector-1 live-catch)', () => {
+  const FLIGHT_BAND: BandGeometry = { widthPx: 1440, heightPx: 334.7, remPx: 18.09 };
+  const PLANET_EM = 2.6; // mirrors WindshieldTableau.tsx's own PLANET_FOOTPRINT_EM_MAX
+
+  // Max's own live repro, verbatim: sector 1, all 6 bodies at cos(phase)<0
+  // (118deg/119deg/251deg/228deg/160deg/135deg are all in the left
+  // hemisphere) -- the exact input that piled onto the star pre-fix.
+  const SECTOR_1_BODIES: SystemBody[] = [
+    { slot: 0, orbit_au: 0.2507, kind: 'BARREN', size_class: 3, palette: { hue: 30, sat: 20 }, rings: false, moons: 0, phase_deg: 118, real: false },
+    { slot: 1, orbit_au: 0.4176, kind: 'TERRAN', size_class: 5, palette: { hue: 120, sat: 45 }, rings: false, moons: 1, phase_deg: 119, real: true, planet_id: 'new-earth', name: 'New Earth' },
+    { slot: 2, orbit_au: 0.5784, kind: 'GAS_GIANT', size_class: 8, palette: { hue: 40, sat: 55 }, rings: true, moons: 2, phase_deg: 251, real: false },
+    { slot: 3, orbit_au: 0.6802, kind: 'BARREN', size_class: 4, palette: { hue: 25, sat: 15 }, rings: false, moons: 0, phase_deg: 228, real: false },
+    { slot: 4, orbit_au: 0.8275, kind: 'VOLCANIC', size_class: 6, palette: { hue: 10, sat: 60 }, rings: false, moons: 0, phase_deg: 160, real: false },
+    { slot: 5, orbit_au: 0.9438, kind: 'GAS_GIANT', size_class: 9, palette: { hue: 200, sat: 50 }, rings: true, moons: 3, phase_deg: 135, real: false },
+  ];
+
+  // A "sector-21-like" 7-body set with a full phase spread across all four
+  // quadrants (not all-left) -- the no-regression case: T1-A's own good
+  // spread on mixed-phase data must survive this redesign untouched.
+  const SECTOR_21_LIKE_BODIES: SystemBody[] = [
+    { slot: 0, orbit_au: 0.22, kind: 'BARREN', size_class: 3, palette: { hue: 30, sat: 20 }, rings: false, moons: 0, phase_deg: 20, real: false },
+    { slot: 1, orbit_au: 0.35, kind: 'TERRAN', size_class: 4, palette: { hue: 120, sat: 45 }, rings: false, moons: 1, phase_deg: 95, real: true, planet_id: 'p1', name: 'World 1' },
+    { slot: 2, orbit_au: 0.48, kind: 'ICE', size_class: 5, palette: { hue: 200, sat: 40 }, rings: false, moons: 0, phase_deg: 160, real: false },
+    { slot: 3, orbit_au: 0.6, kind: 'GAS_GIANT', size_class: 7, palette: { hue: 40, sat: 55 }, rings: true, moons: 2, phase_deg: 210, real: false },
+    { slot: 4, orbit_au: 0.72, kind: 'BARREN', size_class: 4, palette: { hue: 25, sat: 15 }, rings: false, moons: 0, phase_deg: 280, real: false },
+    { slot: 5, orbit_au: 0.85, kind: 'VOLCANIC', size_class: 6, palette: { hue: 10, sat: 60 }, rings: false, moons: 0, phase_deg: 300, real: true, planet_id: 'p6', name: 'World 6' },
+    { slot: 6, orbit_au: 0.93, kind: 'GAS_GIANT', size_class: 9, palette: { hue: 200, sat: 50 }, rings: true, moons: 3, phase_deg: 75, real: false },
+  ];
+
+  function assertDistinctAndSpread(sectorId: number, bodies: SystemBody[], label: string) {
+    const star = starAnchor(sectorId, { kind: 'K_ORANGE', label: '', color: '#fff' }, bodies);
+    const radii = safeOrbitRadii(star, FLIGHT_BAND, PLANET_EM);
+    const placed = bodies.map((b) => {
+      const pos = bodyPosition(star, b, radii);
+      return {
+        xPx: (pos.xPct / 100) * FLIGHT_BAND.widthPx,
+        yPx: (pos.yPct / 100) * FLIGHT_BAND.heightPx,
+        diamPx: bodySizeEm(b) * FLIGHT_BAND.remPx,
+      };
+    });
+
+    // 1. IN-BAND (T1-A, must survive this redesign).
+    for (const p of placed) {
+      expect(p.xPx - p.diamPx / 2).toBeGreaterThanOrEqual(-0.5);
+      expect(p.xPx + p.diamPx / 2).toBeLessThanOrEqual(FLIGHT_BAND.widthPx + 0.5);
+      expect(p.yPx - p.diamPx / 2).toBeGreaterThanOrEqual(-0.5);
+      expect(p.yPx + p.diamPx / 2).toBeLessThanOrEqual(FLIGHT_BAND.heightPx + 0.5);
+    }
+
+    // 2. DISTINCT -- min pairwise center-to-center distance >= 1.2x the
+    // LARGER of the two bodies' own diameters.
+    let minDist = Infinity;
+    for (let i = 0; i < placed.length; i++) {
+      for (let j = i + 1; j < placed.length; j++) {
+        const dx = placed[i].xPx - placed[j].xPx;
+        const dy = placed[i].yPx - placed[j].yPx;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const threshold = 1.2 * Math.max(placed[i].diamPx, placed[j].diamPx);
+        minDist = Math.min(minDist, dist);
+        expect(dist, `${label}: bodies ${i}/${j} too close (${dist.toFixed(1)}px < ${threshold.toFixed(1)}px)`).toBeGreaterThanOrEqual(threshold);
+      }
+    }
+
+    // 3. SPREAD -- x-centers span >= 50% of the band width.
+    const xs = placed.map((p) => p.xPx);
+    const xRange = Math.max(...xs) - Math.min(...xs);
+    expect(xRange, `${label}: x-range ${xRange.toFixed(1)}px`).toBeGreaterThanOrEqual(FLIGHT_BAND.widthPx * 0.5);
+
+    return { minDist, xRangePx: xRange, placed };
+  }
+
+  it('sector-1 repro (all 6 bodies left-hemisphere phase): stays in-band, all 6 DISTINCT, x-range >=50% of band width', () => {
+    const { minDist, xRangePx } = assertDistinctAndSpread(1, SECTOR_1_BODIES, 'sector-1');
+    // eslint-disable-next-line no-console
+    console.log(`[T0-1 proof] sector-1: minPairwiseDist=${minDist.toFixed(1)}px, xRange=${xRangePx.toFixed(1)}px (band width ${FLIGHT_BAND.widthPx}px)`);
+    expect(minDist).toBeGreaterThan(0);
+  });
+
+  it('sector-21-like 7-body mixed-phase case: no regression -- stays in-band, distinct, and well-spread', () => {
+    const { minDist, xRangePx } = assertDistinctAndSpread(21, SECTOR_21_LIKE_BODIES, 'sector-21-like');
+    // eslint-disable-next-line no-console
+    console.log(`[T0-1 proof] sector-21-like: minPairwiseDist=${minDist.toFixed(1)}px, xRange=${xRangePx.toFixed(1)}px (band width ${FLIGHT_BAND.widthPx}px)`);
+    expect(minDist).toBeGreaterThan(0);
+  });
+
+  it('X is monotonic in orbit_au at a fixed phase (the "further out = further right" fan, independent of the old left/right radius branch)', () => {
+    const star = starAnchor(1, { kind: 'K_ORANGE', label: '', color: '#fff' }, SECTOR_1_BODIES);
+    const radii = safeOrbitRadii(star, FLIGHT_BAND, PLANET_EM);
+    const xs = [0.25, 0.4, 0.55, 0.7, 0.85, 0.94].map((au) => orbitalPosition(star, au, 200, radii).xPct); // same phase for all -- isolates the orbit_au term
+    for (let i = 1; i < xs.length; i++) {
+      expect(xs[i]).toBeGreaterThan(xs[i - 1]);
+    }
+  });
+});
