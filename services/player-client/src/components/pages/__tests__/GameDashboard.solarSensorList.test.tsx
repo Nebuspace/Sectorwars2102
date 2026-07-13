@@ -253,6 +253,68 @@ describe('GameDashboard — SOLAR SYSTEM[SYSTEM] sensor-list rows (WO-UI-MAX-BAT
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
+  it('uninhabitable-body filter (T1-B) defaults OFF — decorative bodies visible, STAR row unaffected by the toggle', async () => {
+    await mount();
+    const solar = container.querySelector('.mon.system-monitor')!;
+
+    const filterBtn = solar.querySelector('.system-filter-toggle') as HTMLButtonElement;
+    expect(filterBtn).toBeTruthy();
+    expect(filterBtn.getAttribute('aria-pressed')).toBe('false');
+    expect(filterBtn.getAttribute('aria-label')).toBe('Hide uninhabitable bodies');
+
+    // DEFAULT OFF: both decorative bodies from CONTENTS_RESPONSE render.
+    expect(solar.textContent).toContain('BARREN');
+    expect(solar.textContent).toContain('GAS GIANT');
+    expect(solar.textContent).toContain('K-CLASS ORANGE DWARF'); // the star, unrelated to the filter
+
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it('uninhabitable-body filter (T1-B) toggling ON drops the decorative rows (count assertion), toggling back OFF restores them', async () => {
+    await mount();
+    const solar = container.querySelector('.mon.system-monitor')!;
+    const rowsBefore = solar.querySelectorAll('.mbody > .row').length;
+
+    const filterBtn = solar.querySelector('.system-filter-toggle') as HTMLButtonElement;
+    await click(filterBtn);
+
+    expect(filterBtn.getAttribute('aria-pressed')).toBe('true');
+    // Label-in-Name (WCAG 2.5.3): aria-label stays the STABLE literal while
+    // aria-pressed (asserted above) is the sole state carrier — a dynamic
+    // per-state label would drop the visible "HIDE UNINHABITABLE" text from
+    // the accessible name in the ON state.
+    expect(filterBtn.getAttribute('aria-label')).toBe('Hide uninhabitable bodies');
+    // The 2 decorative CONTENTS_RESPONSE bodies (BARREN, GAS_GIANT) are gone.
+    const rowsAfter = solar.querySelectorAll('.mbody > .row').length;
+    expect(rowsAfter).toBe(rowsBefore - 2);
+    expect(solar.textContent).not.toContain('BARREN');
+    expect(solar.textContent).not.toContain('GAS GIANT');
+    // The STAR row is NOT a decorative body — the filter never touches it.
+    expect(solar.textContent).toContain('K-CLASS ORANGE DWARF');
+
+    await click(filterBtn);
+    expect(filterBtn.getAttribute('aria-pressed')).toBe('false');
+    expect(solar.querySelectorAll('.mbody > .row').length).toBe(rowsBefore);
+    expect(solar.textContent).toContain('BARREN');
+  });
+
+  it('a long decorative-body list renders every row uncapped — the panel scrolls internally instead of truncating (Max ruling, T1-B)', async () => {
+    const manyBodies = Array.from({ length: 40 }, (_, i) => ({
+      slot: i, kind: i % 2 === 0 ? 'BARREN' : 'ICE', real: false,
+    }));
+    mockApiGet.mockResolvedValue({
+      data: { star: CONTENTS_RESPONSE.star, bodies: manyBodies, stations: [] },
+    });
+    await mount();
+    const solar = container.querySelector('.mon.system-monitor')!;
+    const rows = solar.querySelectorAll('.mbody > .row');
+
+    // 40 decorative-body rows + the STAR row, at minimum (plus SENSOR SWEEP
+    // and this fixture's generic hazard row) — no slice/count cap anywhere.
+    expect(rows.length).toBeGreaterThanOrEqual(41);
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
   it('a failed /contents fetch silently degrades to zero STAR/barren rows — no console.error, no crash', async () => {
     mockApiGet.mockRejectedValue(new Error('network'));
     await mount();
@@ -319,5 +381,31 @@ describe('GameDashboard — SOLAR SYSTEM[SYSTEM] sensor-list rows (WO-UI-MAX-BAT
     const tabs = Array.from(solar.querySelectorAll('.deck-tab-btn'));
     const salvageTab = tabs.find((b) => b.textContent === 'SALVAGE');
     expect(salvageTab?.className).toContain('active');
+  });
+});
+
+// Static CSS-source proof (T1-B): jsdom doesn't apply this component's
+// imported stylesheet, and a real layout-driven scrollHeight>clientHeight
+// assertion is unreachable in jsdom's stub layout engine (it reports 0 for
+// both regardless of content/CSS) — mirrors WindshieldTableau.test.tsx's own
+// `.ssv-popup-title` static-source precedent (readFileSync + a scoped
+// rule-block regex, not a whole-file grep) for exactly this reason. Proves
+// the rule exists, is scoped to `.system-monitor .mbody` (not global/
+// document-level), and carries the Scroll-Law-exception marker a future
+// audit needs to find before "fixing" it. The real geometry (panel actually
+// scrolls, document does not) still owes a live/Playwright eyeball.
+describe('solar-system-viewscreen.css — SOLAR SYSTEM Scroll-Law exception (T1-B)', () => {
+  it('.system-monitor .mbody declares overflow-y:auto, scoped (not global), with the Scroll-Law-exception marker present', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const cssPath = path.resolve(__dirname, '../../tactical/solar-system-viewscreen.css');
+    const css = fs.readFileSync(cssPath, 'utf8');
+
+    const match = css.match(/\.system-monitor \.mbody\s*\{([^}]*)\}/);
+    expect(match).not.toBeNull();
+    expect(match![1]).toMatch(/overflow-y\s*:\s*auto/);
+
+    expect(css).toMatch(/SCROLL-LAW EXCEPTION/i);
+    expect(css).toMatch(/Max ruling/);
   });
 });

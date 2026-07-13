@@ -326,3 +326,36 @@
   .ssv-tableau .moon-orbit { animation: none; }
   .ssv-tableau .reticle::before { animation: none; }
 }
+
+/* ============================================================
+   SOLAR SYSTEM DECK MONITOR (T1-B) — `.mon.system-monitor`
+   header + interior-scroll rules. These target GameDashboard.tsx's deck
+   monitor (cockpit-shell.css/cockpit.css own that panel's base chrome),
+   not this file's own `.ssv-*` glass/tableau classes above — they live
+   here because this file is the one CSS lane this WO's fence permits,
+   and SolarSystemViewscreen.tsx (which imports this file) is always
+   mounted alongside GameDashboard's deck in flight mode, so the rule
+   reaches its target the same as every other global stylesheet here.
+   ============================================================ */
+
+/* Let the header wrap instead of silently clipping (`.mon` is
+   `overflow:hidden`) once the uninhabitable-filter toggle button joins
+   the title + sector-name — narrower monitor columns need the room. */
+.system-monitor .mhead {
+  flex-wrap: wrap;
+  row-gap: 0.3em;
+}
+
+/* SCROLL-LAW EXCEPTION (Max ruling, T1-B): the SOLAR SYSTEM object list
+   is a secondary sensor readout, not the panel's primary action — Max
+   explicitly ruled it should SCROLL WITHIN ITSELF when long rather than
+   cap the object count. `.mbody` (cockpit-shell.css) already carries a
+   base `overflow-y:auto` shared by every monitor; this reaffirms it
+   scoped + documented for THIS panel specifically, so a future Scroll-Law
+   audit reads the ruling here instead of "fixing" it by truncating the
+   list or forcing the document to scroll. Do not remove without a fresh
+   Max ruling.
+   ============================================================ */
+.system-monitor .mbody {
+  overflow-y: auto;
+}

@@ -918,6 +918,18 @@ const GameDashboardInner: React.FC = () => {
   // moved.
   const [scanActive, setScanActive] = useState(false);
 
+  // Uninhabitable-body declutter filter (T1-B, Max ruling): DEFAULT OFF —
+  // every decorative body shows by default, matching every other sensor
+  // toggle's honest-by-default convention. Scoped to the SAME decorative
+  // (`real:false`) bodies `solarStatic.bodies` already carries and
+  // barrenBodyLabel already tags "uninhabitable" — the one place in this
+  // codebase that note is an honest, non-guessed fact (see that function's
+  // own doc-comment). Real DB planets (planetsInSector/PlanetPortPair) are
+  // NEVER "uninhabitable" bodies for this filter's purposes — they're
+  // colonizable game objects, not decorative flavor, so they're untouched
+  // by this toggle even at habitability_score 0.
+  const [hideUninhabitable, setHideUninhabitable] = useState(false);
+
   // STAR + decorative-body sensor rows (WO-UI-MAX-BATCH-1 item 9: "the
   // SYSTEM page = the full sensor list mirroring the windshield objects").
   // WindshieldTableau.tsx already fetches this exact GET /sectors/{id}
@@ -3468,6 +3480,32 @@ const GameDashboardInner: React.FC = () => {
                 <div className="mhead">
                   <span className="mtitle">SOLAR SYSTEM</span>
                   <span className="hsub">{currentSector?.name ?? '—'}</span>
+                  {/* Uninhabitable-body filter (T1-B, Max ruling): DEFAULT
+                      OFF — every decorative body visible until toggled ON.
+                      Lives in the header (not a content row) so it persists
+                      across SYSTEM/SALVAGE/SIGNALS/HAZARD, mirroring the
+                      SCAN toggle's `.act`/aria-pressed idiom (below) rather
+                      than inventing a new control style. aria-label is a
+                      STABLE literal (not a per-state ternary like SCAN's) —
+                      aria-pressed alone carries the on/off state, so the
+                      accessible name always contains the visible text
+                      (WCAG 2.5.3 Label-in-Name; a dynamic label broke this
+                      in the ON state, caught by the a11y gate). `title`
+                      stays a per-state hover hint — it doesn't drive the
+                      accessible name. */}
+                  <button
+                    type="button"
+                    className={`act system-filter-toggle${hideUninhabitable ? ' buy' : ''}`}
+                    onClick={() => setHideUninhabitable((prev) => !prev)}
+                    aria-pressed={hideUninhabitable}
+                    aria-label="Hide uninhabitable bodies"
+                    title={hideUninhabitable
+                      ? 'Show uninhabitable (barren/decorative) bodies'
+                      : 'Hide uninhabitable (barren/decorative) bodies'}
+                  >
+                    🌑 HIDE UNINHABITABLE{hideUninhabitable && solarStatic?.bodies.length
+                      ? ` — ${solarStatic.bodies.length}` : ''}
+                  </button>
                 </div>
                 <div
                   className="mbody"
@@ -3483,14 +3521,17 @@ const GameDashboardInner: React.FC = () => {
                           — scorched rock — barren" rows. Absent entirely while
                           the /contents fetch above hasn't resolved (or failed)
                           — no loading placeholder, since this is decorative
-                          sensor flavor, not primary content. */}
+                          sensor flavor, not primary content. The STAR row is
+                          NEVER gated by hideUninhabitable — it's the system's
+                          primary reference body, not one of the barren/
+                          decorative bodies the filter declutters. */}
                       {solarStatic?.star && (
                         <div className="row">
                           <b>☀ {solarStatic.star.label.toUpperCase()}</b>
                           <span className="dim">primary</span>
                         </div>
                       )}
-                      {solarStatic?.bodies.map((body, index) => {
+                      {!hideUninhabitable && solarStatic?.bodies.map((body, index) => {
                         const { name, note } = barrenBodyLabel(body.kind);
                         return (
                           <div className="row" key={`solar-body-${index}`}>
