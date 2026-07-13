@@ -11,15 +11,50 @@
 import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useGame } from '../../contexts/GameContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
-import type { MFDPageId, MFDScreenConfig, MFDSnapshot } from './mfdTypes';
-import { getPageDef, isPageHidden } from './mfdRegistry';
+import type { MFDPageDef, MFDPageId, MFDScreenConfig, MFDSnapshot } from './mfdTypes';
+import { getPageDef, isPageAvailable, isPageHidden } from './mfdRegistry';
 import { useMFD, useMFDScreenInternal } from './MFDContext';
 import { deriveInitialPage } from './situations';
 import { readPersistedPage } from './persistence';
 import MFDPageBoundary from './MFDPageBoundary';
-import MFDSoftkeyRail from './MFDSoftkeyRail';
+import SoftkeyRail, { type SoftkeyRailItem } from '../common/SoftkeyRail';
 import { MFDPageSkeleton } from './atoms';
 import './mfd.css';
+
+// Bottom softkey rail: hard 5-slot cap, no paging (WO-UI1-CHROME-COMPLETE).
+// The rail itself now lives in common/SoftkeyRail.tsx (WO-UI0-SHELL-
+// TRANSPLANT, register D7) — this screen still owns which of its visible
+// pages become keys (the 5-slot cap) and how each key looks (disabled-in-
+// place for an unavailable-but-visible page, the alert badge), exactly as
+// mfd/MFDSoftkeyRail.tsx did before the consolidation.
+export const MAX_SOFTKEYS = 5;
+
+export const buildSoftkeyItems = (
+  visiblePages: MFDPageDef[],
+  snapshot: MFDSnapshot,
+  activePageId: MFDPageId,
+  hasAlert: (pageId: MFDPageId) => boolean,
+  onSelect: (pageId: MFDPageId) => void,
+): SoftkeyRailItem[] =>
+  visiblePages.slice(0, MAX_SOFTKEYS).map((def) => {
+    const isActive = def.id === activePageId;
+    const available = isPageAvailable(def, snapshot);
+    const alerted = hasAlert(def.id) && !isActive;
+    return {
+      key: def.id,
+      label: (
+        <>
+          {def.softLabel}
+          {alerted ? <span className="mfd-key-badge" aria-hidden="true" /> : null}
+        </>
+      ),
+      selected: isActive,
+      disabled: !available,
+      onSelect: () => onSelect(def.id),
+      accent: def.accent,
+      ariaLabel: alerted ? `${def.title} — alert` : def.title,
+    };
+  });
 
 // Design A graft: ONE memoized snapshot per screen render, so predicate
 // evaluation never tears between softkeys.
@@ -120,16 +155,17 @@ const MFDScreen: React.FC<{ config: MFDScreenConfig }> = ({ config }) => {
           </Suspense>
         </MFDPageBoundary>
       </div>
-      <MFDSoftkeyRail
-        screenLabel={config.systemLabel}
-        pages={visiblePages}
-        snapshot={snapshot}
-        activePageId={activePageId}
-        hasAlert={hasAlert}
-        onSelect={(pageId) => {
+      <SoftkeyRail
+        items={buildSoftkeyItems(visiblePages, snapshot, activePageId, hasAlert, (pageId) => {
           userTouchedRef.current = true;
           selectPage(config.screenId, pageId);
-        }}
+        })}
+        ariaLabel={`${config.systemLabel} pages`}
+        railClassName="mfd-softkey-rail"
+        itemClassName={() => 'mfd-key'}
+        accentVar="--mfd-key-accent"
+        activateOnArrow={false}
+        homeEnd={false}
       />
     </section>
   );

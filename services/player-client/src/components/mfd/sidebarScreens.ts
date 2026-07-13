@@ -40,7 +40,7 @@ export const SIDEBAR_B: MFDScreenConfig = {
 // not the live config prop). GameLayout swaps which config it renders
 // (this one vs. the SIDEBAR_A/SIDEBAR_B pair) rather than mutating either
 // in place, so each screenId registers cleanly on first use. Exactly 5
-// pages == the MAX_SOFTKEYS cap (MFDSoftkeyRail.tsx); quantum-drive's own
+// pages == the MAX_SOFTKEYS cap (MFDScreen.tsx); quantum-drive's own
 // `hidden` predicate (WJ-gated) keeps non-WARP_JUMPER ships at 4.
 export const SIDEBAR_A_FOLDED: MFDScreenConfig = {
   screenId: 'sidebar-a-folded', systemLabel: 'MFD-A', defaultPageId: 'vessel-status',

@@ -1,30 +1,32 @@
-import React, { useRef } from 'react';
+import React from 'react';
+import SoftkeyRail, { type SoftkeyRailItem } from '../common/SoftkeyRail';
 
 /**
  * DeckPageTabs — the ONE shared switchable-page rail for a deck monitor's
- * screen-hud-header (WO-UI2-DECK-MONITORS). Replaces three hand-copied,
- * near-identical switches that had drifted apart: NAV's WARP-GRAPH/QUANTUM-
- * DRIVE (nav-mode-switch), COMMS' CONTACTS/HAILS (comms-mode-switch), and
- * SOLAR SYSTEM's new BODIES/HAZARDS. Generic over a caller-defined page id —
- * NOT type-coupled to any one monitor's page union.
+ * screen-hud-header, station terminal tabs, and colony-management tabs
+ * (WO-UI2-DECK-MONITORS). Replaces three hand-copied, near-identical
+ * switches that had drifted apart: NAV's WARP-GRAPH/QUANTUM-DRIVE
+ * (nav-mode-switch), COMMS' CONTACTS/HAILS (comms-mode-switch), and SOLAR
+ * SYSTEM's new BODIES/HAZARDS. Generic over a caller-defined page id — NOT
+ * type-coupled to any one monitor's page union.
  *
- * Modeled on mfd/MFDSoftkeyRail.tsx's interaction (role=tablist/tab, roving
- * tabindex, ArrowLeft/Right wrap) and layouts/StatusBar.tsx's dossier
- * tablist (Home/End). Deliberately NOT a copy of MFDSoftkeyRail: that
- * component is type-coupled to the frozen MFDPageId union and expects a
- * LazyExoticComponent per page — wrong shape for a thin, page-content-
- * agnostic rail. Also deliberately not `.mfd-key` styling — mfd.css is a
- * different visual generation; this rail's CSS lives in cockpit.css's
- * `.deck-tab-rail`/`.deck-tab-btn`, parameterized by `--tab-accent` so each
- * monitor (NAV cyan, SOLAR SYSTEM purple, COMMS green) supplies its own
- * accent without a per-monitor CSS block.
- *
- * Availability differs from MFDSoftkeyRail's model too: an unavailable page
- * (e.g. QUANTUM DRIVE on a non-Warp-Jumper hull) is never rendered as a
- * disabled/dead tab — it's filtered out entirely before the rail's roving-
- * tabindex/arrow-nav math ever sees it. A monitor left with fewer than 2
- * available pages gets NO rail (returns null) rather than a lone,
- * unswitchable tab.
+ * This component's own public API — `DeckPage`/`DeckPageTabsProps`, the
+ * `.deck-tab-rail`/`.deck-tab-btn` classes, the id/aria-controls a11y
+ * wiring, the <2-pages-renders-null rule, per-page `accent` — is
+ * unchanged and byte-identical to before WO-UI0-SHELL-TRANSPLANT; every
+ * existing call site (GameDashboard NAV/SOLAR SYSTEM, TacticalMonitor,
+ * CommsMailbox, CockpitColonyManagement, PortOfficeVenue,
+ * ContractBoardVenue ×2, ConstructionVenue) needs zero changes. Only the
+ * internals changed: rendering now delegates to the shared
+ * common/SoftkeyRail.tsx primitive (register D7 / §05 accept: "one
+ * softkey component drives MFDs, monitors, station tabs, colony tabs —
+ * grep-provable single source"), which also backs mfd/MFDScreen.tsx's
+ * bottom MFD keys. Availability/interaction model still differs from the
+ * MFD side by design (see SoftkeyRail.tsx's doc-comment for why): an
+ * unavailable page (e.g. QUANTUM DRIVE on a non-Warp-Jumper hull) is
+ * filtered out entirely below, never rendered disabled-in-place, and
+ * ArrowLeft/Right/Home/End here select immediately (automatic
+ * activation) rather than only moving focus.
  */
 
 export interface DeckPage {
@@ -89,77 +91,31 @@ const DeckPageTabs: React.FC<DeckPageTabsProps> = ({
   className,
 }) => {
   const tabs = pages.filter((p) => p.available !== false);
-  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   // <2 available pages: no rail at all (not a single dead tab).
   if (tabs.length < 2) return null;
 
-  const activeIndexRaw = tabs.findIndex((p) => p.id === activeId);
-  // Roving-tabindex anchor: if the active id isn't among the currently
-  // rendered (available) tabs — e.g. mid-transition after a ship swap drops
-  // a page — the first tab keeps the rail keyboard-reachable.
-  const tabStopIndex = activeIndexRaw !== -1 ? activeIndexRaw : 0;
-
-  const focusAndSelect = (index: number): void => {
-    onSelect(tabs[index].id);
-    tabRefs.current[index]?.focus();
-  };
-
-  const handleKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number): void => {
-    const count = tabs.length;
-    switch (event.key) {
-      case 'ArrowRight':
-        event.preventDefault();
-        focusAndSelect((index + 1) % count);
-        return;
-      case 'ArrowLeft':
-        event.preventDefault();
-        focusAndSelect((index - 1 + count) % count);
-        return;
-      case 'Home':
-        event.preventDefault();
-        focusAndSelect(0);
-        return;
-      case 'End':
-        event.preventDefault();
-        focusAndSelect(count - 1);
-        return;
-      default:
-        return;
-    }
-  };
+  const items: SoftkeyRailItem[] = tabs.map((page) => ({
+    key: page.id,
+    label: page.label,
+    selected: page.id === activeId,
+    onSelect: () => onSelect(page.id),
+    accent: page.accent,
+    id: `${idBase}-tab-${page.id}`,
+    ariaControls: `${idBase}-panel-${page.id}`,
+  }));
 
   return (
-    <div
-      className={`deck-tab-rail${className ? ' ' + className : ''}`}
-      role="tablist"
-      aria-label={ariaLabel}
-      style={{ '--tab-accent': accent } as React.CSSProperties}
-    >
-      {tabs.map((page, index) => {
-        const isActive = page.id === activeId;
-        return (
-          <button
-            key={page.id}
-            ref={(el) => {
-              tabRefs.current[index] = el;
-            }}
-            type="button"
-            role="tab"
-            id={`${idBase}-tab-${page.id}`}
-            aria-controls={`${idBase}-panel-${page.id}`}
-            className={`deck-tab-btn${isActive ? ' active' : ''}`}
-            aria-selected={isActive}
-            tabIndex={index === tabStopIndex ? 0 : -1}
-            style={{ '--tab-accent': page.accent ?? accent } as React.CSSProperties}
-            onClick={() => onSelect(page.id)}
-            onKeyDown={(event) => handleKeyDown(event, index)}
-          >
-            {page.label}
-          </button>
-        );
-      })}
-    </div>
+    <SoftkeyRail
+      items={items}
+      ariaLabel={ariaLabel}
+      railClassName={`deck-tab-rail${className ? ' ' + className : ''}`}
+      itemClassName={(item) => `deck-tab-btn${item.selected ? ' active' : ''}`}
+      accentVar="--tab-accent"
+      railAccent={accent}
+      activateOnArrow
+      homeEnd
+    />
   );
 };
 
