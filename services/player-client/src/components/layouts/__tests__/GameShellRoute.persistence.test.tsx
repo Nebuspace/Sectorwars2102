@@ -14,12 +14,13 @@
  * This pins that TRUE resetting set across a real react-router navigation
  * (/game -> /game/map, via a real data router — createMemoryRouter +
  * RouterProvider, not a mocked useNavigate): the "INITIALIZING SYSTEMS"
- * loading latch, a manual teleprinter display-mode change (GameLayout-owned
- * `teleprinterDisplayMode` state -- the sidebar-collapse toggle this proof
- * used to drive was retired, WO-UI5-RETIREMENT+GLASS; teleprinterDisplayMode
- * is now the only remaining piece of GameLayout-local, user-triggerable
- * state), and a mount-only effect on a shell-persistent child all survive
- * the nav, while the Outlet's own content genuinely swaps.
+ * loading latch, a manual teleprinter toggle change (GameLayout-owned
+ * `teleprinterTranscriptOpen` state, WO-UI-MAX-BATCH-1 REVISE -- the
+ * sidebar-collapse toggle this proof used to drive was retired,
+ * WO-UI5-RETIREMENT+GLASS; the teleprinter's two toggle booleans are now
+ * the only remaining piece of GameLayout-local, user-triggerable state),
+ * and a mount-only effect on a shell-persistent child all survive the nav,
+ * while the Outlet's own content genuinely swaps.
  *
  * GameLayout itself is the SUT and is NOT mocked. Its context deps
  * (useAuth/useGame/useWebSocket/useAutopilot) and GameShellRoute's own
@@ -225,29 +226,21 @@ describe('GameShellRoute + GameLayout — persistent shell across navigation', (
     expect(container.querySelector('.viewport-loading-overlay')).toBeNull();
     expect(medalToastMountCount).toBe(1); // a Context-value change, not a remount
 
-    // ── Phase 2: manually change the teleprinter display mode ──
+    // ── Phase 2: manually change a teleprinter toggle ──
     // (the sidebar-collapse toggle this proof used to drive is retired,
-    // WO-UI5-RETIREMENT+GLASS -- teleprinterDisplayMode is the only
-    // remaining piece of GameLayout-owned, user-triggerable local state to
-    // prove survives the nav). The single mode toggle (WO-UI-MAX-BATCH-1,
-    // `.tp-mode-toggle`) cycles ticker->mid-panel->full-overlay->ticker --
-    // two clicks from ticker to reach full-overlay: the ticker row's own
-    // instance (`.tkey.tp-mode-toggle`) fires `onDisplayModeChange('mid-
-    // panel')`, then the now-visible `#tp-body` instance
-    // (`.tp-display-btn.tp-mode-toggle`) fires `onDisplayModeChange('full-
-    // overlay')`, which GameLayout mirrors onto the Teleprinter root as
-    // `tp-full-overlay`.
-    const tickerToggle = container.querySelector('.tkey.tp-mode-toggle') as HTMLButtonElement;
-    expect(tickerToggle).not.toBeNull();
+    // WO-UI5-RETIREMENT+GLASS -- the teleprinter's two toggle booleans are
+    // the only remaining piece of GameLayout-owned, user-triggerable local
+    // state to prove survives the nav). WO-UI-MAX-BATCH-1 REVISE: the LOG
+    // toggle (`.tp-log-toggle`, a single persistent node -- see
+    // Teleprinter.smoke.test.tsx's own "no focus-instance-swap" proof) is a
+    // genuine one-click binary toggle, unlike the retired 3-state cycle
+    // this proof used to walk through two clicks to reach `full-overlay`.
+    const logToggle = container.querySelector('.tp-log-toggle') as HTMLButtonElement;
+    expect(logToggle).not.toBeNull();
     await act(async () => {
-      tickerToggle.dispatchEvent(new MouseEvent('click', { bubbles: true })); // ticker -> mid-panel
+      logToggle.dispatchEvent(new MouseEvent('click', { bubbles: true })); // ticker -> ticker+LOG
     });
-    const bodyToggle = container.querySelector('.tp-display-btn.tp-mode-toggle') as HTMLButtonElement;
-    expect(bodyToggle).not.toBeNull();
-    await act(async () => {
-      bodyToggle.dispatchEvent(new MouseEvent('click', { bubbles: true })); // mid-panel -> full-overlay
-    });
-    expect(container.querySelector('[data-testid="teleprinter"].tp-full-overlay')).not.toBeNull();
+    expect(container.querySelector('[data-testid="teleprinter"].tp-log-open')).not.toBeNull();
 
     // Pre-nav baseline: nothing has focused the main landmark yet (a fresh
     // mount must NOT steal focus -- see the redirect-focus-management
@@ -275,8 +268,8 @@ describe('GameShellRoute + GameLayout — persistent shell across navigation', (
     // (3) exactly one mount of the persistent shell across the whole nav.
     expect(medalToastMountCount).toBe(1);
 
-    // (2) the manual teleprinter display-mode change survived the navigation.
-    expect(container.querySelector('[data-testid="teleprinter"].tp-full-overlay')).not.toBeNull();
+    // (2) the manual teleprinter toggle change survived the navigation.
+    expect(container.querySelector('[data-testid="teleprinter"].tp-log-open')).not.toBeNull();
 
     // (1) the loading latch survived the navigation: even if isLoading
     // flips true again post-nav, hasLoadedOnce (GameLayout-internal state

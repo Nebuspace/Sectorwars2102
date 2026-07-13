@@ -1,22 +1,21 @@
 // @vitest-environment jsdom
 /**
- * GameLayout — teleprinter display-mode → MFD-B fold stitch
- * (WO-UI1-CHROME-COMPLETE item 2/3).
+ * GameLayout — teleprinter PANEL toggle → MFD-B fold stitch
+ * (WO-UI1-CHROME-COMPLETE item 2/3; REVISED by WO-UI-MAX-BATCH-1 REVISE,
+ * Max #22-24, for the two-independent-toggle rebuild).
  *
  * Pins the structural fact the fold is FOR: GameLayout renders EXACTLY the
  * unfolded MFDScreen pair (`sidebar-a` + `sidebar-b`) while the teleprinter
- * is ticker/full-overlay, and swaps to the SINGLE folded config
+ * is in TICKER form, and swaps to the SINGLE folded config
  * (`sidebar-a-folded`, 5 pageIds == the MFD-A + MFD-B union) the instant
- * the teleprinter enters mid-panel — driven by REAL clicks on the REAL
- * (unmocked) Teleprinter's own single mode-toggle control (WO-UI-MAX-
- * BATCH-1's `.tp-mode-toggle`, cycling ticker→mid-panel→full-overlay→
- * ticker; two DOM instances, `.tkey.tp-mode-toggle` in the ticker row and
- * `.tp-display-btn.tp-mode-toggle` in `#tp-body`), exactly as a player
- * would. Also pins `.game-container.tp-mid-panel` tracking the same
- * state — that class still exists purely for the fold hook now; the
- * band-shrink it used to also drive is REVERTED (game-layout.css's own
- * MID-PANEL BAND CORRECTION comment, Max's ruling — `.band` no longer
- * reacts to it at all).
+ * PANEL opens — driven by a REAL click on the REAL (unmocked) Teleprinter's
+ * own persistent `.tp-panel-toggle` button, exactly as a player would. Also
+ * pins `.game-container.tp-panel` tracking the same boolean — that class
+ * still exists purely for the fold hook (no live CSS rule reads it), and
+ * the band-shrink it never drove is confirmed still absent (game-layout.
+ * css's own PANEL BAND CORRECTION comment, Max's ruling — `.band` never
+ * reacts to PANEL at all). LOG (`transcriptOpen`, the independent toggle)
+ * does NOT fold MFD-B — proven separately below.
  *
  * MFDScreen is mocked to reveal its `config` prop (screenId + pageIds)
  * rather than rendering the real MFD console tree (MFDProvider/registry
@@ -114,7 +113,7 @@ vi.mock('../../onboarding/FirstSessionObjectives', () => ({ default: () => null 
 
 import GameLayout from '../GameLayout';
 
-describe('GameLayout — teleprinter display mode drives the MFD-B→MFD-A fold', () => {
+describe('GameLayout — teleprinter PANEL toggle drives the MFD-B→MFD-A fold', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;
   let errorSpy: ReturnType<typeof vi.spyOn>;
@@ -140,7 +139,7 @@ describe('GameLayout — teleprinter display mode drives the MFD-B→MFD-A fold'
     errorSpy.mockRestore();
   });
 
-  it('default (ticker): renders the unfolded MFDScreen pair, no fold, no tp-mid-panel class', async () => {
+  it('default (ticker): renders the unfolded MFDScreen pair, no fold, no tp-panel class', async () => {
     await act(async () => {
       root.render(
         <MemoryRouter>
@@ -155,13 +154,13 @@ describe('GameLayout — teleprinter display mode drives the MFD-B→MFD-A fold'
     expect(container.querySelector('[data-testid="mfd-screen-sidebar-a"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="mfd-screen-sidebar-b"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="mfd-screen-sidebar-a-folded"]')).toBeNull();
-    expect(container.querySelector('.game-container')?.className).not.toContain('tp-mid-panel');
+    expect(container.querySelector('.game-container')?.className).not.toContain('tp-panel');
     expect(container.querySelector('.teleprinter')?.className).toContain('tp-ticker');
 
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
-  it('entering mid-panel (via the single mode toggle) swaps to the SINGLE folded MFD-A config at the 5-key cap; cycling on through full-overlay and back to ticker restores the pair', async () => {
+  it('opening PANEL (via its own persistent toggle) swaps to the SINGLE folded MFD-A config at the 5-key cap; closing PANEL restores the pair', async () => {
     await act(async () => {
       root.render(
         <MemoryRouter>
@@ -173,16 +172,16 @@ describe('GameLayout — teleprinter display mode drives the MFD-B→MFD-A fold'
     });
     await flush();
 
-    const toggleBtn = container.querySelector('.tkey.tp-mode-toggle') as HTMLButtonElement;
-    expect(toggleBtn).not.toBeNull();
-    expect(toggleBtn.textContent).toBe('TICKER');
+    const panelToggle = container.querySelector('.tp-panel-toggle') as HTMLButtonElement;
+    expect(panelToggle).not.toBeNull();
+    expect(panelToggle.textContent).toBe('PANEL');
     await act(async () => {
-      toggleBtn.click(); // ticker -> mid-panel
+      panelToggle.click(); // ticker -> panel
     });
     await flush();
 
-    expect(container.querySelector('.teleprinter')?.className).toContain('tp-mid-panel');
-    expect(container.querySelector('.game-container')?.className).toContain('tp-mid-panel');
+    expect(container.querySelector('.teleprinter')?.className).toContain('tp-panel');
+    expect(container.querySelector('.game-container')?.className).toContain('tp-panel');
 
     const folded = container.querySelector('[data-testid="mfd-screen-sidebar-a-folded"]');
     expect(folded).not.toBeNull();
@@ -194,25 +193,10 @@ describe('GameLayout — teleprinter display mode drives the MFD-B→MFD-A fold'
     expect(container.querySelector('[data-testid="mfd-screen-sidebar-a"]')).toBeNull();
     expect(container.querySelector('[data-testid="mfd-screen-sidebar-b"]')).toBeNull();
 
-    // Continue the strict 3-state cycle (WO-UI-MAX-BATCH-1 -- no direct
-    // mid-panel->ticker jump any more): mid-panel -> full-overlay unfolds
-    // immediately (fold is mid-panel-only, see the sibling test below).
-    const bodyToggle = container.querySelector('.tp-display-btn.tp-mode-toggle') as HTMLButtonElement;
-    expect(bodyToggle.textContent).toBe('PANEL');
+    // Same toggle (now labeled TICKER) restores the pair.
+    expect(panelToggle.textContent).toBe('TICKER');
     await act(async () => {
-      bodyToggle.click(); // mid-panel -> full-overlay
-    });
-    await flush();
-    expect(container.querySelector('.teleprinter')?.className).toContain('tp-full-overlay');
-    expect(container.querySelector('[data-testid="mfd-screen-sidebar-a"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="mfd-screen-sidebar-b"]')).not.toBeNull();
-    expect(container.querySelector('.game-container')?.className).not.toContain('tp-mid-panel');
-
-    // full-overlay -> ticker, the pair stays restored.
-    const bodyToggle2 = container.querySelector('.tp-display-btn.tp-mode-toggle') as HTMLButtonElement;
-    expect(bodyToggle2.textContent).toBe('LOG');
-    await act(async () => {
-      bodyToggle2.click(); // full-overlay -> ticker
+      panelToggle.click(); // panel -> ticker
     });
     await flush();
 
@@ -220,12 +204,12 @@ describe('GameLayout — teleprinter display mode drives the MFD-B→MFD-A fold'
     expect(container.querySelector('[data-testid="mfd-screen-sidebar-a"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="mfd-screen-sidebar-b"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="mfd-screen-sidebar-a-folded"]')).toBeNull();
-    expect(container.querySelector('.game-container')?.className).not.toContain('tp-mid-panel');
+    expect(container.querySelector('.game-container')?.className).not.toContain('tp-panel');
 
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
-  it('full-overlay (reached by cycling the toggle through mid-panel) does NOT fold MFD-B -- fold is mid-panel-only', async () => {
+  it('LOG (opened via its own independent toggle, PANEL untouched) does NOT fold MFD-B -- the fold is bodyPanel-only', async () => {
     await act(async () => {
       root.render(
         <MemoryRouter>
@@ -237,22 +221,18 @@ describe('GameLayout — teleprinter display mode drives the MFD-B→MFD-A fold'
     });
     await flush();
 
-    const toggleBtn = container.querySelector('.tkey.tp-mode-toggle') as HTMLButtonElement;
+    const logToggle = container.querySelector('.tp-log-toggle') as HTMLButtonElement;
     await act(async () => {
-      toggleBtn.click(); // ticker -> mid-panel
-    });
-    await flush();
-    const bodyToggle = container.querySelector('.tp-display-btn.tp-mode-toggle') as HTMLButtonElement;
-    await act(async () => {
-      bodyToggle.click(); // mid-panel -> full-overlay
+      logToggle.click(); // LOG open, bodyPanel still false
     });
     await flush();
 
-    expect(container.querySelector('.teleprinter')?.className).toContain('tp-full-overlay');
+    expect(container.querySelector('.teleprinter')?.className).toContain('tp-log-open');
+    expect(container.querySelector('.teleprinter')?.className).toContain('tp-ticker');
     expect(container.querySelector('[data-testid="mfd-screen-sidebar-a"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="mfd-screen-sidebar-b"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="mfd-screen-sidebar-a-folded"]')).toBeNull();
-    expect(container.querySelector('.game-container')?.className).not.toContain('tp-mid-panel');
+    expect(container.querySelector('.game-container')?.className).not.toContain('tp-panel');
 
     expect(errorSpy).not.toHaveBeenCalled();
   });

@@ -137,13 +137,22 @@ vi.mock('../../aria/Teleprinter', async (importOriginal) => {
       teleprinterMountCount++;
     }, []);
     // WO-UI1-CHROME-COMPLETE: Teleprinter is now a controlled component
-    // (displayMode owned by its parent, mirroring GameLayout's real
-    // teleprinterDisplayMode state) -- forward real state so the REAL,
+    // (both toggle booleans owned by its parent, mirroring GameLayout's
+    // real teleprinterBodyPanel/teleprinterTranscriptOpen state --
+    // WO-UI-MAX-BATCH-1 REVISE) -- forward real state so the REAL,
     // unmocked component underneath behaves exactly as it does in
     // production, not with undefined props.
-    const [displayMode, setDisplayMode] = React.useState<'ticker' | 'mid-panel' | 'full-overlay'>('ticker');
+    const [bodyPanel, setBodyPanel] = React.useState(false);
+    const [transcriptOpen, setTranscriptOpen] = React.useState(false);
     const Real = actual.default;
-    return <Real displayMode={displayMode} onDisplayModeChange={setDisplayMode} />;
+    return (
+      <Real
+        bodyPanel={bodyPanel}
+        onBodyPanelChange={setBodyPanel}
+        transcriptOpen={transcriptOpen}
+        onTranscriptOpenChange={setTranscriptOpen}
+      />
+    );
   };
   return { ...actual, default: Spy };
 });

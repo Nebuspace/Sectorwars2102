@@ -4,10 +4,11 @@
  * TRANSPLANT's STATE-PRESERVATION GATE).
  *
  * Pins the Accept criterion verbatim: MFDProvider (GameLayout.tsx) and
- * teleprinterDisplayMode (GameLayout.tsx) MUST stay owned by GameLayout
- * (persistent across navigation) — render, set MFD-B->COMM + teleprinter->
- * mid-panel, navigate /game -> /game/map -> back to /game, assert both
- * preserved plus the scene still present. Plus the portal-lifecycle asserts
+ * teleprinterBodyPanel (GameLayout.tsx, WO-UI-MAX-BATCH-1 REVISE — was
+ * teleprinterDisplayMode) MUST stay owned by GameLayout (persistent across
+ * navigation) — render, set MFD-B->COMM + teleprinter->PANEL, navigate
+ * /game -> /game/map -> back to /game, assert both preserved plus the scene
+ * still present. Plus the portal-lifecycle asserts
  * the WO calls out by name: `.band` empty (no orphan node, no "Target
  * container is not a DOM node") the instant the index route's content
  * unmounts on nav-away, and exactly ONE `.cockpit-windshield` inside `.band`
@@ -32,11 +33,11 @@
  * StubIndexPage, mirroring a real softkey click) actually flip MFD-B and
  * have that survive the nav, without needing the real (API-backed) MFD page
  * content components. Teleprinter is the REAL, unmocked component (same
- * seam as GameLayout.teleprinterDisplayModes.test.tsx) — mid-panel is
- * entered via a real click on its own single mode-toggle control
- * (WO-UI-MAX-BATCH-1's `.tp-mode-toggle`, ticker->mid-panel), exactly as a
- * player would. Annunciator/the toast-banner children are stubbed as
- * irrelevant chrome (matches every sibling GameLayout test).
+ * seam as GameLayout.teleprinterDisplayModes.test.tsx) — PANEL is entered
+ * via a real click on its own persistent PANEL toggle (WO-UI-MAX-BATCH-1
+ * REVISE's `.tp-panel-toggle`, ticker->panel), exactly as a player would.
+ * Annunciator/the toast-banner children are stubbed as irrelevant chrome
+ * (matches every sibling GameLayout test).
  */
 import React, { act, useEffect } from 'react';
 import { createPortal } from 'react-dom';
@@ -192,7 +193,7 @@ function buildGameRouter() {
   );
 }
 
-describe('GameLayout — shell-slots portal + MFDProvider/teleprinterDisplayMode survive navigation', () => {
+describe('GameLayout — shell-slots portal + MFDProvider/teleprinterBodyPanel survive navigation', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;
   let errorSpy: ReturnType<typeof vi.spyOn>;
@@ -213,7 +214,7 @@ describe('GameLayout — shell-slots portal + MFDProvider/teleprinterDisplayMode
     errorSpy.mockRestore();
   });
 
-  it('MFD-B selection + teleprinter mid-panel survive a /game -> /game/map -> /game round trip; the band portal never orphans or duplicates', async () => {
+  it('MFD-B selection + teleprinter PANEL survive a /game -> /game/map -> /game round trip; the band portal never orphans or duplicates', async () => {
     const router = buildGameRouter();
 
     // ── Mount at /game ──────────────────────────────────────────────────
@@ -239,8 +240,8 @@ describe('GameLayout — shell-slots portal + MFDProvider/teleprinterDisplayMode
     });
     expect(mfdB()?.getAttribute('data-active-page')).toBe('comms-crew');
 
-    // ── Set teleprinter -> mid-panel via its own real single mode toggle ──
-    const panelBtn = container.querySelector('.tkey.tp-mode-toggle') as HTMLButtonElement;
+    // ── Set teleprinter -> PANEL via its own real, persistent toggle ──────
+    const panelBtn = container.querySelector('.tp-panel-toggle') as HTMLButtonElement;
     expect(panelBtn).not.toBeNull();
     await act(async () => {
       panelBtn.click();
@@ -248,8 +249,8 @@ describe('GameLayout — shell-slots portal + MFDProvider/teleprinterDisplayMode
     await act(async () => {
       await new Promise((r) => setTimeout(r, 0));
     });
-    expect(container.querySelector('.teleprinter')?.className).toContain('tp-mid-panel');
-    expect(container.querySelector('.game-container')?.className).toContain('tp-mid-panel');
+    expect(container.querySelector('.teleprinter')?.className).toContain('tp-panel');
+    expect(container.querySelector('.game-container')?.className).toContain('tp-panel');
     // The MFD-B/MFD-A fold: only the merged sidebar-a-folded screen mounts.
     expect(container.querySelector('[data-testid="mfd-screen-sidebar-b"]')).toBeNull();
     expect(container.querySelector('[data-testid="mfd-screen-sidebar-a-folded"]')).not.toBeNull();
@@ -285,24 +286,17 @@ describe('GameLayout — shell-slots portal + MFDProvider/teleprinterDisplayMode
     expect(container.querySelector('[data-testid="mfd-screen-sidebar-a-folded"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="mfd-screen-sidebar-b"]')).toBeNull();
 
-    // teleprinterDisplayMode survived the whole round trip too.
-    expect(container.querySelector('.teleprinter')?.className).toContain('tp-mid-panel');
-    expect(container.querySelector('.game-container')?.className).toContain('tp-mid-panel');
+    // teleprinterBodyPanel survived the whole round trip too.
+    expect(container.querySelector('.teleprinter')?.className).toContain('tp-panel');
+    expect(container.querySelector('.game-container')?.className).toContain('tp-panel');
 
-    // Collapse back out of mid-panel and confirm the COMM selection itself
-    // (not just the fold) survived underneath it the whole time. The strict
-    // 3-state cycle (WO-UI-MAX-BATCH-1) has no direct mid-panel->ticker
-    // jump any more -- two clicks: mid-panel -> full-overlay -> ticker.
-    let collapseBtn = container.querySelector('.tp-display-btn.tp-mode-toggle') as HTMLButtonElement;
+    // Collapse back to TICKER (one click now, WO-UI-MAX-BATCH-1 REVISE --
+    // no more 3-state cycle to walk through) and confirm the COMM
+    // selection itself (not just the fold) survived underneath it the
+    // whole time.
+    const collapseBtn = container.querySelector('.tp-panel-toggle') as HTMLButtonElement;
     await act(async () => {
-      collapseBtn.click(); // mid-panel -> full-overlay
-    });
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 0));
-    });
-    collapseBtn = container.querySelector('.tp-display-btn.tp-mode-toggle') as HTMLButtonElement;
-    await act(async () => {
-      collapseBtn.click(); // full-overlay -> ticker
+      collapseBtn.click(); // panel -> ticker
     });
     await act(async () => {
       await new Promise((r) => setTimeout(r, 0));

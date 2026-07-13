@@ -6,7 +6,7 @@ import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useAutopilot } from '../../contexts/AutopilotContext';
 // import { useTheme } from '../../themes/ThemeProvider'; // Available for future use
 import StatusBar from './StatusBar';
-import Teleprinter, { type TeleprinterDisplayMode } from '../aria/Teleprinter';
+import Teleprinter from '../aria/Teleprinter';
 import Annunciator from '../hud/Annunciator';
 import { MFDProvider, useMFD } from '../mfd/MFDContext';
 import MFDScreen from '../mfd/MFDScreen';
@@ -176,12 +176,18 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
   const { playerState, isLoading, isRefreshing, refreshPlayerState } = useGame();
   // const { currentTheme } = useTheme(); // Available for future use
 
-  // ── Teleprinter display mode (WO-UI1-CHROME-COMPLETE) ─────────────────
-  // Owned here (not inside Teleprinter) because 'mid-panel' also drives
-  // which MFD-A config the sidebar renders (the MFD-B→MFD-A fold, below)
-  // — a decision GameLayout must see: owned at the top, threaded down as a
-  // controlled prop.
-  const [teleprinterDisplayMode, setTeleprinterDisplayMode] = useState<TeleprinterDisplayMode>('ticker');
+  // ── Teleprinter display toggles (WO-UI1-CHROME-COMPLETE; WO-UI-MAX-
+  // BATCH-1 REVISE — Max #22-24 retracted the shipped single 3-state cycle
+  // back to the artifact's own TWO INDEPENDENT BINARY TOGGLES) ───────────
+  // Owned here (not inside Teleprinter), same rationale as before: PANEL
+  // still drives which MFD-A config the sidebar renders (the MFD-B→MFD-A
+  // fold, below) — a decision GameLayout must see. `transcriptOpen` (LOG
+  // open/closed) has no cross-component consumer, but is kept alongside
+  // `teleprinterBodyPanel` for symmetry (both are "the teleprinter mode
+  // state" this WO's file lane assigns to GameLayout, not Teleprinter) and
+  // so a future consumer never needs to hunt for it in two places.
+  const [teleprinterBodyPanel, setTeleprinterBodyPanel] = useState(false);
+  const [teleprinterTranscriptOpen, setTeleprinterTranscriptOpen] = useState(false);
 
   // ── Redirect focus management (WCAG 2.4.3, Pixel a11y gate) ───────────
   // GameShellRoute/GameLayout mount ONCE and persist across every /game/*
@@ -379,7 +385,7 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
         <div
           className={`game-container ${mode}${
             playerState?.is_docked || playerState?.is_landed ? ' console-expand' : ''
-          }${teleprinterDisplayMode === 'mid-panel' ? ' tp-mid-panel' : ''}`}
+          }${teleprinterBodyPanel ? ' tp-panel' : ''}`}
         >
           {/* MFDProvider (WO-UI1-CHROME-COMPLETE, widened again here) wraps
               the ENTIRE `.stage` content now — Annunciator (inside `.band`)
@@ -467,12 +473,15 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
 
           {/* Teleprinter (WO-UI1-TELEPRINTER stitch) — a DIRECT, non-
               absolute child of .game-container/.stage, auto-placed into
-              grid row 3. displayMode is CONTROLLED from here (WO-UI1-
-              CHROME-COMPLETE) — see teleprinterDisplayMode's own doc-comment
-              for why (the MFD-B fold below needs to see it). */}
+              grid row 3. Both display toggles are CONTROLLED from here
+              (WO-UI1-CHROME-COMPLETE; WO-UI-MAX-BATCH-1 REVISE) — see
+              teleprinterBodyPanel's own doc-comment for why bodyPanel is
+              owned here (the MFD-B fold below needs to see it). */}
           <Teleprinter
-            displayMode={teleprinterDisplayMode}
-            onDisplayModeChange={setTeleprinterDisplayMode}
+            bodyPanel={teleprinterBodyPanel}
+            onBodyPanelChange={setTeleprinterBodyPanel}
+            transcriptOpen={teleprinterTranscriptOpen}
+            onTranscriptOpenChange={setTeleprinterTranscriptOpen}
           />
 
           {/* `.lower` (WO-UI0-SHELL-TRANSPLANT) — MFD column + instrument
@@ -498,8 +507,8 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
               console portals its 3-monitor/station-face/surface-face
               content into `deckEl`. */}
           <div className="lower">
-            <aside className={teleprinterDisplayMode === 'mid-panel' ? 'mfdcol folded' : 'mfdcol'}>
-              {teleprinterDisplayMode === 'mid-panel' ? (
+            <aside className={teleprinterBodyPanel ? 'mfdcol folded' : 'mfdcol'}>
+              {teleprinterBodyPanel ? (
                 <MFDScreen config={SIDEBAR_A_FOLDED} />
               ) : (
                 <>

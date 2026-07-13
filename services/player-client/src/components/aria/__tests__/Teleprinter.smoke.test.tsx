@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 /**
  * Teleprinter — live-mount console-error smoke (WO-UI1-TELEPRINTER sub-part
- * a; extended by WO-UI1-CHROME-COMPLETE for the grammar wiring + three
- * display modes). Mirrors StatusBar.smoke.test.tsx's seam (jsdom +
- * react-dom/client createRoot + act(), no RTL in this project).
+ * a; extended by WO-UI1-CHROME-COMPLETE for the grammar wiring; REVISED by
+ * WO-UI-MAX-BATCH-1 REVISE, Max #22-24, for the two-independent-toggle
+ * rebuild). Mirrors StatusBar.smoke.test.tsx's seam (jsdom + react-dom/
+ * client createRoot + act(), no RTL in this project).
  *
  * Proves, against the REAL ariaFeedStore (not mocked — it's a lightweight
  * module-level singleton, exercising it directly proves the genuine merge/
@@ -16,13 +17,15 @@
  *     accept #2
  *   - all three CONTENT tabs (narration/dialogue/CMD) are switchable and
  *     show DISTINCT filtered content — accept #3
- *   - collapse to ticker -> restore preserves content-tab + in-progress
- *     input state, proving no remount occurred — accept #4/#5
- *   - the THREE DISPLAY modes (ticker/mid-panel/full-overlay) are all
- *     reachable via the SINGLE 3-state mode toggle (WO-UI-MAX-BATCH-1,
- *     ticker->mid-panel->full-overlay->ticker, wrapping), whose label +
- *     aria-pressed always track the current mode, and the root class
- *     tracks the active one
+ *   - toggling PANEL<->TICKER preserves content-tab + in-progress input
+ *     state (accept #4/#5) — `#tp-body` is unconditionally in the DOM now
+ *     (CSS display-toggled, never a conditional unmount), so this is even
+ *     more directly true than before this REVISE
+ *   - TWO INDEPENDENT BINARY TOGGLES (WO-UI-MAX-BATCH-1 REVISE): PANEL
+ *     (bodyPanel) and LOG (transcriptOpen) are separate booleans, each with
+ *     its own persistent, never-unmounted button, correct aria-pressed, and
+ *     an action-naming label that swaps with state; LOG can open over
+ *     EITHER body form (orthogonality)
  *   - the ADR-0072 command grammar (dock/undock/land/lift off/set course to
  *     N/engage/abort/status/help) parses + executes from BOTH the CMD tab
  *     and the ticker's own compact input (visual-form steer); unrecognized
@@ -151,16 +154,27 @@ vi.mock('../../../contexts/AutopilotContext', () => ({
 }));
 
 import { ariaFeed } from '../../mfd/ariaFeedStore';
-import Teleprinter, { type TeleprinterDisplayMode } from '../Teleprinter';
+import Teleprinter from '../Teleprinter';
 
-/** Test-local controlled wrapper — Teleprinter's displayMode is owned by
- *  its parent in production (GameLayout); this mirrors that exactly.
- *  Defaults to 'mid-panel' (tp-body visible) so the pre-existing content-
- *  tab assertions below need no changes; ticker/display-mode tests pass
- *  `initial="ticker"` explicitly. */
-const ControlledTeleprinter: React.FC<{ initial?: TeleprinterDisplayMode }> = ({ initial = 'mid-panel' }) => {
-  const [displayMode, setDisplayMode] = React.useState<TeleprinterDisplayMode>(initial);
-  return <Teleprinter displayMode={displayMode} onDisplayModeChange={setDisplayMode} />;
+/** Test-local controlled wrapper — both toggle booleans are owned by the
+ *  parent in production (GameLayout); this mirrors that exactly. Defaults
+ *  to bodyPanel=true (PANEL, #tp-body's richer content) so the pre-existing
+ *  content-tab assertions below need no changes; ticker/toggle tests pass
+ *  `initialBodyPanel={false}` explicitly. */
+const ControlledTeleprinter: React.FC<{ initialBodyPanel?: boolean; initialTranscriptOpen?: boolean }> = ({
+  initialBodyPanel = true,
+  initialTranscriptOpen = false,
+}) => {
+  const [bodyPanel, setBodyPanel] = React.useState(initialBodyPanel);
+  const [transcriptOpen, setTranscriptOpen] = React.useState(initialTranscriptOpen);
+  return (
+    <Teleprinter
+      bodyPanel={bodyPanel}
+      onBodyPanelChange={setBodyPanel}
+      transcriptOpen={transcriptOpen}
+      onTranscriptOpenChange={setTranscriptOpen}
+    />
+  );
 };
 
 describe('Teleprinter — live-mount smoke', () => {
@@ -526,7 +540,7 @@ describe('Teleprinter — live-mount smoke', () => {
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
-  it('collapse to ticker -> restore preserves content-tab + in-progress input (no remount)', async () => {
+  it('toggling PANEL<->TICKER preserves content-tab + in-progress input (no remount)', async () => {
     await act(async () => {
       root.render(<ControlledTeleprinter />);
     });
@@ -543,18 +557,12 @@ describe('Teleprinter — live-mount smoke', () => {
     await setInput(input, 'draft in progress');
     expect(input.value).toBe('draft in progress');
 
-    // Collapse to ticker via the tp-body mode toggle (WO-UI-MAX-BATCH-1's
-    // strict ticker->mid-panel->full-overlay->ticker cycle has no direct
-    // mid-panel->ticker jump any more — two clicks: mid-panel -> full-
-    // overlay -> ticker).
-    let bodyToggle = container.querySelector('.tp-display-btn.tp-mode-toggle') as HTMLButtonElement;
+    // One click flips PANEL -> TICKER now (WO-UI-MAX-BATCH-1 REVISE — no
+    // more 3-state cycle to walk through).
+    const panelToggle = container.querySelector('.tp-panel-toggle') as HTMLButtonElement;
+    expect(panelToggle.textContent).toBe('TICKER'); // action label while bodyPanel=true
     await act(async () => {
-      bodyToggle.click(); // mid-panel -> full-overlay
-    });
-    await flush();
-    bodyToggle = container.querySelector('.tp-display-btn.tp-mode-toggle') as HTMLButtonElement;
-    await act(async () => {
-      bodyToggle.click(); // full-overlay -> ticker
+      panelToggle.click();
     });
     await flush();
 
@@ -563,14 +571,13 @@ describe('Teleprinter — live-mount smoke', () => {
     // conditional unmount (a remount would drop the mode/input state below).
     expect(container.querySelector('#tp-body')).not.toBeNull();
 
-    // Restore via the ticker's own single mode toggle.
-    const tickerToggle = container.querySelector('.tkey.tp-mode-toggle') as HTMLButtonElement;
+    // One click restores PANEL.
     await act(async () => {
-      tickerToggle.click(); // ticker -> mid-panel
+      panelToggle.click();
     });
     await flush();
 
-    expect(container.querySelector('.teleprinter')?.className).toContain('tp-mid-panel');
+    expect(container.querySelector('.teleprinter')?.className).toContain('tp-panel');
     // If this were a remount, mode would reset to 'narration' (default) and
     // the input would reset to ''.
     expect(container.querySelector('.tp-mode-dialogue.active')).not.toBeNull();
@@ -579,13 +586,15 @@ describe('Teleprinter — live-mount smoke', () => {
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
-  // ── THREE DISPLAY MODES + SINGLE MODE TOGGLE (WO-UI-MAX-BATCH-1) ────────
-  describe('display modes — ticker / mid-panel / full-overlay', () => {
-    it('ticker renders the single amber-line form re-classed onto cockpit-shell.css (WO-UI0-SHELL-TRANSPLANT leaf L4): .glyph + .tline + .telerow[.tin + XMIT + mode toggle]', async () => {
+  // ── TWO INDEPENDENT BINARY TOGGLES (WO-UI-MAX-BATCH-1 REVISE, Max #22-24
+  // — Max live-playtested the shipped single 3-state cycle and RETRACTED
+  // it, back to the artifact's own two-toggle model). ─────────────────────
+  describe('two independent toggles — PANEL/TICKER and LOG/HIDE', () => {
+    it('ticker (default) renders the persistent control row: .glyph + .tline + .telerow[.tin + XMIT + PANEL toggle + LOG toggle], both toggles default-labeled + aria-pressed=false', async () => {
       ariaFeed.appendNav('Standing by, Commander.');
 
       await act(async () => {
-        root.render(<ControlledTeleprinter initial="ticker" />);
+        root.render(<ControlledTeleprinter initialBodyPanel={false} />);
       });
       await flush();
 
@@ -596,50 +605,228 @@ describe('Teleprinter — live-mount smoke', () => {
       expect(row?.querySelector('.glyph')?.textContent).toBe('▸ ARIA');
       expect(row?.querySelector('.tline')?.textContent).toContain('Standing by, Commander.');
       // .telerow (cockpit-shell.css: display:contents outside the artifact's
-      // own aria=2 mode) wraps the input + XMIT + the single mode toggle
-      // (order XMIT->mode toggle, matching the old XMIT->PANEL->LOG order).
+      // own aria=2 mode) wraps the input group + PANEL toggle + LOG toggle,
+      // matching the artifact's own XMIT->◫PANEL->▲LOG order.
       const telerow = row?.querySelector('.telerow');
       expect(telerow).not.toBeNull();
       expect(telerow?.querySelector('.tin')).not.toBeNull();
       expect(telerow?.querySelector('.tkey.tp-ticker-xmit')?.textContent).toBe('XMIT');
-      const modeToggle = telerow?.querySelector('.tkey.tp-mode-toggle');
-      expect(modeToggle?.textContent).toBe('TICKER');
-      expect(modeToggle?.getAttribute('aria-pressed')).toBe('false');
+
+      const panelToggle = telerow?.querySelector('.tp-panel-toggle') as HTMLButtonElement;
+      expect(panelToggle.textContent).toBe('PANEL'); // action label: click switches TO panel
+      expect(panelToggle.getAttribute('aria-pressed')).toBe('false');
+
+      const logToggle = telerow?.querySelector('.tp-log-toggle') as HTMLButtonElement;
+      expect(logToggle.textContent).toBe('LOG'); // action label: click opens the transcript
+      expect(logToggle.getAttribute('aria-pressed')).toBe('false');
+
+      // DOM order: input group, THEN PANEL toggle, THEN LOG toggle
+      // (farthest right) — matches the artifact's own layout.
+      const telerowChildren = Array.from(telerow!.children);
+      expect(telerowChildren.indexOf(panelToggle)).toBeLessThan(telerowChildren.indexOf(logToggle));
 
       expect(errorSpy).not.toHaveBeenCalled();
     });
 
-    it('the single mode toggle cycles ticker -> mid-panel -> full-overlay -> ticker (wrapping); label + aria-pressed always track the CURRENT mode', async () => {
+    it('the PANEL toggle flips bodyPanel independently of LOG; label swaps PANEL<->TICKER; aria-pressed + root class track the boolean', async () => {
       await act(async () => {
-        root.render(<ControlledTeleprinter initial="ticker" />);
+        root.render(<ControlledTeleprinter initialBodyPanel={false} />);
       });
       await flush();
 
+      const panelToggle = container.querySelector('.tp-panel-toggle') as HTMLButtonElement;
       expect(container.querySelector('.teleprinter')?.className).toContain('tp-ticker');
-      let toggle = container.querySelector('.tkey.tp-mode-toggle') as HTMLButtonElement;
-      expect(toggle.textContent).toBe('TICKER');
-      expect(toggle.getAttribute('aria-pressed')).toBe('false');
+      expect(panelToggle.textContent).toBe('PANEL');
+      expect(panelToggle.getAttribute('aria-pressed')).toBe('false');
 
-      await act(async () => { toggle.click(); }); // ticker -> mid-panel
+      await act(async () => { panelToggle.click(); });
       await flush();
-      expect(container.querySelector('.teleprinter')?.className).toContain('tp-mid-panel');
-      let bodyToggle = container.querySelector('.tp-display-btn.tp-mode-toggle') as HTMLButtonElement;
-      expect(bodyToggle.textContent).toBe('PANEL');
-      expect(bodyToggle.getAttribute('aria-pressed')).toBe('true');
+      expect(container.querySelector('.teleprinter')?.className).toContain('tp-panel');
+      expect(panelToggle.textContent).toBe('TICKER');
+      expect(panelToggle.getAttribute('aria-pressed')).toBe('true');
 
-      await act(async () => { bodyToggle.click(); }); // mid-panel -> full-overlay
-      await flush();
-      expect(container.querySelector('.teleprinter')?.className).toContain('tp-full-overlay');
-      bodyToggle = container.querySelector('.tp-display-btn.tp-mode-toggle') as HTMLButtonElement;
-      expect(bodyToggle.textContent).toBe('LOG');
-      expect(bodyToggle.getAttribute('aria-pressed')).toBe('true');
-
-      await act(async () => { bodyToggle.click(); }); // full-overlay -> ticker (wraps)
+      await act(async () => { panelToggle.click(); });
       await flush();
       expect(container.querySelector('.teleprinter')?.className).toContain('tp-ticker');
-      toggle = container.querySelector('.tkey.tp-mode-toggle') as HTMLButtonElement;
-      expect(toggle.textContent).toBe('TICKER');
-      expect(toggle.getAttribute('aria-pressed')).toBe('false');
+      expect(panelToggle.textContent).toBe('PANEL');
+      expect(panelToggle.getAttribute('aria-pressed')).toBe('false');
+
+      // LOG never moved.
+      const logToggle = container.querySelector('.tp-log-toggle') as HTMLButtonElement;
+      expect(logToggle.getAttribute('aria-pressed')).toBe('false');
+      expect(container.querySelector('.teleprinter')?.className).not.toContain('tp-log-open');
+
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    it('the LOG toggle flips transcriptOpen independently of PANEL; label swaps LOG<->HIDE; aria-pressed + root class track the boolean', async () => {
+      await act(async () => {
+        root.render(<ControlledTeleprinter initialBodyPanel={false} />);
+      });
+      await flush();
+
+      const logToggle = container.querySelector('.tp-log-toggle') as HTMLButtonElement;
+      expect(logToggle.textContent).toBe('LOG');
+      expect(logToggle.getAttribute('aria-pressed')).toBe('false');
+      expect(container.querySelector('.teleprinter')?.className).not.toContain('tp-log-open');
+
+      await act(async () => { logToggle.click(); });
+      await flush();
+      expect(container.querySelector('.teleprinter')?.className).toContain('tp-log-open');
+      expect(logToggle.textContent).toBe('HIDE');
+      expect(logToggle.getAttribute('aria-pressed')).toBe('true');
+
+      await act(async () => { logToggle.click(); });
+      await flush();
+      expect(container.querySelector('.teleprinter')?.className).not.toContain('tp-log-open');
+      expect(logToggle.textContent).toBe('LOG');
+      expect(logToggle.getAttribute('aria-pressed')).toBe('false');
+
+      // PANEL never moved -- still ticker (default).
+      const panelToggle = container.querySelector('.tp-panel-toggle') as HTMLButtonElement;
+      expect(panelToggle.getAttribute('aria-pressed')).toBe('false');
+      expect(container.querySelector('.teleprinter')?.className).toContain('tp-ticker');
+
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    it('orthogonality: LOG opens over EITHER body form -- ticker+LOG and panel+LOG are both reachable, independently', async () => {
+      await act(async () => {
+        root.render(<ControlledTeleprinter initialBodyPanel={false} />);
+      });
+      await flush();
+
+      const logToggle = container.querySelector('.tp-log-toggle') as HTMLButtonElement;
+      const panelToggle = container.querySelector('.tp-panel-toggle') as HTMLButtonElement;
+
+      // ticker + LOG open.
+      await act(async () => { logToggle.click(); });
+      await flush();
+      let cls = container.querySelector('.teleprinter')?.className ?? '';
+      expect(cls).toContain('tp-ticker');
+      expect(cls).toContain('tp-log-open');
+
+      // Flip to PANEL while LOG stays open -- LOG's own state is untouched.
+      await act(async () => { panelToggle.click(); });
+      await flush();
+      cls = container.querySelector('.teleprinter')?.className ?? '';
+      expect(cls).toContain('tp-panel');
+      expect(cls).toContain('tp-log-open');
+      expect(logToggle.getAttribute('aria-pressed')).toBe('true');
+
+      // Close LOG while PANEL stays open.
+      await act(async () => { logToggle.click(); });
+      await flush();
+      cls = container.querySelector('.teleprinter')?.className ?? '';
+      expect(cls).toContain('tp-panel');
+      expect(cls).not.toContain('tp-log-open');
+
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    // ── No focus-instance-swap machinery (WO-UI-MAX-BATCH-1 REVISE — Max
+    // #22-24: "no focus-instance-swap issue, the buttons persist"). The
+    // retired single-3-state-toggle design needed displayToggleRefs/
+    // focusToggleOnModeChangeRef because ITS one shared control rendered as
+    // TWO DOM instances that display-toggled each other away. These two
+    // toggles are each exactly ONE persistent node -- this proves there is
+    // no sibling instance to strand focus on, across every state
+    // combination, rather than proving a focus-transfer mechanism works.
+    it('both toggle buttons are the SAME persistent DOM node across every PANEL/LOG state combination -- never unmounted, focus never stolen or stranded', async () => {
+      await act(async () => {
+        root.render(<ControlledTeleprinter initialBodyPanel={false} />);
+      });
+      await flush();
+
+      const panelToggle = container.querySelector('.tp-panel-toggle') as HTMLButtonElement;
+      const logToggle = container.querySelector('.tp-log-toggle') as HTMLButtonElement;
+
+      await act(async () => { logToggle.focus(); });
+      await flush();
+      expect(document.activeElement).toBe(logToggle);
+
+      // Click PANEL (a DIFFERENT control) -- LOG's own focus must be
+      // completely undisturbed, and both nodes must be the SAME references
+      // as before (proving neither was torn down and recreated).
+      await act(async () => { panelToggle.click(); });
+      await flush();
+      expect(container.querySelector('.tp-panel-toggle')).toBe(panelToggle);
+      expect(container.querySelector('.tp-log-toggle')).toBe(logToggle);
+      expect(document.activeElement).toBe(logToggle);
+
+      // Click LOG itself (still focused) -- toggling its own state doesn't
+      // remount it either.
+      await act(async () => { logToggle.click(); });
+      await flush();
+      expect(container.querySelector('.tp-log-toggle')).toBe(logToggle);
+      expect(document.activeElement).toBe(logToggle);
+
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    // ── Single-live-region invariant (Pixel a11y gate, REVISE follow-up) ──
+    // PANEL and LOG can now both be open at once (the whole point of two
+    // orthogonal toggles) -- #tp-log (PANEL's filtered content) and
+    // .telelog (LOG's unfiltered content) must never BOTH carry
+    // aria-live="polite" simultaneously, or a screen-reader user hears
+    // every qualifying message announced twice. Exactly ONE aria-live
+    // region across all 4 toggle states; in the both-open state .telelog
+    // (the fuller, unfiltered transcript) is the authoritative surface and
+    // #tp-log goes quiet. jsdom doesn't compute `display`, so this asserts
+    // on the real attribute values the DOM actually exposes -- never a
+    // faked/assumed computed style.
+    it('exactly ONE aria-live region is active across all 4 toggle states -- TICKER/PANEL/LOG/BOTH -- never a double-announce', async () => {
+      const ariaLiveOf = (el: Element | null) => el?.getAttribute('aria-live') ?? null;
+
+      await act(async () => {
+        root.render(<ControlledTeleprinter initialBodyPanel={false} initialTranscriptOpen={false} />);
+      });
+      await flush();
+
+      const panelToggle = container.querySelector('.tp-panel-toggle') as HTMLButtonElement;
+      const logToggle = container.querySelector('.tp-log-toggle') as HTMLButtonElement;
+      const tline = () => container.querySelector('.tline');
+      const tpLog = () => container.querySelector('#tp-log');
+      const telelog = () => container.querySelector('.telelog');
+
+      // TICKER (F,F): .tline is the sole live surface.
+      expect(ariaLiveOf(tline())).toBe('polite');
+      expect(ariaLiveOf(tpLog())).toBe('polite'); // #tp-log's own base attr is unconditional; PANEL being closed removes it from the a11y tree via display:none (jsdom can't see that -- .telelog's own explicit gate is the one this test can assert on).
+      expect(ariaLiveOf(telelog())).toBeNull();
+      expect(telelog()?.getAttribute('aria-hidden')).toBe('true');
+
+      // PANEL (T,F): #tp-log is the sole live surface; .tline silenced.
+      await act(async () => { panelToggle.click(); });
+      await flush();
+      expect(ariaLiveOf(tline())).toBeNull();
+      expect(ariaLiveOf(tpLog())).toBe('polite');
+      expect(ariaLiveOf(telelog())).toBeNull();
+      expect(telelog()?.getAttribute('aria-hidden')).toBe('true');
+
+      // BOTH (T,T): the new guard -- #tp-log must go SILENT the instant LOG
+      // opens alongside PANEL; .telelog becomes the sole live surface.
+      await act(async () => { logToggle.click(); });
+      await flush();
+      expect(ariaLiveOf(tline())).toBeNull();
+      expect(ariaLiveOf(tpLog())).toBeNull();
+      expect(ariaLiveOf(telelog())).toBe('polite');
+      // React stringifies aria-hidden={false} to the literal attribute
+      // "false" (unlike aria-live={undefined}, which is omitted entirely)
+      // -- ARIA's boolean tokens are string-typed, not HTML boolean attrs.
+      expect(telelog()?.getAttribute('aria-hidden')).toBe('false');
+
+      // LOG (F,T): close PANEL, LOG stays open -- .telelog remains the sole
+      // live surface, #tp-log stays silent (LOG's own gate, unaffected by
+      // PANEL's state).
+      await act(async () => { panelToggle.click(); });
+      await flush();
+      expect(ariaLiveOf(tline())).toBeNull();
+      expect(ariaLiveOf(tpLog())).toBeNull();
+      expect(ariaLiveOf(telelog())).toBe('polite');
+      // React stringifies aria-hidden={false} to the literal attribute
+      // "false" (unlike aria-live={undefined}, which is omitted entirely)
+      // -- ARIA's boolean tokens are string-typed, not HTML boolean attrs.
+      expect(telelog()?.getAttribute('aria-hidden')).toBe('false');
 
       expect(errorSpy).not.toHaveBeenCalled();
     });
@@ -772,7 +959,7 @@ describe('Teleprinter — live-mount smoke', () => {
 
     it('the TICKER input dispatches through the SAME grammar-first path as CMD (visual-form steer)', async () => {
       await act(async () => {
-        root.render(<ControlledTeleprinter initial="ticker" />);
+        root.render(<ControlledTeleprinter initialBodyPanel={false} />);
       });
       await flush();
 

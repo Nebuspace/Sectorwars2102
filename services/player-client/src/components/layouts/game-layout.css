@@ -20,12 +20,12 @@
    sizing. This file (an untouched-baseline sibling) only adds what that
    shared rule can't: flex-growth inside `.game-layout`'s flex column, the
    `.mode-station`/`.mode-surface` band-height overrides (trap i), the
-   em-root SCALE-LAW retarget (below), the MID-PANEL BAND CORRECTION
-   comment (below — `.band` is deliberately left un-overridden in mid-
-   panel, WO-UI-MAX-BATCH-1), and the `.game-content`/`.lower`/`.deck`/
-   `.mfdcol` geometry the portal-based transplant needs but the artifact's
-   own bare markup never had to solve (traps ii/iv — see each rule's own
-   comment below). */
+   em-root SCALE-LAW retarget (below), the PANEL BAND CORRECTION comment
+   (below — `.band` is deliberately left un-overridden in PANEL,
+   WO-UI-MAX-BATCH-1) + the `--tp-log-h` LOG OVERLAY GEOMETRY tokens right
+   after it, and the `.game-content`/`.lower`/`.deck`/`.mfdcol` geometry
+   the portal-based transplant needs but the artifact's own bare markup
+   never had to solve (traps ii/iv — see each rule's own comment below). */
 .game-container {
   flex: 1;
 }
@@ -84,8 +84,9 @@ div.game-container {
    set a real `data-mode` attribute) therefore never match here and stay
    permanently inert — these class-selector equivalents are what actually
    apply. Higher specificity (0,3,0 — two classes + a descendant) than
-   cockpit-shell.css's base `.band { height: 15.5em }` (0,1,0) so they win
-   regardless of import/cascade order. */
+   cockpit-shell.css's base `.band { height: var(--band-h-flight) }`
+   (0,1,0 -- 18.5em as of WO-UI-MAX-BATCH-1's Max-ruled override, was
+   15.5em) so they win regardless of import/cascade order. */
 .game-container.mode-station .band {
   height: 8.5em;
 }
@@ -94,33 +95,71 @@ div.game-container {
   height: 16em;
 }
 
-/* MID-PANEL BAND CORRECTION (WO-UI-MAX-BATCH-1, Max's authoritative
-   ruling #11/12) — SUPERSEDES WO-UI0-VERTICAL-COMPOSITION's own "MID-
-   PANEL BAND-SHRINK HOOK", which billed panel mode a flat 3em tithe off
+/* PANEL BAND CORRECTION (WO-UI-MAX-BATCH-1, Max's authoritative ruling
+   #11/12) — SUPERSEDES WO-UI0-VERTICAL-COMPOSITION's own "MID-PANEL
+   BAND-SHRINK HOOK", which billed panel mode a flat 3em tithe off
    `.band`'s rest height (artifact parity, cockpit-redesign-v10-
    RATIFIED.html L306-318: `.stage[data-aria="2"] .band { height:12.5em }`
    — flight 15.5em→12.5em, station 8.5em→5.5em, surface 16em→13em, via
    `.game-container.tp-mid-panel .band` + two mode-scoped 4-class
-   compounds). Max's correction: "THE BAND PAYS NOTHING" — panel mode
+   compounds). Max's correction: "THE BAND PAYS NOTHING" — PANEL mode
    ("squishes the LOWER PANELS downward", ~4 ARIA lines + input) must
-   leave `.band`'s rect at EXACTLY its per-mode rest height in every
-   display mode, ticker or panel; the ENTIRE cost of the teleprinter's
-   mid-panel growth must land on `.lower`'s `1fr` row instead.
+   leave `.band`'s rect at EXACTLY its per-mode rest height whether the
+   teleprinter is in TICKER or PANEL form; the ENTIRE cost of PANEL's
+   growth must land on `.lower`'s `1fr` row instead. Re-confirmed live
+   under WO-UI-MAX-BATCH-1 REVISE (Max #22-24, the TWO INDEPENDENT
+   TOGGLES rebuild, teleprinter.css's own header) — PANEL's own growth
+   mechanic is UNCHANGED by that REVISE, only the toggle that drives it
+   (`bodyPanel`, was `teleprinterDisplayMode==='mid-panel'`) was renamed.
    FIX: the three tithe rules are DELETED — `.band` now falls straight
    through to the untouched `.mode-station .band`/`.mode-surface .band`
    rules above (or cockpit-shell.css's bare `.band` base for flight),
-   unconditionally, regardless of `.tp-mid-panel`. No new CSS is needed to
-   make `.lower` absorb the growth: `.game-container`'s own
+   unconditionally, regardless of PANEL/`.tp-panel`. No new CSS is needed
+   to make `.lower` absorb the growth: `.game-container`'s own
    `auto auto auto 1fr` track list (StatusBar/`.band`/Teleprinter/
    `.lower`, cockpit-shell.css) already guarantees it structurally — CSS
    Grid sizes every `auto` track to its own max-content contribution
-   FIRST (the teleprinter's row grows from the ticker's single compact
-   line to the full mid-panel body: tabs + ~4-line log + input), THEN
-   hands 100% of whatever height remains to the lone `1fr` track. This is
-   exactly the PRE-WO-UI0-VERTICAL-COMPOSITION behavior that WO's own
-   comment (now removed) documented as the "bug" it was fixing — Max's
-   ruling here is that behavior was actually the intended design; the
-   artifact's own flat-tithe demo was not. */
+   FIRST (the teleprinter's row grows from the persistent control row's
+   single compact line to that row PLUS the PANEL body: tabs + ~4-line
+   log + input, stacked above it), THEN hands 100% of whatever height
+   remains to the lone `1fr` track. This is exactly the
+   PRE-WO-UI0-VERTICAL-COMPOSITION behavior that WO's own comment (now
+   removed) documented as the "bug" it was fixing — Max's ruling here is
+   that behavior was actually the intended design; the artifact's own
+   flat-tithe demo was not. */
+
+/* LOG OVERLAY GEOMETRY (WO-UI-MAX-BATCH-1 REVISE, Max #22-24 bullet 2 —
+   "LOG covers the ENTIRE band, top of band → the teleprinter row") —
+   `--tp-log-h` is the single source of truth teleprinter.css's
+   `.teleprinter.tp-log-open .telelog { height: var(--tp-log-h) }` rule
+   reads (see that file's own header). It mirrors the SAME three values
+   `.band`'s own height rules above (and cockpit-shell.css's flight-mode
+   base, `--band-h-flight`) use, per mode — declared here rather than
+   inherited from `.band` itself because `.telelog` is a SIBLING of
+   `.band` (both direct `.game-container` children), and a CSS custom
+   property set on one element is never visible to its siblings, only its
+   own descendants; `.game-container` is the nearest common ancestor both
+   can read from. This is the SAME "class-selector equivalent, numbers
+   mirrored with a doc-comment" duplication already accepted immediately
+   above for `.mode-station .band`/`.mode-surface .band` themselves
+   (trap i) — if either `.band` height ever changes, update the matching
+   value here in the same edit; a drift-detector test
+   (Teleprinter.logGeometryAndUniformity.test.ts) pins the two staying in
+   lockstep. */
+.game-container {
+  --tp-log-h: 18.5em; /* flight rest height — mirrors cockpit-shell.css's
+                          `.band { height: var(--band-h-flight) }`, 18.5em
+                          as of this same REVISE (Max-ruled override,
+                          cockpit-shell.css's own comment). */
+}
+
+.game-container.mode-station {
+  --tp-log-h: 8.5em; /* mirrors `.mode-station .band` above. */
+}
+
+.game-container.mode-surface {
+  --tp-log-h: 16em; /* mirrors `.mode-surface .band` above. */
+}
 
 /* Annunciator station/surface flip (WO-UI0-SHELL-TRANSPLANT integration
    cleanup, item 3) — same trap i as the `.band` rules just above:
@@ -194,7 +233,7 @@ div.game-container {
    (WO-UI5-RETIREMENT+GLASS) restored that exact shape, so no override is
    needed for the un-folded case any more (the old `auto 1fr 1fr` override
    that gave RouteRail its own auto-sized row above the MFD pair is gone
-   with it). `.folded` (GameLayout: teleprinter mid-panel, only ONE
+   with it). `.folded` (GameLayout: teleprinter PANEL, only ONE
    MFDScreen renders) still needs its own override — a bare single-row
    `1fr` so that one screen gets the full cell height, since cockpit-
    shell.css's base assumes 2 rows unconditionally. Higher specificity

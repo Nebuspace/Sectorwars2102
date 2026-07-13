@@ -13,12 +13,11 @@
  *      ARIA free-chat (sendARIAMessage) unchanged — this is deterministic
  *      client-side dispatch, NOT a new AI-safety surface; the WS
  *      free-chat path is untouched.
- *   2. THREE display modes (ticker / mid-panel / full-overlay), replacing
- *      the old binary minimize/expand — controlled by the parent
- *      (GameLayout owns `displayMode`, mirrors its existing windshield-
- *      min pattern) because mid-panel also drives the MFD-B→MFD-A fold,
- *      a decision GameLayout must see to swap which MFDScreen configs it
- *      renders.
+ *   2. TWO INDEPENDENT DISPLAY TOGGLES (WO-UI-MAX-BATCH-1 REVISE, Max
+ *      #22-24 — see below), controlled by the parent (GameLayout owns
+ *      `bodyPanel`/`transcriptOpen`, mirrors its existing windshield-min
+ *      pattern) because `bodyPanel` also drives the MFD-B→MFD-A fold, a
+ *      decision GameLayout must see to swap which MFD-A config it renders.
  *   3. ARIA ABSORPTION — the MFD-B `aria-terminal` page is retired
  *      (mfdRegistry.tsx/sidebarScreens.ts/mfdTypes.ts); this component is
  *      now the only place free-chat + commands live. AriaTerminalPage.tsx
@@ -26,33 +25,47 @@
  *      ThreatPage/SalvagePage, WO-UI2-DECK-RECONCILE).
  *
  * TICKER FORM (visual-form steer, mid-build, relayed from Max via the
- * orchestrator): the compact mode is ONE amber-on-dark row —
- * `▸ ARIA ✎ <latest event>` + an inline command input + [XMIT] + a single
- * mode-toggle button — not the old click-anywhere-to-expand strip. XMIT
+ * orchestrator): the compact input area is ONE amber-on-dark row —
+ * `▸ ARIA ✎ <latest event>` + an inline command input + [XMIT] + the two
+ * toggle buttons — not the old click-anywhere-to-expand strip. XMIT
  * dispatches through the SAME grammar-first path as the CMD tab (item 1).
  * This is a deliberate, sanctioned exception to the shipped ARIA cyan/
- * violet convention (teleprinter.css header) — amber, matching the v10
- * prototype's teleprinter demo palette, scoped to JUST the ticker row;
- * mid-panel/full-overlay keep the existing narration=violet/dialogue=cyan/
- * command-echo=amber tab convention untouched.
+ * violet convention that the retired old header documented for PANEL's own
+ * tabs — as of WO-UI-MAX-BATCH-1 REVISE the whole component (ticker/PANEL/
+ * LOG) shares this ONE amber/phosphor-green/brass palette, so it is no
+ * longer an "exception" scoped to just the ticker row (see teleprinter.
+ * css's own header).
  *
- * DISPLAY-MODE CONTROL (WO-UI-MAX-BATCH-1, Max's authoritative ruling
- * #11/12 — supersedes the WAVE-2/CHROME-COMPLETE two-button-per-location
- * design above and below): a SINGLE 3-state toggle (ticker→mid-panel→
- * full-overlay→ticker, `DISPLAY_MODE_CYCLE`/`cycleDisplayMode` below)
- * replaces what used to be FOUR separate jump buttons split across two
- * locations — the ticker's own [◫ PANEL]/[▲ LOG] and `#tp-body`'s
- * [⤢ overlay-toggle]/[▾ TICKER]. The toggle's label always names the
- * CURRENT mode (TICKER/PANEL/LOG) and `aria-pressed` reflects "expanded"
- * (true whenever displayMode isn't 'ticker'). It renders as TWO DOM
- * instances — one inside the ticker row's `.telerow` (after XMIT, same
- * slot the old PANEL/LOG pair occupied), one inside `#tp-body`'s
- * `.tp-display-controls` (replacing the old overlay/ticker toggle pair)
- * — sharing the exact same cycle/label logic; the ticker/mid-panel CSS
- * display-toggle means only ONE is ever visible to the player at a time,
- * so from the player's perspective there is exactly one control. Mid-
- * panel's own composition correction (the band no longer shrinking) lives
- * in game-layout.css's own comment, not here.
+ * DISPLAY-MODE CONTROL (WO-UI-MAX-BATCH-1 REVISE, Max #22-24 — Max
+ * live-playtested the shipped single 3-state cycle toggle and RETRACTED
+ * it, back to the artifact's own TWO INDEPENDENT BINARY TOGGLES model,
+ * cockpit-redesign-v10-RATIFIED.html L91-104/L455-465):
+ *   - `bodyPanel` (prop, owned by GameLayout) — PANEL vs TICKER: which
+ *     form the INPUT AREA takes. Also still drives the MFD-B→MFD-A fold
+ *     (GameLayout, unchanged from before this REVISE).
+ *   - `transcriptOpen` (prop, owned by GameLayout) — LOG open/closed: the
+ *     read-only transcript overlay, ORTHOGONAL to `bodyPanel` — LOG can
+ *     open over EITHER body form.
+ * This REPLACES the retired `TeleprinterDisplayMode` 3-enum
+ * (ticker/mid-panel/full-overlay cycled by one shared control) — there is
+ * no longer a single "mode" to cycle; the two booleans compose freely.
+ *
+ * Structurally: the persistent control row (glyph + latest-line + the
+ * ticker's own compact input/XMIT + both toggle buttons) is ALWAYS in the
+ * DOM and ALWAYS visible — never CSS display-toggled away as a whole, only
+ * its own input+XMIT pair hides while PANEL supplies its own richer input
+ * row instead (rendered ABOVE the persistent row via CSS `order:-1`,
+ * matching the artifact's own `.midlog`, not replacing it). The LOG
+ * overlay is a separate, always-present (height CSS-toggled, matching the
+ * artifact's own open/close transition) flat transcript, independent of
+ * both. Because neither toggle button is ever unmounted or display:none'd,
+ * activating one can never strand keyboard focus on a now-invisible
+ * sibling instance — the retired single-toggle design's dual-DOM-instance
+ * focus-transfer machinery (displayToggleRefs/focusToggleOnModeChangeRef)
+ * has no equivalent here and is deleted outright, not ported.
+ * `aria-pressed` on each toggle now reflects a genuine binary boolean
+ * (Pixel a11y — the retired 3-state cycle explicitly could NOT carry
+ * aria-pressed correctly; these two, being real toggles, correctly can).
  *
  * REUSES the existing ARIA plumbing verbatim — no new transport:
  *   - useWebSocket().ariaMessages / sendARIAMessage / isConnected — the WS
@@ -70,9 +83,10 @@
  *     GameDashboard's manual helm buttons and AriaTerminalPage's grammar
  *     already dispatch to; nothing reimplemented here.
  *
- * The merged stream is a natural 3-way partition, which IS the mid-panel/
- * full-overlay CONTENT mode (independent of the ticker/mid-panel/full-
- * overlay DISPLAY mode above — no new message shape invented):
+ * The merged stream is a natural 3-way partition, which IS PANEL's own
+ * content-tab axis (independent of the bodyPanel/transcriptOpen DISPLAY
+ * axis above — LOG shows the merged stream UNFILTERED, matching the
+ * artifact's own single flat transcript; only PANEL keeps the 3-way split):
  *   - narration    — isNarration (server catalog events) OR local isNav
  *                    ai-lines (autopilot transitions, command replies).
  *                    Ambient prose, read-primary; "every event, every
@@ -95,17 +109,17 @@
  * player typed it into — never silently dropped, and never vanishing into
  * an unrelated tab.
  *
- * Minimize/expand is CSS-only (the root's `tp-<displayMode>` class toggles
- * which of `.tp-ticker-row` / `.tp-body` is visible) — the component tree
- * is never conditionally unmounted, so mode/input/scroll state all
- * survive a display-mode switch.
+ * PANEL's body/mode/input state is CSS-only display-toggled (the root's
+ * `tp-panel`/`tp-ticker` class toggles which form the input area takes) —
+ * `#tp-body` is never conditionally unmounted, so mode/input/scroll state
+ * survives a TICKER<->PANEL switch.
  *
  * WO-UI0-SHELL-TRANSPLANT (leaf L4) re-classes the ticker row onto the
  * artifact's `.tele/.glyph/.tline/.telerow/.tin/.tkey` (cockpit-shell.css)
  * — see teleprinter.css's own header for the skin-ownership split and the
- * `.midlog`/`.telelog` mapping onto the mid-panel/full-overlay body. Pure
- * re-class + one data-correctness fix (`toEpoch` below); the grammar/modes/
- * a11y this header documents are untouched.
+ * `.midlog`/`.telelog` mapping onto PANEL/LOG. Pure re-class + one
+ * data-correctness fix (`toEpoch` below); the grammar/a11y this header
+ * documents are untouched by this REVISE beyond the display toggles.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
@@ -115,17 +129,21 @@ import { useAutopilot } from '../../contexts/AutopilotContext';
 import { ariaFeed, useAriaFeed } from '../mfd/ariaFeedStore';
 import './teleprinter.css';
 
-/** Content-channel tab, independent of the display-mode axis below. */
+/** Content-channel tab, independent of the two display-toggle booleans
+ *  below. PANEL keeps this 3-way split; LOG shows the merged stream
+ *  unfiltered (see the module doc-comment). */
 export type TeleprinterMode = 'narration' | 'dialogue' | 'command-echo';
 
-/** Display-mode axis (cockpit-redesign-v10 §05 L624): how much of the
- *  cockpit the teleprinter occupies. `mid-panel` also drives the MFD-B→
- *  MFD-A fold in GameLayout — controlled from there, not owned locally. */
-export type TeleprinterDisplayMode = 'ticker' | 'mid-panel' | 'full-overlay';
-
 interface TeleprinterProps {
-  displayMode: TeleprinterDisplayMode;
-  onDisplayModeChange: (mode: TeleprinterDisplayMode) => void;
+  /** PANEL (true) vs TICKER (false) — which form the input area takes.
+   *  Owned by GameLayout: also drives the MFD-B→MFD-A fold there. */
+  bodyPanel: boolean;
+  onBodyPanelChange: (bodyPanel: boolean) => void;
+  /** LOG open/closed — the read-only transcript overlay, orthogonal to
+   *  `bodyPanel` (WO-UI-MAX-BATCH-1 REVISE). Owned by GameLayout for
+   *  symmetry with `bodyPanel` (nothing outside this component reads it). */
+  transcriptOpen: boolean;
+  onTranscriptOpenChange: (transcriptOpen: boolean) => void;
 }
 
 /** A feed entry — either a WS ariaMessages item, a local ariaFeedStore
@@ -189,21 +207,6 @@ const MODES: Array<{ id: TeleprinterMode; label: string }> = [
   { id: 'command-echo', label: 'CMD' },
 ];
 
-/** The single 3-state display-mode cycle (WO-UI-MAX-BATCH-1) — ticker →
- *  mid-panel → full-overlay → ticker, one step per click, wrapping. Order
- *  matches Max's authoritative wording (ticker/PANEL/LOG). */
-const DISPLAY_MODE_CYCLE: TeleprinterDisplayMode[] = ['ticker', 'mid-panel', 'full-overlay'];
-
-/** User-facing labels for the toggle — "the label shows the CURRENT
- *  mode" (Max's wording). Internal state/CSS class names are unchanged
- *  ('mid-panel'/'full-overlay') to avoid an unrelated cross-file rename;
- *  only the visible/announced text uses Max's PANEL/LOG vocabulary. */
-const DISPLAY_MODE_LABEL: Record<TeleprinterDisplayMode, string> = {
-  ticker: 'TICKER',
-  'mid-panel': 'PANEL',
-  'full-overlay': 'LOG',
-};
-
 const MAX_MESSAGE_LENGTH = 4000;
 
 const EMPTY_TEXT: Record<TeleprinterMode, string> = {
@@ -239,7 +242,12 @@ const RE_PLOT_COURSE =
   /^(plot|lay in|set)\s+(a\s+)?(course|route)\s*(to|for)?\s*#?(\d+)$/i;
 const RE_GOTO = /^(goto|navigate to)\s+#?(\d+)$/i;
 
-const Teleprinter: React.FC<TeleprinterProps> = ({ displayMode, onDisplayModeChange }) => {
+const Teleprinter: React.FC<TeleprinterProps> = ({
+  bodyPanel,
+  onBodyPanelChange,
+  transcriptOpen,
+  onTranscriptOpenChange,
+}) => {
   const { ariaMessages, sendARIAMessage, isConnected } = useWebSocket();
   const { navMessages, conversationId } = useAriaFeed();
   const {
@@ -263,6 +271,9 @@ const Teleprinter: React.FC<TeleprinterProps> = ({ displayMode, onDisplayModeCha
   const [localEchoes, setLocalEchoes] = useState<FeedEntry[]>([]);
 
   const logEndRef = useRef<HTMLDivElement>(null);
+  // LOG overlay's own scroll anchor — a separate DOM subtree from PANEL's
+  // `#tp-log` above, so it needs its own ref (same idiom, own container).
+  const telelogEndRef = useRef<HTMLDivElement>(null);
   // Roving-tabindex targets for the mode tablist's keyboard nav (Pixel a11y
   // REVISE #1) — one ref per rendered tab, same idiom as StatusBar.tsx's
   // dossier tabRefs.
@@ -289,6 +300,13 @@ const Teleprinter: React.FC<TeleprinterProps> = ({ displayMode, onDisplayModeCha
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, [filtered]);
+
+  // LOG overlay's own auto-scroll — only while actually open (no point
+  // scrolling a height:0, invisible-to-the-player box).
+  useEffect(() => {
+    if (!transcriptOpen) return;
+    telelogEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [merged, transcriptOpen]);
 
   // ── ADR-0072 command grammar intercept ────────────────────────────────
   // Returns true if the input was a recognized command (echoed + executed
@@ -504,7 +522,7 @@ const Teleprinter: React.FC<TeleprinterProps> = ({ displayMode, onDisplayModeCha
   // ── Ticker's own compact input (visual-form steer) — always grammar-
   // first, exactly like the CMD tab; unrecognized text falls through to
   // free-chat, pinned to command-echo so it lands in the CMD tab once the
-  // player expands. ────────────────────────────────────────────────────
+  // player opens PANEL. ────────────────────────────────────────────────
   const submitTicker = useCallback(() => {
     const raw = tickerInputValue.trim();
     if (!raw) return;
@@ -564,80 +582,94 @@ const Teleprinter: React.FC<TeleprinterProps> = ({ displayMode, onDisplayModeCha
     modeTabRefs.current[nextIndex]?.focus();
   }, [mode]);
 
-  // ── Display-mode control — single 3-state toggle (WO-UI-MAX-BATCH-1) ───
-  const nextDisplayMode = useMemo(
-    () => DISPLAY_MODE_CYCLE[(DISPLAY_MODE_CYCLE.indexOf(displayMode) + 1) % DISPLAY_MODE_CYCLE.length],
-    [displayMode]
+  // ── Two independent binary toggles (WO-UI-MAX-BATCH-1 REVISE) ─────────
+  // Each button's label always names the ACTION it performs, not the
+  // current state — "PANEL" while in ticker (click to switch TO panel),
+  // "TICKER" while in panel (click to switch back); "LOG" while closed,
+  // "HIDE" while open. Both are genuine 2-state toggles now, so
+  // aria-pressed correctly carries the CURRENT state (Pixel a11y).
+  const togglePanel = useCallback(() => onBodyPanelChange(!bodyPanel), [bodyPanel, onBodyPanelChange]);
+  const toggleTranscript = useCallback(
+    () => onTranscriptOpenChange(!transcriptOpen),
+    [transcriptOpen, onTranscriptOpenChange]
   );
-  const cycleDisplayMode = useCallback(
-    () => onDisplayModeChange(nextDisplayMode),
-    [nextDisplayMode, onDisplayModeChange]
-  );
-  const modeToggleAriaLabel = `Teleprinter display: ${DISPLAY_MODE_LABEL[displayMode]}. Activate to switch to ${DISPLAY_MODE_LABEL[nextDisplayMode]}.`;
-  const modeToggleTitle = `${DISPLAY_MODE_LABEL[displayMode]} — click for ${DISPLAY_MODE_LABEL[nextDisplayMode]}`;
+
+  // The persistent row's `.tline` is aria-live only while it's the ONLY
+  // live-announcing surface — PANEL's own `#tp-log` (aria-live) and LOG's
+  // own `.telelog` (aria-live while open) would otherwise double-announce
+  // the same new message alongside `.tline`.
+  const tlineAriaLive = bodyPanel || transcriptOpen ? undefined : 'polite';
 
   return (
-    <div className={`teleprinter tele tp-${displayMode}`} data-testid="teleprinter">
-      {/* ── TICKER — one amber-on-dark row (visual-form steer), re-classed
-          onto the artifact's cockpit-shell.css primitives (WO-UI0-SHELL-
-          TRANSPLANT leaf L4): .glyph/.tline live directly in the row;
-          .telerow wraps the input + 3 keys (cockpit-shell's .telerow is
-          `display:contents` outside the artifact's own aria=2 mode, so it's
-          a purely organizational wrapper here — zero layout change). Always
-          in the DOM (CSS display-toggled, never unmounted) so a half-typed
-          command survives a switch to mid-panel/full-overlay and back. ── */}
-      <div className="tp-ticker-row" role="group" aria-label="ARIA teleprinter ticker">
+    <div
+      className={`teleprinter tele tp-${bodyPanel ? 'panel' : 'ticker'}${transcriptOpen ? ' tp-log-open' : ''}`}
+      data-testid="teleprinter"
+    >
+      {/* ── Persistent control row — see the module doc-comment: ALWAYS in
+          the DOM and ALWAYS visible, never CSS display-toggled away as a
+          whole. Re-classed onto the artifact's cockpit-shell.css
+          primitives (WO-UI0-SHELL-TRANSPLANT leaf L4): .glyph/.tline live
+          directly in the row; .telerow wraps the input group + both
+          toggles (cockpit-shell's .telerow is `display:contents` outside
+          the artifact's own aria=2 mode, so it's a purely organizational
+          wrapper here — zero layout change). ── */}
+      <div className="tp-ticker-row" role="group" aria-label="ARIA teleprinter controls">
         <span className="glyph" aria-hidden="true">▸ ARIA</span>
-        <span className="tline" aria-live="polite">{latestLine}</span>
+        <span className="tline" aria-live={tlineAriaLive}>{latestLine}</span>
         {!isConnected && <span className="tp-ticker-offline">UPLINK OFFLINE</span>}
         <div className="telerow">
-          <input
-            type="text"
-            className="tin"
-            value={tickerInputValue}
-            onChange={(e) => setTickerInputValue(e.target.value)}
-            onKeyDown={handleTickerKeyDown}
-            placeholder="speak to the ship — try: help"
-            maxLength={MAX_MESSAGE_LENGTH}
-            aria-label="Send command or message to ARIA"
-          />
+          {/* Ticker's own compact input+XMIT — hides as a unit while PANEL
+              supplies its own input row instead (teleprinter.css). */}
+          <span className="tp-ticker-input-group">
+            <input
+              type="text"
+              className="tin"
+              value={tickerInputValue}
+              onChange={(e) => setTickerInputValue(e.target.value)}
+              onKeyDown={handleTickerKeyDown}
+              placeholder="speak to the ship — try: help"
+              maxLength={MAX_MESSAGE_LENGTH}
+              aria-label="Send command or message to ARIA"
+            />
+            <button
+              type="button"
+              className="tkey tp-ticker-xmit"
+              onClick={submitTicker}
+              disabled={!tickerInputValue.trim()}
+              aria-label="Transmit"
+            >
+              XMIT
+            </button>
+          </span>
           <button
             type="button"
-            className="tkey tp-ticker-xmit"
-            onClick={submitTicker}
-            disabled={!tickerInputValue.trim()}
-            aria-label="Transmit"
+            className="tkey tp-panel-toggle"
+            onClick={togglePanel}
+            aria-pressed={bodyPanel}
+            aria-label={bodyPanel ? 'Switch teleprinter input to ticker' : 'Switch teleprinter input to panel'}
+            title={bodyPanel ? 'Switch to ticker' : 'Switch to panel'}
           >
-            XMIT
+            {bodyPanel ? 'TICKER' : 'PANEL'}
           </button>
           <button
             type="button"
-            className="tkey tp-mode-toggle"
-            onClick={cycleDisplayMode}
-            aria-pressed={displayMode !== 'ticker'}
-            aria-label={modeToggleAriaLabel}
-            title={modeToggleTitle}
+            className="tkey tp-log-toggle"
+            onClick={toggleTranscript}
+            aria-pressed={transcriptOpen}
+            aria-label={transcriptOpen ? 'Hide ARIA transcript' : 'Show ARIA transcript'}
+            title={transcriptOpen ? 'Hide transcript' : 'Show transcript'}
           >
-            {DISPLAY_MODE_LABEL[displayMode]}
+            {transcriptOpen ? 'HIDE' : 'LOG'}
           </button>
         </div>
       </div>
 
-      {/* ── mid-panel / full-overlay body — narration/dialogue/CMD tabs +
-          log + input, unchanged from the prior single "expanded" state
-          except for the CMD grammar wiring above and the single mode-
-          toggle control below (WO-UI-MAX-BATCH-1). Never conditionally
+      {/* ── PANEL body — narration/dialogue/CMD tabs + log + input,
+          unchanged from before this REVISE except for the toggle mechanics
+          (WO-UI-MAX-BATCH-1 REVISE) — see teleprinter.css for the
+          order:-1 placement above the persistent row. Never conditionally
           unmounted (accept #4/#5's state-preservation contract). ── */}
-      {/* `telelog` (full-overlay only) borrows cockpit-shell.css's transcript-
-          panel skin (warm-olive background, position:absolute/bottom:100%
-          "opens upward", border-top) — see teleprinter.css's own comment for
-          why the open-height is driven by `tp-full-overlay` rather than the
-          artifact's `.stage.tele-open` (an ancestor class outside this leaf's
-          file lane). */}
-      <div
-        id="tp-body"
-        className={`tp-body${displayMode === 'full-overlay' ? ' telelog' : ''}`}
-      >
+      <div id="tp-body" className="tp-body">
         <div className="tp-body-header">
           <div
             className="tp-modes"
@@ -655,33 +687,31 @@ const Teleprinter: React.FC<TeleprinterProps> = ({ displayMode, onDisplayModeCha
                 aria-selected={mode === m.id}
                 aria-controls="tp-log"
                 tabIndex={mode === m.id ? 0 : -1}
-                className={`tp-mode-btn tp-mode-${m.id}${mode === m.id ? ' active' : ''}`}
+                className={`tkey tp-mode-btn tp-mode-${m.id}${mode === m.id ? ' active' : ''}`}
                 onClick={() => setMode(m.id)}
               >
                 {m.label}
               </button>
             ))}
           </div>
-
-          <div className="tp-display-controls">
-            <button
-              type="button"
-              className="tp-display-btn tp-mode-toggle"
-              onClick={cycleDisplayMode}
-              aria-pressed={displayMode !== 'ticker'}
-              aria-label={modeToggleAriaLabel}
-              title={modeToggleTitle}
-            >
-              {DISPLAY_MODE_LABEL[displayMode]}
-            </button>
-          </div>
         </div>
 
         <div
           id="tp-log"
-          className={`tp-log tp-log-${mode}${displayMode === 'mid-panel' ? ' midlog' : ''}`}
+          className={`tp-log tp-log-${mode}`}
           role="log"
-          aria-live="polite"
+          // Silenced while LOG is open (Pixel a11y, WO-UI-MAX-BATCH-1 REVISE
+          // follow-up): PANEL and LOG can now both be open at once (the
+          // whole point of the two orthogonal toggles), and #tp-log's
+          // FILTERED content + .telelog's UNFILTERED content would both be
+          // aria-live="polite" simultaneously, double-announcing every
+          // qualifying message to a screen-reader user. When LOG is open it
+          // is the AUTHORITATIVE live surface (the fuller, unfiltered
+          // transcript), so #tp-log goes quiet — same gating idiom as
+          // `tlineAriaLive` above and `.telelog`'s own aria-live below.
+          // Net invariant: exactly ONE aria-live region across all 4
+          // toggle states; in the both-open state the winner is `.telelog`.
+          aria-live={transcriptOpen ? undefined : 'polite'}
           aria-labelledby={`tp-mode-tab-${mode}`}
         >
           {filtered.length === 0 && (
@@ -706,7 +736,7 @@ const Teleprinter: React.FC<TeleprinterProps> = ({ displayMode, onDisplayModeCha
           <span className="tp-prompt" aria-hidden="true">&gt;</span>
           <input
             type="text"
-            className={`tp-input${inputFocused ? ' tp-input-focused' : ''}`}
+            className={`tin tp-input${inputFocused ? ' tp-input-focused' : ''}`}
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -718,13 +748,43 @@ const Teleprinter: React.FC<TeleprinterProps> = ({ displayMode, onDisplayModeCha
           />
           <button
             type="button"
-            className="tp-xmit"
+            className="tkey tp-xmit"
             onClick={submit}
             disabled={!inputValue.trim()}
             aria-label="Transmit"
           >
             XMIT
           </button>
+        </div>
+      </div>
+
+      {/* ── LOG overlay — the artifact's own flat, read-only, UNFILTERED
+          transcript (cockpit-redesign-v10-RATIFIED.html L455-465), always
+          in the DOM (CSS height-toggled off the root's `tp-log-open`
+          modifier, matching the artifact's own open/close transition) —
+          independent of `bodyPanel` (see the module doc-comment). `.a`/`.p`
+          are cockpit-shell.css's own amber2/phosphor-green transcript-line
+          classes (L102-103 of the artifact) — reused verbatim, zero new
+          CSS needed for the line colors themselves. aria-live/aria-hidden
+          are gated on `transcriptOpen`: height:0 alone doesn't remove this
+          region from the accessibility tree the way display:none does, so
+          without the gate a closed-but-mounted LOG would announce updates
+          the player can't see. ── */}
+      <div
+        className="telelog"
+        role="log"
+        aria-live={transcriptOpen ? 'polite' : undefined}
+        aria-hidden={!transcriptOpen}
+        aria-label="ARIA transcript"
+      >
+        <div className="lines">
+          {merged.length === 0 && <div className="a">Standing by, Commander.</div>}
+          {merged.map((entry) => (
+            <div key={entry.id} className={entry.type === 'ai' ? 'a' : 'p'}>
+              {entry.content}
+            </div>
+          ))}
+          <div ref={telelogEndRef} />
         </div>
       </div>
     </div>
