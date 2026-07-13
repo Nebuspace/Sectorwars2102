@@ -11,8 +11,8 @@ import { formatCredits } from '../../../utils/formatters';
  * Relocated + enhanced from CommsMailbox's CONTACTS list (GameDashboard's
  * `sectorContacts` merge — live WS presence ∪ the players_present snapshot
  * — is passed down unchanged, same prop shape CommsMailbox received).
- * CommsMailbox.tsx itself is untouched (read-only reference; orphaned,
- * cleaned up by a later WO) — this is a fresh implementation, not an
+ * CommsMailbox.tsx itself is DELETED (WO-UI5-RETIREMENT+GLASS — zero
+ * remaining consumers) — this was always a fresh implementation, not an
  * import, per §05's TARGET grammar: rep-colored names, context-aware
  * ENGAGE/HAIL, hover-record, name-click→reticle.
  *

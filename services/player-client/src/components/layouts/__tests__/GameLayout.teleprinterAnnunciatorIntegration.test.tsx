@@ -29,7 +29,7 @@
  *      boundary only (their own source files are untouched).
  *
  * Mock harness mirrors GameLayout.statusBarIntegration.test.tsx's proven
- * seam (GameLayout itself is the SUT, not mocked; RouteRail/MFDScreen/the
+ * seam (GameLayout itself is the SUT, not mocked; MFDScreen/the
  * toast-banner children stubbed as irrelevant chrome), extended with the
  * WebSocketContext/GameContext fields Annunciator/Teleprinter need (per
  * their own Annunciator.test.tsx / Teleprinter.smoke.test.tsx seams) — all
@@ -119,7 +119,6 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-vi.mock('../../mfd/RouteRail', () => ({ default: () => <div data-testid="route-rail-stub" /> }));
 vi.mock('../../mfd/MFDScreen', () => ({ default: () => <div data-testid="mfd-screen-stub" /> }));
 vi.mock('../../ranking/MedalToast', () => ({ default: () => null }));
 vi.mock('../../comms/PriorityHailConsumer', () => ({ default: () => null }));

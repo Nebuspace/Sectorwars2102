@@ -10,7 +10,9 @@ import MedalShowcase from '../ranking/MedalShowcase';
  * There IS already a shipped "SERVICE RECORD console" — pages/RankingPage.tsx
  * (its own doc-comment literally says so) — composing RankDisplay +
  * RankProgress + MedalShowcase + Leaderboard inside a full-page
- * CockpitInstrument frame reached via the rail (RouteRail 'SET'-style nav).
+ * CockpitInstrument frame (formerly reached via RouteRail's 'SET'-style nav;
+ * RouteRail itself is retired, WO-UI5-RETIREMENT+GLASS, and /game/ranking
+ * is now a client-side redirect onto this dossier tab, GameRouteRedirects.tsx).
  * Embedding that whole page verbatim here doesn't fit: CockpitInstrument is
  * sized/chromed for a full monitor, and Leaderboard is GALACTIC standings
  * (all players) — a different concern from one player's own service record.

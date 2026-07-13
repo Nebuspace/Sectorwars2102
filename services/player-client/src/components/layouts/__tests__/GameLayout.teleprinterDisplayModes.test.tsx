@@ -95,7 +95,6 @@ vi.mock('../../../contexts/AutopilotContext', () => ({
   }),
 }));
 
-vi.mock('../../mfd/RouteRail', () => ({ default: () => <div data-testid="route-rail-stub" /> }));
 vi.mock('../../mfd/MFDScreen', () => ({
   default: ({ config }: { config: { screenId: string; pageIds: string[] } }) => (
     <div data-testid={`mfd-screen-${config.screenId}`} data-page-ids={config.pageIds.join(',')} />

@@ -10,8 +10,7 @@
  * the teleprinter (components/aria/Teleprinter.tsx), which now carries
  * the ADR-0072 grammar + free-chat directly, landing the ratified MFD
  * slate (canon §05 L578: "A: STAT · CRGO · QTM — B: POS · COMM", no ARIA
- * tab). AriaTerminalPage.tsx is untouched on disk — dead code, same
- * retirement pattern as the entries below.
+ * tab).
  *
  * WO-UI2-DECK-RECONCILE previously dropped four entries down to that same
  * ratified slate:
@@ -19,10 +18,12 @@
  *   - salvage           → MOVED to the deck SOLAR SYSTEM monitor's [SALVAGE] page
  *   - turn-economy, reputation → already-dead entries (WO-PLAYERINFO id=147
  *     dropped their sidebar softkeys; nothing referenced them since)
- * The ReputationPage, SalvagePage/ThreatPage/TurnEconomyPage, and
- * AriaTerminalPage COMPONENTS are all untouched — only the registry
- * entries are gone. ReputationPage is still reused directly by
- * components/player/PlayerInfo.tsx's dossier reputation tab.
+ * AriaTerminalPage.tsx, SalvagePage.tsx, ThreatPage.tsx, and
+ * TurnEconomyPage.tsx (the four now-unwired components) are DELETED
+ * (WO-UI5-RETIREMENT+GLASS — zero remaining consumers, confirmed by grep).
+ * ReputationPage.tsx is the one exception: still live, reused directly by
+ * components/player/PlayerInfo.tsx's and components/layouts/StatusBar.tsx's
+ * dossier reputation tabs — kept on disk, just no MFD registry entry.
  */
 
 import React from 'react';

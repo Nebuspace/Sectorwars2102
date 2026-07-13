@@ -283,11 +283,6 @@ describe('SolarSystemViewscreen — interaction wiring (full mount)', () => {
     });
   };
 
-  const toggleScan = async () => {
-    const btn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.includes('SCAN'))!;
-    await act(async () => { btn.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
-  };
-
   const closePopupViaEscape = async () => {
     await act(async () => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -358,21 +353,28 @@ describe('SolarSystemViewscreen — interaction wiring (full mount)', () => {
   });
 
   it('scanActive gates the wreck/formation hit targets in the live component too', async () => {
-    await mount();
+    // scanActive defaults to false and is now a controlled prop (WO-UI5-
+    // RETIREMENT+GLASS item 3: the toggle button that used to live inside
+    // this component moved to the caller — GameDashboard's SOLAR SYSTEM
+    // monitor). Explicit here for clarity even though it matches the
+    // component default.
+    await mount({ scanActive: false });
     const targets = referenceTargets([TEST_WRECK], [TEST_FORMATION], true);
     const wreck = targets.find((t) => t.kind === 'wreck')!;
     expect(wreck).toBeDefined();
 
-    // SCAN is off by default -- right-clicking the wreck's would-be position
-    // hits nothing (the empty-space menu), because scanActive=false means
-    // the wreck was never pushed to hitTargets this frame.
+    // SCAN is off -- right-clicking the wreck's would-be position hits
+    // nothing (the empty-space menu), because scanActive=false means the
+    // wreck was never pushed to hitTargets this frame.
     await rightClick(wreck.x, wreck.y);
     let popup = container.querySelector('.ssv-popup');
     expect(popup!.textContent).toContain('SECTOR SPACE');
     await closePopupViaEscape();
 
-    // Toggle SCAN on -- now the SAME position hits the wreck.
-    await toggleScan();
+    // Re-render with scanActive flipped on via the controlled prop (a
+    // caller-side toggle, not a button inside this component anymore) --
+    // now the SAME position hits the wreck.
+    await mount({ scanActive: true });
     await rightClick(wreck.x, wreck.y);
     popup = container.querySelector('.ssv-popup');
     expect(popup).not.toBeNull();

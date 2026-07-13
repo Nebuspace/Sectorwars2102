@@ -9,13 +9,14 @@
  * class itself lands on `.game-container` while docked (and NOT while
  * flying/landed — `mode-flight`/`mode-surface` are mutually exclusive
  * siblings, never co-applied). Also pins the "carried slate" invariant the
- * WO calls out explicitly: the MFD rail (RouteRail + both MFDScreens) is
- * NOT gated by is_docked/is_landed in GameLayout.tsx — it renders
- * unconditionally for all three modes — so this asserts it stays mounted
- * docked exactly as it does flying.
+ * WO calls out explicitly: the MFD rail (both MFDScreens — RouteRail,
+ * their former sibling, is retired: WO-UI5-RETIREMENT+GLASS) is NOT gated
+ * by is_docked/is_landed in GameLayout.tsx — it renders unconditionally
+ * for all three modes — so this asserts it stays mounted docked exactly as
+ * it does flying.
  *
  * Harness mirrors the other GameLayout.*.test.tsx files' proven seam
- * exactly (GameLayout itself is the SUT, unmocked; RouteRail/MFDScreen/
+ * exactly (GameLayout itself is the SUT, unmocked; MFDScreen/
  * toast-banner children stubbed as irrelevant chrome; `<div/>` stands in for
  * GameDashboard — this file is scoped to GameLayout's OWN shell, not what
  * GameDashboard renders inside it, which is covered separately by
@@ -81,7 +82,6 @@ vi.mock('../../../contexts/AutopilotContext', () => ({
   useAutopilot: () => ({ status: 'idle', course: null, pauseReason: null }),
 }));
 
-vi.mock('../../mfd/RouteRail', () => ({ default: () => <div data-testid="route-rail-stub" /> }));
 vi.mock('../../mfd/MFDScreen', () => ({ default: () => <div data-testid="mfd-screen-stub" /> }));
 vi.mock('../../ranking/MedalToast', () => ({ default: () => null }));
 vi.mock('../../comms/PriorityHailConsumer', () => ({ default: () => null }));
@@ -133,11 +133,14 @@ describe('GameLayout — mode-station real styling + MFD rail persists docked (W
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
-  it('docked: the MFD rail (RouteRail + both MFDScreens) stays mounted — the "carried slate"', async () => {
+  it('docked: the MFD rail (both MFDScreens) stays mounted — the "carried slate"', async () => {
     await renderWith({ is_docked: true });
 
-    expect(container.querySelector('[data-testid="route-rail-stub"]')).not.toBeNull();
     expect(container.querySelectorAll('[data-testid="mfd-screen-stub"]').length).toBe(2);
+    // RouteRail is retired (WO-UI5-RETIREMENT+GLASS) — .mfdcol holds ONLY
+    // the MFD screens now, no rail keys anywhere.
+    expect(container.querySelector('.route-rail')).toBeNull();
+    expect(container.querySelector('.mfdcol')?.children.length).toBe(2);
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
@@ -147,8 +150,8 @@ describe('GameLayout — mode-station real styling + MFD rail persists docked (W
     expect(container.querySelector('.game-container.mode-flight')).not.toBeNull();
     expect(container.querySelector('.game-container.mode-station')).toBeNull();
     // Same rail, same three modes — the persistence invariant flying too.
-    expect(container.querySelector('[data-testid="route-rail-stub"]')).not.toBeNull();
     expect(container.querySelectorAll('[data-testid="mfd-screen-stub"]').length).toBe(2);
+    expect(container.querySelector('.route-rail')).toBeNull();
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
@@ -157,8 +160,8 @@ describe('GameLayout — mode-station real styling + MFD rail persists docked (W
 
     expect(container.querySelector('.game-container.mode-surface')).not.toBeNull();
     expect(container.querySelector('.game-container.mode-station')).toBeNull();
-    expect(container.querySelector('[data-testid="route-rail-stub"]')).not.toBeNull();
     expect(container.querySelectorAll('[data-testid="mfd-screen-stub"]').length).toBe(2);
+    expect(container.querySelector('.route-rail')).toBeNull();
     expect(errorSpy).not.toHaveBeenCalled();
   });
 });

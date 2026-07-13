@@ -51,6 +51,32 @@ import './statusbar.css';
  */
 type DossierTab = 'identity' | 'reputation' | 'service' | 'fleet' | 'colonies' | 'crew' | 'settings';
 
+// REP badge color-grading (canon §05 L614: "reputation visible at all
+// times, color-graded (blue/gray/red grammar)") — the artifact's OWN
+// grammar, reused verbatim rather than invented (cockpit-redesign-v10-
+// RATIFIED.html:538 — "red is dead" #FF5A6A / "gray struck the lawful"
+// #9AA6B5 / "blue in good standing" #5FB8FF), bucketed off the backend's
+// 8-tier `reputation_tier` string (personal_reputation_service.py:
+// REPUTATION_TIERS). Mirrors ReputationPage.tsx's LEVEL_COLORS /
+// RankDisplay.tsx's TIER_COLORS shape (Record<tier, color> + a lookup
+// helper), not a new pattern. LAWFUL is the one tier that keeps the
+// artifact's own fixed green (`--grn` #46D68C, cockpit-shell.css) — also
+// the fallback for an unrecognized/missing tier, so the common lawful-
+// player case still reads green rather than falling through to a
+// different default.
+const REP_TIER_COLORS: Record<string, string> = {
+  Villain: '#FF5A6A',
+  Criminal: '#FF5A6A',
+  Outlaw: '#FF5A6A',
+  Suspicious: '#9AA6B5',
+  Neutral: '#9AA6B5',
+  Lawful: '#46D68C',
+  Heroic: '#5FB8FF',
+  Legendary: '#5FB8FF',
+};
+const REP_TIER_COLOR_DEFAULT = '#46D68C';
+const repTierColor = (tier: string): string => REP_TIER_COLORS[tier] || REP_TIER_COLOR_DEFAULT;
+
 const DOSSIER_TABS: Array<{ id: DossierTab; label: string }> = [
   { id: 'identity', label: 'IDENTITY' },
   { id: 'reputation', label: 'REPUTATION' },
@@ -355,12 +381,14 @@ const StatusBar: React.FC = () => {
 
   // REP badge (nit a) — tier + SIGNED personal_reputation, e.g. "Trusted
   // +250" (artifact: "LAWFUL +300"). NOT tier-only (the prior content).
-  // Fixed green (`.repb`, cockpit-shell.css) per the artifact -- supersedes
-  // the earlier per-tier `--rep-color` grading this badge used to carry;
-  // flagged in the report as a visible behavior change worth a second look.
+  // Color-graded via `repTierColor()` (WO-UI5-RETIREMENT+GLASS rep-lane) --
+  // RESTORES the per-tier grading the shell-transplant's fixed green had
+  // dropped; see REP_TIER_COLORS above + the `.vit.repb` rule in
+  // statusbar.css for the CSS-var mechanism.
   const repTier = playerState?.reputation_tier || 'Neutral';
   const personalRep = playerState?.personal_reputation ?? 0;
   const repSign = personalRep >= 0 ? '+' : '';
+  const repColor = repTierColor(repTier);
 
   return (
     <div className="sbar status-bar">
@@ -505,6 +533,7 @@ const StatusBar: React.FC = () => {
         )}
         <span
           className="vit repb"
+          style={{ '--rep-color': repColor } as React.CSSProperties}
           title={`Reputation tier: ${repTier}`}
           aria-label={`Reputation: ${repTier} ${repSign}${personalRep}`}
         >

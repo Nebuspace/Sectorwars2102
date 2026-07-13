@@ -9,8 +9,9 @@
  * teleprinter (components/aria/Teleprinter.tsx), which now carries the
  * ADR-0072 grammar + free-chat directly, landing the ratified slate
  * "A: STAT · CRGO · QTM — B: POS · COMM" (no ARIA tab on MFD-B).
- * AriaTerminalPage.tsx is untouched on disk — dead code, same retirement
- * pattern as ThreatPage/SalvagePage (WO-UI2-DECK-RECONCILE). Previously
+ * AriaTerminalPage.tsx is DELETED (WO-UI5-RETIREMENT+GLASS — zero
+ * remaining consumers), same retirement pattern as ThreatPage/SalvagePage
+ * (WO-UI2-DECK-RECONCILE, also deleted). Previously
  * re-frozen at 6 pages (WO-UI2-DECK-RECONCILE): dropped 'turn-economy' +
  * 'reputation' (already-dead sidebar entries, WO-PLAYERINFO id=147) and
  * 'threat-readiness' + 'salvage' (MOVED to the deck TACTICAL / SOLAR

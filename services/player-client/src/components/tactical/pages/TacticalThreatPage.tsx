@@ -8,10 +8,9 @@ import { formatCredits } from '../../../utils/formatters';
  * RECONCILE, §05: "THREAT: law status → CLEAR FINE · mines → LAY 5 ·
  * hazard readout").
  *
- * Relocated from mfd/pages/ThreatPage.tsx (left untouched, read-only
- * source — the mfd-lane's file, not deleted here; a later cleanup WO
- * retires the now-unreachable MFD THRT page per the design brief's own
- * rollup table). Same data sources (currentSector hazard/radiation/type,
+ * Relocated from mfd/pages/ThreatPage.tsx, since DELETED
+ * (WO-UI5-RETIREMENT+GLASS — the now-unreachable MFD THRT page, zero
+ * remaining consumers). Same data sources (currentSector hazard/radiation/type,
  * playerState.mines, GET/POST /combat/grey-status), same hooks/effects —
  * re-laid-out for the compact deck-monitor's screen-hud-content shape
  * instead of MFDPageHeader/MFDPageBody chrome (DeckPageTabs.tsx's own

@@ -25,10 +25,9 @@ import GameLayout from './GameLayout';
  *
  * Every consuming component under GameLayout (MFD pages, HUD, toasts) is
  * exercised with real, safely-defaulted data --- MFD pages additionally sit
- * behind MFDPageBoundary (see MFDScreen.tsx / RouteRail.tsx's "OUTSIDE any
- * MFD page error boundary" comment), so even a page that dereferences more
- * than this stub supplies can only fault its own viewport, never the outer
- * geometry this harness exists to prove.
+ * behind MFDPageBoundary (see MFDScreen.tsx's own doc-comment), so even a
+ * page that dereferences more than this stub supplies can only fault its
+ * own viewport, never the outer geometry this harness exists to prove.
  */
 
 type ShellMode = 'flight' | 'station' | 'surface';

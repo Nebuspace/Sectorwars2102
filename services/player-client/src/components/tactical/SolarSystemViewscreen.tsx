@@ -227,7 +227,7 @@ interface SolarSystemViewscreenProps {
   /**
    * flight scene only: sector wrecks (GET /sectors/{id}/wrecks — see
    * services/api.ts's sectorAPI.sectorWrecks / SectorWreck) rendered as SCAN
-   * layer glyphs, gated behind the windshield's own SCAN toggle. Defaults to
+   * layer glyphs, gated behind the `scanActive` toggle below. Defaults to
    * empty — the SCAN layer simply shows nothing when omitted.
    */
   wrecks?: SectorWreck[];
@@ -237,6 +237,15 @@ interface SolarSystemViewscreenProps {
    * layer glyphs alongside wrecks. Defaults to empty.
    */
   formations?: SpecialFormationSummary[];
+  /**
+   * flight scene only: gates the wreck/formation glyphs (+ their hit
+   * targets) drawn above. WO-UI5-RETIREMENT+GLASS item 3: this used to be
+   * SSV-local state with its own glass button (`.ssv-scan-toggle`); the
+   * button moved to the SOLAR SYSTEM monitor's SYSTEM page, so this is now
+   * a controlled prop — mirrors `selectedShipId` above (same "cross-
+   * component state, button lives elsewhere" shape). Defaults to false.
+   */
+  scanActive?: boolean;
 }
 
 /** Per-kind payload backing the click popup card */
@@ -7581,7 +7590,8 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   selectedShipId = null,
   onSelectShip,
   wrecks = [],
-  formations = []
+  formations = [],
+  scanActive = false
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -7758,9 +7768,12 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   wrecksRef.current = wrecks;
   const formationsRef = useRef<SpecialFormationSummary[]>(formations);
   formationsRef.current = formations;
-  // SSV-LOCAL SCAN toggle — gates the wreck/formation glyphs + their hit
-  // targets. No server call; a purely client-side reveal like hover.
-  const [scanActive, setScanActive] = useState(false);
+  // SCAN toggle — gates the wreck/formation glyphs + their hit targets.
+  // WO-UI5-RETIREMENT+GLASS item 3: was SSV-local state with its own button
+  // here; now a controlled prop (GameDashboard owns the state + the button,
+  // relocated to the SOLAR SYSTEM monitor's SYSTEM page) — same ref-mirror
+  // shape as wrecksRef/formationsRef above, just sourced from a prop instead
+  // of local state.
   const scanActiveRef = useRef(scanActive);
   scanActiveRef.current = scanActive;
 
@@ -8032,6 +8045,17 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   useEffect(() => {
     if (reducedMotionRef.current) drawNowRef.current();
   }, [selectedShipId]);
+
+  // ---- SCAN toggle change (now a controlled prop, WO-UI5-RETIREMENT+GLASS
+  //      item 3) → repaint immediately in reduced-motion (static) mode, same
+  //      reasoning as the selection-change effect above: with reduced motion
+  //      there's no rAF loop to naturally pick up the new scanActiveRef value
+  //      on the next frame, so the button's former inline click-handler used
+  //      to force this draw itself. Now that the button lives outside this
+  //      component, this effect is the only place left to do it. ----
+  useEffect(() => {
+    if (reducedMotionRef.current) drawNowRef.current();
+  }, [scanActive]);
 
   // ---- Drop the module-level landed-scene cache on unmount so a remount never
   //      reuses CanvasGradient objects bound to the destroyed canvas context.
@@ -8535,34 +8559,12 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
           </div>
         </VistaErrorBoundary>
       )}
-      {/* SCAN toggle (#7) — reuses the established glass-chip visual language
-          (same border/glow/mono-font treatment as .ssv-popup-action and the
-          orbital HUD's inline "glass" style below) rather than inventing new
-          chrome. Top-left is the one HUD corner GameDashboard's own overlays
-          never occupy (hazard=top-right, radiation=bottom-right, formations=
-          bottom-left — see GameDashboard.tsx), and it's free of the orbital
-          closeup's "◄ SYSTEM VIEW" button since the two are mutually
-          exclusive (this only shows while !orbit). */}
-      {scene === 'flight' && !orbit && (
-        <button
-          type="button"
-          className={`ssv-scan-toggle${scanActive ? ' active' : ''}`}
-          onClick={() => {
-            // Mutate the ref SYNCHRONOUSLY before the immediate redraw below
-            // (like hoverRef in handleMouseMove) — setScanActive's re-render
-            // (which would otherwise refresh scanActiveRef.current) hasn't
-            // happened yet at this point in the handler, and reduced-motion
-            // has no rAF loop to self-heal a stale read on the next frame.
-            const next = !scanActiveRef.current;
-            scanActiveRef.current = next;
-            setScanActive(next);
-            if (reducedMotionRef.current) drawNowRef.current();
-          }}
-          aria-pressed={scanActive}
-        >
-          📡 SCAN{scanActive ? ` — ${wrecks.length + formations.length}` : ''}
-        </button>
-      )}
+      {/* SCAN toggle (#7) button RETIRED from the glass here (WO-UI5-
+          RETIREMENT+GLASS item 3) — relocated to the SOLAR SYSTEM monitor's
+          SYSTEM page as a `.act` button (GameDashboard.tsx), wired to the
+          SAME `scanActive` flag, now received as a controlled prop above.
+          The wreck/formation glyphs + hit targets below still gate on
+          `scanActive` exactly as before — only the trigger moved. */}
       {popup && scene === 'flight' && (
         <div
           className="ssv-popup"

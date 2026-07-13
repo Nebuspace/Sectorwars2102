@@ -19,7 +19,7 @@
  * pass is the pixel-geometry proof.
  *
  * Mock harness mirrors GameShellRoute.persistence.test.tsx's proven seam
- * exactly (GameLayout itself is the SUT, not mocked; RouteRail/MFDScreen/the
+ * exactly (GameLayout itself is the SUT, not mocked; MFDScreen/the
  * toast-banner children are stubbed as irrelevant chrome). StatusBar is
  * DELIBERATELY left unmocked — both its dropdowns default closed, so none of
  * the tab content they gate (ReputationPage/ShipSelector/ServiceRecordTab/
@@ -85,7 +85,6 @@ vi.mock('../../../contexts/AutopilotContext', () => ({
   useAutopilot: () => ({ status: 'idle', course: null, pauseReason: null }),
 }));
 
-vi.mock('../../mfd/RouteRail', () => ({ default: () => <div data-testid="route-rail-stub" /> }));
 vi.mock('../../mfd/MFDScreen', () => ({ default: () => <div data-testid="mfd-screen-stub" /> }));
 vi.mock('../../ranking/MedalToast', () => ({ default: () => null }));
 vi.mock('../../comms/PriorityHailConsumer', () => ({ default: () => null }));

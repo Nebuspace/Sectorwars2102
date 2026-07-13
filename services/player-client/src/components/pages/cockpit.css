@@ -62,145 +62,18 @@
   justify-content: stretch;
 }
 
-/* DOCKED-MINIMIZE: a few seconds after docking the low-value station-bay
-   scenery collapses to a thin identity strip, handing the band to the station
-   console (the buy/sell desk + venues). Toggleable by the player. */
-.cockpit-mode.docked-min .cockpit-windshield {
-  flex-basis: 34px;
-}
-/* Hide the bay canvas, frame and HUD chips while minimized — show only the
-   slim docked strip. */
-.cockpit-mode.docked-min .cockpit-windshield > *:not(.docked-min-bar) {
-  display: none !important;
-}
-.docked-min-bar { display: none; }
-.cockpit-mode.docked-min .docked-min-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  width: 100%;
-  height: 34px;
-  padding: 0 14px;
-  box-sizing: border-box;
-  background: linear-gradient(180deg, rgba(0, 30, 40, 0.95), rgba(0, 12, 20, 0.95));
-  border-bottom: 1px solid rgba(0, 217, 255, 0.3);
-  font-family: 'Courier New', monospace;
-}
-.docked-min-name {
-  color: #00d9ff;
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  text-shadow: 0 0 8px rgba(0, 217, 255, 0.5);
-}
-.docked-min-expand {
-  flex-shrink: 0;
-  background: rgba(0, 217, 255, 0.1);
-  color: #00d9ff;
-  border: 1px solid rgba(0, 217, 255, 0.45);
-  border-radius: 3px;
-  font: inherit;
-  font-size: 0.7rem;
-  letter-spacing: 0.06em;
-  padding: 3px 10px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-.docked-min-expand:hover {
-  background: rgba(0, 217, 255, 0.22);
-  box-shadow: 0 0 8px rgba(0, 217, 255, 0.4);
-}
-/* Manual "minimize bay" button — bottom-center of the expanded bay. */
-.bay-minimize-btn {
-  position: absolute;
-  bottom: 8px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 6;
-  background: rgba(0, 12, 20, 0.7);
-  color: rgba(0, 217, 255, 0.85);
-  border: 1px solid rgba(0, 217, 255, 0.4);
-  border-radius: 3px;
-  font-family: 'Courier New', monospace;
-  font-size: 0.65rem;
-  letter-spacing: 0.08em;
-  padding: 3px 12px;
-  cursor: pointer;
-  backdrop-filter: blur(3px);
-  transition: all 0.15s ease;
-}
-.bay-minimize-btn:hover {
-  background: rgba(0, 217, 255, 0.18);
-  box-shadow: 0 0 8px rgba(0, 217, 255, 0.35);
-}
-/* While minimized the manual button is irrelevant (whole bay hidden) */
-.cockpit-mode.docked-min .bay-minimize-btn { display: none; }
-
-/* LANDED-MINIMIZE: parity with docked-minimize for the planet-surface scene —
-   a few seconds after landing the surface vista collapses to a thin identity
-   strip, handing the band to the planetary console. Toggleable by the player.
-   Green/surface accent vs the cyan station treatment. */
-.cockpit-mode.landed-min .cockpit-windshield {
-  flex-basis: 34px;
-}
-.cockpit-mode.landed-min .cockpit-windshield > *:not(.landed-min-bar) {
-  display: none !important;
-}
-.landed-min-bar { display: none; }
-.cockpit-mode.landed-min .landed-min-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  width: 100%;
-  height: 34px;
-  padding: 0 14px;
-  box-sizing: border-box;
-  background: linear-gradient(180deg, rgba(0, 40, 22, 0.95), rgba(0, 18, 10, 0.95));
-  border-bottom: 1px solid rgba(0, 255, 127, 0.3);
-  font-family: 'Courier New', monospace;
-}
-.landed-min-name {
-  color: #00ff7f;
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  text-shadow: 0 0 8px rgba(0, 255, 127, 0.5);
-}
-.landed-min-expand {
-  flex-shrink: 0;
-  background: rgba(0, 255, 127, 0.1);
-  color: #00ff7f;
-  border: 1px solid rgba(0, 255, 127, 0.45);
-  border-radius: 3px;
-  font: inherit;
-  font-size: 0.7rem;
-  letter-spacing: 0.06em;
-  padding: 3px 10px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-.landed-min-expand:hover {
-  background: rgba(0, 255, 127, 0.22);
-  box-shadow: 0 0 8px rgba(0, 255, 127, 0.4);
-}
-/* Right-hand action cluster on the green landed bar: EXPAND SURFACE + the
-   single LIFT OFF (WO 129-C). */
-.landed-min-actions {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-/* LIFT OFF lives on the green bar — amber so it reads as the depart action,
-   distinct from the green expand affordance beside it. */
+/* The DOCKED-MINIMIZE / LANDED-MINIMIZE 34px green/cyan-bar collapse
+   mechanism is DELETED (WO-UI5-RETIREMENT+GLASS): `.cockpit-mode.docked-min`
+   / `.landed-min` were never applied by GameDashboard (WO-INVERTED-L retired
+   the 34px collapse in favor of docked/landed EXPANDING the console
+   instead, leaving `.docked-min-bar`/`.landed-min-bar` and the
+   `bay-minimize-btn`/`.docked-min-expand`/`.landed-min-expand` controls
+   that toggled them permanently unreachable), and the `bay-minimize-btn`
+   JSX itself is now also deleted. LIFT OFF is the one surviving control —
+   it lives on directly (not on a min-bar), styled by `.landed-min-liftoff`'s
+   base rule below (used standalone now, no min-bar variant left to pair
+   with). */
+/* LIFT OFF — amber so it reads as the depart action. */
 .landed-min-liftoff {
   flex-shrink: 0;
   background: rgba(251, 191, 36, 0.12);
@@ -226,15 +99,10 @@
   box-shadow: none;
 }
 
-/* EXPANDED-state surface controls — Minimize Surface + Lift Off grouped as an
-   ABSOLUTE corner cluster over the vista (Max + Orchestrator placement decision,
-   superseding the earlier bottom-left dock). Anchored top-right at 3.4rem
-   (y≈54), sitting ABOVE the owner HUD chip (now at top:5.5rem / y≈88 after the
-   cascade fix — see .hud-overlay.top-right[data-hud-chip="owner"] below).
-   Both buttons are corner controls over the surface, so neither pushes/overlaps
-   the planet viewport. .cockpit-windshield is position:relative.
-   Scoped to the landed render's cluster, so the shared docked-bay
-   .bay-minimize-btn (bottom-center) is untouched. */
+/* Corner cluster over the landed vista holding LIFT OFF (Max + Orchestrator
+   placement decision). Anchored top-right at 3.4rem (y≈54), sitting ABOVE
+   the owner HUD chip (top:5.5rem / y≈88 — see .hud-overlay.top-right[data-
+   hud-chip="owner"] below). .cockpit-windshield is position:relative. */
 .landed-surface-controls {
   position: absolute;
   top: 3.4rem;
@@ -244,29 +112,14 @@
   align-items: center;
   gap: 8px;
 }
-/* Inside the cluster the buttons flow normally (override their standalone
-   absolute positioning — the docked bay-minimize-btn, NOT in this cluster,
-   keeps its bottom-center anchor). */
-.landed-surface-controls .bay-minimize-btn,
+/* Inside the cluster the button flows normally (override its standalone
+   absolute positioning). */
 .landed-surface-controls .landed-min-liftoff.expanded {
   position: static;
   transform: none;
   bottom: auto;
   left: auto;
   backdrop-filter: blur(3px);
-}
-.cockpit-mode.landed-min .bay-minimize-btn { display: none; }
-
-/* Build-progress beacon in the minimized-surface strip (amber construction). */
-.landed-min-build {
-  flex-shrink: 0;
-  color: #ffaa44;
-  font-family: 'Courier New', monospace;
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-shadow: 0 0 8px rgba(255, 170, 68, 0.5);
-  white-space: nowrap;
 }
 
 /* CITADEL CONSTRUCTION INDICATOR — live time-based build readout in the landed
@@ -1016,16 +869,6 @@
   overflow: hidden;
 }
 
-/* WO-INVERTED-L retires the 34px green-bar collapse: the band is always present
-   and docked/landed EXPAND the console instead. GameDashboard no longer applies
-   .docked-min/.landed-min, so the windshield-collapse rules above never fire;
-   hide the now-defunct "minimize surface / bay" buttons (the min-bars they
-   toggled never render). LIFT OFF stays — it lives in .landed-surface-controls,
-   not on a min-bar. */
-.bay-minimize-btn {
-  display: none !important;
-}
-
 /* Metallic texture overlay */
 .cockpit-console::before {
   content: '';
@@ -1471,31 +1314,15 @@
    rail needing the flex-wrap/row-gap safety net that rule provided), so
    every selector in it was permanently dead. */
 
-/* NAV + COMMS header rules, consolidated here alongside SOLAR SYSTEM's so
-   all 3 monitors' header-with-modes rules have one obvious co-located hook
-   for future overrides (Pixel INCONSISTENT). Both are STILL also defined
-   in their own component CSS (NAV: quantum/quantum-drive.css; COMMS:
-   comms/comms-mailbox.css) — those files import AFTER cockpit.css in
-   GameDashboard.tsx, so their copies still win the cascade today. COMMS'
-   copy is already identical (no behavior change); NAV's copy is missing
-   this flex-wrap/row-gap safety net, so this cockpit.css block does not
-   yet change NAV's live wrap behavior — a follow-up should delete both
-   duplicate copies and make this the sole source of truth.
-   WO-UI0-SHELL-TRANSPLANT (Leaf L3): NAV dropped out of this selector —
-   `.mhead` no longer holds a rail to wrap (moved to `.skrow`), so
-   `.nav-header-with-modes` is permanently dead here; the still-live
-   duplicate copy in quantum/quantum-drive.css is now ALSO fully dead
-   (out of this WO's file scope — flagged, not touched). COMMS stays: its
-   own duplicate in comms/comms-mailbox.css is still the live copy for
-   CommsMailbox.tsx's still-orphaned (unmounted, undeleted) markup. */
-.comms-header-with-modes {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-  row-gap: 2px;
-}
+/* NAV + COMMS header-with-modes rules (formerly consolidated here alongside
+   SOLAR SYSTEM's) are both fully dead now: NAV's `.nav-header-with-modes`
+   dropped out of this selector under WO-UI0-SHELL-TRANSPLANT (Leaf L3 —
+   `.mhead` no longer holds a rail to wrap), and COMMS' `.comms-header-with-
+   modes` lost its sole consumer when CommsMailbox.tsx was deleted
+   (WO-UI5-RETIREMENT+GLASS — zero remaining importers, its own
+   comms-mailbox.css duplicate went with it). The still-live duplicate copy
+   of NAV's rule in quantum/quantum-drive.css remains out of this WO's file
+   scope — flagged, not touched. */
 
 /* Vertical rhythm between SOLAR SYSTEM[SYSTEM] hazard-note metric groups
    (hazard / radiation / description — WO-UI2-DECK-RECONCILE folded these
@@ -1528,15 +1355,15 @@
 
 /* .comms-monitor frame rules retired WO-UI2-DECK-RECONCILE — the deck
    COMMS monitor is gone (its CONTACTS relocated into TACTICAL[TARGET],
-   its HAILS/composer moved to the MFD-B COMM lane); CommsMailbox.tsx
-   itself is untouched/orphaned, not deleted, so .comms-header-with-modes
-   below stays live for it. */
+   its HAILS/composer moved to the MFD-B COMM lane). CommsMailbox.tsx itself
+   is now also deleted (WO-UI5-RETIREMENT+GLASS — zero remaining consumers). */
 
 /* WO-UI2-TACTICAL-MONITOR / WO-UI2-DECK-RECONCILE: TACTICAL is now the
    3rd (rightmost, 29%) deck-monitor column, DOM-3rd with default order:0
    (no override needed). Its orange DeckPageTabs accent (`accent="#FF8800"`,
    TacticalMonitor.tsx) -- deliberately NOT the WPN weapons-route accent
-   (#FF4D6D, mfd/RouteRail.tsx) and distinct from NAV cyan / SOLAR SYSTEM
+   (#FF4D6D, formerly mfd/RouteRail.tsx, itself retired WO-UI5-RETIREMENT
+   +GLASS) and distinct from NAV cyan / SOLAR SYSTEM
    purple -- still tints the base `.deck-tab-btn:hover` rule above via
    --tab-accent; TARGET's rep-status colors and THREAT's law/hazard
    readouts (tactical-monitor.css) carry their own semantic colors

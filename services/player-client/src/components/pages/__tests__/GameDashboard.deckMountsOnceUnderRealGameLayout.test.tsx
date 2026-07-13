@@ -40,7 +40,7 @@
  * test.tsx's (services/api, react-router-dom, sub-component stubs, game
  * state shape) and GameLayout.teleprinterAnnunciatorIntegration.test.tsx's
  * (the context fields GameLayout's own hooks need) — GameLayout itself is
- * NOT mocked (the entire point), but Annunciator/Teleprinter/RouteRail/
+ * NOT mocked (the entire point), but Annunciator/Teleprinter/
  * MFDScreen inside it are stubbed as irrelevant chrome, keeping this file
  * focused on the one thing it exists to prove.
  */
@@ -67,6 +67,11 @@ vi.mock('../../../services/api', () => ({
 
 vi.mock('react-router-dom', () => ({
   useNavigate: () => vi.fn(),
+  // GameLayout is mounted for REAL here (the whole point of this file) and
+  // now calls useLocation() for its redirect-focus-management effect
+  // (Pixel a11y gate, WCAG 2.4.3) -- a static pathname is enough since this
+  // file never navigates; it only needs the call to not throw.
+  useLocation: () => ({ pathname: '/game' }),
 }));
 
 // GameLayout is DELIBERATELY NOT mocked — that's the entire point of this file.
@@ -95,7 +100,6 @@ vi.mock('../../../hooks/useResourceCatalog', () => ({
 vi.mock('../../layouts/StatusBar', () => ({ default: () => <div data-testid="statusbar-stub" /> }));
 vi.mock('../../aria/Teleprinter', () => ({ default: () => <div data-testid="teleprinter-stub" /> }));
 vi.mock('../../hud/Annunciator', () => ({ default: () => <div data-testid="annunciator-stub" /> }));
-vi.mock('../../mfd/RouteRail', () => ({ default: () => <div data-testid="route-rail-stub" /> }));
 vi.mock('../../mfd/MFDScreen', () => ({ default: () => <div data-testid="mfd-screen-stub" /> }));
 vi.mock('../../ranking/MedalToast', () => ({ default: () => null }));
 vi.mock('../../comms/PriorityHailConsumer', () => ({ default: () => null }));

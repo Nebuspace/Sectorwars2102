@@ -20,21 +20,17 @@ import OAuthCallback from './components/auth/OAuthCallback'
 import LandingPage from './components/landing/LandingPage'
 import GameShellRoute from './components/layouts/GameShellRoute'
 import GameDashboard from './components/pages/GameDashboard'
-import GalaxyMap from './components/pages/GalaxyMap'
-import RankingPage from './components/pages/RankingPage'
-import SettingsPage from './components/pages/SettingsPage'
 import DebugPage from './components/pages/DebugPage'
 import TestAuthPage from './components/pages/TestAuthPage'
 import { FirstLoginContainer } from './components/first-login'
-
-// Import game feature components
-import { TeamManager } from './components/teams'
-import { CombatInterface } from './components/combat'
-import { PlanetManager } from './components/planetary'
-import { ShipSelector } from './components/ships'
-import { TradingInterface } from './components/trading'
-import PlayerInfo from './components/player/PlayerInfo'
-import GovernancePanel from './components/governance/GovernancePanel'
+// WO-UI5-RETIREMENT+GLASS: the 9 other /game/* page components RouteRail's
+// nav keys used to route to (map/player/settings/planets/combat/team/
+// governance/ranking/ships/trading) are retired to client-side redirects
+// below — GameRouteRedirects.tsx. The page components themselves stay on
+// disk, untouched (the codebase's established retirement convention — see
+// mfdRegistry.tsx's own doc-comment for the same pattern), just no longer
+// imported/mounted here.
+import { RedirectToGame, RedirectToTacticalTarget } from './components/layouts/GameRouteRedirects'
 
 // Dev-only lab routes — dead-code-eliminated from prod builds by Vite
 // Both imports are gated on import.meta.env.DEV so Vite dead-code-eliminates
@@ -273,16 +269,21 @@ function App() {
                 </ProtectedRoute>
               }>
                 <Route index element={<GameDashboard />} />
-                <Route path="map" element={<GalaxyMap />} />
-                <Route path="team" element={<TeamManager />} />
-                <Route path="governance" element={<GovernancePanel />} />
-                <Route path="combat" element={<CombatInterface />} />
-                <Route path="planets" element={<PlanetManager />} />
-                <Route path="ships" element={<ShipSelector />} />
-                <Route path="player" element={<PlayerInfo />} />
-                <Route path="trading" element={<TradingInterface />} />
-                <Route path="ranking" element={<RankingPage />} />
-                <Route path="settings" element={<SettingsPage />} />
+                {/* WO-UI5-RETIREMENT+GLASS — legacy RouteRail URLs, redirected
+                    client-side onto their shipped homes on the single-page
+                    cockpit. See GameRouteRedirects.tsx for the deep-link
+                    rationale (only /game/combat gets one, via the existing
+                    deckNavBus) and the full per-route target map. */}
+                <Route path="map" element={<RedirectToGame />} />
+                <Route path="team" element={<RedirectToGame />} />
+                <Route path="governance" element={<RedirectToGame />} />
+                <Route path="combat" element={<RedirectToTacticalTarget />} />
+                <Route path="planets" element={<RedirectToGame />} />
+                <Route path="ships" element={<RedirectToGame />} />
+                <Route path="player" element={<RedirectToGame />} />
+                <Route path="trading" element={<RedirectToGame />} />
+                <Route path="ranking" element={<RedirectToGame />} />
+                <Route path="settings" element={<RedirectToGame />} />
               </Route>
               {import.meta.env.DEV && VistaLab && (
                 <Route path="/lab/vista" element={<Suspense fallback={<div>Loading Vista Lab…</div>}><VistaLab /></Suspense>} />

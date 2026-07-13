@@ -576,22 +576,35 @@
   }
 }
 
-/* REP badge (DECISIONS #9) — WO-UI0-SHELL-TRANSPLANT Leaf L1 nit (a): now
-   plain `.vit.repb` (cockpit-shell.css: fixed `color: var(--grn)`), tier +
-   SIGNED personal_reputation content (StatusBar.tsx), NOT tier-only. This
-   SUPERSEDES the per-tier `name_color` grading (Villain #FF0000 → …
-   Legendary #00FFFF) the badge previously carried under this same
-   DECISIONS-#9 slot — a real, visible behavior change flagged in this
-   leaf's own report for a second look, not a silent regression. No rule
-   needed here any more; `.repb` alone covers it. */
+/* REP badge (DECISIONS #9) — WO-UI5-RETIREMENT+GLASS rep-lane: RESTORES
+   per-tier color-grading. WO-UI0-SHELL-TRANSPLANT Leaf L1 nit (a) had
+   re-classed this onto plain `.vit.repb` (cockpit-shell.css: fixed
+   `color: var(--grn)`), dropping the per-tier `--rep-color` grading the
+   badge carried pre-transplant (`.sb-rep-badge`, 0b444585) — flagged in
+   that leaf's own report as a visible behavior change worth a second look,
+   not a silent regression, and now confirmed against canon: §05 L614
+   mandates "reputation visible at all times, color-graded (blue/gray/red
+   grammar)", so a flat color was a real gap, not a design call. Restored
+   via the SAME `--rep-color` CSS-var indirection the pre-transplant badge
+   used, now fed the artifact's OWN blue/gray/red triad (source
+   cockpit-redesign-v10-RATIFIED.html:538 — "red is dead" #FF5A6A /
+   "gray struck the lawful" #9AA6B5 / "blue in good standing" #5FB8FF)
+   bucketed off `reputation_tier` in StatusBar.tsx's REP_TIER_COLORS, not
+   the old raw `name_color` passthrough (that was the demo's 8-hue ramp,
+   a different grammar than L614's 3-band one). LAWFUL keeps the artifact's
+   own fixed green (`--grn`) — also the var()'s fallback, so the common
+   lawful-player case still reads green even if a tier is unrecognized. */
 
 /* REP badge uppercase (WO-UI0-SHELL-TRANSPLANT integration cleanup item 5)
    — the artifact shows the tier in caps ("LAWFUL +300"); StatusBar.tsx
    renders the raw `reputation_tier` string Title-case ("Trusted +250") for
    app-wide consistency with how tier names read elsewhere. Visual-only
    CSS transform, NOT a data/string change — compound `.vit.repb` (2
-   classes) so it doesn't leak onto any other `.vit` badge. */
+   classes) so it doesn't leak onto any other `.vit` badge; same compound
+   selector also outranks cockpit-shell.css's bare `.repb` on specificity
+   for the color rule below, regardless of CSS load order. */
 .vit.repb {
+  color: var(--rep-color, var(--grn));
   text-transform: uppercase;
 }
 

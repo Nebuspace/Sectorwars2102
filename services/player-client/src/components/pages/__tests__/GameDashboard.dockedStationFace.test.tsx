@@ -65,7 +65,6 @@ vi.mock('../../tactical/SolarSystemViewscreen', () => ({
 vi.mock('../../tactical/PlanetPortPair', () => ({ default: () => <div /> }));
 vi.mock('../../quantum/QuantumDriveConsole', () => ({ default: () => <div /> }));
 vi.mock('../../gatewright/GatewrightPanel', () => ({ default: () => <div /> }));
-vi.mock('../../comms/CommsMailbox', () => ({ default: () => <div /> }));
 vi.mock('../../cockpit/CockpitColonyManagement', () => ({ default: () => <div /> }));
 vi.mock('../../cockpit/SafeVaultPanel', () => ({ default: () => <div /> }));
 

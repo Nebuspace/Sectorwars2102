@@ -34,8 +34,8 @@
  * content components. Teleprinter is the REAL, unmocked component (same
  * seam as GameLayout.teleprinterDisplayModes.test.tsx) — mid-panel is
  * entered via a real click on its own [◫ PANEL] control, exactly as a
- * player would. Annunciator/RouteRail/the toast-banner children are
- * stubbed as irrelevant chrome (matches every sibling GameLayout test).
+ * player would. Annunciator/the toast-banner children are stubbed as
+ * irrelevant chrome (matches every sibling GameLayout test).
  */
 import React, { act, useEffect } from 'react';
 import { createPortal } from 'react-dom';
@@ -120,7 +120,6 @@ vi.mock('../../../contexts/AutopilotContext', () => ({
   }),
 }));
 
-vi.mock('../../mfd/RouteRail', () => ({ default: () => <div data-testid="route-rail-stub" /> }));
 vi.mock('../../hud/Annunciator', () => ({ default: () => <div data-testid="annunciator-stub" /> }));
 vi.mock('../../ranking/MedalToast', () => ({ default: () => null }));
 vi.mock('../../comms/PriorityHailConsumer', () => ({ default: () => null }));

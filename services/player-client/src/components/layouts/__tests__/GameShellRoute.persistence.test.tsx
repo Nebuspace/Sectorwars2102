@@ -14,9 +14,12 @@
  * This pins that TRUE resetting set across a real react-router navigation
  * (/game -> /game/map, via a real data router — createMemoryRouter +
  * RouterProvider, not a mocked useNavigate): the "INITIALIZING SYSTEMS"
- * loading latch, a manual sidebar-collapse, and a mount-only effect on a
- * shell-persistent child all survive the nav, while the Outlet's own
- * content genuinely swaps.
+ * loading latch, a manual teleprinter display-mode change (GameLayout-owned
+ * `teleprinterDisplayMode` state -- the sidebar-collapse toggle this proof
+ * used to drive was retired, WO-UI5-RETIREMENT+GLASS; teleprinterDisplayMode
+ * is now the only remaining piece of GameLayout-local, user-triggerable
+ * state), and a mount-only effect on a shell-persistent child all survive
+ * the nav, while the Outlet's own content genuinely swaps.
  *
  * GameLayout itself is the SUT and is NOT mocked. Its context deps
  * (useAuth/useGame/useWebSocket/useAutopilot) and GameShellRoute's own
@@ -30,7 +33,7 @@
  * confirmed by a live repro before landing this version. A genuine
  * Context-value change (via the provider's own `setState`) propagates to
  * every consuming fiber regardless of that memoization, exactly like the
- * real GameProvider does in production. RouteRail, MFDScreen, and the 5
+ * real GameProvider does in production. MFDScreen and the 5
  * always-mounted toast/banner children (MedalToast, PriorityHailConsumer,
  * WelcomeBackToast, NpcCombatBanner, FirstSessionObjectives) are stubbed --
  * irrelevant chrome for this proof. MedalToast's stub doubles as the
@@ -80,10 +83,6 @@ vi.mock('../../../contexts/WebSocketContext', () => ({
 
 vi.mock('../../../contexts/AutopilotContext', () => ({
   useAutopilot: () => ({ status: 'idle', course: null, pauseReason: null }),
-}));
-
-vi.mock('../../mfd/RouteRail', () => ({
-  default: () => <div data-testid="route-rail-stub" />,
 }));
 
 vi.mock('../../mfd/MFDScreen', () => ({
@@ -226,13 +225,26 @@ describe('GameShellRoute + GameLayout — persistent shell across navigation', (
     expect(container.querySelector('.viewport-loading-overlay')).toBeNull();
     expect(medalToastMountCount).toBe(1); // a Context-value change, not a remount
 
-    // ── Phase 2: manually collapse the sidebar ──
-    const toggleBtn = container.querySelector('.sidebar-edge-toggle') as HTMLButtonElement;
-    expect(toggleBtn).not.toBeNull();
+    // ── Phase 2: manually change the teleprinter display mode ──
+    // (the sidebar-collapse toggle this proof used to drive is retired,
+    // WO-UI5-RETIREMENT+GLASS -- teleprinterDisplayMode is the only
+    // remaining piece of GameLayout-owned, user-triggerable local state to
+    // prove survives the nav). The ticker row's "▲ LOG" key
+    // (`.tp-ticker-log`) is always in the DOM and calls
+    // `onDisplayModeChange('full-overlay')`, which GameLayout mirrors onto
+    // the Teleprinter root as `tp-full-overlay`.
+    const overlayBtn = container.querySelector('.tp-ticker-log') as HTMLButtonElement;
+    expect(overlayBtn).not.toBeNull();
     await act(async () => {
-      toggleBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      overlayBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
-    expect(container.querySelector('.game-container.console-collapsed')).not.toBeNull();
+    expect(container.querySelector('[data-testid="teleprinter"].tp-full-overlay')).not.toBeNull();
+
+    // Pre-nav baseline: nothing has focused the main landmark yet (a fresh
+    // mount must NOT steal focus -- see the redirect-focus-management
+    // doc-comment on GameLayout's location-change effect).
+    const mainLandmark = container.querySelector('.game-content');
+    expect(document.activeElement).not.toBe(mainLandmark);
 
     // ── Phase 3: navigate to the sibling route ──
     await act(async () => {
@@ -245,11 +257,17 @@ describe('GameShellRoute + GameLayout — persistent shell across navigation', (
     expect(container.querySelector('[data-testid="stub-index-page"]')).toBeNull();
     expect(container.querySelector('.game-layout-wrapper')).not.toBeNull();
 
+    // (5) Pixel a11y gate (WCAG 2.4.3): a real /game/* navigation moves
+    // focus onto the cockpit's own <main class="game-content"> landmark
+    // instead of dropping it on <body> -- proves GameRouteRedirects.tsx's
+    // legacy-URL <Navigate> landings are announced, not silent.
+    expect(document.activeElement).toBe(mainLandmark);
+
     // (3) exactly one mount of the persistent shell across the whole nav.
     expect(medalToastMountCount).toBe(1);
 
-    // (2) the manual sidebar-collapse survived the navigation.
-    expect(container.querySelector('.game-container.console-collapsed')).not.toBeNull();
+    // (2) the manual teleprinter display-mode change survived the navigation.
+    expect(container.querySelector('[data-testid="teleprinter"].tp-full-overlay')).not.toBeNull();
 
     // (1) the loading latch survived the navigation: even if isLoading
     // flips true again post-nav, hasLoadedOnce (GameLayout-internal state

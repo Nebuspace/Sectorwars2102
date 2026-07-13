@@ -11,68 +11,6 @@
   z-index: 1;
 }
 
-.sidebar-toggle {
-  width: 50px;
-  height: 50px;
-  background: linear-gradient(145deg, #1A1A22, #151519);
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  color: var(--color-primary);
-  cursor: pointer;
-  transition: all var(--transition-normal);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 1.2rem;
-  position: relative;
-  overflow: hidden;
-}
-
-.sidebar-toggle:hover {
-  border-color: var(--color-primary);
-  box-shadow: var(--glow-primary);
-  transform: scale(1.05);
-}
-
-.toggle-icon {
-  transition: transform var(--transition-normal);
-}
-
-.sidebar-toggle:hover .toggle-icon {
-  transform: scale(1.2);
-}
-
-/* Edge-anchored variant — the toggle moved out of the deleted top header
-   onto the left edge of the viewport. Reuses the .sidebar-toggle chrome
-   (gradient/border/hover) and overrides only position + size so it sits
-   compactly at the viewport's left, vertically centered, above content. */
-/* Two-class selector so `position:absolute` outranks `.cockpit-btn{position:relative}`
-   (cockpit-components.css, same specificity but imported later) — otherwise the
-   toggle stays in-flow at the top of .game-content and (with main{gap:4rem})
-   pushes the viewport down ~102px, leaving an empty band above it. */
-/* Slim flush-edge tab (id=139 item 2): a 38x38 square inset 0.5rem at the
-   viewport's left-center stole scene clicks there. Shrunk to a 14x44 vertical
-   tab pinned FLUSH to the left edge (left:0) and rounded only on its inner
-   (right) corners, so its click-stealing footprint drops from 38x38=1444px^2
-   to 14x44=616px^2 and sits against the rail seam instead of over the scene. */
-.cockpit-btn.sidebar-edge-toggle {
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 40;
-  width: 14px;
-  height: 44px;
-  min-width: 0; /* override .cockpit-btn min sizing so the slim width holds */
-  padding: 0;
-  border-radius: 0 6px 6px 0;
-}
-
-.sidebar-edge-toggle:hover {
-  /* keep the base translateY centering while applying the hover scale */
-  transform: translateY(-50%) scale(1.05);
-}
-
 /* Game container — WO-UI0-SHELL-TRANSPLANT (supersedes WO-INVERTED-L's
    absolute-overlay geometry below). `.game-container` IS the `.stage` grid
    host now: cockpit-shell.css's `.stage, .game-container` dual-selector
@@ -150,8 +88,9 @@
    winning over a plain static box regardless of source order (CSS
    Appendix E: positioned descendants paint after non-positioned ones,
    full stop). Without this, `.game-content`'s box (deliberately NOT
-   pointer-events:none — the 9 standalone routes rendered inside it need
-   full interactivity) would sit in front of the MFD rail on every route. */
+   pointer-events:none — the index route's residual chrome, see the
+   `.game-content` doc-comment below, needs full interactivity) would sit
+   in front of the MFD rail on every route. */
 .game-container .lower {
   position: relative;
   grid-template-rows: 1fr;
@@ -173,55 +112,27 @@
 }
 
 /* `.mfdcol` — cockpit-shell.css's untouched `1fr 1fr` 2-row template
-   assumes exactly 2 children (the source artifact's own markup: two bare
-   `.mfd` boxes, no nav rail). This tree also carries RouteRail above the
-   MFD pair — its retirement is a later, Phase-5 WO gated behind unbuilt
-   deck-monitors (see the cockpit-redesign-v10 ratified plan's own phase
-   ordering), not this WO's to do. `auto 1fr 1fr` gives RouteRail its own
-   auto-sized row and leaves the original 1fr/1fr split for the two
-   MFDScreens untouched; `.folded` (GameLayout: teleprinter mid-panel, only
-   ONE MFDScreen renders) drops to `auto 1fr` so that single screen gets
-   the full remaining height instead of half of it. Higher specificity
+   already assumes exactly 2 children (the source artifact's own markup:
+   two bare `.mfd` boxes, no nav rail) — RouteRail's retirement
+   (WO-UI5-RETIREMENT+GLASS) restored that exact shape, so no override is
+   needed for the un-folded case any more (the old `auto 1fr 1fr` override
+   that gave RouteRail its own auto-sized row above the MFD pair is gone
+   with it). `.folded` (GameLayout: teleprinter mid-panel, only ONE
+   MFDScreen renders) still needs its own override — a bare single-row
+   `1fr` so that one screen gets the full cell height, since cockpit-
+   shell.css's base assumes 2 rows unconditionally. Higher specificity
    (0,2,0) than cockpit-shell.css's bare `.mfdcol` (0,1,0) so this always
    wins regardless of cascade order. */
-.game-container .mfdcol {
-  grid-template-rows: auto 1fr 1fr;
-}
-
 .game-container .mfdcol.folded {
-  grid-template-rows: auto 1fr;
+  grid-template-rows: 1fr;
 }
 
-/* Sidebar-collapse restoration (adversarial-review catch, Mack): the
-   pre-transplant `.console-collapsed` set `--sidebar-w: 0px`, read by the
-   OLD absolute `.game-sidebar { width: var(--sidebar-w) }` rule. Both the
-   var and that reader are retired — the edge-toggle button (GameLayout.tsx
-   sidebar-edge-toggle) and the WO-129-B landing auto-collapse effect still
-   flip `.console-collapsed` on `.game-container`, but until now nothing
-   consumed it, so the MFD rail stopped collapsing (a silent behavior
-   regression the fixed 19%/81% `.lower` split introduced). INTERIM,
-   NO-REGRESSION fix only: collapse `.mfdcol`'s column to 0 under the new
-   fixed-column `.lower`, so the toggle/auto-collapse are visibly live
-   again, same as pre-seam. Higher specificity (0,3,0) than cockpit-shell.css's
-   base `.lower{grid-template-columns:19% 81%}` (0,1,0). The DELIBERATE
-   retire-vs-keep call (the v10 artifact's own shell has no collapse
-   affordance at all — fixed rail, always) is explicitly OUT of this WO's
-   scope and deferred to a later wave/orchestrator ruling — do not remove
-   this rule to "finish the job" without that ruling. */
-.game-container.console-collapsed .lower {
-  grid-template-columns: 0 100%;
-}
-
-/* `.mfdcol` itself carries no `overflow` (cockpit-shell.css) — harmless at
-   its normal 19% width, but at a collapsed 0px cell its children (RouteRail
-   labels, MFDScreen bezels) have real intrinsic width and would visually
-   bleed into the deck rather than disappearing. `min-width:0` (`.stage *`,
-   cockpit-shell.css) already lets the CELL itself shrink to 0; this clips
-   the CONTENT to match, scoped to the collapsed state only so the normal
-   19% width is untouched. */
-.game-container.console-collapsed .mfdcol {
-  overflow: hidden;
-}
+/* The sidebar-collapse mechanism (manual edge-toggle + WO-129-B landing
+   auto-collapse, `.console-collapsed` on `.game-container`, and the
+   `.mfdcol` column/overflow rules that used to key off it) is RETIRED
+   (WO-UI5-RETIREMENT+GLASS) — the v10 artifact's own shell has no collapse
+   affordance at all: `.lower` stays fixed at cockpit-shell.css's base
+   19%/81% split at ALL times now. */
 
 /* STATION FACE (WO-UI3-STATION-MODE): docked stops looking like the cockpit.
    `mode-station` (GameLayout.tsx) was a real-but-empty hook — this is its
@@ -393,19 +304,16 @@
    is now a fixed-height row per mode, not a player-resizable one, so there
    is nothing left for a minimize/expand affordance to do. */
 
-/* MFD console layout: rail fixed top, screens share the leftover height.
-   Descendant (not child) selectors so an extra provider wrapper between
-   the aside and the screens can never silently break the split.
-   `.mfdcol` (WO-UI0-SHELL-TRANSPLANT) supersedes the old absolute
-   `.game-sidebar` as RouteRail/MFDScreen's ancestor (see the
-   `.game-container .mfdcol` row-template rule above) — `min-height: 0`
-   still matters even though `.mfdcol` is a grid (not flex) parent now, for
-   the same reason it always did: without it a grid/flex item refuses to
-   shrink below its content's natural height. */
-.mfdcol .route-rail {
-  flex: 0 0 auto;
-}
-
+/* MFD console layout: screens share the available height. Descendant (not
+   child) selectors so an extra provider wrapper between the aside and the
+   screens can never silently break the split. `.mfdcol`
+   (WO-UI0-SHELL-TRANSPLANT) supersedes the old absolute `.game-sidebar` as
+   MFDScreen's ancestor (RouteRail, its other former child, is retired —
+   WO-UI5-RETIREMENT+GLASS; see the `.game-container .mfdcol.folded`
+   row-template rule above) — `min-height: 0` still matters even though
+   `.mfdcol` is a grid (not flex) parent now, for the same reason it always
+   did: without it a grid/flex item refuses to shrink below its content's
+   natural height. */
 .mfdcol .mfd-screen {
   flex: 1 1 0;
   min-height: 0;
@@ -531,15 +439,17 @@
    status bar, never above or behind it); `inset: 0` then fills that
    containing block exactly. Deliberately left pointer-events:auto
    (default) — unlike `.band`/`.deck` (which opt OUT of hit-testing when
-   empty, see above), THIS box needs to be fully interactive: it's what the
-   9 standalone /game/* routes (GalaxyMap, TeamManager, GovernancePanel,
-   CombatInterface, PlanetManager, ShipSelector, TradingInterface,
-   RankingPage, SettingsPage) render their real page content into,
-   unchanged. For GameDashboard specifically its real content (the
-   windshield scene + the 3 deck monitors) is portaled OUT of this box into
-   `.band`/`.deck` (ShellContext.ts) — what's left here for that one route
-   is residual alert/modal chrome, all `position: fixed` or portaled
-   straight to `document.body`, indifferent to where this box sits. */
+   empty, see above), THIS box needs to be fully interactive.
+   WO-UI5-RETIREMENT+GLASS: of the 11 nested /game/* routes (App.tsx), only
+   the INDEX route (GameDashboard) still mounts real content here — its real
+   content (the windshield scene + the 3 deck monitors) is portaled OUT of
+   this box into `.band`/`.deck` (ShellContext.ts), so what's left here for
+   it is residual alert/modal chrome, all `position: fixed` or portaled
+   straight to `document.body`, indifferent to where this box sits. The
+   other 10 legacy paths (map/team/governance/combat/planets/ships/player/
+   trading/ranking/settings) are now bare client-side <Navigate> redirects
+   back onto `/game` (GameRouteRedirects.tsx) — they never render real page
+   content into this box. */
 .game-content {
   position: absolute;
   grid-row: 2 / -1;
@@ -679,19 +589,6 @@
    fixed `.lower{grid-template-columns:19% 81%}` now, not a var). This WO is
    scoped to the 1440×900 reference resolution (Scroll Law) — a real
    sub-768px `.mfdcol`/`.deck` breakpoint, if wanted, is a follow-up, not a
-   structure-only carry-forward of dead numbers. Only the edge-toggle
-   hit-target sizing below (unrelated to those vars) survives. */
-@media (max-width: 768px) {
-  .sidebar-toggle {
-    width: 45px;
-    height: 45px;
-  }
-}
-
-@media (max-width: 480px) {
-  .sidebar-toggle {
-    width: 40px;
-    height: 40px;
-    font-size: 1rem;
-  }
-}
+   structure-only carry-forward of dead numbers. The edge-toggle hit-target
+   sizing that used to survive here is retired along with the toggle itself
+   (WO-UI5-RETIREMENT+GLASS). */

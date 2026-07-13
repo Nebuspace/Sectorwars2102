@@ -11,7 +11,6 @@ import SpaceDockInterface from '../spacedock/SpaceDockInterface';
 import PortOfficeVenue from '../spacedock/PortOfficeVenue';
 import ContractBoardVenue from '../spacedock/ContractBoardVenue';
 import PopulationCenterInterface from '../planetary/PopulationCenterInterface';
-import TacticalCard from '../tactical/TacticalCard';
 import SolarSystemViewscreen from '../tactical/SolarSystemViewscreen';
 import PlanetPortPair from '../tactical/PlanetPortPair';
 import NavigationMap from '../tactical/NavigationMap';
@@ -26,6 +25,7 @@ import DeckPageTabs from '../cockpit/DeckPageTabs';
 import type { ProductionLine } from '../cockpit/ProductionPanel';
 import type { PerColonistRates, ProdRole } from '../cockpit/CoupledColonistSliders';
 import SafeVaultPanel from '../cockpit/SafeVaultPanel';
+import HazardAnalysisCard from '../hud/HazardAnalysisCard';
 import { navAPI, type NavChartResponse, sectorAPI, type SectorWreck } from '../../services/api';
 import apiClient from '../../services/apiClient';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
@@ -35,6 +35,10 @@ import './cockpit.css';
 import '../tactical/tactical-layout.css';
 import '../quantum/quantum-drive.css';
 import '../galaxy/styles/galaxy-3d.css';
+// HazardAnalysisCard's dialog skin (.annunciator-card*) is defined here,
+// alongside Annunciator.tsx's own defensive re-import of the same file (both
+// leaves mount the same shared card — see the locrow HAZARD chip below).
+import '../hud/annunciator.css';
 
 // Planet type icons (shared by the landed console and the claim ceremony)
 const PLANET_TYPE_ICONS: Record<string, string> = {
@@ -674,16 +678,6 @@ const GameDashboard: React.FC = () => {
     setStationTerminal('trade');
   }, [playerState?.current_port_id]);
 
-  // Same pattern for the planet-surface scene: a few seconds after landing the
-  // low-value surface vista collapses to a thin strip, handing the band to the
-  // planetary console (parity with the docked station bay). Resets on liftoff.
-  const [landedChromeMin, setLandedChromeMin] = useState(false);
-  useEffect(() => {
-    if (!playerState?.is_landed) { setLandedChromeMin(false); return; }
-    setLandedChromeMin(false); // start expanded so the surface "lands" visibly
-    const t = window.setTimeout(() => setLandedChromeMin(true), 3500);
-    return () => window.clearTimeout(t);
-  }, [playerState?.is_landed, playerState?.current_planet_id]);
 
   // NAV monitor mode (WO-UI2-DECK-RECONCILE, §05: [COURSE · CHART · DRIVE]):
   // COURSE (adjacent-exit MOVE + plotted-course PLOT/ENGAGE, its own page --
@@ -811,15 +805,15 @@ const GameDashboard: React.FC = () => {
   }, [shipsInSector, selectedShipId]);
 
   // SCAN layer feed (WO-UI2-LIVING-WINDSHIELD): the flight windshield's SCAN
-  // toggle (SolarSystemViewscreen-local) renders sector wrecks alongside
-  // special_formations. Also the SOLAR SYSTEM monitor's SALVAGE page (WO-
-  // UI2-DECK-RECONCILE) -- one shared fetch, not two, `refetchSectorWrecks`
-  // exposed so a completed/failed salvage can refresh the list without a
-  // second independent GET. No context cache exists for wrecks (unlike
-  // planets/stations/ships) -- mirrors the navChart effect above
-  // (cancelled-flag guard, keyed on sector_id) but a failed/absent fetch
-  // resolves to [] rather than keeping stale data, since a wreck list has no
-  // meaningful "last known" fallback across a sector change.
+  // toggle renders sector wrecks alongside special_formations. Also the
+  // SOLAR SYSTEM monitor's SALVAGE page (WO-UI2-DECK-RECONCILE) -- one
+  // shared fetch, not two, `refetchSectorWrecks` exposed so a completed/
+  // failed salvage can refresh the list without a second independent GET.
+  // No context cache exists for wrecks (unlike planets/stations/ships) --
+  // mirrors the navChart effect above (cancelled-flag guard, keyed on
+  // sector_id) but a failed/absent fetch resolves to [] rather than keeping
+  // stale data, since a wreck list has no meaningful "last known" fallback
+  // across a sector change.
   const [sectorWrecks, setSectorWrecks] = useState<SectorWreck[]>([]);
   const refetchSectorWrecks = useCallback(() => {
     if (currentSector?.sector_id == null) {
@@ -841,6 +835,29 @@ const GameDashboard: React.FC = () => {
       .catch(() => { if (!cancelled) setSectorWrecks([]); });
     return () => { cancelled = true; };
   }, [currentSector?.sector_id]);
+
+  // SCAN toggle (WO-UI5-RETIREMENT+GLASS item 3): lifted OUT of
+  // SolarSystemViewscreen (was SSV-local state) so its button can live in
+  // the SOLAR SYSTEM monitor's SYSTEM page instead of the glass — SSV is
+  // now a controlled component for this flag, mirroring the established
+  // selectedShipId/onSelectShip cross-boundary pattern above. The FUNCTION
+  // (gating the wreck/formation glyphs) is unchanged; only the trigger
+  // moved.
+  const [scanActive, setScanActive] = useState(false);
+
+  // locrow HAZARD chip → HazardAnalysisCard (WO-UI5-RETIREMENT+GLASS item 1).
+  // A second, independent trigger for the same self-contained card
+  // Annunciator.tsx already opens from its own HAZARD segment (own local
+  // open-state there too, in useAnnunciatorState.ts) — mirrors that exact
+  // pattern rather than threading a shared open-flag across the two
+  // components; HazardAnalysisCard itself is pure content (sector, onClose),
+  // safe to mount from either trigger.
+  const [locrowHazardCardOpen, setLocrowHazardCardOpen] = useState(false);
+  const locrowHazardButtonRef = useRef<HTMLButtonElement>(null);
+  const handleCloseLocrowHazardCard = () => {
+    setLocrowHazardCardOpen(false);
+    locrowHazardButtonRef.current?.focus();
+  };
 
   // NAV map sectors: one node per destination sector. A sector reachable by
   // BOTH a warp and a tunnel used to be listed twice (duplicate React keys in
@@ -2036,12 +2053,14 @@ const GameDashboard: React.FC = () => {
     }
   };
 
-  // Shared formation-badge-with-Investigate-control list — the windshield's
-  // FORMATIONS HudChip and the SOLAR SYSTEM monitor's HAZARDS page (WO-
-  // UI2-DECK-MONITORS) show the SAME currentSector.special_formations data;
-  // this closure (over investigatedFormationIds/investigatingFormationId/
-  // handleInvestigateFormation) is the one place that logic lives, reused
-  // by both instead of a second hand-copied block.
+  // Shared formation-badge-with-Investigate-control list — was reused by the
+  // windshield's FORMATIONS HudChip AND the SOLAR SYSTEM monitor's SIGNALS
+  // page (WO-UI2-DECK-MONITORS); the glass copy was retired at WO-UI5-
+  // RETIREMENT+GLASS (the locrow + annunciator's HAZARD segment own the
+  // glass now), so this closure (over investigatedFormationIds/
+  // investigatingFormationId/handleInvestigateFormation) now has the one
+  // SIGNALS-page call site below — kept as its own function rather than
+  // inlined, since a second consumer could return.
   const renderFormationList = (formations: SpecialFormationSummary[]) => (
     <div className="hud-features">
       {formations.map(f => {
@@ -2358,23 +2377,18 @@ const GameDashboard: React.FC = () => {
                 </div>
               </HudChip>
 
-              {/* Expanded-surface corner controls — Minimize Surface + Lift Off
-                  grouped as an absolute corner cluster OVER the vista (Max +
-                  Orchestrator placement decision) so neither pushes/overlaps the
-                  surface viewport. Scoped to the landed render, so the shared
-                  docked-bay minimize button is unaffected. Lift Off must stay
-                  reachable here because the green landed-min-bar (the other Lift
-                  Off) is display:none until the surface minimizes — the two
-                  chromes are mutually exclusive, so exactly one Lift Off shows. */}
+              {/* Surface corner control — LIFT OFF, an absolute corner cluster
+                  OVER the vista (Max + Orchestrator placement decision) so it
+                  never pushes/overlaps the surface viewport. The MINIMIZE
+                  SURFACE button + the green landed-min-bar it used to reveal
+                  are DELETED (WO-UI5-RETIREMENT+GLASS): GameDashboard never
+                  applied the `.cockpit-mode.landed-min` class either toggled,
+                  so the min-bar was permanently display:none and MINIMIZE
+                  SURFACE a dead click (already force-hidden by cockpit.css's
+                  own `.bay-minimize-btn { display: none !important; }`) —
+                  LIFT OFF is the one control that was ever reachable, so it's
+                  the one that survives, unconditionally. */}
               <div className="landed-surface-controls">
-                <button
-                  type="button"
-                  className="bay-minimize-btn"
-                  onClick={() => setLandedChromeMin(true)}
-                  title="Minimize the surface view — expand the planetary console"
-                >
-                  ▴ MINIMIZE SURFACE
-                </button>
                 <button
                   type="button"
                   className="landed-min-liftoff expanded"
@@ -2384,44 +2398,6 @@ const GameDashboard: React.FC = () => {
                 >
                   {helmBusy ? '🚀 DEPARTING…' : '🚀 LIFT OFF & DEPART'}
                 </button>
-              </div>
-
-              {/* Collapsed strip (shown only when minimized via CSS): planet
-                  identity + expand affordance. */}
-              <div className="landed-min-bar">
-                <span className="landed-min-name">
-                  🪐 LANDED — {(landedPlanet?.name || 'Planet').toUpperCase()}
-                </span>
-                {citadelInfo?.is_upgrading && (() => {
-                  const startMs = citadelInfo.upgrade_started_at ? new Date(citadelInfo.upgrade_started_at).getTime() : null;
-                  const endMs = citadelInfo.upgrade_complete_at ? new Date(citadelInfo.upgrade_complete_at).getTime() : null;
-                  const pct = (startMs && endMs && endMs > startMs)
-                    ? Math.min(100, Math.max(0, ((nowMs - startMs) / (endMs - startMs)) * 100)) : 0;
-                  const remainMs = endMs ? Math.max(0, endMs - nowMs) : 0;
-                  return <span className="landed-min-build" title="Citadel construction in progress">🏗️ {Math.round(pct)}% · {fmtBuildCountdown(remainMs)}</span>;
-                })()}
-                <span className="landed-min-actions">
-                  <button
-                    type="button"
-                    className="landed-min-expand"
-                    onClick={() => setLandedChromeMin(false)}
-                    title="Expand the surface view"
-                  >
-                    ⤢ EXPAND SURFACE
-                  </button>
-                  {/* The single landing-level LIFT OFF lives here on the green
-                      bar (WO 129-C); the gray helm-rail landed line and the
-                      vitals-strip Lift Off were removed so there is exactly one. */}
-                  <button
-                    type="button"
-                    className="landed-min-liftoff"
-                    onClick={handleLeavePlanet}
-                    disabled={helmBusy}
-                    title="Lift off and depart this planet"
-                  >
-                    {helmBusy ? '🚀 DEPARTING…' : '🚀 LIFT OFF & DEPART'}
-                  </button>
-                </span>
               </div>
             </>
             );
@@ -2435,10 +2411,10 @@ const GameDashboard: React.FC = () => {
               Salvaged verbatim: the ⚓ CLAMPED HudChip (id="baystatus").
               DROPPED (not resurrected): the bay-minimize-btn/docked-min-bar
               pair that used to live here — already dead code before this WO
-              (cockpit.css's own `.bay-minimize-btn { display: none
-              !important; }` retired it when WO-INVERTED-L landed; the
-              `.cockpit-mode.docked-min` class it targeted was never applied
-              to any element). GameLayout's manual windshield-minimize/
+              (the `.cockpit-mode.docked-min` class it targeted was never
+              applied to any element; the landed sibling's own dead
+              min-bar/minimize pair is deleted outright above, see that
+              comment). GameLayout's manual windshield-minimize/
               expand toggle (id=151, `--band-h`) this band used to
               collapse/grow with is ITSELF retired (WO-UI0-SHELL-TRANSPLANT
               — the band is now a fixed 8.5em height in station mode,
@@ -2487,6 +2463,7 @@ const GameDashboard: React.FC = () => {
                 onSelectShip={setSelectedShipId}
                 wrecks={sectorWrecks}
                 formations={currentSector.special_formations ?? []}
+                scanActive={scanActive}
               />
 
               {/* Cockpit frame vignette */}
@@ -2509,48 +2486,55 @@ const GameDashboard: React.FC = () => {
                   components/governance/RegionOwnerControls.tsx, mounted
                   inside that same LocationDropdown. */}
 
-              {currentSector.hazard_level > 0 && (
-                <HudChip
-                  id="hazard"
-                  className="top-right hazard"
-                  pill={<>⚠ {currentSector.hazard_level}/10</>}
-                >
-                  <div className="hud-label">⚠️ HAZARD</div>
-                  <div className="hud-value danger">{currentSector.hazard_level}/10</div>
-                  <div className="hud-bar">
-                    <div className="hud-bar-fill danger" style={{ width: `${currentSector.hazard_level * 10}%` }}></div>
-                  </div>
-                </HudChip>
-              )}
-
-              {currentSector.radiation_level > 0 && (
-                <HudChip
-                  id="radiation"
-                  className="bottom-right radiation"
-                  pill={<>☢ {(currentSector.radiation_level * 100).toFixed(1)}%</>}
-                >
-                  <div className="hud-label">☢️ RADIATION</div>
-                  <div className="hud-value warning">{(currentSector.radiation_level * 100).toFixed(1)}%</div>
-                  <div className="hud-bar">
-                    <div className="hud-bar-fill warning" style={{ width: `${currentSector.radiation_level * 100}%` }}></div>
-                  </div>
-                </HudChip>
-              )}
-
-              {currentSector.special_formations && currentSector.special_formations.length > 0 && (
-                <HudChip
-                  id="formations"
-                  className="bottom-left formations"
-                  pill={<>🌀 {currentSector.special_formations.length}</>}
-                >
-                  <div className="hud-label">🌀 FORMATIONS</div>
-                  {/* WO-UI-ANOMALY: a discovered formation carries an Investigate
-                      control (one-time reward). Undiscovered → label only, no
-                      control. Already-investigated this session → disabled.
-                      Shared with the SOLAR SYSTEM monitor's HAZARDS page
-                      (renderFormationList, WO-UI2-DECK-MONITORS). */}
-                  {renderFormationList(currentSector.special_formations)}
-                </HudChip>
+              {/* LOCROW (WO-UI5-RETIREMENT+GLASS item 1) — top-left location
+                  chips, reproduced from the ratified prototype's own
+                  `.locrow` markup (RATIFIED.html renderBand, item 1's Artifact
+                  reference L1266/L87-88): sector name / region / HAZARD
+                  (click → the analysis card, same one Annunciator's own
+                  HAZARD segment opens) / NEBULA / ALL STOP (in-transit only,
+                  same autopilot.abort the NAV monitor's ABORT button already
+                  calls). This — plus the annunciator strip already mounted in
+                  `.band` — retires the hazard/radiation/formations HudChips
+                  that used to occupy this glass real estate (item 2, below):
+                  hazard+radiation are already folded into the SOLAR SYSTEM
+                  monitor's SYSTEM page (`.system-hazard-fold`, WO-UI2-DECK-
+                  RECONCILE) and formations into its SIGNALS page — zero data
+                  loss, just no longer duplicated on the glass. */}
+              <div className="locrow">
+                <span className="loc">{currentSector.name}</span>
+                {currentSector.region_name && (
+                  <span className="loc">{currentSector.region_name}</span>
+                )}
+                {currentSector.hazard_level > 0 && (
+                  <button
+                    type="button"
+                    ref={locrowHazardButtonRef}
+                    className="loc"
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => setLocrowHazardCardOpen(true)}
+                    title="Open the hazard analysis card"
+                  >
+                    HAZARD {currentSector.hazard_level}/10 ▾
+                  </button>
+                )}
+                {currentSector.type?.toUpperCase() === 'NEBULA' && (
+                  <span className="loc">NEBULA</span>
+                )}
+                {autopilot.status === 'engaged' && (
+                  <button
+                    type="button"
+                    className="loc"
+                    style={{ color: '#FFB3BC', borderColor: '#5A2630', cursor: 'pointer' }}
+                    onClick={() => autopilot.abort('all stop')}
+                    aria-label="Abort autopilot and hold position"
+                    title="Abort autopilot and hold position"
+                  >
+                    🛑 ALL STOP
+                  </button>
+                )}
+              </div>
+              {locrowHazardCardOpen && (
+                <HazardAnalysisCard sector={currentSector} onClose={handleCloseLocrowHazardCard} />
               )}
 
               {currentSector.special_features && currentSector.special_features.length > 0 && (
@@ -3393,6 +3377,34 @@ const GameDashboard: React.FC = () => {
                 >
                 {systemPage === 'system' ? (
                     <>
+                      {/* SCAN toggle (WO-UI5-RETIREMENT+GLASS item 3) — was a
+                          standalone `.ssv-scan-toggle` button on the glass
+                          (SolarSystemViewscreen-local state); relocated here
+                          as the artifact's own `.row`/`.act` action-row
+                          idiom, wired to the SAME lifted `scanActive` flag
+                          the flight SolarSystemViewscreen mount above now
+                          receives as a controlled prop. Function unchanged —
+                          reveals/hides sector wrecks + special_formations as
+                          SCAN glyphs on the viewport; only the button moved.
+                          `.buy` (not `.armed`) is the ON accent -- mirrors
+                          the artifact's own two-way-toggle idiom (the colony
+                          autoVault switch: `class="act ${sel?'buy':''}"`),
+                          not the danger/flashing HALT/ENGAGE use of
+                          `.armed`, since a sensor sweep isn't an urgent
+                          state. */}
+                      <div className="row system-scan-row">
+                        <b>SENSOR SWEEP</b>
+                        <button
+                          type="button"
+                          className={`act${scanActive ? ' buy' : ''}`}
+                          onClick={() => setScanActive((prev) => !prev)}
+                          aria-pressed={scanActive}
+                          aria-label={scanActive ? 'Sensor scan active — showing wrecks and formations' : 'Sensor scan off — wrecks and formations hidden'}
+                          title={scanActive ? 'Disable sensor scan — hide wrecks and anomalies' : 'Enable sensor scan — reveal wrecks and anomalies'}
+                        >
+                          📡 SCAN{scanActive ? ` — ${sectorWrecks.length + (currentSector?.special_formations?.length ?? 0)}` : ''}
+                        </button>
+                      </div>
                       {/* Show planets paired with stations (by index) */}
                       {planetsInSector.map((planet, index) => (
                         <PlanetPortPair
@@ -3442,13 +3454,13 @@ const GameDashboard: React.FC = () => {
                       )}
                       {/* Hazards FOLDED IN — NOT their own page (§05 SYSTEM:
                           "bodies/stations rows... WITH hazards FOLDED IN").
-                          Same currentSector fields the windshield's HudChips
-                          already surface (hazard/radiation/features/
-                          description); special_formations is deliberately
-                          NOT repeated here — it moved to its own SIGNALS
-                          page below. Always shows the hazard/radiation
-                          readouts (even at 0) so this reads as a live
-                          sensor sweep, not a conditional chip. */}
+                          Same currentSector fields the glass surfaces (the
+                          locrow's HAZARD chip + hazard/radiation/features/
+                          description here); special_formations is
+                          deliberately NOT repeated here — it moved to its
+                          own SIGNALS page below. Always shows the hazard/
+                          radiation readouts (even at 0) so this reads as a
+                          live sensor sweep, not a conditional chip. */}
                       {currentSector && (
                         <div className="system-hazard-fold">
                           <div className="system-hazard-fold-title">SECTOR HAZARDS</div>
@@ -3492,9 +3504,9 @@ const GameDashboard: React.FC = () => {
                     <SolarSalvagePage wrecks={sectorWrecks} onSalvaged={refetchSectorWrecks} />
                   ) : (
                     /* SIGNALS — discovered formations → INVESTIGATE (§05).
-                       Shares renderFormationList with the windshield's
-                       FORMATIONS HudChip (same currentSector.
-                       special_formations data + Investigate control). */
+                       renderFormationList used to also be shared with the
+                       windshield's FORMATIONS HudChip, retired at WO-UI5-
+                       RETIREMENT+GLASS — this is now its one call site. */
                     !currentSector ? (
                       <div className="empty-state">No sector telemetry</div>
                     ) : currentSector.special_formations && currentSector.special_formations.length > 0 ? (

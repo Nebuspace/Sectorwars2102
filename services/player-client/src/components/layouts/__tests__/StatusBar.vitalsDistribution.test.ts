@@ -80,9 +80,11 @@ describe('statusbar.css — WO-UI0-SHELL-TRANSPLANT Leaf L1 re-emission', () => 
     expect(block).not.toMatch(/max-height:\s*calc\(100vh/);
   });
 
-  it('REP badge has no per-tier `--rep-color` grading left — `.repb` (cockpit-shell.css, fixed green) is the only rule now', () => {
+  it('REP badge is compound `.vit.repb` and carries per-tier `--rep-color` grading (WO-UI5-RETIREMENT+GLASS rep-lane — restored, not the retired `.sb-rep-badge` selector)', () => {
     expect(css).not.toMatch(/\.sb-rep-badge\s*\{/);
-    expect(css).not.toMatch(/--rep-color/);
+    const block = ruleBlock('.vit.repb');
+    expect(block).toMatch(/color:\s*var\(--rep-color,\s*var\(--grn\)\)\s*;/);
+    expect(block).toMatch(/text-transform:\s*uppercase\s*;/);
   });
 
   it('[⚙]/[⏻] no longer carry the old fixed-size `.sb-icon-btn` square skin or the LogoutButton width-defect fix (both dead now that both are plain `.chip`s)', () => {

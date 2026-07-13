@@ -6,9 +6,9 @@ import './solar-salvage.css';
  * SolarSalvagePage — SOLAR SYSTEM monitor's SALVAGE page (WO-UI2-DECK-
  * RECONCILE, §05: "SALVAGE: wreck rows → SALVAGE ▸").
  *
- * Logic ported from mfd/pages/SalvagePage.tsx (left untouched, read-only
- * source — a later cleanup WO retires the now-unreachable MFD SALV page
- * per the design brief's own rollup table), re-laid-out for the deck-
+ * Logic ported from mfd/pages/SalvagePage.tsx, since DELETED
+ * (WO-UI5-RETIREMENT+GLASS — the now-unreachable MFD SALV page, zero
+ * remaining consumers), re-laid-out for the deck-
  * monitor's screen-hud-content shape instead of MFDPageHeader/MFDPageBody
  * chrome. One difference from the MFD source: the wreck LIST is sourced
  * from GameDashboard's existing `sectorWrecks` state (already fetched for

@@ -160,41 +160,8 @@
   box-shadow: 0 0 10px rgba(0, 217, 255, 0.25);
 }
 
-/* ============================================
-   SCAN TOGGLE — flight scene only, top-left.
-   Same frosted-glass HUD language as the popup
-   and the orbital closeup's inline "glass"
-   buttons (border/glow/mono-font), not new
-   chrome.
-   ============================================ */
-
-.ssv-scan-toggle {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  z-index: 6;
-  padding: 5px 10px;
-  cursor: pointer;
-  background: rgba(0, 10, 16, 0.72);
-  border: 1px solid rgba(0, 217, 255, 0.45);
-  border-radius: 3px;
-  box-shadow: 0 0 14px rgba(0, 217, 255, 0.18);
-  backdrop-filter: blur(3px);
-  color: #00d9ff;
-  font-family: 'Courier New', monospace;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-shadow: 0 0 8px rgba(0, 217, 255, 0.5);
-}
-
-.ssv-scan-toggle:hover {
-  background: rgba(0, 217, 255, 0.16);
-}
-
-.ssv-scan-toggle.active {
-  border-color: rgba(0, 255, 65, 0.6);
-  color: #00ff41;
-  text-shadow: 0 0 8px rgba(0, 255, 65, 0.6);
-  box-shadow: 0 0 14px rgba(0, 255, 65, 0.25);
-}
+/* SCAN TOGGLE button CSS retired here (WO-UI5-RETIREMENT+GLASS item 3) — the
+   button moved off the glass to the SOLAR SYSTEM monitor's SYSTEM page,
+   which skins it with the shared artifact `.act` class (cockpit-shell.css)
+   instead of this bespoke `.ssv-scan-toggle` rule. Dead, zero remaining
+   consumers — see SolarSystemViewscreen.tsx's own SCAN-toggle comment. */
