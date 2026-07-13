@@ -513,7 +513,9 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
         content: message.data.message,
         // The plain-WS aria_response frame omits a top-level timestamp; without
         // a fallback this stays undefined and any consumer that sorts the feed
-        // by timestamp (AriaTerminalPage) throws on .localeCompare → MFD fault.
+        // by timestamp (the teleprinter, components/aria/Teleprinter.tsx —
+        // ARIA is absorbed into it, there is no standalone ARIA page anymore)
+        // throws on .localeCompare → MFD fault.
         timestamp: message.timestamp ?? new Date().toISOString(),
         conversationId: message.conversation_id,
         confidence: message.data.confidence,
@@ -535,12 +537,12 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     cleanups.push(ariaHandler);
 
     // ARIA narration handler (WO-ARIA-NARRATE-KERNEL / ADR-0068). Appends
-    // into the SAME ariaMessages array aria_response populates, so
-    // AriaTerminalPage's existing merge-and-render (ariaMessages +
-    // navMessages) picks these up with zero further wiring — visually
-    // attributed to ARIA via type: 'ai', no layout changes. Server-side
-    // emission lands in a later WO; this activates the moment the
-    // message type appears on the wire.
+    // into the SAME ariaMessages array aria_response populates, so the
+    // teleprinter's (components/aria/Teleprinter.tsx) existing merge-and-
+    // render (ariaMessages + navMessages) picks these up with zero further
+    // wiring — visually attributed to ARIA via type: 'ai', no layout
+    // changes. Server-side emission lands in a later WO; this activates the
+    // moment the message type appears on the wire.
     const ariaNarrationHandler = websocketService.onARIANarration((message: ARIANarrationMessage) => {
       const narrationMessage = {
         id: `narration-${message.event_id}-${message.ts}`,

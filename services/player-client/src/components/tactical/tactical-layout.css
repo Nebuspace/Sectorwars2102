@@ -185,28 +185,12 @@
   gap: 1.5rem;
 }
 
-.simplified-mode .tactical-card {
-  font-size: 1.1em;
-}
-
-.simplified-mode .tactical-card-content {
-  padding: 1.5rem;
-}
-
-.simplified-mode .tactical-card-title {
-  font-size: 1rem;
-}
-
 /* Hide secondary information in simplified mode */
 .simplified-mode .secondary-info {
   display: none;
 }
 
 /* Reduce animations in simplified mode */
-.simplified-mode .tactical-card::before {
-  animation: none;
-}
-
 .simplified-mode .animate-glow-pulse,
 .simplified-mode .animate-pulse,
 .simplified-mode .shimmer-effect {
