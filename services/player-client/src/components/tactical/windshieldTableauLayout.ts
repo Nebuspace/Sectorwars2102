@@ -52,12 +52,38 @@ export const DECORATIVE_RING_RADII: readonly number[] = [22, 42, 62, 82];
 export const AU_SEMI_X_PCT = 80; // = 100 * 1.6 / 2
 export const AU_SEMI_Y_PCT = 120; // = 100 * 2.4 / 2
 
+/** Fallback "typical planet" size (em) used only to floor the star's size
+ *  when a system has zero real/procedural bodies to compare against — the
+ *  midpoint of bodySizeEm's own [0.9, 2.4] range. */
+const STAR_SIZE_FALLBACK_PLANET_EM = 1.6;
+
+/** Max, live-playtest #18: "represent the star... as MUCH LARGER than the
+ *  planets" — the rendered star must clear this multiple of the LARGEST
+ *  planet actually present in the system, regardless of star kind. 3.2 is a
+ *  safety margin over the 3x floor so rounding never lands exactly at the
+ *  boundary. */
+export const STAR_MIN_SIZE_VS_LARGEST_PLANET = 3.2;
+
 /** Off-center-left star anchor — the "sliver" (Max: "a sliver of the solar
  *  system... no rotating around the sun"). Ranges mirror the demo's own
- *  per-sector star.x/y authoring (RATIFIED.html L727-748: x 8-12, y 40-50),
- *  with a small sectorId-seeded jitter so systems don't share one skeleton
- *  (same intent as the live canvas's anchorRng, ported off-center). */
-export function starAnchor(sectorId: number, star: SystemStar | null): StarAnchor {
+ *  per-sector star.x/y authoring (RATIFIED.html L727-748: x 8-12, y 40-50 —
+ *  VERIFIED against all 4 SEC entries live-playtest #18; a WO-TABLEAU-TUNE
+ *  citation claiming "x 15-25" does not match any of the 4 authored sectors,
+ *  so the existing 9-14% anchor — already the demo-verbatim range — is kept
+ *  unchanged here), with a small sectorId-seeded jitter so systems don't
+ *  share one skeleton (same intent as the live canvas's anchorRng, ported
+ *  off-center).
+ *
+ *  `bodies` (optional, live-playtest #18 addendum): the system's real+
+ *  procedural bodies, used ONLY to floor the star's rendered size at
+ *  STAR_MIN_SIZE_VS_LARGEST_PLANET x the largest one actually present — the
+ *  live render read "too modest/planet-like" because the per-star-kind
+ *  factor alone (G_YELLOW ≈ 3.8em) sits BELOW a typical planet's own ceiling
+ *  (2.4em), so common star kinds no longer read as bigger than their own
+ *  planets at all. Giant-class stars (O_BLUE_SUPER, RED_GIANT) already clear
+ *  the floor on their own factor and are unaffected — this only lifts the
+ *  common/small kinds up to "unmistakably THE star". */
+export function starAnchor(sectorId: number, star: SystemStar | null, bodies: SystemBody[] = []): StarAnchor {
   const rng = new SeededRng(deriveChildSeed(NS, `star:${sectorId}`));
   const xPct = 9 + rng.next01() * 5; // ~9-14%
   const yPct = 42 + rng.next01() * 8; // ~42-50%
@@ -65,7 +91,10 @@ export function starAnchor(sectorId: number, star: SystemStar | null): StarAncho
   // STAR_RADIUS_FACTOR is a canvas-pixel fraction of min(w,h); 54 is a fixed
   // em-scale constant chosen so G_YELLOW (0.07) lands at ~3.8em, matching the
   // demo's own G/K-class star.size values (RATIFIED.html: 5.5, 3.8, 6, 3.4).
-  const sizeEm = Math.round(factor * 54 * 10) / 10;
+  const baseSizeEm = factor * 54;
+  const largestPlanetEm = bodies.length > 0 ? Math.max(...bodies.map(bodySizeEm)) : STAR_SIZE_FALLBACK_PLANET_EM;
+  const floorSizeEm = largestPlanetEm * STAR_MIN_SIZE_VS_LARGEST_PLANET;
+  const sizeEm = Math.round(Math.max(baseSizeEm, floorSizeEm) * 10) / 10;
   return { xPct, yPct, sizeEm };
 }
 
@@ -116,13 +145,33 @@ export function stationPosition(star: StarAnchor, station: SystemStation): PctPo
 /** One child-orbit's CSS-animation parameters. Rendered as a small rotating
  *  wrapper (transform-origin at the parent's center, translateX(radiusEm))
  *  so the ANIMATION is pure CSS and dies for free under
- *  prefers-reduced-motion (solar-system-viewscreen.css). */
+ *  prefers-reduced-motion (solar-system-viewscreen.css). `clockwise` is the
+ *  SAME value for every moon of one body (a co-rotating family — see
+ *  moonOrbits below); `sizeEm` is the individual moon-dot's own diameter. */
 export interface MoonOrbit {
   radiusEm: number;
   durationS: number;
   startDeg: number;
   clockwise: boolean;
+  sizeEm: number;
 }
+
+/** Moon-dot diameter band (em) — the "~2-5px" range Max asked for
+ *  (live-playtest #17), expressed against the codebase's nominal 16px em
+ *  root (no ancestor of `.ssv-tableau` sets its own font-size — see
+ *  index.css's html/body rule — so 1em there resolves against whatever the
+ *  `.stage`/`.game-container` em-root computes, the same convention every
+ *  other em value in this module already relies on). */
+export const MOON_DOT_MIN_EM = 0.18;
+export const MOON_DOT_MAX_EM = 0.32;
+
+/** Minimum radial gap (em) between two consecutive moon orbit tracks of the
+ *  SAME family — must clear MOON_DOT_MAX_EM (the largest possible dot) with
+ *  margin so no two tracks ever read as touching/competing (Max: "at
+ *  varying non-competing distances"). Chosen so even the worst-case
+ *  per-moon jitter below can't erode the gap under MOON_DOT_MAX_EM. */
+const MOON_TRACK_STAGGER_EM = 0.55;
+const MOON_TRACK_JITTER_MAX_EM = 0.1;
 
 /** Max's refinement (5a): system-level bodies stay fixed, but a body's own
  *  children (moons) keep slow, local, parent-anchored orbital motion. Reuses
@@ -145,18 +194,41 @@ export interface MoonOrbit {
  * The wrapper-rotates/dot-offsets CSS-only mechanism itself (no transition,
  * no per-frame JS writes — solar-system-viewscreen.css's `.moon-orbit`/
  * `.moon-dot`) was already structurally correct; only these two numbers
- * needed retuning. */
+ * needed retuning.
+ *
+ * Max addendum, live-playtest #17: "varied in size, all rotate the SAME WAY
+ * around a planet, at varying non-competing distances" — the previous cut
+ * drew `clockwise` PER MOON (independently random), so one planet's moons
+ * could spin in opposite directions, and its per-moon radius term
+ * (`edgeFactor`, drawn independently per moon in [0.6, 1.2] planet-radii)
+ * could make a LATER moon land closer in than an EARLIER one whenever
+ * planetRadiusEm was large enough for that draw-to-draw swing to outweigh
+ * the old flat +0.4em stagger — no gap guarantee. Fixed here: direction is
+ * drawn ONCE per family (deterministic per sectorId+body.slot, so it can
+ * still differ planet-to-planet) and applied to every moon; radius is now
+ * base + m*MOON_TRACK_STAGGER_EM + a small bounded per-moon jitter, so
+ * consecutive tracks are ALWAYS separated by at least
+ * MOON_TRACK_STAGGER_EM - MOON_TRACK_JITTER_MAX_EM (0.45em), comfortably
+ * above MOON_DOT_MAX_EM (0.32em) — no two orbital tracks can ever compete. */
 export function moonOrbits(sectorId: number, body: SystemBody): MoonOrbit[] {
+  // One direction for the WHOLE family — independent seed stream from the
+  // per-moon draws below so adding/removing moons never perturbs it.
+  const familyRng = new SeededRng(deriveChildSeed(NS, `moon-family:${sectorId}:${body.slot}`));
+  const clockwise = familyRng.next01() < 0.5;
+
   const rng = new SeededRng(deriveChildSeed(NS, `moons:${sectorId}:${body.slot}`));
   const planetRadiusEm = bodySizeEm(body) / 2;
+  const baseOffset = 0.6 + rng.next01() * 0.3; // 0.6-0.9 planet-radii OUTSIDE the edge for the innermost moon
   const out: MoonOrbit[] = [];
   for (let m = 0; m < body.moons; m++) {
-    const edgeFactor = 0.6 + rng.next01() * 0.6; // 0.6-1.2 planet-radii OUTSIDE the edge
+    const jitterEm = rng.next01() * MOON_TRACK_JITTER_MAX_EM;
+    const radiusEm = planetRadiusEm * (1 + baseOffset) + m * MOON_TRACK_STAGGER_EM + jitterEm;
     out.push({
-      radiusEm: planetRadiusEm * (1 + edgeFactor) + m * 0.4, // stagger multiple moons further out
+      radiusEm,
       durationS: 40 + rng.next01() * 50, // one revolution ~40-90s — slow, subtle
       startDeg: rng.next01() * 360,
-      clockwise: rng.next01() < 0.5,
+      clockwise,
+      sizeEm: MOON_DOT_MIN_EM + rng.next01() * (MOON_DOT_MAX_EM - MOON_DOT_MIN_EM),
     });
   }
   return out;

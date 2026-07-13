@@ -202,6 +202,36 @@ describe('WindshieldTableau', () => {
     expect(proceduralPlanetBtn.querySelectorAll('.moon-orbit').length).toBe(0);
   });
 
+  it('a planet\'s moon family co-rotates in the real DOM (every .moon-orbit under one planet shares the same .ccw state) and each dot carries its own varied inline size (WO-TABLEAU-TUNE #17)', async () => {
+    await mount();
+    const realPlanetBtn = container.querySelector('.pl') as HTMLElement;
+    const orbitEls = Array.from(realPlanetBtn.querySelectorAll('.moon-orbit'));
+    expect(orbitEls.length).toBe(2);
+    const ccwStates = new Set(orbitEls.map((el) => el.classList.contains('ccw')));
+    expect(ccwStates.size).toBe(1); // whole family: one shared direction
+
+    const dotEls = Array.from(realPlanetBtn.querySelectorAll('.moon-dot')) as HTMLElement[];
+    const widths = dotEls.map((el) => parseFloat(el.style.width));
+    for (const w of widths) {
+      expect(w).toBeGreaterThan(0);
+      expect(w).toBeLessThanOrEqual(0.32); // MOON_DOT_MAX_EM
+    }
+    // Same orbital radius separation guarantee, read straight off the DOM.
+    const lefts = dotEls.map((el) => parseFloat(el.style.left)).sort((a, b) => a - b);
+    expect(lefts[1] - lefts[0]).toBeGreaterThan(0.32); // > MOON_DOT_MAX_EM
+  });
+
+  it('the star renders unmistakably larger than every planet — at least 3x the largest planet\'s diameter (WO-TABLEAU-TUNE #18)', async () => {
+    await mount();
+    const sun = container.querySelector('.sun') as HTMLElement;
+    const sunSizeEm = parseFloat(sun.style.width);
+    const planetSizesEm = Array.from(container.querySelectorAll('.pl')).map(
+      (el) => parseFloat((el as HTMLElement).style.width)
+    );
+    const largestPlanetEm = Math.max(...planetSizesEm);
+    expect(sunSizeEm).toBeGreaterThanOrEqual(largestPlanetEm * 3);
+  });
+
   it('renders other ships as static presence markers (⊳, faction-colored) with aria-label, and clicking opens a popup', async () => {
     const onSelectShip = vi.fn();
     await mount({ ships: [TEST_SHIP], onSelectShip });
@@ -237,6 +267,30 @@ describe('WindshieldTableau', () => {
     expect(dockBtn).toBeTruthy();
     await act(async () => { dockBtn.click(); });
     expect(onRequestDock).toHaveBeenCalledWith('station-1');
+  });
+
+  it('renders the FULL station name in the popup title even when it is long — no ellipsis clamp (WO-TABLEAU-TUNE #25, Max #25)', async () => {
+    const longStationName = 'Trade Hub Capelworks Expansion Complex';
+    mockGet.mockResolvedValue({ data: { ...TEST_SYSTEM, stations: [{ ...TEST_STATION, name: longStationName }] } });
+    await mount();
+    const stationBtn = container.querySelector('.obj') as HTMLButtonElement;
+    await act(async () => { stationBtn.click(); });
+    const title = container.querySelector('.ssv-popup-title') as HTMLElement;
+    expect(title).not.toBeNull();
+    expect(title.textContent).toBe(longStationName.toUpperCase());
+    expect(title.textContent).not.toContain('…');
+    expect(title.textContent?.endsWith('...')).toBe(false);
+  });
+
+  it('renders the FULL real-planet name in the popup title even when it is long — no ellipsis clamp (WO-TABLEAU-TUNE #25, Max #25)', async () => {
+    const longPlanetName = 'Frostholm Deep Colony Reclamation Site';
+    mockGet.mockResolvedValue({ data: { ...TEST_SYSTEM, bodies: [{ ...REAL_PLANET, name: longPlanetName }] } });
+    await mount();
+    const planetBtn = container.querySelector('.pl') as HTMLButtonElement;
+    await act(async () => { planetBtn.click(); });
+    const planetTitle = container.querySelector('.ssv-popup-title') as HTMLElement;
+    expect(planetTitle.textContent).toBe(longPlanetName.toUpperCase());
+    expect(planetTitle.textContent).not.toContain('…');
   });
 
   it('the ship marker is the ONLY system-level mover: clicking an object glides it there (left/top change, --hdg set) and it briefly burns', async () => {
@@ -373,5 +427,30 @@ describe('WindshieldTableau', () => {
     expect(ship.className).not.toContain('burning');
     expect(flightCapture?.isFlying).toBe(false);
     expect(flightCapture?.targetId).toBeNull();
+  });
+});
+
+// ---- WO-TABLEAU-TUNE (Max #25): source-level guard against the ellipsis
+// clamp regressing. The DOM textContent assertions above prove there is no
+// JS-level string truncation, but they can't see a CSS text-overflow clamp
+// (jsdom doesn't apply the imported stylesheet's computed style) — so this
+// reads the real stylesheet text and asserts the SPECIFIC `.ssv-popup-title`
+// rule block no longer declares white-space:nowrap/overflow:hidden/
+// text-overflow:ellipsis together (the combination that silently cut real
+// station/planet names like "TRADE HUB CAPELWORKS" off mid-word in the
+// fixed-232px popup card). Scoped to just that block (not a whole-file grep)
+// so it can't false-fail on `.ssv-tableau .pltag`'s legitimate, demo-verbatim
+// `white-space: nowrap` (that class has no width clamp, so nowrap there
+// never truncates).
+describe('solar-system-viewscreen.css — .ssv-popup-title has no ellipsis clamp', () => {
+  it('the .ssv-popup-title rule block does not declare text-overflow:ellipsis', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const cssPath = path.resolve(__dirname, '../solar-system-viewscreen.css');
+    const css = fs.readFileSync(cssPath, 'utf8');
+    const match = css.match(/\.ssv-popup-title\s*\{([^}]*)\}/);
+    expect(match).not.toBeNull();
+    const block = match![1];
+    expect(block).not.toMatch(/text-overflow\s*:\s*ellipsis/);
   });
 });

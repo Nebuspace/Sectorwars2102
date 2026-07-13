@@ -99,11 +99,19 @@
   font-weight: 700;
   letter-spacing: 0.08em;
   text-shadow: 0 0 10px rgba(0, 217, 255, 0.7);
-  padding-right: 18px; /* clear the ✕ tab */
+  padding-right: 18px; /* clear the ✕ tab, on every wrapped line too */
   margin-bottom: 0.25rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* WO-TABLEAU-TUNE (Max #25): a real station/planet name (e.g. "TRADE HUB
+     CAPELWORKS") routinely exceeds the ~20-char single-line budget this
+     232px-wide card leaves at 0.85rem bold monospace, so the previous
+     nowrap+ellipsis clamp silently cut real names off mid-word. The demo's
+     own name-reveal idiom (`.pltag`/`.objtag`, RATIFIED.html L113-115/L60)
+     never clamps — full names always render — so this card shouldn't
+     either: let the title WRAP instead (the card has no fixed height, so
+     it just grows) and hard-break the rare single unbroken token that
+     alone exceeds the card width, instead of ellipsizing. */
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 .ssv-popup-line {
@@ -270,7 +278,11 @@
 /* Moon child-orbits (Max refinement 5a): system-level bodies stay FIXED but
    a planet's own moons keep slow, local, parent-anchored motion. A rotating
    0x0 wrapper centered on the planet + a dot translated out by the orbit
-   radius — pure CSS, so it dies for free under reduced-motion below. */
+   radius — pure CSS, so it dies for free under reduced-motion below.
+   WO-TABLEAU-TUNE (live-playtest #17): every moon of ONE planet shares a
+   single `.ccw` state (windshieldTableauLayout.ts's moonOrbits() draws one
+   `clockwise` per family) so the whole family visibly co-rotates; only the
+   per-family DIRECTION varies planet-to-planet, not per-moon. */
 .ssv-tableau .moon-orbit {
   position: absolute; left: 50%; top: 50%; width: 0; height: 0;
   animation-name: ssv-moon-spin; animation-timing-function: linear; animation-iteration-count: infinite;
@@ -278,7 +290,12 @@
 .ssv-tableau .moon-orbit.ccw { animation-direction: reverse; }
 .ssv-tableau .moon-dot {
   /* Slightly dim + a soft (not point-source) glow — reads as a nearby moon
-     catching starlight, not a bright background star (Max addendum #9). */
+     catching starlight, not a bright background star (Max addendum #9).
+     width/height default here is a fallback only — WindshieldTableau.tsx
+     always sets an inline width/height from windshieldTableauLayout.ts's
+     per-moon `sizeEm` (MOON_DOT_MIN_EM..MOON_DOT_MAX_EM), so moons within
+     one family read as varied sizes, not a uniform dot (WO-TABLEAU-TUNE,
+     live-playtest #17). */
   position: absolute; width: .3em; height: .3em; border-radius: 50%;
   background: rgba(200, 202, 214, 0.72); box-shadow: 0 0 .2em rgba(200, 202, 214, .32);
   transform: translate(-50%, -50%);

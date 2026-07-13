@@ -19,6 +19,9 @@ import {
   nebulaArcs,
   debrisArc,
   DECORATIVE_RING_RADII,
+  MOON_DOT_MIN_EM,
+  MOON_DOT_MAX_EM,
+  STAR_MIN_SIZE_VS_LARGEST_PLANET,
 } from '../windshieldTableauLayout';
 import type { SystemBody, SystemStation } from '../SolarSystemViewscreen';
 
@@ -55,6 +58,33 @@ describe('starAnchor', () => {
     const dwarf = starAnchor(9, { kind: 'M_DWARF', label: '', color: '#fff' });
     const giant = starAnchor(9, { kind: 'O_BLUE_SUPER', label: '', color: '#fff' });
     expect(giant.sizeEm).toBeGreaterThan(dwarf.sizeEm);
+  });
+
+  // WO-TABLEAU-TUNE (live-playtest #18): "represent the star... as MUCH
+  // LARGER than the planets" — must hold for EVERY star kind, not just the
+  // naturally-huge ones, against whatever bodies are actually in the system.
+  it('is floored at STAR_MIN_SIZE_VS_LARGEST_PLANET x the largest real body present, even for a modest star kind', () => {
+    const bodies = [
+      { ...BODY, slot: 0, size_class: 3 }, // bodySizeEm ≈ 1.39
+      { ...BODY, slot: 1, size_class: 10 }, // bodySizeEm = 2.4 (ceiling) — the largest
+    ];
+    const largest = Math.max(...bodies.map(bodySizeEm));
+    const star = starAnchor(9, { kind: 'G_YELLOW', label: '', color: '#fff' }, bodies);
+    expect(star.sizeEm).toBeGreaterThanOrEqual(largest * STAR_MIN_SIZE_VS_LARGEST_PLANET);
+  });
+
+  it('still floors correctly with zero bodies (no system data yet)', () => {
+    const star = starAnchor(9, { kind: 'G_YELLOW', label: '', color: '#fff' }, []);
+    expect(star.sizeEm).toBeGreaterThan(0);
+  });
+
+  it('a naturally giant star kind is unaffected by the floor (already clears it on its own factor)', () => {
+    const bodies = [{ ...BODY, slot: 0, size_class: 10 }]; // bodySizeEm = 2.4 (ceiling)
+    const floor = bodySizeEm(bodies[0]) * STAR_MIN_SIZE_VS_LARGEST_PLANET;
+    const dwarfStar = starAnchor(9, { kind: 'M_DWARF', label: '', color: '#fff' }, bodies);
+    const giantStar = starAnchor(9, { kind: 'RED_GIANT', label: '', color: '#fff' }, bodies);
+    expect(dwarfStar.sizeEm).toBeCloseTo(floor, 1); // clamped up to the floor (rounded to 1dp)
+    expect(giantStar.sizeEm).toBeGreaterThan(floor); // already above it on its own factor
   });
 });
 
@@ -156,6 +186,46 @@ describe('moonOrbits', () => {
     const orbits = moonOrbits(7, multiMoon);
     const radii = orbits.map((o) => o.radiusEm);
     expect(new Set(radii.map((r) => Math.round(r * 1000))).size).toBe(radii.length);
+  });
+
+  // ---- WO-TABLEAU-TUNE (live-playtest #17): moon families ----------------
+
+  it('every moon of ONE planet co-rotates — a single shared direction, not independently random per moon', () => {
+    const family: SystemBody = { ...BODY, moons: 5 };
+    const orbits = moonOrbits(7, family);
+    const directions = new Set(orbits.map((o) => o.clockwise));
+    expect(directions.size).toBe(1);
+  });
+
+  it('family direction is deterministic per planet id (body.slot) and MAY differ planet-to-planet', () => {
+    const bodyA: SystemBody = { ...BODY, slot: 0, moons: 2 };
+    // Deterministic: same body -> same direction on a second, independent call.
+    expect(moonOrbits(7, bodyA)[0].clockwise).toBe(moonOrbits(7, { ...bodyA })[0].clockwise);
+    // Across a spread of slots, both directions actually occur (not hardcoded
+    // to always-clockwise or always-counter) — proves per-planet variation
+    // is real, not coincidental to a single sample.
+    const seen = new Set(
+      Array.from({ length: 12 }, (_, slot) => moonOrbits(7, { ...BODY, slot, moons: 1 })[0].clockwise)
+    );
+    expect(seen.size).toBe(2);
+  });
+
+  it('consecutive orbital tracks never compete — the radial gap always clears MOON_DOT_MAX_EM (the largest possible moon-dot diameter)', () => {
+    const family: SystemBody = { ...BODY, moons: 6 };
+    const radii = moonOrbits(7, family).map((o) => o.radiusEm).sort((a, b) => a - b);
+    for (let i = 1; i < radii.length; i++) {
+      expect(radii[i] - radii[i - 1]).toBeGreaterThan(MOON_DOT_MAX_EM);
+    }
+  });
+
+  it('moon-dot sizes are varied within a family and stay within the MOON_DOT_MIN_EM..MOON_DOT_MAX_EM band', () => {
+    const family: SystemBody = { ...BODY, moons: 6 };
+    const sizes = moonOrbits(7, family).map((o) => o.sizeEm);
+    for (const s of sizes) {
+      expect(s).toBeGreaterThanOrEqual(MOON_DOT_MIN_EM);
+      expect(s).toBeLessThanOrEqual(MOON_DOT_MAX_EM);
+    }
+    expect(new Set(sizes.map((s) => Math.round(s * 1000))).size).toBeGreaterThan(1); // not all identical
   });
 });
 

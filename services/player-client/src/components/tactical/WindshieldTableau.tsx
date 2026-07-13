@@ -206,7 +206,10 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
     };
   }, [sectorId]);
 
-  const star = useMemo(() => starAnchor(sectorId, system?.star ?? null), [sectorId, system?.star]);
+  const star = useMemo(
+    () => starAnchor(sectorId, system?.star ?? null, system?.bodies ?? []),
+    [sectorId, system?.star, system?.bodies]
+  );
   const rings = useMemo(() => decorativeRings(star), [star]);
   const belt = useMemo(() => (system?.belt ? beltStyle(star) : null), [star, system?.belt]);
   const hazeArcs = useMemo(() => (system?.nebula ? nebulaArcs(sectorId) : []), [sectorId, system?.nebula]);
@@ -590,7 +593,10 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
                   }}
                   aria-hidden="true"
                 >
-                  <span className="moon-dot" style={{ left: `${m.radiusEm}em`, top: 0 }} />
+                  <span
+                    className="moon-dot"
+                    style={{ left: `${m.radiusEm}em`, top: 0, width: `${m.sizeEm}em`, height: `${m.sizeEm}em` }}
+                  />
                 </span>
               ))}
             </button>
