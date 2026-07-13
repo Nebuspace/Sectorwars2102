@@ -59,10 +59,37 @@
    content ever meets, so any residual deficit is contained inside its own
    rounded-corner box instead of spilling into the sibling MFD unit / the
    shell edge. Paired with `.mfd .skrow { flex-shrink: 0 }` below so `.scr`
-   (not the softkey rail) is what actually absorbs a real deficit. */
+   (not the softkey rail) is what actually absorbs a real deficit.
+
+   WO-UI-MFD-FILL (Max #26 — dead space between/under the two MFD units):
+   `align-self` was NOT the cause (measured: `.mfd`'s default computed
+   `align-self` already resolves to `stretch`; forcing it explicitly with
+   `!important` via inline style changed the rendered height by 0px, at
+   both 1440x900 and 1560x980 — ruled out empirically, not assumed). The
+   real mechanism is a grid/flex circularity: `.mfdcol`'s `1fr 1fr` row
+   tracks use `auto` as their min sizing function, so each track's BASE
+   size is first measured from `.mfd`'s max-content contribution — for a
+   `flex: 1 1 0%` child (`.scr`, cockpit-shell.css) with no definite main
+   size yet to grow into, that contribution collapses to its own natural
+   content height (~187px measured), not the eventual stretched size. The
+   1fr flexible-space pass then DOES grow the abstract row TRACK the rest
+   of the way (measured via `.mfdcol`'s computed `grid-template-rows`:
+   219px, matching a full fill) — but that growth is never handed back to
+   `.mfd`'s own box; `.mfd` stays pinned at its track's pre-growth base
+   size regardless of align-self. `height: 100%` sidesteps the collapse by
+   resolving against the row track's final, definite (post-growth) size
+   directly, rather than depending on stretch to propagate it. Once `.mfd`
+   has a definite content-box height, `.scr`'s `flex: 1 1 0%` (no longer
+   ambiguous — a real main size exists to grow into) fills the remainder
+   on its own; `.skrow` keeps its natural size via `flex-shrink: 0` above,
+   unaffected. Confirmed via Playwright (`/lab/shell?mode=flight`) at
+   1440x900 and 1560x980: 0px unexplained slack post-fix (was ~32px per
+   unit, ~64px total, at each viewport) — see WO-UI-MFD-FILL STATUS for
+   the measured numbers. */
 .mfd {
   min-height: 0;
   overflow: hidden;
+  height: 100%;
 }
 
 /* `.skrow`'s softkeys must ALWAYS be fully visible — CLAUDE.md's Scroll Law:
