@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import apiClient from '../../services/apiClient';
 import { useAutopilot } from '../../contexts/AutopilotContext';
+import { useWindshieldFlight } from '../../contexts/WindshieldFlightContext';
 import type { SectorWreck } from '../../services/api';
 import type { SpecialFormationSummary } from '../../contexts/GameContext';
 import type {
@@ -15,6 +16,7 @@ import {
   AU_SEMI_Y_PCT,
   beltStyle,
   bodyPosition,
+  bodySizeEm,
   debrisArc,
   decorativeRings,
   headingDeg,
@@ -75,6 +77,15 @@ import './solar-system-viewscreen.css';
  * push, and switching those three feeds to it would trade away the
  * liveness GameDashboard's currentSector context already provides for no
  * WO-required benefit.
+ *
+ * FLIGHT (WO-UI2-FLIGHT-FEEL): this component OWNS the actual click→glide
+ * (`travelTo`, below) — it alone has the /contents system data needed to
+ * resolve a planet/station id to a %-position and is the only thing that
+ * renders/animates `.shipmk`. It publishes that state into the shared
+ * WindshieldFlightContext (contexts/WindshieldFlightContext.tsx) so the
+ * SOLAR SYSTEM monitor's per-row APPROACH/HALT and the locrow's ALL STOP
+ * chip — previously wired to the unrelated inter-sector AutopilotContext —
+ * read and drive the SAME real flight state a band-object click does.
  */
 
 // ---------------------------------------------------------------------------
@@ -205,10 +216,17 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
   const [shipPos, setShipPos] = useState<PctPoint | null>(null);
   const [heading, setHeading] = useState(0);
   const [localBurn, setLocalBurn] = useState(false);
+  // The current glide's target planet/station id, or null (star/ship/wreck/
+  // formation clicks, or no glide in progress) — published to the shared
+  // flight context below so a SOLAR row can tell whether IT is the thing
+  // being approached (WO-UI2-FLIGHT-FEEL).
+  const [glideTargetId, setGlideTargetId] = useState<string | null>(null);
   const shipPosRef = useRef<PctPoint | null>(null);
   shipPosRef.current = shipPos;
+  const shipMkRef = useRef<HTMLDivElement>(null);
   const seededSectorRef = useRef<number | null>(null);
   const autopilot = useAutopilot();
+  const flight = useWindshieldFlight();
 
   useEffect(() => {
     if (!system) return; // wait for the fetch that resolves dock/land host lookups
@@ -228,19 +246,70 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
     setHeading(0);
   }, [system, sectorId, lastDockedStationId, lastLandedPlanetId, star]);
 
-  const travelTo = useCallback((target: PctPoint) => {
+  const travelTo = useCallback((target: PctPoint, objectId: string | null = null) => {
     const from = shipPosRef.current ?? target;
     setHeading(headingDeg(from, target));
     setShipPos(target);
     setLocalBurn(true);
+    setGlideTargetId(objectId);
   }, []);
 
   const burning = localBurn || autopilot.status === 'engaged';
 
+  // Publish this component's real flight state into the shared context on
+  // every change, so PlanetPortPair rows + the locrow ALL STOP chip
+  // (GameDashboard.tsx) see the SAME glide a band-object click drives.
+  useEffect(() => {
+    flight.reportFlightState(burning, glideTargetId);
+  }, [burning, glideTargetId, flight.reportFlightState]);
+
+  // A SOLAR row's "APPROACH ▸" click records a request on the shared
+  // context (GameDashboard.tsx -> PlanetPortPair's onApproach ->
+  // flight.approach(id)); resolve it against the fetched system data and
+  // run the SAME glide a direct band click performs — reuse, don't fork.
+  useEffect(() => {
+    if (!flight.pendingApproach || !system) return;
+    const { objectId } = flight.pendingApproach;
+    const bodyMatch = system.bodies.find((b) => b.real && b.planet_id === objectId);
+    if (bodyMatch) {
+      travelTo(bodyPosition(star, bodyMatch), objectId);
+      return;
+    }
+    const stationMatch = system.stations.find((s) => s.station_id === objectId);
+    if (stationMatch) {
+      travelTo(stationPosition(star, stationMatch), objectId);
+    }
+    // Unresolvable (stale id from a since-changed sector) — no-op, matches
+    // the context's own documented "no-op if the id can't be resolved".
+  }, [flight.pendingApproach, system, star, travelTo]);
+
+  // A row/locrow ALL STOP click (flight.allStop()) bumps stopSignal; freeze
+  // the glide at its LIVE on-screen spot (not the target it was heading
+  // toward) — read the ship marker's actual rendered position and re-commit
+  // it as the state, which makes the in-flight CSS transition a zero-delta
+  // no-op instead of jumping anywhere.
+  useEffect(() => {
+    if (flight.stopSignal === 0) return; // 0 = never stopped yet — skip the mount-time run
+    const containerEl = containerRef.current;
+    const shipEl = shipMkRef.current;
+    if (containerEl && shipEl) {
+      const containerRect = containerEl.getBoundingClientRect();
+      const shipRect = shipEl.getBoundingClientRect();
+      if (containerRect.width > 0 && containerRect.height > 0) {
+        setShipPos({
+          xPct: ((shipRect.left + shipRect.width / 2 - containerRect.left) / containerRect.width) * 100,
+          yPct: ((shipRect.top + shipRect.height / 2 - containerRect.top) / containerRect.height) * 100,
+        });
+      }
+    }
+    setLocalBurn(false);
+    setGlideTargetId(null);
+  }, [flight.stopSignal]);
+
   // ---- Popups (click → info card, reusing the .ssv-popup glass) ----
-  const openPopup = useCallback((meta: HitMeta, name: string, pos: PctPoint) => {
+  const openPopup = useCallback((meta: HitMeta, name: string, pos: PctPoint, objectId: string | null = null) => {
     setPopup({ key: `${meta.kind}:${name}`, meta, name, xPct: pos.xPct, yPct: pos.yPct });
-    travelTo(pos);
+    travelTo(pos, objectId);
   }, [travelTo]);
 
   const popupStyle = useMemo((): React.CSSProperties | null => {
@@ -473,7 +542,7 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
         {/* planets + their moons */}
         {(system?.bodies ?? []).map((body, idx) => {
           const pos = bodyPosition(star, body);
-          const sizeEm = Math.min(2.4, Math.max(0.9, 0.55 + body.size_class * 0.28));
+          const sizeEm = bodySizeEm(body);
           const moons = moonOrbits(sectorId, body);
           const isReal = body.real && body.planet_id;
           const name = body.name || `slot-${body.slot}`;
@@ -494,7 +563,8 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
                   ? openPopup(
                       { kind: 'planet', planetId: body.planet_id as string, planetKind: body.kind, habitability: body.habitability, owned: body.owned },
                       name,
-                      pos
+                      pos,
+                      body.planet_id as string
                     )
                   : openPopup(
                       { kind: 'procedural', designation: label, typeName: body.kind.replace(/_/g, ' '), sizeDesc: `SIZE CLASS ${body.size_class}` },
@@ -537,7 +607,7 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
               className="obj"
               style={{ left: `${pos.xPct}%`, top: `${pos.yPct}%`, transform: 'translate(-50%,-50%)' }}
               aria-label={st.name}
-              onClick={() => openPopup({ kind: 'station', stationId: st.station_id, stationType: st.type }, st.name, pos)}
+              onClick={() => openPopup({ kind: 'station', stationId: st.station_id, stationType: st.type }, st.name, pos, st.station_id)}
             >
               <span className="glyphbox">🛰</span>
               <span className="objtag">{st.name}</span>
@@ -644,9 +714,10 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
         {/* the player's own ship — the ONLY system-level mover */}
         {shipPos && (
           <div
+            ref={shipMkRef}
             className={`shipmk${burning ? ' burning' : ''}`}
             style={{ left: `${shipPos.xPct}%`, top: `${shipPos.yPct}%`, '--hdg': `${heading.toFixed(0)}deg` } as React.CSSProperties}
-            onTransitionEnd={() => setLocalBurn(false)}
+            onTransitionEnd={() => { setLocalBurn(false); setGlideTargetId(null); }}
           >
             ➤
           </div>

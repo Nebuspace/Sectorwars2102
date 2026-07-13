@@ -166,6 +166,20 @@ export interface LinkStatusMessage {
   timestamp: string;
 }
 
+// A client-LOCAL synthetic event (never sent over the wire) — send() emits
+// this through the SAME notifyHandlers pub/sub every server-pushed message
+// type above uses, so any caller (chat, ARIA, sector-player requests, and
+// any future flight-feel action) that attempts a send while disconnected
+// gets ONE consistent, generic surface instead of the previous
+// `console.warn`-only "WebSocket: Cannot send message - not connected"
+// silent failure (WO-UI2-FLIGHT-FEEL UX nit — WebSocketContext.tsx
+// subscribes and turns this into a visible toast via addNotification).
+export interface SendFailedMessage {
+  type: 'send_failed';
+  messageType: string;
+  timestamp: string;
+}
+
 type MessageHandler = (message: WebSocketMessage) => void;
 
 class WebSocketService {
@@ -483,6 +497,7 @@ class WebSocketService {
   send(message: WebSocketMessage): boolean {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       console.warn('WebSocket: Cannot send message - not connected');
+      this.notifySendFailed(message.type);
       return false;
     }
 
@@ -491,8 +506,27 @@ class WebSocketService {
       return true;
     } catch (error) {
       console.error('WebSocket: Failed to send message', error);
+      this.notifySendFailed(message.type);
       return false;
     }
+  }
+
+  private notifySendFailed(messageType: string): void {
+    this.notifyHandlers({
+      type: 'send_failed',
+      messageType,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  onSendFailed(callback: (messageType: string) => void): () => void {
+    const handler = (message: WebSocketMessage) => {
+      if (message.type === 'send_failed') {
+        callback((message as SendFailedMessage).messageType);
+      }
+    };
+    this.addMessageHandler(handler);
+    return () => this.removeMessageHandler(handler);
   }
 
   // Chat methods

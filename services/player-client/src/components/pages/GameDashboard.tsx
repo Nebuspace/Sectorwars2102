@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState, useMemo } from 'react'
 import { createPortal } from 'react-dom';
 import { useGame, type MoveOption, type SpecialFormationSummary } from '../../contexts/GameContext';
 import { useAutopilot } from '../../contexts/AutopilotContext';
+import { WindshieldFlightProvider, useWindshieldFlight } from '../../contexts/WindshieldFlightContext';
 import { useFirstLogin } from '../../contexts/FirstLoginContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useShellSlots } from '../layouts/ShellContext';
@@ -540,7 +541,15 @@ const TerraformHeaderPanel: React.FC<{
   );
 };
 
-const GameDashboard: React.FC = () => {
+// GameDashboard (below) is a thin wrapper mounting WindshieldFlightProvider
+// — the shared flight-state store rows/locrow/the windshield tableau all
+// now read from (WO-UI2-FLIGHT-FEEL). It has to be an ANCESTOR of the hook
+// call in GameDashboardInner (a component cannot consume a context provided
+// by its own returned children), so the split lives here rather than deeper
+// in the JSX tree. GameLayout — this component's OWN ancestor via the
+// /game route's Outlet — was the other candidate mount point, but this WO's
+// scope keeps the provider mount inside GameDashboard.tsx.
+const GameDashboardInner: React.FC = () => {
   const {
     playerState,
     currentShip,
@@ -580,15 +589,22 @@ const GameDashboard: React.FC = () => {
   const { getIcon: getResourceIcon, getLabel: getResourceLabel } = useResourceCatalog();
 
   const autopilot = useAutopilot();
+  const flight = useWindshieldFlight();
 
-  // WO-UI2-WINDSHIELD-TABLEAU item 3 — the SOLAR SYSTEM page's per-body rows
-  // (PlanetPortPair + the asteroid-field HARVEST row) need the same "in
-  // transit" signal the locrow's 🛑 ALL STOP chip already reads (below,
-  // `autopilot.status === 'engaged'`) so a body's row shows HALT instead of
-  // its normal action while a course is under way. `handleHalt` mirrors the
-  // locrow chip's own onClick exactly (`autopilot.abort('all stop')`).
-  const flying = autopilot.status === 'engaged';
-  const handleHalt = () => autopilot.abort('all stop');
+  // WO-UI2-FLIGHT-FEEL seam fix — the SOLAR SYSTEM page's per-body rows
+  // (PlanetPortPair + the asteroid-field HARVEST row) and the locrow's
+  // 🛑 ALL STOP chip now all read the SAME shared WindshieldFlightContext
+  // the windshield tableau itself drives, not `autopilot.status` (that read
+  // the wrong, unrelated inter-sector autopilot engine — see
+  // WindshieldFlightContext.tsx's header). `flight.isFlying` is a superset
+  // of the old signal (local glide OR real autopilot engaged), so this
+  // doesn't drop the "block a row mid real course" behavior, it just also
+  // covers the local click-to-glide case that never flipped these before.
+  // `handleHalt` mirrors the locrow chip's own onClick exactly
+  // (`flight.allStop()`, which itself still calls autopilot.abort('all
+  // stop') AND freezes any local glide).
+  const flying = flight.isFlying;
+  const handleHalt = () => flight.allStop();
 
   const { requiresFirstLogin } = useFirstLogin();
   const { sectorPlayers } = useWebSocket();
@@ -2539,12 +2555,17 @@ const GameDashboard: React.FC = () => {
                 {currentSector.type?.toUpperCase() === 'NEBULA' && (
                   <span className="loc">NEBULA</span>
                 )}
-                {autopilot.status === 'engaged' && (
+                {/* WO-UI2-FLIGHT-FEEL: reads the SAME shared flight store
+                    the SOLAR SYSTEM rows now do (flying/handleHalt, above)
+                    — flight.isFlying covers a real autopilot course AND the
+                    windshield's own local click-to-glide; flight.allStop()
+                    still calls autopilot.abort('all stop') under the hood. */}
+                {flying && (
                   <button
                     type="button"
                     className="loc"
                     style={{ color: '#FFB3BC', borderColor: '#5A2630', cursor: 'pointer' }}
-                    onClick={() => autopilot.abort('all stop')}
+                    onClick={handleHalt}
                     aria-label="Abort autopilot and hold position"
                     title="Abort autopilot and hold position"
                   >
@@ -3443,6 +3464,7 @@ const GameDashboard: React.FC = () => {
                             isDocked={!!station && playerState?.current_port_id === station.id}
                             flying={flying}
                             onHalt={handleHalt}
+                            onApproach={flight.approach}
                           />
                         );
                       })}
@@ -3458,6 +3480,7 @@ const GameDashboard: React.FC = () => {
                           isDocked={playerState?.current_port_id === station.id}
                           flying={flying}
                           onHalt={handleHalt}
+                          onApproach={flight.approach}
                         />
                       ))}
                       {/* Empty state when neither planets nor stations.
@@ -3744,5 +3767,17 @@ const GameDashboard: React.FC = () => {
       </div>
   );
 };
+
+// WO-UI2-FLIGHT-FEEL — the provider mount: wraps GameDashboardInner (the
+// windshield tableau mount, the SOLAR SYSTEM monitor's rows, and the
+// locrow's ALL STOP chip are all descendants of it) so all three consume
+// ONE shared WindshieldFlightContext instance. Inside AutopilotProvider's
+// scope (App.tsx, above the /game route tree) — the context's own allStop()
+// calls useAutopilot() internally.
+const GameDashboard: React.FC = () => (
+  <WindshieldFlightProvider>
+    <GameDashboardInner />
+  </WindshieldFlightProvider>
+);
 
 export default GameDashboard;

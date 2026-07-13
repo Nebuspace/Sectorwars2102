@@ -94,6 +94,7 @@ describe('PlanetPortPair row state machine', () => {
 
   it('not here, not flying: planet row shows APPROACH ▸', async () => {
     const onLand = vi.fn();
+    const onApproach = vi.fn();
     await render(
       <PlanetPortPair
         planet={PLANET}
@@ -101,6 +102,7 @@ describe('PlanetPortPair row state machine', () => {
         onLandOnPlanet={onLand}
         isLanded={false}
         flying={false}
+        onApproach={onApproach}
       />
     );
     const btn = actButton(container, '.planet-section');
@@ -111,10 +113,31 @@ describe('PlanetPortPair row state machine', () => {
     // not `container` — ConfirmDialog uses createPortal), doesn't call onLand yet
     expect(onLand).not.toHaveBeenCalled();
     expect(document.body.textContent).toContain('Land on Kepler-7?');
+    // WO-UI2-FLIGHT-FEEL: ALSO kicks off the windshield ship-glide, in
+    // addition to (not instead of) the confirm dialog above — the row's
+    // dispatch previously never reached the glide at all.
+    expect(onApproach).toHaveBeenCalledTimes(1);
+    expect(onApproach).toHaveBeenCalledWith('planet-1');
   });
 
-  it('unclaimed planet, not flying: row shows CLAIM ▸ (not APPROACH)', async () => {
+  it('APPROACH is a no-op tolerant of a missing onApproach prop (optional, back-compat)', async () => {
+    await render(
+      <PlanetPortPair
+        planet={PLANET}
+        station={null}
+        onLandOnPlanet={vi.fn()}
+        isLanded={false}
+        flying={false}
+      />
+    );
+    const btn = actButton(container, '.planet-section');
+    await expect(click(btn!)).resolves.toBeUndefined(); // does not throw
+    expect(document.body.textContent).toContain('Land on Kepler-7?');
+  });
+
+  it('unclaimed planet, not flying: row shows CLAIM ▸ (not APPROACH), and CLAIM never fires onApproach', async () => {
     const onClaim = vi.fn();
+    const onApproach = vi.fn();
     await render(
       <PlanetPortPair
         planet={UNCLAIMED_PLANET}
@@ -123,10 +146,14 @@ describe('PlanetPortPair row state machine', () => {
         onClaimPlanet={onClaim}
         isLanded={false}
         flying={false}
+        onApproach={onApproach}
       />
     );
     const btn = actButton(container, '.planet-section');
     expect(btn?.textContent).toBe('🚩 CLAIM ▸');
+    await click(btn!);
+    expect(document.body.textContent).toContain('Claim Kepler-7?');
+    expect(onApproach).not.toHaveBeenCalled();
   });
 
   it('here (isLanded true), not flying: planet row shows LAND ▸', async () => {
@@ -143,9 +170,10 @@ describe('PlanetPortPair row state machine', () => {
     expect(btn?.textContent).toBe('🛬 LAND ▸');
   });
 
-  it('flying: planet row shows 🛑 HALT ▸ (.act.armed) regardless of here-state, and calls onHalt — never onLandOnPlanet', async () => {
+  it('flying: planet row shows 🛑 HALT ▸ (.act.armed) regardless of here-state, and calls onHalt — never onLandOnPlanet or onApproach', async () => {
     const onLand = vi.fn();
     const onHalt = vi.fn();
+    const onApproach = vi.fn();
     await render(
       <PlanetPortPair
         planet={PLANET}
@@ -154,6 +182,7 @@ describe('PlanetPortPair row state machine', () => {
         isLanded={false}
         flying
         onHalt={onHalt}
+        onApproach={onApproach}
       />
     );
     const btn = actButton(container, '.planet-section');
@@ -162,6 +191,7 @@ describe('PlanetPortPair row state machine', () => {
     await click(btn!);
     expect(onHalt).toHaveBeenCalledTimes(1);
     expect(onLand).not.toHaveBeenCalled();
+    expect(onApproach).not.toHaveBeenCalled();
     // The whole section is inert while flying — clicking the card itself
     // (not the HALT button) must not open a confirm dialog either.
     const section = container.querySelector('.planet-section')!;
@@ -172,8 +202,9 @@ describe('PlanetPortPair row state machine', () => {
 
   // ---- Station rows ---------------------------------------------------
 
-  it('not here, not flying: station row shows APPROACH ▸; clicking opens the DOCK confirm', async () => {
+  it('not here, not flying: station row shows APPROACH ▸; clicking opens the DOCK confirm AND kicks off the glide', async () => {
     const onDock = vi.fn();
+    const onApproach = vi.fn();
     await render(
       <PlanetPortPair
         planet={null}
@@ -182,6 +213,7 @@ describe('PlanetPortPair row state machine', () => {
         onDockAtStation={onDock}
         isDocked={false}
         flying={false}
+        onApproach={onApproach}
       />
     );
     const btn = actButton(container, '.station-section');
@@ -189,6 +221,8 @@ describe('PlanetPortPair row state machine', () => {
     await click(btn!);
     expect(document.body.textContent).toContain('Dock at Kepler Ring?');
     expect(onDock).not.toHaveBeenCalled();
+    expect(onApproach).toHaveBeenCalledTimes(1);
+    expect(onApproach).toHaveBeenCalledWith('station-1');
   });
 
   it('here (isDocked true), not flying: station row shows DOCK ▸', async () => {

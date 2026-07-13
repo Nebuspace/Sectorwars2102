@@ -57,8 +57,9 @@ vi.mock('../../tactical/WindshieldTableau', () => ({ default: () => <div /> }));
 // id so this file can assert the per-row flying/here wiring GameDashboard
 // computes, without needing PlanetPortPair's real confirm-dialog machinery
 // (that's PlanetPortPair.rowStateMachine.test.tsx's job).
-const pppCalls: Array<{ planetId: string | null; stationId: string | null; isLanded: boolean; isDocked: boolean; flying: boolean; hasOnHalt: boolean }> = [];
+const pppCalls: Array<{ planetId: string | null; stationId: string | null; isLanded: boolean; isDocked: boolean; flying: boolean; hasOnHalt: boolean; hasOnApproach: boolean }> = [];
 let lastOnHalt: (() => void) | null = null;
+let lastOnApproach: ((objectId: string) => void) | null = null;
 vi.mock('../../tactical/PlanetPortPair', () => ({
   default: (props: any) => {
     pppCalls.push({
@@ -68,8 +69,10 @@ vi.mock('../../tactical/PlanetPortPair', () => ({
       isDocked: !!props.isDocked,
       flying: !!props.flying,
       hasOnHalt: typeof props.onHalt === 'function',
+      hasOnApproach: typeof props.onApproach === 'function',
     });
     lastOnHalt = props.onHalt ?? null;
+    lastOnApproach = props.onApproach ?? null;
     return (
       <div
         data-testid="ppp-stub"
@@ -211,14 +214,26 @@ describe('GameDashboard — SOLAR SYSTEM row state machine wiring (WO-UI2-WINDSH
     await flush();
   };
 
-  it('idle (not engaged): every row gets flying=false and a real onHalt callback', async () => {
+  it('idle (not engaged): every row gets flying=false and a real onHalt/onApproach callback', async () => {
     await mount();
 
     expect(pppCalls.length).toBeGreaterThan(0);
     for (const call of pppCalls) {
       expect(call.flying).toBe(false);
       expect(call.hasOnHalt).toBe(true);
+      expect(call.hasOnApproach).toBe(true);
     }
+  });
+
+  it('onApproach forwards the clicked row\'s id — WO-UI2-FLIGHT-FEEL: the row dispatch that used to go nowhere now reaches the shared flight store', async () => {
+    await mount();
+
+    expect(lastOnApproach).toBeTruthy();
+    // Doesn't throw when invoked with a real row id (WindshieldTableau, the
+    // actual glide resolver, is stubbed inert in this file on purpose — the
+    // full row-click -> ship-moves proof lives in
+    // GameDashboard.flightFeelUnifiedStore.test.tsx, which mounts it real).
+    await act(async () => { lastOnApproach!('planet-a'); });
   });
 
   it('engaged: every row gets flying=true (same signal as the locrow ALL STOP chip)', async () => {
@@ -241,7 +256,11 @@ describe('GameDashboard — SOLAR SYSTEM row state machine wiring (WO-UI2-WINDSH
     await mount();
 
     expect(lastOnHalt).toBeTruthy();
-    lastOnHalt!();
+    // onHalt now routes through the REAL WindshieldFlightProvider's
+    // allStop() (WO-UI2-FLIGHT-FEEL), which still calls autopilot.abort
+    // under the hood — act() because it's a genuine React state update now,
+    // not a bare mock call.
+    await act(async () => { lastOnHalt!(); });
     expect(autopilotState.abort).toHaveBeenCalledWith('all stop');
   });
 

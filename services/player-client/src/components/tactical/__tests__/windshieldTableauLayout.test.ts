@@ -11,6 +11,7 @@ import {
   bodyPosition,
   stationPosition,
   moonOrbits,
+  bodySizeEm,
   scanPosition,
   otherPresencePosition,
   selfRestingAnchor,
@@ -123,6 +124,46 @@ describe('moonOrbits', () => {
       expect(m.radiusEm).toBeGreaterThan(0);
       expect(m.durationS).toBeGreaterThan(0);
     }
+  });
+
+  it('revolution duration is slow (40-90s/lap), not the erratic fast spin Max flagged (live-playtest #9)', () => {
+    for (const m of moonOrbits(7, BODY)) {
+      expect(m.durationS).toBeGreaterThanOrEqual(40);
+      expect(m.durationS).toBeLessThanOrEqual(90);
+    }
+  });
+
+  it('radius is scaled off the PARENT body\'s own rendered size — just outside its disc edge, not a flat detached value', () => {
+    const smallBody: SystemBody = { ...BODY, size_class: 1, moons: 1 };
+    const bigBody: SystemBody = { ...BODY, size_class: 10, moons: 1 };
+    const smallRadiusEm = bodySizeEm(smallBody) / 2;
+    const bigRadiusEm = bodySizeEm(bigBody) / 2;
+
+    const [smallMoon] = moonOrbits(7, smallBody);
+    const [bigMoon] = moonOrbits(7, bigBody);
+
+    // Every moon sits OUTSIDE its own parent's disc (radius > the parent's
+    // own radius), and — because the ratio to the parent scales with the
+    // parent, not a fixed em — a small planet's moon never lands as far out
+    // (in absolute em) as a big planet's, unlike a flat/detached radius.
+    expect(smallMoon.radiusEm).toBeGreaterThan(smallRadiusEm);
+    expect(bigMoon.radiusEm).toBeGreaterThan(bigRadiusEm);
+    expect(smallMoon.radiusEm).toBeLessThan(bigMoon.radiusEm);
+  });
+
+  it('multiple moons on the same body stagger outward (no two share a radius)', () => {
+    const multiMoon: SystemBody = { ...BODY, moons: 3 };
+    const orbits = moonOrbits(7, multiMoon);
+    const radii = orbits.map((o) => o.radiusEm);
+    expect(new Set(radii.map((r) => Math.round(r * 1000))).size).toBe(radii.length);
+  });
+});
+
+describe('bodySizeEm', () => {
+  it('clamps to [0.9, 2.4]em and grows with size_class', () => {
+    expect(bodySizeEm({ ...BODY, size_class: 0 })).toBeCloseTo(0.9); // floor
+    expect(bodySizeEm({ ...BODY, size_class: 20 })).toBeCloseTo(2.4); // ceiling
+    expect(bodySizeEm({ ...BODY, size_class: 5 })).toBeGreaterThan(bodySizeEm({ ...BODY, size_class: 2 }));
   });
 });
 

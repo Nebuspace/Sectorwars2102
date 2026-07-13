@@ -101,6 +101,14 @@ export function bodyPosition(star: StarAnchor, body: SystemBody): PctPoint {
   return orbitalPosition(star, body.orbit_au, body.phase_deg);
 }
 
+/** A body's own rendered disc size (em) — single source of truth shared by
+ *  WindshieldTableau.tsx's `.pl` sizing AND moonOrbits' radius scaling below
+ *  (Max addendum, live-playtest #9: moon-orbit DETACHMENT was a planet-size-
+ *  blind radius, unrelated to how big the parent disc actually renders). */
+export function bodySizeEm(body: SystemBody): number {
+  return Math.min(2.4, Math.max(0.9, 0.55 + body.size_class * 0.28));
+}
+
 export function stationPosition(star: StarAnchor, station: SystemStation): PctPoint {
   return orbitalPosition(star, station.orbit_au, station.phase_deg);
 }
@@ -124,14 +132,29 @@ export interface MoonOrbit {
  *  the full extent of "if the data model HAS parent-child bodies"; stations
  *  carry no such field today, so they get no child-orbit layer (forward-
  *  looking: any future satellite-count field on SystemStation can attach
- *  here the same way, unchanged shape). */
+ *  here the same way, unchanged shape).
+ *
+ * Max addendum, live-playtest #9: the first cut read as "erratic wandering
+ * stars" rather than moons — two concrete numeric defects, both fixed here
+ * ("slow, subtle, parent-anchored"): SPEED (14-24s/lap is fast enough to
+ * visibly race around the disc — now 40-90s) and DETACHMENT (the old radius
+ * was a flat 1.5-2.1em regardless of the parent's own rendered size, so a
+ * SMALL planet's moon sat 3-4x its disc radius away and read as a free-
+ * floating star — now scaled off bodySizeEm() so every moon sits ~0.6-1.2
+ * planet-radii OUTSIDE its OWN parent's edge, whatever that parent's size).
+ * The wrapper-rotates/dot-offsets CSS-only mechanism itself (no transition,
+ * no per-frame JS writes — solar-system-viewscreen.css's `.moon-orbit`/
+ * `.moon-dot`) was already structurally correct; only these two numbers
+ * needed retuning. */
 export function moonOrbits(sectorId: number, body: SystemBody): MoonOrbit[] {
   const rng = new SeededRng(deriveChildSeed(NS, `moons:${sectorId}:${body.slot}`));
+  const planetRadiusEm = bodySizeEm(body) / 2;
   const out: MoonOrbit[] = [];
   for (let m = 0; m < body.moons; m++) {
+    const edgeFactor = 0.6 + rng.next01() * 0.6; // 0.6-1.2 planet-radii OUTSIDE the edge
     out.push({
-      radiusEm: 1.5 + m * 0.55 + rng.next01() * 0.3,
-      durationS: 14 + rng.next01() * 10,
+      radiusEm: planetRadiusEm * (1 + edgeFactor) + m * 0.4, // stagger multiple moons further out
+      durationS: 40 + rng.next01() * 50, // one revolution ~40-90s — slow, subtle
       startDeg: rng.next01() * 360,
       clockwise: rng.next01() < 0.5,
     });

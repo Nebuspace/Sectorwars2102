@@ -277,8 +277,10 @@
 }
 .ssv-tableau .moon-orbit.ccw { animation-direction: reverse; }
 .ssv-tableau .moon-dot {
+  /* Slightly dim + a soft (not point-source) glow — reads as a nearby moon
+     catching starlight, not a bright background star (Max addendum #9). */
   position: absolute; width: .3em; height: .3em; border-radius: 50%;
-  background: rgba(215, 215, 230, 0.9); box-shadow: 0 0 .3em rgba(215, 215, 230, .5);
+  background: rgba(200, 202, 214, 0.72); box-shadow: 0 0 .2em rgba(200, 202, 214, .32);
   transform: translate(-50%, -50%);
 }
 @keyframes ssv-moon-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }

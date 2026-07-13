@@ -455,6 +455,23 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     });
     cleanups.push(linkStatusHandler);
 
+    // Send-failure handler (WO-UI2-FLIGHT-FEEL UX nit) — websocketService.
+    // send() previously only console.warn'd on a dead uplink; every caller
+    // (chat, ARIA, sector-player requests) failed silently from the
+    // player's point of view. One consistent, generic warning toast via the
+    // SAME addNotification idiom every other in-cockpit toast already uses
+    // (mirrors StatusBar's `sb-link` DOWN/RELINK/OK chip, which stays the
+    // persistent ambient signal — this is the one-shot per-action echo of
+    // it, so a click that silently did nothing now visibly says so).
+    const sendFailedHandler = websocketService.onSendFailed(() => {
+      addNotification({
+        title: 'Uplink down',
+        content: "That action wasn't sent — the connection is down.",
+        level: 'warning'
+      });
+    });
+    cleanups.push(sendFailedHandler);
+
     // Chat message handler
     const chatHandler = websocketService.onChatMessage((message) => {
       setChatMessages(prev => [...prev, message].slice(-50)); // Keep last 50 messages
@@ -881,8 +898,11 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           // Only log truly unhandled message types, not ones handled by specific handlers
           // (aria_response is consumed by the dedicated ariaHandler above; the
           // generalHandler still sees it, so exclude it from the noise warning.
-          // aria_narration is consumed by ariaNarrationHandler the same way.)
-          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'aria_narration', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'reputation_changed', 'team_reputation_changed', 'npc_combat_initiated'].includes(message.type)) {
+          // aria_narration is consumed by ariaNarrationHandler the same way.
+          // send_failed is consumed by sendFailedHandler above — it's a
+          // client-local synthetic event (websocket.ts's own send()), not
+          // an unhandled server frame.)
+          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'aria_narration', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'reputation_changed', 'team_reputation_changed', 'npc_combat_initiated', 'send_failed'].includes(message.type)) {
             console.warn('WebSocket: Unhandled message type:', message.type);
           }
       }

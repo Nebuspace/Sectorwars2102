@@ -9,6 +9,13 @@
  * kind rendering from the /contents fetch, the ship marker's click-to-travel
  * glide + heading, moon child-orbit attach points, SCAN gating, and the
  * fetch-failure fallback (never a blank windshield).
+ *
+ * WO-UI2-FLIGHT-FEEL: this component now consumes the shared
+ * WindshieldFlightContext (publishing its own glide state, resolving a
+ * row's approach() request, freezing on allStop()) — every mount() below is
+ * wrapped in a REAL WindshieldFlightProvider (its only real dependency,
+ * useAutopilot, stays the SAME lightweight module mock already established
+ * here).
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -30,6 +37,8 @@ vi.mock('../../../contexts/AutopilotContext', () => ({
 
 // eslint-disable-next-line import/first
 import WindshieldTableau from '../WindshieldTableau';
+// eslint-disable-next-line import/first
+import { WindshieldFlightProvider, useWindshieldFlight } from '../../../contexts/WindshieldFlightContext';
 
 const SECTOR_ID = 77;
 
@@ -91,9 +100,24 @@ describe('WindshieldTableau', () => {
     vi.restoreAllMocks();
   });
 
+  // Captures the shared flight context alongside the real WindshieldTableau
+  // mount, so a test can drive approach()/allStop() the same way a SOLAR row
+  // or the locrow would, and read isFlying/targetId back out.
+  let flightCapture: ReturnType<typeof useWindshieldFlight> | null = null;
+  function FlightCapture() {
+    flightCapture = useWindshieldFlight();
+    return null;
+  }
+
   const mount = async (props: Record<string, unknown> = {}) => {
+    flightCapture = null;
     await act(async () => {
-      root.render(<WindshieldTableau sectorId={SECTOR_ID} {...props} />);
+      root.render(
+        <WindshieldFlightProvider>
+          <FlightCapture />
+          <WindshieldTableau sectorId={SECTOR_ID} {...props} />
+        </WindshieldFlightProvider>
+      );
     });
     await flush();
     await flush();
@@ -268,7 +292,11 @@ describe('WindshieldTableau', () => {
     mockGet.mockReset();
     mockGet.mockReturnValue(new Promise((resolve) => { resolveGet = resolve; }));
     await act(async () => {
-      root.render(<WindshieldTableau sectorId={SECTOR_ID} />);
+      root.render(
+        <WindshieldFlightProvider>
+          <WindshieldTableau sectorId={SECTOR_ID} />
+        </WindshieldFlightProvider>
+      );
     });
     await flush();
     expect(container.querySelector('.shipmk')).toBeNull();
@@ -276,5 +304,74 @@ describe('WindshieldTableau', () => {
     await flush();
     await flush();
     expect(container.querySelector('.shipmk')).not.toBeNull();
+  });
+
+  // ---- WO-UI2-FLIGHT-FEEL: shared flight-context wiring ------------------
+
+  it('publishes its local glide into the shared flight context — a band click flips flightCapture.isFlying/targetId too, not just the DOM', async () => {
+    await mount();
+    expect(flightCapture?.isFlying).toBe(false);
+
+    const planetBtn = container.querySelector('.pl') as HTMLButtonElement;
+    await act(async () => { planetBtn.click(); });
+
+    expect(flightCapture?.isFlying).toBe(true);
+    expect(flightCapture?.targetId).toBe('planet-real-1');
+  });
+
+  it('resolves a row\'s flight.approach(planetId) request into the SAME glide a band click performs (position + burning)', async () => {
+    await mount();
+    const shipBefore = container.querySelector('.shipmk') as HTMLElement;
+    const leftBefore = shipBefore.style.left;
+    const topBefore = shipBefore.style.top;
+
+    await act(async () => { flightCapture!.approach('planet-real-1'); });
+
+    const shipAfter = container.querySelector('.shipmk') as HTMLElement;
+    expect(shipAfter.style.left).not.toBe(leftBefore);
+    expect(shipAfter.style.top).not.toBe(topBefore);
+    expect(shipAfter.className).toContain('burning');
+    expect(flightCapture?.isFlying).toBe(true);
+    expect(flightCapture?.targetId).toBe('planet-real-1');
+  });
+
+  it('resolves flight.approach(stationId) against stations the same way', async () => {
+    await mount();
+    const station = container.querySelector('.obj') as HTMLElement;
+
+    await act(async () => { flightCapture!.approach('station-1'); });
+
+    const ship = container.querySelector('.shipmk') as HTMLElement;
+    expect(ship.style.left).toBe(station.style.left);
+    expect(ship.style.top).toBe(station.style.top);
+    expect(flightCapture?.targetId).toBe('station-1');
+  });
+
+  it('flight.approach() with an unresolvable id is a no-op — no crash, ship stays put', async () => {
+    await mount();
+    const shipBefore = container.querySelector('.shipmk') as HTMLElement;
+    const leftBefore = shipBefore.style.left;
+    const topBefore = shipBefore.style.top;
+
+    await act(async () => { flightCapture!.approach('does-not-exist'); });
+
+    const shipAfter = container.querySelector('.shipmk') as HTMLElement;
+    expect(shipAfter.style.left).toBe(leftBefore);
+    expect(shipAfter.style.top).toBe(topBefore);
+    expect(flightCapture?.isFlying).toBe(false);
+  });
+
+  it('flight.allStop() freezes an in-progress glide — clears burning, and isFlying drops back to false', async () => {
+    await mount();
+    const planetBtn = container.querySelector('.pl') as HTMLButtonElement;
+    await act(async () => { planetBtn.click(); });
+    expect(flightCapture?.isFlying).toBe(true);
+
+    await act(async () => { flightCapture!.allStop(); });
+
+    const ship = container.querySelector('.shipmk') as HTMLElement;
+    expect(ship.className).not.toContain('burning');
+    expect(flightCapture?.isFlying).toBe(false);
+    expect(flightCapture?.targetId).toBeNull();
   });
 });

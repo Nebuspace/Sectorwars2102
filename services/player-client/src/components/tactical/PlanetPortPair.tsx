@@ -56,6 +56,13 @@ interface PlanetPortPairProps {
   /** Aborts the in-progress course — same autopilot.abort('all stop') the
    *  glass locrow's 🛑 ALL STOP chip already calls. */
   onHalt?: () => void;
+  /** WO-UI2-FLIGHT-FEEL: fired (with the planet/station id) the moment an
+   *  "APPROACH ▸" row is clicked, ALONGSIDE the existing confirm-dialog flow
+   *  below (not instead of it) — requests the SAME windshield ship-glide a
+   *  band-object click performs (GameDashboard wires this to the shared
+   *  WindshieldFlightContext's `approach()`). Never fired for LAND/DOCK/
+   *  CLAIM/HALT — only the "not here, not flying" APPROACH case. */
+  onApproach?: (objectId: string) => void;
 }
 
 const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
@@ -67,7 +74,8 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
   isLanded = false,
   isDocked = false,
   flying = false,
-  onHalt
+  onHalt,
+  onApproach
 }) => {
   // Planet type icons
   const planetTypeIcons: { [key: string]: string } = {
@@ -134,6 +142,11 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
       // landable (you land on a hub to recruit colonists); hubs simply can't be
       // claimed. Route straight to the Land confirm, same as the helm-rail
       // LAND button (onLandOnPlanet -> handleLand -> landOnPlanet).
+      // This IS the "🧭 APPROACH ▸" branch (isLanded/flying are already
+      // guarded out above) — also kick off the windshield ship-glide, same
+      // moment the confirm dialog opens (WO-UI2-FLIGHT-FEEL: previously this
+      // click reached ONLY the confirm dialog, never the glide).
+      onApproach?.(targetPlanet.id);
       setPendingConfirm({
         title: 'Landing Request',
         message: `Land on ${targetPlanet.name}?`,
@@ -149,6 +162,9 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
     // Capture narrowed values for the deferred onConfirm closure
     const targetStation = station;
     const dockAtStation = onDockAtStation;
+    // Reachable only via the "🧭 APPROACH ▸" action (isDocked/flying already
+    // guarded out above) — same glide kickoff as the planet APPROACH case.
+    onApproach?.(targetStation.id);
     setPendingConfirm({
       title: 'Docking Request',
       message: `Dock at ${targetStation.name}?`,
