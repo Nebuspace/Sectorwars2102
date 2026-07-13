@@ -38,9 +38,47 @@
    so it can't be updated to the new class name here) — `flex: 1 1 0` was
    already dead weight there regardless (`.mfdcol` is `display: grid`, not
    flex; `flex` has no effect on a grid item), so only `min-height: 0`
-   needs restoring, and it lands here instead. */
+   needs restoring, and it lands here instead.
+
+   WO-UI-MAX-BATCH-1 (`overflow: hidden` added): `min-height: 0` only
+   controls how `.mfd` behaves as ITS OWN grid item (letting the row track
+   shrink it below its content's natural size) — it does nothing about the
+   REVERSE case, where `.mfd`'s two internal flex children (`.scr` + the
+   `.skrow` softkey rail, cockpit-shell.css's flex-column layout for `.mfd`)
+   between them still want MORE height than the grid-stretched row provides.
+   `.scr` already carries `overflow: hidden` (cockpit-shell.css, untouched)
+   but that only clips content OVERFLOWING `.scr`'s own box — it can't stop
+   `.scr` + `.skrow`'s COMBINED flex-resolved heights from exceeding `.mfd`'s
+   box. `.mfd` itself had no `overflow` at all (default `visible`), and
+   neither does `.mfdcol`/`.lower` above it, so any such excess sailed
+   straight through three unclipped ancestor boxes and was only ever cut off
+   by `.stage`'s own `overflow: hidden` at the OUTER shell edge — exactly the
+   live symptom (Max #14): the MFD-B softkey rail clipping at the WINDOW
+   bottom while `.lower`'s own rect measured correctly inside it. Adding
+   `overflow: hidden` here makes `.mfd` the FIRST clip boundary its own
+   content ever meets, so any residual deficit is contained inside its own
+   rounded-corner box instead of spilling into the sibling MFD unit / the
+   shell edge. Paired with `.mfd .skrow { flex-shrink: 0 }` below so `.scr`
+   (not the softkey rail) is what actually absorbs a real deficit. */
 .mfd {
   min-height: 0;
+  overflow: hidden;
+}
+
+/* `.skrow`'s softkeys must ALWAYS be fully visible — CLAUDE.md's Scroll Law:
+   the SCREEN content scrolls (`.scr` → `.mfd-page-body`'s `overflow-y:auto`,
+   already wired, atoms.tsx/pages-*.css), never the console chrome around it.
+   Without this, `.mfd`'s flex-column (`.scr` flex-basis:0% vs `.skrow`'s
+   flex-basis:auto) would let the SHRINK algorithm weight nearly all of any
+   deficit onto `.skrow` instead of `.scr` (a flex-basis:0% item's "scaled
+   shrink factor" — flex-shrink × flex-basis — is ~0, so it absorbs ~none of
+   a shrink pass; `flex-basis:auto` items absorb the rest) — the opposite of
+   the intended "the screen yields, the rail never does." `flex-shrink: 0`
+   pins the rail at its natural size unconditionally; `.scr`'s own
+   `min-height: 0` + `overflow: hidden` (above/cockpit-shell.css) then
+   absorb 100% of any real deficit instead. */
+.mfd .skrow {
+  flex-shrink: 0;
 }
 
 /* Keyboard-focus visibility: cockpit-shell.css's `.skey` (the ratified,

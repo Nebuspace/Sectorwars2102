@@ -61,7 +61,16 @@ button.chip:hover { border-color:#3FD2EC77; }
 .repb { color:var(--grn); }
 
 /* band (container only -- scene content is a separate lane) */
-.band { position:relative; height:15.5em; overflow:hidden; contain:paint; }
+/* Max-ruled override: band 15.5->18.5em, playtest #20 (orchestrator
+   14:42Z), WO-UI-MAX-BATCH-1. Flight/space-mode only -- station/surface
+   (game-layout.css's `.mode-station .band`/`.mode-surface .band`) are
+   UNCHANGED. `--band-h-flight` is the single tunable value (~+19% over
+   the artifact's own 15.5em) so a future ±1em nudge is a one-line edit
+   here; `.lower`'s `1fr` row absorbs the delta (band now ≈36-37% of
+   shell height, up from ≈30.5%) -- same "grid hands the `1fr` track
+   whatever's left" mechanism the MID-PANEL BAND CORRECTION comment
+   (game-layout.css) already documents, no other file needs a change. */
+.band { position:relative; --band-h-flight:18.5em; height:var(--band-h-flight); overflow:hidden; contain:paint; }
 .stage[data-mode=station] .band { height:8.5em; }
 .stage[data-mode=surface] .band { height:16em; }
 
