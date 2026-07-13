@@ -55,10 +55,14 @@ vi.mock('../../../services/api', () => ({
 // apiClient -- AutopilotContext's OWN plot POST target (used by the real,
 // unmocked AutopilotProvider wrapping GameDashboard below). GameDashboard's
 // own two direct apiClient.post call sites (mining harvest, formation
-// investigate) are never exercised by these tests.
+// investigate) are never exercised by these tests. `.get` backs
+// GameDashboard's own STAR/decorative-body sensor-row fetch (GET /sectors/
+// {id}/contents, WO-UI-MAX-BATCH-1 item 9) -- resolves to an empty snapshot
+// here since this file's NAV-monitor tests don't exercise SOLAR SYSTEM rows.
 const mockPost = vi.fn();
+const mockGet = vi.fn().mockResolvedValue({ data: {} });
 vi.mock('../../../services/apiClient', () => ({
-  default: { post: (...a: unknown[]) => mockPost(...a) },
+  default: { post: (...a: unknown[]) => mockPost(...a), get: (...a: unknown[]) => mockGet(...a) },
 }));
 
 vi.mock('../../layouts/GameLayout', () => ({
@@ -227,6 +231,8 @@ describe('GameDashboard — NAV chart monitor (/game/map parity, WO-UI2-CHART-MO
     mockGetChart.mockResolvedValue(DEFAULT_CHART);
     mockPost.mockReset();
     mockPost.mockResolvedValue({ data: {} });
+    mockGet.mockReset();
+    mockGet.mockResolvedValue({ data: {} });
 
     gameState = makeGameState();
 

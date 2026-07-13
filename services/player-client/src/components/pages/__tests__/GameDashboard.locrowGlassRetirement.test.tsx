@@ -1,12 +1,16 @@
 // @vitest-environment jsdom
 /**
- * GameDashboard — WO-UI5-RETIREMENT+GLASS (glass-lane, WO-UI0 part-4).
+ * GameDashboard — WO-UI5-RETIREMENT+GLASS (glass-lane, WO-UI0 part-4),
+ * further simplified WO-UI-MAX-BATCH-1 items 1-3 (Max #10/#13/#16).
  *
- * Proves the three glass changes on the flight-scene windshield:
- *   1. `.locrow` top-left chips (sector / region / HAZARD / NEBULA / ALL
- *      STOP), reproduced from the ratified prototype's own `.locrow` markup
- *      — bound to real currentSector/autopilot state, HAZARD click opens
- *      the shared HazardAnalysisCard.
+ * Proves the glass changes on the flight-scene windshield:
+ *   1. `.locrow` top-left chips are down to a single region-flavor chip +
+ *      conditional ALL STOP — the sector-name chip, the HAZARD chip, and
+ *      the NEBULA chip are all gone (sector number/type + the region's full
+ *      name already live in the status bar's LocationDropdown, "canon";
+ *      HAZARD's OWN open-state was a second, redundant trigger for the
+ *      exact same HazardAnalysisCard Annunciator.tsx's HAZARD segment
+ *      already opens — that segment is untouched and still owns it).
  *   2. The old hazard/radiation/formations HudChip glass idiom is gone —
  *      the annunciator strip + the new locrow own the glass now (the
  *      landed/docked HudChips — owner/habitability/baystatus — are
@@ -216,23 +220,25 @@ describe('GameDashboard — locrow + HudChip retirement + SCAN relocation (WO-UI
     await flush();
   };
 
-  it('renders the .locrow sector/region/HAZARD chips, labelled real buttons', async () => {
+  it('renders the .locrow region-flavor chip only — no sector-name/HAZARD/NEBULA chips', async () => {
     await mount();
 
     const locrow = container.querySelector('.locrow');
     expect(locrow).toBeTruthy();
     const chips = Array.from(locrow!.querySelectorAll('.loc'));
     const chipText = chips.map((c) => c.textContent);
-    expect(chipText).toContain('Sol');
-    expect(chipText).toContain('The Frontier');
-    expect(chipText.some((t) => t === 'HAZARD 6/10 ▾')).toBe(true);
 
-    // HAZARD is a real <button> with a non-empty accessible name (its own
-    // text content) -- not a decorative span.
-    const hazardBtn = chips.find((c) => c.textContent === 'HAZARD 6/10 ▾') as HTMLButtonElement;
-    expect(hazardBtn.tagName).toBe('BUTTON');
-    expect(hazardBtn.textContent).toBeTruthy();
+    // The one surviving informational chip: the sector's region_name.
+    expect(chipText).toEqual(['The Frontier']);
 
+    // The sector-NAME chip ("Sol") is gone -- sector identity now lives
+    // only in the status bar's LocationDropdown (canon).
+    expect(chipText).not.toContain('Sol');
+    // HAZARD is gone entirely -- Annunciator's own HAZARD segment is the
+    // one surviving trigger for HazardAnalysisCard (untouched, out of this
+    // file's flight-only fixtures).
+    expect(chipText.some((t) => t?.startsWith('HAZARD'))).toBe(false);
+    expect(container.querySelector('.locrow button')).toBeNull(); // no HAZARD/ALL STOP button while idle
     // NEBULA + ALL STOP are conditional on nebula type / in-transit -- this
     // fixture is neither, so both are absent.
     expect(chipText).not.toContain('NEBULA');
@@ -241,15 +247,18 @@ describe('GameDashboard — locrow + HudChip retirement + SCAN relocation (WO-UI
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
-  it('locrow NEBULA chip renders for a NEBULA-type sector with no region', async () => {
+  it('locrow has NO chip at all for a NEBULA-type sector with no region (sector type + name are status-bar-only now)', async () => {
     gameState = makeGameState({ currentSector: SECTOR_NEBULA });
     await mount();
 
     const locrow = container.querySelector('.locrow')!;
     const chipText = Array.from(locrow.querySelectorAll('.loc')).map((c) => c.textContent);
-    expect(chipText).toContain('Veil');
-    expect(chipText).toContain('NEBULA');
-    // region_name is null on this fixture -- no region chip, no crash.
+    // region_name is null on this fixture, and the sector-name/NEBULA-type
+    // chips are retired -- the locrow renders with zero informational
+    // chips (still a valid, non-crashing empty state).
+    expect(chipText).toEqual([]);
+    expect(chipText).not.toContain('Veil');
+    expect(chipText).not.toContain('NEBULA');
     expect(chipText).not.toContain('The Frontier');
     expect(errorSpy).not.toHaveBeenCalled();
   });
@@ -271,27 +280,23 @@ describe('GameDashboard — locrow + HudChip retirement + SCAN relocation (WO-UI
     expect(autopilotState.abort).toHaveBeenCalledWith('all stop');
   });
 
-  it('HAZARD chip click opens the HazardAnalysisCard; close returns focus to the chip', async () => {
+  it('the SOLAR SYSTEM monitor HAZARD tab carries the numeric detail the locrow HAZARD chip used to gate — no floating dialog needed', async () => {
     await mount();
 
-    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    // No locrow HAZARD button exists to click anymore.
+    expect(Array.from(container.querySelectorAll('.locrow .loc')).some((c) => c.textContent?.startsWith('HAZARD'))).toBe(false);
 
-    const hazardBtn = Array.from(container.querySelectorAll('.locrow .loc'))
-      .find((c) => c.textContent?.startsWith('HAZARD')) as HTMLButtonElement;
-    await click(hazardBtn);
+    const solar = container.querySelector('.mon.system-monitor')!;
+    const hazardTab = Array.from(solar.querySelectorAll('.deck-tab-btn')).find((b) => b.textContent === 'HAZARD') as HTMLButtonElement;
+    expect(hazardTab).toBeTruthy();
+    await click(hazardTab);
 
-    const dialog = container.querySelector('[role="dialog"]');
-    expect(dialog).toBeTruthy();
-    expect(dialog!.textContent).toContain('HAZARD ANALYSIS');
-    expect(dialog!.textContent).toContain('Sol');
-    expect(dialog!.textContent).toContain('6/10'); // hazard_level
-    expect(dialog!.textContent).toContain('20.0%'); // radiation_level
-
-    const closeBtn = dialog!.querySelector('.annunciator-card-close') as HTMLButtonElement;
-    await click(closeBtn);
-
-    expect(container.querySelector('[role="dialog"]')).toBeNull();
-    expect(document.activeElement).toBe(hazardBtn);
+    expect(solar.textContent).toContain('HAZARD ANALYSIS');
+    expect(solar.textContent).toContain('6/10'); // hazard_level
+    expect(solar.textContent).toContain('20.0%'); // radiation_level
+    // Choosing HAZARD swaps out the sensor list — the SYSTEM page's own
+    // content (e.g. its SENSOR SWEEP toggle) is no longer in the DOM.
+    expect(solar.querySelector('.system-scan-row')).toBeNull();
   });
 
   it('the old hazard/radiation/formations HudChip glass idiom is gone', async () => {

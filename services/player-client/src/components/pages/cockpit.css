@@ -5139,15 +5139,21 @@
    PLANETARY MONITOR — ASTEROID FIELD STATE
    HARVEST trigger shown when the sector is an
    asteroid field with no planets or stations.
+   WO-UI-MAX-BATCH-1 item 7: one dense sensor-row
+   line (icon+label left, action right) instead of
+   a full-height centered block — mirrors the shared
+   `.row` grammar's own flex layout (cockpit-shell.css)
+   directly rather than relying on cross-file class-
+   combination cascade order.
    ============================================ */
 
 .planetary-asteroid-state {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  justify-content: center;
-  gap: 0.75rem;
-  height: 100%;
+  justify-content: space-between;
+  gap: 0.4em .8em;
+  height: auto;
 }
 
 .planetary-asteroid-label {

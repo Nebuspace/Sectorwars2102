@@ -224,22 +224,41 @@ describe('GameDashboard — flying deck collapsed to 3 monitors (WO-UI2-DECK-REC
     expect(container.querySelector('.mon.comms-monitor')).toBeNull();
   });
 
-  it('SOLAR SYSTEM: SYSTEM page folds hazard/radiation/no-transit notes into the bodies list (not a separate page)', async () => {
+  it('SOLAR SYSTEM: SYSTEM page has a 4-tab rail (SYSTEM · SALVAGE · SIGNALS · HAZARD) and shows hazards as a terse row — no numbers on this page (WO-UI-MAX-BATCH-1 Max #21)', async () => {
     await mount();
 
     const solar = container.querySelector('.mon.system-monitor')!;
     const tabs = Array.from(solar.querySelectorAll('.deck-tab-btn')).map((b) => b.textContent);
-    expect(tabs).toEqual(['SYSTEM', 'SALVAGE', 'SIGNALS']);
+    expect(tabs).toEqual(['SYSTEM', 'SALVAGE', 'SIGNALS', 'HAZARD']);
+
+    // The old numeric fold is gone from SYSTEM — relocated to its own
+    // HAZARD tab (below). SECTOR_100 is type STANDARD with hazard_level>0
+    // and no named hazard type, so it gets the ONE generic fallback row
+    // the WO's brief itself anticipates ("if a sector's hazard data
+    // doesn't map to a named object, render a GENERIC hazard row").
+    expect(solar.querySelector('.system-hazard-fold')).toBeNull();
+    expect(solar.textContent).not.toContain('6/10');
+    expect(solar.textContent).not.toContain('20.0%');
+    expect(solar.textContent).toContain('HAZARD DETECTED');
+    // Formations do NOT render on SYSTEM's SIGNALS-style badge list anymore
+    // — they moved to SIGNALS. (SCAN is off in this fixture by default, so
+    // the new scanActive-gated formation sensor row is absent too —
+    // covered on its own in GameDashboard.solarSensorList.test.tsx.)
+    expect(solar.textContent).not.toContain('WHISPER CLOUD');
+  });
+
+  it('SOLAR SYSTEM: HAZARD tab carries the numeric hazard/radiation/no-transit/description detail relocated off SYSTEM, and competes with it for the panel', async () => {
+    await mount();
+    const solar = container.querySelector('.mon.system-monitor')!;
+    await clickTab('HAZARD');
 
     expect(solar.querySelector('.system-hazard-fold')).toBeTruthy();
     expect(solar.textContent).toContain('6/10'); // hazard_level
     expect(solar.textContent).toContain('20.0%'); // radiation_level
     expect(solar.textContent).toContain('NEBULA'); // special_features NO-TRANSIT note
     expect(solar.textContent).toContain('A quiet stretch of charted space.');
-    // Formations do NOT render on SYSTEM anymore — they moved to SIGNALS
-    // ('.hud-badge' also styles the special_features NO-TRANSIT note above,
-    // so assert on the formation's own name text instead of the shared class).
-    expect(solar.textContent).not.toContain('WHISPER CLOUD');
+    // Choosing HAZARD swaps the panel — SYSTEM's own sensor-sweep row is gone.
+    expect(solar.querySelector('.system-scan-row')).toBeNull();
   });
 
   it('SOLAR SYSTEM: SIGNALS page shows discovered formations with INVESTIGATE (moved off the old HAZARDS page)', async () => {

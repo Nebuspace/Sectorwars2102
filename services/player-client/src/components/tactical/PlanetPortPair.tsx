@@ -203,44 +203,75 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
           ? { label: '⚓ DOCK ▸', onClick: handleStationClick, armed: false, ariaLabel: `Dock at ${station.name}` }
           : { label: '🧭 APPROACH ▸', onClick: handleStationClick, armed: false, ariaLabel: `Approach ${station.name}` };
 
+  // Dense one-line qualifiers (WO-UI-MAX-BATCH-1 item 7: "EVERY object = ONE
+  // DENSE .row line ... secondary stats go DIM-INLINE after the name ...
+  // NOT stacked multi-line — the tall claimable-planet card → one dense
+  // line"). Ownership/hub/unclaimed are mutually exclusive (same precedence
+  // the old stacked `.planet-meta` block already used); `planet.status` is
+  // the real backend PlanetStatus value (HABITABLE/UNINHABITABLE/COLONIZED/
+  // DEVELOPED/TERRAFORMING — models/planet.py), not a guessed threshold.
+  const planetQualifiers: Array<{ key: string; text: string; cls: string }> = [];
+  if (planet) {
+    if (isPopulationHub) {
+      planetQualifiers.push({ key: 'hub', text: 'POPULATION HUB', cls: 'pq-hub' });
+    } else if (isPlanetUnclaimed && onClaimPlanet) {
+      planetQualifiers.push({ key: 'unclaimed', text: 'UNCLAIMED', cls: 'pq-unclaimed' });
+    } else if (ownerDisplay) {
+      planetQualifiers.push({ key: 'owner', text: ownerDisplay.toUpperCase(), cls: 'pq-owner' });
+    }
+    if (planet.status) {
+      planetQualifiers.push({ key: 'status', text: planet.status.toUpperCase(), cls: 'pq-status' });
+    }
+    if (isPlanetUnclaimed && onClaimPlanet) {
+      planetQualifiers.push({ key: 'reqs', text: '💰10,000cr · 👥100+', cls: 'pq-reqs' });
+    }
+    if (planet.habitability_score !== undefined) {
+      planetQualifiers.push({ key: 'temp', text: `🌡️${planet.habitability_score}%`, cls: 'pq-stat' });
+    }
+    if (planet.population !== undefined) {
+      planetQualifiers.push({ key: 'pop', text: `👥${formatPopulation(planet.population)}`, cls: 'pq-stat' });
+    }
+  }
+
+  const stationQualifiers: Array<{ key: string; text: string; cls: string }> = [];
+  if (station) {
+    if (stationOwnerDisplay) {
+      stationQualifiers.push({ key: 'owner', text: stationOwnerDisplay.toUpperCase(), cls: 'pq-owner' });
+    }
+    stationQualifiers.push({
+      key: 'class',
+      text: stationClassInfo
+        ? `CLASS ${stationClassInfo.classNumber} · ${stationClassInfo.name.toUpperCase()}`
+        : station.port_class !== undefined
+          ? `CLASS ${station.port_class}`
+          : station.type.replace(/_/g, ' ').toUpperCase(),
+      cls: 'pq-status',
+    });
+  }
+
   return (
     <div className="planet-port-pair">
-      {/* Planet Section - Clickable (only show if planet exists) */}
+      {/* Planet Section - Clickable (only show if planet exists). One dense
+          line: icon + name + inline dim qualifiers on the left, the row
+          action on the right (`justify-content:space-between`, planet-port-
+          pair.css) — replaces the old stacked icon/name + meta-badges +
+          stats layout. */}
       {planet && (
         <div
           className={`planet-section ${flying ? 'inactive' : !isLanded ? 'clickable' : 'landed'} ${isPlanetUnclaimed ? 'unclaimed' : ''}`}
           aria-disabled={flying}
           onClick={flying ? undefined : handlePlanetClick}
         >
-          <div className="planet-details">
-            {/* icon + name always on ONE line — icon scaled to line-height */}
-            <div className="planet-name-line">
-              <span className="planet-icon">{planetIcon}</span>
-              <span className="planet-name">{planet.name}</span>
-            </div>
-            {/* badges: claim/hub/owner — rendered only when present */}
-            {((isPlanetUnclaimed && !!onClaimPlanet) || isPopulationHub || !!ownerDisplay) && (
-              <div className="planet-meta">
-                {isPlanetUnclaimed && onClaimPlanet ? (
-                  <>
-                    <span className="planet-claim-hint">Click to Claim</span>
-                    <span className="planet-claim-reqs">💰 10,000cr · 👥 100+ colonists aboard</span>
-                  </>
-                ) : isPopulationHub ? (
-                  <span className="planet-hub-tag">POPULATION HUB · REGIONAL ADMINISTRATION</span>
-                ) : (
-                  ownerDisplay && <span className="planet-owner">{ownerDisplay}</span>
-                )}
-              </div>
+          <div className="planet-info">
+            <span className="planet-icon">{planetIcon}</span>
+            <span className="planet-name">{planet.name}</span>
+            {planetQualifiers.length > 0 && (
+              <span className="planet-quals">
+                {planetQualifiers.map((q) => (
+                  <span key={q.key} className={q.cls}>{q.text}</span>
+                ))}
+              </span>
             )}
-            <div className="planet-stats">
-              {planet.habitability_score !== undefined && (
-                <span className="stat">🌡️ {planet.habitability_score}%</span>
-              )}
-              {planet.population !== undefined && (
-                <span className="stat">👥 {formatPopulation(planet.population)}</span>
-              )}
-            </div>
           </div>
           {/* Row action (WO-UI2-WINDSHIELD-TABLEAU item 3, demo L1350) —
               here?LAND/CLAIM:(flying?HALT:APPROACH). Reuses the shared
@@ -260,51 +291,37 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
         </div>
       )}
 
-      {/* Orbital Connector - only show if both planet and station exist */}
-      {planet && station && <div className="orbital-connector">→</div>}
-
-      {/* Station Section - Clickable if exists */}
+      {/* Station Section - Clickable if exists. Same dense one-line grammar
+          as the planet section above — no more `.orbital-connector` arrow
+          pairing them side by side (WO-UI-MAX-BATCH-1 item 7: every object
+          is its own full-width row, matching the target screenshot's flat
+          object list, not a paired orbit card). */}
       {station && (
         <div
           className={`station-section ${!isDocked && !flying && stationOperational ? 'clickable' : 'inactive'}`}
           aria-disabled={flying}
           onClick={flying ? undefined : handleStationClick}
         >
-          <div className="station-details">
-            <div className="station-name-line">
-              {/* icon + name + status on ONE line */}
-              <div className="station-name-status">
-                <span
-                  className="station-icon"
-                  style={stationClassInfo ? { color: stationClassInfo.accent } : undefined}
-                >
-                  {stationClassInfo ? (
-                    <StationClassMark group={stationClassInfo.group} size={16} />
-                  ) : (
-                    '🛰️'
-                  )}
-                </span>
-                <span className="station-name">{station.name}</span>
-                <span className="station-status">
-                  {stationOperational ? '🟢' : '🔴'}
-                </span>
-              </div>
-              {stationOwnerDisplay && <span className="station-owner">{stationOwnerDisplay}</span>}
+          <div className="station-info">
+            <span
+              className="station-icon"
+              style={stationClassInfo ? { color: stationClassInfo.accent } : undefined}
+            >
               {stationClassInfo ? (
-                <span
-                  className="station-class"
-                  style={{ color: stationClassInfo.accent }}
-                  title={stationClassInfo.blurb}
-                >
-                  Class {stationClassInfo.classNumber} · {stationClassInfo.name}
-                </span>
+                <StationClassMark group={stationClassInfo.group} size={16} />
               ) : (
-                station.port_class !== undefined && (
-                  <span className="station-class">Class {station.port_class}</span>
-                )
+                '🛰️'
               )}
-              <span className="station-type">{station.type.replace(/_/g, ' ')}</span>
-            </div>
+            </span>
+            <span className="station-name">{station.name}</span>
+            <span className="station-status">{stationOperational ? '🟢' : '🔴'}</span>
+            {stationQualifiers.length > 0 && (
+              <span className="planet-quals" title={stationClassInfo?.blurb}>
+                {stationQualifiers.map((q) => (
+                  <span key={q.key} className={q.cls}>{q.text}</span>
+                ))}
+              </span>
+            )}
           </div>
           {/* Row action (WO-UI2-WINDSHIELD-TABLEAU item 3, demo L1349) —
               here?DOCK:(flying?HALT:APPROACH). null while non-operational

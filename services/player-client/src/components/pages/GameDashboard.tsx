@@ -27,7 +27,6 @@ import DeckPageTabs from '../cockpit/DeckPageTabs';
 import type { ProductionLine } from '../cockpit/ProductionPanel';
 import type { PerColonistRates, ProdRole } from '../cockpit/CoupledColonistSliders';
 import SafeVaultPanel from '../cockpit/SafeVaultPanel';
-import HazardAnalysisCard from '../hud/HazardAnalysisCard';
 import { navAPI, type NavChartResponse, sectorAPI, type SectorWreck } from '../../services/api';
 import apiClient from '../../services/apiClient';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
@@ -37,10 +36,6 @@ import './cockpit.css';
 import '../tactical/tactical-layout.css';
 import '../quantum/quantum-drive.css';
 import '../galaxy/styles/galaxy-3d.css';
-// HazardAnalysisCard's dialog skin (.annunciator-card*) is defined here,
-// alongside Annunciator.tsx's own defensive re-import of the same file (both
-// leaves mount the same shared card — see the locrow HAZARD chip below).
-import '../hud/annunciator.css';
 
 // Planet type icons (shared by the landed console and the claim ceremony)
 const PLANET_TYPE_ICONS: Record<string, string> = {
@@ -57,6 +52,54 @@ const getPlanetIcon = (type?: string): string =>
 // One accent class per planet type — the colors live in cockpit.css
 const getPlanetTintClass = (type?: string): string =>
   `planet-tint-${(type || 'unknown').toLowerCase().replace(/[^a-z_]+/g, '_')}`;
+
+/** Decorative (non-colonizable) body row label — SOLAR SYSTEM[SYSTEM]'s
+ *  STAR/barren-body sensor rows (WO-UI-MAX-BATCH-1 item 9). `kind` is one
+ *  of the backend's real PlanetType values (models/planet.py); decorative
+ *  bodies from GET /sectors/{id}/contents are always drawn from the
+ *  uninhabitable subset (BARREN/ICE/VOLCANIC/DESERT/GAS_GIANT — see
+ *  celestial_service.py's BODY_KIND_WEIGHTS), so "uninhabitable" is always
+ *  an honest note here, not a guess. */
+const barrenBodyLabel = (kind: string): { name: string; note: string } => ({
+  name: (kind || 'UNCHARTED').toUpperCase().replace(/_/g, ' '),
+  note: 'uninhabitable',
+});
+
+/** SOLAR SYSTEM[SYSTEM]'s hazard-as-rows (WO-UI-MAX-BATCH-1 item 8, revised
+ *  by Max #21: terse rows here, the numeric breakdown moved to its own
+ *  HAZARD tab below). Named rows come from the sector's own TYPE — a real,
+ *  narrow enum (models/sector.py's SectorSpecialType) — using ITS OWN code
+ *  comments as the note text (not invented flavor; c.f. HazardAnalysisCard
+ *  .tsx's file-header note that the ratified prototype's h.type/h.fx have
+ *  "no real-data analogue in this codebase's Sector model"). Anything else
+ *  with hazard_level>0 gets the one generic fallback row the WO's own brief
+ *  anticipates ("if a sector's hazard data doesn't map to a named object,
+ *  render a GENERIC hazard row") — the common case, since most sectors are
+ *  type STANDARD/NORMAL with a nonzero hazard_level from the security-tier
+ *  formula, not one of the four exotic types below. */
+const HAZARD_TYPE_ROWS: Record<string, { icon: string; label: string; note: string }> = {
+  NEBULA: { icon: '☁', label: 'NEBULA', note: 'affects sensors and combat' },
+  BLACK_HOLE: { icon: '🕳', label: 'BLACK HOLE', note: 'gravitational effects — danger' },
+  RADIATION_ZONE: { icon: '☢', label: 'RADIATION ZONE', note: 'damages ships over time' },
+  WARP_STORM: { icon: '⚡', label: 'WARP STORM', note: 'disrupts warp tunnels' },
+};
+const hazardRowsFor = (
+  sector: { type?: string; hazard_level?: number; radiation_level?: number } | null
+): Array<{ key: string; icon: string; label: string; note: string }> => {
+  if (!sector) return [];
+  const typeKey = (sector.type || '').toUpperCase();
+  const named = HAZARD_TYPE_ROWS[typeKey];
+  if (named) return [{ key: typeKey, ...named }];
+  if ((sector.hazard_level ?? 0) > 0 || (sector.radiation_level ?? 0) > 0) {
+    return [{
+      key: 'GENERIC',
+      icon: '⚠',
+      label: 'HAZARD DETECTED',
+      note: 'see the HAZARD tab for the full analysis',
+    }];
+  }
+  return [];
+};
 
 /**
  * HudChip — windshield HUD glass chip.
@@ -718,11 +761,15 @@ const GameDashboardInner: React.FC = () => {
   const [navChartMode, setNavChartMode] = useState<'2d' | '3d'>('2d');
 
   // SOLAR SYSTEM monitor mode (WO-UI2-DECK-RECONCILE, §05: [SYSTEM ·
-  // SALVAGE · SIGNALS]): SYSTEM (the planet/station list, hazard/radiation
-  // readout folded in -- no more standalone HAZARDS page), SALVAGE (wreck
-  // rows), SIGNALS (discovered formations -- was surfaced on the old
-  // HAZARDS page, now its own tab; was "BODIES"/"HAZARDS").
-  const [systemPage, setSystemPage] = useState<'system' | 'salvage' | 'signals'>('system');
+  // SALVAGE · SIGNALS]; 4th page HAZARD added WO-UI-MAX-BATCH-1 Max #21):
+  // SYSTEM (the dense sensor-row list — bodies/stations/formations/wrecks,
+  // hazards appearing only as terse un-numbered rows), SALVAGE (wreck rows),
+  // SIGNALS (discovered formations), HAZARD (the numeric deep-dive — hazard
+  // level/radiation%/NO-TRANSIT notes/description — the content that used to
+  // be SYSTEM's own `.system-hazard-fold` block, now its own competing page:
+  // choosing HAZARD swaps out the sensor list, by design, same DeckPageTabs
+  // single-active-page behavior every other page here already has).
+  const [systemPage, setSystemPage] = useState<'system' | 'salvage' | 'signals' | 'hazard'>('system');
   const [showGatewright, setShowGatewright] = useState(false);
 
   // Region-owner invite/tradedock/governance state + probe RELOCATED to
@@ -871,19 +918,46 @@ const GameDashboardInner: React.FC = () => {
   // moved.
   const [scanActive, setScanActive] = useState(false);
 
-  // locrow HAZARD chip → HazardAnalysisCard (WO-UI5-RETIREMENT+GLASS item 1).
-  // A second, independent trigger for the same self-contained card
-  // Annunciator.tsx already opens from its own HAZARD segment (own local
-  // open-state there too, in useAnnunciatorState.ts) — mirrors that exact
-  // pattern rather than threading a shared open-flag across the two
-  // components; HazardAnalysisCard itself is pure content (sector, onClose),
-  // safe to mount from either trigger.
-  const [locrowHazardCardOpen, setLocrowHazardCardOpen] = useState(false);
-  const locrowHazardButtonRef = useRef<HTMLButtonElement>(null);
-  const handleCloseLocrowHazardCard = () => {
-    setLocrowHazardCardOpen(false);
-    locrowHazardButtonRef.current?.focus();
-  };
+  // STAR + decorative-body sensor rows (WO-UI-MAX-BATCH-1 item 9: "the
+  // SYSTEM page = the full sensor list mirroring the windshield objects").
+  // WindshieldTableau.tsx already fetches this exact GET /sectors/{id}
+  // /contents static-composition snapshot for the flight scene, but that
+  // file is committed/off-limits for this WO and owns no shared context to
+  // read instead of a second GET -- its own file-header doc-comment notes
+  // the endpoint was "unioned into the one consolidated read-only endpoint
+  // the backend shipped specifically anticipating this FE pass" (i.e. more
+  // than one reader was always the plan). Cheap, deterministic, server-side
+  // seeded-per-sector -- a second GET per sector change is a fine cost for
+  // this decorative addition. Only `star` + the DECORATIVE (`real:false`)
+  // bodies are kept: real (`real:true`) bodies are already the DB planets
+  // planetsInSector/PlanetPortPair render below -- duplicating them here
+  // would double-list. Silent-catch (no console.error, unlike
+  // WindshieldTableau's own louder failure log): this is purely decorative,
+  // "no STAR/barren rows" is a fine degrade, and several sibling GameDashboard
+  // test files assert console.error was never called.
+  const [solarStatic, setSolarStatic] = useState<{
+    star: { label: string } | null;
+    bodies: Array<{ kind: string }>;
+  } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setSolarStatic(null);
+    if (currentSector?.sector_id == null) return undefined;
+    apiClient.get(`/api/v1/sectors/${currentSector.sector_id}/contents`)
+      .then((res) => {
+        if (cancelled) return;
+        const d = res.data || {};
+        const rawBodies = Array.isArray(d.bodies) ? d.bodies : [];
+        setSolarStatic({
+          star: d.star?.label ? { label: String(d.star.label) } : null,
+          bodies: rawBodies
+            .filter((b: any) => !b?.real)
+            .map((b: any) => ({ kind: String(b?.kind || '') })),
+        });
+      })
+      .catch(() => { if (!cancelled) setSolarStatic(null); });
+    return () => { cancelled = true; };
+  }, [currentSector?.sector_id]);
 
   // NAV map sectors: one node per destination sector. A sector reachable by
   // BOTH a warp and a tunnel used to be listed twice (duplicate React keys in
@@ -2521,39 +2595,27 @@ const GameDashboardInner: React.FC = () => {
                   components/governance/RegionOwnerControls.tsx, mounted
                   inside that same LocationDropdown. */}
 
-              {/* LOCROW (WO-UI5-RETIREMENT+GLASS item 1) — top-left location
-                  chips, reproduced from the ratified prototype's own
-                  `.locrow` markup (RATIFIED.html renderBand, item 1's Artifact
-                  reference L1266/L87-88): sector name / region / HAZARD
-                  (click → the analysis card, same one Annunciator's own
-                  HAZARD segment opens) / NEBULA / ALL STOP (in-transit only,
-                  same autopilot.abort the NAV monitor's ABORT button already
-                  calls). This — plus the annunciator strip already mounted in
-                  `.band` — retires the hazard/radiation/formations HudChips
-                  that used to occupy this glass real estate (item 2, below):
-                  hazard+radiation are already folded into the SOLAR SYSTEM
-                  monitor's SYSTEM page (`.system-hazard-fold`, WO-UI2-DECK-
-                  RECONCILE) and formations into its SIGNALS page — zero data
-                  loss, just no longer duplicated on the glass. */}
+              {/* LOCROW (WO-UI5-RETIREMENT+GLASS item 1; further simplified
+                  WO-UI-MAX-BATCH-1 items 1-3): top-left glass chips, now down
+                  to a single region-flavor chip + a conditional ALL STOP.
+                  Sector identity (number/type) and the region's full name
+                  already live in the status bar's LocationDropdown
+                  (components/layouts/LocationDropdown.tsx — sectorLabel/
+                  sectorTypeLabel/regionLabel, "canon"), so the sector-name
+                  chip and the NEBULA-type chip this row used to carry are
+                  gone as pure duplication, not data loss. The HAZARD chip is
+                  gone too — its OWN open-state/ref/HazardAnalysisCard mount
+                  (locrowHazardCardOpen etc.) was a second, redundant trigger
+                  for the exact same card Annunciator.tsx's HAZARD segment
+                  already opens from its own local state; that segment is the
+                  one surviving entry point (still open behind the click,
+                  unaffected by this change). Hazard/radiation detail now
+                  additionally has a full deep-dive home at SOLAR SYSTEM
+                  monitor's own HAZARD tab (below) — the glass was never
+                  its only route. */}
               <div className="locrow">
-                <span className="loc">{currentSector.name}</span>
                 {currentSector.region_name && (
                   <span className="loc">{currentSector.region_name}</span>
-                )}
-                {currentSector.hazard_level > 0 && (
-                  <button
-                    type="button"
-                    ref={locrowHazardButtonRef}
-                    className="loc"
-                    style={{ cursor: 'pointer' }}
-                    onClick={() => setLocrowHazardCardOpen(true)}
-                    title="Open the hazard analysis card"
-                  >
-                    HAZARD {currentSector.hazard_level}/10 ▾
-                  </button>
-                )}
-                {currentSector.type?.toUpperCase() === 'NEBULA' && (
-                  <span className="loc">NEBULA</span>
                 )}
                 {/* WO-UI2-FLIGHT-FEEL: reads the SAME shared flight store
                     the SOLAR SYSTEM rows now do (flying/handleHalt, above)
@@ -2573,9 +2635,6 @@ const GameDashboardInner: React.FC = () => {
                   </button>
                 )}
               </div>
-              {locrowHazardCardOpen && (
-                <HazardAnalysisCard sector={currentSector} onClose={handleCloseLocrowHazardCard} />
-              )}
 
               {currentSector.special_features && currentSector.special_features.length > 0 && (
                 <div className="hud-overlay bottom-left features" style={{ display: 'none' }}>
@@ -3399,11 +3458,12 @@ const GameDashboardInner: React.FC = () => {
               </div>
 
               {/* CENTER MONITOR: Solar System (formerly "Planetary Systems",
-                  §05 [SYSTEM · SALVAGE · SIGNALS], WO-UI2-DECK-RECONCILE) */}
+                  §05 [SYSTEM · SALVAGE · SIGNALS · HAZARD], WO-UI2-DECK-
+                  RECONCILE, HAZARD added WO-UI-MAX-BATCH-1 Max #21) */}
               <div className="mon system-monitor">
                 {/* WO-UI0-SHELL-TRANSPLANT (Leaf L3): header now shows only
                     the title + the live sector name as its sub-status; the
-                    SYSTEM/SALVAGE/SIGNALS softkeys moved to a bottom
+                    SYSTEM/SALVAGE/SIGNALS/HAZARD softkeys moved to a bottom
                     `.skrow` (artifact `monSys()`). */}
                 <div className="mhead">
                   <span className="mtitle">SOLAR SYSTEM</span>
@@ -3417,6 +3477,28 @@ const GameDashboardInner: React.FC = () => {
                 >
                 {systemPage === 'system' ? (
                     <>
+                      {/* STAR + decorative-body sensor rows (WO-UI-MAX-BATCH-1
+                          item 9) — dim, no action, matching the target
+                          screenshot's "✳ K-CLASS ORANGE — primary" / "○ CINDER
+                          — scorched rock — barren" rows. Absent entirely while
+                          the /contents fetch above hasn't resolved (or failed)
+                          — no loading placeholder, since this is decorative
+                          sensor flavor, not primary content. */}
+                      {solarStatic?.star && (
+                        <div className="row">
+                          <b>☀ {solarStatic.star.label.toUpperCase()}</b>
+                          <span className="dim">primary</span>
+                        </div>
+                      )}
+                      {solarStatic?.bodies.map((body, index) => {
+                        const { name, note } = barrenBodyLabel(body.kind);
+                        return (
+                          <div className="row" key={`solar-body-${index}`}>
+                            <b>{getPlanetIcon(body.kind)} {name}</b>
+                            <span className="dim">{note}</span>
+                          </div>
+                        );
+                      })}
                       {/* SCAN toggle (WO-UI5-RETIREMENT+GLASS item 3) — was a
                           standalone `.ssv-scan-toggle` button on the glass
                           (SolarSystemViewscreen-local state); relocated here
@@ -3489,7 +3571,7 @@ const GameDashboardInner: React.FC = () => {
                       {planetsInSector.length === 0 && stationsInSector.length === 0 && (
                         currentSector?.type?.toUpperCase() === 'ASTEROID_FIELD' ? (
                           <div className="planetary-asteroid-state">
-                            <div className="planetary-asteroid-label">⚫ ASTEROID FIELD</div>
+                            <b className="planetary-asteroid-label">⚫ ASTEROID FIELD</b>
                             {flying ? (
                               // Demo L1352 field-row branch: here?HARVEST:(flying?HALT:APPROACH) —
                               // under burn, the row offers HALT instead of HARVEST (same
@@ -3520,57 +3602,77 @@ const GameDashboardInner: React.FC = () => {
                           <div className="empty-state">No planetary bodies or stations detected</div>
                         )
                       )}
-                      {/* Hazards FOLDED IN — NOT their own page (§05 SYSTEM:
-                          "bodies/stations rows... WITH hazards FOLDED IN").
-                          Same currentSector fields the glass surfaces (the
-                          locrow's HAZARD chip + hazard/radiation/features/
-                          description here); special_formations is
-                          deliberately NOT repeated here — it moved to its
-                          own SIGNALS page below. Always shows the hazard/
-                          radiation readouts (even at 0) so this reads as a
-                          live sensor sweep, not a conditional chip. */}
-                      {currentSector && (
-                        <div className="system-hazard-fold">
-                          <div className="system-hazard-fold-title">SECTOR HAZARDS</div>
-                          <div className="system-hazard-metric">
-                            <div className="hud-label">⚠️ HAZARD</div>
-                            <div className={`hud-value${currentSector.hazard_level > 0 ? ' danger' : ''}`}>
-                              {currentSector.hazard_level}/10
-                            </div>
-                            <div className="hud-bar">
-                              <div className="hud-bar-fill danger" style={{ width: `${currentSector.hazard_level * 10}%` }}></div>
-                            </div>
+                      {/* Formation + wreck sensor rows (WO-UI-MAX-BATCH-1 item
+                          9 — "the full sensor list mirroring the windshield
+                          objects"), gated on the SAME `scanActive` flag the
+                          windshield's own glyphs use — SCAN reveals presence
+                          here exactly like it does on the glass; the toggle
+                          above would otherwise have zero visible effect on
+                          this page. Formation identity masking mirrors
+                          renderFormationList's own convention (undiscovered →
+                          "❔ UNKNOWN ANOMALY", no action) — SURVEY reuses the
+                          SAME handleInvestigateFormation the SIGNALS page's
+                          INVESTIGATE button calls, not a new action. Wrecks
+                          get APPROACH ▸, which opens the SALVAGE page (its
+                          quantity-select UI can't collapse into one row) —
+                          the SAME shared sectorWrecks feed SALVAGE renders
+                          from, not a second fetch. */}
+                      {scanActive && currentSector?.special_formations?.map((f) => {
+                        const investigated = investigatedFormationIds.has(f.id);
+                        const investigating = investigatingFormationId === f.id;
+                        const label = f.is_discovered ? (f.name || 'UNNAMED').toUpperCase() : 'UNKNOWN ANOMALY';
+                        return (
+                          <div className="row" key={`formation-${f.id}`}>
+                            <b>
+                              {f.is_discovered ? '☁' : '❔'} {label}
+                              {f.is_discovered && f.type && (
+                                <span className="dim"> · {f.type.replace(/_/g, ' ').toUpperCase()}</span>
+                              )}
+                            </b>
+                            {f.is_discovered && (
+                              <button
+                                type="button"
+                                className="act"
+                                onClick={() => handleInvestigateFormation(f.id)}
+                                disabled={investigated || investigating}
+                                aria-label={investigated ? `${label} already surveyed` : `Survey ${label}`}
+                                title={investigated ? 'Already investigated' : 'Investigate this anomaly for a one-time reward'}
+                              >
+                                {investigating ? '🔭 …' : investigated ? '✓ SURVEYED' : '🔭 SURVEY ▸'}
+                              </button>
+                            )}
                           </div>
-                          <div className="system-hazard-metric">
-                            <div className="hud-label">☢️ RADIATION</div>
-                            <div className={`hud-value${currentSector.radiation_level > 0 ? ' warning' : ''}`}>
-                              {(currentSector.radiation_level * 100).toFixed(1)}%
-                            </div>
-                            <div className="hud-bar">
-                              <div className="hud-bar-fill warning" style={{ width: `${currentSector.radiation_level * 100}%` }}></div>
-                            </div>
-                          </div>
-                          {currentSector.special_features && currentSector.special_features.length > 0 && (
-                            <div className="system-hazard-metric">
-                              <div className="hud-label">NO-TRANSIT NOTES</div>
-                              <div className="hud-features">
-                                {currentSector.special_features.map(feature => (
-                                  <span key={feature} className="hud-badge">
-                                    {feature.replace(/_/g, ' ').toUpperCase()}
-                                  </span>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                          {currentSector.description && (
-                            <div className="hud-description-text">{currentSector.description}</div>
-                          )}
+                        );
+                      })}
+                      {scanActive && sectorWrecks.map((wreck) => (
+                        <div className="row" key={`wreck-${wreck.id}`}>
+                          <b>⌀ {(wreck.destroyed_ship_type || 'WRECK').replace(/_/g, ' ').toUpperCase()}</b>
+                          <button
+                            type="button"
+                            className="act"
+                            onClick={() => setSystemPage('salvage')}
+                            aria-label={`Approach the ${(wreck.destroyed_ship_type || 'wreck').replace(/_/g, ' ')} wreck — open SALVAGE`}
+                            title="Approach — open the SALVAGE page to recover cargo"
+                          >
+                            🧭 APPROACH ▸
+                          </button>
                         </div>
-                      )}
+                      ))}
+                      {/* Hazards as terse, un-numbered object rows (WO-UI-
+                          MAX-BATCH-1 item 8, revised Max #21): the numeric
+                          hazard_level/radiation_level/NO-TRANSIT breakdown
+                          moved OFF this page entirely, onto its own HAZARD
+                          tab below — never a %-block or a bare number here. */}
+                      {hazardRowsFor(currentSector).map((hazard) => (
+                        <div className="row" key={`hazard-${hazard.key}`}>
+                          <b>{hazard.icon} {hazard.label}</b>
+                          <span className="dim">{hazard.note}</span>
+                        </div>
+                      ))}
                     </>
                   ) : systemPage === 'salvage' ? (
                     <SolarSalvagePage wrecks={sectorWrecks} onSalvaged={refetchSectorWrecks} />
-                  ) : (
+                  ) : systemPage === 'signals' ? (
                     /* SIGNALS — discovered formations → INVESTIGATE (§05).
                        renderFormationList used to also be shared with the
                        windshield's FORMATIONS HudChip, retired at WO-UI5-
@@ -3582,6 +3684,57 @@ const GameDashboardInner: React.FC = () => {
                     ) : (
                       <div className="empty-state">No signals or formations charted in this sector</div>
                     )
+                  ) : (
+                    /* HAZARD — the numeric deep-dive (WO-UI-MAX-BATCH-1 Max
+                       #21): hazard_level/radiation_level bars + NO-TRANSIT
+                       badges + description, relocated verbatim off SYSTEM's
+                       old `.system-hazard-fold` (same currentSector fields
+                       HazardAnalysisCard's floating quick-glance already
+                       surfaces — this is the full-page home, not a second
+                       data source). Deliberately competes with SYSTEM for
+                       this panel — choosing HAZARD hides the sensor list,
+                       same single-active-page behavior every DeckPageTabs
+                       page here already has. */
+                    !currentSector ? (
+                      <div className="empty-state">No sector telemetry</div>
+                    ) : (
+                      <div className="system-hazard-fold">
+                        <div className="system-hazard-fold-title">HAZARD ANALYSIS</div>
+                        <div className="system-hazard-metric">
+                          <div className="hud-label">⚠️ HAZARD</div>
+                          <div className={`hud-value${currentSector.hazard_level > 0 ? ' danger' : ''}`}>
+                            {currentSector.hazard_level}/10
+                          </div>
+                          <div className="hud-bar">
+                            <div className="hud-bar-fill danger" style={{ width: `${currentSector.hazard_level * 10}%` }}></div>
+                          </div>
+                        </div>
+                        <div className="system-hazard-metric">
+                          <div className="hud-label">☢️ RADIATION</div>
+                          <div className={`hud-value${currentSector.radiation_level > 0 ? ' warning' : ''}`}>
+                            {(currentSector.radiation_level * 100).toFixed(1)}%
+                          </div>
+                          <div className="hud-bar">
+                            <div className="hud-bar-fill warning" style={{ width: `${currentSector.radiation_level * 100}%` }}></div>
+                          </div>
+                        </div>
+                        {currentSector.special_features && currentSector.special_features.length > 0 && (
+                          <div className="system-hazard-metric">
+                            <div className="hud-label">NO-TRANSIT NOTES</div>
+                            <div className="hud-features">
+                              {currentSector.special_features.map(feature => (
+                                <span key={feature} className="hud-badge">
+                                  {feature.replace(/_/g, ' ').toUpperCase()}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {currentSector.description && (
+                          <div className="hud-description-text">{currentSector.description}</div>
+                        )}
+                      </div>
+                    )
                   )}
                 </div>
                 <div className="skrow">
@@ -3590,9 +3743,10 @@ const GameDashboardInner: React.FC = () => {
                       { id: 'system', label: 'SYSTEM' },
                       { id: 'salvage', label: 'SALVAGE' },
                       { id: 'signals', label: 'SIGNALS' },
+                      { id: 'hazard', label: 'HAZARD' },
                     ]}
                     activeId={systemPage}
-                    onSelect={(id) => setSystemPage(id as 'system' | 'salvage' | 'signals')}
+                    onSelect={(id) => setSystemPage(id as 'system' | 'salvage' | 'signals' | 'hazard')}
                     ariaLabel="SOLAR SYSTEM display mode"
                     accent="#9333ea"
                     idBase="system"

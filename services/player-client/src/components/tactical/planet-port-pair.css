@@ -1,15 +1,22 @@
 /* ============================================
-   PLANET-PORT PAIR - Ultra-Compact Orbital View
+   PLANET-PORT PAIR - Dense one-line sensor rows
+   (WO-UI-MAX-BATCH-1 item 7: "EVERY object = ONE
+   DENSE .row line ... the claim/dock/land button
+   sits to the RIGHT of the info on the SAME line").
+   Was a side-by-side planet↔station "orbit pair"
+   card with an arrow connector and stacked meta/
+   stats beneath each name; now a vertical stack of
+   up to two full-width dense rows — no connector,
+   no stacking, matching the SOLAR SYSTEM page's flat
+   object list (every other row on that monitor —
+   NAV exits, TACTICAL contacts — is already this
+   shape; PlanetPortPair was the one holdout).
    ============================================ */
 
 .planet-port-pair {
   display: flex;
-  align-items: center;
-  /* In a narrow monitor the planet and station rows stack instead of
-     crushing each other into clipped names — each section has a hard
-     wrap floor below. */
-  flex-wrap: wrap;
-  gap: 0.25rem;
+  flex-direction: column;
+  gap: 0.2rem;
   background: linear-gradient(135deg, rgba(15, 20, 35, 0.9) 0%, rgba(8, 12, 22, 0.95) 100%);
   border: 1px solid rgba(147, 51, 234, 0.3);
   border-radius: 4px;
@@ -36,19 +43,16 @@
   pointer-events: none;
 }
 
-/* Planet Section */
+/* Planet Section — one dense row: icon+name+qualifiers left, action right. */
 .planet-section {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   flex-wrap: nowrap;
-  gap: 0.25rem;
+  gap: 0.5rem;
   padding: 0.15rem 0.3rem;
   border-radius: 4px;
   transition: all 0.2s ease;
-  /* Wrap floor: below ~11rem of available width the section takes its own
-     row rather than letting names clip (min-width:0 let it crush to
-     nothing). */
-  flex: 1 1 11rem;
   min-width: 0;
 }
 
@@ -58,7 +62,6 @@
 
 .planet-section.clickable:hover {
   background: rgba(147, 51, 234, 0.15);
-  transform: scale(1.02);
 }
 
 .planet-section.landed {
@@ -89,30 +92,17 @@
   }
 }
 
-.planet-details {
+/* icon + name + inline dim qualifiers, all on ONE row — the dense-line
+   container. min-width:0 lets `.planet-quals` shrink/ellipsis before the
+   name does (name keeps display priority; qualifiers are secondary). */
+.planet-info,
+.station-info {
   display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-  min-width: 0;
-  flex: 1;
-}
-
-/* icon + name always on one tight row — flex-row, never wraps */
-.planet-name-line {
-  display: flex;
-  flex-direction: row;
   align-items: center;
-  gap: 0.3rem;
+  gap: 0.35rem;
   flex-wrap: nowrap;
   min-width: 0;
-}
-
-/* claim/hub/owner badges — stacked below the name row */
-.planet-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-  min-width: 0;
+  flex: 1;
 }
 
 .planet-name {
@@ -120,45 +110,46 @@
   font-weight: 700;
   color: #9333ea;
   line-height: 1.2;
-  /* id=141: TRUNCATE (ellipsis) instead of break-word wrapping — a long name
-     wrapping grew the details block and read as the icon "stacking" above the
-     name at narrow cockpit widths. nowrap + ellipsis keeps the planet row a
-     single line so the icon stays beside the name; needs the min-width:0 chain
-     (.planet-section / .planet-details / .planet-name-line) to shrink. */
-  display: block;
-  align-self: stretch;
-  min-width: 0;
-  max-width: 100%;
+  /* id=141: TRUNCATE (ellipsis) instead of break-word wrapping. */
+  flex-shrink: 0;
+  max-width: 60%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.planet-hub-tag {
-  font-size: 0.55rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+/* Secondary stats/badges — DIM-INLINE after the name (WO-UI-MAX-BATCH-1
+   item 7), not stacked underneath it. Each qualifier is its own <span>;
+   a leading " · " separator renders via ::before on every sibling but the
+   first, so the list composes cleanly regardless of which qualifiers are
+   present for a given row. */
+.planet-quals {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.6rem;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.planet-quals span + span::before {
+  content: ' · ';
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.planet-quals .pq-hub {
   color: #00d9ff;
-  background: rgba(0, 217, 255, 0.08);
-  border: 1px solid rgba(0, 217, 255, 0.35);
-  border-radius: 3px;
-  padding: 0.1rem 0.3rem;
-  white-space: normal;
-  line-height: 1.3;
+  font-weight: 700;
+  letter-spacing: 0.06em;
 }
 
-.planet-owner {
-  font-size: 0.6rem;
-  color: #00ff41;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.planet-claim-hint {
-  font-size: 0.6rem;
+.planet-quals .pq-unclaimed {
   color: #ffb000;
-  font-weight: 600;
-  white-space: nowrap;
+  font-weight: 700;
+  letter-spacing: 0.04em;
   animation: claim-pulse 2s ease-in-out infinite;
 }
 
@@ -171,12 +162,24 @@
   }
 }
 
-/* Claim requirements at a glance, shown under the Click-to-Claim hint */
-.planet-claim-reqs {
-  font-size: 0.55rem;
+.planet-quals .pq-owner {
+  color: #00ff41;
+  font-weight: 600;
+}
+
+.planet-quals .pq-status {
+  color: rgba(255, 255, 255, 0.75);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.planet-quals .pq-reqs {
   color: rgba(255, 176, 0, 0.75);
-  white-space: nowrap;
   letter-spacing: 0.02em;
+}
+
+.planet-quals .pq-stat {
+  color: rgba(255, 255, 255, 0.8);
 }
 
 /* Unclaimed planet styling */
@@ -188,66 +191,23 @@
   background: rgba(255, 176, 0, 0.15);
 }
 
-.planet-stats {
-  display: flex;
-  gap: 0.3rem;
-  font-size: 0.65rem;
-}
-
 /* Row action button (LAND/CLAIM/APPROACH/HALT ▸) — shared cockpit-shell.css
-   `.act`/`.act.armed`; never let it get crushed by the flex-1 details block. */
+   `.act`/`.act.armed`; never let it get crushed by the flex-1 info block. */
 .planet-section > .act,
 .station-section > .act {
   flex-shrink: 0;
 }
 
-.planet-stats .stat {
-  display: flex;
-  align-items: center;
-  gap: 0.2rem;
-  color: rgba(255, 255, 255, 0.8);
-  white-space: nowrap;
-}
-
-/* Orbital Connector — decorative; when the pair wraps into stacked rows
-   the arrow would dangle at the end of the planet row, so it only renders
-   when there is room for the side-by-side layout. */
-.orbital-connector {
-  font-size: 0.9rem;
-  color: rgba(147, 51, 234, 0.5);
-  flex-shrink: 0;
-  animation: pulse-connector 2s ease-in-out infinite;
-}
-
-@container system-content (max-width: 26rem) {
-  .orbital-connector {
-    display: none;
-  }
-}
-
-@keyframes pulse-connector {
-  0%, 100% {
-    opacity: 0.5;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
-/* Station Section */
+/* Station Section — same dense one-line grammar as the planet section. */
 .station-section {
   display: flex;
   align-items: center;
-  gap: 0.25rem;
+  justify-content: space-between;
+  gap: 0.5rem;
   padding: 0.15rem 0.3rem;
   border-radius: 4px;
   transition: all 0.2s ease;
-  /* Same wrap floor as .planet-section; the old flex-shrink:0 +
-     max-width:50% combination clipped long station names mid-word
-     ("Industrial Hub Tau...") instead of giving them their own row. */
-  flex: 1 1 11rem;
   min-width: 0;
-  max-width: 100%;
 }
 
 .station-section.clickable {
@@ -256,7 +216,6 @@
 
 .station-section.clickable:hover {
   background: rgba(0, 217, 255, 0.15);
-  transform: scale(1.02);
 }
 
 .station-section.inactive {
@@ -274,82 +233,23 @@
   filter: drop-shadow(0 0 6px currentColor);
 }
 
-.station-details {
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-  min-width: 0;
-  flex: 1;
-}
-
-.station-name-line {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.1rem;
-}
-
-/* icon + name + status dot on ONE tight row */
-.station-name-status {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  min-width: 0;
-  width: 100%;
-}
-
 .station-name {
   font-size: 0.75rem;
   font-weight: 700;
   color: #00d9ff;
   line-height: 1.2;
   /* ellipsis-truncate long names (mirrors .planet-name / id=141) */
+  flex-shrink: 0;
+  max-width: 55%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  min-width: 0;
-  flex: 1;
-}
-
-.station-owner {
-  font-size: 0.6rem;
-  color: #00ff41;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.station-class {
-  font-size: 0.6rem;
-  color: rgba(255, 215, 0, 0.9);
-  font-weight: 600;
-  letter-spacing: 0.3px;
-}
-
-.station-type {
-  font-size: 0.6rem;
-  color: rgba(0, 217, 255, 0.7);
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-  font-weight: 500;
 }
 
 .station-status {
   font-size: 0.9rem;
   line-height: 1;
   flex-shrink: 0;
-}
-
-/* Responsive */
-@media (max-width: 1024px) {
-  .planet-port-pair {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .orbital-connector {
-    transform: rotate(90deg);
-    align-self: center;
-  }
 }
 
 /* Accessibility */
@@ -360,9 +260,8 @@
     transition: none;
   }
 
-  .orbital-connector,
   .planet-icon,
-  .planet-claim-hint {
+  .planet-quals .pq-unclaimed {
     animation: none;
   }
 }

@@ -57,6 +57,16 @@ vi.mock('../../../services/api', () => ({
   sectorAPI: { sectorWrecks: () => Promise.resolve([]) },
 }));
 
+// WO-UI-MAX-BATCH-1 item 9: GameDashboard's own SOLAR SYSTEM[SYSTEM]
+// STAR/decorative-body sensor-row fetch (GET /sectors/{id}/contents) --
+// not under test here (this file is NAV-monitor-only), resolved empty so
+// the real network reject this suite would otherwise take on every mount
+// (harmless but real per-mount latency) doesn't tax the heavy 300-node
+// force-layout test's own generous-but-finite timeout budget.
+vi.mock('../../../services/apiClient', () => ({
+  default: { get: () => Promise.resolve({ data: {} }) },
+}));
+
 // react-router-dom: GameDashboard calls useNavigate() unconditionally at the
 // top of the component; no <Router> is mounted here since nothing under
 // test performs navigation.
