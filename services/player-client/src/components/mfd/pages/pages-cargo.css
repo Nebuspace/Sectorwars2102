@@ -1,0 +1,77 @@
+/* ============================================================
+   NEON15 B2 — CARGO BAY page visual (WO-UI-MAX-BATCH-1, mfd-crgo
+   lane). CargoPage-EXCLUSIVE: unlike pages-ship.css / pages-ops.css
+   (shared page-type families), nothing else imports this file — it
+   exists precisely so this pass never has to touch the shared
+   families a concurrent lane may also own.
+
+   Re-emits the ratified demo's HOLD TANK + cargo STACK visual
+   (audit/design-briefs/cockpit-redesign-v10-RATIFIED.html L1302-1321):
+   a 12-segment fill-gauge for total hold usage, plus a proportional
+   composition bar + swatched legend for held commodities. Genesis
+   bay classes stay put in pages-ship.css (shared verbatim with
+   VesselPage.tsx) — out of this file, untouched.
+   ============================================================ */
+
+.mfd-cargo-tank {
+  margin-bottom: 4px;
+}
+
+.mfd-cargo-tank-svg {
+  width: 100%;
+  height: 7em;
+  display: block;
+}
+
+.mfd-cargo-tank-label {
+  fill: rgba(225, 235, 245, 0.55);
+  font-size: 4.6px;
+  font-family: inherit;
+}
+
+.mfd-cargo-tank-frame {
+  fill: none;
+  stroke: rgba(158, 197, 255, 0.25);
+  stroke-width: 1;
+}
+
+.mfd-cargo-tank-seg {
+  fill: #0c1824;
+  stroke: rgba(158, 197, 255, 0.18);
+  stroke-width: 0.6;
+  transition: fill 0.2s ease, stroke 0.2s ease;
+}
+
+.mfd-cargo-tank-seg.filled {
+  fill: rgba(158, 197, 255, 0.28);
+  stroke: var(--mfd-accent, #9ec5ff);
+  filter: drop-shadow(0 0 1.2px var(--mfd-accent, #9ec5ff));
+}
+
+/* ── Composition stack bar (proportional per-commodity segments) ── */
+
+.mfd-cargo-stack-svg {
+  width: 100%;
+  height: 1.4em;
+  display: block;
+  margin-bottom: 4px;
+}
+
+/* ── Legend swatch (sits inline before the commodity name in the
+   shared .mfd-page-cargo-row/-name from pages-ship.css) ── */
+
+.mfd-cargo-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 5px;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mfd-cargo-tank-seg.filled {
+    transition: none;
+  }
+}
