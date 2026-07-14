@@ -168,6 +168,36 @@
   box-shadow: 0 0 10px rgba(0, 217, 255, 0.25);
 }
 
+/* FIX C revise (Max correction: right-click must be MENU-mediated, not
+   direct-travel) — a small floating "Travel To" menu, same HUD-glass
+   language as .ssv-popup (rgba/border/backdrop-filter) but sized for a
+   single action button instead of an info card. Its own .ssv-popup-action
+   button is the SAME reused class the popup's LAND/DOCK buttons already
+   use — margin-top reset to 0 since here it's the menu's only/first item,
+   not spaced below other popup content. */
+.ssv-ctxmenu {
+  position: absolute;
+  z-index: 26;
+  min-width: 120px;
+  box-sizing: border-box;
+  pointer-events: auto;
+  background: rgba(0, 10, 16, 0.38);
+  border: 1px solid rgba(0, 217, 255, 0.25);
+  border-radius: 4px;
+  backdrop-filter: blur(3px);
+  box-shadow:
+    0 0 14px rgba(0, 217, 255, 0.12),
+    inset 0 1px 0 rgba(0, 217, 255, 0.08);
+  padding: 0.35rem;
+  font-family: 'Courier New', monospace;
+}
+
+.ssv-ctxmenu .ssv-popup-action {
+  margin-top: 0;
+  width: 100%;
+  text-align: left;
+}
+
 /* SCAN TOGGLE button CSS retired here (WO-UI5-RETIREMENT+GLASS item 3) — the
    button moved off the glass to the SOLAR SYSTEM monitor's SYSTEM page,
    which skins it with the shared artifact `.act` class (cockpit-shell.css)

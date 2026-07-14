@@ -509,6 +509,17 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
     return { left, top };
   }, [popup]);
 
+  // Same clamped-anchor idiom as popupStyle above, sized for the smaller menu.
+  const ctxMenuStyle = useMemo((): React.CSSProperties | null => {
+    if (!ctxMenu || !containerRef.current) return { left: 8, top: 8 };
+    const rect = containerRef.current.getBoundingClientRect();
+    const px = (ctxMenu.xPct / 100) * rect.width;
+    const py = (ctxMenu.yPct / 100) * rect.height;
+    const left = Math.min(Math.max(6, px), Math.max(6, rect.width - CTXMENU_W - 6));
+    const top = Math.min(Math.max(6, py), Math.max(6, rect.height - CTXMENU_H - 6));
+    return { left, top };
+  }, [ctxMenu]);
+
   const renderPopupContent = (): React.ReactNode => {
     if (!popup) return null;
     const meta = popup.meta;
@@ -930,6 +941,14 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
         <div className="ssv-popup" style={popupStyle} role="dialog" aria-label={`${popup.name} details`}>
           <button type="button" className="ssv-popup-close" onClick={() => setPopup(null)} aria-label="Close details">✕</button>
           {renderPopupContent()}
+        </div>
+      )}
+
+      {ctxMenu && ctxMenuStyle && (
+        <div ref={ctxMenuRef} className="ssv-ctxmenu" style={ctxMenuStyle} role="menu" aria-label="Sector context menu">
+          <button type="button" className="ssv-popup-action" role="menuitem" onClick={handleTravelToClick}>
+            Travel To
+          </button>
         </div>
       )}
     </div>
