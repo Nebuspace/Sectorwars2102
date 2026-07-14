@@ -1,5 +1,5 @@
 /* ============================================
-   PLANET-PORT PAIR - Dense one-line sensor rows
+   PLANET-PORT PAIR - Dense two-line sensor rows
    (WO-UI-MAX-BATCH-1 item 7: "EVERY object = ONE
    DENSE .row line ... the claim/dock/land button
    sits to the RIGHT of the info on the SAME line").
@@ -11,6 +11,25 @@
    object list (every other row on that monitor —
    NAV exits, TACTICAL contacts — is already this
    shape; PlanetPortPair was the one holdout).
+
+   FIX #32 (habitable-planet card too tall): every
+   selector below is scoped under `.planet-port-pair`
+   on purpose. cockpit.css ships bare, unscoped
+   `.planet-section` / `.planet-icon` / `.planet-name`
+   / `.station-icon` / `.station-name` rules left over
+   from a retired stacked planet-header design (its own
+   comments admit "remain because tactical cards share
+   those class names") — since cockpit.css loads AFTER
+   this file in GameDashboard's import graph, those
+   same-specificity bare rules were winning: a 4rem
+   icon, a 1.1rem name, and (worst) `.planet-section {
+   flex-direction: column !important }` turning the
+   dense one-line row into a stack. Scoping under
+   `.planet-port-pair` raises specificity so THIS file
+   wins regardless of import order; the one `!important`
+   is matched with a higher-specificity `!important` of
+   our own rather than editing the shared cockpit.css
+   (out of this lane).
    ============================================ */
 
 .planet-port-pair {
@@ -43,9 +62,14 @@
   pointer-events: none;
 }
 
-/* Planet Section — one dense row: icon+name+qualifiers left, action right. */
-.planet-section {
+/* Planet Section — two dense lines: icon+name on line 1, action button
+   rides alongside; quals/stats on line 2. cockpit.css's bare
+   `.planet-section { flex-direction: column !important }` (see file
+   header) would otherwise stack `.planet-info` above the action button —
+   matched here with our own higher-specificity !important. */
+.planet-port-pair .planet-section {
   display: flex;
+  flex-direction: row !important;
   align-items: center;
   justify-content: space-between;
   flex-wrap: nowrap;
@@ -56,26 +80,26 @@
   min-width: 0;
 }
 
-.planet-section.clickable {
+.planet-port-pair .planet-section.clickable {
   cursor: pointer;
 }
 
-.planet-section.clickable:hover {
+.planet-port-pair .planet-section.clickable:hover {
   background: rgba(147, 51, 234, 0.15);
 }
 
-.planet-section.landed {
+.planet-port-pair .planet-section.landed {
   background: rgba(147, 51, 234, 0.2);
   border-left: 2px solid #9333ea;
 }
 
 /* In transit (flying) — mirrors .station-section.inactive below; the row's
    action becomes the shared .act.armed HALT chip instead of LAND/APPROACH. */
-.planet-section.inactive {
+.planet-port-pair .planet-section.inactive {
   opacity: 0.6;
 }
 
-.planet-icon {
+.planet-port-pair .planet-icon {
   font-size: 1rem;   /* ~1 line-height so icon sits flush beside the name */
   flex-shrink: 0;
   animation: planet-rotation 20s linear infinite;
@@ -92,42 +116,45 @@
   }
 }
 
-/* icon + name + inline dim qualifiers, all on ONE row — the dense-line
-   container. min-width:0 lets `.planet-quals` shrink/ellipsis before the
-   name does (name keeps display priority; qualifiers are secondary). */
-.planet-info,
-.station-info {
+/* icon + name on line 1, quals/stats forced to line 2 via flex-wrap +
+   flex-basis:100% on `.planet-quals` below (Max: "TWO lines: top line =
+   name, bottom line = stats"). min-width:0 lets children shrink/ellipsis
+   rather than blow out the row width. */
+.planet-port-pair .planet-info,
+.planet-port-pair .station-info {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
+  row-gap: 0.1rem;
+  column-gap: 0.35rem;
   min-width: 0;
   flex: 1;
 }
 
-.planet-name {
+.planet-port-pair .planet-name {
   font-size: 0.75rem;
   font-weight: 700;
   color: #9333ea;
   line-height: 1.2;
   /* id=141: TRUNCATE (ellipsis) instead of break-word wrapping. */
-  flex-shrink: 0;
-  max-width: 60%;
+  flex-shrink: 1;
+  max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* Secondary stats/badges — DIM-INLINE after the name (WO-UI-MAX-BATCH-1
-   item 7), not stacked underneath it. Each qualifier is its own <span>;
-   a leading " · " separator renders via ::before on every sibling but the
-   first, so the list composes cleanly regardless of which qualifiers are
-   present for a given row. */
-.planet-quals {
+/* Secondary stats/badges — line 2 of the card (Max #32). Each qualifier is
+   its own <span>; a leading " · " separator renders via ::before on every
+   sibling but the first, so the list composes cleanly regardless of which
+   qualifiers are present for a given row. flex-basis:100% is the standard
+   flex-wrap trick that forces this block onto its own line even though
+   icon+name (line 1) don't fill the row's width. */
+.planet-port-pair .planet-quals {
   display: flex;
   align-items: center;
+  flex: 1 1 100%;
   min-width: 0;
-  flex: 1 1 auto;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -135,18 +162,18 @@
   color: rgba(255, 255, 255, 0.65);
 }
 
-.planet-quals span + span::before {
+.planet-port-pair .planet-quals span + span::before {
   content: ' · ';
   color: rgba(255, 255, 255, 0.35);
 }
 
-.planet-quals .pq-hub {
+.planet-port-pair .planet-quals .pq-hub {
   color: #00d9ff;
   font-weight: 700;
   letter-spacing: 0.06em;
 }
 
-.planet-quals .pq-unclaimed {
+.planet-port-pair .planet-quals .pq-unclaimed {
   color: #ffb000;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -162,44 +189,47 @@
   }
 }
 
-.planet-quals .pq-owner {
+.planet-port-pair .planet-quals .pq-owner {
   color: #00ff41;
   font-weight: 600;
 }
 
-.planet-quals .pq-status {
+.planet-port-pair .planet-quals .pq-status {
   color: rgba(255, 255, 255, 0.75);
   font-weight: 600;
   letter-spacing: 0.03em;
 }
 
-.planet-quals .pq-reqs {
+.planet-port-pair .planet-quals .pq-reqs {
   color: rgba(255, 176, 0, 0.75);
   letter-spacing: 0.02em;
 }
 
-.planet-quals .pq-stat {
+.planet-port-pair .planet-quals .pq-stat {
   color: rgba(255, 255, 255, 0.8);
 }
 
 /* Unclaimed planet styling */
-.planet-section.unclaimed {
+.planet-port-pair .planet-section.unclaimed {
   border-left: 2px solid rgba(255, 176, 0, 0.5);
 }
 
-.planet-section.unclaimed.clickable:hover {
+.planet-port-pair .planet-section.unclaimed.clickable:hover {
   background: rgba(255, 176, 0, 0.15);
 }
 
 /* Row action button (LAND/CLAIM/APPROACH/HALT ▸) — shared cockpit-shell.css
    `.act`/`.act.armed`; never let it get crushed by the flex-1 info block. */
-.planet-section > .act,
-.station-section > .act {
+.planet-port-pair .planet-section > .act,
+.planet-port-pair .station-section > .act {
   flex-shrink: 0;
 }
 
-/* Station Section — same dense one-line grammar as the planet section. */
-.station-section {
+/* Station Section — same dense two-line grammar as the planet section.
+   No bare cockpit.css `.station-section` rule exists (grep-confirmed), so
+   flex-direction doesn't need the !important escape hatch here — only the
+   icon/name font-size collision applies (below). */
+.planet-port-pair .station-section {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -210,19 +240,19 @@
   min-width: 0;
 }
 
-.station-section.clickable {
+.planet-port-pair .station-section.clickable {
   cursor: pointer;
 }
 
-.station-section.clickable:hover {
+.planet-port-pair .station-section.clickable:hover {
   background: rgba(0, 217, 255, 0.15);
 }
 
-.station-section.inactive {
+.planet-port-pair .station-section.inactive {
   opacity: 0.6;
 }
 
-.station-icon {
+.planet-port-pair .station-icon {
   display: inline-flex;
   align-items: center;
   font-size: 1rem;   /* scaled to ~1 line-height, matches planet-icon */
@@ -233,20 +263,20 @@
   filter: drop-shadow(0 0 6px currentColor);
 }
 
-.station-name {
+.planet-port-pair .station-name {
   font-size: 0.75rem;
   font-weight: 700;
   color: #00d9ff;
   line-height: 1.2;
   /* ellipsis-truncate long names (mirrors .planet-name / id=141) */
-  flex-shrink: 0;
-  max-width: 55%;
+  flex-shrink: 1;
+  max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.station-status {
+.planet-port-pair .station-status {
   font-size: 0.9rem;
   line-height: 1;
   flex-shrink: 0;
@@ -255,13 +285,13 @@
 /* Accessibility */
 @media (prefers-reduced-motion: reduce) {
   .planet-port-pair,
-  .planet-section,
-  .station-section {
+  .planet-port-pair .planet-section,
+  .planet-port-pair .station-section {
     transition: none;
   }
 
-  .planet-icon,
-  .planet-quals .pq-unclaimed {
+  .planet-port-pair .planet-icon,
+  .planet-port-pair .planet-quals .pq-unclaimed {
     animation: none;
   }
 }
