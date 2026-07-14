@@ -16,10 +16,10 @@ import {
   AU_SEMI_Y_PCT,
   BODY_SIZE_EM_MAX,
   beltStyle,
+  bodyOrbitEllipse,
   bodyPosition,
   bodySizeEm,
   debrisArc,
-  decorativeRings,
   headingDeg,
   moonOrbits,
   nebulaArcs,
@@ -138,6 +138,13 @@ export interface WindshieldTableauProps {
 const POPUP_W = 232;
 const POPUP_H = 158;
 
+/** FIX C revise (Max: right-click must be MENU-mediated, not direct-travel —
+ *  corrects the earlier direct-travel cut): a small floating menu, sized for
+ *  a single "Travel To" action button, not the 232px info card `.ssv-popup`
+ *  is sized for. */
+const CTXMENU_W = 140;
+const CTXMENU_H = 40;
+
 /** T1-A: a `.pl` planet disc's own rendered footprint — its `.pltag` label
  *  is position:absolute (escapes `.pl`'s own layout box, see solar-system-
  *  viewscreen.css), so the button's own bounding rect never exceeds
@@ -184,6 +191,14 @@ interface PopupState {
   yPct: number;
 }
 
+/** FIX C revise: the stashed right-click target -- a menu opens at
+ *  (xPct,yPct) and NOTHING travels until the player explicitly picks
+ *  "Travel To" (see handleContextMenu/handleTravelToClick below). */
+interface CtxMenuState {
+  xPct: number;
+  yPct: number;
+}
+
 function arcPath(star: StarAnchor, arc: HazardArc): string {
   const rx = arc.rFrac * AU_SEMI_X_PCT;
   const ry = arc.rFrac * AU_SEMI_Y_PCT;
@@ -195,6 +210,36 @@ function arcPath(star: StarAnchor, arc: HazardArc): string {
   const ey = (star.yPct + Math.sin(endRad) * ry).toFixed(2);
   const largeArc = arc.sweepDeg > 180 ? 1 : 0;
   return `M ${sx} ${sy} A ${rx.toFixed(2)} ${ry.toFixed(2)} 0 ${largeArc} 1 ${ex} ${ey}`;
+}
+
+/** T0-2 (orbit-line view): a single body's own thin orbit ellipse — reuses
+ *  the SAME `.orbit` div idiom (and its exact CSS: 1px dashed, low-opacity,
+ *  z-index:0 — solar-system-viewscreen.css) the retired generic
+ *  decorativeRings already used, so the visual weight is unchanged; the
+ *  geometry is now REAL (bodyOrbitEllipse derives the ellipse FROM the
+ *  body's own already-computed position, T0-1's fan/rank placement
+ *  untouched) instead of 4 fixed cosmetic radii. Rendered as a SIBLING
+ *  immediately BEFORE its own body/station/wreck element (same map
+ *  iteration, wrapped in a Fragment) so DOM order alone keeps it visually
+ *  BEHIND that element even where the element has no explicit z-index of
+ *  its own (`.obj` — CSS Appendix E: same-level (z:0/auto) siblings paint
+ *  in tree order); `.pl`'s own explicit z-index:2 makes this doubly certain
+ *  there. Returns null (renders nothing) for bodyOrbitEllipse's own
+ *  degenerate case. */
+function orbitEllipse(star: StarAnchor, pos: PctPoint, key: string): React.ReactNode {
+  const ellipse = bodyOrbitEllipse(star, pos);
+  if (!ellipse) return null;
+  return (
+    <div
+      key={key}
+      className="orbit"
+      style={{
+        left: `${ellipse.cxPct}%`, top: `${ellipse.cyPct}%`,
+        width: `${ellipse.rxPct * 2}%`, height: `${ellipse.ryPct * 2}%`,
+        transform: 'translate(-50%,-50%)',
+      }}
+    />
+  );
 }
 
 const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
@@ -241,6 +286,8 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
   const [system, setSystem] = useState<StaticSystem | null>(null);
   const [fetchFailed, setFetchFailed] = useState(false);
   const [popup, setPopup] = useState<PopupState | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<CtxMenuState | null>(null);
+  const ctxMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -291,7 +338,6 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
     () => (bandBox ? safeOrbitRadii(star, bandBox, STATION_FOOTPRINT_EM_WIDTH_MAX, STATION_FOOTPRINT_EM_HEIGHT_MAX) : undefined),
     [star, bandBox]
   );
-  const rings = useMemo(() => decorativeRings(star), [star]);
   const belt = useMemo(() => (system?.belt ? beltStyle(star) : null), [star, system?.belt]);
   const hazeArcs = useMemo(() => (system?.nebula ? nebulaArcs(sectorId) : []), [sectorId, system?.nebula]);
   const debrisRingArc = useMemo(() => (system?.debris ? debrisArc(system.debris) : null), [system?.debris]);
@@ -398,20 +444,18 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
 
   // ---- Popups (click → info card, reusing the .ssv-popup glass) ----
   const openPopup = useCallback((meta: HitMeta, name: string, pos: PctPoint, objectId: string | null = null) => {
+    setCtxMenu(null); // a left-click popup and a right-click menu are mutually exclusive overlays
     setPopup({ key: `${meta.kind}:${name}`, meta, name, xPct: pos.xPct, yPct: pos.yPct });
     travelTo(pos, objectId);
   }, [travelTo]);
 
-  // FIX C (Max: "no longer able to right click anywhere and travel there") --
-  // right-click ANYWHERE in the tableau glides the ship straight to that
-  // point. Reuses the SAME travelTo() every other glide entry point uses
-  // (left-click popups, a SOLAR row's APPROACH) -- heading/burning/flight-
-  // context wiring is identical, not forked. `null` objectId (no specific
-  // body/station targeted) matches travelTo's own "no glide target" idiom
-  // (star/ship/wreck/formation clicks already do the same). No context
-  // MENU (Travel/Inspect/Select, the old canvas's idiom) -- Max asked for
-  // direct travel only; a menu is a separate future ask. preventDefault
-  // suppresses the native browser menu.
+  // FIX C revise (Max correction: "no longer able to right click anywhere
+  // and travel there" was fixed as DIRECT travel-on-right-click first, but
+  // Max wants it MENU-mediated -- right-click opens a small "Travel To"
+  // menu at the click point and the ship does NOT move until that item is
+  // explicitly chosen). preventDefault still suppresses the native browser
+  // menu; only the STASHED target + the immediate travel are new. Closes
+  // any open left-click popup too (mutually exclusive overlays).
   const handleContextMenu = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     e.preventDefault();
     const el = containerRef.current;
@@ -420,8 +464,40 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
     if (rect.width <= 0 || rect.height <= 0) return;
     const xPct = Math.min(100, Math.max(0, ((e.clientX - rect.left) / rect.width) * 100));
     const yPct = Math.min(100, Math.max(0, ((e.clientY - rect.top) / rect.height) * 100));
-    travelTo({ xPct, yPct }, null);
-  }, [travelTo]);
+    setPopup(null);
+    setCtxMenu({ xPct, yPct });
+  }, []);
+
+  // The menu's own "Travel To" click -- the ONLY place the stashed ctxMenu
+  // target actually turns into a glide. Reuses the SAME travelTo() every
+  // other glide entry point uses (left-click popups, a SOLAR row's
+  // APPROACH, the old direct-travel cut) -- heading/burning/flight-context
+  // wiring stays identical, not forked. `null` objectId matches travelTo's
+  // own "no glide target" idiom (no specific body/station was targeted).
+  const handleTravelToClick = useCallback(() => {
+    if (!ctxMenu) return;
+    travelTo({ xPct: ctxMenu.xPct, yPct: ctxMenu.yPct }, null);
+    setCtxMenu(null);
+  }, [ctxMenu, travelTo]);
+
+  // Dismiss on outside-click or Escape -- standard floating-menu idiom.
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (ctxMenuRef.current && !ctxMenuRef.current.contains(e.target as Node)) {
+        setCtxMenu(null);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setCtxMenu(null);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [ctxMenu]);
 
   const popupStyle = useMemo((): React.CSSProperties | null => {
     if (!popup || !containerRef.current) return { left: 8, top: 8 };
@@ -596,19 +672,6 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
           </svg>
         )}
 
-        {/* decorative orbit rings — flat, never tied to a real body */}
-        {rings.map((r, i) => (
-          <div
-            key={`ring-${i}`}
-            className="orbit"
-            style={{
-              left: `${r.xPct}%`, top: `${r.yPct}%`,
-              width: `${r.wPct}%`, height: `${r.hPct}%`,
-              transform: 'translate(-50%,-50%)',
-            }}
-          />
-        ))}
-
         {/* asteroid belt — decorative, mostly off-frame (the "sliver") */}
         {belt && (
           <div
@@ -669,8 +732,9 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
           // already solved.
           const name = body.name || `slot-${body.slot}`;
           return (
-            <button
-              key={`body-${body.slot}`}
+            <React.Fragment key={`body-${body.slot}`}>
+              {orbitEllipse(star, pos, `orbit-body-${body.slot}`)}
+              <button
               type="button"
               className="pl"
               style={{
@@ -726,7 +790,8 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
                   />
                 </span>
               ))}
-            </button>
+              </button>
+            </React.Fragment>
           );
         })}
 
@@ -734,17 +799,19 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
         {(system?.stations ?? []).map((st) => {
           const pos = stationPosition(star, st, safeRadiiStations);
           return (
-            <button
-              key={`station-${st.station_id}`}
-              type="button"
-              className="obj"
-              style={{ left: `${pos.xPct}%`, top: `${pos.yPct}%`, transform: 'translate(-50%,-50%)' }}
-              aria-label={st.name}
-              onClick={() => openPopup({ kind: 'station', stationId: st.station_id, stationType: st.type }, st.name, pos, st.station_id)}
-            >
-              <span className="glyphbox">🛰</span>
-              <span className="objtag">{st.name}</span>
-            </button>
+            <React.Fragment key={`station-${st.station_id}`}>
+              {orbitEllipse(star, pos, `orbit-station-${st.station_id}`)}
+              <button
+                type="button"
+                className="obj"
+                style={{ left: `${pos.xPct}%`, top: `${pos.yPct}%`, transform: 'translate(-50%,-50%)' }}
+                aria-label={st.name}
+                onClick={() => openPopup({ kind: 'station', stationId: st.station_id, stationType: st.type }, st.name, pos, st.station_id)}
+              >
+                <span className="glyphbox">🛰</span>
+                <span className="objtag">{st.name}</span>
+              </button>
+            </React.Fragment>
           );
         })}
 
@@ -752,31 +819,33 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
         {scanActive && wrecks.map((w) => {
           const pos = scanPosition(w.id);
           return (
-            <button
-              key={`wreck-${w.id}`}
-              type="button"
-              className="obj"
-              style={{ left: `${pos.xPct}%`, top: `${pos.yPct}%`, transform: 'translate(-50%,-50%)', background: 'none', border: 'none' }}
-              aria-label={`Wreckage — ${w.destroyed_ship_type}`}
-              onClick={() =>
-                openPopup(
-                  { kind: 'wreck', wreckId: w.id, shipType: w.destroyed_ship_type, cause: w.cause, suspect: w.would_flag_suspect },
-                  'WRECKAGE',
-                  pos
-                )
-              }
-            >
-              <svg viewBox="0 0 44 20" style={{ width: '1.9em', height: '.9em', display: 'block', transform: 'rotate(-11deg)', opacity: 0.5 }}>
-                <path d="M4 11 L15 6 L19 9 L10 14 Z" fill="#4A4038" stroke="#8A7A66" strokeWidth={0.7} />
-                <path d="M23 9 L34 4 L39 7 L28 13 Z" fill="#3E362E" stroke="#7A6A56" strokeWidth={0.7} transform="rotate(14 31 8)" />
-                <line x1="17" y1="9" x2="24" y2="8" stroke="#5A4E42" strokeWidth={0.6} strokeDasharray="1.5 1.5" />
-                <circle cx="14" cy="16" r={0.7} fill="#6E6254" />
-                <circle cx="30" cy="16" r={0.5} fill="#6E6254" />
-                <circle cx="38" cy="12" r={0.6} fill="#57493E" />
-                <circle cx="21" cy="4" r={0.5} fill="#8A7A66" />
-              </svg>
-              <span className="objtag">WRECK — SALVAGE</span>
-            </button>
+            <React.Fragment key={`wreck-${w.id}`}>
+              {orbitEllipse(star, pos, `orbit-wreck-${w.id}`)}
+              <button
+                type="button"
+                className="obj"
+                style={{ left: `${pos.xPct}%`, top: `${pos.yPct}%`, transform: 'translate(-50%,-50%)', background: 'none', border: 'none' }}
+                aria-label={`Wreckage — ${w.destroyed_ship_type}`}
+                onClick={() =>
+                  openPopup(
+                    { kind: 'wreck', wreckId: w.id, shipType: w.destroyed_ship_type, cause: w.cause, suspect: w.would_flag_suspect },
+                    'WRECKAGE',
+                    pos
+                  )
+                }
+              >
+                <svg viewBox="0 0 44 20" style={{ width: '1.9em', height: '.9em', display: 'block', transform: 'rotate(-11deg)', opacity: 0.5 }}>
+                  <path d="M4 11 L15 6 L19 9 L10 14 Z" fill="#4A4038" stroke="#8A7A66" strokeWidth={0.7} />
+                  <path d="M23 9 L34 4 L39 7 L28 13 Z" fill="#3E362E" stroke="#7A6A56" strokeWidth={0.7} transform="rotate(14 31 8)" />
+                  <line x1="17" y1="9" x2="24" y2="8" stroke="#5A4E42" strokeWidth={0.6} strokeDasharray="1.5 1.5" />
+                  <circle cx="14" cy="16" r={0.7} fill="#6E6254" />
+                  <circle cx="30" cy="16" r={0.5} fill="#6E6254" />
+                  <circle cx="38" cy="12" r={0.6} fill="#57493E" />
+                  <circle cx="21" cy="4" r={0.5} fill="#8A7A66" />
+                </svg>
+                <span className="objtag">WRECK — SALVAGE</span>
+              </button>
+            </React.Fragment>
           );
         })}
         {scanActive && formations.map((f) => {

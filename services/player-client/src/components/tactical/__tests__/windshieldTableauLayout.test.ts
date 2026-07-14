@@ -5,7 +5,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   starAnchor,
-  decorativeRings,
+  bodyOrbitEllipse,
+  ORBIT_TILT_RATIO,
   beltStyle,
   orbitalPosition,
   bodyPosition,
@@ -19,13 +20,13 @@ import {
   nebulaArcs,
   debrisArc,
   safeOrbitRadii,
-  DECORATIVE_RING_RADII,
   MOON_DOT_MIN_EM,
   MOON_DOT_MAX_EM,
   STAR_MIN_SIZE_VS_LARGEST_PLANET,
   BODY_SIZE_EM_MAX,
   ORBIT_AU_MAX,
   type BandGeometry,
+  type PctPoint,
 } from '../windshieldTableauLayout';
 import type { SystemBody, SystemStation } from '../SolarSystemViewscreen';
 
@@ -92,17 +93,67 @@ describe('starAnchor', () => {
   });
 });
 
-describe('decorativeRings', () => {
-  it('emits exactly the 4 demo-verbatim fixed AU marks, centered on the star', () => {
+// ---- T0-2 (orbit-line view): a real per-body ellipse REPLACES the old
+// generic, cosmetic-only decorativeRings -- every planet/station/wreck
+// visibly rides its own orbit line, derived FROM its already-computed
+// position (T0-1's fan/rank placement untouched).
+
+describe('bodyOrbitEllipse', () => {
+  it('the ellipse path passes EXACTLY through the body position it was derived from', () => {
     const star = starAnchor(3, null);
-    const rings = decorativeRings(star);
-    expect(rings.length).toBe(DECORATIVE_RING_RADII.length);
-    rings.forEach((r, i) => {
-      expect(r.xPct).toBe(star.xPct);
-      expect(r.yPct).toBe(star.yPct);
-      expect(r.wPct).toBeCloseTo(DECORATIVE_RING_RADII[i] * 1.6);
-      expect(r.hPct).toBeCloseTo(DECORATIVE_RING_RADII[i] * 2.4);
-    });
+    // A spread of positions, not just axis-aligned ones.
+    const positions: PctPoint[] = [
+      { xPct: star.xPct + 30, yPct: star.yPct + 10 },
+      { xPct: star.xPct - 5, yPct: star.yPct + 40 },
+      { xPct: star.xPct + 60, yPct: star.yPct - 20 },
+      { xPct: star.xPct + 5, yPct: star.yPct - 3 },
+    ];
+    for (const pos of positions) {
+      const ellipse = bodyOrbitEllipse(star, pos);
+      expect(ellipse).not.toBeNull();
+      const dx = pos.xPct - ellipse!.cxPct;
+      const dy = pos.yPct - ellipse!.cyPct;
+      const residual = Math.abs((dx / ellipse!.rxPct) ** 2 + (dy / ellipse!.ryPct) ** 2 - 1);
+      expect(residual).toBeLessThan(1e-9);
+    }
+  });
+
+  it('is centered on the star', () => {
+    const star = starAnchor(7, null);
+    const ellipse = bodyOrbitEllipse(star, { xPct: star.xPct + 20, yPct: star.yPct + 15 });
+    expect(ellipse!.cxPct).toBe(star.xPct);
+    expect(ellipse!.cyPct).toBe(star.yPct);
+  });
+
+  it('the tilt (ry/rx) is always ORBIT_TILT_RATIO, matching the retired decorativeRings\' own ratio (2.4/1.6=1.5)', () => {
+    const star = starAnchor(7, null);
+    expect(ORBIT_TILT_RATIO).toBeCloseTo(1.5);
+    for (const pos of [{ xPct: star.xPct + 12, yPct: star.yPct + 8 }, { xPct: star.xPct - 40, yPct: star.yPct + 2 }]) {
+      const ellipse = bodyOrbitEllipse(star, pos)!;
+      expect(ellipse.ryPct / ellipse.rxPct).toBeCloseTo(ORBIT_TILT_RATIO);
+    }
+  });
+
+  it('returns null for the degenerate case (body exactly at the star anchor)', () => {
+    const star = starAnchor(7, null);
+    expect(bodyOrbitEllipse(star, { xPct: star.xPct, yPct: star.yPct })).toBeNull();
+  });
+
+  it('different body positions produce different ellipses (not one shared/fixed shape)', () => {
+    const star = starAnchor(7, null);
+    const a = bodyOrbitEllipse(star, { xPct: star.xPct + 20, yPct: star.yPct + 5 })!;
+    const b = bodyOrbitEllipse(star, { xPct: star.xPct + 55, yPct: star.yPct - 30 })!;
+    expect(a.rxPct).not.toBeCloseTo(b.rxPct);
+  });
+
+  it('works for any star-relative point, not just orbit_au-derived ones (e.g. a station or a scatter-positioned wreck)', () => {
+    const star = starAnchor(7, null);
+    const stationLikePos = { xPct: star.xPct + 25, yPct: star.yPct - 8 };
+    const ellipse = bodyOrbitEllipse(star, stationLikePos);
+    expect(ellipse).not.toBeNull();
+    const dx = stationLikePos.xPct - ellipse!.cxPct;
+    const dy = stationLikePos.yPct - ellipse!.cyPct;
+    expect(Math.abs((dx / ellipse!.rxPct) ** 2 + (dy / ellipse!.ryPct) ** 2 - 1)).toBeLessThan(1e-9);
   });
 });
 

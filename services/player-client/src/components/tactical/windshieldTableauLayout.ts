@@ -46,10 +46,6 @@ export interface StarAnchor extends PctPoint {
   sizeEm: number;
 }
 
-/** Demo-verbatim decorative ring "radii" (NOT tied to real orbit_au — flat
- *  z-0 decoration only, RATIFIED.html L1219: w=r*1.6%, h=r*2.4%). */
-export const DECORATIVE_RING_RADII: readonly number[] = [22, 42, 62, 82];
-
 /** Semi-axis %-per-orbit_au scale for REAL body/station placement. orbit_au
  *  is already a normalized ~0.2-0.95 fraction (celestial_service.py), so
  *  treating it as "demo r / 100" and applying the demo's own w=r*1.6/h=r*2.4
@@ -105,17 +101,39 @@ export function starAnchor(sectorId: number, star: SystemStar | null, bodies: Sy
   return { xPct, yPct, sizeEm };
 }
 
-/** The 4 fixed decorative orbit rings — flat z-0 chrome, never tied to a
- *  real body (RATIFIED.html L1219). */
-export function decorativeRings(
-  star: StarAnchor
-): Array<{ xPct: number; yPct: number; wPct: number; hPct: number }> {
-  return DECORATIVE_RING_RADII.map((r) => ({
-    xPct: star.xPct,
-    yPct: star.yPct,
-    wPct: r * 1.6,
-    hPct: r * 2.4,
-  }));
+/** T0-2 (Max: "your pick, knock it out" — orbit-line view). The tilt ratio
+ *  (ry/rx) every per-body orbit ellipse below uses, so the new individual
+ *  orbit lines read as the SAME orbital-plane as the rest of this module's
+ *  %-space geometry — this is the exact ratio the RETIRED decorativeRings
+ *  used (w=r*1.6%, h=r*2.4%, i.e. semi-axes r*0.8/r*1.2 → ratio 1.5), which
+ *  is itself just AU_SEMI_Y_PCT/AU_SEMI_X_PCT (120/80 = 1.5) — one shared
+ *  constant instead of two separately-tuned magic ratios that happen to
+ *  agree. */
+export const ORBIT_TILT_RATIO = AU_SEMI_Y_PCT / AU_SEMI_X_PCT;
+
+/** A single body/station's own orbit ellipse — centered on the star, tilted
+ *  at ORBIT_TILT_RATIO, sized so its path passes EXACTLY through `bodyPos`
+ *  (the body's own already-computed rendered position — T0-1's fan/rank
+ *  positioning is completely untouched by this; the ellipse is derived
+ *  FROM the position, never the other way around). Solving
+ *  `(dx/rx)^2 + (dy/ry)^2 = 1` with `ry = ORBIT_TILT_RATIO*rx` for `rx`:
+ *  `rx = sqrt(dx^2 + (dy/ORBIT_TILT_RATIO)^2)`.
+ *
+ *  REPLACES the old generic, cosmetic-only decorativeRings (4 fixed rings,
+ *  never tied to a real body) — Max's own ask: "every planet/station rides
+ *  its own orbit line, and its spot on that line is where we are on the
+ *  orbital plane" — a real per-body ellipse the body visibly sits ON, not
+ *  decoration behind it. Returns `null` for the degenerate case (`bodyPos`
+ *  exactly AT the star's own anchor — never observed in practice, since
+ *  the safe-radii margin always keeps real bodies clear of the star's own
+ *  disc, but a zero-radius ellipse isn't renderable either way). */
+export function bodyOrbitEllipse(star: StarAnchor, bodyPos: PctPoint): { cxPct: number; cyPct: number; rxPct: number; ryPct: number } | null {
+  const dx = bodyPos.xPct - star.xPct;
+  const dy = bodyPos.yPct - star.yPct;
+  if (dx === 0 && dy === 0) return null;
+  const rxPct = Math.sqrt(dx * dx + (dy / ORBIT_TILT_RATIO) * (dy / ORBIT_TILT_RATIO));
+  const ryPct = ORBIT_TILT_RATIO * rxPct;
+  return { cxPct: star.xPct, cyPct: star.yPct, rxPct, ryPct };
 }
 
 /** The asteroid belt annulus — mostly off-frame by design (the "sliver"),
@@ -283,9 +301,9 @@ const X_SECONDARY_WIGGLE_FRACTION = 0.15;
  *
  *  Without `safeRadii` (decorative callers, and any caller mid-mount before
  *  a real band has been measured), this is byte-identical to the original
- *  symmetric AU_SEMI_X_PCT/AU_SEMI_Y_PCT math — unchanged so decorativeRings/
- *  beltStyle's own visual-consistency-with-real-bodies intent (their own
- *  doc-comments) and every pre-T1-A test stay exactly as they were.
+ *  symmetric AU_SEMI_X_PCT/AU_SEMI_Y_PCT math — unchanged so beltStyle's own
+ *  visual-consistency-with-real-bodies intent (its own doc-comment) and
+ *  every pre-T1-A test stay exactly as they were.
  *
  *  With `safeRadii`, Y stays the T1-A mechanism unchanged (phase-DOMINANT,
  *  orbit_au-scaled: `sin(phase) * au * up/downPctPerAu` — Max: "vertical

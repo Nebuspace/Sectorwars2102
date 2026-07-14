@@ -128,7 +128,7 @@ describe('WindshieldTableau', () => {
     expect(mockGet).toHaveBeenCalledWith(`/api/v1/sectors/${SECTOR_ID}/contents`);
   });
 
-  it('renders the "sliver" composition: fixed stars layer first, off-center sun, 4 decorative orbit rings, and the belt', async () => {
+  it('renders the "sliver" composition: fixed stars layer first, off-center sun, one per-body orbit ellipse per body/station (T0-2), and the belt', async () => {
     await mount();
     const scene = container.querySelector('.scene.space')!;
     expect(scene).not.toBeNull();
@@ -144,7 +144,10 @@ describe('WindshieldTableau', () => {
     expect(sunTop).toBeGreaterThan(30);
     expect(sunTop).toBeLessThan(60);
 
-    expect(container.querySelectorAll('.orbit').length).toBe(4);
+    // T0-2: the old 4 generic decorativeRings are RETIRED -- one real
+    // per-body orbit ellipse per body/station instead (TEST_SYSTEM: 2
+    // bodies + 1 station = 3).
+    expect(container.querySelectorAll('.orbit').length).toBe(3);
     expect(container.querySelector('.belt')).not.toBeNull();
   });
 
@@ -619,6 +622,74 @@ describe('WindshieldTableau', () => {
     expect(ship.className).not.toContain('burning');
     expect(flightCapture?.isFlying).toBe(false);
     expect(flightCapture?.targetId).toBeNull();
+  });
+
+  // ---- T0-2 (Max: "your pick, knock it out" — orbit-line view): every
+  // planet/station/wreck rides its own real orbit ellipse, REPLACING the
+  // old generic decorativeRings. Body POSITIONING (T0-1's fan/rank fix) is
+  // completely untouched -- the ellipse is derived FROM the position.
+
+  it('every planet, station, and (scan-gated) wreck has EXACTLY one orbit ellipse whose path passes through its own rendered position', async () => {
+    await mount({ scanActive: true, wrecks: [TEST_WRECK] });
+
+    const planetEls = Array.from(container.querySelectorAll('.pl')) as HTMLElement[];
+    const objEls = Array.from(container.querySelectorAll('.obj')) as HTMLElement[]; // station + wreck
+    expect(planetEls.length).toBe(2); // REAL_PLANET + PROCEDURAL_PLANET
+    expect(objEls.length).toBe(2); // TEST_STATION + TEST_WRECK
+
+    const allTargets = [...planetEls, ...objEls];
+    expect(container.querySelectorAll('.orbit').length).toBe(allTargets.length); // (1) exactly one ellipse per target, no more/fewer
+
+    for (const target of allTargets) {
+      // Its own ellipse is the immediately PRECEDING sibling (same Fragment,
+      // ellipse rendered first) -- see WindshieldTableau.tsx's orbitEllipse()
+      // doc-comment for why DOM order alone keeps it visually behind.
+      const ellipse = target.previousElementSibling as HTMLElement | null;
+      expect(ellipse?.className).toBe('orbit');
+
+      const targetXPct = parseFloat(target.style.left);
+      const targetYPct = parseFloat(target.style.top);
+      const cx = parseFloat(ellipse!.style.left);
+      const cy = parseFloat(ellipse!.style.top);
+      const rx = parseFloat(ellipse!.style.width) / 2;
+      const ry = parseFloat(ellipse!.style.height) / 2;
+      const dx = targetXPct - cx;
+      const dy = targetYPct - cy;
+      const residual = Math.abs((dx / rx) ** 2 + (dy / ry) ** 2 - 1);
+      expect(residual).toBeLessThan(0.02); // Accept criterion #1's own tolerance
+    }
+  });
+
+  it('nebula and asteroid belt get ZERO orbit ellipse of their own (only bodies/stations/wrecks do)', async () => {
+    mockGet.mockResolvedValue({ data: { ...TEST_SYSTEM, nebula: { hue: 200, density: 0.5 } } });
+    await mount();
+    // 2 bodies + 1 station = 3 ellipses; the nebula (rendered via
+    // .hazard-arcs, not .orbit) and belt (rendered via .belt) contribute none.
+    expect(container.querySelectorAll('.orbit').length).toBe(3);
+    expect(container.querySelector('.hazard-arcs')).not.toBeNull();
+    expect(container.querySelector('.belt')).not.toBeNull();
+  });
+
+  it('the .orbit ellipse stays thin/low-weight, z-behind bodies -- CSS unchanged from the retired decorativeRings (1px border, z-index:0)', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const cssPath = path.resolve(__dirname, '../solar-system-viewscreen.css');
+    const css = fs.readFileSync(cssPath, 'utf8');
+    const match = css.match(/\.ssv-tableau \.orbit\s*\{([^}]*)\}/);
+    expect(match).not.toBeNull();
+    const block = match![1];
+    expect(block).toMatch(/border:\s*1px/);
+    expect(block).toMatch(/z-index:\s*0/);
+  });
+
+  it('body/station positioning is byte-unchanged by the orbit-line addition -- T1-A/T0-1 in-band+distinct+spread still hold at 2 sectors', async () => {
+    for (const [sectorId, bodies] of [[21, EXTREME_BODIES], [104, EXTREME_BODIES.slice(0, 2)]] as const) {
+      mockGet.mockResolvedValue({
+        data: { ...TEST_SYSTEM, sector_id: sectorId, bodies, stations: [EXTREME_STATION] },
+      });
+      await mount({ sectorId });
+      assertEveryObjectInBand(container, 800, 400);
+    }
   });
 });
 
