@@ -149,6 +149,7 @@ class SectorResponse(BaseModel):
     type: str
     region_id: str | None = None
     region_name: str | None = None
+    region_type: str | None = None
     hazard_level: int
     radiation_level: float
     resources: Dict[str, Any]
@@ -179,6 +180,7 @@ class MoveOption(BaseModel):
     type: str
     region_id: str | None = None
     region_name: str | None = None
+    region_type: str | None = None
     turn_cost: int
     can_afford: bool
     tunnel_type: str = None
@@ -486,8 +488,10 @@ async def get_current_sector(
     # Player-facing region label: display_name ("Terran Space"), not the
     # internal import-scoped name ("bang-<uuid>-terran_space")
     region_name = None
+    region_type = None
     if sector.region:
         region_name = sector.region.display_name or sector.region.name
+        region_type = sector.region.region_type
 
     # Enrich NPC presence entries with LIVE activity + mission + archetype so
     # the client can render ships honestly (a transiting ship cruises out; a
@@ -557,6 +561,7 @@ async def get_current_sector(
         type=sector.type.value if hasattr(sector.type, 'value') else str(sector.type),
         region_id=str(sector.region_id) if sector.region_id else None,
         region_name=region_name,
+        region_type=region_type,
         hazard_level=sector.hazard_level,
         radiation_level=sector.radiation_level,
         resources=sector.resources or {},
@@ -698,6 +703,7 @@ async def get_available_moves(
             type=warp["type"],
             region_id=str(sector.region_id) if sector and sector.region_id else None,
             region_name=region_name,
+            region_type=sector.region.region_type if sector and sector.region else None,
             turn_cost=warp["turn_cost"],
             can_afford=warp["can_afford"],
             special_formations=_serialize_neighbour_formations(sector)
@@ -716,6 +722,7 @@ async def get_available_moves(
             type=tunnel["type"],
             region_id=str(sector.region_id) if sector and sector.region_id else None,
             region_name=region_name,
+            region_type=sector.region.region_type if sector and sector.region else None,
             turn_cost=tunnel["turn_cost"],
             can_afford=tunnel["can_afford"],
             tunnel_type=tunnel.get("tunnel_type"),
