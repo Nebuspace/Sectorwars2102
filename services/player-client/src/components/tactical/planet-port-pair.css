@@ -133,6 +133,17 @@
   row-gap: 0;
   column-gap: 0.35em;
   line-height: 1.2;
+  /* HEIGHT BOMB #3: planetary/colony-specialization.css ships a bare
+     `.planet-info` card rule (padding:var(--space-md), margin-bottom:
+     var(--space-lg), font-size:.875rem). In the live cockpit that leaked
+     into PlanetPortPair's planet row only, giving NEW EARTH 16px top/bottom
+     padding + 24px bottom margin while Earth Station stayed dense. Keep this
+     sensor-list info block chromeless and inherited-size, same as station. */
+  padding: 0 !important;
+  margin: 0 !important;
+  background: transparent !important;
+  border-radius: 0 !important;
+  font-size: inherit !important;
   min-width: 0;
   flex: 1;
 }
