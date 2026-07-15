@@ -236,6 +236,17 @@
 .planet-port-pair .planet-section > .act,
 .planet-port-pair .station-section > .act {
   flex-shrink: 0;
+  /* HEIGHT BOMB #2: `.act` sets no line-height, so it inherits `.mbody`'s
+     15.81px line box (~1.7x its own 8.8px font). Padding .25em + that fat
+     inherited leading made the button 21.4px tall — taller than a text line —
+     so `align-items:center` stretched the whole clickable row well above every
+     sibling `.row`. Pin a tight line-height + trim vertical padding so the
+     button hugs its label and the row height is driven by the text, not the
+     chip. Row now measures ~as tall as star/barren `.row` items. */
+  line-height: 1.15;
+  padding-top: 0.1em;
+  padding-bottom: 0.1em;
+  align-self: center;
 }
 
 /* Station Section — same dense two-line grammar as the planet section.
