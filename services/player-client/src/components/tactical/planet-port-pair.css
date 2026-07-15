@@ -32,34 +32,24 @@
    (out of this lane).
    ============================================ */
 
+/* Flat sensor-list row — matches sibling `.row` items in the SOLAR SYSTEM
+   monitor (star / barren / SCAN). The old card chrome (gradient + border +
+   padding + scanline ::before) made the planet button box multiples taller
+   than every other entry even when the text was only two lines. */
 .planet-port-pair {
   display: flex;
   flex-direction: column;
-  gap: 0.2rem;
-  background: linear-gradient(135deg, rgba(15, 20, 35, 0.9) 0%, rgba(8, 12, 22, 0.95) 100%);
-  border: 1px solid rgba(147, 51, 234, 0.3);
-  border-radius: 4px;
-  padding: 0.3rem;
-  margin-bottom: 0.25rem;
-  transition: all 0.3s ease;
+  gap: 0;
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  margin: 0;
+  /* Same dashed separator as cockpit-shell.css `.row` */
+  border-bottom: 1px dashed #14202E;
+  transition: none;
   position: relative;
-  overflow: hidden;
-}
-
-.planet-port-pair::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: repeating-linear-gradient(
-    90deg,
-    rgba(147, 51, 234, 0.03) 0px,
-    transparent 1px,
-    transparent 2px
-  );
-  pointer-events: none;
+  overflow: visible;
 }
 
 /* Planet Section — two dense lines: icon+name on line 1, action button
@@ -74,21 +64,14 @@
   justify-content: space-between;
   flex-wrap: nowrap;
   gap: 0.5rem;
-  /* WO-SOLARUI item B(iii): tighter vertical padding (was .15rem) so a planet
-     row's total height tracks a normal single-line `.row` rather than running
-     ~1.35x taller — the icon already sets the min line height, the extra pad
-     was pure overhead. */
-  padding: 0.05rem 0.3rem;
-  border-radius: 4px;
+  /* Match cockpit-shell.css `.row` vertical padding (.35em 0) so the
+     clickable planet box is the same height family as star/barren/SCAN. */
+  padding: 0.35em 0;
+  border-radius: 0;
   transition: all 0.2s ease;
   min-width: 0;
-  /* WO-SOLARUI item B(i) — kill the DOUBLE-CARD. cockpit.css's bare
-     `.planet-section` (2714-2721) paints its OWN gradient + border, which
-     stacks a second card *inside* the `.planet-port-pair` card that already
-     has one (see top of this file). Neutralize the inherited chrome here
-     (this scoped selector out-specifics the bare rule); the outer
-     `.planet-port-pair` remains the single visible card. The `.landed` /
-     `.unclaimed` accent rules below re-add their own left-border intentionally. */
+  /* Kill the DOUBLE-CARD — neutralize inherited bare `.planet-section`
+     gradient/border (cockpit.css:2714). No outer card wrapper anymore. */
   background: transparent;
   border: none;
 }
@@ -113,10 +96,14 @@
 }
 
 .planet-port-pair .planet-icon {
-  /* WO-SOLARUI item B(ii): was absolute 1rem (~16px) — ~2.7x the `.mbody`
-     .62em body text, so the icon towered over the row. em-relative now, so it
-     scales WITH the row's inherited font like every sibling `.row`. */
+  /* WO-SOLARUI item B(ii): em-relative so it scales with `.mbody`.
+     CRITICAL: cockpit.css's bare `.planet-icon` still ships
+     `margin-bottom: 1rem` (landed-console leftover). That margin was the
+     remaining height bomb — scoped font-size alone left it intact, so the
+     clickable planet box stayed much taller than sibling `.row`s. Kill it. */
   font-size: 1.15em;
+  margin: 0;
+  filter: none;
   flex-shrink: 0;
   animation: planet-rotation 20s linear infinite;
   display: inline-block;
@@ -148,12 +135,14 @@
 }
 
 .planet-port-pair .planet-name {
-  /* WO-SOLARUI item B(ii): em-relative (was 0.75rem absolute) — scales with
-     the row's inherited `.mbody` font like sibling `.row b` labels. */
+  /* WO-SOLARUI item B(ii): em-relative — scales with `.mbody`.
+     Also zero the bare cockpit.css `.planet-name { margin: 0 0 0.25rem }`
+     so it doesn't pad the row. */
   font-size: 1em;
   font-weight: 700;
   color: #9333ea;
   line-height: 1.2;
+  margin: 0;
   /* id=141: TRUNCATE (ellipsis) instead of break-word wrapping. */
   flex-shrink: 1;
   max-width: 100%;
@@ -258,10 +247,9 @@
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-  /* WO-SOLARUI item B(iii): kept in lockstep with .planet-section (was .15rem)
-     so planet + station rows stay symmetric at the tighter density. */
-  padding: 0.05rem 0.3rem;
-  border-radius: 4px;
+  /* Keep in lockstep with .planet-section — same `.row` padding. */
+  padding: 0.35em 0;
+  border-radius: 0;
   transition: all 0.2s ease;
   min-width: 0;
 }
@@ -281,21 +269,24 @@
 .planet-port-pair .station-icon {
   display: inline-flex;
   align-items: center;
-  /* WO-SOLARUI item B(ii): em-relative, matches .planet-icon (was 1rem). */
+  /* em-relative + kill bare cockpit.css `.station-icon` (4rem + margin-bottom:1rem) */
   font-size: 1.15em;
+  margin: 0;
   flex-shrink: 0;
   line-height: 1;
+  animation: none;
   /* currentColor follows the station-class accent set inline; falls back to cyan */
   color: #00d9ff;
   filter: drop-shadow(0 0 6px currentColor);
 }
 
 .planet-port-pair .station-name {
-  /* WO-SOLARUI item B(ii): em-relative, matches .planet-name (was 0.75rem). */
+  /* em-relative, matches .planet-name; zero bare margins */
   font-size: 1em;
   font-weight: 700;
   color: #00d9ff;
   line-height: 1.2;
+  margin: 0;
   /* ellipsis-truncate long names (mirrors .planet-name / id=141) */
   flex-shrink: 1;
   max-width: 100%;
@@ -305,9 +296,10 @@
 }
 
 .planet-port-pair .station-status {
-  font-size: 0.9rem;
+  font-size: 0.85em;
   line-height: 1;
   flex-shrink: 0;
+  margin: 0;
 }
 
 /* Accessibility */

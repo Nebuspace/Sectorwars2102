@@ -3479,7 +3479,9 @@ const GameDashboardInner: React.FC = () => {
                     `.skrow` (artifact `monSys()`). */}
                 <div className="mhead">
                   <span className="mtitle">SOLAR SYSTEM</span>
-                  <span className="hsub">{currentSector?.name ?? '—'}</span>
+                  {/* Sector name (e.g. "Terra") removed from the header —
+                      Max 2026-07-14: title alone; the locrow already shows
+                      where you are. */}
                   {/* Uninhabitable-body filter (T1-B, Max ruling): DEFAULT
                       OFF — every decorative body visible until toggled ON.
                       Lives in the header (not a content row) so it persists
