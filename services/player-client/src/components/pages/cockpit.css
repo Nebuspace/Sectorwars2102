@@ -1548,12 +1548,10 @@
    share those class names.
    ============================================ */
 
-.station-icon {
-  font-size: 4rem;
-  margin-bottom: 1rem;
-  filter: drop-shadow(0 0 20px rgba(0, 217, 255, 0.6));
-  animation: station-icon-pulse 3s ease-in-out infinite;
-}
+/* RETIRED (2026-07-14): bare 4rem `.station-icon` — same leak class as
+   `.planet-icon`. PlanetPortPair sizes `.station-icon` in planet-port-pair.css.
+   Pulse keyframes kept for explicit opt-in. */
+
 
 @keyframes station-icon-pulse {
   0%, 100% {
@@ -1810,12 +1808,13 @@
   --planet-accent: 192, 132, 252;
 }
 
-.planet-icon {
-  font-size: 4rem;
-  margin-bottom: 1rem;
-  filter: drop-shadow(0 0 20px rgba(147, 51, 234, 0.6));
-  animation: planet-icon-pulse 3s ease-in-out infinite;
-}
+/* RETIRED (2026-07-14): bare `.planet-icon { font-size:4rem; margin-bottom:1rem;
+   filter; animation:planet-icon-pulse }` leaked into the SOLAR SYSTEM sensor
+   list (PlanetPortPair) and made Earth Planet ~4× taller than Earth Station /
+   barren `.row`s. The only remaining `planet-icon` consumers are PlanetPortPair
+   (sized in planet-port-pair.css) and the sector-viewport legend bullet —
+   neither wants a 4rem hero glyph. Pulse keyframes kept below for any future
+   landed-console hero that opts in explicitly via a dedicated class. */
 
 @keyframes planet-icon-pulse {
   0%, 100% {
@@ -2710,8 +2709,16 @@
   padding-top: 0.5rem;
 }
 
-/* Sections - ensure vertical layout with header on TOP */
-.planet-section {
+/* Sections - vertical card layout for landed-console / colony panels ONLY.
+   Must NOT match PlanetPortPair's `.planet-port-pair > .planet-section`
+   (clickable|landed|inactive|unclaimed) — those are dense sensor-list rows
+   peer to `.row`, and this card chrome was making Earth Planet ~4× the
+   height of Earth Station. Colony call sites always carry a panel kind. */
+.planet-section.defense,
+.planet-section.production,
+.planet-section.storage,
+.planet-section.terraform,
+.planet-section.vitals {
   display: flex;
   flex-direction: column !important;
   background: linear-gradient(135deg, rgba(20, 10, 40, 0.8) 0%, rgba(10, 5, 25, 0.9) 100%);

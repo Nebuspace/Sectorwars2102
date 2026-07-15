@@ -63,17 +63,19 @@
   align-items: center;
   justify-content: space-between;
   flex-wrap: nowrap;
-  gap: 0.5rem;
-  /* Match cockpit-shell.css `.row` vertical padding (.35em 0) so the
-     clickable planet box is the same height family as star/barren/SCAN. */
-  padding: 0.35em 0;
-  border-radius: 0;
+  gap: 0.35em;
+  /* Match cockpit-shell.css `.row` vertical padding (.35em 0). !important
+     on the box model so a regression of the bare colony-card rule can never
+     re-inflate this row (Max 2026-07-14: Earth Planet was 4× Earth Station). */
+  padding: 0.35em 0 !important;
+  border-radius: 0 !important;
   transition: all 0.2s ease;
   min-width: 0;
-  /* Kill the DOUBLE-CARD — neutralize inherited bare `.planet-section`
-     gradient/border (cockpit.css:2714). No outer card wrapper anymore. */
-  background: transparent;
-  border: none;
+  min-height: 0 !important;
+  background: transparent !important;
+  background-image: none !important;
+  border: none !important;
+  box-shadow: none !important;
 }
 
 .planet-port-pair .planet-section.clickable {
@@ -96,18 +98,16 @@
 }
 
 .planet-port-pair .planet-icon {
-  /* WO-SOLARUI item B(ii): em-relative so it scales with `.mbody`.
-     CRITICAL: cockpit.css's bare `.planet-icon` still ships
-     `margin-bottom: 1rem` (landed-console leftover). That margin was the
-     remaining height bomb — scoped font-size alone left it intact, so the
-     clickable planet box stayed much taller than sibling `.row`s. Kill it. */
-  font-size: 1.15em;
-  margin: 0;
-  filter: none;
+  /* em-relative; !important belt against any leftover bare `.planet-icon`
+     hero rules (cockpit.css previously shipped 4rem + margin-bottom:1rem —
+     that alone made Earth Planet ~4× Earth Station). */
+  font-size: 1.15em !important;
+  margin: 0 !important;
+  filter: none !important;
   flex-shrink: 0;
   animation: planet-rotation 20s linear infinite;
   display: inline-block;
-  line-height: 1;
+  line-height: 1 !important;
 }
 
 @keyframes planet-rotation {
@@ -128,8 +128,11 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  row-gap: 0.1rem;
-  column-gap: 0.35rem;
+  /* Two lines of content is fine (name / stats) — but don't inherit the
+     panel's fat ~1.7 line-height or the box balloons around the text. */
+  row-gap: 0;
+  column-gap: 0.35em;
+  line-height: 1.2;
   min-width: 0;
   flex: 1;
 }
@@ -160,18 +163,16 @@
 .planet-port-pair .planet-quals {
   display: flex;
   align-items: center;
-  /* WO-SOLARUI item B(iii): was `flex: 1 1 100%`, the flex-wrap trick that
-     FORCED quals onto a second line — doubling every planet row's height vs a
-     normal single-line `.row`. Basis `auto` lets quals share line 1 with the
-     name (both min-width:0 + ellipsis, so they truncate rather than wrap),
-     collapsing the row toward the standard one-line height. */
-  flex: 1 1 auto;
+  /* Max 2026-07-14: two lines is correct (name · stats). Force quals onto
+     line 2 via flex-basis:100%, but keep leading tight so the box hugs the
+     text — never a padded colony card. */
+  flex: 1 1 100%;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  /* em-relative (was 0.6rem absolute) so secondary text scales with the row */
   font-size: 0.85em;
+  line-height: 1.15;
   color: rgba(255, 255, 255, 0.65);
 }
 
