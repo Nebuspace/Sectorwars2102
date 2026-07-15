@@ -83,9 +83,14 @@ skip_glob = ["*/migrations/*"]
 
 [tool.ruff]
 line-length = 120
+# Real migrations live under alembic/ (there is no top-level migrations/ dir —
+# the old exclude matched nothing). Keep alembic/ out of lint like the rest of
+# the tooling family; WO QUALITY-techdebt-ruff-config-migrate.
+exclude = ["alembic"]
+
+[tool.ruff.lint]
 select = ["E", "F", "W", "C90", "I", "N", "B", "S"]
 ignore = ["S101", "B008"]
-exclude = ["migrations"]
 
 [tool.mypy]
 python_version = "3.11"
