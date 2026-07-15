@@ -74,10 +74,23 @@
   justify-content: space-between;
   flex-wrap: nowrap;
   gap: 0.5rem;
-  padding: 0.15rem 0.3rem;
+  /* WO-SOLARUI item B(iii): tighter vertical padding (was .15rem) so a planet
+     row's total height tracks a normal single-line `.row` rather than running
+     ~1.35x taller — the icon already sets the min line height, the extra pad
+     was pure overhead. */
+  padding: 0.05rem 0.3rem;
   border-radius: 4px;
   transition: all 0.2s ease;
   min-width: 0;
+  /* WO-SOLARUI item B(i) — kill the DOUBLE-CARD. cockpit.css's bare
+     `.planet-section` (2714-2721) paints its OWN gradient + border, which
+     stacks a second card *inside* the `.planet-port-pair` card that already
+     has one (see top of this file). Neutralize the inherited chrome here
+     (this scoped selector out-specifics the bare rule); the outer
+     `.planet-port-pair` remains the single visible card. The `.landed` /
+     `.unclaimed` accent rules below re-add their own left-border intentionally. */
+  background: transparent;
+  border: none;
 }
 
 .planet-port-pair .planet-section.clickable {
@@ -100,7 +113,10 @@
 }
 
 .planet-port-pair .planet-icon {
-  font-size: 1rem;   /* ~1 line-height so icon sits flush beside the name */
+  /* WO-SOLARUI item B(ii): was absolute 1rem (~16px) — ~2.7x the `.mbody`
+     .62em body text, so the icon towered over the row. em-relative now, so it
+     scales WITH the row's inherited font like every sibling `.row`. */
+  font-size: 1.15em;
   flex-shrink: 0;
   animation: planet-rotation 20s linear infinite;
   display: inline-block;
@@ -132,7 +148,9 @@
 }
 
 .planet-port-pair .planet-name {
-  font-size: 0.75rem;
+  /* WO-SOLARUI item B(ii): em-relative (was 0.75rem absolute) — scales with
+     the row's inherited `.mbody` font like sibling `.row b` labels. */
+  font-size: 1em;
   font-weight: 700;
   color: #9333ea;
   line-height: 1.2;
@@ -153,12 +171,18 @@
 .planet-port-pair .planet-quals {
   display: flex;
   align-items: center;
-  flex: 1 1 100%;
+  /* WO-SOLARUI item B(iii): was `flex: 1 1 100%`, the flex-wrap trick that
+     FORCED quals onto a second line — doubling every planet row's height vs a
+     normal single-line `.row`. Basis `auto` lets quals share line 1 with the
+     name (both min-width:0 + ellipsis, so they truncate rather than wrap),
+     collapsing the row toward the standard one-line height. */
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: 0.6rem;
+  /* em-relative (was 0.6rem absolute) so secondary text scales with the row */
+  font-size: 0.85em;
   color: rgba(255, 255, 255, 0.65);
 }
 
@@ -234,7 +258,9 @@
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-  padding: 0.15rem 0.3rem;
+  /* WO-SOLARUI item B(iii): kept in lockstep with .planet-section (was .15rem)
+     so planet + station rows stay symmetric at the tighter density. */
+  padding: 0.05rem 0.3rem;
   border-radius: 4px;
   transition: all 0.2s ease;
   min-width: 0;
@@ -255,7 +281,8 @@
 .planet-port-pair .station-icon {
   display: inline-flex;
   align-items: center;
-  font-size: 1rem;   /* scaled to ~1 line-height, matches planet-icon */
+  /* WO-SOLARUI item B(ii): em-relative, matches .planet-icon (was 1rem). */
+  font-size: 1.15em;
   flex-shrink: 0;
   line-height: 1;
   /* currentColor follows the station-class accent set inline; falls back to cyan */
@@ -264,7 +291,8 @@
 }
 
 .planet-port-pair .station-name {
-  font-size: 0.75rem;
+  /* WO-SOLARUI item B(ii): em-relative, matches .planet-name (was 0.75rem). */
+  font-size: 1em;
   font-weight: 700;
   color: #00d9ff;
   line-height: 1.2;

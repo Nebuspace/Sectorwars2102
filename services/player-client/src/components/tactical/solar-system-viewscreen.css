@@ -376,6 +376,24 @@
   row-gap: 0.3em;
 }
 
+/* WO-SOLARUI item A — header filter toggle density.
+   The 🌑 HIDE UNINHABITABLE button is the shared `.act` chip
+   (cockpit-shell.css: `font-size:.95em`), but it sits in `.mhead`, which
+   inherits the shell-ROOT font (`.stage` ~10-15px) — NOT `.mbody`'s `.62em`.
+   So the identical chip that reads ~6-9px in the object list renders ~10-14px
+   here and dominates the header. `.act` sets its own font-size, so we must
+   override on the button itself (higher specificity than `.act`). Bring its
+   effective size to the in-body `.act` scale (`.95 * .62 ≈ .59em` of root) so
+   it matches the list chips + sits in line with `.mtitle`/`.hsub` (.66em),
+   while staying clearly tappable. Scoped under `.system-monitor .mhead` so it
+   touches ONLY this header's toggle — bare `.act` elsewhere is untouched. */
+.system-monitor .mhead .system-filter-toggle {
+  font-size: 0.6em;
+  padding: 0.2em 0.55em;
+  line-height: 1.2;
+  align-self: center;
+}
+
 /* SCROLL-LAW EXCEPTION (Max ruling, T1-B): the SOLAR SYSTEM object list
    is a secondary sensor readout, not the panel's primary action — Max
    explicitly ruled it should SCROLL WITHIN ITSELF when long rather than
