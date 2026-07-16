@@ -457,6 +457,12 @@ def _presence_entry(npc: NPCCharacter, ship: Ship) -> Dict[str, Any]:
         # without guessing from the ship name) + the trader scruples axis.
         "archetype": npc.archetype.name if npc.archetype else None,
         "notoriety": npc.notoriety,
+        # Live schedule fields — windshield/SSV motion reads these so contacts
+        # don't all freeze as identical SLEEP glyphs until a later enrich pass.
+        "activity": (
+            npc.current_activity.name if npc.current_activity else None
+        ),
+        "mission": (npc.daily_schedule or {}).get("mission") or None,
     }
 
 

@@ -35,19 +35,21 @@ handler just cleaned.
 
 import logging
 import uuid
-from datetime import datetime, UTC
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import UTC, datetime
+from typing import Any, Dict, List, Optional, Set
 
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.core.game_time import canonical_hours_since
-from src.models.npc_character import NPCCharacter, NPCStatus, NPCArchetype
+from src.models.npc_character import NPCArchetype, NPCCharacter, NPCStatus
+from src.models.region import Region
 from src.models.sector import Sector
 from src.models.ship import Ship
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
 from src.services.movement_service import MovementService, _is_player_gate
-from src.services.npc_spawn_service import _presence_entry, _patrol_route
+from src.services.npc_engagement_service import FEDERATION_ZONE_FRACTION
+from src.services.npc_spawn_service import _patrol_route, _presence_entry
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +94,270 @@ _UNMOVABLE_STATUSES = (
     NPCStatus.RETIRED,
     NPCStatus.REASSIGNED,
 )
+
+# Federation Marshals on the capital-watch route share a ≤3-waypoint loop
+# (capital + up to 2 neighbours). Even phase assignment in Loop A keeps
+# ~1/N at each waypoint; size 3 is the floor that still covers all three
+# slots so Sector 1 is not left empty by stagger alone. police-forces.md:
+# starter cluster (sectors 1..fedspace) is densest Fed coverage.
+CAPITAL_WATCH_SQUAD_SIZE = 3
+FEDERATION_FACTION = "terran_federation"
+
+
+def _region_capital_global_id(region: Region, sids: List[int]) -> int:
+    """Map region-local ``capital_sector_number`` onto a global sector_id.
+
+    ``sids`` must be the region's sector_ids sorted ascending. Local 1 is the
+    first sector in that list (Terran Space → global 1; offset regions →
+    min(sector_id) + local - 1).
+    """
+    if not sids:
+        raise ValueError("region has no sectors")
+    local = int(region.capital_sector_number or 1)
+    candidate = sids[0] + local - 1
+    if candidate in sids:
+        return candidate
+    # Degenerate / legacy: fall back to the region's lowest sector.
+    return sids[0]
+
+
+def disperse_law_patrols(db: Session) -> int:
+    """Spread LAW_ENFORCEMENT NPCs across their region instead of swarming the
+    roster's single host sector (24 Sentinels anchored to one sector + its two
+    neighbours made ~6-8 pile into every sector around the host). Each LAW NPC
+    gets a DETERMINISTIC scattered patrol anchor (seeded by its id) somewhere in
+    its region, a small local patrol loop around that anchor, and is relocated
+    there. Deterministic + idempotent: an NPC already on its scattered anchor is
+    left untouched, so this self-heals re-clustered respawns each startup without
+    churn. Pirates are intentionally NOT dispersed (their clustering is canon —
+    holdings/strongholds).
+
+    Terran Space Federation Marshals: the first ``CAPITAL_WATCH_SQUAD_SIZE``
+    (stable id sort) are anchored on the capital (Sector 1) so the starter
+    sector always has rotating named Fed coverage; the rest disperse across
+    the Federation-Zone third of the region. Flush-only; caller owns the commit.
+    """
+    law = (
+        db.query(NPCCharacter)
+        .filter(
+            NPCCharacter.archetype == NPCArchetype.LAW_ENFORCEMENT,
+            NPCCharacter.status.notin_(_UNMOVABLE_STATUSES),
+            NPCCharacter.ship_id.isnot(None),
+        )
+        .all()
+    )
+    if not law:
+        return 0
+
+    # Group by home/current region so we can reserve a capital-watch squad
+    # per Terran Space region before scattering the rest.
+    by_region: Dict[Any, List[NPCCharacter]] = {}
+    region_sectors: Dict[Any, List[int]] = {}
+    regions: Dict[Any, Region] = {}
+
+    for npc in law:
+        region_id = npc.home_region_id
+        if region_id is None:
+            cur = db.query(Sector).filter(Sector.sector_id == npc.current_sector_id).first()
+            region_id = cur.region_id if cur else None
+        if region_id is None:
+            continue
+        by_region.setdefault(region_id, []).append(npc)
+        if region_id not in region_sectors:
+            region_sectors[region_id] = sorted(
+                sid for (sid,) in db.query(Sector.sector_id)
+                .filter(Sector.region_id == region_id).all()
+            )
+            region = db.query(Region).filter(Region.id == region_id).first()
+            if region is not None:
+                regions[region_id] = region
+
+    dispersed = 0
+    for region_id, members in by_region.items():
+        sids = region_sectors.get(region_id) or []
+        if not sids:
+            continue
+        region = regions.get(region_id)
+        is_terran = bool(region is not None and region.is_terran_space)
+
+        capital_sid: Optional[int] = None
+        capital_watch_ids: Set[str] = set()
+        if is_terran and region is not None:
+            capital_sid = _region_capital_global_id(region, sids)
+            # Prefer Federation Marshals for the capital watch (not Sentinels
+            # if any ever share a region). Stable id sort → idempotent.
+            fed = sorted(
+                (
+                    n for n in members
+                    if (n.faction_code or "") == FEDERATION_FACTION
+                ),
+                key=lambda n: str(n.id),
+            )
+            capital_watch_ids = {str(n.id) for n in fed[:CAPITAL_WATCH_SQUAD_SIZE]}
+
+        # Core Fed Zone pool for non-watch Terran LE (same 0.33 fraction
+        # player-owned Fed Zone uses). Nexus / other regions: full list.
+        if is_terran:
+            core_n = max(1, int(len(sids) * FEDERATION_ZONE_FRACTION))
+            scatter_pool = sids[:core_n] or sids
+        else:
+            scatter_pool = sids
+
+        for npc in members:
+            if str(npc.id) in capital_watch_ids and capital_sid is not None:
+                anchor = capital_sid
+                route = _patrol_route(db, capital_sid)
+                capital_watch = True
+            else:
+                h = int(str(npc.id).replace("-", "")[:12], 16)
+                anchor = scatter_pool[h % len(scatter_pool)]
+                route = _patrol_route(db, anchor)
+                capital_watch = False
+
+            loc_ref: Dict[str, Any] = {
+                "sectors": route,
+                "minutes_per_sector": 240,
+            }
+            if capital_watch:
+                loc_ref["capital_watch"] = True
+
+            cur_ref = (
+                ((npc.daily_schedule or {}).get("blocks") or [{}])[0]
+                .get("location_ref") or {}
+            )
+            cur_route = cur_ref.get("sectors") if isinstance(cur_ref, dict) else None
+            already = (
+                cur_route == route
+                and npc.current_sector_id == anchor
+                and bool(cur_ref.get("capital_watch")) == capital_watch
+            )
+            if already:
+                continue
+
+            if npc.current_sector_id != anchor:
+                _relocate_npc(db, npc, anchor)
+            npc.daily_schedule = {
+                "timezone": "utc",
+                "shift_offset_hours": 0,
+                "blocks": [{
+                    "start_minute": 0, "end_minute": 1440,
+                    "activity": "patrol", "location_type": "patrol_route",
+                    "location_ref": loc_ref,
+                }],
+            }
+            npc.home_region_id = npc.home_region_id or region_id
+            dispersed += 1
+    return dispersed
+
+
+def ensure_capital_fed_presence(db: Session) -> int:
+    """Hard floor: every Terran Space capital has ≥1 ON_DUTY Federation Marshal.
+
+    Capital-watch squad members rotate through the capital + neighbours under
+    Loop A phase stagger, but hops can briefly empty Sector 1. When that
+    happens, teleport-repair the nearest capital-watch Marshal onto the
+    capital so the cockpit always sees named Fed coverage. Returns the number
+    of NPCs relocated. Flush-only; caller owns the commit.
+    """
+    filled = 0
+    terran_regions = (
+        db.query(Region)
+        .all()
+    )
+    for region in terran_regions:
+        if not region.is_terran_space:
+            continue
+        sids = sorted(
+            sid for (sid,) in db.query(Sector.sector_id)
+            .filter(Sector.region_id == region.id).all()
+        )
+        if not sids:
+            continue
+        capital_sid = _region_capital_global_id(region, sids)
+
+        on_duty_here = (
+            db.query(NPCCharacter)
+            .filter(
+                NPCCharacter.archetype == NPCArchetype.LAW_ENFORCEMENT,
+                NPCCharacter.faction_code == FEDERATION_FACTION,
+                NPCCharacter.status == NPCStatus.ON_DUTY,
+                NPCCharacter.current_sector_id == capital_sid,
+                NPCCharacter.ship_id.isnot(None),
+            )
+            .count()
+        )
+        if on_duty_here >= 1:
+            continue
+
+        # Prefer capital-watch Marshals already assigned to this capital's route.
+        candidates = (
+            db.query(NPCCharacter)
+            .filter(
+                NPCCharacter.archetype == NPCArchetype.LAW_ENFORCEMENT,
+                NPCCharacter.faction_code == FEDERATION_FACTION,
+                NPCCharacter.status == NPCStatus.ON_DUTY,
+                NPCCharacter.ship_id.isnot(None),
+                NPCCharacter.current_sector_id.isnot(None),
+                NPCCharacter.current_sector_id != capital_sid,
+            )
+            .all()
+        )
+        # Stay inside this Terran region (home_region or current sector).
+        region_candidates: List[NPCCharacter] = []
+        for npc in candidates:
+            if npc.home_region_id == region.id:
+                region_candidates.append(npc)
+                continue
+            cur = db.query(Sector).filter(Sector.sector_id == npc.current_sector_id).first()
+            if cur is not None and cur.region_id == region.id:
+                region_candidates.append(npc)
+
+        def _is_capital_watch(npc: NPCCharacter) -> bool:
+            blocks = (npc.daily_schedule or {}).get("blocks") or []
+            if not blocks:
+                return False
+            ref = blocks[0].get("location_ref") or {}
+            return bool(isinstance(ref, dict) and ref.get("capital_watch"))
+
+        region_candidates.sort(
+            key=lambda n: (0 if _is_capital_watch(n) else 1, str(n.id))
+        )
+        if not region_candidates:
+            continue
+        pick = region_candidates[0]
+        try:
+            with db.begin_nested():
+                if not _relocate_npc(db, pick, capital_sid):
+                    continue
+                # Keep them on the capital route so the next Loop A tick resumes
+                # the rotating watch instead of scattering them again.
+                route = _patrol_route(db, capital_sid)
+                pick.daily_schedule = {
+                    "timezone": "utc",
+                    "shift_offset_hours": 0,
+                    "blocks": [{
+                        "start_minute": 0, "end_minute": 1440,
+                        "activity": "patrol", "location_type": "patrol_route",
+                        "location_ref": {
+                            "sectors": route,
+                            "minutes_per_sector": 240,
+                            "capital_watch": True,
+                        },
+                    }],
+                }
+                pick.home_region_id = pick.home_region_id or region.id
+                filled += 1
+                logger.info(
+                    "Capital Fed presence: relocated %s (%s) → sector %s",
+                    pick.title or pick.display_name or pick.id,
+                    pick.id,
+                    capital_sid,
+                )
+        except Exception:
+            logger.exception(
+                "Capital Fed presence: relocate failed for %s", pick.id
+            )
+    return filled
 
 
 def hop_cost(db: Session, origin_sector_id: int, dest_sector_id: int,
@@ -239,11 +505,23 @@ def move_npc(
     did not happen (no connection, pacing window not yet elapsed, NPC no
     longer movable). Flush-only — the caller owns the transaction.
     """
+    from sqlalchemy import text
+
     if npc.ship_id is None or npc.current_sector_id is None:
         return []
     origin_sector_id = npc.current_sector_id
     if origin_sector_id == dest_sector_id:
         return []
+
+    # Fail fast under row-lock contention (same discipline as player move /
+    # colonist transfer). Without this, a stuck idle-in-transaction peer
+    # freezes the whole Loop A tick for minutes and NPCs look motionless.
+    # Loop A wraps each drive in a SAVEPOINT so a lock timeout only aborts
+    # this NPC's hop — not every earlier hop in the same tick.
+    try:
+        db.execute(text("SET LOCAL lock_timeout = '3s'"))
+    except Exception:
+        logger.debug("move_npc: could not set lock_timeout", exc_info=True)
 
     # LOCK 1 — the NPC's ship row (before any sector rows; see module
     # docstring lock order).
@@ -362,11 +640,17 @@ def _relocate_npc(db: Session, npc: NPCCharacter, dest_sector_id: int) -> bool:
     Same lock order as ``move_npc`` (ship row, then both sectors ascending)
     so it can't deadlock against movers or the KIA path. Returns True when
     the NPC was relocated. Flush-only; caller owns the commit."""
+    from sqlalchemy import text
+
     if npc.ship_id is None or npc.current_sector_id is None:
         return False
     origin_id = npc.current_sector_id
     if origin_id == dest_sector_id:
         return False
+    try:
+        db.execute(text("SET LOCAL lock_timeout = '3s'"))
+    except Exception:
+        logger.debug("relocate_npc: could not set lock_timeout", exc_info=True)
     ship = db.query(Ship).filter(Ship.id == npc.ship_id).with_for_update().first()
     if ship is None or ship.is_destroyed:
         return False
@@ -397,7 +681,13 @@ def relocate_stranded_npcs(db: Session) -> int:
 
     An NPC is considered fine (skipped) when its current sector IS a target,
     or when ANY target is reachable from it (it's simply en route). Idempotent:
-    a healthy NPC is never touched. Flush-only; caller owns the commit."""
+    a healthy NPC is never touched. Flush-only; caller owns the commit.
+
+    Destination pick: NEVER ``min(targets)`` — colonist couriers all list the
+    population-hub capital (Sector 1) as a load stop, so min() dumped every
+    stranded trader onto Sector 1 (31-NPC capital pile-up). Prefer non-capital
+    home-region stops and hash-spread across the pool.
+    """
     movable = (
         db.query(NPCCharacter)
         .filter(
@@ -408,6 +698,9 @@ def relocate_stranded_npcs(db: Session) -> int:
         .all()
     )
     msvc = MovementService(db)
+    # Cache sector_id → region_id and per-region capital for dest picking.
+    sector_region: Dict[int, Any] = {}
+    region_capital: Dict[Any, int] = {}
     relocated = 0
     for npc in movable:
         targets = _schedule_target_sectors(npc)
@@ -420,7 +713,11 @@ def relocate_stranded_npcs(db: Session) -> int:
         )
         if reachable:
             continue  # en route — it will arrive on its own
-        dest = min(targets)  # deterministic anchor on its own route
+        dest = _pick_stranded_dest(
+            db, npc, targets, sector_region, region_capital,
+        )
+        if dest is None or dest == cur:
+            continue
         if _relocate_npc(db, npc, dest):
             relocated += 1
             logger.info("Relocated stranded NPC %s: sector %s -> %s",
@@ -428,68 +725,116 @@ def relocate_stranded_npcs(db: Session) -> int:
     return relocated
 
 
-def disperse_law_patrols(db: Session) -> int:
-    """Spread LAW_ENFORCEMENT NPCs across their region instead of swarming the
-    roster's single host sector (24 Sentinels anchored to one sector + its two
-    neighbours made ~6-8 pile into every sector around the host). Each LAW NPC
-    gets a DETERMINISTIC scattered patrol anchor (seeded by its id) somewhere in
-    its region, a small local patrol loop around that anchor, and is relocated
-    there. Deterministic + idempotent: an NPC already on its scattered anchor is
-    left untouched, so this self-heals re-clustered respawns each startup without
-    churn. Pirates are intentionally NOT dispersed (their clustering is canon —
-    holdings/strongholds). Flush-only; caller owns the commit."""
-    law = (
-        db.query(NPCCharacter)
-        .filter(
-            NPCCharacter.archetype == NPCArchetype.LAW_ENFORCEMENT,
-            NPCCharacter.status.notin_(_UNMOVABLE_STATUSES),
-            NPCCharacter.ship_id.isnot(None),
+def _pick_stranded_dest(
+    db: Session,
+    npc: NPCCharacter,
+    targets: set,
+    sector_region: Dict[int, Any],
+    region_capital: Dict[Any, int],
+) -> Optional[int]:
+    """Choose a repair teleport target that does not collapse onto the capital.
+
+    Prefer stops in the NPC's home region; among those, prefer non-capital
+    stops (colonist routes always include the hub). Hash the NPC id across
+    the remaining pool so many stranded NPCs don't all land on the same
+    sector.
+    """
+    def _region_of(sid: int) -> Any:
+        if sid in sector_region:
+            return sector_region[sid]
+        row = db.query(Sector.region_id).filter(Sector.sector_id == sid).first()
+        rid = row[0] if row else None
+        sector_region[sid] = rid
+        return rid
+
+    def _capital_of(rid: Any) -> Optional[int]:
+        if rid is None:
+            return None
+        if rid in region_capital:
+            return region_capital[rid]
+        region = db.query(Region).filter(Region.id == rid).first()
+        if region is None:
+            region_capital[rid] = None  # type: ignore[assignment]
+            return None
+        sids = sorted(
+            s for (s,) in db.query(Sector.sector_id)
+            .filter(Sector.region_id == rid).all()
         )
-        .all()
-    )
-    if not law:
-        return 0
-    region_sectors: Dict[Any, List[int]] = {}
-    dispersed = 0
-    for npc in law:
-        region_id = npc.home_region_id
-        if region_id is None:
-            cur = db.query(Sector).filter(Sector.sector_id == npc.current_sector_id).first()
-            region_id = cur.region_id if cur else None
-        if region_id is None:
+        if not sids:
+            region_capital[rid] = None  # type: ignore[assignment]
+            return None
+        cap = _region_capital_global_id(region, sids)
+        region_capital[rid] = cap
+        return cap
+
+    home = npc.home_region_id
+    home_targets = [t for t in targets if _region_of(t) == home] if home else []
+    pool = home_targets if home_targets else list(targets)
+    capital = _capital_of(home) if home else None
+    # LAW capital-watch Marshals may legitimately repair onto the capital;
+    # everyone else spreads onto non-hub stops when available.
+    is_capital_watch = False
+    blocks = (npc.daily_schedule or {}).get("blocks") or []
+    if blocks:
+        ref = blocks[0].get("location_ref") or {}
+        is_capital_watch = bool(isinstance(ref, dict) and ref.get("capital_watch"))
+    if capital is not None and not is_capital_watch:
+        non_hub = [t for t in pool if t != capital]
+        if non_hub:
+            pool = non_hub
+    if not pool:
+        return None
+    ordered = sorted(pool)
+    h = int(str(npc.id).replace("-", "")[:12], 16)
+    return ordered[h % len(ordered)]
+
+
+def clear_capital_trader_pileup(db: Session, *, soft_cap: int = 4) -> int:
+    """One-shot / boot hygiene: if the Terran capital has more than ``soft_cap``
+    traders (stranded-relocator historically dumped them all on Sector 1),
+    teleport the excess onto other stops on their own routes. Leaves LAW
+    capital-watch Marshals alone. Flush-only; caller owns the commit.
+    """
+    moved = 0
+    for region in db.query(Region).all():
+        if not region.is_terran_space:
             continue
-        if region_id not in region_sectors:
-            region_sectors[region_id] = sorted(
-                sid for (sid,) in db.query(Sector.sector_id)
-                .filter(Sector.region_id == region_id).all()
-            )
-        sids = region_sectors[region_id]
+        sids = sorted(
+            s for (s,) in db.query(Sector.sector_id)
+            .filter(Sector.region_id == region.id).all()
+        )
         if not sids:
             continue
-        # Deterministic per-NPC anchor (stable across restarts → idempotent).
-        h = int(str(npc.id).replace("-", "")[:12], 16)
-        anchor = sids[h % len(sids)]
-        route = _patrol_route(db, anchor)
-        cur_route = (
-            ((npc.daily_schedule or {}).get("blocks") or [{}])[0]
-            .get("location_ref") or {}
-        ).get("sectors")
-        if cur_route == route and npc.current_sector_id == anchor:
-            continue  # already dispersed to its anchor
-        # Relocate FIRST — _relocate_npc does db.refresh(npc), which would
-        # discard an unflushed daily_schedule change; set the scattered route
-        # AFTER so it survives (the caller commits).
-        if npc.current_sector_id != anchor:
-            _relocate_npc(db, npc, anchor)
-        npc.daily_schedule = {
-            "timezone": "utc",
-            "shift_offset_hours": 0,
-            "blocks": [{
-                "start_minute": 0, "end_minute": 1440,
-                "activity": "patrol", "location_type": "patrol_route",
-                "location_ref": {"sectors": route, "minutes_per_sector": 240},
-            }],
-        }
-        npc.home_region_id = npc.home_region_id or region_id
-        dispersed += 1
-    return dispersed
+        capital = _region_capital_global_id(region, sids)
+        traders = (
+            db.query(NPCCharacter)
+            .filter(
+                NPCCharacter.archetype == NPCArchetype.TRADER,
+                NPCCharacter.status.notin_(_UNMOVABLE_STATUSES),
+                NPCCharacter.current_sector_id == capital,
+                NPCCharacter.ship_id.isnot(None),
+            )
+            .order_by(NPCCharacter.id)
+            .all()
+        )
+        if len(traders) <= soft_cap:
+            continue
+        excess = traders[soft_cap:]
+        sector_region: Dict[int, Any] = {}
+        region_capital: Dict[Any, int] = {region.id: capital}
+        for npc in excess:
+            targets = _schedule_target_sectors(npc)
+            # Force non-capital dest even if currently sitting on capital.
+            targets = {t for t in targets if t != capital} or targets
+            dest = _pick_stranded_dest(
+                db, npc, targets, sector_region, region_capital,
+            )
+            if dest is None or dest == capital:
+                continue
+            if _relocate_npc(db, npc, dest):
+                moved += 1
+                logger.info(
+                    "Capital pileup: moved trader %s off sector %s -> %s",
+                    npc.id, capital, dest,
+                )
+    return moved

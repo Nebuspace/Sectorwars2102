@@ -209,8 +209,11 @@ class _FakePresenceSweepDB:
         self.closed = True
 
 
-def _entry(player_id: str) -> Dict[str, str]:
-    return {"player_id": player_id}
+def _entry(player_id: str, *, is_npc: bool = False) -> Dict[str, Any]:
+    e: Dict[str, Any] = {"player_id": player_id}
+    if is_npc:
+        e["is_npc"] = True
+    return e
 
 
 @pytest.mark.unit
@@ -341,3 +344,58 @@ class TestPresenceSweepLockedRefetch:
         assert db.commit_count == 0
         assert db.rollback_count == 1  # the lock-not-acquired bail
         assert db.closed is True
+
+    def test_npc_presence_entries_survive_even_when_humans_are_pruned(self) -> None:
+        """NPCCharacter UUIDs are not Player rows — treating them as stale
+        humans wiped cockpit traffic until reconcile. Prove NPCs are kept
+        while offline humans are still swept."""
+        now = datetime.now(timezone.utc)
+        pk = uuid.uuid4()
+        human_fresh = str(uuid.uuid4())
+        human_stale = str(uuid.uuid4())
+        npc_id = str(uuid.uuid4())
+
+        sector = Sector(
+            id=pk,
+            players_present=[
+                _entry(human_fresh),
+                _entry(human_stale),
+                _entry(npc_id, is_npc=True),
+            ],
+        )
+        db = _FakePresenceSweepDB(
+            candidate_pks=[pk],
+            sectors_by_pk={pk: sector},
+            player_rows=[
+                (human_fresh, now),
+                (human_stale, now - timedelta(minutes=90)),
+                # npc_id deliberately absent from Player table
+            ],
+        )
+
+        with patch("src.core.database.SessionLocal", return_value=db):
+            result = _run_presence_sweep_sync()
+
+        assert result == {"presence_entries_swept": 1, "sectors": 1}
+        assert sector.players_present == [
+            _entry(human_fresh),
+            _entry(npc_id, is_npc=True),
+        ]
+
+    def test_npc_only_sector_is_left_untouched(self) -> None:
+        pk = uuid.uuid4()
+        npc_id = str(uuid.uuid4())
+        sector = Sector(id=pk, players_present=[_entry(npc_id, is_npc=True)])
+        db = _FakePresenceSweepDB(
+            candidate_pks=[pk],
+            sectors_by_pk={pk: sector},
+            player_rows=[],
+        )
+
+        with patch("src.core.database.SessionLocal", return_value=db):
+            result = _run_presence_sweep_sync()
+
+        assert result == {"presence_entries_swept": 0, "sectors": 0}
+        assert sector.players_present == [_entry(npc_id, is_npc=True)]
+        assert db.commit_count == 0
+        assert db.rollback_count == 1

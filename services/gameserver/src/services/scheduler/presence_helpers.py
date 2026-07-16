@@ -18,7 +18,7 @@ import asyncio
 import logging
 import random
 import uuid
-from datetime import datetime, timedelta, UTC
+from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
@@ -33,38 +33,37 @@ from src.models.npc_character import (
 )
 from src.models.player import Player
 from src.models.sector import Sector
-
 from src.services.scheduler._common import (
+    _ADVISORY_LOCK_KEY,
+    _ARIA_PRUNE_STATE_KEY,
+    _BULK_FILL_TRADERS_LOCK_KEY,
+    _CITIZEN_REBAKE_LOCK_KEY,
+    _CITIZEN_REBAKE_STATE_KEY,
+    _LAW_PATROL_DISPERSAL_LOCK_KEY,
+    _ORPHAN_SCHEDULE_REPAIR_LOCK_KEY,
+    _PRESENCE_SWEEP_LOCK_KEY,
+    _RETENTION_SWEEP_LOCK_KEY,
+    _RETENTION_SWEEP_STATE_KEY,
+    _ROUTE_RUNS_RETENTION_LOCK_KEY,
+    _SEED_TRADER_ROSTERS_LOCK_KEY,
+    _STRANDED_RELOCATE_LOCK_KEY,
+    _TRADER_MISSION_LOCK_KEY,
+    _TRADER_NOTORIETY_LOCK_KEY,
     ENGAGEMENT_SWEEP_SECONDS,
     LOOP_A_SECONDS,
     LOOP_B_SECONDS,
     LOOP_C_SECONDS,
-    _ARIA_PRUNE_STATE_KEY,
-    _RETENTION_SWEEP_STATE_KEY,
-    _CITIZEN_REBAKE_STATE_KEY,
+    PRESENCE_STALE_MINUTES,
     ROUTE_RUNS_RETENTION_DAYS,
     ROUTE_RUNS_RETENTION_MAX_PER_PLAYER,
-    _ADVISORY_LOCK_KEY,
-    _CITIZEN_REBAKE_LOCK_KEY,
-    _PRESENCE_SWEEP_LOCK_KEY,
-    PRESENCE_STALE_MINUTES,
-    region_lock_key,
-    _ROUTE_RUNS_RETENTION_LOCK_KEY,
-    _ORPHAN_SCHEDULE_REPAIR_LOCK_KEY,
-    _SEED_TRADER_ROSTERS_LOCK_KEY,
-    _LAW_PATROL_DISPERSAL_LOCK_KEY,
-    _STRANDED_RELOCATE_LOCK_KEY,
-    _TRADER_NOTORIETY_LOCK_KEY,
-    _TRADER_MISSION_LOCK_KEY,
-    _BULK_FILL_TRADERS_LOCK_KEY,
-    _RETENTION_SWEEP_LOCK_KEY,
     canonical_day_number,
+    region_lock_key,
 )
 from src.services.scheduler.npc_tick_loops import (
+    _fill_roster_deficit,
     run_loop_a,
     run_loop_b,
     run_loop_c,
-    _fill_roster_deficit,
 )
 
 logger = logging.getLogger(__name__)
@@ -290,11 +289,15 @@ def _relocate_stranded_npcs_sync() -> int:
     """Un-stick NPCs frozen in a sector that can't reach their route (the
     silent next_hop_toward→None no-op — e.g. a trader stranded in the wrong
     region after a galaxy re-bootstrap). Teleport-repairs each onto one of its
-    own route sectors. Safe + idempotent (only genuinely stranded NPCs move);
-    no roster/galaxy surgery. xact-advisory-lock-gated like the other repairs.
-    Returns the number of NPCs relocated."""
+    own route sectors. Also clears Terran-capital trader pile-ups left by the
+    historical min(targets)→Sector-1 dump. Safe + idempotent; no roster/galaxy
+    surgery. xact-advisory-lock-gated like the other repairs.
+    Returns the number of NPCs relocated (stranded + pile-up clears)."""
     from src.core.database import SessionLocal
-    from src.services.npc_movement_service import relocate_stranded_npcs
+    from src.services.npc_movement_service import (
+        clear_capital_trader_pileup,
+        relocate_stranded_npcs,
+    )
 
     db = SessionLocal()
     try:
@@ -305,6 +308,7 @@ def _relocate_stranded_npcs_sync() -> int:
         if not got_lock:
             return 0
         count = relocate_stranded_npcs(db)
+        count += clear_capital_trader_pileup(db)
         db.commit()  # releases the xact lock
         return count
     finally:
@@ -760,8 +764,10 @@ def _run_presence_sweep_sync() -> Dict[str, int]:
     Reads a wall-clock last-seen, mutates only the JSONB list. No migration,
     no new row.
     """
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta, timezone
+
     from sqlalchemy.orm.attributes import flag_modified
+
     from src.core.database import SessionLocal
 
     db = SessionLocal()
@@ -808,23 +814,40 @@ def _run_presence_sweep_sync() -> Dict[str, int]:
                     db.rollback()
                     continue
                 entries = list(sec.players_present or [])
-                pids = [
+                # NPC entries use NPCCharacter UUIDs, not Player.id — they never
+                # appear in the Player.last_game_login freshness set. Dropping
+                # them here emptied the cockpit who's-here list until Loop C
+                # reconcile (~30m) or the next move_npc hop restored them.
+                # Only prune human player entries; leave is_npc contacts alone.
+                human_pids = [
                     e.get("player_id") for e in entries
-                    if isinstance(e, dict) and e.get("player_id")
+                    if isinstance(e, dict)
+                    and e.get("player_id")
+                    and not e.get("is_npc")
                 ]
-                if not pids:
+                if not human_pids:
+                    # NPC-only (or empty) presence — nothing for this sweep.
                     db.rollback()
                     continue
                 rows = (
                     db.query(Player.id, Player.last_game_login)
-                    .filter(Player.id.in_(pids))
+                    .filter(Player.id.in_(human_pids))
                     .all()
                 )
                 fresh = {
                     str(pid) for pid, lgl in rows
                     if lgl is not None and lgl >= cutoff
                 }
-                kept = [e for e in entries if e.get("player_id") in fresh]
+                kept = []
+                for e in entries:
+                    if not isinstance(e, dict):
+                        continue
+                    if e.get("is_npc"):
+                        kept.append(e)
+                        continue
+                    pid = e.get("player_id")
+                    if pid and pid in fresh:
+                        kept.append(e)
                 removed = len(entries) - len(kept)
                 if removed > 0:
                     sec.players_present = kept
@@ -883,16 +906,18 @@ async def _run_aria_prune_async() -> Dict[str, int]:
 
     Returns {players_scanned, players_pruned, rows_evicted}.
     """
+    from sqlalchemy import select as sa_select
+    from sqlalchemy.orm.attributes import flag_modified
+
     from src.core.database import AsyncSessionLocal
-    from src.models.galaxy import Galaxy
     from src.models.aria_personal_intelligence import (
-        ARIAPersonalMemory, ARIAMarketIntelligence,
+        ARIAMarketIntelligence,
+        ARIAPersonalMemory,
     )
+    from src.models.galaxy import Galaxy
     from src.services.aria_personal_intelligence_service import (
         ARIAPersonalIntelligenceService,
     )
-    from sqlalchemy import select as sa_select
-    from sqlalchemy.orm.attributes import flag_modified
 
     result = {"players_scanned": 0, "players_pruned": 0, "rows_evicted": 0}
 
