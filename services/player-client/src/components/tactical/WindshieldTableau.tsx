@@ -1566,9 +1566,39 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
               }
               aria-label={system.star.label || 'Primary star'}
             />
-            <div className="pltag" style={{ position: 'absolute', left: `${star.xPct}%`, top: `${star.yPct + 14}%`, transform: 'translateX(-50%)' }}>
-              {system.star.kind.replace(/_/g, ' ')}
-            </div>
+            {(() => {
+              // WO-QUEUE-PLTAG-MOVING-STAR: the star's tag is a SIBLING of
+              // `.sun` (not its child, unlike `.pl`'s tag), so it can't use
+              // the shared `.pltag.pltag-lean-*` CSS (that relies on the
+              // tag's CONTAINING BLOCK being the disc's own sized box) --
+              // this computes the equivalent flush-to-disc-edge offset
+              // directly in px (bandBox.remPx * star.sizeEm/2, the SAME
+              // conversion safeOrbitRadii/labelEdgeLean already use
+              // internally) since a `%`+`em` calc() here would resolve the
+              // `em` against THIS div's OWN font-size (.55em of ambient,
+              // solar-system-viewscreen.css), not the ambient scale
+              // star.sizeEm is expressed in -- px sidesteps that mismatch
+              // entirely. Star sits far-LEFT by design (starAnchor:
+              // xPct~9-14%), so 'left' is the realistic case, but computed
+              // generically (matches WindshieldTableau's own "don't
+              // hardcode which edge" convention from the body-tag fix).
+              const starLabel = system.star.kind.replace(/_/g, ' ');
+              const starTagLean = labelEdgeLean(star.xPct, pltagLabelHalfWidthEm(starLabel), bandBox ?? undefined);
+              const starHalfWidthPx = bandBox ? (star.sizeEm / 2) * bandBox.remPx : 0;
+              const left =
+                starTagLean === 'left' ? `calc(${star.xPct}% - ${starHalfWidthPx}px)`
+                  : starTagLean === 'right' ? `calc(${star.xPct}% + ${starHalfWidthPx}px)`
+                    : `${star.xPct}%`;
+              const transform =
+                starTagLean === 'left' ? 'none'
+                  : starTagLean === 'right' ? 'translateX(-100%)'
+                    : 'translateX(-50%)';
+              return (
+                <div className="pltag" style={{ position: 'absolute', left, top: `${star.yPct + 14}%`, transform }}>
+                  {starLabel}
+                </div>
+              );
+            })()}
           </>
         )}
 
@@ -1778,6 +1808,17 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
           }
           const faction = shipFaction(s);
           const isPirate = faction.key === 'raider';
+          const contactName = s.ship_name || faction.label;
+          // WO-QUEUE-PLTAG-MOVING-STAR: `.other`'s `.pltag` IS a real DOM
+          // child of `.other` here (same containing-block relationship as
+          // `.pl`'s tag), so it reuses the SAME shared CSS modifier classes
+          // the body-tag fix already defined -- no new CSS needed. Computed
+          // every render (xPct/yPct are fresh every frame/poll for a moving
+          // contact, so this naturally tracks the whole drift path, not a
+          // mount-time snapshot); the function itself is two multiplies and
+          // a compare, negligible next to the pose interpolation this
+          // component already recomputes per render.
+          const contactTagLean = labelEdgeLean(xPct, pltagLabelHalfWidthEm(contactName), bandBox ?? undefined);
           const turning =
             phaseClass === 'orienting' ||
             phaseClass === 'brake-turn' ||
@@ -1817,7 +1858,7 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
                   </>
                 )}
               </span>
-              <span className="pltag" style={{ color: faction.color }}>{s.ship_name || faction.label}</span>
+              <span className={`pltag${contactTagLean ? ` pltag-lean-${contactTagLean}` : ''}`} style={{ color: faction.color }}>{contactName}</span>
             </button>
           );
         })}

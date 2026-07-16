@@ -429,6 +429,51 @@ describe('WindshieldTableau', () => {
     expect(popup?.textContent).toContain('ALPHA RUNNER');
   });
 
+  // WO-QUEUE-PLTAG-MOVING-STAR: extends the body-tag edge-lean fix (T2's own
+  // WO-UI-PLTAG-CLAMP) to the star's tag (far-left by design, so left-lean is
+  // the realistic case) and moving NPC-contact tags (right-lean, the live
+  // defect a hub probe caught: "Freight Captain..." names overflowing by up
+  // to 105px). pltagLabelHalfWidthEm/labelEdgeLean's own pure-function
+  // correctness is proven in windshieldTableauLayout.test.ts (+ this WO's own
+  // report, a zero-footprint Playwright harness at real 1440x900 pixel
+  // geometry) -- these two tests only prove the WIRING into this component's
+  // render (right variable, right className/style branch), using this
+  // suite's own global getBoundingClientRect mock (800x400, beforeEach above)
+  // so bandBox is non-zero here too.
+  it('the star tag leans LEFT instead of centering when its label is wide enough to cross the left edge (star sits at ~9-14% by design, starAnchor)', async () => {
+    const wideStarSystem = {
+      ...TEST_SYSTEM,
+      star: { kind: 'HYPERGIANT_UNSTABLE_VARIABLE_LABEL_LONG_ENOUGH_TO_OVERFLOW', label: 'Test', color: '#fff' },
+    };
+    mockContents(wideStarSystem);
+    await mount();
+    // The star's own tag is the only `.pltag` that's a DIRECT child of
+    // `.scene.space` -- body/ship tags are nested one level deeper inside
+    // `.pl`/`.other`.
+    const starTag = container.querySelector('.scene.space > .pltag') as HTMLElement;
+    expect(starTag).not.toBeNull();
+    expect(starTag.textContent).toBe('HYPERGIANT UNSTABLE VARIABLE LABEL LONG ENOUGH TO OVERFLOW');
+    // Left-lean sets transform:none (flush-left, see WindshieldTableau.tsx's
+    // own doc-comment on this branch) -- the default centered case would be
+    // 'translateX(-50%)'.
+    expect(starTag.style.transform).toBe('none');
+    expect(starTag.style.left).toMatch(/^calc\(/);
+  });
+
+  it('a moving NPC-contact tag leans RIGHT instead of overflowing when near the band\'s right edge with a real live-longest-pattern ship name (hub probe: "Freight Captain..." names, up to 105px overflow on stage)', async () => {
+    const longShip = {
+      player_id: 'p9', ship_id: 'ship-freight', ship_type: 'FREIGHTER', is_npc: true,
+      username: 'npc', archetype: 'TRADER',
+      ship_name: "Freight Captain Yuki Tanahashi III's Freighter",
+      pose: { x_pct: 92, y_pct: 50, heading_deg: 0, leg: null },
+    };
+    await mount({ ships: [longShip] });
+    const contactTag = container.querySelector('.other .pltag') as HTMLElement;
+    expect(contactTag).not.toBeNull();
+    expect(contactTag.textContent).toBe("Freight Captain Yuki Tanahashi III's Freighter");
+    expect(contactTag.className).toContain('pltag-lean-right');
+  });
+
   it('gates planet landing by proximity: APPROACH → flashing HALT → LAND', async () => {
     const onRequestLand = vi.fn();
     await mount({ onRequestLand });
