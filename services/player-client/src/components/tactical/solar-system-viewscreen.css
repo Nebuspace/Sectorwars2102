@@ -279,6 +279,22 @@
   border-radius: 4px; padding: .1em .45em; color: #BFE9F5; font-size: .55em; letter-spacing: .06em;
 }
 .ssv-tableau .pltag.dim { color: #6E8298; }
+/* WO-UI-PLTAG-CLAMP: `.pltag` is centered under its anchor by default
+   (left:50% + translateX(-50%) above) -- correct for the common case, but
+   a body near the band's left/right edge can have a name label wide enough
+   that HALF its width still crosses the edge even though the disc itself
+   (`.pl`, T1-A) stays fully in-band, since this label escapes `.pl`'s own
+   layout box (position:absolute). WindshieldTableau.tsx's labelEdgeLean
+   decides which lean (if any) a given body's label needs and applies one
+   of these two modifiers instead -- never repositions the disc, only the
+   label's own horizontal anchor: right-lean flushes the label's RIGHT
+   edge to the disc's right edge (`right:0` instead of centering), left-
+   lean flushes its LEFT edge to the disc's left edge. Same higher-
+   specificity-via-compound-class convention as `.pltag.dim` above; no
+   `!important` needed since `.pltag.pltag-lean-*` (2 classes) beats the
+   base `.pltag` (1 class) on specificity alone. */
+.ssv-tableau .pltag.pltag-lean-right { left: auto; right: 0; transform: translateY(.4em); }
+.ssv-tableau .pltag.pltag-lean-left { left: 0; transform: translateY(.4em); }
 
 .ssv-tableau .obj {
   position: absolute; display: flex; flex-direction: column; align-items: center; gap: .3em;

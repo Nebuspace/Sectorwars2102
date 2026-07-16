@@ -28,6 +28,10 @@ import {
   STAR_MIN_SIZE_VS_LARGEST_PLANET,
   BODY_SIZE_EM_MAX,
   ORBIT_AU_MAX,
+  pltagLabelHalfWidthEm,
+  labelEdgeLean,
+  PLTAG_LABEL_BASE_EM,
+  PLTAG_LABEL_PER_CHAR_EM,
   type BandGeometry,
   type PctPoint,
 } from '../windshieldTableauLayout';
@@ -716,5 +720,74 @@ describe('T0-1 — bodies stay DISTINCT and SPREAD, not just in-band (sector-1 l
     for (let i = 1; i < xs.length; i++) {
       expect(xs[i]).toBeGreaterThan(xs[i - 1]);
     }
+  });
+
+  it('WO-UI-PLTAG-CLAMP discovery (out of THIS WO\'s scope, flagged in its report): at phase_deg=0 (max X_SECONDARY_WIGGLE_FRACTION contribution), two DIFFERENT orbit_au values can saturate onto the IDENTICAL clamped xPct -- monotonicity is only guaranteed at the phase this file already tests (200deg), not universally', () => {
+    const star = starAnchor(1, { kind: 'K_ORANGE', label: '', color: '#fff' }, SECTOR_1_BODIES);
+    const radii = safeOrbitRadii(star, FLIGHT_BAND, PLANET_EM);
+    const x085 = orbitalPosition(star, 0.85, 0, radii).xPct;
+    const x095 = orbitalPosition(star, 0.95, 0, radii).xPct;
+    // Pins the DISCOVERED behavior (both saturate to the xMaxPct ceiling) so
+    // a future change to the clamp/wiggle math surfaces here rather than
+    // silently -- not asserting this is DESIRED, just documenting reality.
+    expect(x085).toBeCloseTo(x095, 5);
+  });
+});
+
+describe('pltagLabelHalfWidthEm / labelEdgeLean (WO-UI-PLTAG-CLAMP)', () => {
+  // Matches this WO's own zero-footprint Playwright harness measurement at
+  // 1440x900 flight-mode band (`.ssv-tableau`'s real getComputedStyle
+  // fontSize, the SAME call bandBox.remPx makes) -- independently confirmed
+  // 15px in T2-E's own harness too (`.game-container`'s
+  // `calc(clamp(10px,1.05vw,15px)*--uiscale)` formula maxes out at 15px by
+  // 1440px viewport width).
+  const BAND: BandGeometry = { widthPx: 1438, heightPx: 277.5, remPx: 15 };
+
+  it('is monotonic increasing with name length', () => {
+    const lens = [4, 10, 16, 21, 50].map((n) => pltagLabelHalfWidthEm('x'.repeat(n)));
+    for (let i = 1; i < lens.length; i++) {
+      expect(lens[i]).toBeGreaterThan(lens[i - 1]);
+    }
+  });
+
+  it('matches the documented base+per-char formula exactly', () => {
+    expect(pltagLabelHalfWidthEm('12345')).toBeCloseTo((PLTAG_LABEL_BASE_EM + PLTAG_LABEL_PER_CHAR_EM * 5) / 2, 10);
+  });
+
+  it('never underestimated any of the 5 live-measured real body names this WO calibrated against (4/10/16/21/50 chars, real .pltag rendered widths at BAND.remPx=15)', () => {
+    // measuredHalfWidthPx from this WO's own report (Playwright, 1440x900):
+    // "Mars"(4)=15.6px, "New Terran"(10)=32.0px, "Old Aldebaran Six"(16)=51.1px,
+    // "Earth (Central Nexus)"(21)=62.1px, 50-char ceiling name=141.3px.
+    const cases: Array<[string, number]> = [
+      ['Mars', 15.6],
+      ['New Terran', 32.0],
+      ['Old Aldebaran Six', 51.1],
+      ['Earth (Central Nexus)', 62.1],
+      ['New Terra Prime Settlement Colony Alpha Station Ni', 141.3],
+    ];
+    for (const [name, measuredHalfWidthPx] of cases) {
+      const estimatedHalfWidthPx = pltagLabelHalfWidthEm(name) * BAND.remPx;
+      expect(estimatedHalfWidthPx).toBeGreaterThanOrEqual(measuredHalfWidthPx);
+    }
+  });
+
+  it('labelEdgeLean returns null (no lean) without real band geometry -- mid-mount safety, mirrors every other T1-A no-op-before-band-measured convention', () => {
+    expect(labelEdgeLean(99, pltagLabelHalfWidthEm('Earth (Central Nexus)'), undefined)).toBeNull();
+  });
+
+  it('labelEdgeLean returns null for a body comfortably in the middle regardless of name length', () => {
+    expect(labelEdgeLean(50, pltagLabelHalfWidthEm('New Terra Prime Settlement Colony Alpha Station Ni'), BAND)).toBeNull();
+  });
+
+  it('labelEdgeLean returns "right" for the T1-A-clamped worst-case right-edge position (xPct~98.64%, this WO\'s own measured ceiling) with the live-longest 21-char name', () => {
+    expect(labelEdgeLean(98.6439, pltagLabelHalfWidthEm('Earth (Central Nexus)'), BAND)).toBe('right');
+  });
+
+  it('labelEdgeLean returns null at that SAME worst-case position for a short name (no unnecessary lean, preserves the default centered look)', () => {
+    expect(labelEdgeLean(98.6439, pltagLabelHalfWidthEm('Mars'), BAND)).toBeNull();
+  });
+
+  it('labelEdgeLean is symmetric: "left" for the mirrored near-left-edge position', () => {
+    expect(labelEdgeLean(100 - 98.6439, pltagLabelHalfWidthEm('Earth (Central Nexus)'), BAND)).toBe('left');
   });
 });

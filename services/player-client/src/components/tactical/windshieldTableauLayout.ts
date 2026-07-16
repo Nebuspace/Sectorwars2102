@@ -385,6 +385,61 @@ export function stationPosition(star: StarAnchor, station: SystemStation, safeRa
   return orbitalPosition(star, station.orbit_au, station.phase_deg, safeRadii);
 }
 
+/** WO-UI-PLTAG-CLAMP (Max fly-by catch, sector 68: "Pollux" clipped ~1.7px
+ *  past the band's right edge): `.pl`/`.other`/star-tag's shared `.pltag`
+ *  label is `position:absolute` (escapes its anchor's own layout box BY
+ *  DESIGN — see PLANET_FOOTPRINT_EM_MAX's own doc-comment, that's what
+ *  keeps a body's disc size independent of its name length), so a body
+ *  positioned near a band edge can have its DISC fully in-band (T1-A) while
+ *  its CENTERED label still crosses the boundary once the label is wider
+ *  than the disc. `pltagLabelHalfWidthEm` estimates that width so
+ *  `labelEdgeLean` below can decide whether the label needs to lean off-
+ *  center to stay in-band — WITHOUT ever touching the anchor's own
+ *  xPct/yPct (T1-A's body-position math is a separate, proven system; this
+ *  WO's own report is the record of why that stays untouched).
+ *
+ *  Base/per-char constants are live-measured (Playwright, 1440x900 flight-
+ *  mode band, this WO's own report) against `.pltag`'s REAL rendered width
+ *  for 5 real body names spanning 4-50 chars (4/10/16/21/50), same
+ *  empirically-grounded-ceiling idiom as STATION_FOOTPRINT_EM_WIDTH_MAX's
+ *  own doc-comment — deliberately biased slightly HIGH (never underestimated
+ *  the 5 measured points; worst residual was the 16-char point, ~14px
+ *  overestimate) so a caller triggers the lean a touch early rather than
+ *  late. 50 chars is the ADR-0073 rename ceiling (gameserver
+ *  planets.py:_rename_planet_by_discoverer, "50 characters or fewer",
+ *  server-validated) — a REAL reachable width for a body's name
+ *  (gameserver celestial_service.py:389 confirms real planet bodies use
+ *  `planet.display_name`, the same custom_name-aware field the rename
+ *  endpoint writes), not a hypothetical ceiling. */
+export const PLTAG_LABEL_BASE_EM = 0.8;
+export const PLTAG_LABEL_PER_CHAR_EM = 0.43;
+
+export function pltagLabelHalfWidthEm(name: string): number {
+  return (PLTAG_LABEL_BASE_EM + PLTAG_LABEL_PER_CHAR_EM * name.length) / 2;
+}
+
+export type LabelEdgeLean = 'left' | 'right' | null;
+
+/** Given an anchor's xPct (a `.pl`/`.other`/star's OWN center, unchanged)
+ *  and its label's estimated half-width, decides which way (if any) the
+ *  `.pltag` needs to lean to stay fully inside the band's [0,100]% width.
+ *  `band` undefined (mid-mount, before real geometry is measured — mirrors
+ *  every other T1-A safety net's own `!safeRadii`/no-op-before-band-
+ *  measured convention) or a non-positive width both return `null` (no
+ *  lean) rather than guessing. */
+export function labelEdgeLean(
+  xPct: number,
+  labelHalfWidthEm: number,
+  band?: BandGeometry
+): LabelEdgeLean {
+  if (!band || band.widthPx <= 0) return null;
+  const halfWidthPx = labelHalfWidthEm * band.remPx;
+  const xPx = (xPct / 100) * band.widthPx;
+  if (xPx + halfWidthPx > band.widthPx) return 'right';
+  if (xPx - halfWidthPx < 0) return 'left';
+  return null;
+}
+
 /** One child-orbit's CSS-animation parameters. Rendered as a small rotating
  *  wrapper (transform-origin at the parent's center, translateX(radiusEm))
  *  so the ANIMATION is pure CSS and dies for free under

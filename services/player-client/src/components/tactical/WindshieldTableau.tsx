@@ -28,9 +28,11 @@ import {
   bodySizeEm,
   debrisArc,
   headingDeg,
+  labelEdgeLean,
   moonOrbits,
   nebulaArcs,
   otherShipFlightPose,
+  pltagLabelHalfWidthEm,
   safeOrbitRadii,
   scanPosition,
   selfRestingAnchor,
@@ -1588,6 +1590,14 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
           // decorative, instead of fabricating a designation the server
           // already solved.
           const name = body.name || `slot-${body.slot}`;
+          // WO-UI-PLTAG-CLAMP: the disc (`.pl`) itself is T1-A-proven
+          // in-band via safeRadiiPlanets above — this only decides whether
+          // the CENTERED name label needs to lean left/right to avoid
+          // crossing the band edge on its own (a wide name can still
+          // overflow even when the disc doesn't, see labelEdgeLean's own
+          // doc-comment). Never feeds back into `pos` — the disc's position
+          // is unaffected either way.
+          const tagLean = labelEdgeLean(pos.xPct, pltagLabelHalfWidthEm(name), bandBox ?? undefined);
           return (
             <React.Fragment key={`body-${body.slot}`}>
               {orbitEllipse(star, pos, `orbit-body-${body.slot}`)}
@@ -1624,7 +1634,7 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
                     )
               }
             >
-              <span className={`pltag${isReal && body.habitability ? '' : ' dim'}`}>
+              <span className={`pltag${isReal && body.habitability ? '' : ' dim'}${tagLean ? ` pltag-lean-${tagLean}` : ''}`}>
                 {name}{isReal && !body.habitability ? ' ◦' : ''}
               </span>
               {moons.map((m, mi) => (
