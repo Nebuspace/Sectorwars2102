@@ -127,32 +127,46 @@ class _CandidateBranch:
 
 class _SectorLockBranch:
     """`.filter(Sector.id == pk).populate_existing().with_for_update().first()`
-    -- records the call order + resolved pk into the shared `call_log`, and
-    resolves `.first()` from the seeded `sectors_by_pk` map. A bypass shape
-    (e.g. bare `.with_for_update()` with no `.populate_existing()`, or a
-    `.first()` called before either) would simply not append the expected
+    (the removal loop's lock key) OR
+    `.filter(Sector.sector_id == sid).populate_existing().with_for_update()
+    .first()` (P0-FIX-SWEEP-HEAL's own lock key, a DIFFERENT column on the
+    SAME entity) -- records the call order + resolved key into the shared
+    `call_log`, and resolves `.first()` from whichever seeded map matches
+    the filtered column (`expr.left.key` -- "id" vs "sector_id"). A bypass
+    shape (e.g. bare `.with_for_update()` with no `.populate_existing()`, or
+    a `.first()` called before either) would simply not append the expected
     log entries -- Scenario 1's assertions catch that directly."""
 
-    def __init__(self, sectors_by_pk: Dict[uuid.UUID, Sector], call_log: List[Tuple[str, Any]]):
+    def __init__(
+        self,
+        sectors_by_pk: Dict[uuid.UUID, Sector],
+        call_log: List[Tuple[str, Any]],
+        sectors_by_sector_id: Optional[Dict[int, Sector]] = None,
+    ):
         self._sectors_by_pk = sectors_by_pk
+        self._sectors_by_sector_id = sectors_by_sector_id or {}
         self._call_log = call_log
-        self._pk: Optional[uuid.UUID] = None
+        self._pk: Optional[Any] = None
+        self._key_col: str = "id"
 
     def filter(self, expr):
+        self._key_col = expr.left.key
         self._pk = expr.right.value
-        self._call_log.append(("filter", self._pk))
+        self._call_log.append(("filter", self._key_col, self._pk))
         return self
 
     def populate_existing(self):
-        self._call_log.append(("populate_existing", self._pk))
+        self._call_log.append(("populate_existing", self._key_col, self._pk))
         return self
 
     def with_for_update(self):
-        self._call_log.append(("with_for_update", self._pk))
+        self._call_log.append(("with_for_update", self._key_col, self._pk))
         return self
 
     def first(self):
-        self._call_log.append(("first", self._pk))
+        self._call_log.append(("first", self._key_col, self._pk))
+        if self._key_col == "sector_id":
+            return self._sectors_by_sector_id.get(self._pk)
         return self._sectors_by_pk.get(self._pk)
 
 
@@ -171,16 +185,41 @@ class _PlayerFreshnessBranch:
         return self._rows
 
 
+class _FreshPlayersForHealBranch:
+    """P0-FIX-SWEEP-HEAL's own candidate query --
+    `.query(Player.id, Player.current_sector_id, Player.username,
+    Player.current_ship_id, Player.team_id, Player.intrasystem_pose,
+    Player.last_game_login).filter(current_sector_id.isnot(None)).all()` --
+    returns the full seeded set regardless of the requested filter
+    (current_sector_id filtering is pre-existing, unchanged code; freshness
+    is decided in PYTHON by _is_presence_fresh, not a SQL WHERE clause --
+    seed the 7th element per row to exercise that). This fake only proves
+    the SWEEP's own reconciliation logic given a candidate set."""
+
+    def __init__(self, rows: List[Tuple[Any, ...]]):
+        self._rows = rows
+
+    def filter(self, *_a, **_k):
+        return self
+
+    def all(self):
+        return self._rows
+
+
 class _FakePresenceSweepDB:
     def __init__(
         self,
         candidate_pks: List[uuid.UUID],
         sectors_by_pk: Dict[uuid.UUID, Sector],
         player_rows: List[Tuple[uuid.UUID, Optional[datetime]]],
+        sectors_by_sector_id: Optional[Dict[int, Sector]] = None,
+        fresh_players_for_heal: Optional[List[Tuple[Any, ...]]] = None,
     ):
         self._candidate_rows: List[Tuple[uuid.UUID]] = [(pk,) for pk in candidate_pks]
         self._sectors_by_pk = sectors_by_pk
+        self._sectors_by_sector_id = sectors_by_sector_id or {}
         self._player_rows = player_rows
+        self._fresh_players_for_heal = fresh_players_for_heal or []
         self.call_log: List[Tuple[str, Any]] = []
         self.commit_count = 0
         self.rollback_count = 0
@@ -194,9 +233,11 @@ class _FakePresenceSweepDB:
         if len(entities) == 1 and entities[0] is Sector.id:
             return _CandidateBranch(self._candidate_rows)
         if len(entities) == 1 and entities[0] is Sector:
-            return _SectorLockBranch(self._sectors_by_pk, self.call_log)
+            return _SectorLockBranch(self._sectors_by_pk, self.call_log, self._sectors_by_sector_id)
         if len(entities) == 2 and entities[0] is Player.id and entities[1] is Player.last_game_login:
             return _PlayerFreshnessBranch(self._player_rows)
+        if len(entities) == 7 and entities[0] is Player.id and entities[1] is Player.current_sector_id:
+            return _FreshPlayersForHealBranch(self._fresh_players_for_heal)
         raise AssertionError(f"unexpected query entities: {entities!r}")
 
     def commit(self):
@@ -214,6 +255,13 @@ def _entry(player_id: str, *, is_npc: bool = False) -> Dict[str, Any]:
     if is_npc:
         e["is_npc"] = True
     return e
+
+
+# A last_game_login well within PRESENCE_STALE_MINUTES of "now" -- fresh by
+# construction for every TestPresenceSweepHeal seed below (the heal pass's
+# own freshness gate, _is_presence_fresh, is exercised directly by
+# test_stale_player_is_not_healed_and_no_flapping_across_the_same_tick).
+_FRESH_LOGIN = datetime.now(timezone.utc)
 
 
 @pytest.mark.unit
@@ -255,7 +303,10 @@ class TestPresenceSweepLockedRefetch:
             result = _run_presence_sweep_sync()
 
         # Behavioral: P2 (stale) pruned from sector A, sector B untouched.
-        assert result == {"presence_entries_swept": 1, "sectors": 1}
+        assert result == {
+            "presence_entries_swept": 1, "sectors": 1,
+            "presence_entries_healed": 0, "heal_sectors": 0,
+        }
         assert sector_a.players_present == [_entry(p1)]
         assert sector_b.players_present == [_entry(p3)]  # unchanged object
 
@@ -268,7 +319,7 @@ class TestPresenceSweepLockedRefetch:
         # Structural: BOTH candidates went through the full locked chain, in
         # order, before the prune decision for that sector was made.
         for pk in (pk_a, pk_b):
-            calls_for_pk = [name for name, seen_pk in db.call_log if seen_pk == pk]
+            calls_for_pk = [name for name, _key_col, seen_pk in db.call_log if seen_pk == pk]
             assert calls_for_pk == ["filter", "populate_existing", "with_for_update", "first"], (
                 pk, db.call_log,
             )
@@ -296,7 +347,10 @@ class TestPresenceSweepLockedRefetch:
         with patch("src.core.database.SessionLocal", return_value=db):
             result = _run_presence_sweep_sync()
 
-        assert result == {"presence_entries_swept": 0, "sectors": 0}
+        assert result == {
+            "presence_entries_swept": 0, "sectors": 0,
+            "presence_entries_healed": 0, "heal_sectors": 0,
+        }
         assert db.commit_count == 0
         assert db.rollback_count == 1  # the "not pids" bail path
         assert sector.players_present == []
@@ -323,7 +377,10 @@ class TestPresenceSweepLockedRefetch:
 
         # pk_missing: rollback via `sec is None` guard.
         # pk_present: P1 is stale -> pruned, committed.
-        assert result == {"presence_entries_swept": 1, "sectors": 1}
+        assert result == {
+            "presence_entries_swept": 1, "sectors": 1,
+            "presence_entries_healed": 0, "heal_sectors": 0,
+        }
         assert sector.players_present == []
         assert db.commit_count == 1
         assert db.rollback_count == 1
@@ -332,7 +389,9 @@ class TestPresenceSweepLockedRefetch:
     def test_locked_elsewhere_skips_without_touching_any_sector(self) -> None:
         """Pre-existing discipline, unchanged by this fix: when the advisory
         lock is held by another sweep instance, the loop must never run at
-        all -- no candidate scan, no per-sector query."""
+        all -- no candidate scan, no per-sector query. This is the ONE bail
+        path that returns BEFORE either the removal or the P0-FIX-SWEEP-HEAL
+        loop, so its result dict keeps the original 2-key shape."""
         db = _FakePresenceSweepDB(candidate_pks=[], sectors_by_pk={}, player_rows=[])
         db.execute = lambda *_a, **_k: SimpleNamespace(scalar=lambda: False)  # lock NOT acquired
 
@@ -376,7 +435,10 @@ class TestPresenceSweepLockedRefetch:
         with patch("src.core.database.SessionLocal", return_value=db):
             result = _run_presence_sweep_sync()
 
-        assert result == {"presence_entries_swept": 1, "sectors": 1}
+        assert result == {
+            "presence_entries_swept": 1, "sectors": 1,
+            "presence_entries_healed": 0, "heal_sectors": 0,
+        }
         assert sector.players_present == [
             _entry(human_fresh),
             _entry(npc_id, is_npc=True),
@@ -395,7 +457,203 @@ class TestPresenceSweepLockedRefetch:
         with patch("src.core.database.SessionLocal", return_value=db):
             result = _run_presence_sweep_sync()
 
-        assert result == {"presence_entries_swept": 0, "sectors": 0}
+        assert result == {
+            "presence_entries_swept": 0, "sectors": 0,
+            "presence_entries_healed": 0, "heal_sectors": 0,
+        }
         assert sector.players_present == [_entry(npc_id, is_npc=True)]
         assert db.commit_count == 0
         assert db.rollback_count == 1
+
+
+@pytest.mark.unit
+class TestPresenceSweepHeal:
+    """P0-FIX-SWEEP-HEAL (Max two-seat repro, 2026-07-16): reconciles MISSING
+    or pose-less HUMAN presence entries from Player.current_sector_id, in
+    ADDITION to (never instead of) the removal pass above -- a completely
+    separate candidate set and lock key (Sector.sector_id, not Sector.id),
+    deliberately not folded into the removal loop so its already-tested
+    NPC-preservation logic (311115e1) stays untouched (see
+    test_npc_entries_untouched_by_heal_pass / test_heal_and_removal_coexist
+    below for direct proof of that non-interference)."""
+
+    def test_heals_a_missing_human_entry_with_pose(self) -> None:
+        """Live repro #2: a diagnostic teleport bypassed presence entirely
+        -- the sector had ZERO entries, not even the human's own."""
+        sid = 42
+        sector = Sector(id=uuid.uuid4(), sector_id=sid, players_present=[])
+        pid = uuid.uuid4()
+        pose = {"x_pct": 10.0, "y_pct": 20.0, "heading_deg": 0.0, "phase": "idle", "burning": False, "leg": None}
+
+        db = _FakePresenceSweepDB(
+            candidate_pks=[],  # nothing for the removal loop -- presence starts empty
+            sectors_by_pk={},
+            player_rows=[],
+            sectors_by_sector_id={sid: sector},
+            fresh_players_for_heal=[(pid, sid, "sweepclean", None, None, pose, _FRESH_LOGIN)],
+        )
+
+        with patch("src.core.database.SessionLocal", return_value=db):
+            result = _run_presence_sweep_sync()
+
+        assert result["presence_entries_healed"] == 1
+        assert result["heal_sectors"] == 1
+        assert len(sector.players_present) == 1
+        entry = sector.players_present[0]
+        assert entry["player_id"] == str(pid)
+        assert entry["username"] == "sweepclean"
+        assert entry.get("is_npc") is None  # never marked as NPC
+        assert entry["pose"]["x_pct"] == 10.0
+        assert entry["pose"]["phase"] == "idle"
+
+    def test_completes_an_existing_pose_less_human_entry(self) -> None:
+        """Live repro #1: ensure_player_pose's lazy create-on-GET never
+        mirrors -- the entry EXISTS but has no `pose` key at all."""
+        sid = 7
+        pid = uuid.uuid4()
+        existing = {
+            "player_id": str(pid), "username": "Shouden", "ship_id": None,
+            "ship_name": "None", "ship_type": "None", "team_id": None,
+            "arrived_at": "2026-07-16T00:00:00+00:00",
+        }
+        sector = Sector(id=uuid.uuid4(), sector_id=sid, players_present=[existing])
+        pose = {"x_pct": 55.0, "y_pct": 33.0, "heading_deg": 90.0, "phase": "idle", "burning": False, "leg": None}
+
+        db = _FakePresenceSweepDB(
+            candidate_pks=[],
+            sectors_by_pk={},
+            player_rows=[],
+            sectors_by_sector_id={sid: sector},
+            fresh_players_for_heal=[(pid, sid, "Shouden", None, None, pose, _FRESH_LOGIN)],
+        )
+
+        with patch("src.core.database.SessionLocal", return_value=db):
+            result = _run_presence_sweep_sync()
+
+        assert result["presence_entries_healed"] == 1
+        assert len(sector.players_present) == 1  # completed IN PLACE, not duplicated
+        assert sector.players_present[0]["pose"]["x_pct"] == 55.0
+        assert sector.players_present[0]["username"] == "Shouden"  # other fields preserved
+
+    def test_npc_entries_untouched_by_heal_pass(self) -> None:
+        sid = 9
+        npc_id = str(uuid.uuid4())
+        sector = Sector(id=uuid.uuid4(), sector_id=sid, players_present=[_entry(npc_id, is_npc=True)])
+
+        db = _FakePresenceSweepDB(
+            candidate_pks=[],
+            sectors_by_pk={},
+            player_rows=[],
+            sectors_by_sector_id={sid: sector},
+            fresh_players_for_heal=[],  # no active human players in this sector
+        )
+
+        with patch("src.core.database.SessionLocal", return_value=db):
+            result = _run_presence_sweep_sync()
+
+        assert result["presence_entries_healed"] == 0
+        assert sector.players_present == [_entry(npc_id, is_npc=True)]
+
+    def test_pose_less_npc_entry_is_not_touched_by_the_heal_pass_even_if_a_human_shares_the_sector(self) -> None:
+        """The heal pass's by_pid index is built from non-NPC entries only
+        -- an NPC entry must never be matched/overwritten by a human's own
+        heal, even when both are present in the same sector."""
+        sid = 11
+        npc_id = str(uuid.uuid4())
+        pid = uuid.uuid4()
+        sector = Sector(id=uuid.uuid4(), sector_id=sid, players_present=[_entry(npc_id, is_npc=True)])
+        pose = {"x_pct": 5.0, "y_pct": 6.0, "heading_deg": 0.0, "phase": "idle", "burning": False, "leg": None}
+
+        db = _FakePresenceSweepDB(
+            candidate_pks=[],
+            sectors_by_pk={},
+            player_rows=[],
+            sectors_by_sector_id={sid: sector},
+            fresh_players_for_heal=[(pid, sid, "NewArrival", None, None, pose, _FRESH_LOGIN)],
+        )
+
+        with patch("src.core.database.SessionLocal", return_value=db):
+            result = _run_presence_sweep_sync()
+
+        assert result["presence_entries_healed"] == 1
+        assert sector.players_present[0] == _entry(npc_id, is_npc=True)  # NPC entry byte-identical
+        assert sector.players_present[1]["player_id"] == str(pid)
+
+    def test_heal_and_removal_coexist_in_the_same_sweep_run(self) -> None:
+        """Integration proof: one sweep pass both prunes a stale human from
+        sector A (removal loop, untouched logic) AND heals a missing human
+        in sector B (new heal loop) -- the two loops don't interfere."""
+        now = datetime.now(timezone.utc)
+        pk_a = uuid.uuid4()
+        sid_b = 55
+        sector_a = Sector(id=pk_a, players_present=[_entry(str(uuid.uuid4()))])
+        stale_human = sector_a.players_present[0]["player_id"]
+        sector_b = Sector(id=uuid.uuid4(), sector_id=sid_b, players_present=[])
+        missing_pid = uuid.uuid4()
+        pose = {"x_pct": 1.0, "y_pct": 2.0, "heading_deg": 0.0, "phase": "idle", "burning": False, "leg": None}
+
+        db = _FakePresenceSweepDB(
+            candidate_pks=[pk_a],
+            sectors_by_pk={pk_a: sector_a},
+            player_rows=[(stale_human, now - timedelta(minutes=90))],
+            sectors_by_sector_id={sid_b: sector_b},
+            fresh_players_for_heal=[(missing_pid, sid_b, "New Player", None, None, pose, now)],
+        )
+
+        with patch("src.core.database.SessionLocal", return_value=db):
+            result = _run_presence_sweep_sync()
+
+        assert result == {
+            "presence_entries_swept": 1, "sectors": 1,
+            "presence_entries_healed": 1, "heal_sectors": 1,
+        }
+        assert sector_a.players_present == []
+        assert len(sector_b.players_present) == 1
+        assert sector_b.players_present[0]["player_id"] == str(missing_pid)
+
+    def test_stale_player_is_not_healed_and_no_flapping_across_the_same_tick(self) -> None:
+        """Hub-ruled invariant (2026-07-16): heal and prune consume the SAME
+        _is_presence_fresh predicate, so within ONE sweep tick a stale
+        player's entry ends up ABSENT (pruned by the removal pass, never
+        re-created by the heal pass) and a fresh player sharing the SAME
+        sector ends up present EXACTLY ONCE (pose completed by the heal
+        pass, not duplicated) -- no oscillation between the two passes."""
+        now = datetime.now(timezone.utc)
+        stale_login = now - timedelta(minutes=90)
+        sid = 88
+        pk = uuid.uuid4()
+        fresh_pid = uuid.uuid4()
+        stale_pid = uuid.uuid4()
+        fresh_pose = {"x_pct": 3.0, "y_pct": 4.0, "heading_deg": 0.0, "phase": "idle", "burning": False, "leg": None}
+
+        # Both players already have an entry in this ONE sector -- the fresh
+        # one's is missing its pose key, the stale one's is otherwise
+        # complete but stale. The SAME Sector object is registered under
+        # BOTH lock keys (id for the removal pass, sector_id for the heal
+        # pass) so mutations from one pass are visible to the other within
+        # this single tick, exactly as the real shared row would be.
+        sector = Sector(
+            id=pk, sector_id=sid,
+            players_present=[_entry(str(fresh_pid)), _entry(str(stale_pid))],
+        )
+
+        db = _FakePresenceSweepDB(
+            candidate_pks=[pk],
+            sectors_by_pk={pk: sector},
+            player_rows=[(str(fresh_pid), now), (str(stale_pid), stale_login)],
+            sectors_by_sector_id={sid: sector},
+            fresh_players_for_heal=[
+                (fresh_pid, sid, "fresh-player", None, None, fresh_pose, now),
+                (stale_pid, sid, "stale-player", None, None, fresh_pose, stale_login),
+            ],
+        )
+
+        with patch("src.core.database.SessionLocal", return_value=db):
+            result = _run_presence_sweep_sync()
+
+        remaining_ids = [e["player_id"] for e in sector.players_present]
+        assert remaining_ids.count(str(fresh_pid)) == 1  # present exactly once
+        assert str(stale_pid) not in remaining_ids  # absent -- pruned, never re-healed
+        assert sector.players_present[0]["pose"]["x_pct"] == 3.0
+        assert result["presence_entries_swept"] == 1  # stale_pid pruned
+        assert result["presence_entries_healed"] == 1  # fresh_pid's pose completed

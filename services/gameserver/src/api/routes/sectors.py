@@ -396,32 +396,15 @@ async def salvage_wreck(
 
 def _enrich_players_present(db: Session, present: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Pure read: enriches NPC presence entries with LIVE activity/mission/
-    archetype (NPCCharacter query only, no write) -- lifted out of
-    get_sector_contents's body verbatim (same logic get_current_sector,
-    api/routes/player.py, applies inline) purely to keep the route's own
-    cyclomatic complexity readable; not a behavior change."""
-    npc_ids = [e.get("player_id") for e in present
-               if isinstance(e, dict) and e.get("is_npc") and e.get("player_id")]
-    if not npc_ids:
-        return present
-    from src.models.npc_character import NPCCharacter
-    npcs = db.query(NPCCharacter).filter(NPCCharacter.id.in_(npc_ids)).all()
-    by_id = {str(n.id): n for n in npcs}
-    enriched = []
-    for e in present:
-        if isinstance(e, dict) and e.get("is_npc"):
-            n = by_id.get(str(e.get("player_id")))
-            if n is not None:
-                e = dict(e)
-                act = n.current_activity
-                e["activity"] = (act.name if hasattr(act, "name") else str(act)) if act else None
-                e["mission"] = (n.daily_schedule or {}).get("mission") or "commerce"
-                e["archetype"] = n.archetype.name if n.archetype else None
-                if n.intrasystem_pose is not None:
-                    from src.services import intrasystem_movement_service as isp
-                    e["pose"] = isp.pose_public(n.intrasystem_pose)
-        enriched.append(e)
-    return enriched
+    archetype AND re-derives every entry's `pose` (NPC and human) from the
+    authoritative Player/NPCCharacter row, not whatever was last mirrored
+    into sector.players_present at write time (P0-FIX-PRESENCE-MIRROR --
+    see intrasystem_movement_service.enrich_presence_with_live_pose's own
+    doc-comment for the live repro and rationale). Same shared helper
+    api/routes/player.py's get_current_sector now calls too, so both
+    routes stay in lockstep instead of re-diverging."""
+    from src.services import intrasystem_movement_service as isp
+    return isp.enrich_presence_with_live_pose(db, present)
 
 
 @router.get("/{sector_id}/contents", response_model=SectorContentsResponse)

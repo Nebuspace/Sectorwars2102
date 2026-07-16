@@ -730,6 +730,146 @@ def _run_citizen_rebake_sweep_sync() -> Dict[str, int]:
         db.close()
 
 
+def _is_presence_fresh(last_game_login: Optional[datetime], cutoff: datetime) -> bool:
+    """Single source of truth for "this player is fresh enough to be owed a
+    presence entry" — consumed by BOTH the removal pass (an entry for a
+    STALE player is pruned) and the heal pass (an entry is only created/
+    completed for a FRESH player), so the two can never disagree and
+    oscillate a player's entry between sweeps (hub-ruled invariant,
+    P0-FIX-SWEEP-HEAL, 2026-07-16 — heal and prune consume the SAME
+    freshness predicate, expressed as one function both paths call, not two
+    lookalike expressions).
+
+    Isolated behind this one function specifically so swapping the
+    underlying liveness signal is a ONE-SITE change: last_game_login only
+    refreshes on the LOGIN route, so a session minted without it (JWT
+    inject, admin tooling) never refreshes it and gets swept while
+    genuinely live (confirmed live, 2026-07-16 — a JWT-injected seat's
+    presence entry was pruned every sweep pass despite being actively
+    played). The ruled direction (QUEUE-LIVENESS-SIGNAL, a separate
+    ticket — NOT built here) is to derive liveness from a throttled
+    authenticated-API-activity touch instead of the login route; this
+    function is the one place that swap lands."""
+    return last_game_login is not None and last_game_login >= cutoff
+
+
+def _heal_missing_or_poseless_presence_sync(db: Session, cutoff: datetime) -> "tuple[int, int]":
+    """P0-FIX-SWEEP-HEAL (Max two-seat repro, 2026-07-16): reconciles MISSING
+    or pose-less HUMAN presence entries from ``Player.current_sector_id``.
+    ``_run_presence_sweep_sync``'s own removal loop only prunes entries that
+    already EXIST. A presence entry can go missing entirely (live repro: a
+    diagnostic teleport bypassed ``movement_service._update_player_
+    presence``, leaving the player's sector with ZERO presence entries at
+    all -- not even NPCs -- so the removal loop's own candidate scan,
+    ``jsonb_array_length(players_present) > 0``, never even visits that
+    sector) or exist but carry no ``pose`` key (``ensure_player_pose``'s
+    lazy create-on-GET never mirrors -- see ``intrasystem_movement_service.
+    enrich_presence_with_live_pose``'s own doc-comment; that function heals
+    READS, this heals the STORED array for any OTHER consumer reading
+    ``players_present`` directly).
+
+    Consumes the SAME ``_is_presence_fresh`` predicate as the removal pass
+    (own doc-comment: hub-ruled invariant -- heal and prune must never
+    disagree on who's fresh, or they oscillate an entry between sweeps).
+    Deliberately a SEPARATE candidate set (by ``Player.current_sector_id``,
+    not by existing ``players_present`` content) and a separate lock-
+    acquire per sector -- and a SEPARATE function from the removal loop
+    entirely -- so that already-tested, 311115e1-hardened NPC-preservation
+    logic stays completely untouched. Returns
+    ``(healed_count, sectors_touched_count)``."""
+    from collections import defaultdict
+
+    from src.services.intrasystem_movement_service import pose_public
+
+    healed = 0
+    heal_sectors_touched = 0
+    # last_game_login is fetched here (not pre-filtered in SQL) specifically
+    # so freshness is decided by _is_presence_fresh -- the ONE predicate the
+    # removal loop above also calls -- rather than a second, independently-
+    # written SQL expression that could silently drift out of sync with it.
+    candidate_rows = (
+        db.query(
+            Player.id, Player.current_sector_id, Player.username,
+            Player.current_ship_id, Player.team_id, Player.intrasystem_pose,
+            Player.last_game_login,
+        )
+        .filter(Player.current_sector_id.isnot(None))
+        .all()
+    )
+    by_sector: Dict[int, list] = defaultdict(list)
+    for pid, sid, username, ship_id, team_id, pose, last_game_login in candidate_rows:
+        if not _is_presence_fresh(last_game_login, cutoff):
+            continue
+        by_sector[sid].append((pid, username, ship_id, team_id, pose))
+
+    for sid, players in by_sector.items():
+        try:
+            sec = (
+                db.query(Sector)
+                .filter(Sector.sector_id == sid)
+                .populate_existing()
+                .with_for_update()
+                .first()
+            )
+            if sec is None:
+                db.rollback()
+                continue
+            entries = list(sec.players_present or [])
+            by_pid = {
+                str(e.get("player_id")): i
+                for i, e in enumerate(entries)
+                if isinstance(e, dict) and not e.get("is_npc") and e.get("player_id")
+            }
+            changed = False
+            for pid, username, ship_id, team_id, pose in players:
+                spid = str(pid)
+                if spid in by_pid:
+                    idx = by_pid[spid]
+                    e = entries[idx]
+                    if not e.get("pose") and pose is not None:
+                        entries[idx] = dict(e)
+                        entries[idx]["pose"] = pose_public(pose)
+                        changed = True
+                        healed += 1
+                    continue
+                # Missing entirely -- recreate the entry shell (same fields
+                # movement_service._update_player_presence writes on a
+                # normal move; ship_name/ship_type use that same function's
+                # own "None" fallback rather than a 4th query shape here --
+                # cosmetic-only, self-corrects the moment this player next
+                # actually moves through the normal path). The pose is what
+                # matters for this P0 -- and that IS the authoritative live
+                # value, not a fallback.
+                new_entry = {
+                    "player_id": spid,
+                    "username": username,
+                    "ship_id": str(ship_id) if ship_id else None,
+                    "ship_name": "None",
+                    "ship_type": "None",
+                    "team_id": str(team_id) if team_id else None,
+                    "arrived_at": datetime.now(UTC).isoformat(),
+                }
+                if pose is not None:
+                    new_entry["pose"] = pose_public(pose)
+                entries.append(new_entry)
+                changed = True
+                healed += 1
+            if changed:
+                sec.players_present = entries
+                flag_modified(sec, "players_present")
+                db.commit()
+                heal_sectors_touched += 1
+            else:
+                db.rollback()
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "presence sweep: heal pass failed for sector %s (loop continues)",
+                sid,
+            )
+    return healed, heal_sectors_touched
+
+
 def _run_presence_sweep_sync() -> Dict[str, int]:
     """WO-PRESWEEP — remove offline players from ``Sector.players_present``.
 
@@ -836,7 +976,7 @@ def _run_presence_sweep_sync() -> Dict[str, int]:
                 )
                 fresh = {
                     str(pid) for pid, lgl in rows
-                    if lgl is not None and lgl >= cutoff
+                    if _is_presence_fresh(lgl, cutoff)
                 }
                 kept = []
                 for e in entries:
@@ -863,7 +1003,19 @@ def _run_presence_sweep_sync() -> Dict[str, int]:
                     "presence sweep: sector %s failed (loop continues)",
                     sector_pk,
                 )
-        return {"presence_entries_swept": swept, "sectors": sectors_touched}
+
+        # P0-FIX-SWEEP-HEAL: reconcile MISSING or pose-less HUMAN presence
+        # entries -- see _heal_missing_or_poseless_presence_sync's own
+        # doc-comment for the live repro + why this is a deliberately
+        # separate pass from the removal loop above.
+        healed, heal_sectors_touched = _heal_missing_or_poseless_presence_sync(db, cutoff)
+
+        return {
+            "presence_entries_swept": swept,
+            "sectors": sectors_touched,
+            "presence_entries_healed": healed,
+            "heal_sectors": heal_sectors_touched,
+        }
     finally:
         db.close()
 

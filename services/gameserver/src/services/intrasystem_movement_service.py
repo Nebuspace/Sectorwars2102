@@ -683,6 +683,79 @@ def mirror_into_presence_entry(
     return out
 
 
+def enrich_presence_with_live_pose(db: Session, present: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """P0-FIX-PRESENCE-MIRROR: pure read that overwrites EVERY presence
+    entry's `pose` (and, for NPCs, activity/mission/archetype — the
+    pre-existing enrichment this extends) with the CURRENT authoritative
+    source (Player.intrasystem_pose / NPCCharacter.intrasystem_pose),
+    instead of trusting whatever was last mirrored into
+    sector.players_present at WRITE time.
+
+    Live repro this closes: ensure_player_pose (called from GET /helm/
+    intrasystem/pose) lazily creates a player's FIRST pose but never calls
+    set_player_pose/_sync_player_presence_pose — the pose exists on the
+    Player row, but that player's own players_present entry has NO pose
+    keys at all, so every OTHER player's client renders them "porting"
+    (mirrors the pre-existing NPC-only enrichment in sectors.py/player.py,
+    which is why NPCs were never affected by this bug class — their pose
+    is ALWAYS re-derived fresh here, never trusted from the stale mirror).
+    Any FUTURE write path that forgets to mirror on write is automatically
+    covered too, since every read re-derives instead of trusting storage.
+
+    Kept in ADDITION to (not instead of) the existing write-time mirror
+    (_sync_player_presence_pose/_sync_npc_presence_pose) — that mirror is
+    still the only freshness guarantee for any OTHER consumer that reads
+    sector.players_present directly without calling this function (e.g. a
+    future WS broadcast of the raw array); removing it would trade one
+    stale-read class for another. Cheap defense in depth, not redundant
+    work — the write-time mirror was already paid for."""
+    if not present:
+        return present
+    npc_ids = [
+        e.get("player_id") for e in present
+        if isinstance(e, dict) and e.get("is_npc") and e.get("player_id")
+    ]
+    human_ids = [
+        e.get("player_id") for e in present
+        if isinstance(e, dict) and not e.get("is_npc") and e.get("player_id")
+    ]
+    if not npc_ids and not human_ids:
+        return present
+
+    npc_by_id: Dict[str, Any] = {}
+    if npc_ids:
+        from src.models.npc_character import NPCCharacter
+        npc_by_id = {str(n.id): n for n in db.query(NPCCharacter).filter(NPCCharacter.id.in_(npc_ids)).all()}
+
+    player_by_id: Dict[str, Any] = {}
+    if human_ids:
+        from src.models.player import Player
+        player_by_id = {str(p.id): p for p in db.query(Player).filter(Player.id.in_(human_ids)).all()}
+
+    enriched: List[Dict[str, Any]] = []
+    for e in present:
+        if not isinstance(e, dict):
+            enriched.append(e)
+            continue
+        if e.get("is_npc"):
+            n = npc_by_id.get(str(e.get("player_id")))
+            if n is not None:
+                e = dict(e)
+                act = n.current_activity
+                e["activity"] = (act.name if hasattr(act, "name") else str(act)) if act else None
+                e["mission"] = (n.daily_schedule or {}).get("mission") or "commerce"
+                e["archetype"] = n.archetype.name if n.archetype else None
+                if n.intrasystem_pose is not None:
+                    e["pose"] = pose_public(n.intrasystem_pose)
+        else:
+            p = player_by_id.get(str(e.get("player_id")))
+            if p is not None and p.intrasystem_pose is not None:
+                e = dict(e)
+                e["pose"] = pose_public(p.intrasystem_pose)
+        enriched.append(e)
+    return enriched
+
+
 def ensure_player_pose(player, ship_key: Optional[str] = None) -> Dict[str, Any]:
     key = ship_key or str(getattr(player, "current_ship_id", None) or player.id)
     pose = getattr(player, "intrasystem_pose", None)

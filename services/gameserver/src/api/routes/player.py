@@ -523,29 +523,13 @@ async def get_current_sector(
     # archetype rather than guessing from the ship name. Archetype is also
     # stored in the JSONB entry at spawn time (npc_spawn_service._presence_entry),
     # but enriching it here guarantees the authoritative value for legacy JSONB
-    # rows that pre-date the archetype field.
-    present = list(sector.players_present or [])
-    npc_ids = [e.get("player_id") for e in present
-               if isinstance(e, dict) and e.get("is_npc") and e.get("player_id")]
-    if npc_ids:
-        from src.models.npc_character import NPCCharacter
-        npcs = db.query(NPCCharacter).filter(NPCCharacter.id.in_(npc_ids)).all()
-        by_id = {str(n.id): n for n in npcs}
-        enriched = []
-        for e in present:
-            if isinstance(e, dict) and e.get("is_npc"):
-                n = by_id.get(str(e.get("player_id")))
-                if n is not None:
-                    e = dict(e)
-                    act = n.current_activity
-                    e["activity"] = (act.name if hasattr(act, "name") else str(act)) if act else None
-                    e["mission"] = (n.daily_schedule or {}).get("mission") or "commerce"
-                    e["archetype"] = n.archetype.name if n.archetype else None
-                    if n.intrasystem_pose is not None:
-                        from src.services import intrasystem_movement_service as isp
-                        e["pose"] = isp.pose_public(n.intrasystem_pose)
-            enriched.append(e)
-        present = enriched
+    # rows that pre-date the archetype field. ALSO re-derives every entry's
+    # `pose` (NPC and human) from the authoritative Player/NPCCharacter row
+    # rather than trusting the write-time mirror (P0-FIX-PRESENCE-MIRROR --
+    # see intrasystem_movement_service.enrich_presence_with_live_pose's own
+    # doc-comment; shared with sectors.py's own _enrich_players_present).
+    from src.services import intrasystem_movement_service as isp
+    present = isp.enrich_presence_with_live_pose(db, list(sector.players_present or []))
 
     # Special-formation discovery + disclosure (WO-CA; per-player since
     # ADR-0045). Viewing the current sector scans it: any formation anchored

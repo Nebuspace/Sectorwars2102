@@ -834,6 +834,14 @@ async def _npc_scheduler_main_loop() -> None:
                         pres.get("presence_entries_swept", 0),
                         pres.get("sectors", 0),
                     )
+                if pres.get("presence_entries_healed"):
+                    # P0-FIX-SWEEP-HEAL
+                    logger.info(
+                        "NPC scheduler: presence sweep — healed %d missing/pose-less "
+                        "entr(y/ies) across %d sector(s)",
+                        pres.get("presence_entries_healed", 0),
+                        pres.get("heal_sectors", 0),
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception:
