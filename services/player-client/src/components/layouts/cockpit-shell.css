@@ -162,6 +162,15 @@ button.chip:hover { border-color:#3FD2EC77; }
 .skey:active { transform:translateY(1px); }
 .skey:disabled { opacity:.35; cursor:not-allowed; }
 .deck { display:grid; gap:.6em; padding:.6em; }
+/* DEAD: .deck.flight / .deck.single never match a live element -- the real
+   `.deck` div (GameLayout.tsx:551) always carries the literal className
+   "deck", never "deck flight"/"deck single" (no dynamic classList mutation
+   adds those either, grep-confirmed). The actual 3-monitor grid comes from
+   `.cockpit-console`'s own grid-template-columns instead (cockpit.css).
+   Left unmodified per this file's own "untouched diff baseline" rule
+   (header above) -- comment-only annotation is this file's sanctioned
+   exception class (see the BUILD-BLOCKING FIX comment above for
+   precedent). QUEUE-DEADCSS-DECKFLIGHT ruling, 2026-07-16. */
 .deck.flight { grid-template-columns:30% 1fr 29%; }
 .deck.single { grid-template-columns:1fr; }
 .mon { display:flex; flex-direction:column; border:1px solid #1B2836; border-radius:8px; background:#0A111B; overflow:hidden; }
@@ -196,4 +205,8 @@ button.chip:hover { border-color:#3FD2EC77; }
 .menu .sep { border-top:1px solid #1B2A3C; margin:.3em 0; }
 .toastwrap { position:absolute; top:3.2em; right:1em; z-index:12; display:flex; flex-direction:column; gap:.4em; }
 
+/* DEAD fragment below: the `.deck.flight{...}` clause never matches (see
+   the DEAD comment above `.deck.flight`, ~line 165) -- `.lower{...}` in the
+   same rule IS live and stays unmodified. QUEUE-DEADCSS-DECKFLIGHT ruling,
+   2026-07-16. */
 @media (max-width:760px){ .lower{grid-template-columns:26% 74%;} .deck.flight{grid-template-columns:1fr;} }
