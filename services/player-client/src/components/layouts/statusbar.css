@@ -42,6 +42,28 @@
     here documents the intent and survives if that ever changes). */
 }
 
+/* WO-TRANCHE-0716 type-scale #19: every font-size in this file is `em`, not
+   the naive 1:1 rem->em swap the numbers might suggest. EVERY element this
+   file styles is a DOM descendant of `<div className="sbar status-bar">`
+   (StatusBar.tsx's own root -- confirmed no createPortal anywhere in that
+   file, so nothing here escapes it), and `.sbar` itself already carries
+   `font-size: .78em` (cockpit-shell.css, the frozen ratified artifact --
+   not editable from this lane). Without compensation, every value here
+   would compound under that .78 on top of whatever it already says (e.g. a
+   naive un-compensated .75 em value would render at .78*.75=.585 of the
+   `.game-container` root, not the flat .75 the original .75rem value
+   intended). Every declaration below is therefore `(intended flat
+   coefficient) / .78`, so the FINAL computed size lands at
+   `(intended coefficient) * .game-container's font-size`, exactly matching
+   what `rem` gave before (just now root-relative instead of pinned to the
+   document's fixed 16px `:root`). Verified via a live Playwright harness
+   (`.harness-tmp/`, real cockpit-shell.css + this file loaded, two
+   `.game-container` font-size roots) -- see WO-TRANCHE-0716 STATUS for the
+   numbers table. `.mfd-page-title` (mfd.css) has the identical `.sbar`
+   compounding for the same reason (it only ever renders inside this file's
+   dossier tab, via ReputationPage) and carries the same style of
+   compensation there. */
+
 /* ── Shared chip button (name / location triggers) ─────────────────────── */
 .sb-chip {
   display: inline-flex;
@@ -52,7 +74,7 @@
   border-radius: 4px;
   padding: 0.3rem 0.6rem;
   color: var(--color-text, #c9d4e3);
-  font-size: 0.75rem;
+  font-size: 0.9615em;
   font-weight: 600;
   letter-spacing: 0.04em;
   cursor: pointer;
@@ -66,7 +88,7 @@
 }
 
 .sb-chip-icon {
-  font-size: 0.9rem;
+  font-size: 1.1538em;
   line-height: 1;
 }
 
@@ -170,7 +192,7 @@
   border: 1px solid transparent;
   border-radius: 3px 3px 0 0;
   color: var(--color-text-muted, #7e8ca0);
-  font-size: 0.62rem;
+  font-size: 0.7949em;
   font-weight: 700;
   letter-spacing: 0.06em;
   padding: 0.35rem 0.5rem;
@@ -207,7 +229,7 @@
 
 /* ── Identity tab ────────────────────────────────────────────────────────── */
 .sb-identity-name {
-  font-size: 0.95rem;
+  font-size: 1.2179em;
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -227,14 +249,14 @@
 }
 
 .sb-identity-k {
-  font-size: 0.55rem;
+  font-size: 0.7051em;
   font-weight: 600;
   letter-spacing: 0.1em;
   color: var(--color-text-muted, #7e8ca0);
 }
 
 .sb-identity-v {
-  font-size: 0.85rem;
+  font-size: 1.0897em;
   font-weight: 700;
 }
 
@@ -271,14 +293,14 @@
   padding: 0.25rem 0.6rem;
   border: 1px dashed rgba(126, 140, 160, 0.4);
   border-radius: 3px;
-  font-size: 0.68rem;
+  font-size: 0.8718em;
   color: var(--color-text-muted, #7e8ca0);
   cursor: not-allowed;
 }
 
 .sb-settings-link {
   color: #00d9ff;
-  font-size: 0.78rem;
+  font-size: 1.0000em;
   font-weight: 700;
   text-decoration: none;
 }
@@ -297,7 +319,7 @@
 /* ── Colonies roster tab ─────────────────────────────────────────────────── */
 .sb-colonies-loading,
 .sb-colonies-error {
-  font-size: 0.75rem;
+  font-size: 0.9615em;
   color: var(--color-text-muted, #7e8ca0);
 }
 
@@ -317,7 +339,7 @@
   padding: 0.35rem 0.4rem;
   border: 1px solid rgba(0, 217, 255, 0.15);
   border-radius: 4px;
-  font-size: 0.72rem;
+  font-size: 0.9231em;
 }
 
 .sb-colonies-name {
@@ -338,13 +360,13 @@
 .sb-colonies-siege {
   color: var(--health-danger, #ef4444);
   font-weight: 700;
-  font-size: 0.6rem;
+  font-size: 0.7692em;
   letter-spacing: 0.05em;
 }
 
 .sb-colonies-footer {
   margin: 0.6rem 0 0;
-  font-size: 0.65rem;
+  font-size: 0.8333em;
   color: var(--color-text-muted, #7e8ca0);
   font-style: italic;
 }
@@ -352,7 +374,7 @@
 /* ── Crew (team summary) tab ─────────────────────────────────────────────── */
 .sb-crew-loading,
 .sb-crew-error {
-  font-size: 0.75rem;
+  font-size: 0.9615em;
   color: var(--color-text-muted, #7e8ca0);
 }
 
@@ -366,7 +388,7 @@
   /* Pixel a11y fix: now an <h2> (was a plain div) -- reset the UA
      stylesheet's default heading margin so the visual is unchanged. */
   margin: 0;
-  font-size: 0.85rem;
+  font-size: 1.0897em;
   font-weight: 700;
   letter-spacing: 0.03em;
 }
@@ -379,7 +401,7 @@
 
 .sb-crew-link {
   color: #00d9ff;
-  font-size: 0.72rem;
+  font-size: 0.9231em;
   font-weight: 700;
   text-decoration: none;
   align-self: flex-start;
@@ -401,13 +423,13 @@
 }
 
 .sb-location-header-sector {
-  font-size: 0.85rem;
+  font-size: 1.0897em;
   font-weight: 700;
   color: #00d9ff;
 }
 
 .sb-location-header-region {
-  font-size: 0.65rem;
+  font-size: 0.8333em;
   color: var(--color-text-muted, #7e8ca0);
   letter-spacing: 0.05em;
 }
@@ -415,14 +437,14 @@
 /* Sector type + docked/landed scene readout — relocated from the deleted
    canvas-corner HudChips (id="location"/"station"/"landed"). */
 .sb-location-header-type {
-  font-size: 0.6rem;
+  font-size: 0.7692em;
   color: var(--color-text-muted, #7e8ca0);
   letter-spacing: 0.08em;
   margin-top: 0.15rem;
 }
 
 .sb-location-header-scene {
-  font-size: 0.7rem;
+  font-size: 0.8974em;
   font-weight: 600;
   margin-top: 0.35rem;
   color: var(--color-text, #c9d4e3);
@@ -461,7 +483,7 @@
 }
 
 .sb-k {
-  font-size: 0.5rem;
+  font-size: 0.6410em;
   font-weight: 600;
   letter-spacing: 0.14em;
   color: var(--color-text-muted, #7e8ca0);
@@ -469,14 +491,14 @@
 }
 
 .sb-v {
-  font-size: 0.8rem;
+  font-size: 1.0256em;
   font-weight: 700;
   line-height: 1;
   letter-spacing: 0.3px;
 }
 
 .sb-sub {
-  font-size: 0.7em;
+  font-size: 0.8974em;
   font-weight: 600;
   opacity: 0.6;
 }
@@ -498,7 +520,7 @@
    the two primary values read as one size, not two independently-tuned
    ones. */
 .vit.sb-credits {
-  font-size: 1.02rem;
+  font-size: 1.3077em;
   font-weight: 700;
   line-height: 1;
   color: var(--credits-color, #fbbf24);
@@ -514,7 +536,7 @@
 }
 
 .sb-turns-count {
-  font-size: 1.02rem;
+  font-size: 1.3077em;
   font-weight: 700;
   line-height: 1;
 }
@@ -527,7 +549,7 @@
    baseline correction, itself font-size-relative -- both scale off this
    rule instead of a hardcoded rem that couldn't track a value-size change. */
 .vit.sb-turns .sb-k {
-  font-size: 1.02rem;
+  font-size: 1.3077em;
 }
 
 /* WO-PROG-TURN-VISIBILITY canon threshold (<50) — carried over from
@@ -538,7 +560,7 @@
 }
 
 .sb-regen {
-  font-size: 0.55rem;
+  font-size: 0.7051em;
   font-weight: 700;
   color: var(--health-good, #10b981);
   opacity: 0.85;
@@ -559,7 +581,7 @@
 
 .sb-drone {
   white-space: nowrap;
-  font-size: 1rem;
+  font-size: 1.2821em;
 }
 
 /* Mines value (WO-UI-STATUSBAR-VITALS): the `<b>` here previously had NO
@@ -581,7 +603,7 @@
    used to run ~1.13x the font-size, throwing off the icon/numeral height
    match below. */
 .vit.sb-mines b {
-  font-size: 0.88rem;
+  font-size: 1.1282em;
   line-height: 1;
 }
 
@@ -590,7 +612,7 @@
    inheriting this so its box (and font-size-relative baseline correction)
    track the mines value's own 0.88rem. */
 .vit.sb-mines .sb-k {
-  font-size: 0.88rem;
+  font-size: 1.1282em;
 }
 
 .sb-bounty .sb-v {

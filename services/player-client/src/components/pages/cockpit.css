@@ -81,7 +81,7 @@
   border: 1px solid rgba(251, 191, 36, 0.5);
   border-radius: 3px;
   font: inherit;
-  font-size: 0.7rem;
+  font-size: 0.7em;
   font-weight: 700;
   letter-spacing: 0.06em;
   padding: 3px 10px;
@@ -143,7 +143,7 @@
 }
 .citadel-construction .cc-title {
   color: #ffaa44;
-  font-size: 0.72rem;
+  font-size: 0.72em;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-shadow: 0 0 8px rgba(255, 170, 68, 0.5);
@@ -151,7 +151,7 @@
 }
 .citadel-construction .cc-target {
   color: rgba(255, 200, 130, 0.9);
-  font-size: 0.7rem;
+  font-size: 0.7em;
   letter-spacing: 0.05em;
 }
 .citadel-construction .cc-bar {
@@ -179,7 +179,7 @@
   justify-content: space-between;
   gap: 8px;
   margin-top: 5px;
-  font-size: 0.68rem;
+  font-size: 0.68em;
   color: rgba(255, 200, 140, 0.85);
   font-variant-numeric: tabular-nums;
 }
@@ -192,7 +192,7 @@
   border: 1px solid rgba(255, 90, 90, 0.5);
   border-radius: 3px;
   font-family: 'Courier New', monospace;
-  font-size: 0.62rem;
+  font-size: 0.62em;
   letter-spacing: 0.05em;
   padding: 2px 8px;
   cursor: pointer;
@@ -212,7 +212,7 @@
 }
 .defense-buildings .db-head {
   font-family: 'Courier New', monospace;
-  font-size: 0.7rem;
+  font-size: 0.7em;
   font-weight: 700;
   letter-spacing: 0.06em;
   color: rgba(255, 190, 110, 0.9);
@@ -225,7 +225,7 @@
   gap: 8px;
   padding: 3px 0;
   font-family: 'Courier New', monospace;
-  font-size: 0.7rem;
+  font-size: 0.7em;
 }
 .defense-buildings .db-name { color: var(--text-primary, #e0e0e0); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .defense-buildings .db-count { color: rgba(255, 190, 110, 0.85); font-variant-numeric: tabular-nums; }
@@ -236,19 +236,19 @@
   border: 1px solid rgba(255, 170, 68, 0.5);
   border-radius: 3px;
   font: inherit;
-  font-size: 0.65rem;
+  font-size: 0.65em;
   padding: 2px 9px;
   cursor: pointer;
   transition: all 0.15s ease;
 }
 .defense-buildings .db-build:hover:not(:disabled) { background: rgba(255, 170, 68, 0.26); box-shadow: 0 0 8px rgba(255, 170, 68, 0.4); }
 .defense-buildings .db-build:disabled { opacity: 0.45; cursor: not-allowed; }
-.defense-buildings .db-max { color: var(--text-secondary, #9aa); font-size: 0.62rem; letter-spacing: 0.05em; }
+.defense-buildings .db-max { color: var(--text-secondary, #9aa); font-size: 0.62em; letter-spacing: 0.05em; }
 .defense-buildings .db-row-wrap { padding: 1px 0; }
-.defense-buildings .db-queued { color: #ffce6a; font-style: normal; font-size: 0.62rem; }
+.defense-buildings .db-queued { color: #ffce6a; font-style: normal; font-size: 0.62em; }
 .defense-buildings .db-building {
   color: #ffce6a;
-  font-size: 0.62rem;
+  font-size: 0.62em;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.03em;
   white-space: nowrap;
@@ -269,17 +269,17 @@
 }
 
 /* Cost sub-label inside an action button (e.g. shield upgrade). */
-.btn-sublabel { display: block; font-size: 0.6rem; opacity: 0.8; margin-top: 1px; font-weight: 400; }
+.btn-sublabel { display: block; font-size: 0.6em; opacity: 0.8; margin-top: 1px; font-weight: 400; }
 
 /* Pre-flight requirement checklist on the citadel upgrade confirm. */
-.preflight { list-style: none; margin: 5px 0 2px; padding: 0; font-family: 'Courier New', monospace; font-size: 0.66rem; }
+.preflight { list-style: none; margin: 5px 0 2px; padding: 0; font-family: 'Courier New', monospace; font-size: 0.66em; }
 .preflight li { padding: 1px 0; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
 .preflight li.ok { color: #66dd99; }
 .preflight li.no { color: #ff7a6b; }
 
 /* 25/50/75 quick-fill presets in the citadel safe deposit/withdraw form. */
 .safe-presets { display: inline-flex; gap: 4px; }
-.safe-btn.preset { padding: 2px 7px; font-size: 0.62rem; }
+.safe-btn.preset { padding: 2px 7px; font-size: 0.62em; }
 
 /* Citadel safe vault fill bar. */
 .vault-bar {
@@ -317,7 +317,7 @@
   flex-shrink: 0;
   padding: 0.3rem 0.65rem;
   font-family: 'Courier New', monospace;
-  font-size: 0.65rem;
+  font-size: 0.65em;
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -359,7 +359,7 @@
   border: 1px solid rgba(0, 217, 255, 0.25);
   border-radius: 4px 4px 0 0;
   font-family: 'Courier New', monospace;
-  font-size: 0.72rem;
+  font-size: 0.72em;
   font-weight: 700;
   letter-spacing: 0.06em;
   padding: 5px 14px;
@@ -529,7 +529,7 @@
   border-radius: 2px;
   color: rgba(0, 217, 255, 0.85);
   font-family: 'Courier New', monospace;
-  font-size: 12px;
+  font-size: 0.75em; /* was 12px; 12/16 to match the demo em-root's default */
   font-weight: 700;
   line-height: 1;
 }
@@ -546,7 +546,7 @@
 
 .hud-pill {
   font-family: 'Courier New', monospace;
-  font-size: 0.8rem;
+  font-size: 0.8em;
   font-weight: 700;
   letter-spacing: 0.06em;
   color: #00d9ff;
@@ -668,7 +668,7 @@
 /* Entity-name readout inside a chip — smaller than the SECTOR numerals,
    single line, ellipsized (full name in the title tooltip) */
 .hud-value.hud-chip-name {
-  font-size: 1.05rem;
+  font-size: 1.05em;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -681,7 +681,7 @@
 
 /* HUD Typography */
 .hud-label {
-  font-size: 0.65rem;
+  font-size: 0.65em;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.15em;
@@ -691,7 +691,7 @@
 }
 
 .hud-value {
-  font-size: 1.5rem;
+  font-size: 1.5em;
   font-weight: 700;
   color: #00d9ff;
   text-shadow: 0 0 15px rgba(0, 217, 255, 0.8);
@@ -712,7 +712,7 @@
 }
 
 .hud-value-secondary {
-  font-size: 0.85rem;
+  font-size: 0.85em;
   font-weight: 600;
   color: rgba(0, 217, 255, 0.8);
   margin-bottom: 0.5rem;
@@ -721,7 +721,7 @@
 /* Region name - friendly display_name on its own smaller line under the
    primary SECTOR readout; single-line ellipsis (full name in tooltip) */
 .hud-region-name {
-  font-size: 0.75rem;
+  font-size: 0.75em;
   font-weight: 600;
   color: rgba(0, 217, 255, 0.7);
   margin-bottom: 0.3rem;
@@ -735,7 +735,7 @@
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  font-size: 0.7rem;
+  font-size: 0.7em;
   font-weight: 600;
   color: #00ff41;
   margin-top: 0.5rem;
@@ -782,7 +782,7 @@
   background: rgba(0, 217, 255, 0.15);
   border: 1px solid rgba(0, 217, 255, 0.4);
   border-radius: 3px;
-  font-size: 0.65rem;
+  font-size: 0.65em;
   font-weight: 600;
   color: #00d9ff;
   text-shadow: 0 0 6px rgba(0, 217, 255, 0.6);
@@ -790,7 +790,7 @@
 
 /* HUD Description */
 .hud-description-text {
-  font-size: 0.75rem;
+  font-size: 0.75em;
   color: rgba(255, 255, 255, 0.9);
   line-height: 1.4;
   font-style: italic;
@@ -985,7 +985,7 @@
   position: absolute;
   top: 0.25rem;
   left: 0.5rem;
-  font-size: 0.6rem;
+  font-size: 0.6em;
   font-weight: 700;
   letter-spacing: 0.2em;
   color: rgba(0, 217, 255, 0.8);
@@ -1054,7 +1054,7 @@
 .screen-hud-header {
   position: relative;
   padding: 0.3rem 0.6rem 0.3rem 0.5rem;
-  font-size: 0.6rem;
+  font-size: 0.6em;
   font-weight: 700;
   letter-spacing: 0.2em;
   color: rgba(0, 217, 255, 1);
@@ -1117,7 +1117,7 @@
   position: relative;
   padding: 0.12rem 0.45rem;
   font-family: inherit;
-  font-size: 0.5rem;
+  font-size: 0.5em;
   font-weight: 700;
   letter-spacing: 0.12em;
   background: transparent;
@@ -1246,7 +1246,7 @@
 }
 
 .nav-scan-text {
-  font-size: 0.7rem;
+  font-size: 0.7em;
   font-weight: 600;
   letter-spacing: 0.1em;
   color: rgba(0, 217, 255, 0.8);
@@ -1260,7 +1260,7 @@
 
 .nav-scan-retry {
   padding: 0.4rem 0.9rem;
-  font-size: 0.7rem;
+  font-size: 0.7em;
   font-weight: 700;
   letter-spacing: 0.1em;
   background: rgba(0, 217, 255, 0.15);
@@ -1346,7 +1346,7 @@
 
 .system-hazard-fold-title {
   font-family: 'Courier New', monospace;
-  font-size: 0.6rem;
+  font-size: 0.6em;
   font-weight: 700;
   letter-spacing: 0.1em;
   color: rgba(147, 51, 234, 0.75);
@@ -1435,7 +1435,7 @@
 
 /* Alert content */
 .cockpit-alert .alert-header {
-  font-size: 0.75rem;
+  font-size: 0.75em;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.1em;
@@ -1451,8 +1451,32 @@
 }
 
 .cockpit-alert .alert-message {
-  font-size: 0.85rem;
+  font-size: 0.85em;
   color: rgba(255, 255, 255, 0.9);
+}
+
+/* T4-K: covers 3 of the click-to-dismiss-early toasts (formationDiscovery,
+   harvestResult, investigateResult in GameDashboard.tsx) that are now
+   keyboard-focusable -- they self-clear on a timer, but Enter/Space here
+   lets a keyboard user dismiss early too, same as the existing mouse click.
+   Outline + outline-offset only -- no border/box-shadow size change. This
+   selector also matches sibling .cockpit-alert instances with no tabIndex
+   (claimNotice/movementResult/dockingResult/landingResult) but
+   :focus-visible can never fire on an unfocusable element, so it's a no-op
+   for those. Base uses currentColor (no single semantic color fits every
+   variant); success/error override to match their own border-color exactly,
+   same per-variant pattern as .alert-header above. */
+.cockpit-alert:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+.cockpit-alert.success:focus-visible {
+  outline-color: #00ff41;
+}
+
+.cockpit-alert.error:focus-visible {
+  outline-color: #ef4444;
 }
 
 /* Claim refusal — the server's in-fiction message, amber-styled */
@@ -1473,7 +1497,7 @@
   background: transparent;
   border: none;
   color: rgba(255, 255, 255, 0.6);
-  font-size: 1rem;
+  font-size: 1em;
   line-height: 1;
   cursor: pointer;
   padding: 0 0.2rem;
@@ -1565,7 +1589,7 @@
 }
 
 .station-name {
-  font-size: 1.1rem;
+  font-size: 1.1em;
   color: rgba(255, 255, 255, 0.9);
   font-weight: 500;
   margin: 0;
@@ -1669,7 +1693,7 @@
   justify-content: center;
   height: 100%;
   color: rgba(255, 255, 255, 0.4);
-  font-size: 0.85rem;
+  font-size: 0.85em;
   font-style: italic;
   text-align: center;
   padding: 1rem;
@@ -1708,7 +1732,7 @@
   align-items: center;
   gap: 4px;
   min-width: 0;
-  font-size: 0.8rem;
+  font-size: 0.8em;
   font-weight: 600;
 }
 
@@ -1808,7 +1832,7 @@
   --planet-accent: 192, 132, 252;
 }
 
-/* RETIRED (2026-07-14): bare `.planet-icon { font-size:4rem; margin-bottom:1rem;
+/* RETIRED (2026-07-14): bare `.planet-icon { font-size: 4em; margin-bottom:1rem;
    filter; animation:planet-icon-pulse }` leaked into the SOLAR SYSTEM sensor
    list (PlanetPortPair) and made Earth Planet ~4× taller than Earth Station /
    barren `.row`s. The only remaining `planet-icon` consumers are PlanetPortPair
@@ -1828,7 +1852,7 @@
 }
 
 .planet-header h2 {
-  font-size: 1.5rem;
+  font-size: 1.5em;
   font-weight: 700;
   letter-spacing: 0.2em;
   color: #9333ea;
@@ -1837,14 +1861,14 @@
 }
 
 .planet-name {
-  font-size: 1.1rem;
+  font-size: 1.1em;
   color: rgba(255, 255, 255, 0.9);
   font-weight: 500;
   margin: 0 0 0.25rem 0;
 }
 
 .planet-type {
-  font-size: 0.85rem;
+  font-size: 0.85em;
   color: rgba(147, 51, 234, 0.9);
   font-weight: 600;
   letter-spacing: 0.1em;
@@ -1859,7 +1883,7 @@
   border-radius: 4px;
   color: rgba(147, 51, 234, 0.8);
   cursor: pointer;
-  font-size: 0.9rem;
+  font-size: 0.9em;
   padding: 0.2rem 0.4rem;
   margin-left: 0.5rem;
   transition: all 0.2s ease;
@@ -1912,7 +1936,7 @@
   width: 170px;
   padding: 0.15rem 0.35rem;
   font-family: 'Courier New', monospace;
-  font-size: 0.7rem;
+  font-size: 0.7em;
   background: rgba(0, 5, 10, 0.8);
   border: 1px solid rgba(147, 51, 234, 0.5);
   border-radius: 3px;
@@ -1950,14 +1974,14 @@
 }
 
 .vital-dial .dial-value {
-  font-size: 0.8rem;
+  font-size: 0.8em;
   font-weight: 700;
   font-family: 'Courier New', monospace;
   color: rgba(255, 255, 255, 0.92);
 }
 
 .vital-dial .dial-label {
-  font-size: 0.6rem;
+  font-size: 0.6em;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: rgba(255, 255, 255, 0.55);
@@ -1978,7 +2002,7 @@
 }
 
 .vital-bar-label {
-  font-size: 0.65rem;
+  font-size: 0.65em;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: rgba(255, 255, 255, 0.6);
@@ -2012,7 +2036,7 @@
 }
 
 .vital-bar-value {
-  font-size: 0.7rem;
+  font-size: 0.7em;
   font-family: 'Courier New', monospace;
   color: rgba(255, 255, 255, 0.85);
   white-space: nowrap;
@@ -2036,7 +2060,7 @@
   margin-top: 0.5rem;
   padding-top: 0.5rem;
   border-top: 1px solid rgba(0, 255, 65, 0.3);
-  font-size: 0.8rem;
+  font-size: 0.8em;
   color: rgba(255, 255, 255, 0.8);
 }
 
@@ -2139,7 +2163,7 @@
 
 .ops-panel h3 {
   margin: 0 0 1rem 0;
-  font-size: 0.9rem;
+  font-size: 0.9em;
   font-weight: 700;
   color: #9333ea;
   text-shadow: 0 0 8px rgba(147, 51, 234, 0.6);
@@ -2165,14 +2189,14 @@
 }
 
 .planet-info-grid .label {
-  font-size: 0.7rem;
+  font-size: 0.7em;
   color: rgba(255, 255, 255, 0.6);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
 
 .planet-info-grid .value {
-  font-size: 0.9rem;
+  font-size: 0.9em;
   font-weight: 600;
   color: #a855f7;
   font-family: 'Courier New', monospace;
@@ -2192,7 +2216,7 @@
   border: 1px solid rgba(147, 51, 234, 0.4);
   border-radius: 6px;
   color: #a855f7;
-  font-size: 0.85rem;
+  font-size: 0.85em;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s ease;
@@ -2239,13 +2263,13 @@
 }
 
 .resource-name {
-  font-size: 0.8rem;
+  font-size: 0.8em;
   color: rgba(255, 255, 255, 0.8);
   text-transform: capitalize;
 }
 
 .resource-amount {
-  font-size: 0.85rem;
+  font-size: 0.85em;
   font-weight: 600;
   color: #a855f7;
   font-family: 'Courier New', monospace;
@@ -2258,7 +2282,7 @@
   flex: 1;
   color: rgba(255, 255, 255, 0.4);
   font-style: italic;
-  font-size: 0.85rem;
+  font-size: 0.85em;
 }
 
 /* ============================================
@@ -2292,13 +2316,13 @@
   font-family: 'Courier New', monospace;
 }
 
-.planet-vitals-strip .pvs-icon { font-size: 1.15rem; line-height: 1; }
+.planet-vitals-strip .pvs-icon { font-size: 1.15em; line-height: 1; }
 
 .planet-vitals-strip .pvs-name {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-  font-size: 0.92rem;
+  font-size: 0.92em;
   font-weight: 700;
   letter-spacing: 0.02em;
   color: #e6f6ff;
@@ -2310,12 +2334,12 @@
   display: inline-flex;
   align-items: baseline;
   gap: 0.3rem;
-  font-size: 0.7rem;
+  font-size: 0.7em;
   white-space: nowrap;
 }
 
 .planet-vitals-strip .pvs-stat.type {
-  font-size: 0.6rem;
+  font-size: 0.6em;
   font-weight: 700;
   letter-spacing: 0.14em;
   color: #7dd3fc;
@@ -2323,7 +2347,7 @@
 }
 
 .planet-vitals-strip .pvs-label {
-  font-size: 0.55rem;
+  font-size: 0.55em;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: #6c8aa3;
@@ -2353,7 +2377,7 @@
 }
 
 .planet-vitals-strip .pvs-transfer-label {
-  font-size: 0.55rem;
+  font-size: 0.55em;
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -2373,7 +2397,7 @@
   gap: 0.3rem;
   padding: 0.32rem 0.6rem;
   font-family: 'Courier New', monospace;
-  font-size: 0.62rem;
+  font-size: 0.62em;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -2417,7 +2441,7 @@
 }
 
 .planet-icon-lg {
-  font-size: 1.5rem;
+  font-size: 1.5em;
   filter: drop-shadow(0 0 8px rgba(0, 217, 255, 0.5));
 }
 
@@ -2427,7 +2451,7 @@
 }
 
 .planet-name-block .planet-name {
-  font-size: 0.95rem;
+  font-size: 0.95em;
   font-weight: 700;
   color: #00d9ff;
   text-shadow: 0 0 8px rgba(0, 217, 255, 0.5);
@@ -2435,7 +2459,7 @@
 }
 
 .planet-name-block .planet-meta {
-  font-size: 0.7rem;
+  font-size: 0.7em;
   color: rgba(255, 255, 255, 0.6);
   white-space: nowrap;
 }
@@ -2458,11 +2482,11 @@
   display: flex;
   align-items: center;
   gap: 0.4rem;
-  font-size: 0.75rem;
+  font-size: 0.75em;
 }
 
 .header-terra-icon {
-  font-size: 0.9rem;
+  font-size: 0.9em;
 }
 
 .header-terra-name {
@@ -2472,7 +2496,7 @@
 
 .header-terra-level {
   color: rgba(255, 255, 255, 0.6);
-  font-size: 0.65rem;
+  font-size: 0.65em;
 }
 
 .header-terra-bar {
@@ -2505,7 +2529,7 @@
 }
 
 .header-terra-bonus {
-  font-size: 0.65rem;
+  font-size: 0.65em;
   color: #00ff41;
   display: flex;
   align-items: center;
@@ -2513,7 +2537,7 @@
 }
 
 .paradise-badge {
-  font-size: 0.8rem;
+  font-size: 0.8em;
   animation: sparkle 2s ease-in-out infinite;
 }
 
@@ -2523,7 +2547,7 @@
 }
 
 .header-terra-btn {
-  font-size: 0.6rem;
+  font-size: 0.6em;
   padding: 0.2rem 0.5rem;
   background: rgba(0, 100, 50, 0.3);
   border: 1px solid rgba(0, 255, 100, 0.4);
@@ -2543,7 +2567,7 @@
 }
 
 .header-terra-desc {
-  font-size: 0.6rem;
+  font-size: 0.6em;
   color: rgba(255, 255, 255, 0.5);
   font-style: italic;
 }
@@ -2590,18 +2614,18 @@
 }
 
 .citadel-icon {
-  font-size: 1.3rem;
+  font-size: 1.3em;
 }
 
 .citadel-name {
-  font-size: 1rem;
+  font-size: 1em;
   font-weight: 700;
   color: #fbbf24;
   text-shadow: 0 0 8px rgba(251, 191, 36, 0.5);
 }
 
 .citadel-level {
-  font-size: 0.75rem;
+  font-size: 0.75em;
   color: rgba(251, 191, 36, 0.7);
   padding: 0.15rem 0.4rem;
   background: rgba(251, 191, 36, 0.1);
@@ -2621,7 +2645,7 @@
 .section-btn {
   flex: 1;
   padding: 0.4rem 0.5rem;
-  font-size: 0.7rem;
+  font-size: 0.7em;
   font-weight: 600;
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid rgba(255, 255, 255, 0.15);
@@ -2683,7 +2707,7 @@
   width: 100%;
   padding: 0.5rem 0.75rem;
   margin-top: 0.5rem;
-  font-size: 0.85rem;
+  font-size: 0.85em;
   font-weight: 600;
   background: rgba(34, 197, 94, 0.15);
   border: 1px solid rgba(34, 197, 94, 0.3);
@@ -2732,7 +2756,7 @@
   width: 100%;
   margin: 0 0 0.4rem 0;
   padding-bottom: 0.3rem;
-  font-size: 0.8rem;
+  font-size: 0.8em;
   font-weight: 600;
   color: #9333ea;
   text-shadow: 0 0 6px rgba(147, 51, 234, 0.5);
@@ -2767,18 +2791,18 @@
 }
 
 .defense-item span:first-child {
-  font-size: 1.2rem;
+  font-size: 1.2em;
 }
 
 .defense-item span:nth-child(2) {
-  font-size: 1rem;
+  font-size: 1em;
   font-weight: 700;
   color: #fca5a5;
   flex: 1;
 }
 
 .defense-item .sublabel {
-  font-size: 0.7rem;
+  font-size: 0.7em;
   color: rgba(255, 255, 255, 0.5);
   text-transform: uppercase;
 }
@@ -2814,13 +2838,13 @@
 }
 
 .pop-count {
-  font-size: 1.1rem;
+  font-size: 1.1em;
   font-weight: 700;
   color: #4ade80;
 }
 
 .pop-label {
-  font-size: 0.55rem;
+  font-size: 0.55em;
   color: rgba(255, 255, 255, 0.5);
   text-transform: uppercase;
 }
@@ -2838,7 +2862,7 @@
   justify-content: center;
   gap: 0.3rem;
   padding: 0.35rem 0.4rem;
-  font-size: 0.65rem;
+  font-size: 0.65em;
   font-weight: 600;
   border-radius: 3px;
   cursor: pointer;
@@ -2846,7 +2870,12 @@
 }
 
 .transfer-btn span {
-  font-size: 0.75rem;
+  /* em, not the naive 0.75 -- this span nests inside .transfer-btn, which
+     itself now carries font-size: 0.65em, so a plain 0.75em would compound
+     against that (0.65 * 0.75 = 0.4875 of the em-root instead of 0.75).
+     1.1538 = 0.75 / 0.65, cancelling the parent's scale so the rendered
+     size stays proportionally where the original 0.75rem put it. */
+  font-size: 1.1538em;
 }
 
 .transfer-btn.disembark {
@@ -2867,7 +2896,7 @@
 }
 
 .transfer-note {
-  font-size: 0.65rem;
+  font-size: 0.65em;
   color: rgba(255, 255, 255, 0.6);
   white-space: nowrap;
   font-style: italic;
@@ -2878,7 +2907,7 @@
   display: flex;
   align-items: center;
   gap: 0.35rem;
-  font-size: 0.7rem;
+  font-size: 0.7em;
   font-weight: 600;
   color: #fbbf24;
   padding: 0.25rem 0.4rem;
@@ -2890,7 +2919,7 @@
 
 /* Inline result of the last colonist transfer */
 .transfer-notice {
-  font-size: 0.7rem;
+  font-size: 0.7em;
   padding: 0.3rem 0.45rem;
   margin-bottom: 0.5rem;
   border-radius: 3px;
@@ -2916,7 +2945,7 @@
 }
 
 .allocation-header {
-  font-size: 0.65rem;
+  font-size: 0.65em;
   color: rgba(255, 255, 255, 0.6);
   text-transform: uppercase;
   padding-bottom: 0.2rem;
@@ -2937,13 +2966,13 @@
 }
 
 .alloc-icon {
-  font-size: 0.85rem;
+  font-size: 0.85em;
   width: 1.1rem;
   text-align: center;
 }
 
 .alloc-name {
-  font-size: 0.65rem;
+  font-size: 0.65em;
   color: rgba(255, 255, 255, 0.7);
   width: 55px;
 }
@@ -2981,7 +3010,7 @@
 .alloc-slider.terraform { background: linear-gradient(to right, rgba(168, 85, 247, 0.4) 0%, rgba(168, 85, 247, 0.4) var(--value, 20%), rgba(255, 255, 255, 0.1) var(--value, 20%)); }
 
 .alloc-pct {
-  font-size: 0.7rem;
+  font-size: 0.7em;
   font-weight: 600;
   color: #4ade80;
   width: 28px;
@@ -2989,14 +3018,14 @@
 }
 
 .alloc-rate {
-  font-size: 0.6rem;
+  font-size: 0.6em;
   color: rgba(255, 255, 255, 0.5);
   width: 45px;
   text-align: right;
 }
 
 .alloc-stored {
-  font-size: 0.62rem;
+  font-size: 0.62em;
   color: #7dd3fc;
   width: 66px;
   text-align: right;
@@ -3030,7 +3059,7 @@
   transition: width 0.4s ease;
 }
 .alloc-storage-text {
-  font-size: 0.58rem;
+  font-size: 0.58em;
   color: #7dd3fc;
   font-variant-numeric: tabular-nums;
 }
@@ -3048,7 +3077,7 @@
 
 /* Colony-wide overflow banner — server flagged WASTED production at the cap. */
 .storage-overflow-banner {
-  font-size: 0.62rem;
+  font-size: 0.62em;
   color: #f87171;
   background: rgba(239, 68, 68, 0.1);
   border: 1px solid rgba(248, 113, 113, 0.35);
@@ -3066,12 +3095,12 @@
   border-top: 1px solid rgba(59, 130, 246, 0.18);
 }
 .safe-commodities .sc-head {
-  font-size: 0.66rem;
+  font-size: 0.66em;
   color: rgba(125, 211, 252, 0.9);
   letter-spacing: 0.04em;
   margin-bottom: 3px;
 }
-.safe-commodities .sc-hint { color: var(--text-secondary, #9aa); font-size: 0.58rem; }
+.safe-commodities .sc-hint { color: var(--text-secondary, #9aa); font-size: 0.58em; }
 .safe-commodities .sc-row {
   display: grid;
   grid-template-columns: 1fr auto auto;
@@ -3079,7 +3108,7 @@
   gap: 6px;
   padding: 3px 0;
   font-family: 'Courier New', monospace;
-  font-size: 0.68rem;
+  font-size: 0.68em;
 }
 .safe-commodities .sc-name {
   color: var(--text-primary, #e0e0e0);
@@ -3093,7 +3122,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 4px 10px;
-  font-size: 0.6rem;
+  font-size: 0.6em;
   font-variant-numeric: tabular-nums;
 }
 /* Explicit, labelled counts replace the old slashed "0 / 29872" pair so a glance
@@ -3103,11 +3132,11 @@
 /* Legacy single-cell qty styles, retained for any other callers. */
 .safe-commodities .sc-qty { color: #7dd3fc; font-variant-numeric: tabular-nums; text-align: right; }
 .safe-commodities .sc-qty em { color: var(--text-secondary, #9aa); font-style: normal; }
-.safe-commodities .sc-btn { padding: 2px 8px; font-size: 0.62rem; white-space: nowrap; }
+.safe-commodities .sc-btn { padding: 2px 8px; font-size: 0.62em; white-space: nowrap; }
 /* One-line shared-vault explainer under the cap bar (stays one line; no page scroll). */
 .safe-vault-explainer {
   margin: 0;
-  font-size: 0.6rem;
+  font-size: 0.6em;
   line-height: 1.3;
   color: var(--text-secondary, #9aa);
 }
@@ -3146,7 +3175,7 @@
   border-top: 1px solid rgba(251, 191, 36, 0.18);
 }
 .safe-credit-io .sc-head {
-  font-size: 0.66rem;
+  font-size: 0.66em;
   color: rgba(251, 191, 36, 0.9);
   letter-spacing: 0.04em;
   margin-bottom: 4px;
@@ -3156,7 +3185,7 @@
   gap: 6px;
   margin-bottom: 6px;
 }
-.safe-credit-tabs .safe-btn { padding: 3px 12px; font-size: 0.68rem; }
+.safe-credit-tabs .safe-btn { padding: 3px 12px; font-size: 0.68em; }
 /* The active direction reads brighter; inactive direction dims. */
 .safe-credit-tabs .safe-btn:not(.active) { opacity: 0.55; }
 .safe-credit-tabs .safe-btn.active { opacity: 1; box-shadow: inset 0 0 0 1px currentColor; }
@@ -3174,11 +3203,11 @@
   border-radius: 4px;
   color: #ffffff;
   font-family: 'Courier New', monospace;
-  font-size: 0.7rem;
+  font-size: 0.7em;
   padding: 3px 6px;
 }
 .safe-amount-input:disabled { opacity: 0.5; cursor: not-allowed; }
-.safe-btn.confirm { padding: 3px 12px; font-size: 0.68rem; margin-left: auto; }
+.safe-btn.confirm { padding: 3px 12px; font-size: 0.68em; margin-left: auto; }
 
 /* Safe Grid - Expanded for all commodities */
 .planet-section.storage {
@@ -3221,7 +3250,7 @@
 
 .safe-header .safe-cap {
   margin: 0;
-  font-size: 0.7rem;
+  font-size: 0.7em;
 }
 
 .safe-credits {
@@ -3236,17 +3265,17 @@
 }
 
 .credits-label {
-  font-size: 0.9rem;
+  font-size: 0.9em;
 }
 
 .credits-value {
-  font-size: 0.9rem;
+  font-size: 0.9em;
   font-weight: 700;
   color: #fbbf24;
 }
 
 .credits-text {
-  font-size: 0.65rem;
+  font-size: 0.65em;
   color: rgba(251, 191, 36, 0.7);
   text-transform: uppercase;
 }
@@ -3259,7 +3288,7 @@
 
 .safe-header-actions .safe-btn {
   padding: 0.4rem 0.6rem;
-  font-size: 0.75rem;
+  font-size: 0.75em;
 }
 
 /* Horizontal safe grid - items in a row */
@@ -3275,15 +3304,15 @@
 }
 
 .safe-grid-horizontal .safe-item span:first-child {
-  font-size: 1.2rem;
+  font-size: 1.2em;
 }
 
 .safe-grid-horizontal .safe-item span:nth-child(2) {
-  font-size: 0.85rem;
+  font-size: 0.85em;
 }
 
 .safe-grid-horizontal .safe-item .item-label {
-  font-size: 0.55rem;
+  font-size: 0.55em;
 }
 
 .safe-item {
@@ -3300,18 +3329,18 @@
 }
 
 .safe-item span:first-child {
-  font-size: 1.1rem;
+  font-size: 1.1em;
   margin-bottom: 0.15rem;
 }
 
 .safe-item span:nth-child(2) {
-  font-size: 0.9rem;
+  font-size: 0.9em;
   font-weight: 700;
   color: #60a5fa;
 }
 
 .safe-item .item-label {
-  font-size: 0.6rem;
+  font-size: 0.6em;
   color: rgba(255, 255, 255, 0.5);
   text-transform: uppercase;
   margin-top: 0.1rem;
@@ -3369,7 +3398,7 @@
 
 .safe-cap {
   margin-top: 0.5rem;
-  font-size: 0.75rem;
+  font-size: 0.75em;
   color: rgba(255, 255, 255, 0.5);
   text-align: center;
 }
@@ -3387,7 +3416,7 @@
   justify-content: center;
   gap: 0.3rem;
   padding: 0.4rem 0.6rem;
-  font-size: 0.75rem;
+  font-size: 0.75em;
   font-weight: 600;
   border-radius: 4px;
   cursor: pointer;
@@ -3483,13 +3512,13 @@
 }
 
 .terra-level-label .level-name {
-  font-size: 0.85rem;
+  font-size: 0.85em;
   font-weight: 600;
   color: #4ade80;
 }
 
 .terra-level-label .level-num {
-  font-size: 0.75rem;
+  font-size: 0.75em;
   color: rgba(255, 255, 255, 0.5);
   background: rgba(34, 197, 94, 0.2);
   padding: 0.15rem 0.4rem;
@@ -3508,17 +3537,17 @@
 }
 
 .terra-bonus span:first-child {
-  font-size: 1.1rem;
+  font-size: 1.1em;
 }
 
 .terra-bonus .bonus-value {
-  font-size: 1rem;
+  font-size: 1em;
   font-weight: 700;
   color: #4ade80;
 }
 
 .terra-bonus .bonus-label {
-  font-size: 0.7rem;
+  font-size: 0.7em;
   color: rgba(255, 255, 255, 0.5);
   margin-left: auto;
 }
@@ -3533,7 +3562,7 @@
   background: linear-gradient(135deg, rgba(34, 197, 94, 0.2) 0%, rgba(22, 163, 74, 0.3) 100%);
   border: 1px solid rgba(34, 197, 94, 0.4);
   border-radius: 5px;
-  font-size: 0.9rem;
+  font-size: 0.9em;
   font-weight: 600;
   color: #4ade80;
   text-shadow: 0 0 8px rgba(34, 197, 94, 0.5);
@@ -3543,7 +3572,7 @@
 .lift-off-btn {
   width: 100%;
   padding: 0.6rem 1rem;
-  font-size: 1rem;
+  font-size: 1em;
   font-weight: 700;
   background: linear-gradient(135deg, rgba(147, 51, 234, 0.4) 0%, rgba(124, 58, 237, 0.5) 100%);
   border: 2px solid rgba(147, 51, 234, 0.6);
@@ -3613,21 +3642,21 @@
 }
 
 .stat-block .stat-label {
-  font-size: 0.6rem;
+  font-size: 0.6em;
   color: rgba(255, 255, 255, 0.6);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
 
 .stat-block .stat-value {
-  font-size: 0.75rem;
+  font-size: 0.75em;
   font-weight: 600;
   color: #00d9ff;
   font-family: 'Courier New', monospace;
 }
 
 .stat-block .stat-value.type {
-  font-size: 0.7rem;
+  font-size: 0.7em;
   color: #a855f7;
 }
 
@@ -3641,7 +3670,7 @@
 
 .stat-block .stat-value.owner {
   color: #ffb000;
-  font-size: 0.75rem;
+  font-size: 0.75em;
 }
 
 /* Mini Progress Bars */
@@ -3716,7 +3745,7 @@
 }
 
 .defense-icon {
-  font-size: 1.1rem;
+  font-size: 1.1em;
   filter: drop-shadow(0 0 4px rgba(255, 176, 0, 0.4));
 }
 
@@ -3728,14 +3757,14 @@
 }
 
 .defense-label {
-  font-size: 0.65rem;
+  font-size: 0.65em;
   color: rgba(255, 255, 255, 0.6);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
 
 .defense-value {
-  font-size: 0.85rem;
+  font-size: 0.85em;
   font-weight: 600;
   color: #ffb000;
   font-family: 'Courier New', monospace;
@@ -3746,7 +3775,7 @@
 }
 
 .defense-level {
-  font-size: 0.6rem;
+  font-size: 0.6em;
   color: rgba(255, 176, 0, 0.7);
 }
 
@@ -3808,11 +3837,11 @@
 }
 
 .alloc-icon {
-  font-size: 0.9rem;
+  font-size: 0.9em;
 }
 
 .alloc-label {
-  font-size: 0.7rem;
+  font-size: 0.7em;
   color: rgba(255, 255, 255, 0.8);
   white-space: nowrap;
   overflow: hidden;
@@ -3846,7 +3875,7 @@
 }
 
 .alloc-value {
-  font-size: 0.75rem;
+  font-size: 0.75em;
   font-weight: 600;
   color: #00ff41;
   text-align: right;
@@ -3854,14 +3883,14 @@
 }
 
 .alloc-count {
-  font-size: 0.65rem;
+  font-size: 0.65em;
   color: rgba(255, 255, 255, 0.5);
   text-align: right;
   font-family: 'Courier New', monospace;
 }
 
 .allocation-note {
-  font-size: 0.7rem;
+  font-size: 0.7em;
   color: rgba(255, 176, 0, 0.8);
   text-align: center;
   margin-top: auto;
@@ -3894,16 +3923,16 @@
 }
 
 .prod-icon {
-  font-size: 0.9rem;
+  font-size: 0.9em;
 }
 
 .prod-label {
-  font-size: 0.7rem;
+  font-size: 0.7em;
   color: rgba(255, 255, 255, 0.8);
 }
 
 .prod-rate {
-  font-size: 0.7rem;
+  font-size: 0.7em;
   font-weight: 600;
   color: #00ff41;
   font-family: 'Courier New', monospace;
@@ -3940,7 +3969,7 @@
 }
 
 .prod-stored {
-  font-size: 0.65rem;
+  font-size: 0.65em;
   color: rgba(255, 255, 255, 0.6);
   text-align: right;
   font-family: 'Courier New', monospace;
@@ -3953,7 +3982,7 @@
   margin-top: auto;
   padding-top: 0.4rem;
   border-top: 1px solid rgba(147, 51, 234, 0.2);
-  font-size: 0.65rem;
+  font-size: 0.65em;
   color: rgba(255, 255, 255, 0.5);
 }
 
@@ -3962,7 +3991,7 @@
   background: rgba(147, 51, 234, 0.2);
   border: 1px solid rgba(147, 51, 234, 0.3);
   border-radius: 3px;
-  font-size: 0.6rem;
+  font-size: 0.6em;
   font-weight: 600;
   color: rgba(147, 51, 234, 0.8);
 }
@@ -3991,7 +4020,7 @@
 
 .safe-capacity {
   margin-left: auto;
-  font-size: 0.6rem;
+  font-size: 0.6em;
   color: rgba(59, 130, 246, 0.8);
   font-family: 'Courier New', monospace;
 }
@@ -4020,23 +4049,23 @@
 }
 
 .safe-icon {
-  font-size: 0.9rem;
+  font-size: 0.9em;
 }
 
 .safe-label {
-  font-size: 0.7rem;
+  font-size: 0.7em;
   color: rgba(255, 255, 255, 0.8);
 }
 
 .safe-value {
-  font-size: 0.8rem;
+  font-size: 0.8em;
   font-weight: 600;
   color: #3b82f6;
   font-family: 'Courier New', monospace;
 }
 
 .safe-note {
-  font-size: 0.65rem;
+  font-size: 0.65em;
   color: rgba(0, 255, 65, 0.8);
   text-align: center;
   margin-top: auto;
@@ -4115,11 +4144,11 @@
 }
 
 .btn-icon {
-  font-size: 0.85rem;
+  font-size: 0.85em;
 }
 
 .btn-text {
-  font-size: 0.65rem;
+  font-size: 0.65em;
   font-weight: 600;
   color: rgba(255, 255, 255, 0.9);
   letter-spacing: 0.02em;
@@ -4153,7 +4182,7 @@
 
 .terraform-level {
   margin-left: auto;
-  font-size: 0.7rem;
+  font-size: 0.7em;
   font-weight: 700;
   padding: 0.2rem 0.5rem;
   background: linear-gradient(135deg, rgba(34, 197, 94, 0.3) 0%, rgba(22, 163, 74, 0.4) 100%);
@@ -4188,21 +4217,21 @@
 }
 
 .terraform-label {
-  font-size: 0.6rem;
+  font-size: 0.6em;
   color: rgba(255, 255, 255, 0.6);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
 
 .terraform-value {
-  font-size: 0.75rem;
+  font-size: 0.75em;
   font-weight: 600;
   color: #22c55e;
 }
 
 .terraform-value.bonus {
   color: #00ff41;
-  font-size: 0.9rem;
+  font-size: 0.9em;
   text-shadow: 0 0 6px rgba(0, 255, 65, 0.5);
 }
 
@@ -4222,12 +4251,12 @@
 }
 
 .progress-label {
-  font-size: 0.7rem;
+  font-size: 0.7em;
   color: rgba(255, 255, 255, 0.8);
 }
 
 .progress-time {
-  font-size: 0.7rem;
+  font-size: 0.7em;
   font-weight: 600;
   color: #ffb000;
   font-family: 'Courier New', monospace;
@@ -4272,13 +4301,13 @@
 }
 
 .next-label {
-  font-size: 0.65rem;
+  font-size: 0.65em;
   color: rgba(255, 255, 255, 0.8);
   font-weight: 600;
 }
 
 .upgrade-tag {
-  font-size: 0.6rem;
+  font-size: 0.6em;
   padding: 0.15rem 0.4rem;
   background: linear-gradient(135deg, rgba(147, 51, 234, 0.3) 0%, rgba(124, 58, 237, 0.4) 100%);
   border: 1px solid rgba(147, 51, 234, 0.5);
@@ -4304,11 +4333,11 @@
 }
 
 .req-icon {
-  font-size: 0.7rem;
+  font-size: 0.7em;
 }
 
 .req-value {
-  font-size: 0.55rem;
+  font-size: 0.55em;
   font-weight: 600;
   color: rgba(255, 255, 255, 0.8);
   font-family: 'Courier New', monospace;
@@ -4319,7 +4348,7 @@
 }
 
 .citadel-req {
-  font-size: 0.65rem;
+  font-size: 0.65em;
   font-weight: 600;
 }
 
@@ -4346,7 +4375,7 @@
 }
 
 .maxed-icon {
-  font-size: 1.2rem;
+  font-size: 1.2em;
   filter: drop-shadow(0 0 10px rgba(34, 197, 94, 0.6));
   animation: terraform-glow 3s ease-in-out infinite;
 }
@@ -4363,7 +4392,7 @@
 }
 
 .maxed-text {
-  font-size: 0.8rem;
+  font-size: 0.8em;
   font-weight: 700;
   letter-spacing: 0.1em;
   color: #22c55e;
@@ -4371,7 +4400,7 @@
 }
 
 .maxed-bonus {
-  font-size: 0.9rem;
+  font-size: 0.9em;
   font-weight: 700;
   color: #00ff41;
   text-shadow: 0 0 8px rgba(0, 255, 65, 0.6);
@@ -4389,7 +4418,7 @@
   border: 1px solid rgba(34, 197, 94, 0.5);
   border-radius: 5px;
   color: #22c55e;
-  font-size: 0.7rem;
+  font-size: 0.7em;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s ease;
@@ -4410,7 +4439,7 @@
 }
 
 .terraform-btn .btn-icon {
-  font-size: 0.85rem;
+  font-size: 0.85em;
 }
 
 .terraform-btn .btn-text {
@@ -4498,6 +4527,19 @@
   animation: claim-overlay-in 0.3s ease-out;
 }
 
+/* T4-K: this overlay itself is the keyboard-focusable dismiss target (see
+   GameDashboard.tsx). Outline + outline-offset only -- no border/box-shadow
+   size change. Offset is NEGATIVE (inward), same reasoning as the sister
+   .keel-ceremony-overlay rule in construction-venue.css: a positive offset
+   on a full-viewport position:fixed;inset:0 element renders off-screen.
+   Color matches .claim-banner's own green (this ceremony self-clears on a
+   10s timer, so Enter/Space is a dismiss-early convenience, not the only
+   path out -- unlike keel-ceremony-overlay, which has no timer at all). */
+.claim-celebration-overlay:focus-visible {
+  outline: 3px solid #00ff41;
+  outline-offset: -4px;
+}
+
 @keyframes claim-overlay-in {
   from {
     opacity: 0;
@@ -4579,7 +4621,7 @@
 }
 
 .claim-banner {
-  font-size: 1.3rem;
+  font-size: 1.3em;
   font-weight: 800;
   letter-spacing: 0.25em;
   color: #00ff41;
@@ -4588,13 +4630,13 @@
 }
 
 .claim-planet-icon {
-  font-size: 4rem;
+  font-size: 4em;
   margin-bottom: 0.8rem;
   filter: drop-shadow(0 0 24px rgba(0, 255, 65, 0.5));
 }
 
 .claim-planet-name {
-  font-size: 1.4rem;
+  font-size: 1.4em;
   font-weight: 700;
   letter-spacing: 0.08em;
   color: rgba(255, 255, 255, 0.95);
@@ -4602,7 +4644,7 @@
 }
 
 .claim-detail {
-  font-size: 0.95rem;
+  font-size: 0.95em;
   color: rgba(255, 255, 255, 0.85);
   font-family: 'Courier New', monospace;
   margin: 0.3rem 0;
@@ -4610,7 +4652,7 @@
 
 .claim-dismiss-hint {
   margin-top: 1.5rem;
-  font-size: 0.7rem;
+  font-size: 0.7em;
   text-transform: uppercase;
   letter-spacing: 0.15em;
   color: rgba(255, 255, 255, 0.45);
@@ -4650,7 +4692,7 @@
 
 .colonist-modal-header h3 {
   margin: 0;
-  font-size: 0.9rem;
+  font-size: 0.9em;
   letter-spacing: 0.12em;
   color: #4ade80;
 }
@@ -4659,7 +4701,7 @@
   background: transparent;
   border: none;
   color: rgba(255, 255, 255, 0.6);
-  font-size: 1.2rem;
+  font-size: 1.2em;
   line-height: 1;
   cursor: pointer;
 }
@@ -4669,7 +4711,7 @@
 }
 
 .colonist-modal-route {
-  font-size: 0.75rem;
+  font-size: 0.75em;
   color: rgba(255, 255, 255, 0.65);
   margin-bottom: 1rem;
 }
@@ -4682,7 +4724,7 @@
 }
 
 .colonist-qty-label {
-  font-size: 0.65rem;
+  font-size: 0.65em;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: rgba(255, 255, 255, 0.55);
@@ -4707,7 +4749,7 @@
   color: #4ade80;
   border-radius: 4px;
   cursor: pointer;
-  font-size: 1rem;
+  font-size: 1em;
   line-height: 1;
 }
 
@@ -4735,7 +4777,7 @@
 .colonist-qty-presets button {
   flex: 1;
   padding: 0.3rem 0.4rem;
-  font-size: 0.65rem;
+  font-size: 0.65em;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.18);
   color: rgba(255, 255, 255, 0.8);
@@ -4767,7 +4809,7 @@
 .colonist-transfer-summary .summary-line {
   display: flex;
   justify-content: space-between;
-  font-size: 0.75rem;
+  font-size: 0.75em;
   color: rgba(255, 255, 255, 0.7);
 }
 
@@ -4844,7 +4886,7 @@
   height: 22px;
   padding: 0 0.4rem;
   font-family: 'Courier New', monospace;
-  font-size: 0.65rem;
+  font-size: 0.65em;
   font-weight: 600;
   letter-spacing: 0.06em;
   background: rgba(0, 5, 12, 0.85);
@@ -4865,7 +4907,7 @@
 
 .nav-plot-input::placeholder {
   color: rgba(0, 217, 255, 0.35);
-  font-size: 0.6rem;
+  font-size: 0.6em;
   letter-spacing: 0.04em;
 }
 
@@ -4879,7 +4921,7 @@
   height: 22px;
   padding: 0 0.55rem;
   font-family: 'Courier New', monospace;
-  font-size: 0.6rem;
+  font-size: 0.6em;
   font-weight: 700;
   letter-spacing: 0.1em;
   background: rgba(0, 217, 255, 0.1);
@@ -4918,7 +4960,7 @@
 
 .nav-course-section-title {
   font-family: 'Courier New', monospace;
-  font-size: 0.6rem;
+  font-size: 0.6em;
   font-weight: 700;
   letter-spacing: 0.1em;
   color: rgba(0, 217, 255, 0.75);
@@ -4940,7 +4982,7 @@
   flex: 1;
   min-width: 0;
   font-family: 'Courier New', monospace;
-  font-size: 0.68rem;
+  font-size: 0.68em;
   color: #eaf6ff;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4951,7 +4993,7 @@
   display: inline-flex;
   align-items: center;
   gap: 0.15rem;
-  font-size: 0.6rem;
+  font-size: 0.6em;
   color: rgba(255, 255, 255, 0.55);
   white-space: nowrap;
 }
@@ -4960,7 +5002,7 @@
   height: 20px;
   padding: 0 0.5rem;
   font-family: 'Courier New', monospace;
-  font-size: 0.58rem;
+  font-size: 0.58em;
   font-weight: 700;
   letter-spacing: 0.08em;
   background: rgba(0, 217, 255, 0.1);
@@ -5000,7 +5042,7 @@
   height: 22px;
   padding: 0 0.55rem;
   font-family: 'Courier New', monospace;
-  font-size: 0.6rem;
+  font-size: 0.6em;
   font-weight: 700;
   letter-spacing: 0.1em;
   background: rgba(0, 217, 255, 0.12);
@@ -5029,7 +5071,7 @@
   height: 22px;
   padding: 0 0.55rem;
   font-family: 'Courier New', monospace;
-  font-size: 0.6rem;
+  font-size: 0.6em;
   font-weight: 700;
   letter-spacing: 0.1em;
   background: rgba(255, 176, 0, 0.12);
@@ -5075,7 +5117,7 @@
 }
 
 .planetary-asteroid-label {
-  font-size: 0.65rem;
+  font-size: 0.65em;
   font-weight: 700;
   letter-spacing: 0.2em;
   color: rgba(255, 200, 0, 0.7);
@@ -5085,7 +5127,7 @@
 .planetary-harvest-btn {
   padding: 0.4rem 1.1rem;
   font-family: 'Courier New', monospace;
-  font-size: 0.7rem;
+  font-size: 0.7em;
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -5137,7 +5179,7 @@
   border-color: rgba(255, 176, 0, 0.3);
   color: #ffb000;
   font-family: 'Courier New', monospace;
-  font-size: 0.6rem;
+  font-size: 0.6em;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-shadow: 0 0 6px rgba(255, 176, 0, 0.4);
@@ -5150,7 +5192,7 @@
    route (WO-NAV-COURSE-OVERLAY). */
 .nav-course-meta {
   font-family: 'Courier New', monospace;
-  font-size: 0.58rem;
+  font-size: 0.58em;
   font-weight: 600;
   letter-spacing: 0.08em;
   color: rgba(0, 217, 255, 0.65);

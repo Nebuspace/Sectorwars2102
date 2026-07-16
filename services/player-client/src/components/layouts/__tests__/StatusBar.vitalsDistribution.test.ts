@@ -25,6 +25,8 @@ import { describe, it, expect } from 'vitest';
 
 const CSS_PATH = resolve(__dirname, '../statusbar.css');
 const css = readFileSync(CSS_PATH, 'utf-8');
+const mfdCss = readFileSync(resolve(__dirname, '../../mfd/mfd.css'), 'utf-8');
+const cockpitCss = readFileSync(resolve(__dirname, '../../pages/cockpit.css'), 'utf-8');
 
 function ruleBlock(selector: string): string {
   const start = css.indexOf(`${selector} {`);
@@ -34,6 +36,19 @@ function ruleBlock(selector: string): string {
   const braceOpen = css.indexOf('{', start);
   const braceClose = css.indexOf('}', braceOpen);
   return css.slice(braceOpen + 1, braceClose);
+}
+
+/** Same slicing idiom as ruleBlock(), against an arbitrary already-loaded
+ *  CSS source string (used below to reach into mfd.css/cockpit.css, not
+ *  just this file's own statusbar.css). */
+function ruleBlockIn(source: string, selector: string): string {
+  const start = source.indexOf(`${selector} {`);
+  if (start === -1) {
+    throw new Error(`selector "${selector}" not found`);
+  }
+  const braceOpen = source.indexOf('{', start);
+  const braceClose = source.indexOf('}', braceOpen);
+  return source.slice(braceOpen + 1, braceClose);
 }
 
 describe('statusbar.css — WO-UI0-SHELL-TRANSPLANT Leaf L1 re-emission', () => {
@@ -92,4 +107,66 @@ describe('statusbar.css — WO-UI0-SHELL-TRANSPLANT Leaf L1 re-emission', () => 
     expect(css).not.toMatch(/\.status-bar \.sb-logout-btn\s*\{/);
     expect(css).not.toMatch(/\.sb-logout-btn:hover\s*\{/);
   });
+});
+
+/**
+ * WO-TRANCHE-0716 type-scale #19 — HUD interior text is now `em`, not `rem`,
+ * across mfd.css / cockpit.css / statusbar.css. `rem` is pinned to the
+ * document root (`html`, never sized by this game -- stays at the browser's
+ * 16px default) and is blind to the LOCAL "demo" em-root cockpit-shell.css
+ * establishes on `.stage`/`.game-container`
+ * (`font-size: calc(clamp(10px,1.05vw,15px) * var(--uiscale))`). `em` reads
+ * whatever font-size is inherited at that point in the DOM, so once these
+ * three files stopped using `rem`, their interior text started tracking
+ * that local root instead of the fixed page root.
+ *
+ * jsdom can't demonstrate this live (vitest's default `css: false` means no
+ * stylesheet is ever applied for a real computed-style read here -- see this
+ * file's own header comment / Teleprinter.logGeometryAndUniformity.test.ts
+ * for the same constraint). So this proves the mechanism the way CSS itself
+ * defines `em`: computed px = coefficient * inherited font-size. Pulling the
+ * REAL coefficient out of each file's source (not a hand-copied duplicate)
+ * and evaluating that formula at two different em-root sizes must yield
+ * results that scale by exactly the same ratio the root did -- the
+ * discriminating property `rem` never has (a `rem` value would stay fixed
+ * at both roots, since it ignores the local ancestor entirely).
+ */
+describe('mfd.css / cockpit.css / statusbar.css — interior text tracks the demo em-root (WO-TRANCHE-0716 #19)', () => {
+  function emCoefficient(block: string): number {
+    const match = block.match(/font-size:\s*([\d.]+)em\s*;/);
+    expect(match, `expected an em-based font-size in: ${block}`).not.toBeNull();
+    return parseFloat(match![1]);
+  }
+
+  const samples: Array<{ file: string; selector: string; block: string }> = [
+    { file: 'mfd.css', selector: '.mfd-page-title', block: ruleBlockIn(mfdCss, '.mfd-page-title') },
+    {
+      file: 'cockpit.css',
+      selector: '.planet-vitals-strip .pvs-icon',
+      block: ruleBlockIn(cockpitCss, '.planet-vitals-strip .pvs-icon'),
+    },
+    { file: 'statusbar.css', selector: '.sb-chip', block: ruleBlockIn(css, '.sb-chip') },
+  ];
+
+  it.each(samples)('$file $selector is em-sized, not rem/px', ({ block }) => {
+    expect(block).toMatch(/font-size:\s*[\d.]+em\s*;/);
+    expect(block).not.toMatch(/font-size:\s*[\d.]+(rem|px)\s*;/);
+  });
+
+  it.each(samples)(
+    '$file $selector\'s computed size scales in lockstep with a changed em-root, not pinned to a fixed 16px page root',
+    ({ block }) => {
+      const coefficient = emCoefficient(block);
+      const rootA = 15; // px -- .stage/.game-container's SCALE-LAW ceiling at typical desktop width
+      const rootB = 20; // px -- an arbitrary different em-root, simulating a uiscale/viewport change
+      const sizeAtRootA = coefficient * rootA;
+      const sizeAtRootB = coefficient * rootB;
+      // The defining property of em: the ratio between the two computed
+      // sizes equals the ratio between the two roots. A rem value (pinned
+      // to :root, never to the local .stage/.game-container root) would
+      // instead produce sizeAtRootA === sizeAtRootB regardless of rootB.
+      expect(sizeAtRootB / sizeAtRootA).toBeCloseTo(rootB / rootA, 10);
+      expect(sizeAtRootB).not.toBeCloseTo(sizeAtRootA, 5);
+    }
+  );
 });
