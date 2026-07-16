@@ -321,7 +321,26 @@
    the retrograde flip layered on as a timed track. The ship keeps coasting at
    speed through the flip (momentum), never stopping to turn. TRAVEL_MOVE_MS in
    WindshieldTableau.tsx (6400) must equal this 6.4s position duration. */
-.ssv-tableau .shipmk.travel-orienting { --travel-pos-dur: 0s; --travel-rot-dur: 1s; }
+/* QUEUE-TRAVEL-ROT-EASE: --travel-rot-ease was the one member of this
+   4-var family with no per-state overrides (always the fallback
+   cubic-bezier(.4,0,.2,1) above) -- git-blame shows it was introduced
+   alongside its 3 siblings in one commit with no comment ever singling it
+   out as deliberately static, so this fills the same per-state pattern the
+   siblings already carry. Only states with a NONZERO --travel-rot-dur get
+   an override (matching the existing convention: --travel-pos-ease is
+   likewise never set for a 0s --travel-pos-dur state -- an ease on a
+   zero-duration transition is a no-op). Values are either (a) mirrored
+   from that SAME state's own --travel-pos-ease when one exists, so the
+   flip/turn shares its embedded glide's motion character, or (b) a fresh
+   curve matching the state's own doc-comment narrative where no position
+   sibling exists to borrow from -- documented per state below. */
+.ssv-tableau .shipmk.travel-orienting {
+  --travel-pos-dur: 0s; --travel-rot-dur: 1s;
+  /* No pos-ease sibling (pos-dur:0s) -- the pre-departure aim-and-lock
+     turn, snappy swing settling hard into the new heading (nothing else
+     is moving yet, so this can read as decisive rather than gentle). */
+  --travel-rot-ease: cubic-bezier(.3, 0, .15, 1);
+}
 .ssv-tableau .shipmk.travel-accelerating,
 .ssv-tableau .shipmk.travel-gliding,
 .ssv-tableau .shipmk.travel-brake-turn,
@@ -332,8 +351,19 @@
 .ssv-tableau .shipmk.travel-accelerating,
 .ssv-tableau .shipmk.travel-gliding,
 .ssv-tableau .shipmk.travel-braking { --travel-rot-dur: 0s; }
-.ssv-tableau .shipmk.travel-brake-turn { --travel-rot-dur: 1.3s; }
-.ssv-tableau .shipmk.travel-final-orient { --travel-pos-dur: 0s; --travel-rot-dur: .8s; }
+/* brake-turn's flip happens WHILE still coasting forward on the SAME 6.4s
+   glide (this block's own comment above: "the ship keeps coasting at
+   speed through the flip") -- mirrors that glide's own --travel-pos-ease
+   so the rotation reads as embedded in the same continuous motion, not a
+   separately-timed turn. */
+.ssv-tableau .shipmk.travel-brake-turn { --travel-rot-dur: 1.3s; --travel-rot-ease: cubic-bezier(.45, .05, .55, .95); }
+.ssv-tableau .shipmk.travel-final-orient {
+  --travel-pos-dur: 0s; --travel-rot-dur: .8s;
+  /* No pos-ease sibling (pos-dur:0s) -- the LAST beat of the sequence,
+     settling face-forward at the destination; a long, gentle deceleration
+     into rest reads as "arrived," not another mid-flight turn. */
+  --travel-rot-ease: cubic-bezier(.16, 1, .3, 1);
+}
 /* Emergency Halt — retargets the running glide to a nearby stop. Shorter
    position duration so the coast-ahead + burn reads as an abort, not a crawl. */
 .ssv-tableau .shipmk.travel-halt-turn,
@@ -341,7 +371,11 @@
   --travel-pos-dur: 3.4s;
   --travel-pos-ease: cubic-bezier(.05, .7, .15, 1);
 }
-.ssv-tableau .shipmk.travel-halt-turn { --travel-rot-dur: 1.8s; }
+/* Mirrors this SAME emergency-halt block's own --travel-pos-ease (fast
+   initial ramp, long settle) -- the abort flip should read as urgent, the
+   same motion language as the "coast-ahead + burn reads as an abort, not
+   a crawl" position curve it's paired with. */
+.ssv-tableau .shipmk.travel-halt-turn { --travel-rot-dur: 1.8s; --travel-rot-ease: cubic-bezier(.05, .7, .15, 1); }
 .ssv-tableau .shipmk.travel-halt-brake { --travel-rot-dur: 0s; }
 /* Mid-course redirect — keep forward speed while RCS swings onto a soft
    arc waypoint, then burn toward the new destination. Never parks. */
@@ -349,6 +383,9 @@
   --travel-pos-dur: 2.4s;
   --travel-pos-ease: cubic-bezier(.2, .55, .35, 1);
   --travel-rot-dur: 1.6s;
+  /* Mirrors this state's own --travel-pos-ease -- the RCS swing is the
+     SAME "soft arc" this comment already describes, not a harder turn. */
+  --travel-rot-ease: cubic-bezier(.2, .55, .35, 1);
 }
 /* Sector reseeds / warp arrival are teleports — never CSS-glide the hull across
    the band (that reads as "ship crawling from the old sector's coordinates"). */
@@ -356,6 +393,11 @@
 .ssv-tableau .shipmk.warp-arriving { transition: none; }
 .ssv-tableau .shipmk.warp-turning {
   --travel-rot-dur: 3s; /* preserve the deliberate pre-warp reorientation */
+  /* No pos-ease sibling (warp-launching/-arriving disable the transition
+     entirely, and this state's own comment calls the turn "deliberate") --
+     a slow, weighty, symmetric ease distinct from the punchier combat/nav
+     turns above, reading as a ceremonial pre-warp swing, not a maneuver. */
+  --travel-rot-ease: cubic-bezier(.65, 0, .35, 1);
   filter: drop-shadow(0 0 .45em rgba(125, 215, 255, .7));
 }
 /* RCS attitude jets — tiny gas puffs on opposite corners of the hull firing as
