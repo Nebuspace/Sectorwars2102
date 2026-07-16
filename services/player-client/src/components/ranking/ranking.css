@@ -515,7 +515,7 @@
   color: #ccc;
 }
 
-.req-item {
+.rank-progress-req-item {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -524,17 +524,29 @@
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
 }
 
-.req-item.met { color: #44ff44; }
-.req-item.unmet { color: #ff6b6b; }
+.rank-progress-req-item.met { color: #44ff44; }
+.rank-progress-req-item.unmet { color: #ff6b6b; }
 
-.req-icon { font-size: 0.9rem; flex-shrink: 0; }
+/* WO-TYPESCALE-COMPOUND-AUDIT: renamed from the bare `.req-icon`/`.req-name`/
+   `.req-value`/`.req-item` tokens this component used to share with an
+   unrelated, dead cockpit.css widget (the old citadel upgrade-requirements
+   grid, `.next-requirements .req-item`). Equal specificity (0,1,0) + later
+   position in the bundled stylesheet meant cockpit.css's `.req-icon{.7em}`/
+   `.req-value{.55em}` silently WON over these rem-based rules wherever this
+   component renders — which is always inside StatusBar's `.sbar` (cockpit-
+   shell.css, font-size:.78em), so the cockpit.css values additionally
+   compounded under that ancestor (.7*.78≈.546 / .55*.78≈.429 of the
+   .game-container em-root) instead of this file's intended flat rem sizing.
+   Scoping these under the `rank-progress-` prefix this file already uses for
+   every sibling class removes the collision at the root. */
+.rank-progress-req-icon { font-size: 0.9rem; flex-shrink: 0; }
 
-.req-name {
+.rank-progress-req-name {
   flex: 1;
   color: #ddd;
 }
 
-.req-value {
+.rank-progress-req-value {
   font-variant-numeric: tabular-nums;
   color: #aaa;
   font-size: 0.75rem;

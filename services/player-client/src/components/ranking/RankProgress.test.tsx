@@ -83,7 +83,7 @@ describe('RankProgress', () => {
     await mount();
 
     expect(container.querySelector('.rank-progress-pct')?.textContent).toBe('84.0%');
-    expect(container.querySelectorAll('.req-item').length).toBe(1);
+    expect(container.querySelectorAll('.rank-progress-req-item').length).toBe(1);
     expect(container.querySelector('.stats-grid')?.textContent).toContain('12');
   });
 
@@ -96,7 +96,7 @@ describe('RankProgress', () => {
     // Missing progress_percent -> defaults to 0, still renders a number.
     expect(container.querySelector('.rank-progress-pct')?.textContent).toBe('0.0%');
     // Missing requirements/stats -> empty list / zeroed stat grid, no crash.
-    expect(container.querySelectorAll('.req-item').length).toBe(0);
+    expect(container.querySelectorAll('.rank-progress-req-item').length).toBe(0);
     expect(container.querySelector('.stats-grid')).not.toBeNull();
   });
 

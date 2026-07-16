@@ -129,10 +129,10 @@ const RankProgress: React.FC = () => {
       <div className="rank-progress-reqs">
         <h4>Requirements</h4>
         {requirements.map((req) => (
-          <div key={req.name} className={`req-item ${req.met ? 'met' : 'unmet'}`}>
-            <span className="req-icon">{req.met ? '\u2705' : '\u274C'}</span>
-            <span className="req-name">{req.name}</span>
-            <span className="req-value">
+          <div key={req.name} className={`rank-progress-req-item ${req.met ? 'met' : 'unmet'}`}>
+            <span className="rank-progress-req-icon">{req.met ? '\u2705' : '\u274C'}</span>
+            <span className="rank-progress-req-name">{req.name}</span>
+            <span className="rank-progress-req-value">
               {req.current.toLocaleString()}
               {req.required != null && ` / ${req.required.toLocaleString()}`}
             </span>
