@@ -114,9 +114,28 @@ def log_error_securely(
     }
     
     if request:
+        # QUEUE-ERRHANDLER-WS (2026-07-16): `request` may be a Starlette
+        # WebSocket, not an HTTP Request, when a handler raises during a WS
+        # connection -- Starlette's exception middleware dispatches to the
+        # SAME registered handler for both connection kinds. `.url`,
+        # `.headers`, `.query_params`, `.client`, and `.scope` are all
+        # defined on the shared `HTTPConnection` base BOTH inherit from, so
+        # every other field below is already WS-safe -- but `.method` is
+        # HTTP-only (there is no HTTP verb on a WebSocket connection), so a
+        # bare access here crashed the error-LOGGING path itself (observed
+        # live during reload cycles: an AttributeError masking whatever the
+        # original error was). getattr-with-sentinel + scope["type"]
+        # fallback keeps the HTTP path byte-identical (every real Request
+        # always has `.method`, so `getattr` always returns it unchanged)
+        # while logging the meaningful equivalent for WS -- "websocket",
+        # from `scope["type"]`, since there's no verb to report.
+        method = getattr(request, "method", None)
+        if method is None:
+            method = getattr(request, "scope", {}).get("type", "unknown")
+
         # Safe request information (no sensitive headers/params)
         context.update({
-            "method": request.method,
+            "method": method,
             "path": request.url.path,
             "user_agent": request.headers.get("user-agent", "unknown")[:200],
             "client_ip": get_client_ip(request),
