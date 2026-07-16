@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import apiClient from '../../services/apiClient';
+import { arrivalBearingForWarp, WARP_TURN_MS, WARP_MIN_CHARGE_MS, WARP_ARRIVE_MS, WARP_CHARGE_TIMEOUT_MS } from '../../services/warpCinematicBus';
 import { useAutopilot } from '../../contexts/AutopilotContext';
 import { useWindshieldFlight } from '../../contexts/WindshieldFlightContext';
 import type { SectorWreck } from '../../services/api';
@@ -12,6 +13,12 @@ import type {
 } from './SolarSystemViewscreen';
 import { shipFaction } from './SolarSystemViewscreen';
 import {
+  deriveIspPose,
+  ispPhaseToTravelClass,
+  parseIspTime,
+  type IspPose,
+} from '../../services/intrasystemFlight';
+import {
   AU_SEMI_X_PCT,
   AU_SEMI_Y_PCT,
   BODY_SIZE_EM_MAX,
@@ -23,13 +30,14 @@ import {
   headingDeg,
   moonOrbits,
   nebulaArcs,
-  otherPresencePosition,
+  otherShipFlightPose,
   safeOrbitRadii,
   scanPosition,
   selfRestingAnchor,
   starAnchor,
   stationPosition,
   type BandGeometry,
+  type ContactDock,
   type HazardArc,
   type PctPoint,
   type StarAnchor,
@@ -133,10 +141,121 @@ export interface WindshieldTableauProps {
    *  mount structure — see GameDashboard.tsx). */
   lastDockedStationId?: string | null;
   lastLandedPlanetId?: string | null;
+  /** Warp cinematic trigger. GameDashboard bumps `token` (and supplies the
+   *  exit `bearingDeg`) the instant the player commits to an inter-sector
+   *  jump — BEFORE the move resolves — so the buildup ("charging") + warp-away
+   *  ("launch") play over the CURRENT sector, then the sector swaps and the
+   *  arrival flash lands. Null / unchanged token = no cinematic (e.g. autopilot
+   *  hops, which jump silently). */
+  warpDepart?: { token: number; bearingDeg: number; destinationSectorId: number } | null;
 }
 
 const POPUP_W = 232;
 const POPUP_H = 158;
+
+// Warp cinematic phase durations — imported from warpCinematicBus (single
+// source of truth). Callers delay moveToSector by WARP_TURN_MS so the sector
+// swap cannot abort the RCS reorientation. CSS keyframes in
+// solar-system-viewscreen.css must stay in sync with these values.
+const DOCK_RANGE_EM = 5;
+const DOCK_APPROACH_STANDOFF_EM = 3.5;
+// Local intra-system flight is ONE continuous position glide (accelerate →
+// cruise → decelerate, a single eased CSS transition over TRAVEL_MOVE_MS), with
+// the engine burn, RCS jets, and the retrograde flip layered on as a timed
+// track. The hull keeps coasting at speed through the flip — momentum, never a
+// dead stop to turn. Phase boundaries only retoggle visuals / retime the NEXT
+// rotation; they never restart the running position glide. TRAVEL_MOVE_MS must
+// equal the 6.4s position duration in solar-system-viewscreen.css.
+const TRAVEL_ORIENT_MS = 1000;
+const TRAVEL_ACCEL_MS = 1800;
+const TRAVEL_COAST_MS = 1100;
+const TRAVEL_FLIP_MS = 1300;
+const TRAVEL_DECEL_MS = 2200;
+const TRAVEL_SETTLE_MS = 800;
+const TRAVEL_MOVE_MS = TRAVEL_ACCEL_MS + TRAVEL_COAST_MS + TRAVEL_FLIP_MS + TRAVEL_DECEL_MS;
+/** Emergency Halt: flip then burn — shorter than a planned approach brake. */
+const TRAVEL_HALT_FLIP_MS = 1800;
+const TRAVEL_HALT_BRAKE_MS = 1600;
+/** How far ahead (as a fraction of remaining path) the hull coasts while flipping. */
+const TRAVEL_HALT_COAST_FRAC = 0.38;
+/** Mid-course redirect: RCS turn while the path arcs onto the new bearing. */
+const TRAVEL_REDIRECT_TURN_MS = 1600;
+
+type TravelPhase =
+  | 'idle'
+  | 'orienting'
+  | 'accelerating'
+  | 'gliding'
+  | 'brake-turn'
+  | 'braking'
+  | 'final-orient'
+  | 'halt-turn'
+  | 'halt-brake'
+  | 'redirect-turn';
+
+/** Signed shortest angular delta from `from` to `to`, in (-180, 180]. */
+function shortestAngleDelta(from: number, to: number): number {
+  return ((to - from + 540) % 360) - 180;
+}
+
+function clampPct(n: number): number {
+  return Math.min(98, Math.max(2, n));
+}
+
+/** Soft arc control point: keep coasting along current velocity, then bend toward the new target. */
+function redirectArcWaypoint(
+  live: PctPoint,
+  velocity: { x: number; y: number },
+  target: PctPoint,
+): PctPoint {
+  const toTarget = Math.hypot(target.xPct - live.xPct, target.yPct - live.yPct);
+  const lead = Math.min(Math.max(4, toTarget * 0.32), 14);
+  const coast: PctPoint = {
+    xPct: live.xPct + velocity.x * lead,
+    yPct: live.yPct + velocity.y * lead,
+  };
+  return {
+    xPct: clampPct(coast.xPct + (target.xPct - coast.xPct) * 0.4),
+    yPct: clampPct(coast.yPct + (target.yPct - coast.yPct) * 0.4),
+  };
+}
+
+function isInFlightPhase(phase: TravelPhase): boolean {
+  return (
+    phase === 'accelerating' ||
+    phase === 'gliding' ||
+    phase === 'brake-turn' ||
+    phase === 'braking' ||
+    phase === 'halt-turn' ||
+    phase === 'halt-brake' ||
+    phase === 'redirect-turn'
+  );
+}
+
+function distancePx(a: PctPoint, b: PctPoint, band: BandGeometry): number {
+  return Math.hypot(
+    ((a.xPct - b.xPct) / 100) * band.widthPx,
+    ((a.yPct - b.yPct) / 100) * band.heightPx,
+  );
+}
+
+/** Stop near a station rather than directly on top of its glyph. */
+function stationApproachPoint(
+  from: PctPoint,
+  station: PctPoint,
+  band: BandGeometry,
+): PctPoint {
+  const dxPx = ((from.xPct - station.xPct) / 100) * band.widthPx;
+  const dyPx = ((from.yPct - station.yPct) / 100) * band.heightPx;
+  const length = Math.hypot(dxPx, dyPx);
+  const ux = length > 0.01 ? dxPx / length : 1;
+  const uy = length > 0.01 ? dyPx / length : 0;
+  const standOffPx = DOCK_APPROACH_STANDOFF_EM * band.remPx;
+  return {
+    xPct: Math.min(97, Math.max(3, station.xPct + (ux * standOffPx / band.widthPx) * 100)),
+    yPct: Math.min(94, Math.max(6, station.yPct + (uy * standOffPx / band.heightPx) * 100)),
+  };
+}
 
 /** FIX C revise (Max: right-click must be MENU-mediated, not direct-travel —
  *  corrects the earlier direct-travel cut): a small floating menu, sized for
@@ -182,6 +301,128 @@ const STATION_FOOTPRINT_EM_HEIGHT_MAX = 5;
  *  nominal default em-root (windshieldTableauLayout.ts's MOON_DOT_*
  *  comment cites the same convention). */
 const DEFAULT_REM_PX = 16;
+
+function toStaticSystem(data: any): StaticSystem {
+  const d = data || {};
+  return {
+    star: d.star ?? null,
+    nebula: d.nebula ?? null,
+    belt: d.belt ?? null,
+    debris: d.debris ?? null,
+    bodies: Array.isArray(d.bodies) ? d.bodies : [],
+    stations: Array.isArray(d.stations) ? d.stations : [],
+  };
+}
+
+/**
+ * Pick a fresh warp-in point while keeping the entire arrival bubble clear of
+ * the destination star, planets, and station glyphs. Collision tests run in
+ * real pixels (not raw x/y percentages — the windshield is very wide/short).
+ * Random candidates make repeated arrivals vary; the deterministic grid is a
+ * last-resort "farthest available" fallback for unusually crowded systems.
+ */
+export function chooseWarpArrivalAnchor(
+  sectorId: number,
+  snapshot: StaticSystem,
+  band: BandGeometry,
+  random: () => number = Math.random,
+): PctPoint {
+  const star = starAnchor(sectorId, snapshot.star, snapshot.bodies);
+  const planetRadii = safeOrbitRadii(star, band, PLANET_FOOTPRINT_EM_MAX);
+  const stationRadii = safeOrbitRadii(
+    star,
+    band,
+    STATION_FOOTPRINT_EM_WIDTH_MAX,
+    STATION_FOOTPRINT_EM_HEIGHT_MAX,
+  );
+  const bubbleRadiusPx = 1.7 * band.remPx;
+  const clearancePx = 0.8 * band.remPx;
+  const shipClearancePx = bubbleRadiusPx + clearancePx;
+
+  type Obstacle =
+    | { kind: 'circle'; xPx: number; yPx: number; radiusPx: number }
+    | { kind: 'rect'; xPx: number; yPx: number; halfWidthPx: number; halfHeightPx: number };
+  const toPx = (p: PctPoint) => ({
+    xPx: (p.xPct / 100) * band.widthPx,
+    yPx: (p.yPct / 100) * band.heightPx,
+  });
+  const obstacles: Obstacle[] = [];
+
+  if (snapshot.star) {
+    const p = toPx(star);
+    obstacles.push({ kind: 'circle', ...p, radiusPx: (star.sizeEm * band.remPx) / 2 });
+  }
+  snapshot.bodies.forEach((body) => {
+    const p = toPx(bodyPosition(star, body, planetRadii));
+    obstacles.push({
+      kind: 'circle',
+      ...p,
+      radiusPx: (bodySizeEm(body) * band.remPx) / 2,
+    });
+  });
+  snapshot.stations.forEach((station) => {
+    const p = toPx(stationPosition(star, station, stationRadii));
+    obstacles.push({
+      kind: 'rect',
+      ...p,
+      halfWidthPx: (STATION_FOOTPRINT_EM_WIDTH_MAX * band.remPx) / 2,
+      halfHeightPx: (STATION_FOOTPRINT_EM_HEIGHT_MAX * band.remPx) / 2,
+    });
+  });
+
+  const marginXPct = (shipClearancePx / band.widthPx) * 100;
+  const marginYPct = (shipClearancePx / band.heightPx) * 100;
+  const xMin = Math.max(6, marginXPct);
+  const xMax = Math.min(94, 100 - marginXPct);
+  const yMin = Math.max(10, marginYPct);
+  const yMax = Math.min(90, 100 - marginYPct);
+
+  const clearance = (candidate: PctPoint): number => {
+    const p = toPx(candidate);
+    if (obstacles.length === 0) return Number.POSITIVE_INFINITY;
+    return Math.min(...obstacles.map((obstacle) => {
+      const dx = Math.abs(p.xPx - obstacle.xPx);
+      const dy = Math.abs(p.yPx - obstacle.yPx);
+      if (obstacle.kind === 'circle') {
+        return Math.hypot(dx, dy) - obstacle.radiusPx - shipClearancePx;
+      }
+      const outsideX = dx - obstacle.halfWidthPx - shipClearancePx;
+      const outsideY = dy - obstacle.halfHeightPx - shipClearancePx;
+      if (outsideX >= 0 || outsideY >= 0) {
+        return Math.hypot(Math.max(0, outsideX), Math.max(0, outsideY));
+      }
+      return Math.max(outsideX, outsideY);
+    }));
+  };
+
+  // A fresh random stream is consumed on every warp, so revisiting one sector
+  // does not reuse its prior arrival coordinate.
+  for (let attempt = 0; attempt < 160; attempt++) {
+    const candidate = {
+      xPct: xMin + Math.min(0.999999, Math.max(0, random())) * (xMax - xMin),
+      yPct: yMin + Math.min(0.999999, Math.max(0, random())) * (yMax - yMin),
+    };
+    if (clearance(candidate) >= 0) return candidate;
+  }
+
+  // Extremely crowded fallback: choose the grid point with maximum clearance.
+  let best: PctPoint = { xPct: (xMin + xMax) / 2, yPct: (yMin + yMax) / 2 };
+  let bestClearance = clearance(best);
+  for (let yi = 0; yi <= 10; yi++) {
+    for (let xi = 0; xi <= 16; xi++) {
+      const candidate = {
+        xPct: xMin + (xi / 16) * (xMax - xMin),
+        yPct: yMin + (yi / 10) * (yMax - yMin),
+      };
+      const candidateClearance = clearance(candidate);
+      if (candidateClearance > bestClearance) {
+        best = candidate;
+        bestClearance = candidateClearance;
+      }
+    }
+  }
+  return best;
+}
 
 interface PopupState {
   key: string;
@@ -256,6 +497,7 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
   onSelectShip,
   lastDockedStationId = null,
   lastLandedPlanetId = null,
+  warpDepart = null,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -298,15 +540,7 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
       .get(`/api/v1/sectors/${sectorId}/contents`)
       .then((res) => {
         if (cancelled) return;
-        const d = res.data || {};
-        setSystem({
-          star: d.star ?? null,
-          nebula: d.nebula ?? null,
-          belt: d.belt ?? null,
-          debris: d.debris ?? null,
-          bodies: Array.isArray(d.bodies) ? d.bodies : [],
-          stations: Array.isArray(d.stations) ? d.stations : [],
-        });
+        setSystem(toStaticSystem(res.data));
       })
       .catch((err) => {
         if (cancelled) return;
@@ -342,10 +576,39 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
   const hazeArcs = useMemo(() => (system?.nebula ? nebulaArcs(sectorId) : []), [sectorId, system?.nebula]);
   const debrisRingArc = useMemo(() => (system?.debris ? debrisArc(system.debris) : null), [system?.debris]);
 
+  // Real planet/station anchors contacts fly between (same procedure as .shipmk).
+  // Tag habitable vs barren so cosmetic fallback matches server destination bias.
+  const contactDocks = useMemo((): ContactDock[] => {
+    if (!system) return [];
+    const docks: ContactDock[] = [];
+    const habKinds = new Set(['TERRAN', 'OCEANIC', 'TROPICAL', 'JUNGLE']);
+    for (const body of system.bodies) {
+      const pos = bodyPosition(star, body, safeRadiiPlanets);
+      const kind = String(body.kind || '').toUpperCase().replace(/^PLANETTYPE\./, '');
+      const hab = typeof body.habitability === 'number' ? body.habitability : null;
+      const habitable = habKinds.has(kind) || (hab != null && hab >= 50);
+      docks.push({ ...pos, bucket: habitable ? 'habitable' : 'barren' });
+    }
+    for (const st of system.stations) {
+      docks.push({ ...stationPosition(star, st, safeRadiiStations), bucket: 'habitable' });
+    }
+    return docks;
+  }, [system, star, safeRadiiPlanets, safeRadiiStations]);
+
   // ---- Player's own ship marker — the ONLY system-level mover. ----
   const [shipPos, setShipPos] = useState<PctPoint | null>(null);
   const [heading, setHeading] = useState(0);
+  const headingRef = useRef(heading);
+  headingRef.current = heading;
   const [localBurn, setLocalBurn] = useState(false);
+  const [travelPhase, setTravelPhase] = useState<TravelPhase>('idle');
+  const travelPhaseRef = useRef<TravelPhase>('idle');
+  travelPhaseRef.current = travelPhase;
+  const travelTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const clearTravelTimers = useCallback(() => {
+    travelTimersRef.current.forEach(clearTimeout);
+    travelTimersRef.current = [];
+  }, []);
   // The current glide's target planet/station id, or null (star/ship/wreck/
   // formation clicks, or no glide in progress) — published to the shared
   // flight context below so a SOLAR row can tell whether IT is the thing
@@ -353,14 +616,183 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
   const [glideTargetId, setGlideTargetId] = useState<string | null>(null);
   const shipPosRef = useRef<PctPoint | null>(null);
   shipPosRef.current = shipPos;
+  const travelOriginRef = useRef<PctPoint | null>(null);
   const shipMkRef = useRef<HTMLDivElement>(null);
   const seededSectorRef = useRef<number | null>(null);
   const autopilot = useAutopilot();
   const flight = useWindshieldFlight();
 
+  // ---- Warp cinematic (sphere-field jump between sectors) ----
+  //   idle → charging (bubble inflates around the parked hull; HOLDS over the
+  //                    current sector until the jump actually resolves)
+  //        → launch   (field snaps, ship streaks out along the exit bearing)
+  //        → arriving (a warp flash as the destination sector takes over)
+  //        → idle
+  // The buildup is kicked by `warpDepart.token` (fired the instant the jump is
+  // committed); the warp-away is keyed to the sectorId prop actually changing,
+  // so the buildup always precedes the swap without delaying the move itself.
+  // reduced-motion callers never send a token, so the whole thing no-ops.
+  const [warpPhase, setWarpPhase] = useState<'idle' | 'turning' | 'charging' | 'launch' | 'arriving'>('idle');
+  const warpPhaseRef = useRef(warpPhase);
+  warpPhaseRef.current = warpPhase;
+  const warpBearing = warpDepart?.bearingDeg ?? 0;
+  const arrivalBearing = warpDepart
+    ? arrivalBearingForWarp(warpBearing, warpDepart.token)
+    : 0;
+  const warpTokenSeenRef = useRef<number | null>(null);
+  const chargeStartRef = useRef(0);
+  const [preparedArrival, setPreparedArrival] = useState<{
+    token: number;
+    sectorId: number;
+    point: PctPoint;
+  } | null>(null);
+  const warpTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const clearWarpTimers = useCallback(() => {
+    warpTimersRef.current.forEach(clearTimeout);
+    warpTimersRef.current = [];
+  }, []);
+
+  // Prefetch destination geometry while the departure bubble is charging.
+  // That lets us choose an object-safe random point BEFORE the sector swaps,
+  // so the destination's first arrival frame already has ship+bubble centered
+  // together instead of correcting position afterward.
+  useEffect(() => {
+    if (!warpDepart || !bandBox) return;
+    let cancelled = false;
+    const { token, destinationSectorId } = warpDepart;
+    setPreparedArrival((current) => (current?.token === token ? current : null));
+    apiClient
+      .get(`/api/v1/sectors/${destinationSectorId}/contents`)
+      .then((res) => {
+        if (cancelled) return;
+        const snapshot = toStaticSystem(res.data);
+        setPreparedArrival({
+          token,
+          sectorId: destinationSectorId,
+          point: chooseWarpArrivalAnchor(destinationSectorId, snapshot, bandBox),
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        // Do not invent an unsafe fallback point: the normal destination fetch
+        // can retry after the sector changes, while the launch keeps the old
+        // hull hidden.
+        // eslint-disable-next-line no-console
+        console.error('WindshieldTableau: warp-arrival prefetch failed:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [warpDepart, bandBox]);
+
+  // If the prefetch lost a race or transiently failed, the normal destination
+  // fetch supplies the same geometry once `sectorId` changes. Still do not
+  // reveal the arrival until an avoidance-checked point exists.
+  useEffect(() => {
+    if (!warpDepart || !bandBox || !system) return;
+    if (warpDepart.destinationSectorId !== sectorId) return;
+    if (preparedArrival?.token === warpDepart.token) return;
+    setPreparedArrival({
+      token: warpDepart.token,
+      sectorId,
+      point: chooseWarpArrivalAnchor(sectorId, system, bandBox),
+    });
+  }, [warpDepart, bandBox, system, sectorId, preparedArrival?.token]);
+
+  // Buildup: a fresh token starts the bubble inflating over the CURRENT sector,
+  // then the launch streak plays there. Arrival (sectorId effect below) cuts in
+  // when the destination actually lands — snapping the hull to the new anchor.
+  useEffect(() => {
+    if (!warpDepart) return;
+    if (warpTokenSeenRef.current === warpDepart.token) return;
+    warpTokenSeenRef.current = warpDepart.token;
+    clearWarpTimers();
+    clearTravelTimers();
+    setTravelPhase('idle');
+    setLocalBurn(false);
+    setGlideTargetId(null);
+    // Phase 1 — TURN: re-orient the hull toward the exit bearing (RCS jets
+    // puffing) BEFORE anything else. The warp field does not start inflating
+    // until this turn has visibly finished. `bearingDeg` is the real galactic
+    // XYZ vector projected onto this 2D view when coordinates are available
+    // (deterministic fallback otherwise).
+    setHeading(warpDepart.bearingDeg);
+    setWarpPhase('turning');
+    const timers = warpTimersRef.current;
+    // Phase 2 — CHARGE: only after the turn completes does the bubble inflate.
+    timers.push(
+      setTimeout(() => {
+        if (warpPhaseRef.current === 'turning') {
+          chargeStartRef.current = Date.now();
+          setWarpPhase('charging');
+        }
+      }, WARP_TURN_MS)
+    );
+    // Phase 3 — LAUNCH streak, once the field is fully charged.
+    timers.push(
+      setTimeout(() => {
+        if (warpPhaseRef.current === 'charging') setWarpPhase('launch');
+      }, WARP_TURN_MS + WARP_MIN_CHARGE_MS)
+    );
+    timers.push(
+      setTimeout(() => {
+        if (
+          warpPhaseRef.current === 'turning' ||
+          warpPhaseRef.current === 'charging' ||
+          warpPhaseRef.current === 'launch'
+        ) {
+          setWarpPhase('idle');
+        }
+      }, WARP_CHARGE_TIMEOUT_MS)
+    );
+  }, [warpDepart, clearWarpTimers, clearTravelTimers]);
+
+  // Arrival: sector swapped. Never cut the TURN short — if the move resolved
+  // early (or a stale race), hold until the hull has finished re-orienting.
+  // Snap the hull onto the NEW resting anchor IMMEDIATELY (`.shipmk` otherwise
+  // CSS-glides left/top over 11.6s — bubble has no transition, so it jumps
+  // while the ship crawls from the old sector's coordinates). Then play the
+  // collapsing arrival sphere with the ship already centered inside it.
+  useEffect(() => {
+    if (warpPhase === 'turning' || warpPhase === 'idle') return;
+    if (warpPhase !== 'charging' && warpPhase !== 'launch') return;
+    if (!warpDepart || warpDepart.destinationSectorId !== sectorId) return;
+    if (
+      !preparedArrival ||
+      preparedArrival.token !== warpDepart.token ||
+      preparedArrival.sectorId !== sectorId
+    ) return;
+    clearWarpTimers();
+    const arriveAt = preparedArrival.point;
+    seededSectorRef.current = sectorId;
+    shipPosRef.current = arriveAt;
+    setShipPos(arriveAt);
+    // Arrive on a deliberately different angle from departure. The inbound
+    // streak uses this same bearing so hull orientation and motion agree.
+    setHeading(arrivalBearing);
+    setLocalBurn(false);
+    setGlideTargetId(null);
+    setWarpPhase('arriving');
+    warpTimersRef.current = [
+      setTimeout(() => setWarpPhase('idle'), WARP_ARRIVE_MS),
+    ];
+    return () => clearWarpTimers();
+  }, [sectorId, warpDepart, preparedArrival, arrivalBearing, warpPhase, clearWarpTimers]);
+
+  useEffect(() => () => clearWarpTimers(), [clearWarpTimers]);
+
   useEffect(() => {
     if (!system) return; // wait for the fetch that resolves dock/land host lookups
     if (seededSectorRef.current === sectorId) return;
+    // A warp arrival owns this sector's first ship position. Wait for its
+    // prefetched object-safe random anchor instead of applying the old
+    // deterministic `selfRestingAnchor(sectorId)` first.
+    if (
+      warpDepart?.destinationSectorId === sectorId &&
+      (warpPhaseRef.current === 'turning' ||
+        warpPhaseRef.current === 'charging' ||
+        warpPhaseRef.current === 'launch')
+    ) return;
     seededSectorRef.current = sectorId;
     let anchor: PctPoint | null = null;
     if (lastDockedStationId) {
@@ -372,9 +804,17 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
       if (b) anchor = bodyPosition(star, b, safeRadiiPlanets);
     }
     if (!anchor) anchor = selfRestingAnchor(sectorId);
+    // Sector reseed is a teleport, not a glide — suppress the 11.6s left/top
+    // transition (warp-arriving / warp-launching CSS also forces this).
+    shipPosRef.current = anchor;
     setShipPos(anchor);
     setHeading(0);
-  }, [system, sectorId, lastDockedStationId, lastLandedPlanetId, star, safeRadiiPlanets, safeRadiiStations]);
+    // Emerging at a resting anchor (undock, planet lift-off, or a fresh
+    // sector arrival) is NOT travel — the ship is parked, so the exhaust
+    // flame must be cold. Clear any burn carried in from a prior glide.
+    setLocalBurn(false);
+    setGlideTargetId(null);
+  }, [system, sectorId, lastDockedStationId, lastLandedPlanetId, star, safeRadiiPlanets, safeRadiiStations, warpDepart]);
 
   // FIX B: real band aspect (heightPx/widthPx) so headingDeg converts %-space
   // deltas into the same px-equivalent units before computing the angle --
@@ -382,22 +822,256 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
   // behavior) before bandBox is measured, matching headingDeg's own default.
   const bandAspect = useMemo(() => (bandBox ? bandBox.heightPx / bandBox.widthPx : 1), [bandBox]);
 
-  const travelTo = useCallback((target: PctPoint, objectId: string | null = null) => {
-    const from = shipPosRef.current ?? target;
-    setHeading(headingDeg(from, target, bandAspect));
-    setShipPos(target);
-    setLocalBurn(true);
-    setGlideTargetId(objectId);
-  }, [bandAspect]);
+  // Contact traffic clock — drives ISP plan interpolation (~20fps).
+  const [contactT, setContactT] = useState(0);
+  const [ispClockSkewMs, setIspClockSkewMs] = useState(0); // server_time - local
+  const [selfIspPose, setSelfIspPose] = useState<IspPose | null>(null);
+  useEffect(() => {
+    if (ships.length === 0 && !selfIspPose?.leg) return;
+    const reduce =
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+    if (reduce) {
+      setContactT(0);
+      return;
+    }
+    let raf = 0;
+    let lastPaint = 0;
+    const tick = (now: number) => {
+      if (now - lastPaint >= 50) {
+        lastPaint = now;
+        setContactT(now / 1000);
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [ships.length, selfIspPose?.leg]);
 
+  // Hydrate authoritative self pose (reload / sector entry).
+  // Must claim `seededSectorRef` when applied — otherwise the resting-anchor
+  // seed (below) races in after /system resolves and snaps the ship back.
+  useEffect(() => {
+    let cancelled = false;
+    apiClient
+      .get('/api/v1/helm/intrasystem/pose')
+      .then((res) => {
+        if (cancelled) return;
+        const data = res.data as IspPose;
+        if (data?.server_time) {
+          setIspClockSkewMs(parseIspTime(data.server_time) - Date.now());
+        }
+        setSelfIspPose(data);
+        const sample = deriveIspPose(data, Date.now() + (data?.server_time ? parseIspTime(data.server_time) - Date.now() : 0));
+        // Undock/land emerge owns the first frame — don't stomp with a prior ISP.
+        if (lastDockedStationId || lastLandedPlanetId) return;
+        // Only teleport onto server pose when not mid local CSS glide.
+        if (travelPhaseRef.current === 'idle') {
+          seededSectorRef.current = sectorId;
+          shipPosRef.current = { xPct: sample.x_pct, yPct: sample.y_pct };
+          setShipPos({ xPct: sample.x_pct, yPct: sample.y_pct });
+          setHeading(sample.heading_deg);
+          setLocalBurn(!!sample.burning);
+        }
+      })
+      .catch(() => { /* pose endpoint may lag deploy — keep local flight */ });
+    return () => { cancelled = true; };
+  }, [sectorId, lastDockedStationId, lastLandedPlanetId]);
+
+  const ispNowMs = () => Date.now() + ispClockSkewMs;
+
+  const commitIspBurn = useCallback((target: PctPoint, objectId: string | null) => {
+    apiClient
+      .post('/api/v1/helm/intrasystem/burn', {
+        x_pct: target.xPct,
+        y_pct: target.yPct,
+        // Kind is informational; coords are authoritative. Free-point = point.
+        target_kind: objectId ? 'object' : 'point',
+        target_id: objectId,
+      })
+      .then((res) => {
+        const data = res.data as IspPose;
+        if (data?.server_time) setIspClockSkewMs(parseIspTime(data.server_time) - Date.now());
+        setSelfIspPose(data);
+      })
+      .catch(() => { /* optimistic local flight still runs */ });
+  }, []);
+
+  const commitIspHalt = useCallback(() => {
+    apiClient
+      .post('/api/v1/helm/intrasystem/halt')
+      .then((res) => {
+        const data = res.data as IspPose;
+        if (data?.server_time) setIspClockSkewMs(parseIspTime(data.server_time) - Date.now());
+        setSelfIspPose(data);
+      })
+      .catch(() => {});
+  }, []);
+
+  const readLiveShipPos = useCallback((): PctPoint | null => {
+    const containerEl = containerRef.current;
+    const shipEl = shipMkRef.current;
+    if (!containerEl || !shipEl) return shipPosRef.current;
+    const containerRect = containerEl.getBoundingClientRect();
+    const shipRect = shipEl.getBoundingClientRect();
+    if (containerRect.width <= 0 || containerRect.height <= 0) return shipPosRef.current;
+    return {
+      xPct: ((shipRect.left + shipRect.width / 2 - containerRect.left) / containerRect.width) * 100,
+      yPct: ((shipRect.top + shipRect.height / 2 - containerRect.top) / containerRect.height) * 100,
+    };
+  }, []);
+
+  /** Schedule coast → flip → brake → face after the burn/glide has already been committed. */
+  const armArrivalProfile = useCallback((prograde: number) => {
+    const retrograde = prograde + 180;
+    const faceDestination = prograde + 360;
+    const timers = travelTimersRef.current;
+    timers.push(setTimeout(() => {
+      setTravelPhase('gliding');
+      setLocalBurn(false);
+    }, TRAVEL_ACCEL_MS));
+    timers.push(setTimeout(() => {
+      setTravelPhase('brake-turn');
+      setHeading(retrograde);
+    }, TRAVEL_ACCEL_MS + TRAVEL_COAST_MS));
+    timers.push(setTimeout(() => {
+      setTravelPhase('braking');
+      setLocalBurn(true);
+    }, TRAVEL_ACCEL_MS + TRAVEL_COAST_MS + TRAVEL_FLIP_MS));
+    timers.push(setTimeout(() => {
+      setTravelPhase('final-orient');
+      setLocalBurn(false);
+      setHeading(faceDestination);
+    }, TRAVEL_MOVE_MS));
+    timers.push(setTimeout(() => {
+      setTravelPhase('idle');
+      setGlideTargetId(null);
+    }, TRAVEL_MOVE_MS + TRAVEL_SETTLE_MS));
+  }, []);
+
+  const travelTo = useCallback((target: PctPoint, objectId: string | null = null) => {
+    clearTravelTimers();
+    const phase = travelPhaseRef.current;
+
+    // ── Mid-course redirect: keep momentum and arc onto the new bearing. ──
+    // Never drop back into parked `orienting` — that freezes left/top and
+    // reads as an instant momentum kill.
+    if (isInFlightPhase(phase)) {
+      const oldDest = shipPosRef.current ?? target;
+      const origin = travelOriginRef.current;
+      let live = readLiveShipPos() ?? oldDest;
+      // jsdom / unsampled transitions report the style end-target; synthesize
+      // a mid-course point from the recorded origin so the arc still has a
+      // forward velocity vector to preserve.
+      if (
+        origin &&
+        Math.hypot(oldDest.xPct - live.xPct, oldDest.yPct - live.yPct) < 0.4
+      ) {
+        live = {
+          xPct: origin.xPct + (oldDest.xPct - origin.xPct) * 0.45,
+          yPct: origin.yPct + (oldDest.yPct - origin.yPct) * 0.45,
+        };
+      }
+      let vx = oldDest.xPct - (origin?.xPct ?? live.xPct);
+      let vy = oldDest.yPct - (origin?.yPct ?? live.yPct);
+      let vLen = Math.hypot(vx, vy);
+      if (vLen < 1e-3) {
+        vx = target.xPct - live.xPct;
+        vy = target.yPct - live.yPct;
+        vLen = Math.hypot(vx, vy);
+      }
+      if (vLen < 1e-3 || Math.hypot(target.xPct - live.xPct, target.yPct - live.yPct) < 0.1) {
+        setLocalBurn(false);
+        setTravelPhase('idle');
+        setGlideTargetId(null);
+        return;
+      }
+      vx /= vLen;
+      vy /= vLen;
+
+      const waypoint = redirectArcWaypoint(live, { x: vx, y: vy }, target);
+      const arcHeading =
+        headingRef.current + shortestAngleDelta(
+          headingRef.current,
+          headingDeg(live, waypoint, bandAspect),
+        );
+      const prograde =
+        headingRef.current + shortestAngleDelta(
+          headingRef.current,
+          headingDeg(waypoint, target, bandAspect),
+        );
+
+      travelOriginRef.current = live;
+      setGlideTargetId(objectId);
+      setLocalBurn(false);
+      setTravelPhase('redirect-turn');
+      setHeading(arcHeading);
+      // Retarget the running glide onto the arc waypoint — browser continues
+      // from the live interpolated position (momentum preserved).
+      setShipPos(waypoint);
+      shipPosRef.current = waypoint;
+
+      const timers = travelTimersRef.current;
+      timers.push(setTimeout(() => {
+        setTravelPhase('accelerating');
+        setLocalBurn(true);
+        setHeading(prograde);
+        setShipPos(target);
+        shipPosRef.current = target;
+        travelOriginRef.current = waypoint;
+        armArrivalProfile(prograde);
+        commitIspBurn(target, objectId);
+      }, TRAVEL_REDIRECT_TURN_MS));
+      return;
+    }
+
+    // ── Cold start from a parked hull. ──
+    const from = shipPosRef.current ?? target;
+    const moving = Math.hypot(target.xPct - from.xPct, target.yPct - from.yPct) > 0.1;
+    if (!moving) {
+      setLocalBurn(false);
+      setTravelPhase('idle');
+      setGlideTargetId(null);
+      return;
+    }
+
+    travelOriginRef.current = from;
+    const prograde =
+      headingRef.current + shortestAngleDelta(headingRef.current, headingDeg(from, target, bandAspect));
+
+    setGlideTargetId(objectId);
+    setLocalBurn(false);
+    setTravelPhase('orienting');
+    setHeading(prograde);
+    commitIspBurn(target, objectId);
+
+    const timers = travelTimersRef.current;
+    timers.push(setTimeout(() => {
+      setTravelPhase('accelerating');
+      setLocalBurn(true);
+      setShipPos(target);
+      shipPosRef.current = target;
+      armArrivalProfile(prograde);
+    }, TRAVEL_ORIENT_MS));
+  }, [bandAspect, clearTravelTimers, readLiveShipPos, armArrivalProfile, commitIspBurn]);
+
+  const approachStation = useCallback((station: SystemStation, stationPos: PctPoint) => {
+    if (!bandBox) return;
+    const from = (isInFlightPhase(travelPhaseRef.current) ? readLiveShipPos() : null)
+      ?? shipPosRef.current
+      ?? stationPos;
+    travelTo(stationApproachPoint(from, stationPos, bandBox), station.station_id);
+  }, [bandBox, travelTo, readLiveShipPos]);
+
+  const localTraveling = travelPhase !== 'idle';
   const burning = localBurn || autopilot.status === 'engaged';
 
   // Publish this component's real flight state into the shared context on
   // every change, so PlanetPortPair rows + the locrow ALL STOP chip
   // (GameDashboard.tsx) see the SAME glide a band-object click drives.
   useEffect(() => {
-    flight.reportFlightState(burning, glideTargetId);
-  }, [burning, glideTargetId, flight.reportFlightState]);
+    flight.reportFlightState(localTraveling || autopilot.status === 'engaged', glideTargetId);
+  }, [localTraveling, autopilot.status, glideTargetId, flight.reportFlightState]);
 
   // A SOLAR row's "APPROACH ▸" click records a request on the shared
   // context (GameDashboard.tsx -> PlanetPortPair's onApproach ->
@@ -413,40 +1087,138 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
     }
     const stationMatch = system.stations.find((s) => s.station_id === objectId);
     if (stationMatch) {
-      travelTo(stationPosition(star, stationMatch, safeRadiiStations), objectId);
+      const stationPos = stationPosition(star, stationMatch, safeRadiiStations);
+      approachStation(stationMatch, stationPos);
     }
     // Unresolvable (stale id from a since-changed sector) — no-op, matches
     // the context's own documented "no-op if the id can't be resolved".
-  }, [flight.pendingApproach, system, star, safeRadiiPlanets, safeRadiiStations, travelTo]);
+  }, [flight.pendingApproach, system, star, safeRadiiPlanets, safeRadiiStations, travelTo, approachStation]);
 
-  // A row/locrow ALL STOP click (flight.allStop()) bumps stopSignal; freeze
-  // the glide at its LIVE on-screen spot (not the target it was heading
-  // toward) — read the ship marker's actual rendered position and re-commit
-  // it as the state, which makes the in-flight CSS transition a zero-delta
-  // no-op instead of jumping anywhere.
+  // A row/locrow ALL STOP click (flight.allStop()) bumps stopSignal. Instead of
+  // freezing momentum in place, abort the planned destination and run an
+  // emergency flip → retro-burn: the hull keeps coasting a short distance
+  // while it reorients, then burns to a stop. Orienting (not yet moving) just
+  // cancels. Already-halting / already-braking for the destination is a no-op.
   useEffect(() => {
     if (flight.stopSignal === 0) return; // 0 = never stopped yet — skip the mount-time run
+    const phase = travelPhaseRef.current;
+    if (
+      phase === 'idle' ||
+      phase === 'halt-turn' ||
+      phase === 'halt-brake' ||
+      phase === 'brake-turn' ||
+      phase === 'braking' ||
+      phase === 'final-orient'
+    ) {
+      return;
+    }
+
+    clearTravelTimers();
+    commitIspHalt();
+
+    // Still parked while aiming — no momentum to bleed; just cancel.
+    if (phase === 'orienting') {
+      setLocalBurn(false);
+      setTravelPhase('idle');
+      setGlideTargetId(null);
+      return;
+    }
+
     const containerEl = containerRef.current;
     const shipEl = shipMkRef.current;
-    if (containerEl && shipEl) {
-      const containerRect = containerEl.getBoundingClientRect();
-      const shipRect = shipEl.getBoundingClientRect();
-      if (containerRect.width > 0 && containerRect.height > 0) {
-        setShipPos({
-          xPct: ((shipRect.left + shipRect.width / 2 - containerRect.left) / containerRect.width) * 100,
-          yPct: ((shipRect.top + shipRect.height / 2 - containerRect.top) / containerRect.height) * 100,
-        });
-      }
+    const dest = shipPosRef.current;
+    if (!containerEl || !shipEl || !dest) {
+      setLocalBurn(false);
+      setTravelPhase('idle');
+      setGlideTargetId(null);
+      return;
     }
+
+    const containerRect = containerEl.getBoundingClientRect();
+    const shipRect = shipEl.getBoundingClientRect();
+    if (containerRect.width <= 0 || containerRect.height <= 0) {
+      setLocalBurn(false);
+      setTravelPhase('idle');
+      setGlideTargetId(null);
+      return;
+    }
+
+    // Live on-screen position (mid-transition). Do NOT write this back as
+    // style.left first — that would reverse-animate. Changing the end target
+    // below retargets the running CSS transition from the current computed
+    // point, which is what preserves momentum into the halt.
+    let live: PctPoint = {
+      xPct: ((shipRect.left + shipRect.width / 2 - containerRect.left) / containerRect.width) * 100,
+      yPct: ((shipRect.top + shipRect.height / 2 - containerRect.top) / containerRect.height) * 100,
+    };
+
+    let dx = dest.xPct - live.xPct;
+    let dy = dest.yPct - live.yPct;
+    let remaining = Math.hypot(dx, dy);
+    // jsdom (and some instant layout paths) report the ship already at the
+    // style end-target mid-flight. If we're still in a powered/coast phase,
+    // synthesize a mid-course point from the recorded origin so Halt still
+    // has momentum to bleed.
+    const origin = travelOriginRef.current;
+    if (remaining < 0.4 && origin && (phase === 'accelerating' || phase === 'gliding')) {
+      live = {
+        xPct: origin.xPct + (dest.xPct - origin.xPct) * 0.45,
+        yPct: origin.yPct + (dest.yPct - origin.yPct) * 0.45,
+      };
+      dx = dest.xPct - live.xPct;
+      dy = dest.yPct - live.yPct;
+      remaining = Math.hypot(dx, dy);
+    }
+    if (remaining < 0.4) {
+      setLocalBurn(false);
+      setTravelPhase('idle');
+      setGlideTargetId(null);
+      return;
+    }
+
+    const ux = dx / remaining;
+    const uy = dy / remaining;
+    const coastAhead = Math.min(remaining * 0.9, Math.max(2.5, remaining * TRAVEL_HALT_COAST_FRAC));
+    const stopPoint: PctPoint = {
+      xPct: clampPct(live.xPct + ux * coastAhead),
+      yPct: clampPct(live.yPct + uy * coastAhead),
+    };
+
+    const travelHdg = headingDeg(live, stopPoint, bandAspect);
+    const prograde = headingRef.current + shortestAngleDelta(headingRef.current, travelHdg);
+    const retrograde = prograde + 180;
+
+    // Keep glideTargetId so APPROACH→HALT UI stays coherent until we park.
     setLocalBurn(false);
-    setGlideTargetId(null);
-  }, [flight.stopSignal]);
+    setTravelPhase('halt-turn');
+    setHeading(retrograde);
+    // Retarget the continuous glide to a nearby stop — browser continues from
+    // the live interpolated position with the new (short) halt duration.
+    setShipPos(stopPoint);
+    shipPosRef.current = stopPoint;
+
+    const timers = travelTimersRef.current;
+    timers.push(setTimeout(() => {
+      setTravelPhase('halt-brake');
+      setLocalBurn(true);
+    }, TRAVEL_HALT_FLIP_MS));
+    timers.push(setTimeout(() => {
+      setLocalBurn(false);
+      setTravelPhase('idle');
+      setGlideTargetId(null);
+    }, TRAVEL_HALT_FLIP_MS + TRAVEL_HALT_BRAKE_MS));
+  }, [flight.stopSignal, clearTravelTimers, bandAspect, commitIspHalt]);
+
+  useEffect(() => () => clearTravelTimers(), [clearTravelTimers]);
 
   // ---- Popups (click → info card, reusing the .ssv-popup glass) ----
   const openPopup = useCallback((meta: HitMeta, name: string, pos: PctPoint, objectId: string | null = null) => {
     setCtxMenu(null); // a left-click popup and a right-click menu are mutually exclusive overlays
     setPopup({ key: `${meta.kind}:${name}`, meta, name, xPct: pos.xPct, yPct: pos.yPct });
-    travelTo(pos, objectId);
+    // Inspecting a station/planet must not silently start movement. Their
+    // popups own the explicit APPROACH → HALT → DOCK/LAND proximity flow.
+    // Other object kinds keep the existing click-to-glide behavior.
+    if (meta.kind !== 'station' && meta.kind !== 'planet') travelTo(pos, objectId);
   }, [travelTo]);
 
   // FIX C revise (Max correction: "no longer able to right click anywhere
@@ -548,6 +1320,16 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
         const ownerName = meta.owned
           ? planets.find((p) => p.id === meta.planetId)?.owner_name || 'CLAIMED'
           : null;
+        const body = system?.bodies.find((b) => b.planet_id === meta.planetId);
+        const planetPos = body
+          ? bodyPosition(star, body, safeRadiiPlanets)
+          : { xPct: popup.xPct, yPct: popup.yPct };
+        const withinLandRange = Boolean(
+          shipPos &&
+          bandBox &&
+          distancePx(shipPos, planetPos, bandBox) <= DOCK_RANGE_EM * bandBox.remPx
+        );
+        const approachingThisPlanet = localTraveling && glideTargetId === meta.planetId;
         return (
           <>
             <div className="ssv-popup-title">{popup.name.toUpperCase()}</div>
@@ -556,7 +1338,16 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
               <div className="ssv-popup-line">HABITABILITY {Math.round(meta.habitability)}%</div>
             )}
             {ownerName && <div className="ssv-popup-line">OWNER — {ownerName}</div>}
-            {onRequestLand && (
+            {approachingThisPlanet ? (
+              <button
+                type="button"
+                className="ssv-popup-action halt"
+                onClick={() => flight.allStop()}
+                aria-label={`Halt approach to ${popup.name}`}
+              >
+                🛑 HALT
+              </button>
+            ) : withinLandRange && onRequestLand ? (
               <button
                 type="button"
                 className="ssv-popup-action"
@@ -564,16 +1355,46 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
               >
                 🛬 LAND
               </button>
+            ) : body ? (
+              <button
+                type="button"
+                className="ssv-popup-action"
+                onClick={() => travelTo(planetPos, meta.planetId)}
+              >
+                ➤ APPROACH
+              </button>
+            ) : null}
+            {!withinLandRange && !approachingThisPlanet && (
+              <div className="ssv-popup-status">OUTSIDE LANDING RANGE</div>
             )}
           </>
         );
       }
-      case 'station':
+      case 'station': {
+        const station = system?.stations.find((s) => s.station_id === meta.stationId);
+        const stationPos = station
+          ? stationPosition(star, station, safeRadiiStations)
+          : { xPct: popup.xPct, yPct: popup.yPct };
+        const withinDockRange = Boolean(
+          shipPos &&
+          bandBox &&
+          distancePx(shipPos, stationPos, bandBox) <= DOCK_RANGE_EM * bandBox.remPx
+        );
+        const approachingThisStation = localTraveling && glideTargetId === meta.stationId;
         return (
           <>
             <div className="ssv-popup-title">{popup.name.toUpperCase()}</div>
             <div className="ssv-popup-line">{meta.stationType.replace(/_/g, ' ').toUpperCase()}</div>
-            {onRequestDock && (
+            {approachingThisStation ? (
+              <button
+                type="button"
+                className="ssv-popup-action halt"
+                onClick={() => flight.allStop()}
+                aria-label={`Halt approach to ${popup.name}`}
+              >
+                🛑 HALT
+              </button>
+            ) : withinDockRange && onRequestDock ? (
               <button
                 type="button"
                 className="ssv-popup-action"
@@ -581,9 +1402,21 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
               >
                 ⚓ DOCK
               </button>
+            ) : station ? (
+              <button
+                type="button"
+                className="ssv-popup-action"
+                onClick={() => approachStation(station, stationPos)}
+              >
+                ➤ APPROACH
+              </button>
+            ) : null}
+            {!withinDockRange && !approachingThisStation && (
+              <div className="ssv-popup-status">OUTSIDE DOCKING RANGE</div>
             )}
           </>
         );
+      }
       case 'ship':
         return (
           <>
@@ -642,7 +1475,20 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
   const hasNebula = !!system?.nebula;
   const hasHazard = hazardLevel >= 5;
   const selectedShip = ships.find((s) => s.ship_id && String(s.ship_id) === String(selectedShipId));
-  const selectedPos = selectedShip ? otherPresencePosition(String(selectedShip.ship_id)) : null;
+  const selectedPos = (() => {
+    if (!selectedShip?.ship_id) return null;
+    if (selectedShip.pose) {
+      const s = deriveIspPose(selectedShip.pose as IspPose, ispNowMs());
+      return { xPct: s.x_pct, yPct: s.y_pct };
+    }
+    const pose = otherShipFlightPose(String(selectedShip.ship_id), contactT, contactDocks, {
+      archetype: selectedShip.archetype,
+      activity: selectedShip.activity,
+      mission: selectedShip.mission,
+      bandAspect,
+    });
+    return { xPct: pose.xPct, yPct: pose.yPct };
+  })();
 
   return (
     <div ref={containerRef} className="ssv-tableau" onContextMenu={handleContextMenu}>
@@ -889,18 +1735,55 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
           );
         })}
 
-        {/* other ships/pirates — static seeded presence markers */}
+        {/* other ships — prefer server ISP pose/leg; fall back to local flight
+            profile until the sector presence carries pose (Loop A tick). */}
         {ships.map((s) => {
           if (!s.ship_id) return null;
-          const pos = otherPresencePosition(String(s.ship_id));
+          let xPct: number;
+          let yPct: number;
+          let headingDegVal: number;
+          let burningContact = false;
+          let phaseClass = 'idle';
+          if (s.pose) {
+            const sample = deriveIspPose(s.pose as IspPose, ispNowMs());
+            xPct = sample.x_pct;
+            yPct = sample.y_pct;
+            headingDegVal = sample.heading_deg;
+            burningContact = !!sample.burning;
+            phaseClass = ispPhaseToTravelClass(String(sample.phase));
+          } else {
+            const pose = otherShipFlightPose(String(s.ship_id), contactT, contactDocks, {
+              archetype: s.archetype,
+              activity: s.activity,
+              mission: s.mission,
+              bandAspect,
+            });
+            xPct = pose.xPct;
+            yPct = pose.yPct;
+            headingDegVal = pose.headingDeg;
+            burningContact = pose.burning;
+            phaseClass = pose.phase === 'brake-turn' ? 'brake-turn'
+              : pose.phase === 'final-orient' ? 'final-orient'
+              : pose.phase;
+          }
           const faction = shipFaction(s);
           const isPirate = faction.key === 'raider';
+          const turning =
+            phaseClass === 'orienting' ||
+            phaseClass === 'brake-turn' ||
+            phaseClass === 'final-orient' ||
+            phaseClass === 'halt-turn';
           return (
             <button
               key={`ship-${s.ship_id}`}
               type="button"
-              className="other"
-              style={{ left: `${pos.xPct}%`, top: `${pos.yPct}%`, color: faction.color }}
+              className={`other${burningContact ? ' burning' : ''}${phaseClass !== 'idle' ? ` travel-${phaseClass}` : ''}`}
+              style={{
+                left: `${xPct}%`,
+                top: `${yPct}%`,
+                color: faction.color,
+                ['--hdg' as string]: `${headingDegVal.toFixed(0)}deg`,
+              }}
               aria-label={`${s.ship_name || 'Contact'} options`}
               onClick={() =>
                 openPopup(
@@ -911,11 +1794,19 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
                     lawful: faction.lawful, notoriety: s.notoriety ?? undefined,
                   },
                   s.ship_name || 'Contact',
-                  pos
+                  { xPct, yPct }
                 )
               }
             >
-              {isPirate ? '☠' : '⊳'}
+              <span className="other-hull" aria-hidden="true">
+                {isPirate ? '☠' : '⊳'}
+                {turning && (
+                  <>
+                    <span className="ssv-rcs ssv-rcs-a" />
+                    <span className="ssv-rcs ssv-rcs-b" />
+                  </>
+                )}
+              </span>
               <span className="pltag" style={{ color: faction.color }}>{s.ship_name || faction.label}</span>
             </button>
           );
@@ -928,12 +1819,42 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
         {shipPos && (
           <div
             ref={shipMkRef}
-            className={`shipmk${burning ? ' burning' : ''}`}
-            style={{ left: `${shipPos.xPct}%`, top: `${shipPos.yPct}%`, '--hdg': `${heading.toFixed(0)}deg` } as React.CSSProperties}
-            onTransitionEnd={() => { setLocalBurn(false); setGlideTargetId(null); }}
+            className={`shipmk${burning ? ' burning' : ''}${travelPhase !== 'idle' ? ` travel-${travelPhase}` : ''}${warpPhase === 'turning' ? ' warp-turning' : ''}${warpPhase === 'launch' ? ' warp-launching' : ''}${warpPhase === 'arriving' ? ' warp-arriving' : ''}`}
+            style={{ left: `${shipPos.xPct}%`, top: `${shipPos.yPct}%`, '--hdg': `${heading.toFixed(0)}deg`, '--warp-bearing': `${warpBearing.toFixed(0)}deg`, '--arrival-bearing': `${arrivalBearing.toFixed(0)}deg` } as React.CSSProperties}
           >
             ➤
+            {/* RCS attitude jets fire for every attitude change: initial local
+                orientation, flip for braking, final facing, and pre-warp turn. */}
+            {(warpPhase === 'turning' ||
+              travelPhase === 'orienting' ||
+              travelPhase === 'brake-turn' ||
+              travelPhase === 'halt-turn' ||
+              travelPhase === 'redirect-turn' ||
+              travelPhase === 'final-orient') && (
+              <>
+                <span className="ssv-rcs ssv-rcs-a" aria-hidden="true" />
+                <span className="ssv-rcs ssv-rcs-b" aria-hidden="true" />
+              </>
+            )}
           </div>
+        )}
+
+        {/* Warp cinematic — a spherical warp field that inflates around the
+            hull (charging), snaps + streaks out along the exit bearing
+            (launch), then a flash as the destination sector takes over
+            (arriving). Anchored to the ship's live position. Purely decorative. */}
+        {shipPos && warpPhase !== 'idle' && warpPhase !== 'turning' && (
+          <div
+            className={`ssv-warp warp-${warpPhase}`}
+            style={{ left: `${shipPos.xPct}%`, top: `${shipPos.yPct}%`, '--warp-bearing': `${warpBearing.toFixed(0)}deg`, '--arrival-bearing': `${arrivalBearing.toFixed(0)}deg` } as React.CSSProperties}
+            aria-hidden="true"
+          >
+            <span className="ssv-warp-bubble" />
+            <span className="ssv-warp-streak" />
+          </div>
+        )}
+        {(warpPhase === 'launch' || warpPhase === 'arriving') && (
+          <div className="ssv-warp-flash" aria-hidden="true" />
         )}
       </div>
 

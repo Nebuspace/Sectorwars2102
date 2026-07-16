@@ -3,8 +3,8 @@
  *
  * Implements the frozen contract:
  *   plotCourse(target)  → POST /api/v1/nav/plot
- *   engage()            → executes course via moveToSector, one hop per
- *                         ~800ms setTimeout chain (cancellable)
+ *   engage()            → executes course via moveToSector, one hop at a
+ *                         cinematic cadence (warp charge → move → arrive)
  *   abort(reason)       → pauses with a reason string
  *
  * Status machine:
@@ -26,7 +26,16 @@ import React, {
   useState,
 } from 'react';
 import apiClient from '../services/apiClient';
+import { requestWarpDepart, WARP_TURN_MS, WARP_ARRIVE_MS } from '../services/warpCinematicBus';
 import { useGame } from './GameContext';
+
+/**
+ * Cadence aligned with WindshieldTableau warp phases.
+ * TURN (RCS reorient) plays first — moveToSector is delayed by WARP_TURN_MS
+ * so the sector swap cannot abort the turn. We then hold through the arrival
+ * flash before the next hop so multi-hop isn't a teleport train.
+ */
+export const AUTOPILOT_POST_ARRIVE_MS = WARP_ARRIVE_MS;
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -52,6 +61,15 @@ export interface CourseUnreachable {
   reachable: false;
   target_sector_id: number;
   nearest_known: { sector_id: number; name: string } | null;
+  /** Present when the sector id does not exist in the galaxy DB. */
+  error?: string;
+  /**
+   * Why the plot refused:
+   * - `unknown_sector` — no such sector
+   * - `uncharted` — exists but outside the player's known graph
+   * - `no_route` — charted, but no directed path from here (one-ways / gaps)
+   */
+  reason?: 'unknown_sector' | 'uncharted' | 'no_route';
 }
 
 export type CoursePlot = CourseReachable | CourseUnreachable;
@@ -71,7 +89,8 @@ export interface AutopilotContextValue {
   status: AutopilotStatus;
   pauseReason: string | null;
   currentHopIndex: number;
-  plotCourse: (targetSectorId: number) => Promise<void>;
+  /** Plots a course; resolves with the plot result (or null on HTTP failure). */
+  plotCourse: (targetSectorId: number) => Promise<CoursePlot | null>;
   engage: () => void;
   abort: (reason: string) => void;
 }
@@ -124,7 +143,7 @@ export const AutopilotProvider: React.FC<{ children: React.ReactNode }> = ({
   // ── plotCourse ─────────────────────────────────────────────────────────
 
   const plotCourse = useCallback(
-    async (targetSectorId: number) => {
+    async (targetSectorId: number): Promise<CoursePlot | null> => {
       // Abort any running course first
       cancelledRef.current = true;
       clearTimer();
@@ -152,8 +171,10 @@ export const AutopilotProvider: React.FC<{ children: React.ReactNode }> = ({
           // Unreachable — keep any prior course, surface the refusal via lastPlot
           setStatus('idle');
         }
+        return plot;
       } catch {
         setStatus('idle');
+        return null;
       }
     },
     [],
@@ -171,7 +192,15 @@ export const AutopilotProvider: React.FC<{ children: React.ReactNode }> = ({
     setStatus('engaged');
     setPauseReason(null);
 
-    const executeHop = () => {
+    const wait = (ms: number) =>
+      new Promise<void>((resolve) => {
+        timerRef.current = setTimeout(() => {
+          timerRef.current = null;
+          resolve();
+        }, ms);
+      });
+
+    const executeHop = async () => {
       if (cancelledRef.current) return;
 
       const c = courseRef.current;
@@ -179,7 +208,6 @@ export const AutopilotProvider: React.FC<{ children: React.ReactNode }> = ({
 
       const idx = hopIndexRef.current;
       if (idx >= c.hops.length) {
-        // All hops done — arrived
         setStatus('arrived');
         return;
       }
@@ -187,74 +215,97 @@ export const AutopilotProvider: React.FC<{ children: React.ReactNode }> = ({
       const hop = c.hops[idx];
       const targetId = hop.sector_id;
 
-      moveToSector(targetId)
-        .then((result: any) => {
-          if (cancelledRef.current) return;
+      // Arm cinematic first, then WAIT for the RCS turn to finish before the
+      // move — otherwise a fast API round-trip aborts `turning` and the hull
+      // never visibly re-orients. Same delay as manual helm.
+      requestWarpDepart(targetId);
+      await wait(WARP_TURN_MS);
+      if (cancelledRef.current) return;
 
-          // The move endpoint returns 200 with success=false for game-logic
-          // refusals (insufficient turns, no valid path). A refusal PAUSES
-          // the course (player can re-engage after turns regen) — it does
-          // not invalidate it.
-          if (result && result.success === false) {
-            setStatus('paused');
-            setPauseReason(result.message || 'Movement refused');
-            return;
-          }
+      try {
+        const result: any = await moveToSector(targetId);
+        if (cancelledRef.current) return;
 
-          // Bounce check — MoveResponse carries the landing sector as
-          // new_sector_id. A landing that differs from the plotted hop
-          // (latent one-way bounce, redirect) invalidates the course.
-          const landedAt: number | undefined = result?.new_sector_id;
-
-          if (landedAt !== undefined && landedAt !== null && landedAt !== targetId) {
-            setStatus('paused');
-            setPauseReason(
-              `Expected sector ${targetId} but arrived at ${landedAt} — course invalidated`,
-            );
-            courseRef.current = null;
-            setCourse(null);
-            return;
-          }
-
-          // Encounter pause — MoveResponse.encounters (the movement service
-          // attaches these; the response model passes them through).
-          const hasEncounter =
-            Array.isArray(result?.encounters) && result.encounters.length > 0;
-
-          if (hasEncounter) {
-            setStatus('paused');
-            setPauseReason('Encounter detected — autopilot paused');
-            return;
-          }
-
-          // Advance hop index
-          const nextIdx = idx + 1;
-          hopIndexRef.current = nextIdx;
-          setCurrentHopIndex(nextIdx);
-
-          if (cancelledRef.current) return;
-
-          if (nextIdx >= (courseRef.current?.hops.length ?? 0)) {
-            setStatus('arrived');
-            return;
-          }
-
-          // Schedule next hop ~800ms later
-          timerRef.current = setTimeout(executeHop, 800);
-        })
-        .catch((err: any) => {
-          if (cancelledRef.current) return;
-          const msg: string =
-            err?.response?.data?.detail ||
-            err?.message ||
-            'Movement failed';
+        // The move endpoint returns 200 with success=false for game-logic
+        // refusals (insufficient turns, no valid path). A refusal PAUSES
+        // the course (player can re-engage after turns regen) — it does
+        // not invalidate it.
+        if (result && result.success === false) {
           setStatus('paused');
-          setPauseReason(msg);
-        });
+          setPauseReason(result.message || 'Movement refused');
+          return;
+        }
+
+        // Bounce check — MoveResponse carries the landing sector as
+        // new_sector_id. A landing that differs from the plotted hop
+        // (latent one-way bounce, redirect) invalidates the course.
+        const landedAt: number | undefined = result?.new_sector_id;
+
+        if (landedAt !== undefined && landedAt !== null && landedAt !== targetId) {
+          setStatus('paused');
+          setPauseReason(
+            `Expected sector ${targetId} but arrived at ${landedAt} — course invalidated`,
+          );
+          courseRef.current = null;
+          setCourse(null);
+          return;
+        }
+
+        // Encounter pause — MoveResponse.encounters (the movement service
+        // attaches these; the response model passes them through).
+        const hasEncounter =
+          Array.isArray(result?.encounters) && result.encounters.length > 0;
+
+        if (hasEncounter) {
+          setStatus('paused');
+          setPauseReason('Encounter detected — autopilot paused');
+          return;
+        }
+
+        // Advance hop index
+        const nextIdx = idx + 1;
+        hopIndexRef.current = nextIdx;
+        setCurrentHopIndex(nextIdx);
+
+        if (cancelledRef.current) return;
+
+        if (nextIdx >= (courseRef.current?.hops.length ?? 0)) {
+          // Let the final arrival flash finish before flipping to arrived.
+          await wait(AUTOPILOT_POST_ARRIVE_MS);
+          if (cancelledRef.current) return;
+          setStatus('arrived');
+          // Clear the course shortly after arrival so no UI can linger on
+          // an "ARRIVED" card — the windshield HUD already unmounts on
+          // arrived; this resets to idle for the next plot.
+          window.setTimeout(() => {
+            if (cancelledRef.current) return;
+            if (courseRef.current === c) {
+              courseRef.current = null;
+              setCourse(null);
+              setStatus('idle');
+              setCurrentHopIndex(0);
+              setPauseReason(null);
+            }
+          }, 800);
+          return;
+        }
+
+        // Hold through arrival cinematic before the next charge begins.
+        await wait(AUTOPILOT_POST_ARRIVE_MS);
+        if (cancelledRef.current) return;
+        void executeHop();
+      } catch (err: any) {
+        if (cancelledRef.current) return;
+        const msg: string =
+          err?.response?.data?.detail ||
+          err?.message ||
+          'Movement failed';
+        setStatus('paused');
+        setPauseReason(msg);
+      }
     };
 
-    // Kick off immediately (no leading delay — the user just pressed engage)
-    executeHop();
+    void executeHop();
   }, [moveToSector]);
 
   // ── abort ──────────────────────────────────────────────────────────────

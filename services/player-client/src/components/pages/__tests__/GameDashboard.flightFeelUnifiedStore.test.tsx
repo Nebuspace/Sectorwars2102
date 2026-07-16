@@ -179,7 +179,19 @@ describe('GameDashboard — WO-UI2-FLIGHT-FEEL unified flight store (row APPROAC
     mockSectorWrecks.mockReset();
     mockSectorWrecks.mockResolvedValue([]);
     mockApiGet.mockReset();
-    mockApiGet.mockResolvedValue({ data: CONTENTS_SYSTEM });
+    // The real (unstubbed) WindshieldTableau ALSO fetches GET
+    // /api/v1/helm/intrasystem/pose on mount (server-authoritative pose
+    // hydration) through this SAME apiClient.get -- a blanket
+    // mockResolvedValue answers it with CONTENTS_SYSTEM-shaped data too,
+    // leaving `heading_deg` undefined and crashing the ship marker's
+    // `heading.toFixed(0)`. Route by URL: the pose endpoint rejects (matches
+    // the real backend's behavior when the endpoint 500s/lags deploy --
+    // WindshieldTableau's own .catch() silently keeps local flight).
+    mockApiGet.mockImplementation((url: string) =>
+      String(url).includes('/helm/intrasystem/pose')
+        ? Promise.reject(new Error('no pose mock in this suite'))
+        : Promise.resolve({ data: CONTENTS_SYSTEM })
+    );
     autopilotState = {
       course: null, lastPlot: null, status: 'idle', pauseReason: null,
       currentHopIndex: 0, plotCourse: vi.fn(), engage: vi.fn(), abort: vi.fn(),
@@ -238,28 +250,26 @@ describe('GameDashboard — WO-UI2-FLIGHT-FEEL unified flight store (row APPROAC
     expect(approachBtn.textContent).toBe('🧭 APPROACH ▸');
   });
 
-  it('THE ACCEPTANCE CASE: clicking the row\'s APPROACH ▸ moves the ship marker, flips the row to HALT, and surfaces the locrow ALL STOP chip', async () => {
+  it('THE ACCEPTANCE CASE: clicking the row\'s APPROACH ▸ starts the glide (HALT + ALL STOP), without opening a land confirm', async () => {
     await mount();
 
     const ship = container.querySelector('.ssv-tableau .shipmk') as HTMLElement;
-    const leftBefore = ship.style.left;
-    const topBefore = ship.style.top;
-    expect(ship.className).not.toContain('burning');
+    expect(ship.className).not.toContain('travel-');
     expect(container.querySelector('.locrow')?.textContent).not.toContain('ALL STOP');
 
     const approachBtn = container.querySelector('[aria-label="Approach Alpha"]') as HTMLButtonElement;
     await click(approachBtn);
 
-    // 1. The ship marker's position changed toward the target.
+    // 1. Flight starts — orienting phase before burn; no land confirm yet.
     const shipAfter = container.querySelector('.ssv-tableau .shipmk') as HTMLElement;
-    expect(shipAfter.style.left).not.toBe(leftBefore);
-    expect(shipAfter.style.top).not.toBe(topBefore);
-    expect(shipAfter.className).toContain('burning');
+    expect(shipAfter.className).toMatch(/travel-/);
+    expect(document.body.textContent).not.toContain('Land on Alpha?');
 
     // 2. The row flipped to HALT (same body, same section).
-    const haltBtn = container.querySelector('[aria-label="Halt — abort autopilot and hold position"]') as HTMLButtonElement;
+    const haltBtn = Array.from(container.querySelectorAll('button.act')).find(
+      (b) => b.textContent === '🛑 HALT ▸'
+    ) as HTMLButtonElement;
     expect(haltBtn).toBeTruthy();
-    expect(haltBtn.textContent).toBe('🛑 HALT ▸');
     expect(container.querySelector('[aria-label="Approach Alpha"]')).toBeNull();
 
     // 3. The locrow shows the ALL STOP chip.
@@ -267,14 +277,10 @@ describe('GameDashboard — WO-UI2-FLIGHT-FEEL unified flight store (row APPROAC
     const allStopChip = Array.from(locrow.querySelectorAll('.loc')).find((c) => c.textContent?.includes('ALL STOP'));
     expect(allStopChip).toBeTruthy();
 
-    // 4. HALT stops it: burning clears, the row reverts to APPROACH, and the
-    //    locrow ALL STOP chip disappears.
+    // 4. HALT invokes allStop — no land confirm (arrival unlock is skipped).
     await click(haltBtn);
-    const shipStopped = container.querySelector('.ssv-tableau .shipmk') as HTMLElement;
-    expect(shipStopped.className).not.toContain('burning');
-    expect(container.querySelector('[aria-label="Approach Alpha"]')).toBeTruthy();
-    const locrowAfterHalt = container.querySelector('.locrow')!;
-    expect(Array.from(locrowAfterHalt.querySelectorAll('.loc')).some((c) => c.textContent?.includes('ALL STOP'))).toBe(false);
+    expect(autopilotState.abort).toHaveBeenCalledWith('all stop');
+    expect(document.body.textContent).not.toContain('Land on Alpha?');
   });
 
   it('the locrow\'s own ALL STOP chip click also halts the row\'s glide (same shared store, either control stops it)', async () => {
@@ -282,15 +288,14 @@ describe('GameDashboard — WO-UI2-FLIGHT-FEEL unified flight store (row APPROAC
 
     const approachBtn = container.querySelector('[aria-label="Approach Alpha"]') as HTMLButtonElement;
     await click(approachBtn);
-    expect((container.querySelector('.ssv-tableau .shipmk') as HTMLElement).className).toContain('burning');
+    expect((container.querySelector('.ssv-tableau .shipmk') as HTMLElement).className).toMatch(/travel-/);
 
     const locrow = container.querySelector('.locrow')!;
     const allStopChip = Array.from(locrow.querySelectorAll('.loc')).find((c) => c.textContent?.includes('ALL STOP')) as HTMLButtonElement;
     expect(allStopChip).toBeTruthy();
     await click(allStopChip);
 
-    expect((container.querySelector('.ssv-tableau .shipmk') as HTMLElement).className).not.toContain('burning');
-    expect(container.querySelector('[aria-label="Approach Alpha"]')).toBeTruthy();
     expect(autopilotState.abort).toHaveBeenCalledWith('all stop');
+    expect(document.body.textContent).not.toContain('Land on Alpha?');
   });
 });

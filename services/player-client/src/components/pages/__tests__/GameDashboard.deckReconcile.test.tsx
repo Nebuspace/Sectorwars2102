@@ -19,6 +19,7 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { SectorWreck } from '../../../services/api';
+import { WARP_TURN_MS } from '../../../services/warpCinematicBus';
 
 const mockGetChart = vi.fn();
 const mockGetMyRegion = vi.fn();
@@ -294,8 +295,17 @@ describe('GameDashboard — flying deck collapsed to 3 monitors (WO-UI2-DECK-REC
     expect(exitRow.textContent).toContain('Sector 101');
     await click(exitRow.querySelector('.nav-exit-move-btn')!);
 
+    // GameDashboard.handleMove now arms the warp cinematic and HOLDS the hop
+    // for WARP_TURN_MS (the RCS re-orient) before committing moveToSector --
+    // a fast round-trip used to abort the turn before the hull visibly
+    // re-oriented. Real-timer wait past that hold (matches this file's own
+    // real-setTimeout `flush`/`click` helpers -- no fake timers in this file).
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, WARP_TURN_MS + 200));
+    });
+
     expect(gameState.moveToSector).toHaveBeenCalledWith(101);
-  });
+  }, 15000);
 
   it('NAV: CHART page is a separate tab and the graph is not visible on COURSE', async () => {
     await mount();
@@ -331,12 +341,16 @@ describe('GameDashboard — flying deck collapsed to 3 monitors (WO-UI2-DECK-REC
 
   // ---- WO-UI0-SHELL-TRANSPLANT (Leaf L3): re-emitted monitor anatomy -----
 
-  it('NAV + SOLAR SYSTEM: .mon > .mhead(.mtitle+.hsub) + .mbody + bottom .skrow, with live hsub sub-status', async () => {
+  it('NAV + SOLAR SYSTEM: .mon > .mhead(.mtitle[+.hsub]) + .mbody + bottom .skrow — NAV keeps a live hsub, SOLAR SYSTEM is title-only', async () => {
     await mount();
 
+    // SOLAR SYSTEM's header dropped its sector-name sub-status (Max,
+    // 2026-07-14: "title alone; the locrow already shows where you are" --
+    // GameDashboard.tsx's own mhead comment). NAV's live "N CHARTED EXIT(S)"
+    // hsub is unaffected by that ruling and still renders.
     for (const [selector, title, hsub] of [
       ['.mon.nav-monitor', 'NAV', '1 CHARTED EXIT'],
-      ['.mon.system-monitor', 'SOLAR SYSTEM', 'Sol'],
+      ['.mon.system-monitor', 'SOLAR SYSTEM', null],
     ] as const) {
       const mon = container.querySelector(selector)!;
       expect(mon, `expected ${selector}`).toBeTruthy();
@@ -345,7 +359,11 @@ describe('GameDashboard — flying deck collapsed to 3 monitors (WO-UI2-DECK-REC
       expect(children, `${selector} direct children`).toEqual(['mhead', 'mbody', 'skrow']);
 
       expect(mon.querySelector('.mhead .mtitle')!.textContent).toBe(title);
-      expect(mon.querySelector('.mhead .hsub')!.textContent).toBe(hsub);
+      if (hsub === null) {
+        expect(mon.querySelector('.mhead .hsub'), `${selector} .hsub`).toBeNull();
+      } else {
+        expect(mon.querySelector('.mhead .hsub')!.textContent).toBe(hsub);
+      }
 
       // Softkeys relocated out of the header to the bottom .skrow.
       expect(mon.querySelector('.mhead [role="tablist"]')).toBeNull();

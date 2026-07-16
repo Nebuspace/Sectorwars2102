@@ -15,6 +15,9 @@ import {
   bodySizeEm,
   scanPosition,
   otherPresencePosition,
+  otherShipFlightPose,
+  OTHER_FLIGHT_ORIENT_MS,
+  OTHER_FLIGHT_MOVE_MS,
   selfRestingAnchor,
   headingDeg,
   nebulaArcs,
@@ -307,6 +310,129 @@ describe('scanPosition / otherPresencePosition', () => {
 
   it('different ids land at different positions (no collision by construction... in practice)', () => {
     expect(scanPosition('wreck-1')).not.toEqual(scanPosition('wreck-2'));
+  });
+});
+
+describe('otherShipFlightPose', () => {
+  const docks = [
+    { xPct: 20, yPct: 40 },
+    { xPct: 70, yPct: 35 },
+    { xPct: 55, yPct: 70 },
+  ];
+
+  it('is deterministic for the same (id, t, docks)', () => {
+    const a = otherShipFlightPose('ship-a', 12.5, docks, { archetype: 'TRADER' });
+    const b = otherShipFlightPose('ship-a', 12.5, docks, { archetype: 'TRADER' });
+    expect(a).toEqual(b);
+  });
+
+  it('orients in place before translating (no curved wander)', () => {
+    // Pick a t deep enough that phaseOffset is overcome: scan a window for orienting.
+    let foundOrient = false;
+    let foundAccel = false;
+    let foundBrakeTurn = false;
+    let foundBrake = false;
+    for (let t = 0; t < 180; t += 0.25) {
+      const p = otherShipFlightPose('marshal-flight', t, docks, {
+        archetype: 'LAW_ENFORCEMENT',
+        activity: 'PATROL',
+      });
+      if (p.phase === 'orienting') {
+        foundOrient = true;
+        // Position must stay put during orient (compare to nearby sample).
+        const p2 = otherShipFlightPose('marshal-flight', t + 0.05, docks, {
+          archetype: 'LAW_ENFORCEMENT',
+          activity: 'PATROL',
+        });
+        if (p2.phase === 'orienting') {
+          expect(Math.hypot(p2.xPct - p.xPct, p2.yPct - p.yPct)).toBeLessThan(0.05);
+        }
+      }
+      if (p.phase === 'accelerating') {
+        foundAccel = true;
+        expect(p.burning).toBe(true);
+      }
+      if (p.phase === 'brake-turn') {
+        foundBrakeTurn = true;
+        expect(p.burning).toBe(false);
+      }
+      if (p.phase === 'braking') {
+        foundBrake = true;
+        expect(p.burning).toBe(true);
+      }
+    }
+    expect(foundOrient).toBe(true);
+    expect(foundAccel).toBe(true);
+    expect(foundBrakeTurn).toBe(true);
+    expect(foundBrake).toBe(true);
+  });
+
+  it('translates on a straight eased chord during the move window', () => {
+    // Find an accelerating sample, then a later braking sample on same leg —
+    // cross-track deviation from the chord must stay near zero.
+    let from: { xPct: number; yPct: number } | null = null;
+    let to: { xPct: number; yPct: number } | null = null;
+    const samples: { xPct: number; yPct: number }[] = [];
+    for (let t = 0; t < 200; t += 0.5) {
+      const p = otherShipFlightPose('trader-chord', t, docks, { archetype: 'TRADER' });
+      if (p.phase === 'orienting' && !from) {
+        from = { xPct: p.xPct, yPct: p.yPct };
+      }
+      if (from && (p.phase === 'accelerating' || p.phase === 'gliding' || p.phase === 'brake-turn' || p.phase === 'braking')) {
+        samples.push({ xPct: p.xPct, yPct: p.yPct });
+      }
+      if (from && p.phase === 'final-orient') {
+        to = { xPct: p.xPct, yPct: p.yPct };
+        break;
+      }
+    }
+    expect(from).not.toBeNull();
+    expect(to).not.toBeNull();
+    expect(samples.length).toBeGreaterThan(3);
+    const dx = to!.xPct - from!.xPct;
+    const dy = to!.yPct - from!.yPct;
+    const len = Math.hypot(dx, dy) || 1;
+    for (const s of samples) {
+      const cross = Math.abs((s.xPct - from!.xPct) * dy - (s.yPct - from!.yPct) * dx) / len;
+      expect(cross).toBeLessThan(0.15);
+    }
+  });
+
+  it('traders prefer habitable docks over barren in aggregate', () => {
+    const tagged = [
+      { xPct: 20, yPct: 40, bucket: 'habitable' as const },
+      { xPct: 70, yPct: 35, bucket: 'habitable' as const },
+      { xPct: 55, yPct: 70, bucket: 'barren' as const },
+      { xPct: 40, yPct: 55, bucket: 'barren' as const },
+    ];
+    const ends: { xPct: number; yPct: number }[] = [];
+    for (let ship = 0; ship < 24; ship += 1) {
+      for (let t = 0; t < 90; t += 2) {
+        const p = otherShipFlightPose(`trader-bias-${ship}`, t, tagged, {
+          archetype: 'TRADER',
+          mission: 'commerce',
+        });
+        if (p.phase === 'final-orient' || p.phase === 'idle') {
+          ends.push({ xPct: p.xPct, yPct: p.yPct });
+          break;
+        }
+      }
+    }
+    expect(ends.length).toBeGreaterThan(10);
+    const near = (a: { xPct: number; yPct: number }, b: { xPct: number; yPct: number }) =>
+      Math.hypot(a.xPct - b.xPct, a.yPct - b.yPct) < 1.5;
+    let habHits = 0;
+    let barrenHits = 0;
+    for (const e of ends) {
+      if (tagged.filter((d) => d.bucket === 'habitable').some((d) => near(e, d))) habHits += 1;
+      else if (tagged.filter((d) => d.bucket === 'barren').some((d) => near(e, d))) barrenHits += 1;
+    }
+    expect(habHits).toBeGreaterThan(barrenHits);
+  });
+
+  it('exposes the shared flight timing constants used by the player hull', () => {
+    expect(OTHER_FLIGHT_ORIENT_MS).toBe(1000);
+    expect(OTHER_FLIGHT_MOVE_MS).toBe(6400);
   });
 });
 

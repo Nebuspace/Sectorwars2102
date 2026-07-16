@@ -61,8 +61,45 @@ describe('WindshieldFlightContext', () => {
     await mount();
     expect(captured?.isFlying).toBe(false);
     expect(captured?.targetId).toBeNull();
+    expect(captured?.arrivedTargetId).toBeNull();
     expect(captured?.pendingApproach).toBeNull();
     expect(captured?.stopSignal).toBe(0);
+  });
+
+  it('natural glide settle promotes last target to arrivedTargetId', async () => {
+    await mount();
+    await act(async () => { captured!.reportFlightState(true, 'planet-1'); });
+    expect(captured?.arrivedTargetId).toBeNull();
+    await act(async () => { captured!.reportFlightState(false, null); });
+    expect(captured?.isFlying).toBe(false);
+    expect(captured?.arrivedTargetId).toBe('planet-1');
+  });
+
+  it('allStop before settle does NOT set arrivedTargetId', async () => {
+    await mount();
+    await act(async () => { captured!.reportFlightState(true, 'planet-1'); });
+    await act(async () => { captured!.allStop(); });
+    // Halt animation still reports flying=true with the same target — must
+    // not clear skipArrival, or the eventual settle would unlock LAND/DOCK.
+    await act(async () => { captured!.reportFlightState(true, 'planet-1'); });
+    await act(async () => { captured!.reportFlightState(false, null); });
+    expect(captured?.arrivedTargetId).toBeNull();
+  });
+
+  it('free travel / autopilot with no body target does not set arrivedTargetId', async () => {
+    await mount();
+    await act(async () => { captured!.reportFlightState(true, null); });
+    await act(async () => { captured!.reportFlightState(false, null); });
+    expect(captured?.arrivedTargetId).toBeNull();
+  });
+
+  it('approach() clears arrivedTargetId so a new glide can start', async () => {
+    await mount();
+    await act(async () => { captured!.reportFlightState(true, 'planet-1'); });
+    await act(async () => { captured!.reportFlightState(false, null); });
+    expect(captured?.arrivedTargetId).toBe('planet-1');
+    await act(async () => { captured!.approach('station-1'); });
+    expect(captured?.arrivedTargetId).toBeNull();
   });
 
   it('isFlying is true while the REAL inter-sector autopilot is engaged, independent of any local glide', async () => {

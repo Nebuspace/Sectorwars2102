@@ -49,6 +49,10 @@ interface PlanetPortPairProps {
   isLanded?: boolean;
   /** True when the player's CURRENT position matches THIS station specifically. */
   isDocked?: boolean;
+  /** True when the windshield has completed an approach glide to THIS body
+   *  (parked at the approach point, not yet server-landed/docked). Flips the
+   *  row from APPROACH → LAND/DOCK so the confirm dialog only opens then. */
+  atDestination?: boolean;
   /** True while autopilot is under burn (`autopilot.status === 'engaged'`) —
    *  mirrors the demo's row state machine (cockpit-redesign-v10 L1349-1352):
    *  here ? DOCK/LAND/HARVEST : (flying ? HALT : APPROACH). */
@@ -56,12 +60,10 @@ interface PlanetPortPairProps {
   /** Aborts the in-progress course — same autopilot.abort('all stop') the
    *  glass locrow's 🛑 ALL STOP chip already calls. */
   onHalt?: () => void;
-  /** WO-UI2-FLIGHT-FEEL: fired (with the planet/station id) the moment an
-   *  "APPROACH ▸" row is clicked, ALONGSIDE the existing confirm-dialog flow
-   *  below (not instead of it) — requests the SAME windshield ship-glide a
-   *  band-object click performs (GameDashboard wires this to the shared
-   *  WindshieldFlightContext's `approach()`). Never fired for LAND/DOCK/
-   *  CLAIM/HALT — only the "not here, not flying" APPROACH case. */
+  /** Fired (with the planet/station id) when "APPROACH ▸" is clicked —
+   *  starts the windshield glide ONLY. Does not open a land/dock confirm;
+   *  that waits until the ship has arrived (atDestination / isLanded /
+   *  isDocked) and the player clicks LAND/DOCK. */
   onApproach?: (objectId: string) => void;
 }
 
@@ -73,6 +75,7 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
   onDockAtStation,
   isLanded = false,
   isDocked = false,
+  atDestination = false,
   flying = false,
   onHalt,
   onApproach
@@ -122,13 +125,19 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
   // In-fiction confirmation dialog state (replaces native confirm())
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
 
-  const handlePlanetClick = () => {
+  /** APPROACH only — start the windshield glide. No land/dock confirm yet. */
+  const handlePlanetApproach = () => {
     if (!planet || isLanded || flying) return;
-    // Capture narrowed values for the deferred onConfirm closure
+    onApproach?.(planet.id);
+  };
+
+  /** LAND / CLAIM — confirm dialog only. Ready when already landed or after
+   *  a completed approach glide to this planet. */
+  const handlePlanetLandOrClaim = () => {
+    if (!planet || flying) return;
     const targetPlanet = planet;
 
     if (isPlanetUnclaimed) {
-      // Unclaimed, claimable planet — claim it (claiming auto-lands).
       if (!onClaimPlanet) return;
       const claimPlanet = onClaimPlanet;
       setPendingConfirm({
@@ -137,34 +146,30 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
         confirmLabel: 'Claim',
         onConfirm: () => claimPlanet(targetPlanet.id)
       });
-    } else {
-      // Owned planet OR a public population hub (e.g. New Earth) — both are
-      // landable (you land on a hub to recruit colonists); hubs simply can't be
-      // claimed. Route straight to the Land confirm, same as the helm-rail
-      // LAND button (onLandOnPlanet -> handleLand -> landOnPlanet).
-      // This IS the "🧭 APPROACH ▸" branch (isLanded/flying are already
-      // guarded out above) — also kick off the windshield ship-glide, same
-      // moment the confirm dialog opens (WO-UI2-FLIGHT-FEEL: previously this
-      // click reached ONLY the confirm dialog, never the glide).
-      onApproach?.(targetPlanet.id);
-      setPendingConfirm({
-        title: 'Landing Request',
-        message: `Land on ${targetPlanet.name}?`,
-        confirmLabel: 'Land',
-        onConfirm: () => onLandOnPlanet(targetPlanet.id)
-      });
+      return;
     }
+
+    setPendingConfirm({
+      title: 'Landing Request',
+      message: `Land on ${targetPlanet.name}?`,
+      confirmLabel: 'Land',
+      onConfirm: () => onLandOnPlanet(targetPlanet.id)
+    });
   };
 
-  const handleStationClick = (e: React.MouseEvent) => {
-    e.stopPropagation(); // Prevent planet click
+  /** APPROACH only — start the windshield glide. No dock confirm yet. */
+  const handleStationApproach = (e: React.MouseEvent) => {
+    e.stopPropagation();
     if (!station || !onDockAtStation || isDocked || flying) return;
-    // Capture narrowed values for the deferred onConfirm closure
+    onApproach?.(station.id);
+  };
+
+  /** DOCK — confirm dialog only, after arrival (or when already docked). */
+  const handleStationDock = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!station || !onDockAtStation || flying) return;
     const targetStation = station;
     const dockAtStation = onDockAtStation;
-    // Reachable only via the "🧭 APPROACH ▸" action (isDocked/flying already
-    // guarded out above) — same glide kickoff as the planet APPROACH case.
-    onApproach?.(targetStation.id);
     setPendingConfirm({
       title: 'Docking Request',
       message: `Dock at ${targetStation.name}?`,
@@ -180,28 +185,31 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
     onHalt?.();
   };
 
-  // Row action label — mirrors the demo's monSys() state machine exactly
-  // (cockpit-redesign-v10 L1349-1352): here ? DOCK/LAND ▸ : (flying ?
-  // 🛑 HALT ▸ : APPROACH ▸). "here" (isLanded/isDocked) is a per-body id
-  // match, not the old sector-wide broadcast.
+  // here = server-landed/docked OR windshield finished approaching this body.
+  const planetHere = isLanded || atDestination;
+  const stationHere = isDocked || atDestination;
+
+  // Row action: here ? LAND/DOCK : (flying ? HALT : APPROACH).
   const planetAction: { label: string; onClick: (e: React.MouseEvent) => void; armed: boolean; ariaLabel: string } | null =
     !planet ? null : flying
-      ? { label: '🛑 HALT ▸', onClick: handleHalt, armed: true, ariaLabel: 'Halt — abort autopilot and hold position' }
-      : isLanded
-        ? { label: '🛬 LAND ▸', onClick: (e) => { e.stopPropagation(); handlePlanetClick(); }, armed: false, ariaLabel: `Land on ${planet.name}` }
+      ? { label: '🛑 HALT ▸', onClick: handleHalt, armed: true, ariaLabel: 'Halt — abort approach and bleed momentum' }
+      : planetHere
+        ? isPlanetUnclaimed && onClaimPlanet && !isLanded
+          ? { label: '🚩 CLAIM ▸', onClick: (e) => { e.stopPropagation(); handlePlanetLandOrClaim(); }, armed: false, ariaLabel: `Claim ${planet.name}` }
+          : { label: '🛬 LAND ▸', onClick: (e) => { e.stopPropagation(); handlePlanetLandOrClaim(); }, armed: false, ariaLabel: `Land on ${planet.name}` }
         : isPlanetUnclaimed && onClaimPlanet
-          ? { label: '🚩 CLAIM ▸', onClick: (e) => { e.stopPropagation(); handlePlanetClick(); }, armed: false, ariaLabel: `Claim ${planet.name}` }
-          : { label: '🧭 APPROACH ▸', onClick: (e) => { e.stopPropagation(); handlePlanetClick(); }, armed: false, ariaLabel: `Approach ${planet.name}` };
+          ? { label: '🚩 CLAIM ▸', onClick: (e) => { e.stopPropagation(); handlePlanetLandOrClaim(); }, armed: false, ariaLabel: `Claim ${planet.name}` }
+          : { label: '🧭 APPROACH ▸', onClick: (e) => { e.stopPropagation(); handlePlanetApproach(); }, armed: false, ariaLabel: `Approach ${planet.name}` };
 
   const stationOperational = station?.status?.toLowerCase() === 'operational';
   const stationAction: { label: string; onClick: (e: React.MouseEvent) => void; armed: boolean; ariaLabel: string } | null =
     !station || !onDockAtStation ? null : flying
-      ? { label: '🛑 HALT ▸', onClick: handleHalt, armed: true, ariaLabel: 'Halt — abort autopilot and hold position' }
+      ? { label: '🛑 HALT ▸', onClick: handleHalt, armed: true, ariaLabel: 'Halt — abort approach and bleed momentum' }
       : !stationOperational
         ? null
-        : isDocked
-          ? { label: '⚓ DOCK ▸', onClick: handleStationClick, armed: false, ariaLabel: `Dock at ${station.name}` }
-          : { label: '🧭 APPROACH ▸', onClick: handleStationClick, armed: false, ariaLabel: `Approach ${station.name}` };
+        : stationHere
+          ? { label: '⚓ DOCK ▸', onClick: handleStationDock, armed: false, ariaLabel: `Dock at ${station.name}` }
+          : { label: '🧭 APPROACH ▸', onClick: handleStationApproach, armed: false, ariaLabel: `Approach ${station.name}` };
 
   // Dense one-line qualifiers (WO-UI-MAX-BATCH-1 item 7: "EVERY object = ONE
   // DENSE .row line ... secondary stats go DIM-INLINE after the name ...
@@ -258,9 +266,9 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
           stats layout. */}
       {planet && (
         <div
-          className={`planet-section ${flying ? 'inactive' : !isLanded ? 'clickable' : 'landed'} ${isPlanetUnclaimed ? 'unclaimed' : ''}`}
+          className={`planet-section ${flying ? 'inactive' : !planetHere ? 'clickable' : 'landed'} ${isPlanetUnclaimed ? 'unclaimed' : ''}`}
           aria-disabled={flying}
-          onClick={flying ? undefined : handlePlanetClick}
+          onClick={flying ? undefined : (planetHere || (isPlanetUnclaimed && onClaimPlanet) ? handlePlanetLandOrClaim : handlePlanetApproach)}
         >
           <div className="planet-info">
             <span className="planet-icon">{planetIcon}</span>
@@ -298,9 +306,9 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
           object list, not a paired orbit card). */}
       {station && (
         <div
-          className={`station-section ${!isDocked && !flying && stationOperational ? 'clickable' : 'inactive'}`}
+          className={`station-section ${!stationHere && !flying && stationOperational ? 'clickable' : 'inactive'}`}
           aria-disabled={flying}
-          onClick={flying ? undefined : handleStationClick}
+          onClick={flying ? undefined : (stationHere ? handleStationDock : handleStationApproach)}
         >
           <div className="station-info">
             <span

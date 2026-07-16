@@ -484,6 +484,10 @@ export const shipAPI = {
   getShips: () =>
     apiRequest('/api/v1/ships'), // Endpoint may vary
 
+  /** Current piloted hull (cargo hold, genesis, etc.) — SpaceDock's live source. */
+  getCurrentShip: () =>
+    apiRequest('/api/v1/player/current-ship'),
+
   getShip: (shipId: string) =>
     apiRequest(`/api/v1/ships/${shipId}`),
 
@@ -1137,6 +1141,29 @@ export const contractsAPI = {
     apiRequest(`/api/v1/contracts/${contractId}/cancel`, { method: 'POST' }),
 };
 
+// Storage lockers — multi-trip contract fulfillment (FEATURES/economy/storage-lockers.md).
+// Rent is idempotent per (player, contract); deposit auto-completes when
+// accumulated deposits reach the contract quantity.
+export const storageAPI = {
+  rentLocker: (contractId: string) =>
+    apiRequest('/api/v1/storage/lockers', {
+      method: 'POST',
+      body: JSON.stringify({ contract_id: contractId }),
+    }),
+
+  deposit: (lockerId: string, quantity: number) =>
+    apiRequest(`/api/v1/storage/lockers/${lockerId}/deposit`, {
+      method: 'POST',
+      body: JSON.stringify({ quantity }),
+    }),
+
+  retrieve: (lockerId: string, quantity?: number) =>
+    apiRequest(`/api/v1/storage/lockers/${lockerId}/retrieve`, {
+      method: 'POST',
+      body: JSON.stringify(quantity != null ? { quantity } : {}),
+    }),
+};
+
 export const gameAPI = {
   combat: combatAPI,
   greyStatus: greyStatusAPI,
@@ -1159,4 +1186,5 @@ export const gameAPI = {
   haggle: haggleAPI,
   resource: resourceAPI,
   contracts: contractsAPI,
+  storage: storageAPI,
 };

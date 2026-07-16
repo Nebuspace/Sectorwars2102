@@ -14,39 +14,12 @@ import { useAutopilot } from './AutopilotContext';
  * monitor's per-row APPROACH/HALT action and the glass locrow's ALL STOP
  * chip (WO-UI2-FLIGHT-FEEL seam fix).
  *
- * ROOT CAUSE this replaces: the rows/locrow read `flying`/`allStop` off
- * `autopilot.status` (AutopilotContext's REAL inter-sector course engine),
- * while WindshieldTableau.tsx's own click-to-glide (its `travelTo`) is a
- * completely separate, purely-cosmetic intra-sector animation with no
- * connection to that status at all. A row's "APPROACH ▸" click never
- * reached the glide, the row never flipped to HALT while gliding, and the
- * locrow's ALL STOP chip never appeared for it either.
+ * Row state machine (PlanetPortPair):
+ *   APPROACH → (isFlying / HALT) → arrivedTargetId matches row → LAND/DOCK
+ *   → confirm dialog → land/dock API.
  *
- * ARCHITECTURE — the tableau OWNS the actual glide (it alone has the
- * fetched /contents system data needed to resolve a planet/station id to a
- * tableau %-position, and it alone renders + animates the `.shipmk` marker),
- * so this Provider is a small coordination bus, not a second copy of the
- * glide state:
- *   - Row/locrow-facing (`approach`/`allStop`/`isFlying`/`targetId`): the
- *     public API any consumer calls/reads.
- *   - Tableau-facing (`pendingApproach`/`stopSignal`/`reportFlightState`):
- *     internal wiring ONLY WindshieldTableau.tsx should touch — a row click
- *     records a request here; the mounted tableau's own effect resolves it
- *     against its system data and performs the real glide, then reports the
- *     resulting local flight state back so `isFlying`/`targetId` stay live.
- *
- * `isFlying` is `localFlying || autopilot.status === 'engaged'` — a
- * superset of the old (buggy) autopilot-only signal, so the existing "block
- * a row mid real inter-sector course" behavior the old code had is
- * preserved, not dropped, while the previously-missing local-glide half is
- * now ALSO covered. `allStop()` mirrors that union: it always aborts a real
- * autopilot course AND signals the tableau to freeze any local glide, so
- * one control genuinely halts whichever kind of "flying" is actually
- * happening.
- *
- * Mounted once, wrapping GameDashboard's whole tree (GameDashboard.tsx) so
- * it's a stable ancestor of both the windshield mount and the SOLAR SYSTEM
- * monitor / locrow siblings — see that file's outer/inner split.
+ * `arrivedTargetId` is set when a local glide completes naturally (not via
+ * allStop). Cleared on a new approach() or allStop().
  */
 
 export interface WindshieldFlightContextValue {
@@ -55,6 +28,10 @@ export interface WindshieldFlightContextValue {
   isFlying: boolean;
   /** planet_id/station_id of the current glide target, or null when idle. */
   targetId: string | null;
+  /** planet_id/station_id the ship has parked at after a completed approach
+   *  glide — SOLAR rows use this to flip APPROACH → LAND/DOCK without the
+   *  player already being server-landed/docked. */
+  arrivedTargetId: string | null;
   /** Row/locrow-facing: request the ship glide toward this body/station —
    *  the SAME glide a windshield band-object click performs. A no-op if no
    *  tableau is mounted (docked/landed) or the id can't be resolved once it
@@ -87,21 +64,48 @@ export const WindshieldFlightProvider: React.FC<{ children: React.ReactNode }> =
 
   const [localFlying, setLocalFlying] = useState(false);
   const [targetId, setTargetId] = useState<string | null>(null);
+  const [arrivedTargetId, setArrivedTargetId] = useState<string | null>(null);
   const [pendingApproach, setPendingApproach] = useState<{ objectId: string; seq: number } | null>(null);
   const [stopSignal, setStopSignal] = useState(0);
   const approachSeqRef = useRef(0);
+  const lastGlideTargetRef = useRef<string | null>(null);
+  const wasLocalFlyingRef = useRef(false);
+  const skipArrivalRef = useRef(false);
 
   const approach = useCallback((objectId: string) => {
     approachSeqRef.current += 1;
+    skipArrivalRef.current = false;
+    setArrivedTargetId(null);
     setPendingApproach({ objectId, seq: approachSeqRef.current });
   }, []);
 
   const allStop = useCallback(() => {
+    skipArrivalRef.current = true;
+    setArrivedTargetId(null);
     setStopSignal((n) => n + 1);
     autopilot.abort('all stop');
   }, [autopilot]);
 
   const reportFlightState = useCallback((flying: boolean, tgt: string | null) => {
+    if (flying) {
+      if (!wasLocalFlyingRef.current) {
+        // Rising edge — new flight session. Allow arrive-on-settle unless
+        // allStop later marks this session as a Halt (skipArrival stays set
+        // through halt-turn/brake, which never drop through idle mid-way).
+        skipArrivalRef.current = false;
+        setArrivedTargetId(null);
+        if (!tgt) lastGlideTargetRef.current = null;
+      }
+      if (tgt) lastGlideTargetRef.current = tgt;
+    } else if (
+      wasLocalFlyingRef.current
+      && !skipArrivalRef.current
+      && lastGlideTargetRef.current
+    ) {
+      // Natural end of a local glide — ship is parked at the approach point.
+      setArrivedTargetId(lastGlideTargetRef.current);
+    }
+    wasLocalFlyingRef.current = flying;
     setLocalFlying(flying);
     setTargetId(tgt);
   }, []);
@@ -109,12 +113,13 @@ export const WindshieldFlightProvider: React.FC<{ children: React.ReactNode }> =
   const value = useMemo<WindshieldFlightContextValue>(() => ({
     isFlying: localFlying || autopilot.status === 'engaged',
     targetId,
+    arrivedTargetId,
     approach,
     allStop,
     pendingApproach,
     stopSignal,
     reportFlightState,
-  }), [localFlying, autopilot.status, targetId, approach, allStop, pendingApproach, stopSignal, reportFlightState]);
+  }), [localFlying, autopilot.status, targetId, arrivedTargetId, approach, allStop, pendingApproach, stopSignal, reportFlightState]);
 
   return (
     <WindshieldFlightContext.Provider value={value}>

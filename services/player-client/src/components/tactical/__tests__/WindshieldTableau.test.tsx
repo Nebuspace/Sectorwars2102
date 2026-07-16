@@ -26,9 +26,38 @@ import type { SpecialFormationSummary } from '../../../contexts/GameContext';
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const mockGet = vi.fn();
+// commitIspBurn/commitIspHalt POST the optimistic ISP burn/halt commit
+// (both .catch(() => {}) -- "optimistic local flight still runs" even if
+// this rejects) -- reject so the suite's synthetic clicks don't need a real
+// pose contract, matching the pose GET mock's own no-mock-in-suite stance.
+// Re-armed in beforeEach (not just here): this file's afterEach runs
+// vi.restoreAllMocks(), which strips a bare vi.fn()'s implementation after
+// its first use, leaving later tests' apiClient.post(...) returning
+// undefined instead of a promise.
+const mockPost = vi.fn();
 vi.mock('../../../services/apiClient', () => ({
-  default: { get: (...args: unknown[]) => mockGet(...args) },
+  default: {
+    get: (...args: unknown[]) => mockGet(...args),
+    post: (...args: unknown[]) => mockPost(...args),
+  },
 }));
+
+// WindshieldTableau now ALSO fetches GET /api/v1/helm/intrasystem/pose on
+// mount (server-authoritative pose hydration) alongside the /contents fetch
+// this suite already exercised -- both go through the SAME apiClient.get, so
+// a blanket mockResolvedValue answers the pose fetch with system-contents
+// shaped data too, leaving `heading_deg` undefined and crashing the ship
+// marker's `heading.toFixed(0)`. Route by URL: the pose endpoint rejects
+// (matches the real backend's behavior when the endpoint 500s/lags deploy --
+// WindshieldTableau's own .catch() silently keeps local flight), everything
+// else answers with the given contents payload.
+const mockContents = (data: unknown) => {
+  mockGet.mockImplementation((url: string) =>
+    String(url).includes('/helm/intrasystem/pose')
+      ? Promise.reject(new Error('no pose mock in this suite'))
+      : Promise.resolve({ data })
+  );
+};
 
 let autopilotStatus: string = 'idle';
 vi.mock('../../../contexts/AutopilotContext', () => ({
@@ -36,9 +65,11 @@ vi.mock('../../../contexts/AutopilotContext', () => ({
 }));
 
 // eslint-disable-next-line import/first
-import WindshieldTableau from '../WindshieldTableau';
+import WindshieldTableau, { chooseWarpArrivalAnchor } from '../WindshieldTableau';
 // eslint-disable-next-line import/first
 import { WindshieldFlightProvider, useWindshieldFlight } from '../../../contexts/WindshieldFlightContext';
+// eslint-disable-next-line import/first
+import { starAnchor } from '../windshieldTableauLayout';
 
 const SECTOR_ID = 77;
 
@@ -77,13 +108,63 @@ const TEST_SHIP = { player_id: 'p2', ship_id: 'ship-alpha', ship_name: 'Alpha Ru
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+describe('chooseWarpArrivalAnchor', () => {
+  const band = { widthPx: 1000, heightPx: 500, remPx: 16 };
+
+  it('uses a fresh random coordinate instead of a sector-deterministic anchor', () => {
+    const emptySystem = {
+      star: null, nebula: null, belt: null, debris: null, bodies: [], stations: [],
+    };
+    const a = chooseWarpArrivalAnchor(77, emptySystem, band, () => 0.2);
+    const b = chooseWarpArrivalAnchor(77, emptySystem, band, () => 0.8);
+    expect(a).not.toEqual(b);
+  });
+
+  it('rejects a random candidate overlapping the sun', () => {
+    const starOnlySystem = {
+      star: TEST_SYSTEM.star,
+      nebula: null,
+      belt: null,
+      debris: null,
+      bodies: [],
+      stations: [],
+    };
+    const star = starAnchor(SECTOR_ID, starOnlySystem.star, []);
+    // Bounds for this 1000x500 band are x=[6,94], y=[10,90]. Feed the star's
+    // exact center as attempt 1 (must reject), then a clear upper-right point.
+    const draws = [
+      (star.xPct - 6) / 88,
+      (star.yPct - 10) / 80,
+      0.9,
+      0.1,
+    ];
+    let drawIndex = 0;
+    const point = chooseWarpArrivalAnchor(
+      SECTOR_ID,
+      starOnlySystem,
+      band,
+      () => draws[Math.min(drawIndex++, draws.length - 1)],
+    );
+    expect(drawIndex).toBeGreaterThanOrEqual(4);
+    const distancePx = Math.hypot(
+      ((point.xPct - star.xPct) / 100) * band.widthPx,
+      ((point.yPct - star.yPct) / 100) * band.heightPx,
+    );
+    const starRadiusPx = (star.sizeEm * band.remPx) / 2;
+    const bubbleAndClearancePx = (1.7 + 0.8) * band.remPx;
+    expect(distancePx).toBeGreaterThanOrEqual(starRadiusPx + bubbleAndClearancePx);
+  });
+});
+
 describe('WindshieldTableau', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
     mockGet.mockReset();
-    mockGet.mockResolvedValue({ data: TEST_SYSTEM });
+    mockContents(TEST_SYSTEM);
+    mockPost.mockReset();
+    mockPost.mockRejectedValue(new Error('no burn/halt mock in this suite'));
     autopilotStatus = 'idle';
     vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
       width: 800, height: 400, top: 0, left: 0, right: 800, bottom: 400, x: 0, y: 0,
@@ -97,6 +178,7 @@ describe('WindshieldTableau', () => {
   afterEach(async () => {
     await act(async () => { root.unmount(); });
     container.remove();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -190,7 +272,7 @@ describe('WindshieldTableau', () => {
   // designation that discarded it.
   it('a decorative (non-real) body with a server-provided name shows that REAL name -- never a fabricated PROCEDURAL-<sector>-<idx> designation', async () => {
     const namedDecorative = { ...PROCEDURAL_PLANET, name: 'Kelvara Drift' };
-    mockGet.mockResolvedValue({ data: { ...TEST_SYSTEM, bodies: [REAL_PLANET, namedDecorative] } });
+    mockContents({ ...TEST_SYSTEM, bodies: [REAL_PLANET, namedDecorative] });
     await mount();
 
     const tags = Array.from(container.querySelectorAll('.pltag')).map((el) => el.textContent);
@@ -303,9 +385,7 @@ describe('WindshieldTableau', () => {
       [104, [EXTREME_BODIES[0]]],     // a different sector, single body
       [205, EXTREME_BODIES.slice(0, 2)], // a third sector, 2 bodies
     ] as const) {
-      mockGet.mockResolvedValue({
-        data: { ...TEST_SYSTEM, sector_id: sectorId, bodies, stations: [EXTREME_STATION] },
-      });
+      mockContents({ ...TEST_SYSTEM, sector_id: sectorId, bodies, stations: [EXTREME_STATION] });
       await mount({ sectorId });
       assertEveryObjectInBand(container, 800, 400); // mocked containerRef rect, this file's own beforeEach
     }
@@ -328,13 +408,20 @@ describe('WindshieldTableau', () => {
     expect(sunSizeEm).toBeGreaterThanOrEqual(largestPlanetEm * 3);
   });
 
-  it('renders other ships as static presence markers (⊳, faction-colored) with aria-label, and clicking opens a popup', async () => {
+  it('renders other ships on the shared flight profile (oriented hull, phase class) with click→popup', async () => {
     const onSelectShip = vi.fn();
     await mount({ ships: [TEST_SHIP], onSelectShip });
     const other = container.querySelector('.other') as HTMLButtonElement;
     expect(other).not.toBeNull();
     expect(other.getAttribute('aria-label')).toBe('Alpha Runner options');
     expect(other.textContent).toContain('⊳');
+    expect(other.querySelector('.other-hull')).not.toBeNull();
+    expect(other.style.getPropertyValue('--hdg')).toMatch(/deg$/);
+    // Idle or an in-flight travel-* class — never the old static marker.
+    expect(
+      other.className === 'other' ||
+      /travel-(orienting|accelerating|gliding|brake-turn|braking|final-orient)/.test(other.className)
+    ).toBe(true);
 
     await act(async () => { other.click(); });
     const popup = container.querySelector('.ssv-popup');
@@ -342,24 +429,91 @@ describe('WindshieldTableau', () => {
     expect(popup?.textContent).toContain('ALPHA RUNNER');
   });
 
-  it('clicking the real planet opens a popup with a LAND action wired to onRequestLand (the demo click→inspect idiom, not the retired orbital-closeup zoom)', async () => {
+  it('gates planet landing by proximity: APPROACH → flashing HALT → LAND', async () => {
     const onRequestLand = vi.fn();
     await mount({ onRequestLand });
+    vi.useFakeTimers();
+    // Park far from the planet first; this sector's deterministic test anchor
+    // can land inside landing range.
+    const tableau = container.querySelector('.ssv-tableau') as HTMLElement;
+    await act(async () => {
+      tableau.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true, clientX: 760, clientY: 40,
+      }));
+    });
+    const travelBtn = Array.from(container.querySelectorAll('.ssv-popup-action'))
+      .find((b) => b.textContent?.includes('Travel To')) as HTMLButtonElement;
+    await act(async () => { travelBtn.click(); });
+    await act(async () => { vi.advanceTimersByTime(8300); });
+
     const planetBtn = container.querySelector('.pl') as HTMLButtonElement;
     await act(async () => { planetBtn.click(); });
 
-    const landBtn = Array.from(container.querySelectorAll('.ssv-popup-action')).find((b) => b.textContent?.includes('LAND')) as HTMLButtonElement;
+    expect(container.querySelector('.ssv-popup')?.textContent).toContain('OUTSIDE LANDING RANGE');
+    expect(Array.from(container.querySelectorAll('.ssv-popup-action'))
+      .some((b) => b.textContent?.includes('🛬 LAND'))).toBe(false);
+    const approachBtn = Array.from(container.querySelectorAll('.ssv-popup-action'))
+      .find((b) => b.textContent?.includes('APPROACH')) as HTMLButtonElement;
+    expect(approachBtn).toBeTruthy();
+    // Inspecting a planet must not silently start travel.
+    expect((container.querySelector('.shipmk') as HTMLElement).className).not.toContain('travel-');
+
+    await act(async () => { approachBtn.click(); });
+    const haltBtn = Array.from(container.querySelectorAll('.ssv-popup-action'))
+      .find((b) => b.textContent?.includes('HALT')) as HTMLButtonElement;
+    expect(haltBtn).toBeTruthy();
+    expect(haltBtn.classList.contains('halt')).toBe(true);
+    expect(onRequestLand).not.toHaveBeenCalled();
+
+    await act(async () => { vi.advanceTimersByTime(8300); });
+    const landBtn = Array.from(container.querySelectorAll('.ssv-popup-action'))
+      .find((b) => b.textContent?.includes('LAND')) as HTMLButtonElement;
     expect(landBtn).toBeTruthy();
     await act(async () => { landBtn.click(); });
     expect(onRequestLand).toHaveBeenCalledWith('planet-real-1');
   });
 
-  it('clicking a station opens a popup with a DOCK action wired to onRequestDock', async () => {
+  it('gates station docking by proximity: APPROACH → flashing HALT → DOCK', async () => {
     const onRequestDock = vi.fn();
     await mount({ onRequestDock });
+    vi.useFakeTimers();
+    // Park far from the station first; this sector's deterministic test anchor
+    // happens to be inside docking range.
+    const tableau = container.querySelector('.ssv-tableau') as HTMLElement;
+    await act(async () => {
+      tableau.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true, clientX: 760, clientY: 40,
+      }));
+    });
+    const travelBtn = Array.from(container.querySelectorAll('.ssv-popup-action'))
+      .find((b) => b.textContent?.includes('Travel To')) as HTMLButtonElement;
+    await act(async () => { travelBtn.click(); });
+    // Run the whole flight profile so the hull is parked (idle) at the far
+    // corner — the continuous glide replaces the old transitionend signal.
+    await act(async () => { vi.advanceTimersByTime(8300); });
+
     const stationBtn = container.querySelector('.obj') as HTMLButtonElement;
     await act(async () => { stationBtn.click(); });
-    const dockBtn = Array.from(container.querySelectorAll('.ssv-popup-action')).find((b) => b.textContent?.includes('DOCK')) as HTMLButtonElement;
+
+    expect(container.querySelector('.ssv-popup')?.textContent).toContain('OUTSIDE DOCKING RANGE');
+    expect(Array.from(container.querySelectorAll('.ssv-popup-action'))
+      .some((b) => b.textContent?.includes('⚓ DOCK'))).toBe(false);
+    const approachBtn = Array.from(container.querySelectorAll('.ssv-popup-action'))
+      .find((b) => b.textContent?.includes('APPROACH')) as HTMLButtonElement;
+    expect(approachBtn).toBeTruthy();
+
+    await act(async () => { approachBtn.click(); });
+    const haltBtn = Array.from(container.querySelectorAll('.ssv-popup-action'))
+      .find((b) => b.textContent?.includes('HALT')) as HTMLButtonElement;
+    expect(haltBtn).toBeTruthy();
+    expect(haltBtn.classList.contains('halt')).toBe(true);
+    expect(onRequestDock).not.toHaveBeenCalled();
+
+    // Run the approach flight to completion; once parked (idle) at the
+    // stand-off point the popup flips HALT → DOCK.
+    await act(async () => { vi.advanceTimersByTime(8300); });
+    const dockBtn = Array.from(container.querySelectorAll('.ssv-popup-action'))
+      .find((b) => b.textContent?.includes('DOCK')) as HTMLButtonElement;
     expect(dockBtn).toBeTruthy();
     await act(async () => { dockBtn.click(); });
     expect(onRequestDock).toHaveBeenCalledWith('station-1');
@@ -367,7 +521,7 @@ describe('WindshieldTableau', () => {
 
   it('renders the FULL station name in the popup title even when it is long — no ellipsis clamp (WO-TABLEAU-TUNE #25, Max #25)', async () => {
     const longStationName = 'Trade Hub Capelworks Expansion Complex';
-    mockGet.mockResolvedValue({ data: { ...TEST_SYSTEM, stations: [{ ...TEST_STATION, name: longStationName }] } });
+    mockContents({ ...TEST_SYSTEM, stations: [{ ...TEST_STATION, name: longStationName }] });
     await mount();
     const stationBtn = container.querySelector('.obj') as HTMLButtonElement;
     await act(async () => { stationBtn.click(); });
@@ -380,7 +534,7 @@ describe('WindshieldTableau', () => {
 
   it('renders the FULL real-planet name in the popup title even when it is long — no ellipsis clamp (WO-TABLEAU-TUNE #25, Max #25)', async () => {
     const longPlanetName = 'Frostholm Deep Colony Reclamation Site';
-    mockGet.mockResolvedValue({ data: { ...TEST_SYSTEM, bodies: [{ ...REAL_PLANET, name: longPlanetName }] } });
+    mockContents({ ...TEST_SYSTEM, bodies: [{ ...REAL_PLANET, name: longPlanetName }] });
     await mount();
     const planetBtn = container.querySelector('.pl') as HTMLButtonElement;
     await act(async () => { planetBtn.click(); });
@@ -389,21 +543,78 @@ describe('WindshieldTableau', () => {
     expect(planetTitle.textContent).not.toContain('…');
   });
 
-  it('the ship marker is the ONLY system-level mover: clicking an object glides it there (left/top change, --hdg set) and it briefly burns', async () => {
+  it('flies orient → accelerate → coast → reverse-burn → stop → face destination', async () => {
     await mount();
+    vi.useFakeTimers();
     const shipBefore = container.querySelector('.shipmk') as HTMLElement;
     expect(shipBefore).not.toBeNull();
     const leftBefore = shipBefore.style.left;
     const topBefore = shipBefore.style.top;
-
     const planetBtn = container.querySelector('.pl') as HTMLButtonElement;
-    await act(async () => { planetBtn.click(); });
+    const targetLeft = parseFloat(planetBtn.style.left);
+    const targetTop = parseFloat(planetBtn.style.top);
 
-    const shipAfter = container.querySelector('.shipmk') as HTMLElement;
-    expect(shipAfter.style.left).not.toBe(leftBefore);
-    expect(shipAfter.style.top).not.toBe(topBefore);
-    expect(shipAfter.className).toContain('burning');
-    expect(shipAfter.style.getPropertyValue('--hdg')).toMatch(/deg$/);
+    await act(async () => { planetBtn.click(); });
+    const approachBtn = Array.from(container.querySelectorAll('.ssv-popup-action'))
+      .find((b) => b.textContent?.includes('APPROACH')) as HTMLButtonElement;
+    if (approachBtn) {
+      await act(async () => { approachBtn.click(); });
+    } else {
+      await act(async () => { flightCapture!.approach('planet-real-1'); });
+    }
+
+    // Circular difference in degrees, tolerant of the accumulating (unwrapped)
+    // heading values the component uses to keep every turn spinning one way.
+    const circAbsDeg = (a: number, b: number) => {
+      const raw = Math.abs(((a - b) % 360) + 360) % 360;
+      return Math.min(raw, 360 - raw);
+    };
+
+    let ship = container.querySelector('.shipmk') as HTMLElement;
+    expect(ship.className).toContain('travel-orienting');
+    expect(ship.className).not.toContain('burning');
+    expect(ship.querySelectorAll('.ssv-rcs')).toHaveLength(2);
+    expect(ship.style.left).toBe(leftBefore); // still parked while it orients
+    expect(ship.style.top).toBe(topBefore);
+    const forwardHeading = parseFloat(ship.style.getPropertyValue('--hdg'));
+
+    // Engine lights and the SINGLE continuous glide commits to the target.
+    await act(async () => { vi.advanceTimersByTime(1000); });
+    ship = container.querySelector('.shipmk') as HTMLElement;
+    expect(ship.className).toContain('travel-accelerating');
+    expect(ship.className).toContain('burning');
+    expect(parseFloat(ship.style.left)).toBeCloseTo(targetLeft); // one glide, committed once
+    expect(parseFloat(ship.style.top)).toBeCloseTo(targetTop);
+
+    await act(async () => { vi.advanceTimersByTime(1800); });
+    ship = container.querySelector('.shipmk') as HTMLElement;
+    expect(ship.className).toContain('travel-gliding');
+    expect(ship.className).not.toContain('burning'); // coasting, engine cold
+
+    // Flip to retrograde WHILE still coasting — target unchanged (momentum).
+    await act(async () => { vi.advanceTimersByTime(1100); });
+    ship = container.querySelector('.shipmk') as HTMLElement;
+    expect(ship.className).toContain('travel-brake-turn');
+    expect(ship.querySelectorAll('.ssv-rcs')).toHaveLength(2);
+    expect(parseFloat(ship.style.left)).toBeCloseTo(targetLeft);
+    expect(circAbsDeg(parseFloat(ship.style.getPropertyValue('--hdg')), forwardHeading)).toBeCloseTo(180);
+
+    await act(async () => { vi.advanceTimersByTime(1300); });
+    ship = container.querySelector('.shipmk') as HTMLElement;
+    expect(ship.className).toContain('travel-braking');
+    expect(ship.className).toContain('burning'); // retro burn
+
+    await act(async () => { vi.advanceTimersByTime(2200); });
+    ship = container.querySelector('.shipmk') as HTMLElement;
+    expect(ship.className).toContain('travel-final-orient');
+    expect(ship.className).not.toContain('burning');
+    expect(parseFloat(ship.style.left)).toBeCloseTo(targetLeft);
+    expect(parseFloat(ship.style.top)).toBeCloseTo(targetTop);
+    expect(circAbsDeg(parseFloat(ship.style.getPropertyValue('--hdg')), forwardHeading)).toBeCloseTo(0);
+
+    await act(async () => { vi.advanceTimersByTime(800); });
+    expect((container.querySelector('.shipmk') as HTMLElement).className).not.toContain('travel-');
+    vi.useRealTimers();
   });
 
   // ---- FIX B (Max live-playtest): ship heading is aspect-corrected to the
@@ -420,6 +631,14 @@ describe('WindshieldTableau', () => {
     const toYPct = parseFloat(planetBtn.style.top);
 
     await act(async () => { planetBtn.click(); });
+    const approachBtn = Array.from(container.querySelectorAll('.ssv-popup-action'))
+      .find((b) => b.textContent?.includes('APPROACH')) as HTMLButtonElement;
+    if (approachBtn) {
+      await act(async () => { approachBtn.click(); });
+    } else {
+      // Already inside landing range — drive the same glide via the shared approach API.
+      await act(async () => { flightCapture!.approach('planet-real-1'); });
+    }
 
     const shipAfter = container.querySelector('.shipmk') as HTMLElement;
     const hdg = parseFloat(shipAfter.style.getPropertyValue('--hdg'));
@@ -477,6 +696,7 @@ describe('WindshieldTableau', () => {
 
   it('clicking "Travel To" in the menu glides the ship to the stashed pct point with aspect-corrected heading, and closes the menu', async () => {
     await mount();
+    vi.useFakeTimers();
     const tableau = container.querySelector('.ssv-tableau') as HTMLElement;
     const shipBefore = container.querySelector('.shipmk') as HTMLElement;
     const fromXPct = parseFloat(shipBefore.style.left);
@@ -496,10 +716,14 @@ describe('WindshieldTableau', () => {
 
     expect(container.querySelector('.ssv-ctxmenu')).toBeNull(); // menu closes after choosing
 
-    const shipAfter = container.querySelector('.shipmk') as HTMLElement;
+    let shipAfter = container.querySelector('.shipmk') as HTMLElement;
+    expect(shipAfter.className).toContain('travel-orienting');
+    expect(shipAfter.className).not.toContain('burning');
+    await act(async () => { vi.advanceTimersByTime(11600); });
+    shipAfter = container.querySelector('.shipmk') as HTMLElement;
     expect(parseFloat(shipAfter.style.left)).toBeCloseTo(expectedXPct); // NOW it glides to the exact stashed point
     expect(parseFloat(shipAfter.style.top)).toBeCloseTo(expectedYPct);
-    expect(shipAfter.className).toContain('burning');
+    expect(shipAfter.className).not.toContain('burning');
 
     // heading points at the clicked point, aspect-corrected (bandAspect=0.5
     // for this file's own 800x400 mock -- same formula FIX B's own test uses).
@@ -507,11 +731,15 @@ describe('WindshieldTableau', () => {
     const dyPct = expectedYPct - fromYPct;
     const expectedHdg = (Math.atan2(dyPct * 0.5, dxPct) * 180) / Math.PI;
     const hdg = parseFloat(shipAfter.style.getPropertyValue('--hdg'));
-    expect(Math.abs(hdg - expectedHdg)).toBeLessThan(0.6);
+    // Final heading faces the destination; the component accumulates raw degrees
+    // (a full-circle spin ends at prograde+360), so compare circularly.
+    const rawDiff = Math.abs(((hdg - expectedHdg) % 360) + 360) % 360;
+    expect(Math.min(rawDiff, 360 - rawDiff)).toBeLessThan(0.6);
   });
 
   it('right-clicking ON a body opens the SAME menu there too (not special-cased -- the container handler fires on bubble)', async () => {
     await mount();
+    vi.useFakeTimers();
     const planetBtn = container.querySelector('.pl') as HTMLButtonElement;
     const targetXPct = parseFloat(planetBtn.style.left);
     const targetYPct = parseFloat(planetBtn.style.top);
@@ -525,6 +753,7 @@ describe('WindshieldTableau', () => {
     expect(container.querySelector('.ssv-ctxmenu')).not.toBeNull();
     const travelToBtn = container.querySelector('.ssv-ctxmenu .ssv-popup-action') as HTMLButtonElement;
     await act(async () => { travelToBtn.click(); });
+    await act(async () => { vi.advanceTimersByTime(11600); });
 
     const shipAfter = container.querySelector('.shipmk') as HTMLElement;
     expect(parseFloat(shipAfter.style.left)).toBeCloseTo(targetXPct);
@@ -586,6 +815,7 @@ describe('WindshieldTableau', () => {
 
   it('a second right-click elsewhere while the menu is open RELOCATES it to the new point, not toggled shut', async () => {
     await mount();
+    vi.useFakeTimers();
     const tableau = container.querySelector('.ssv-tableau') as HTMLElement;
 
     await act(async () => {
@@ -600,6 +830,7 @@ describe('WindshieldTableau', () => {
     const travelToBtn = container.querySelector('.ssv-ctxmenu .ssv-popup-action') as HTMLButtonElement;
     expect(travelToBtn).not.toBeNull(); // still open (unconditional setCtxMenu, not a toggle)
     await act(async () => { travelToBtn.click(); });
+    await act(async () => { vi.advanceTimersByTime(11600); });
 
     // The SECOND click's target won, confirming it relocated rather than
     // the first stale target silently surviving.
@@ -642,7 +873,11 @@ describe('WindshieldTableau', () => {
     // /contents fetch resolves (avoids a flash-of-wrong-position anchor).
     let resolveGet: (v: unknown) => void = () => {};
     mockGet.mockReset();
-    mockGet.mockReturnValue(new Promise((resolve) => { resolveGet = resolve; }));
+    mockGet.mockImplementation((url: string) =>
+      String(url).includes('/helm/intrasystem/pose')
+        ? Promise.reject(new Error('no pose mock in this suite'))
+        : new Promise((resolve) => { resolveGet = resolve; })
+    );
     await act(async () => {
       root.render(
         <WindshieldFlightProvider>
@@ -660,18 +895,26 @@ describe('WindshieldTableau', () => {
 
   // ---- WO-UI2-FLIGHT-FEEL: shared flight-context wiring ------------------
 
-  it('publishes its local glide into the shared flight context — a band click flips flightCapture.isFlying/targetId too, not just the DOM', async () => {
+  it('publishes its local glide into the shared flight context — APPROACH flips flightCapture.isFlying/targetId too, not just the DOM', async () => {
     await mount();
     expect(flightCapture?.isFlying).toBe(false);
 
     const planetBtn = container.querySelector('.pl') as HTMLButtonElement;
     await act(async () => { planetBtn.click(); });
+    expect(flightCapture?.isFlying).toBe(false); // inspect-only until APPROACH
+    const approachBtn = Array.from(container.querySelectorAll('.ssv-popup-action'))
+      .find((b) => b.textContent?.includes('APPROACH')) as HTMLButtonElement;
+    if (approachBtn) {
+      await act(async () => { approachBtn.click(); });
+    } else {
+      await act(async () => { flightCapture!.approach('planet-real-1'); });
+    }
 
     expect(flightCapture?.isFlying).toBe(true);
     expect(flightCapture?.targetId).toBe('planet-real-1');
   });
 
-  it('resolves a row\'s flight.approach(planetId) request into the SAME glide a band click performs (position + burning)', async () => {
+  it('resolves a row\'s flight.approach(planetId) into the same orient-first flight sequence', async () => {
     await mount();
     const shipBefore = container.querySelector('.shipmk') as HTMLElement;
     const leftBefore = shipBefore.style.left;
@@ -680,22 +923,31 @@ describe('WindshieldTableau', () => {
     await act(async () => { flightCapture!.approach('planet-real-1'); });
 
     const shipAfter = container.querySelector('.shipmk') as HTMLElement;
-    expect(shipAfter.style.left).not.toBe(leftBefore);
-    expect(shipAfter.style.top).not.toBe(topBefore);
-    expect(shipAfter.className).toContain('burning');
+    expect(shipAfter.style.left).toBe(leftBefore);
+    expect(shipAfter.style.top).toBe(topBefore);
+    expect(shipAfter.className).toContain('travel-orienting');
+    expect(shipAfter.className).not.toContain('burning');
+    expect(shipAfter.querySelectorAll('.ssv-rcs')).toHaveLength(2);
     expect(flightCapture?.isFlying).toBe(true);
     expect(flightCapture?.targetId).toBe('planet-real-1');
   });
 
-  it('resolves flight.approach(stationId) against stations the same way', async () => {
+  it('resolves flight.approach(stationId) to a near-station stand-off point', async () => {
     await mount();
+    vi.useFakeTimers();
     const station = container.querySelector('.obj') as HTMLElement;
 
     await act(async () => { flightCapture!.approach('station-1'); });
+    // Position commits once the orient phase hands off to the glide (t≈1000ms);
+    // stop before 'idle' so glideTargetId is still set for the assertion below.
+    await act(async () => { vi.advanceTimersByTime(1200); });
 
     const ship = container.querySelector('.shipmk') as HTMLElement;
-    expect(ship.style.left).toBe(station.style.left);
-    expect(ship.style.top).toBe(station.style.top);
+    const dxPx = ((parseFloat(ship.style.left) - parseFloat(station.style.left)) / 100) * 800;
+    const dyPx = ((parseFloat(ship.style.top) - parseFloat(station.style.top)) / 100) * 400;
+    const standOffPx = Math.hypot(dxPx, dyPx);
+    expect(standOffPx).toBeGreaterThan(0);
+    expect(standOffPx).toBeLessThanOrEqual(5 * 16); // inside DOCK_RANGE_EM
     expect(flightCapture?.targetId).toBe('station-1');
   });
 
@@ -713,15 +965,81 @@ describe('WindshieldTableau', () => {
     expect(flightCapture?.isFlying).toBe(false);
   });
 
-  it('flight.allStop() freezes an in-progress glide — clears burning, and isFlying drops back to false', async () => {
+  it('mid-course redirect keeps momentum and arcs instead of parking to reorient', async () => {
     await mount();
+    vi.useFakeTimers();
+    const planetBtn = container.querySelector('.pl') as HTMLButtonElement;
+    const stationBtn = container.querySelector('.obj') as HTMLButtonElement;
+
+    await act(async () => { flightCapture!.approach('planet-real-1'); });
+    await act(async () => { vi.advanceTimersByTime(1000); }); // past orient → accelerating
+    expect((container.querySelector('.shipmk') as HTMLElement).className).toContain('travel-accelerating');
+    const leftDuring = (container.querySelector('.shipmk') as HTMLElement).style.left;
+
+    // Retarget to the station while still underway.
+    await act(async () => { flightCapture!.approach('station-1'); });
+
+    let ship = container.querySelector('.shipmk') as HTMLElement;
+    expect(ship.className).toContain('travel-redirect-turn');
+    expect(ship.className).not.toContain('travel-orienting'); // must NOT park
+    expect(ship.querySelectorAll('.ssv-rcs')).toHaveLength(2);
+    expect(flightCapture?.isFlying).toBe(true);
+    // Position retargets to an arc waypoint / new path — not snapped idle.
+    expect(ship.style.left).not.toBe(leftDuring);
+
+    await act(async () => { vi.advanceTimersByTime(1600); });
+    ship = container.querySelector('.shipmk') as HTMLElement;
+    expect(ship.className).toContain('travel-accelerating');
+    expect(ship.className).toContain('burning');
+    expect(flightCapture?.targetId).toBe('station-1');
+
+    await act(async () => { vi.advanceTimersByTime(6400 + 800); });
+    ship = container.querySelector('.shipmk') as HTMLElement;
+    expect(ship.className).not.toContain('travel-');
+    // Settled near the station stand-off, not the original planet.
+    const dxPx = ((parseFloat(ship.style.left) - parseFloat(stationBtn.style.left)) / 100) * 800;
+    const dyPx = ((parseFloat(ship.style.top) - parseFloat(stationBtn.style.top)) / 100) * 400;
+    expect(Math.hypot(dxPx, dyPx)).toBeLessThanOrEqual(5 * 16);
+    expect(Math.hypot(
+      parseFloat(ship.style.left) - parseFloat(planetBtn.style.left),
+      parseFloat(ship.style.top) - parseFloat(planetBtn.style.top),
+    )).toBeGreaterThan(1);
+  });
+
+  it('flight.allStop() flips and burns to a stop instead of freezing momentum', async () => {
+    await mount();
+    vi.useFakeTimers();
     const planetBtn = container.querySelector('.pl') as HTMLButtonElement;
     await act(async () => { planetBtn.click(); });
+    const approachBtn = Array.from(container.querySelectorAll('.ssv-popup-action'))
+      .find((b) => b.textContent?.includes('APPROACH')) as HTMLButtonElement;
+    if (approachBtn) {
+      await act(async () => { approachBtn.click(); });
+    } else {
+      await act(async () => { flightCapture!.approach('planet-real-1'); });
+    }
+    // Get past orient so there is real momentum to bleed.
+    await act(async () => { vi.advanceTimersByTime(1000); });
     expect(flightCapture?.isFlying).toBe(true);
+    expect((container.querySelector('.shipmk') as HTMLElement).className).toContain('travel-accelerating');
 
     await act(async () => { flightCapture!.allStop(); });
 
-    const ship = container.querySelector('.shipmk') as HTMLElement;
+    let ship = container.querySelector('.shipmk') as HTMLElement;
+    expect(ship.className).toContain('travel-halt-turn');
+    expect(ship.className).not.toContain('burning');
+    expect(ship.querySelectorAll('.ssv-rcs')).toHaveLength(2);
+    expect(flightCapture?.isFlying).toBe(true); // still flying through the burn
+
+    await act(async () => { vi.advanceTimersByTime(1800); });
+    ship = container.querySelector('.shipmk') as HTMLElement;
+    expect(ship.className).toContain('travel-halt-brake');
+    expect(ship.className).toContain('burning');
+    expect(flightCapture?.isFlying).toBe(true);
+
+    await act(async () => { vi.advanceTimersByTime(1600); });
+    ship = container.querySelector('.shipmk') as HTMLElement;
+    expect(ship.className).not.toContain('travel-');
     expect(ship.className).not.toContain('burning');
     expect(flightCapture?.isFlying).toBe(false);
     expect(flightCapture?.targetId).toBeNull();
@@ -764,7 +1082,7 @@ describe('WindshieldTableau', () => {
   });
 
   it('nebula and asteroid belt get ZERO orbit ellipse of their own (only bodies/stations/wrecks do)', async () => {
-    mockGet.mockResolvedValue({ data: { ...TEST_SYSTEM, nebula: { hue: 200, density: 0.5 } } });
+    mockContents({ ...TEST_SYSTEM, nebula: { hue: 200, density: 0.5 } });
     await mount();
     // 2 bodies + 1 station = 3 ellipses; the nebula (rendered via
     // .hazard-arcs, not .orbit) and belt (rendered via .belt) contribute none.
@@ -787,9 +1105,7 @@ describe('WindshieldTableau', () => {
 
   it('body/station positioning is byte-unchanged by the orbit-line addition -- T1-A/T0-1 in-band+distinct+spread still hold at 2 sectors', async () => {
     for (const [sectorId, bodies] of [[21, EXTREME_BODIES], [104, EXTREME_BODIES.slice(0, 2)]] as const) {
-      mockGet.mockResolvedValue({
-        data: { ...TEST_SYSTEM, sector_id: sectorId, bodies, stations: [EXTREME_STATION] },
-      });
+      mockContents({ ...TEST_SYSTEM, sector_id: sectorId, bodies, stations: [EXTREME_STATION] });
       await mount({ sectorId });
       assertEveryObjectInBand(container, 800, 400);
     }

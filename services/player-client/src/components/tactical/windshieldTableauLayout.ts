@@ -485,11 +485,269 @@ export function scanPosition(id: string): PctPoint {
   return { xPct: 8 + rng.next01() * 84, yPct: 10 + rng.next01() * 78 };
 }
 
-/** Other ships/pirates — static seeded scatter (the demo's `.other` glyphs
- *  carry no transition/animation; the player's OWN ship is the only mover). */
+/** Other ships/pirates — seeded scatter anchor for a contact glyph. Used as
+ *  a fallback waypoint when the system has fewer than two real docks; live
+ *  traffic uses `otherShipFlightPose` between planet/station positions. */
 export function otherPresencePosition(id: string): PctPoint {
   const rng = new SeededRng(deriveChildSeed(`${NS}-presence`, id));
   return { xPct: 8 + rng.next01() * 84, yPct: 10 + rng.next01() * 78 };
+}
+
+/**
+ * Contact flight profile — SAME methodical procedure as the player's
+ * `.shipmk` local travel (WindshieldTableau TRAVEL_* constants):
+ *   orient → accelerate (burn) → coast → brake-turn (RCS flip) →
+ *   decelerate (burn) → final-orient → dwell, then the next leg.
+ * Straight-line eased glide between waypoints (no Lissajous curves).
+ * Timings must stay in lockstep with solar-system-viewscreen.css's
+ * `.shipmk.travel-*` 6.4s position duration.
+ */
+export const OTHER_FLIGHT_ORIENT_MS = 1000;
+export const OTHER_FLIGHT_ACCEL_MS = 1800;
+export const OTHER_FLIGHT_COAST_MS = 1100;
+export const OTHER_FLIGHT_FLIP_MS = 1300;
+export const OTHER_FLIGHT_DECEL_MS = 2200;
+export const OTHER_FLIGHT_SETTLE_MS = 800;
+export const OTHER_FLIGHT_MOVE_MS =
+  OTHER_FLIGHT_ACCEL_MS + OTHER_FLIGHT_COAST_MS + OTHER_FLIGHT_FLIP_MS + OTHER_FLIGHT_DECEL_MS;
+
+export type OtherFlightPhase =
+  | 'idle'
+  | 'orienting'
+  | 'accelerating'
+  | 'gliding'
+  | 'brake-turn'
+  | 'braking'
+  | 'final-orient';
+
+export interface OtherShipFlightPose extends PctPoint {
+  headingDeg: number;
+  phase: OtherFlightPhase;
+  burning: boolean;
+}
+
+function smoothstep01(t: number): number {
+  const x = Math.min(1, Math.max(0, t));
+  return x * x * (3 - 2 * x);
+}
+
+function shortestAngleDeltaDeg(from: number, to: number): number {
+  return ((to - from + 540) % 360) - 180;
+}
+
+function lerpPct(a: PctPoint, b: PctPoint, t: number): PctPoint {
+  return {
+    xPct: a.xPct + (b.xPct - a.xPct) * t,
+    yPct: a.yPct + (b.yPct - a.yPct) * t,
+  };
+}
+
+/** Build a ≥2 waypoint pool from real docks, falling back to seeded scatter. */
+export type ContactDock = PctPoint & {
+  /** Destination realism bucket (Max 2026-07-16). */
+  bucket?: 'habitable' | 'barren' | 'outbound';
+};
+
+export function otherShipWaypoints(id: string, docks: PctPoint[]): PctPoint[] {
+  const uniq: PctPoint[] = [];
+  for (const d of docks) {
+    if (!uniq.some((u) => Math.hypot(u.xPct - d.xPct, u.yPct - d.yPct) < 1.5)) {
+      uniq.push(d);
+    }
+  }
+  if (uniq.length >= 2) return uniq;
+  const rng = new SeededRng(deriveChildSeed(`${NS}-presence-waypoints`, id));
+  const base = otherPresencePosition(id);
+  const extras: PctPoint[] = [base];
+  while (extras.length < 3) {
+    extras.push({
+      xPct: 10 + rng.next01() * 80,
+      yPct: 12 + rng.next01() * 76,
+    });
+  }
+  return extras;
+}
+
+function outboundRimDocks(id: string): ContactDock[] {
+  const rng = new SeededRng(deriveChildSeed(`${NS}-outbound`, id));
+  const pts: ContactDock[] = [];
+  for (let i = 0; i < 3; i += 1) {
+    const edge = Math.floor(rng.next01() * 4);
+    let xPct: number;
+    let yPct: number;
+    if (edge === 0) { xPct = 4 + rng.next01() * 6; yPct = 15 + rng.next01() * 70; }
+    else if (edge === 1) { xPct = 90 + rng.next01() * 6; yPct = 15 + rng.next01() * 70; }
+    else if (edge === 2) { xPct = 15 + rng.next01() * 70; yPct = 6 + rng.next01() * 8; }
+    else { xPct = 15 + rng.next01() * 70; yPct = 86 + rng.next01() * 8; }
+    pts.push({ xPct, yPct, bucket: 'outbound' });
+  }
+  return pts;
+}
+
+function destinationWeights(opts?: {
+  archetype?: string | null;
+  activity?: string | null;
+  mission?: string | null;
+}): Record<'habitable' | 'outbound' | 'barren', number> {
+  const arch = (opts?.archetype || '').toUpperCase();
+  const act = (opts?.activity || '').toUpperCase();
+  const miss = (opts?.mission || '').toLowerCase();
+  if (miss === 'science' || arch === 'RESEARCHER') {
+    return { habitable: 0.40, outbound: 0.20, barren: 0.40 };
+  }
+  if (miss === 'colonist') return { habitable: 0.72, outbound: 0.20, barren: 0.08 };
+  if (miss === 'commerce' || arch === 'TRADER') {
+    return { habitable: 0.68, outbound: 0.22, barren: 0.10 };
+  }
+  if (act === 'PATROL' || arch === 'LAW_ENFORCEMENT') {
+    return { habitable: 0.55, outbound: 0.30, barren: 0.15 };
+  }
+  if (arch === 'HOSTILE_RAIDER') return { habitable: 0.45, outbound: 0.35, barren: 0.20 };
+  return { habitable: 0.60, outbound: 0.20, barren: 0.20 };
+}
+
+function pickWeightedDest(
+  id: string,
+  leg: number,
+  from: PctPoint,
+  docks: ContactDock[],
+  opts?: { archetype?: string | null; activity?: string | null; mission?: string | null },
+): PctPoint {
+  const pools: Record<'habitable' | 'outbound' | 'barren', ContactDock[]> = {
+    habitable: [],
+    barren: [],
+    outbound: outboundRimDocks(`${id}:rim`),
+  };
+  for (const d of docks) {
+    const b = d.bucket || 'habitable';
+    pools[b].push(d);
+  }
+  // Untagged docks that aren't rim → treat as habitable (stations / unknown)
+  if (pools.habitable.length === 0 && docks.length > 0) {
+    pools.habitable = docks.map((d) => ({ ...d, bucket: 'habitable' as const }));
+  }
+
+  const weights = destinationWeights(opts);
+  const available = (Object.keys(pools) as Array<keyof typeof pools>).filter((k) => pools[k].length > 0);
+  if (available.length === 0) {
+    return otherShipWaypoints(id, docks)[0] || { xPct: 50, yPct: 50 };
+  }
+  const total = available.reduce((s, k) => s + weights[k], 0) || available.length;
+  const rng = new SeededRng(deriveChildSeed(`${NS}-dest-pick`, `${id}:${leg}`));
+  let roll = rng.next01() * total;
+  let bucket: keyof typeof pools = available[0];
+  for (const k of available) {
+    roll -= weights[k];
+    if (roll <= 0) { bucket = k; break; }
+  }
+  const optsList = pools[bucket];
+  const ranked = [...optsList].sort(
+    (a, b) => Math.hypot(b.xPct - from.xPct, b.yPct - from.yPct)
+      - Math.hypot(a.xPct - from.xPct, a.yPct - from.yPct),
+  );
+  const top = ranked.slice(0, Math.max(1, Math.ceil(ranked.length / 2)));
+  return top[Math.floor(rng.next01() * top.length)];
+}
+
+/** Cosmetic contact pose — mirrors the player's turn/burn/flip/brake legs. */
+export function otherShipFlightPose(
+  id: string,
+  tSec: number,
+  docks: ContactDock[],
+  opts?: {
+    archetype?: string | null;
+    activity?: string | null;
+    mission?: string | null;
+    bandAspect?: number;
+  },
+): OtherShipFlightPose {
+  const rng = new SeededRng(deriveChildSeed(`${NS}-presence-flight`, id));
+  const bandAspect = opts?.bandAspect ?? 1;
+  const arch = (opts?.archetype || '').toUpperCase();
+  const act = (opts?.activity || '').toUpperCase();
+  const isBusy =
+    act === 'PATROL' ||
+    act === 'COMMUTE' ||
+    act === 'WORK_STATION' ||
+    arch === 'LAW_ENFORCEMENT' ||
+    arch === 'HOSTILE_RAIDER';
+
+  const phaseOffsetMs = Math.floor(rng.next01() * 120_000);
+  const dwellMs = isBusy
+    ? 1800 + Math.floor(rng.next01() * 3200)
+    : 4500 + Math.floor(rng.next01() * 7000);
+  const legMs =
+    OTHER_FLIGHT_ORIENT_MS + OTHER_FLIGHT_MOVE_MS + OTHER_FLIGHT_SETTLE_MS + dwellMs;
+
+  const tMs = Math.max(0, tSec * 1000) + phaseOffsetMs;
+  const leg = Math.floor(tMs / legMs);
+  const u = tMs - leg * legMs;
+
+  // Walk weighted destinations per leg so traders prefer docks/habitable worlds.
+  let from: PctPoint = otherPresencePosition(id);
+  let to = pickWeightedDest(id, 0, from, docks, opts);
+  let prev = from;
+  for (let i = 1; i <= leg; i += 1) {
+    prev = from;
+    from = to;
+    to = pickWeightedDest(id, i, from, docks, opts);
+  }
+
+  const prograde = headingDeg(from, to, bandAspect);
+  const retrograde = prograde + 180;
+  const faceArrival = prograde + 360;
+  const parkedHdg = headingDeg(prev, from, bandAspect);
+
+  const moveStart = OTHER_FLIGHT_ORIENT_MS;
+  const accelEnd = moveStart + OTHER_FLIGHT_ACCEL_MS;
+  const coastEnd = accelEnd + OTHER_FLIGHT_COAST_MS;
+  const flipEnd = coastEnd + OTHER_FLIGHT_FLIP_MS;
+  const moveEnd = moveStart + OTHER_FLIGHT_MOVE_MS;
+  const settleEnd = moveEnd + OTHER_FLIGHT_SETTLE_MS;
+
+  if (u < moveStart) {
+    const t = u / OTHER_FLIGHT_ORIENT_MS;
+    const hdg = parkedHdg + shortestAngleDeltaDeg(parkedHdg, prograde) * smoothstep01(t);
+    return { ...from, headingDeg: hdg, phase: 'orienting', burning: false };
+  }
+
+  if (u < moveEnd) {
+    const p = (u - moveStart) / OTHER_FLIGHT_MOVE_MS;
+    const pos = lerpPct(from, to, smoothstep01(p));
+    if (u < accelEnd) {
+      return { ...pos, headingDeg: prograde, phase: 'accelerating', burning: true };
+    }
+    if (u < coastEnd) {
+      return { ...pos, headingDeg: prograde, phase: 'gliding', burning: false };
+    }
+    if (u < flipEnd) {
+      const ft = (u - coastEnd) / OTHER_FLIGHT_FLIP_MS;
+      const continuous = prograde + 180 * smoothstep01(ft);
+      return { ...pos, headingDeg: continuous, phase: 'brake-turn', burning: false };
+    }
+    return { ...pos, headingDeg: retrograde, phase: 'braking', burning: true };
+  }
+
+  if (u < settleEnd) {
+    const t = (u - moveEnd) / OTHER_FLIGHT_SETTLE_MS;
+    const hdg = retrograde + (faceArrival - retrograde) * smoothstep01(t);
+    return { ...to, headingDeg: hdg, phase: 'final-orient', burning: false };
+  }
+
+  return { ...to, headingDeg: faceArrival, phase: 'idle', burning: false };
+}
+
+/** @deprecated Use otherShipFlightPose — kept for any stray import during cutover. */
+export function otherShipPose(
+  id: string,
+  tSec: number,
+  opts?: {
+    archetype?: string | null;
+    activity?: string | null;
+    bandAspect?: number;
+  },
+): OtherShipFlightPose {
+  return otherShipFlightPose(id, tSec, [], opts);
 }
 
 /** The player's own ship's RESTING anchor when there is no better seed (no

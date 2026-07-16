@@ -104,6 +104,14 @@ const PLANET_UNCLAIMED: any = {
 const PLANET_HUB: any = {
   id: 'planet-2', name: 'New Earth', type: 'TERRAN', sector_id: 100,
   habitability_score: 95, is_population_hub: true, owner_id: null, owner_name: null,
+  population: 8_000_000_000,
+};
+
+/** Hub stranded without the DB flag — pop ≥1M must still route to Population Center. */
+const PLANET_HUB_FLAG_MISSING: any = {
+  id: 'planet-3', name: 'New Earth', type: 'TERRAN', sector_id: 100,
+  habitability_score: 95, is_population_hub: false, owner_id: null, owner_name: null,
+  population: 8_000_000_000,
 };
 
 function makeGameState(overrides: Record<string, unknown> = {}) {
@@ -271,6 +279,24 @@ describe('GameDashboard — landed keeps the vista, bezel-swaps the deck (WO-UI4
     expect(workspace?.querySelector('[data-testid="pc-mock"]')).not.toBeNull();
 
     expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it('landed on a high-pop capital with missed is_population_hub flag: still Population Center (not ownership-gated ops)', async () => {
+    gameState = makeGameState({
+      playerState: {
+        ...makeGameState().playerState,
+        is_landed: true,
+        current_planet_id: 'planet-3',
+      },
+      planetsInSector: [PLANET_HUB_FLAG_MISSING],
+    });
+    await act(async () => {
+      root.render(<GameDashboard />);
+    });
+
+    expect(populationCenterMock).toHaveBeenCalled();
+    expect(container.textContent).not.toContain('PLANETARY OPERATIONS COMMAND');
+    expect(container.textContent).not.toContain('Loading colonists requires landing on a planet you own');
   });
 
   it('flight (not docked, not landed): WindshieldTableau still mounts — no regression (WO-UI2-WINDSHIELD-TABLEAU: was SolarSystemViewscreen)', async () => {

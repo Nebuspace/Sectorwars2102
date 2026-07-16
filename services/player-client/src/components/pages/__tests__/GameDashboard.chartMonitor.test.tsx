@@ -31,6 +31,7 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { NavChartResponse, NavChartSector } from '../../../services/api';
+import { WARP_TURN_MS, WARP_ARRIVE_MS } from '../../../services/warpCinematicBus';
 
 // ---------------------------------------------------------------------------
 // services/api -- navAPI.getChart is the only fetch under test here; the
@@ -401,24 +402,33 @@ describe('GameDashboard — NAV chart monitor (/game/map parity, WO-UI2-CHART-MO
     await clickButton('ENGAGE');
     await settle();
 
+    // AutopilotContext's executeHop arms the warp cinematic and HOLDS each
+    // hop for WARP_TURN_MS (the RCS re-orient) before committing
+    // moveToSector -- wait past that hold with a real timer (this file, like
+    // navMultihop.test.tsx, keeps requestAnimationFrame the only faked
+    // primitive; a real wait is simpler and less fragile here than juggling
+    // vi.useFakeTimers() around the rAF polyfill above).
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, WARP_TURN_MS + 200));
+    });
+    await settle();
+
     // First hop only -- the second must NOT have fired yet (proves
     // one-at-a-time, not both hops dispatched together on engage()).
     expect(gameState.moveToSector).toHaveBeenCalledTimes(1);
     expect(gameState.moveToSector).toHaveBeenNthCalledWith(1, 101);
 
-    // engage()'s hop chain schedules the next hop ~800ms later via a real
-    // setTimeout -- wait past it with a real timer (this file, like
-    // navMultihop.test.tsx, keeps requestAnimationFrame the only faked
-    // primitive; a real 900ms wait is simpler and less fragile here than
-    // juggling vi.useFakeTimers() around the rAF polyfill above).
+    // engage()'s hop chain holds through the arrival cinematic
+    // (WARP_ARRIVE_MS) before starting the next hop's own WARP_TURN_MS
+    // re-orient hold -- wait past both via a real timer.
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 900));
+      await new Promise((resolve) => setTimeout(resolve, WARP_ARRIVE_MS + WARP_TURN_MS + 300));
     });
     await settle();
 
     expect(gameState.moveToSector).toHaveBeenCalledTimes(2);
     expect(gameState.moveToSector).toHaveBeenNthCalledWith(2, 103);
-  }, 15000);
+  }, 20000);
 
   // -- (d) unreachable -> nearest-known feedback, not a crash ----------------
 

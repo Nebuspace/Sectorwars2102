@@ -1,0 +1,192 @@
+/* ARIA Autopilot HUD — daisy-chained dots on a line, origin → destination.
+   A cockpit windshield overlay: fixed anchor, click-through, auto-hides on
+   arrival (component unmounts). */
+
+.autopilot-hud {
+  position: absolute;
+  top: 0.6rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 8;
+  pointer-events: none;
+  max-width: min(92%, 760px);
+  padding: 0.4rem 0.7rem 0.5rem;
+  border: 1px solid rgba(0, 217, 255, 0.35);
+  border-radius: 0.35rem;
+  background: rgba(2, 16, 26, 0.62);
+  backdrop-filter: blur(3px);
+  box-shadow: 0 0 18px rgba(0, 180, 255, 0.15);
+  font-family: "IBM Plex Mono", "JetBrains Mono", ui-monospace, monospace;
+  color: #cfefff;
+}
+
+.autopilot-hud--paused {
+  border-color: rgba(255, 176, 35, 0.55);
+  box-shadow: 0 0 18px rgba(255, 176, 35, 0.18);
+}
+
+.autopilot-hud__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+  white-space: nowrap;
+}
+
+.autopilot-hud__badge {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #00d9ff;
+}
+
+.autopilot-hud--paused .autopilot-hud__badge {
+  color: #ffc23d;
+}
+
+.autopilot-hud__dest {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #e8faff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40ch;
+}
+
+.autopilot-hud__count {
+  font-size: 0.62rem;
+  color: #7aa0b8;
+}
+
+.autopilot-hud__paused-tag {
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #ffc23d;
+}
+
+/* The line of dots. Each <li> carries the connector LEADING INTO its dot,
+   so the whole thing lays out as a single flex line. */
+.autopilot-hud__chain {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  gap: 0;
+}
+
+.autopilot-hud__node {
+  display: flex;
+  align-items: center;
+  position: relative;
+  flex: 0 0 auto;
+}
+
+/* connector segment (the "link" between dots) */
+.autopilot-hud__leg {
+  width: 2.1rem;
+  height: 2px;
+  border-radius: 2px;
+  background: rgba(120, 150, 172, 0.35);
+}
+
+.autopilot-hud__leg.is-traversed {
+  background: #3dff7a;
+}
+
+.autopilot-hud__leg.is-active {
+  background: linear-gradient(90deg, #3dff7a 0%, #ffc23d 100%);
+  animation: autopilot-hud-pulse 1.1s ease-in-out infinite;
+}
+
+.autopilot-hud__leg.is-pending {
+  background: rgba(120, 150, 172, 0.3);
+}
+
+/* the dot */
+.autopilot-hud__dot {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  background: #2b3a49;
+  border: 2px solid #4f86c6;
+  box-shadow: 0 0 6px rgba(79, 134, 198, 0.4);
+}
+
+.is-origin .autopilot-hud__dot {
+  background: #0a2a16;
+  border-color: #3dff7a;
+}
+
+.is-reached .autopilot-hud__dot {
+  background: #123a22;
+  border-color: #3dff7a;
+}
+
+.is-active .autopilot-hud__dot {
+  background: #3a2a08;
+  border-color: #ffc23d;
+  box-shadow: 0 0 10px rgba(255, 194, 61, 0.7);
+  animation: autopilot-hud-pulse 1.1s ease-in-out infinite;
+}
+
+.is-destination .autopilot-hud__dot {
+  width: 0.85rem;
+  height: 0.85rem;
+  background: #2a1030;
+  border-color: #a88cff;
+  box-shadow: 0 0 10px rgba(168, 140, 255, 0.6);
+}
+
+/* per-dot label under the dot; kept compact so a long chain stays legible */
+.autopilot-hud__name {
+  position: absolute;
+  top: 1.1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 0.54rem;
+  letter-spacing: 0.02em;
+  color: #8fb4d6;
+  white-space: nowrap;
+  max-width: 6.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+}
+
+.is-origin .autopilot-hud__name,
+.is-reached .autopilot-hud__name {
+  color: #6fd69a;
+}
+
+.is-active .autopilot-hud__name {
+  color: #ffc23d;
+  font-weight: 600;
+}
+
+.is-destination .autopilot-hud__name {
+  color: #c3b0ff;
+  font-weight: 600;
+}
+
+/* extra bottom padding so absolutely-positioned labels don't clip */
+.autopilot-hud__chain {
+  padding-bottom: 1.2rem;
+}
+
+@keyframes autopilot-hud-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .autopilot-hud__leg.is-active,
+  .is-active .autopilot-hud__dot {
+    animation: none;
+  }
+}

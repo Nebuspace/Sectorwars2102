@@ -18,6 +18,7 @@ import PlanetPortPair from '../tactical/PlanetPortPair';
 import NavigationMap from '../tactical/NavigationMap';
 import { chartToNavSectors } from '../tactical/navChartTransform';
 import Galaxy3DRenderer from '../galaxy/Galaxy3DRenderer';
+import AutopilotHud from '../hud/AutopilotHud';
 import QuantumDriveConsole from '../quantum/QuantumDriveConsole';
 import GatewrightPanel from '../gatewright/GatewrightPanel';
 import TacticalMonitor from '../tactical/TacticalMonitor';
@@ -29,6 +30,7 @@ import type { PerColonistRates, ProdRole } from '../cockpit/CoupledColonistSlide
 import SafeVaultPanel from '../cockpit/SafeVaultPanel';
 import { navAPI, type NavChartResponse, sectorAPI, type SectorWreck } from '../../services/api';
 import apiClient from '../../services/apiClient';
+import { projectedWarpBearing, subscribeWarpDepart, WARP_TURN_MS } from '../../services/warpCinematicBus';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { TurnsIcon } from '../icons/TurnsIcon';
 import './game-dashboard.css';
@@ -658,6 +660,60 @@ const GameDashboardInner: React.FC = () => {
   const [movementResult, setMovementResult] = useState<any>(null);
   const [dockingResult, setDockingResult] = useState<any>(null);
   const [landingResult, setLandingResult] = useState<any>(null);
+
+  // Warp cinematic trigger handed to the flight windshield (WindshieldTableau).
+  // handleMove bumps the token the moment a jump is committed; the windshield
+  // owns the actual charge → launch → arrival sequence. This is just an upper
+  // bound after which the (stateless) trigger prop is retired, comfortably
+  // longer than the whole cinematic. (Local, not imported, so WindshieldTableau
+  // can stay mocked in tests.)
+  const WARP_CINEMATIC_MAX_MS = 16000;
+  const warpTokenRef = useRef(0);
+  const warpClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [warpDepart, setWarpDepart] = useState<{
+    token: number;
+    bearingDeg: number;
+    destinationSectorId: number;
+  } | null>(null);
+
+  const armWarpDepart = useCallback((destinationSectorId: number) => {
+    const prefersReduced =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReduced) return;
+    const destination = [...availableMoves.warps, ...availableMoves.tunnels]
+      .find((move) => move.sector_id === destinationSectorId);
+    const fallbackBearing = (destinationSectorId * 47) % 360;
+    const hasProjectedCoords =
+      currentSector != null
+      && typeof currentSector.x_coord === 'number'
+      && typeof currentSector.y_coord === 'number'
+      && destination != null
+      && typeof destination.x_coord === 'number'
+      && typeof destination.y_coord === 'number';
+    const bearingDeg = hasProjectedCoords
+      ? projectedWarpBearing(
+          { x: currentSector.x_coord, y: currentSector.y_coord },
+          { x: destination.x_coord!, y: destination.y_coord! },
+          fallbackBearing,
+        )
+      : fallbackBearing;
+    warpTokenRef.current += 1;
+    setWarpDepart({
+      token: warpTokenRef.current,
+      bearingDeg,
+      destinationSectorId,
+    });
+    if (warpClearTimerRef.current) clearTimeout(warpClearTimerRef.current);
+    warpClearTimerRef.current = setTimeout(() => setWarpDepart(null), WARP_CINEMATIC_MAX_MS);
+  }, [availableMoves, currentSector]);
+
+  // ARIA autopilot hops fire through the bus so they get the same windshield
+  // charge → launch → arrive cinematic as manual helm jumps.
+  useEffect(() => subscribeWarpDepart((req) => {
+    armWarpDepart(req.destinationSectorId);
+  }), [armWarpDepart]);
 
   // Asteroid-harvest feedback (WO-UI-MINING): the harvest action result banner.
   // {success} carries the yield (ore/pm/shards), turns spent + remaining, and a
@@ -1981,10 +2037,33 @@ const GameDashboardInner: React.FC = () => {
 
 
   const handleMove = async (sectorId: number) => {
+    // Manual helm always wins over ARIA autopilot — a live engage loop was
+    // racing Move clicks (warp cinematic from one hop, move from another,
+    // or a refused hop after the bubble already played).
+    autopilot.abort('manual helm action');
+
+    armWarpDepart(sectorId);
+    // Hold the hop until the RCS turn finishes. Firing moveToSector immediately
+    // lets a fast round-trip abort `turning` and the hull never re-orients.
+    const prefersReduced =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (!prefersReduced) {
+      await new Promise<void>((resolve) => setTimeout(resolve, WARP_TURN_MS));
+    }
     try {
       const result = await moveToSector(sectorId);
+      if (result && result.success === false) {
+        // Move refused — drop the cinematic so we don't sit in "launch"
+        // with no sector change.
+        setWarpDepart(null);
+        setMovementResult(result);
+        return;
+      }
       setMovementResult(result);
     } catch (error) {
+      setWarpDepart(null);
       console.error('Error moving to sector:', error);
     }
   };
@@ -2585,6 +2664,7 @@ const GameDashboardInner: React.FC = () => {
                 scanActive={scanActive}
                 lastDockedStationId={lastDockedStationIdRef.current}
                 lastLandedPlanetId={lastLandedPlanetIdRef.current}
+                warpDepart={warpDepart}
               />
 
               {/* Cockpit frame vignette */}
@@ -2594,6 +2674,10 @@ const GameDashboardInner: React.FC = () => {
                 <div className="frame-corner bottom-left"></div>
                 <div className="frame-corner bottom-right"></div>
               </div>
+
+              {/* ARIA Autopilot course — daisy-chained dots on a line,
+                  origin → destination. Self-hides on arrival (unmounts). */}
+              <AutopilotHud />
 
               {/* HUD Overlays. The top-left id="location" chip (sector/
                   region/CitizenshipBadge + region-owner controls) was
@@ -2781,9 +2865,14 @@ const GameDashboardInner: React.FC = () => {
                 </div>
               </div>
             </div>
-          ) : playerState?.is_landed && landedPlanet?.is_population_hub ? (
+          ) : playerState?.is_landed && (
+            landedPlanet?.is_population_hub
+            || (landedPlanet?.population ?? 0) >= 1_000_000
+          ) ? (
             /* LANDED ON A POPULATION HUB: the Capital Sector welcome +
                Pioneer Office, not the generic owned-colony console.
+               Pop ≥1M fallback mirrors server land/claim/pioneer — a missed
+               is_population_hub flag must not show ownership-gated Load/Unload.
                `.surface-face-workspace` (WO-UI4-SURFACE-MODE, game-layout.css)
                places it the same way the owned-colony branch below is placed;
                PopulationCenterInterface owns its own `.console-monitor
@@ -3423,15 +3512,9 @@ const GameDashboardInner: React.FC = () => {
                         </button>
                       </div>
                       {navChartMode === '3d' ? (
-                        // Galaxy3DRenderer sources currentSector/availableMoves
-                        // itself via useGame() -- the rendered node set is
-                        // already {current} ∪ {warps} ∪ {tunnels}, the exact
-                        // same reachable domain as 2D's availableMoves, so
-                        // any non-current click is always a valid hop
-                        // (mirrors GalaxyMap.tsx's own onSectorSelect reuse).
-                        // .galaxy-3d-container fills 100% of this flex cell,
-                        // same height:100% chain NavigationMap's own wrapper
-                        // already relies on here -- no extra sizing wrapper.
+                        // Galaxy3DRenderer loads the UNBOUNDED known chart
+                        // (visited fog-of-war trail) + merges current exits.
+                        // Sensor ≥1 also reveals one-hop frontier stubs.
                         <Galaxy3DRenderer
                           className="nav-3d-view"
                           onSectorSelect={(sector) => handleMove(sector.sector_id)}
@@ -3587,6 +3670,10 @@ const GameDashboardInner: React.FC = () => {
                             // player was at ANY body in a multi-planet sector.
                             isLanded={playerState?.current_planet_id === planet.id}
                             isDocked={!!station && playerState?.current_port_id === station.id}
+                            atDestination={
+                              flight.arrivedTargetId === planet.id
+                              || (!!station && flight.arrivedTargetId === station.id)
+                            }
                             flying={flying}
                             onHalt={handleHalt}
                             onApproach={flight.approach}
@@ -3603,6 +3690,7 @@ const GameDashboardInner: React.FC = () => {
                           onDockAtStation={handleDock}
                           isLanded={false}
                           isDocked={playerState?.current_port_id === station.id}
+                          atDestination={flight.arrivedTargetId === station.id}
                           flying={flying}
                           onHalt={handleHalt}
                           onApproach={flight.approach}

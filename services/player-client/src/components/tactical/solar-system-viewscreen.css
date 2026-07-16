@@ -167,6 +167,14 @@
   background: rgba(0, 217, 255, 0.22);
   box-shadow: 0 0 10px rgba(0, 217, 255, 0.25);
 }
+.ssv-popup-action.halt {
+  color: #FFD9DE;
+  border-color: #7A3644;
+  background: linear-gradient(180deg, #3A1520, #2A0E16);
+  text-shadow: 0 0 8px rgba(255, 90, 106, .7);
+  animation: ssv-halt-flash 1s steps(2, start) infinite;
+}
+@keyframes ssv-halt-flash { 50% { filter: brightness(.45); } }
 
 /* FIX C revise (Max correction: right-click must be MENU-mediated, not
    direct-travel) — a small floating "Travel To" menu, same HUD-glass
@@ -281,8 +289,73 @@
 
 .ssv-tableau .shipmk {
   position: absolute; z-index: 5; color: #BDEFFB; font-size: 1.1em; text-shadow: 0 0 10px #3FD2ECCC;
-  transition: left 11.6s ease-in-out, top 11.6s ease-in-out;
+  /* Position + rotation durations are driven by CSS variables so a phase
+     change can retime the NEXT rotation without restarting the single,
+     continuous position glide already running (running transitions snapshot
+     their timing at start — later variable edits only affect future ones).
+     That is what keeps momentum reading smoothly through the mid-flight flip. */
+  transition:
+    left var(--travel-pos-dur, 0s) var(--travel-pos-ease, ease-in-out),
+    top var(--travel-pos-dur, 0s) var(--travel-pos-ease, ease-in-out),
+    transform var(--travel-rot-dur, .5s) var(--travel-rot-ease, cubic-bezier(.4,0,.2,1));
   transform: translate(-50%, -50%) rotate(var(--hdg, 0deg)); pointer-events: none;
+}
+/* Local flight profile — ONE continuous eased glide (accelerate → cruise →
+   decelerate as a single position transition), with engine burn, RCS jets, and
+   the retrograde flip layered on as a timed track. The ship keeps coasting at
+   speed through the flip (momentum), never stopping to turn. TRAVEL_MOVE_MS in
+   WindshieldTableau.tsx (6400) must equal this 6.4s position duration. */
+.ssv-tableau .shipmk.travel-orienting { --travel-pos-dur: 0s; --travel-rot-dur: 1s; }
+.ssv-tableau .shipmk.travel-accelerating,
+.ssv-tableau .shipmk.travel-gliding,
+.ssv-tableau .shipmk.travel-brake-turn,
+.ssv-tableau .shipmk.travel-braking {
+  --travel-pos-dur: 6.4s;
+  --travel-pos-ease: cubic-bezier(.45, .05, .55, .95);
+}
+.ssv-tableau .shipmk.travel-accelerating,
+.ssv-tableau .shipmk.travel-gliding,
+.ssv-tableau .shipmk.travel-braking { --travel-rot-dur: 0s; }
+.ssv-tableau .shipmk.travel-brake-turn { --travel-rot-dur: 1.3s; }
+.ssv-tableau .shipmk.travel-final-orient { --travel-pos-dur: 0s; --travel-rot-dur: .8s; }
+/* Emergency Halt — retargets the running glide to a nearby stop. Shorter
+   position duration so the coast-ahead + burn reads as an abort, not a crawl. */
+.ssv-tableau .shipmk.travel-halt-turn,
+.ssv-tableau .shipmk.travel-halt-brake {
+  --travel-pos-dur: 3.4s;
+  --travel-pos-ease: cubic-bezier(.05, .7, .15, 1);
+}
+.ssv-tableau .shipmk.travel-halt-turn { --travel-rot-dur: 1.8s; }
+.ssv-tableau .shipmk.travel-halt-brake { --travel-rot-dur: 0s; }
+/* Mid-course redirect — keep forward speed while RCS swings onto a soft
+   arc waypoint, then burn toward the new destination. Never parks. */
+.ssv-tableau .shipmk.travel-redirect-turn {
+  --travel-pos-dur: 2.4s;
+  --travel-pos-ease: cubic-bezier(.2, .55, .35, 1);
+  --travel-rot-dur: 1.6s;
+}
+/* Sector reseeds / warp arrival are teleports — never CSS-glide the hull across
+   the band (that reads as "ship crawling from the old sector's coordinates"). */
+.ssv-tableau .shipmk.warp-launching,
+.ssv-tableau .shipmk.warp-arriving { transition: none; }
+.ssv-tableau .shipmk.warp-turning {
+  --travel-rot-dur: 3s; /* preserve the deliberate pre-warp reorientation */
+  filter: drop-shadow(0 0 .45em rgba(125, 215, 255, .7));
+}
+/* RCS attitude jets — tiny gas puffs on opposite corners of the hull firing as
+   a rotational couple while the ship re-orients before warp. Body-mounted, so
+   they inherit the hull's rotate() and read as maneuvering thrusters. */
+.ssv-tableau .shipmk .ssv-rcs {
+  position: absolute; width: .5em; height: .16em; border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(225, 246, 255, .95), rgba(150, 205, 255, .45) 55%, transparent 78%);
+  filter: blur(.35px); opacity: 0; pointer-events: none;
+}
+.ssv-tableau .shipmk .ssv-rcs-a { top: -.05em; right: -.35em; animation: ssv-rcs-puff .42s steps(3, jump-none) infinite; }
+.ssv-tableau .shipmk .ssv-rcs-b { bottom: -.05em; left: -.35em; animation: ssv-rcs-puff .42s steps(3, jump-none) .21s infinite; }
+@keyframes ssv-rcs-puff {
+  0% { opacity: 0; transform: scaleX(.3); }
+  25% { opacity: .95; transform: scaleX(1); }
+  100% { opacity: 0; transform: scaleX(1.7); }
 }
 .ssv-tableau .shipmk::after {
   content: ""; display: none; position: absolute; right: 92%; top: 50%; transform: translateY(-50%);
@@ -291,6 +364,79 @@
 }
 .ssv-tableau .shipmk.burning::after { display: block; animation: ssv-thrust .22s steps(2, start) infinite; }
 @keyframes ssv-thrust { 50% { opacity: .55; width: 1.05em; } }
+
+/* Warp cinematic (see WindshieldTableau.tsx's warpPhase machine). The exit
+   bearing arrives as --warp-bearing (deg, 0 = +x / rightward). Durations here
+   MUST track WARP_MIN_CHARGE_MS / WARP_LAUNCH_MS / WARP_ARRIVE_MS in that file. */
+.ssv-tableau .ssv-warp { position: absolute; z-index: 6; transform: translate(-50%, -50%); pointer-events: none; }
+.ssv-tableau .ssv-warp-bubble {
+  position: absolute; left: 0; top: 0; width: 3.4em; height: 3.4em; margin: -1.7em 0 0 -1.7em;
+  border-radius: 50%; border: 1px solid rgba(180, 228, 255, .6);
+  background: radial-gradient(circle at 50% 42%, rgba(160, 224, 255, .30), rgba(90, 160, 255, .15) 55%, transparent 72%);
+  box-shadow: 0 0 1.4em rgba(120, 200, 255, .55), inset 0 0 .9em rgba(190, 232, 255, .55);
+  opacity: 0; transform: scale(.1);
+}
+.ssv-tableau .ssv-warp-streak {
+  position: absolute; left: 0; top: 0; height: .34em; margin-top: -.17em; width: 0;
+  transform-origin: left center; transform: rotate(var(--warp-bearing, 0deg));
+  background: linear-gradient(90deg, rgba(210, 240, 255, .95), rgba(130, 195, 255, .5) 55%, transparent);
+  border-radius: 2px; filter: blur(.4px); opacity: 0;
+}
+.ssv-tableau .ssv-warp.warp-charging .ssv-warp-bubble { animation: ssv-warp-charge 1.8s ease-out forwards; }
+.ssv-tableau .ssv-warp.warp-launch .ssv-warp-bubble { animation: ssv-warp-pop 1.7s ease-in forwards; }
+.ssv-tableau .ssv-warp.warp-launch .ssv-warp-streak { animation: ssv-warp-streak 1.7s ease-in forwards; }
+.ssv-tableau .ssv-warp.warp-arriving .ssv-warp-bubble { animation: ssv-warp-arrive 3.4s ease-out forwards; }
+.ssv-tableau .ssv-warp.warp-arriving .ssv-warp-streak {
+  transform: rotate(calc(var(--arrival-bearing, 0deg) + 180deg));
+  animation: ssv-warp-streak-in 2s cubic-bezier(.35,.05,.75,.45) forwards;
+}
+@keyframes ssv-warp-charge {
+  0% { opacity: 0; transform: scale(.1); }
+  55% { opacity: 1; transform: scale(1); }
+  100% { opacity: .92; transform: scale(1.06); filter: blur(.3px); }
+}
+@keyframes ssv-warp-pop {
+  0% { opacity: .92; transform: scale(1.06); }
+  100% { opacity: 0; transform: scale(2); }
+}
+@keyframes ssv-warp-streak {
+  0% { opacity: 0; width: 0; }
+  35% { opacity: 1; }
+  100% { opacity: 0; width: 15em; }
+}
+/* Inbound line starts far behind the hull and collapses into the bubble-in
+   point, making the arrival direction legible across the solar-system band. */
+@keyframes ssv-warp-streak-in {
+  0% { opacity: 0; width: 44em; filter: blur(1.2px); }
+  18% { opacity: .95; }
+  72% { opacity: .8; width: 9em; filter: blur(.35px); }
+  100% { opacity: 0; width: 0; }
+}
+@keyframes ssv-warp-arrive {
+  0% { opacity: 0; transform: scale(2.2); }
+  20% { opacity: .9; transform: scale(1.7); }
+  72% { opacity: .75; transform: scale(1); }
+  100% { opacity: 0; transform: scale(.7); }
+}
+
+/* Full-band flash bridging the sector swap. */
+.ssv-tableau .ssv-warp-flash {
+  position: absolute; inset: 0; z-index: 6; pointer-events: none; opacity: 0;
+  background: radial-gradient(circle at 50% 50%, rgba(215, 242, 255, .55), rgba(150, 200, 255, .16) 45%, transparent 70%);
+  animation: ssv-warp-flash 3.4s ease-out forwards;
+}
+@keyframes ssv-warp-flash { 0% { opacity: 0; } 18% { opacity: .9; } 55% { opacity: .35; } 100% { opacity: 0; } }
+
+/* The hull itself: streak out on launch, fade back in on arrival. */
+.ssv-tableau .shipmk.warp-launching { animation: ssv-ship-warpout 1.7s ease-in forwards; }
+.ssv-tableau .shipmk.warp-arriving { animation: ssv-ship-warpin 3.4s ease-out; }
+@keyframes ssv-ship-warpout {
+  to { opacity: 0; transform: translate(-50%, -50%) rotate(var(--hdg, 0deg)) scale(.4); }
+}
+@keyframes ssv-ship-warpin {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
 
 .ssv-tableau .anom {
   position: absolute; z-index: 2; color: #C9B8F5; opacity: .5; font-size: 1.2em; cursor: pointer;
@@ -301,6 +447,44 @@
 .ssv-tableau .other {
   position: absolute; z-index: 3; color: #8FB8D8; font-size: .85em; text-shadow: 0 0 8px #8FB8D866;
   cursor: pointer; transform: translate(-50%, -50%); background: none; border: none;
+  /* Position is absolute from otherShipFlightPose (same turn/burn/flip/brake
+     timeline as .shipmk). No CSS left/top easing here — the pose function owns it. */
+}
+.ssv-tableau .other .other-hull {
+  position: relative; display: inline-block;
+  transform: rotate(var(--hdg, 0deg));
+  transition: transform .12s linear;
+}
+.ssv-tableau .other.travel-orienting .other-hull,
+.ssv-tableau .other.travel-brake-turn .other-hull,
+.ssv-tableau .other.travel-final-orient .other-hull {
+  transition: transform var(--travel-rot-dur, .5s) cubic-bezier(.4,0,.2,1);
+}
+.ssv-tableau .other.travel-orienting { --travel-rot-dur: 1s; }
+.ssv-tableau .other.travel-brake-turn { --travel-rot-dur: 1.3s; }
+.ssv-tableau .other.travel-final-orient { --travel-rot-dur: .8s; }
+.ssv-tableau .other.travel-accelerating .other-hull,
+.ssv-tableau .other.travel-gliding .other-hull,
+.ssv-tableau .other.travel-braking .other-hull { transition: transform 0s; }
+/* Exhaust flame — same idiom as .shipmk::after, mounted on the hull so it
+   rotates with heading (behind the chevron while burning). */
+.ssv-tableau .other .other-hull::after {
+  content: ""; display: none; position: absolute; right: 92%; top: 50%; transform: translateY(-50%);
+  width: 1.05em; height: .26em; border-radius: 2px; filter: blur(.4px);
+  background: linear-gradient(270deg, #FFD27ACC, #FF7A5A99 40%, transparent);
+}
+.ssv-tableau .other.burning .other-hull::after { display: block; animation: ssv-thrust .22s steps(2, start) infinite; }
+.ssv-tableau .other .other-hull .ssv-rcs {
+  position: absolute; width: .45em; height: .14em; border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(225, 246, 255, .95), rgba(150, 205, 255, .45) 55%, transparent 78%);
+  filter: blur(.35px); opacity: 0; pointer-events: none;
+}
+.ssv-tableau .other .other-hull .ssv-rcs-a { top: -.05em; right: -.3em; animation: ssv-rcs-puff .42s steps(3, jump-none) infinite; }
+.ssv-tableau .other .other-hull .ssv-rcs-b { bottom: -.05em; left: -.3em; animation: ssv-rcs-puff .42s steps(3, jump-none) .21s infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .ssv-tableau .other .other-hull { transition: none; }
+  .ssv-tableau .other.burning .other-hull::after { animation: none; }
+  .ssv-tableau .other .other-hull .ssv-rcs { display: none; }
 }
 .ssv-tableau .other .pltag { font-size: .62em; color: #7FA3C0; }
 .ssv-tableau .other:hover { color: #CFE8FA; }
@@ -355,6 +539,14 @@
   .ssv-tableau .anom { animation: none; }
   .ssv-tableau .moon-orbit { animation: none; }
   .ssv-tableau .reticle::before { animation: none; }
+  /* Warp cinematic is decorative — GameDashboard already withholds the token
+     under reduced-motion, but belt-and-suspenders in case it ever renders. */
+  .ssv-tableau .ssv-warp,
+  .ssv-tableau .ssv-warp-flash { display: none; }
+  .ssv-tableau .shipmk.warp-launching,
+  .ssv-tableau .shipmk.warp-arriving { animation: none; }
+  .ssv-tableau .shipmk .ssv-rcs { display: none; }
+  .ssv-popup-action.halt { animation: none; }
 }
 
 /* ============================================================

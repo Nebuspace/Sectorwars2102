@@ -92,7 +92,7 @@ describe('PlanetPortPair row state machine', () => {
 
   // ---- Planet rows ---------------------------------------------------
 
-  it('not here, not flying: planet row shows APPROACH ▸', async () => {
+  it('not here, not flying: planet row shows APPROACH ▸ — glide only, no land confirm yet', async () => {
     const onLand = vi.fn();
     const onApproach = vi.fn();
     await render(
@@ -109,13 +109,9 @@ describe('PlanetPortPair row state machine', () => {
     expect(btn?.textContent).toBe('🧭 APPROACH ▸');
     expect(btn?.className).toBe('act'); // never .armed off-burn
     await click(btn!);
-    // APPROACH opens the in-fiction confirm dialog (portaled to document.body,
-    // not `container` — ConfirmDialog uses createPortal), doesn't call onLand yet
+    // APPROACH starts the windshield glide only — confirm waits until arrival.
     expect(onLand).not.toHaveBeenCalled();
-    expect(document.body.textContent).toContain('Land on Kepler-7?');
-    // WO-UI2-FLIGHT-FEEL: ALSO kicks off the windshield ship-glide, in
-    // addition to (not instead of) the confirm dialog above — the row's
-    // dispatch previously never reached the glide at all.
+    expect(document.body.textContent).not.toContain('Land on Kepler-7?');
     expect(onApproach).toHaveBeenCalledTimes(1);
     expect(onApproach).toHaveBeenCalledWith('planet-1');
   });
@@ -132,6 +128,28 @@ describe('PlanetPortPair row state machine', () => {
     );
     const btn = actButton(container, '.planet-section');
     await expect(click(btn!)).resolves.toBeUndefined(); // does not throw
+    expect(document.body.textContent).not.toContain('Land on Kepler-7?');
+  });
+
+  it('atDestination (arrived after approach): planet row shows LAND ▸; click opens land confirm', async () => {
+    const onLand = vi.fn();
+    const onApproach = vi.fn();
+    await render(
+      <PlanetPortPair
+        planet={PLANET}
+        station={null}
+        onLandOnPlanet={onLand}
+        isLanded={false}
+        atDestination
+        flying={false}
+        onApproach={onApproach}
+      />
+    );
+    const btn = actButton(container, '.planet-section');
+    expect(btn?.textContent).toBe('🛬 LAND ▸');
+    await click(btn!);
+    expect(onApproach).not.toHaveBeenCalled();
+    expect(onLand).not.toHaveBeenCalled();
     expect(document.body.textContent).toContain('Land on Kepler-7?');
   });
 
@@ -202,7 +220,7 @@ describe('PlanetPortPair row state machine', () => {
 
   // ---- Station rows ---------------------------------------------------
 
-  it('not here, not flying: station row shows APPROACH ▸; clicking opens the DOCK confirm AND kicks off the glide', async () => {
+  it('not here, not flying: station row shows APPROACH ▸ — glide only, no dock confirm yet', async () => {
     const onDock = vi.fn();
     const onApproach = vi.fn();
     await render(
@@ -219,10 +237,33 @@ describe('PlanetPortPair row state machine', () => {
     const btn = actButton(container, '.station-section');
     expect(btn?.textContent).toBe('🧭 APPROACH ▸');
     await click(btn!);
-    expect(document.body.textContent).toContain('Dock at Kepler Ring?');
+    expect(document.body.textContent).not.toContain('Dock at Kepler Ring?');
     expect(onDock).not.toHaveBeenCalled();
     expect(onApproach).toHaveBeenCalledTimes(1);
     expect(onApproach).toHaveBeenCalledWith('station-1');
+  });
+
+  it('atDestination (arrived after approach): station row shows DOCK ▸; click opens dock confirm', async () => {
+    const onDock = vi.fn();
+    const onApproach = vi.fn();
+    await render(
+      <PlanetPortPair
+        planet={null}
+        station={STATION}
+        onLandOnPlanet={vi.fn()}
+        onDockAtStation={onDock}
+        isDocked={false}
+        atDestination
+        flying={false}
+        onApproach={onApproach}
+      />
+    );
+    const btn = actButton(container, '.station-section');
+    expect(btn?.textContent).toBe('⚓ DOCK ▸');
+    await click(btn!);
+    expect(onApproach).not.toHaveBeenCalled();
+    expect(onDock).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain('Dock at Kepler Ring?');
   });
 
   it('here (isDocked true), not flying: station row shows DOCK ▸', async () => {

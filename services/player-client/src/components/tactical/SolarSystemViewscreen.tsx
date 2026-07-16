@@ -296,6 +296,27 @@ export interface ShipPresence {
   activity?: string | null;
   /** Trader mission (commerce | colonist | science) — drives which dock type. */
   mission?: string | null;
+  /** WO-ISP: authoritative in-system pose / leg plan from the server. */
+  pose?: {
+    x_pct: number;
+    y_pct: number;
+    heading_deg: number;
+    phase?: string;
+    burning?: boolean;
+    leg?: {
+      kind?: string;
+      from_x: number;
+      from_y: number;
+      to_x: number;
+      to_y: number;
+      started_at: string;
+      prograde_deg?: number;
+      parked_heading_deg?: number;
+      target_kind?: string | null;
+      target_id?: string | null;
+    } | null;
+    server_time?: string;
+  } | null;
 }
 
 /** Faction read of a ship — drives glyph color + label. When `archetype` is

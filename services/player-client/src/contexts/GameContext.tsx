@@ -50,6 +50,10 @@ export interface Sector {
   special_features?: string[];
   special_formations?: SpecialFormationSummary[];
   description?: string;
+  /** Galaxy Euclidean coords (same frame as Quantum Jump / NAV 3D). */
+  x_coord?: number | null;
+  y_coord?: number | null;
+  z_coord?: number | null;
 }
 
 export interface Planet {
@@ -113,6 +117,10 @@ export interface MoveOption {
   region_name?: string | null;
   turn_cost: number;
   can_afford: boolean;
+  /** Neighbor galaxy coords for spatial NAV layout (from available-moves). */
+  x_coord?: number | null;
+  y_coord?: number | null;
+  z_coord?: number | null;
   tunnel_type?: string;
   stability?: number;
   // Special formations present in (or anchored at) this neighbour sector,
@@ -690,7 +698,11 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setError(null);
     
     try {
-      const response = await api.post(`/api/v1/player/move/${sectorId}`);
+      // Hard ceiling so a stuck FOR UPDATE / wedged gameserver cannot leave
+      // the cockpit in "warp bubble forever" with no sector change.
+      const response = await api.post(`/api/v1/player/move/${sectorId}`, null, {
+        timeout: 20000,
+      });
 
       // Update player state after movement
       await refreshPlayerState();
@@ -702,7 +714,11 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return response.data;
     } catch (error: any) {
       console.error('Error moving to sector:', error);
-      setError(error.response?.data?.message || 'Failed to move to sector');
+      const msg =
+        error?.code === 'ECONNABORTED'
+          ? 'Move timed out — server busy. Try again.'
+          : (error.response?.data?.detail || error.response?.data?.message || 'Failed to move to sector');
+      setError(msg);
       throw error;
     }
   };

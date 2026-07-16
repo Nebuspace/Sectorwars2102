@@ -12,6 +12,7 @@ import { MFDProvider, useMFD } from '../mfd/MFDContext';
 import MFDScreen from '../mfd/MFDScreen';
 import { SIDEBAR_A, SIDEBAR_B, SIDEBAR_A_FOLDED } from '../mfd/sidebarScreens';
 import { ariaFeed } from '../mfd/ariaFeedStore';
+import { subscribeTeleprinterPanelRequest } from '../../services/teleprinterBus';
 import MedalToast from '../ranking/MedalToast';
 import PriorityHailConsumer from '../comms/PriorityHailConsumer';
 import WelcomeBackToast from '../auth/WelcomeBackToast';
@@ -95,10 +96,31 @@ const MFDAlertWiring: React.FC = () => {
         `Course laid in for Sector ${lastPlot.target_sector_id} — ${hopCount} charted hop${hopCount !== 1 ? 's' : ''}, ${lastPlot.total_turns} turns. Say engage, or use the helm.`
       );
     } else if (lastPlot.reachable === false) {
-      if (lastPlot.nearest_known) {
+      const reason = lastPlot.reason
+        ?? (lastPlot.error === 'unknown sector' ? 'unknown_sector' : undefined);
+      const nearestId = lastPlot.nearest_known?.sector_id;
+      const nearestHint = nearestId != null && nearestId !== lastPlot.target_sector_id
+        ? ` Nearest approach you can reach is Sector ${nearestId}.`
+        : '';
+
+      if (reason === 'no_route') {
         ariaFeed.appendNav(
-          `Sector ${lastPlot.target_sector_id} is beyond my charts. Nearest charted approach is Sector ${lastPlot.nearest_known.sector_id}. Fly the frontier and I will learn the route.`
+          `Sector ${lastPlot.target_sector_id} is on the chart, but I have no directed route from here — one-way warps or gaps in known space.${nearestHint}`
         );
+      } else if (reason === 'unknown_sector') {
+        ariaFeed.appendNav('No such sector on any chart I can read.');
+      } else if (lastPlot.nearest_known) {
+        // Legacy servers without `reason`: if nearest === target, the sector
+        // was charted-but-unreachable (old euclidean-to-self bug).
+        if (nearestId === lastPlot.target_sector_id) {
+          ariaFeed.appendNav(
+            `Sector ${lastPlot.target_sector_id} is on the chart, but I have no directed route from here — one-way warps or gaps in known space.`
+          );
+        } else {
+          ariaFeed.appendNav(
+            `Sector ${lastPlot.target_sector_id} is beyond my charts. Nearest charted approach is Sector ${nearestId}. Fly the frontier and I will learn the route.`
+          );
+        }
       } else {
         ariaFeed.appendNav('No such sector on any chart I can read.');
       }
@@ -188,6 +210,14 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
   // so a future consumer never needs to hunt for it in two places.
   const [teleprinterBodyPanel, setTeleprinterBodyPanel] = useState(false);
   const [teleprinterTranscriptOpen, setTeleprinterTranscriptOpen] = useState(false);
+
+  // NAV 3D multi-hop confirm (and future callers) can request PANEL via
+  // teleprinterBus without coupling to this useState.
+  React.useEffect(() => {
+    return subscribeTeleprinterPanelRequest((req) => {
+      setTeleprinterBodyPanel(req.open);
+    });
+  }, []);
 
   // ── Redirect focus management (WCAG 2.4.3, Pixel a11y gate) ───────────
   // GameShellRoute/GameLayout mount ONCE and persist across every /game/*

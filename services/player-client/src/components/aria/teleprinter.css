@@ -127,6 +127,13 @@
                    cockpit-shell.css's .tline already sets without this. */
 }
 
+/* Ticker mode only: denser type so the single-line summary shows more of
+   each message before ellipsis clips it. PANEL/LOG keep the shell cascade. */
+.teleprinter.tp-ticker .tline {
+  font-size: 0.62rem;
+  letter-spacing: 0.01em;
+}
+
 .tp-ticker-offline {
   flex-shrink: 0;
   font-size: 0.58rem;

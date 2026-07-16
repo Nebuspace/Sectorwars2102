@@ -32,6 +32,7 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { NavChartResponse, NavChartSector, NavChartEdge, NavChartFrontier } from '../../../services/api';
+import { WARP_TURN_MS } from '../../../services/warpCinematicBus';
 
 // ---------------------------------------------------------------------------
 // services/api -- navAPI.getChart is the fetch under test. regionOwnerAPI's
@@ -425,8 +426,18 @@ describe('GameDashboard — NAV multi-hop known-graph feed', () => {
       hitTarget!.dispatchEvent(new Event('pointerdown', { bubbles: true }));
     });
 
+    // GameDashboard.handleMove now arms the warp cinematic and HOLDS the hop
+    // for WARP_TURN_MS (the RCS re-orient) before committing moveToSector --
+    // a fast round-trip used to abort the turn before the hull visibly
+    // re-oriented. Real-timer wait past that hold (real setTimeout, like this
+    // file's own flushTimers -- fake timers are deliberately not used here,
+    // see drainRaf's comment on why rAF stays the only faked primitive).
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, WARP_TURN_MS + 200));
+    });
+
     expect(gameState.moveToSector).toHaveBeenCalledWith(101);
-  });
+  }, 15000);
 
   it('refetches the known-graph chart when the current sector changes', async () => {
     await mount();
