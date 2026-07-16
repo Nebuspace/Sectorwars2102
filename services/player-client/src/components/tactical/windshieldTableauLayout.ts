@@ -296,6 +296,54 @@ export function safeOrbitRadii(
  *  baseline "how far out" position, never behind it. */
 const X_SECONDARY_WIGGLE_FRACTION = 0.15;
 
+/** QUEUE-XPCT-SATURATION-STACK (Max's "pile of planets" catch, phase near
+ *  0deg): the primary X term ALONE is sized so orbitT=1 (au=ORBIT_AU_MAX)
+ *  lands EXACTLY on safeRadii.xMaxPct (xSpreadPct = the star's own full
+ *  rightward room to the box edge) — but the wiggle term above is ADDED ON
+ *  TOP of that, unconditionally, so at cos=1 (phase=0) it pushes every
+ *  orbitT >= 1-X_SECONDARY_WIGGLE_FRACTION (i.e. every au >= ~0.8375, not
+ *  just au=ORBIT_AU_MAX) past xMaxPct — the old hard clamp then collapsed
+ *  ALL of them onto the identical clamped pixel (repro: orbit_au 0.85 and
+ *  0.95 -> the same xPct, pin-tested below). A hard clamp can never fix
+ *  this: it only hides the collapse, it doesn't restore distinctness.
+ *
+ *  Fix: taper the wiggle's own contribution to ZERO as orbitT approaches 1,
+ *  so the primary+wiggle sum can never overshoot xMaxPct in the first
+ *  place — the final hard clamp becomes a provable no-op for the upper
+ *  bound instead of the mechanism doing the (lossy) work. Below this
+ *  threshold the taper is 1.0 (full wiggle, byte-identical to the old
+ *  formula — ZERO delta for the vast majority of orbitT space); above it,
+ *  wiggle ramps linearly to 0 by orbitT=1, continuous at the threshold (no
+ *  jump — a discontinuity there would let a FARTHER-out orbit render
+ *  LESS far right than a closer one, worse than the plateau it replaces).
+ *  threshold=0.84 sits deliberately CLOSE to 0.85 (the old collapse
+ *  boundary, 1-X_SECONDARY_WIGGLE_FRACTION) rather than far from it — every
+ *  extra 0.01 of headroom taken from that gap roughly DOUBLES both the
+ *  worst-case delta to a previously-fine body AND the separation the fix
+ *  buys the previously-stacked ones (empirically measured, see this WO's
+ *  own report); picking the value close to the boundary minimizes the
+ *  former while keeping a real, non-degenerate (not sub-pixel) latter.
+ *  Monotonicity proof (any phase, any two distinct orbit_au at fixed
+ *  phase): d(raw)/d(orbitT) in the tapered zone = xSpreadPct * (1 -
+ *  ((cos+1)/2)*X_SECONDARY_WIGGLE_FRACTION/(1-threshold)) = xSpreadPct *
+ *  (1 - ((cos+1)/2)*0.9375); since (cos+1)/2 in [0,1], this coefficient is
+ *  always in [0.0625, 1] — strictly POSITIVE for every phase (comfortably
+ *  clear of the k=1 degenerate/flat-plateau case), so orbitT (hence
+ *  orbit_au) remains a strict bijection onto X across the ENTIRE range,
+ *  not just below the old collapse point. A narrow band just below the
+ *  threshold (orbitT in [threshold, ~0.85], i.e. the bodies that were
+ *  genuinely fine pre-fix) DOES shift slightly inward as a result — this
+ *  is an unavoidable trade-off of ANY continuous, monotonic squash
+ *  (compression needs somewhere to put the removed room, and it can only
+ *  come from values already close to the edge); see this WO's own report
+ *  for the measured max delta in that band. */
+const X_WIGGLE_TAPER_START_ORBIT_T = 0.84;
+
+function xWiggleTaper(orbitT: number): number {
+  if (orbitT <= X_WIGGLE_TAPER_START_ORBIT_T) return 1;
+  return (1 - orbitT) / (1 - X_WIGGLE_TAPER_START_ORBIT_T);
+}
+
 /** Real orbit_au + phase_deg → a STATIC %-position on the star's orbital
  *  plane. No `t` term — zero system-level animation at rest (Max #4).
  *
@@ -351,7 +399,10 @@ export function orbitalPosition(
   // T1-A mechanism (phase-dominant, orbit_au-scaled).
   const orbitT = (au - ORBIT_AU_MIN) / (ORBIT_AU_MAX - ORBIT_AU_MIN);
   const xSpreadPct = safeRadii.rightPctPerAu * ORBIT_AU_MAX;
-  const xWigglePct = ((cos + 1) / 2) * xSpreadPct * X_SECONDARY_WIGGLE_FRACTION;
+  // QUEUE-XPCT-SATURATION-STACK: taper the wiggle to zero near orbitT=1 so
+  // primary+wiggle can never overshoot xMaxPct -- see xWiggleTaper's own
+  // doc-comment for the saturation bug this closes and the monotonicity proof.
+  const xWigglePct = ((cos + 1) / 2) * xSpreadPct * X_SECONDARY_WIGGLE_FRACTION * xWiggleTaper(orbitT);
   const ry = au * (sin >= 0 ? safeRadii.downPctPerAu : safeRadii.upPctPerAu);
   // Final hard clamp — see SafeOrbitRadii's own xMinPct/xMaxPct/yMinPct/
   // yMaxPct doc-comment for why this is needed even after the primary/

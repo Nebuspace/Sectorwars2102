@@ -71,7 +71,7 @@ EXPECTED_POSITION = [
     (2, 0.6, 200, "station", 53.393730899244304, 37.969394453119925),
     (21, 0.22, 10, "planet", 28.396073260190768, 50.170581814390054),
     (21, 0.82, 350, "station", 85.62803475568293, 43.15142633543697),
-    (5, 0.9, 120, "planet", 95.85209072286452, 83.86504964657738),
+    (5, 0.9, 120, "planet", 93.96600251501292, 83.86504964657738),
     (5, 0.25, 300, "station", 25.63548065597327, 35.69642567639873),
 ]
 
@@ -86,7 +86,7 @@ EXPECTED_LIVE = {
             (0.5784, 251, 59.57551477724482, 21.92597302358456),
             (0.6802, 228, 69.16393298800814, 23.456215547793633),
             (0.8275, 160, 84.51952845271914, 57.2841452159761),
-            (0.9438, 135, 98.366875, 77.8502261174711),
+            (0.9438, 135, 97.74503114442639, 77.8502261174711),
         ],
         "stations": [
             (0.7305, 51, 74.43680340487549, 68.6415483539923),
@@ -210,6 +210,54 @@ def test_orbital_position_x_is_monotonic_in_orbit_au_at_fixed_phase():
     xs = [orbital_position(star, au, 200, radii)[0] for au in (0.2, 0.35, 0.5, 0.65, 0.8, 0.95)]
     assert xs == sorted(xs)
     assert xs[0] < xs[-1] - 1.0  # a real spread, not a flat line
+
+
+# ---------------------------------------------------------------------------
+# QUEUE-XPCT-SATURATION-STACK: byte-equivalent mirror of the TS suite's own
+# regression guard + dense-ladder tests (windshieldTableauLayout.test.ts) --
+# same sector-1 star, same PLANET_FOOTPRINT_EM_MAX footprint. At phase_deg=0
+# (max wiggle contribution) the old code let distinct orbit_au values
+# collapse onto the identical hard-clamped x_pct (repro: 0.85 and 0.95);
+# X_WIGGLE_TAPER_START_ORBIT_T's own doc-comment has the fix + proof.
+# ---------------------------------------------------------------------------
+
+
+def test_orbital_position_regression_guard_saturation_repro_stays_distinct():
+    star = star_anchor(1)
+    radii = _radii(star, PLANET_FOOTPRINT_EM_MAX)
+    x085 = orbital_position(star, 0.85, 0, radii)[0]
+    x095 = orbital_position(star, 0.95, 0, radii)[0]
+    assert abs(x085 - x095) > 0.1  # not "closeTo" at even 1 decimal place
+    assert x095 > x085
+
+
+def test_orbital_position_dense_ladder_strictly_monotonic_at_saturating_phase():
+    """phase_deg=0 is the exact saturating phase (200deg, tested above,
+    never actually exercised the collapse) -- dense sweep across the OLD
+    collapse band (orbit_au ~0.8375 to ORBIT_AU_MAX) must be strictly
+    increasing and stay in-band."""
+    star = star_anchor(1)
+    radii = _radii(star, PLANET_FOOTPRINT_EM_MAX)
+    orbit_aus = [0.80, 0.82, 0.84, 0.85, 0.86, 0.88, 0.90, 0.92, 0.94, 0.95]
+    xs = [orbital_position(star, au, 0, radii)[0] for au in orbit_aus]
+    for i in range(1, len(xs)):
+        assert xs[i] > xs[i - 1], f"orbit_au {orbit_aus[i]} vs {orbit_aus[i-1]}: {xs[i]} not > {xs[i-1]}"
+    for x in xs:
+        assert 0.0 <= x <= radii.x_max_pct
+
+
+def test_orbital_position_beyond_orbit_au_max_aliases_not_saturates():
+    """orbit_au > ORBIT_AU_MAX (e.g. 1.0, seen live from celestial_service's
+    cumulative-orbit-walk normalization) is NOT a saturation-collapse case --
+    it aliases to the IDENTICAL position as orbit_au=ORBIT_AU_MAX itself via
+    the pre-existing, unrelated defensive au clamp (both collapse to the
+    SAME internal `au` before this WO's fix ever runs), matching the client
+    exactly -- intentionally excluded from the strict-monotonicity ladder."""
+    star = star_anchor(1)
+    radii = _radii(star, PLANET_FOOTPRINT_EM_MAX)
+    at_max = orbital_position(star, 0.95, 0, radii)[0]
+    beyond_max = orbital_position(star, 1.0, 0, radii)[0]
+    assert beyond_max == at_max
 
 
 # ---------------------------------------------------------------------------

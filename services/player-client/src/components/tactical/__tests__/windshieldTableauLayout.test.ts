@@ -722,15 +722,37 @@ describe('T0-1 — bodies stay DISTINCT and SPREAD, not just in-band (sector-1 l
     }
   });
 
-  it('WO-UI-PLTAG-CLAMP discovery (out of THIS WO\'s scope, flagged in its report): at phase_deg=0 (max X_SECONDARY_WIGGLE_FRACTION contribution), two DIFFERENT orbit_au values can saturate onto the IDENTICAL clamped xPct -- monotonicity is only guaranteed at the phase this file already tests (200deg), not universally', () => {
+  it("regression guard (was WO-UI-PLTAG-CLAMP discovery, closed by QUEUE-XPCT-SATURATION-STACK): at phase_deg=0 (max X_SECONDARY_WIGGLE_FRACTION contribution), DIFFERENT orbit_au values must stay DISTINCT, not saturate onto the same clamped xPct -- this file originally caught 0.85/0.95 collapsing onto one pixel here; xWiggleTaper's own doc-comment has the fix + monotonicity proof", () => {
     const star = starAnchor(1, { kind: 'K_ORANGE', label: '', color: '#fff' }, SECTOR_1_BODIES);
     const radii = safeOrbitRadii(star, FLIGHT_BAND, PLANET_EM);
     const x085 = orbitalPosition(star, 0.85, 0, radii).xPct;
     const x095 = orbitalPosition(star, 0.95, 0, radii).xPct;
-    // Pins the DISCOVERED behavior (both saturate to the xMaxPct ceiling) so
-    // a future change to the clamp/wiggle math surfaces here rather than
-    // silently -- not asserting this is DESIRED, just documenting reality.
-    expect(x085).toBeCloseTo(x095, 5);
+    expect(x085).not.toBeCloseTo(x095, 1);
+    expect(x095).toBeGreaterThan(x085);
+  });
+
+  it('QUEUE-XPCT-SATURATION-STACK: X is strictly monotonic in orbit_au across a DENSE ladder at phase_deg=0 -- the exact saturating phase (max wiggle contribution), not just the 200deg case above which never actually exercised the collapse. Every position also stays in-band.', () => {
+    const star = starAnchor(1, { kind: 'K_ORANGE', label: '', color: '#fff' }, SECTOR_1_BODIES);
+    const radii = safeOrbitRadii(star, FLIGHT_BAND, PLANET_EM);
+    // 0.80 -> ORBIT_AU_MAX (0.95) -- the densest part of the OLD collapse
+    // band (old code: everything from ~0.8375 up flattened to one pixel).
+    const orbitAus = [0.80, 0.82, 0.84, 0.85, 0.86, 0.88, 0.90, 0.92, 0.94, 0.95];
+    const xs = orbitAus.map((au) => orbitalPosition(star, au, 0, radii).xPct);
+    for (let i = 1; i < xs.length; i++) {
+      expect(xs[i], `orbit_au ${orbitAus[i]} vs ${orbitAus[i - 1]}: xPct ${xs[i]} not > ${xs[i - 1]}`).toBeGreaterThan(xs[i - 1]);
+    }
+    for (const x of xs) {
+      expect(x).toBeGreaterThanOrEqual(0);
+      expect(x).toBeLessThanOrEqual(radii.xMaxPct);
+    }
+  });
+
+  it('an orbit_au beyond ORBIT_AU_MAX (e.g. 1.0, seen live from generate_orbits\' cumulative-walk normalization) is NOT a saturation-collapse case -- it aliases to the IDENTICAL position as orbit_au=ORBIT_AU_MAX itself via the pre-existing, unrelated defensive au clamp (both inputs collapse to the SAME internal `au` before this WO\'s fix ever runs), so it is intentionally excluded from the strict-monotonicity ladder above', () => {
+    const star = starAnchor(1, { kind: 'K_ORANGE', label: '', color: '#fff' }, SECTOR_1_BODIES);
+    const radii = safeOrbitRadii(star, FLIGHT_BAND, PLANET_EM);
+    const atMax = orbitalPosition(star, 0.95, 0, radii).xPct;
+    const beyondMax = orbitalPosition(star, 1.0, 0, radii).xPct;
+    expect(beyondMax).toBe(atMax);
   });
 });
 
