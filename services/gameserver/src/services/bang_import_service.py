@@ -593,6 +593,9 @@ class PlanetSpec:
     citadel_level: int
     citadel_drone_capacity: int
     citadel_safe_credits: int
+    # Capital welcome worlds (New Earth et al.) — public population source;
+    # never claimable. Default False; terran_space invariant sets True.
+    is_population_hub: bool = False
 
 
 @dataclass
@@ -1810,6 +1813,11 @@ class BangImportService:
                 citadel_level=ps.citadel_level,
                 citadel_drone_capacity=ps.citadel_drone_capacity,
                 citadel_safe_credits=ps.citadel_safe_credits,
+                # Belt-and-braces: flag OR pop ≥1M (same threshold land/claim/
+                # pioneer already use) so a missed invariant can't strand the hub.
+                is_population_hub=bool(
+                    ps.is_population_hub or (ps.population or 0) >= 1_000_000
+                ),
             )
             session.add(planet)
 
@@ -2773,6 +2781,7 @@ class BangImportService:
                 citadel_level=0,
                 citadel_drone_capacity=0,
                 citadel_safe_credits=0,
+                is_population_hub=True,
             ),
         )
 

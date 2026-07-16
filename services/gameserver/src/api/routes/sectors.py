@@ -194,7 +194,12 @@ async def get_sector_planets(
             population=planet.population,
             max_population=planet.max_population,
             habitability_score=planet.habitability_score,
-            is_population_hub=bool(planet.is_population_hub)
+            # Same hub detection land/claim/pioneer use — a missed DB flag
+            # (e.g. New Earth re-imported without is_population_hub) must not
+            # strand the capital welcome world as an ownership-gated colony.
+            is_population_hub=bool(
+                planet.is_population_hub or (planet.population or 0) >= 1_000_000
+            ),
         ))
     
     return SectorPlanetsResponse(planets=planet_responses)
@@ -412,6 +417,9 @@ def _enrich_players_present(db: Session, present: List[Dict[str, Any]]) -> List[
                 e["activity"] = (act.name if hasattr(act, "name") else str(act)) if act else None
                 e["mission"] = (n.daily_schedule or {}).get("mission") or "commerce"
                 e["archetype"] = n.archetype.name if n.archetype else None
+                if n.intrasystem_pose is not None:
+                    from src.services import intrasystem_movement_service as isp
+                    e["pose"] = isp.pose_public(n.intrasystem_pose)
         enriched.append(e)
     return enriched
 

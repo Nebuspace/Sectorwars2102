@@ -545,6 +545,8 @@ class TestTerranSpaceStarterInvariants:
         ]
         assert len(s1_planets) == 1
         assert s1_planets[0].name == "New Earth"
+        assert s1_planets[0].is_population_hub is True
+        assert s1_planets[0].population >= 1_000_000
         assert s1_planets[0].max_population == 8_000_000_000
 
     def test_sector_ten_spacedock_class_eleven(
