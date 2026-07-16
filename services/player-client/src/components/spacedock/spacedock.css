@@ -28,6 +28,19 @@
   z-index: 30;
 }
 
+/* The undock button is absolutely pinned (so it survives venue switches), but
+   that means it paints ON TOP of whatever lives in the top-right of the hub
+   header — at Stardock that is the "Services" status chip + icon row. When the
+   outer frame mounts the button (`.has-station-undock`), reserve its footprint
+   on both the hub header and every venue header so chrome never collides. */
+.spacedock-interface.has-station-undock {
+  --station-undock-reserve: 11.5rem;
+}
+.spacedock-interface.has-station-undock .hub-header,
+.spacedock-interface.has-station-undock .venue-header {
+  padding-right: var(--station-undock-reserve);
+}
+
 /* ========================================
    HUB VIEW - Main SpaceDock Landing
    ======================================== */
@@ -1067,24 +1080,29 @@
    SERVICES
    ======================================== */
 
+/* SCROLL LAW: the five service cards (Repair / Maintenance / Cargo / Upgrades
+   / Insurance) must all fit in the SpaceDock terminal without scrolling at
+   1440x900. The old minmax(250px) fit only 4 across the ~1073px venue, wrapping
+   Hull Insurance to a second row that overflowed. A 175px floor lands all five
+   on one row here and degrades to 4/3 gracefully on a narrower venue. */
 .services-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+  gap: 12px;
 }
 
 .service-card {
   background: rgba(20, 30, 48, 0.8);
   border: 1px solid rgba(0, 217, 255, 0.2);
   border-radius: 8px;
-  padding: 16px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
 }
 
 .service-icon {
-  font-size: 2.5em;
+  font-size: 1.9em;
   text-align: center;
 }
 

@@ -36,7 +36,7 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { mockGetBoard, mockGetMine, mockAccept, mockComplete, mockAbandon, mockPost, mockCancel } = vi.hoisted(() => ({
+const { mockGetBoard, mockGetMine, mockAccept, mockComplete, mockAbandon, mockPost, mockCancel, mockRentLocker, mockDeposit, mockGetCurrentShip } = vi.hoisted(() => ({
   mockGetBoard: vi.fn(),
   mockGetMine: vi.fn(),
   mockAccept: vi.fn(),
@@ -44,6 +44,9 @@ const { mockGetBoard, mockGetMine, mockAccept, mockComplete, mockAbandon, mockPo
   mockAbandon: vi.fn(),
   mockPost: vi.fn(),
   mockCancel: vi.fn(),
+  mockRentLocker: vi.fn(),
+  mockDeposit: vi.fn(),
+  mockGetCurrentShip: vi.fn(),
 }));
 
 vi.mock('../../../services/api', () => ({
@@ -56,6 +59,14 @@ vi.mock('../../../services/api', () => ({
     abandon: mockAbandon,
     post: mockPost,
     cancel: mockCancel,
+  },
+  storageAPI: {
+    rentLocker: mockRentLocker,
+    deposit: mockDeposit,
+    retrieve: vi.fn(),
+  },
+  shipAPI: {
+    getCurrentShip: mockGetCurrentShip,
   },
   // Never resolves — useResourceCatalog stays in its permanent-fallback
   // state (mirrors ConstructionVenue.catalog.test.tsx).
@@ -133,6 +144,9 @@ describe('ContractBoardVenue', () => {
     mockAbandon.mockReset();
     mockPost.mockReset();
     mockCancel.mockReset();
+    mockRentLocker.mockReset();
+    mockDeposit.mockReset();
+    mockGetCurrentShip.mockReset();
     VENUE_PROPS.onCreditsSet = vi.fn();
   });
 
@@ -216,8 +230,46 @@ describe('ContractBoardVenue', () => {
 
     const text = container.textContent || '';
     expect(text).toContain('ACCEPTED');
-    expect(findButton('Complete')).toBeTruthy();
+    expect(findButton('Deposit')).toBeTruthy();
+    expect(findButton('Full delivery')).toBeTruthy();
     expect(findButton('Abandon')).toBeTruthy();
+  });
+
+  it('Deposit rents a locker and banks held cargo toward the contract (partial trip)', async () => {
+    mockGetBoard.mockResolvedValueOnce([]);
+    mockGetMine.mockResolvedValueOnce({ posted: [], accepted: [CONTRACT_ACCEPTED] });
+    mockRentLocker.mockResolvedValueOnce({
+      id: 'locker-1',
+      contractId: CONTRACT_ACCEPTED.id,
+      status: 'active',
+    });
+    mockGetCurrentShip.mockResolvedValueOnce({
+      cargo: { contents: { ore: 20 }, used: 20, capacity: 50 },
+    });
+    mockDeposit.mockResolvedValueOnce({
+      locker_id: 'locker-1',
+      deposited: 20,
+      accumulated: 20,
+      quantity_required: 50,
+      fee_charged: 0,
+      completed: false,
+      complete_result: null,
+    });
+
+    await act(async () => {
+      root.render(<ContractBoardVenue {...VENUE_PROPS} />);
+    });
+    await flush();
+
+    await clickButton('My Contracts');
+    await flush();
+    await clickButton('Deposit');
+    await flush();
+
+    expect(mockRentLocker).toHaveBeenCalledWith(CONTRACT_ACCEPTED.id);
+    expect(mockGetCurrentShip).toHaveBeenCalled();
+    expect(mockDeposit).toHaveBeenCalledWith('locker-1', 20);
+    expect(container.textContent).toContain('Locker 20/50');
   });
 
   it('the Post Contract form computes a live escrow preview as payment + insurance reserve', async () => {

@@ -94,6 +94,8 @@ describe('SpaceDockInterface — persistent UNDOCK survives a venue switch (WO-U
     // renderHub() used to render its own second `.hub-undock-btn` inline —
     // confirm it's gone: exactly one element carries the class anywhere.
     expect(container.querySelectorAll('.hub-undock-btn').length).toBe(1);
+    // Outer frame advertises the undock footprint so hub/venue headers pad clear of it.
+    expect(container.querySelector('.spacedock-interface')?.classList.contains('has-station-undock')).toBe(true);
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
@@ -145,6 +147,7 @@ describe('SpaceDockInterface — persistent UNDOCK survives a venue switch (WO-U
     });
 
     expect(container.querySelector('.station-face-undock')).toBeNull();
+    expect(container.querySelector('.spacedock-interface')?.classList.contains('has-station-undock')).toBe(false);
     expect(errorSpy).not.toHaveBeenCalled();
   });
 });

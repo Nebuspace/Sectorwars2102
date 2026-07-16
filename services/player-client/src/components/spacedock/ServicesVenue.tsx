@@ -1,4 +1,5 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { formatCredits } from '../../utils/formatters';
 import { InsuranceManager, MaintenanceManager, ModuleGridInterface, TIER_LABEL } from '../ships';
 import './spacedock.css';
@@ -285,7 +286,14 @@ const ServicesVenue: React.FC<ServicesVenueProps> = ({
           )}
         </div>
 
-        {showInsurance && shipData && (
+        {/* Service modals portal to document.body so they sit ABOVE the ARIA
+            teleprinter strip. The teleprinter is a later sibling of
+            `.game-content` on `.game-container` (z-index:22); an in-tree
+            `position:fixed; z-index:1000` overlay still paints UNDER it
+            because `.game-content` has z-index:auto and comes first in DOM
+            order. Same pattern as TradingInterface's trade modal +
+            PriorityHailConsumer. */}
+        {showInsurance && shipData && createPortal(
           <div className="insurance-overlay" onClick={() => setShowInsurance(false)}>
             <div className="insurance-overlay-panel" onClick={(e) => e.stopPropagation()}>
               <InsuranceManager
@@ -295,10 +303,11 @@ const ServicesVenue: React.FC<ServicesVenueProps> = ({
                 onClose={() => setShowInsurance(false)}
               />
             </div>
-          </div>
+          </div>,
+          document.body
         )}
 
-        {showMaintenance && shipData && (
+        {showMaintenance && shipData && createPortal(
           <div className="maintenance-overlay" onClick={() => setShowMaintenance(false)}>
             <div className="maintenance-overlay-panel" onClick={(e) => e.stopPropagation()}>
               <MaintenanceManager
@@ -308,15 +317,16 @@ const ServicesVenue: React.FC<ServicesVenueProps> = ({
                 onClose={() => setShowMaintenance(false)}
               />
             </div>
-          </div>
+          </div>,
+          document.body
         )}
 
-        {showUpgrades && shipData && (
+        {showUpgrades && shipData && createPortal(
           <div
             className="insurance-overlay"
             onClick={() => { setShowUpgrades(false); refreshPlayerState(); fetchShipData(); }}
           >
-            <div className="insurance-overlay-panel" style={{ position: 'relative' }} onClick={(e) => e.stopPropagation()}>
+            <div className="insurance-overlay-panel mgi-overlay-panel" style={{ position: 'relative' }} onClick={(e) => e.stopPropagation()}>
               <button
                 className="ins-close"
                 style={{ position: 'absolute', top: 12, right: 12, zIndex: 1 }}
@@ -331,7 +341,8 @@ const ServicesVenue: React.FC<ServicesVenueProps> = ({
                 onChanged={() => { refreshPlayerState(); fetchShipData(); }}
               />
             </div>
-          </div>
+          </div>,
+          document.body
         )}
       </div>
       {blackMarketButton}

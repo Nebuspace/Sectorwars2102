@@ -2040,7 +2040,7 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
   };
 
   return (
-    <div className="spacedock-interface">
+    <div className={`spacedock-interface${onUndock ? ' has-station-undock' : ''}`}>
       {/* Persistent UNDOCK (WO-UI3-STATION-MODE, de-duped by WO-UI3-CONCIERGE):
           originally the hub's own `renderHub()` rendered a second
           `.hub-undock-btn` inline in its header — every other venue
@@ -2052,7 +2052,9 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
           view too, so exactly ONE undock button now exists anywhere in
           this component. Reuses `.hub-undock-btn`'s visual treatment;
           `.station-face-undock` (spacedock.css) only adds the fixed corner
-          placement. */}
+          placement. `.has-station-undock` reserves that footprint on the
+          hub/venue headers so the hub's "Services" status chip (and any
+          venue title) never paints under the button. */}
       {onUndock && (
         <button
           type="button"

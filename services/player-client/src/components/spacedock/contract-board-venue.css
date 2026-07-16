@@ -206,6 +206,37 @@
   display: flex;
   gap: 8px;
   flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.cb-deposit-group {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.cb-deposit-qty {
+  width: 4.5rem;
+  padding: 0.35rem 0.4rem;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(0, 217, 255, 0.35);
+  border-radius: 4px;
+  color: #e0e0e0;
+  font-family: inherit;
+  font-size: 0.8em;
+}
+
+.cb-deposit-qty:focus {
+  outline: none;
+  border-color: #00d9ff;
+}
+
+.cb-locker-progress {
+  font-size: 0.75em;
+  color: rgba(0, 217, 255, 0.85);
+  white-space: nowrap;
 }
 
 /* Danger variant (Abandon / Cancel) — scoped to this venue only, the

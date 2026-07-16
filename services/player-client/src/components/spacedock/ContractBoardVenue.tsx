@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
-import { contractsAPI } from '../../services/api';
+import { contractsAPI, shipAPI, storageAPI } from '../../services/api';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { formatCredits } from '../../utils/formatters';
 import type { ContractDTO, ContractMineResponse } from '../../types/contract';
@@ -15,8 +15,8 @@ import './contract-board-venue.css';
 // ConstructionVenue) — the venue renders ONLY what the API returns, with
 // explicit loading / empty / error states. No mock data, ever.
 //
-// SCROLL LAW: the primary action per tab (Accept / Complete / Abandon /
-// Cancel / Post) must never require a page-level scroll at 1440x900. Only
+// SCROLL LAW: the primary action per tab (Accept / Deposit / Full delivery /
+// Abandon / Cancel / Post) must never require a page-level scroll at 1440x900. Only
 // `.cb-list` (the board rows / my-contracts rows) scrolls internally —
 // `.venue-content-area` itself is pinned to `overflow: hidden` for this
 // venue (contract-board-venue.css), so the tab bar and each row's own
@@ -68,14 +68,26 @@ const fmtCountdown = (
 // Feature-detect the updated credit balance out of an action response —
 // accept returns remaining_balance, complete/abandon/post/cancel return
 // credits (contracts.py:266-274/:356-362/:413-418/:550-558/:617-622).
+// Locker deposits that auto-complete nest the same shape under complete_result.
 const creditsFromResponse = (result: unknown): number | null => {
   const body = asRecord(result);
   if (!body) return null;
-  const candidates = [body.credits, body.remaining_balance];
+  const nested = asRecord(body.complete_result);
+  const candidates = [body.credits, body.remaining_balance, nested?.credits];
   for (const c of candidates) {
     if (typeof c === 'number' && Number.isFinite(c)) return c;
   }
   return null;
+};
+
+/** Units of `commodity` currently on the piloted ship (0 if unknown/empty). */
+const heldCommodityOnShip = async (commodity: string): Promise<number> => {
+  const ship = asRecord(await shipAPI.getCurrentShip());
+  if (!ship) return 0;
+  const cargo = asRecord(ship.cargo);
+  const contents = asRecord(cargo?.contents) ?? {};
+  const held = contents[commodity];
+  return typeof held === 'number' && Number.isFinite(held) ? Math.max(0, Math.floor(held)) : 0;
 };
 
 const shortId = (id: string) => `#${id.slice(0, 8)}`;
@@ -129,6 +141,12 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
   const [mineSubTab, setMineSubTab] = useState<MineSubTab>('accepted');
   const [mineActionError, setMineActionError] = useState<string | null>(null);
   const [mineActionSuccess, setMineActionSuccess] = useState<string | null>(null);
+  // Optional deposit qty override per contract (empty → deposit all held of that commodity).
+  const [depositQtyByContract, setDepositQtyByContract] = useState<Record<string, string>>({});
+  // Last known locker progress from a successful deposit (no GET progress endpoint yet).
+  const [lockerProgress, setLockerProgress] = useState<
+    Record<string, { accumulated: number; quantityRequired: number }>
+  >({});
 
   // Shared action-in-flight guard (one action at a time, mirrors PortOfficeVenue)
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -266,6 +284,86 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
       }
     },
     [runAction, onCreditsSet, fetchMine]
+  );
+
+  // Multi-trip fulfillment via station locker (storage-lockers.md). Complete
+  // requires the FULL quantity in one hold; Deposit rents/reuses the locker
+  // and banks whatever is on the ship (or an explicit qty) toward the total.
+  const handleDeposit = useCallback(
+    async (contract: ContractDTO) => {
+      setMineActionSuccess(null);
+      if (contract.destination_station_id !== stationId) {
+        setMineActionError(
+          'Deposit at the contract destination station — lockers open only there.'
+        );
+        return;
+      }
+
+      const result = await runAction(
+        `deposit-${contract.id}`,
+        async () => {
+          const locker = asRecord(await storageAPI.rentLocker(contract.id));
+          const lockerId = typeof locker?.id === 'string' ? locker.id : null;
+          if (!lockerId) throw new Error('Locker rent returned no id.');
+
+          const typed = parseInt(depositQtyByContract[contract.id] ?? '', 10);
+          let quantity =
+            Number.isFinite(typed) && typed > 0 ? typed : await heldCommodityOnShip(contract.commodity_type);
+          if (quantity <= 0) {
+            throw new Error(
+              `No ${getLabel(contract.commodity_type)} in your hold to deposit.`
+            );
+          }
+
+          return storageAPI.deposit(lockerId, quantity);
+        },
+        setMineActionError,
+        'Locker deposit failed.'
+      );
+
+      if (result !== null) {
+        const body = asRecord(result);
+        const deposited = typeof body?.deposited === 'number' ? body.deposited : null;
+        const accumulated = typeof body?.accumulated === 'number' ? body.accumulated : null;
+        const quantityRequired =
+          typeof body?.quantity_required === 'number' ? body.quantity_required : contract.quantity;
+        const completed = body?.completed === true;
+
+        if (accumulated != null && quantityRequired != null) {
+          setLockerProgress((prev) => ({
+            ...prev,
+            [contract.id]: { accumulated, quantityRequired },
+          }));
+        }
+
+        const newCredits = creditsFromResponse(result);
+        if (newCredits !== null) onCreditsSet(newCredits);
+
+        if (completed) {
+          setMineActionSuccess(
+            `Locker full (${accumulated ?? '—'}/${quantityRequired}) — contract completed, payout received.`
+          );
+          setLockerProgress((prev) => {
+            const next = { ...prev };
+            delete next[contract.id];
+            return next;
+          });
+          await fetchMine();
+        } else {
+          setMineActionSuccess(
+            `Deposited ${deposited ?? '—'} → locker ${accumulated ?? '—'}/${quantityRequired}. Return with more to finish.`
+          );
+        }
+      }
+    },
+    [
+      stationId,
+      runAction,
+      depositQtyByContract,
+      getLabel,
+      onCreditsSet,
+      fetchMine,
+    ]
   );
 
   const handleAbandon = useCallback(
@@ -464,12 +562,44 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
       <div className="cb-row-actions">
         {kind === 'accepted' && contract.status === 'accepted' && (
           <>
+            {contract.destination_station_id === stationId && (
+              <div className="cb-deposit-group">
+                <input
+                  className="cb-deposit-qty"
+                  type="number"
+                  min={1}
+                  inputMode="numeric"
+                  placeholder="qty"
+                  aria-label={`Deposit quantity for ${getLabel(contract.commodity_type)}`}
+                  value={depositQtyByContract[contract.id] ?? ''}
+                  onChange={(e) =>
+                    setDepositQtyByContract((prev) => ({ ...prev, [contract.id]: e.target.value }))
+                  }
+                  disabled={Boolean(busyAction)}
+                />
+                <button
+                  className="action-button primary"
+                  onClick={() => handleDeposit(contract)}
+                  disabled={Boolean(busyAction)}
+                  title="Bank cargo in the station locker toward this contract (partial trips OK). Leave qty blank to deposit everything in your hold."
+                >
+                  {busyAction === `deposit-${contract.id}` ? 'Depositing...' : '🗄️ Deposit'}
+                </button>
+              </div>
+            )}
+            {lockerProgress[contract.id] && (
+              <span className="cb-locker-progress" title="Locker progress from your last deposit">
+                Locker {lockerProgress[contract.id].accumulated}/
+                {lockerProgress[contract.id].quantityRequired}
+              </span>
+            )}
             <button
-              className="action-button primary"
+              className="action-button"
               onClick={() => handleComplete(contract)}
               disabled={Boolean(busyAction)}
+              title="One-shot: requires the FULL contract quantity in your hold. Use Deposit for multi-trip locker delivery."
             >
-              {busyAction === `complete-${contract.id}` ? 'Delivering...' : '📦 Complete'}
+              {busyAction === `complete-${contract.id}` ? 'Delivering...' : '📦 Full delivery'}
             </button>
             <button
               className="action-button danger"
