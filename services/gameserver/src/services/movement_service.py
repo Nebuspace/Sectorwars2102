@@ -781,14 +781,32 @@ class MovementService:
             logger.error("Failed lazy warp-gate advance during movement: %s", e)
             self.db.rollback()
 
-        # Lock player row to prevent concurrent movement race conditions
-        player = (
-            self.db.query(Player)
-            .filter(Player.id == player_id)
-            .populate_existing()
-            .with_for_update()
-            .first()
-        )
+        # Lock player row to prevent concurrent movement race conditions.
+        # Fail fast if another session is idle-in-transaction on this row —
+        # otherwise the cockpit arms the warp cinematic and hangs forever
+        # waiting on FOR UPDATE (seen live on Heimdall: 4+ minute lock waits).
+        from sqlalchemy import text as _sql_text
+        self.db.execute(_sql_text("SET LOCAL lock_timeout = '5s'"))
+        try:
+            player = (
+                self.db.query(Player)
+                .filter(Player.id == player_id)
+                .populate_existing()
+                .with_for_update()
+                .first()
+            )
+        except Exception as lock_err:
+            # SQLAlchemy wraps QueryCanceled / lock_not_available
+            err = str(lock_err).lower()
+            if "lock" in err or "canceling statement" in err or "querycanceled" in err:
+                logger.warning("move_player_to_sector: player-row lock timeout for %s", player_id)
+                self.db.rollback()
+                return {
+                    "success": False,
+                    "message": "Movement busy — try again in a moment",
+                    "turn_cost": 0,
+                }
+            raise
         if not player:
             return {"success": False, "message": "Player not found", "turn_cost": 0}
 
