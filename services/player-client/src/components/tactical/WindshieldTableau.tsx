@@ -305,6 +305,25 @@ const STATION_FOOTPRINT_EM_HEIGHT_MAX = 5;
  *  comment cites the same convention). */
 const DEFAULT_REM_PX = 16;
 
+/** canonical-%-space (Max ruling): the client computes every ISP %-space
+ *  POSITION from this FIXED reference band — identical to the server's own
+ *  SectorLayout geometry by construction, at every real viewport/uiscale —
+ *  never from `bandBox` (this component's own live `getBoundingClientRect`/
+ *  ResizeObserver measurement, which the hub's fly-by proved diverges
+ *  0.11-0.26% from the server across common viewports, since a real user's
+ *  screen size/uiscale has nothing to do with the canonical layout the
+ *  server independently computes). `bandBox` is NOT retired — it still
+ *  drives every PURE-RENDERING concern (px-scaling of the %-results the
+ *  browser already does via `left:X%`, label-clip lean decisions, visual
+ *  heading/aspect-correction for the glyph rotation) where using the REAL
+ *  viewport is not just safe but *correct* (a label's clip risk is a real-
+ *  pixel fact, not a canonical one). See this WO's own report for the full
+ *  per-consumer classification. Values match this module's own long-
+ *  standing test fixture (`windshieldTableauLayout.test.ts`'s `FLIGHT_BAND`)
+ *  — that fixture was already the ratified reference, just not yet wired
+ *  into the runtime component itself. */
+const REFERENCE_BAND: BandGeometry = { widthPx: 1440, heightPx: 334.7, remPx: 18.09 };
+
 function toStaticSystem(data: any): StaticSystem {
   const d = data || {};
   return {
@@ -560,20 +579,20 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
     () => starAnchor(sectorId, system?.star ?? null, system?.bodies ?? []),
     [sectorId, system?.star, system?.bodies]
   );
-  // T1-A: undefined until the container's real geometry is measured (first
-  // paint only) — orbitalPosition's own `!safeRadii` branch covers that
-  // brief gap with the pre-T1-A unclamped math, harmlessly, since no body
-  // renders until `system` resolves anyway (well after this is set). Two
-  // SEPARATE radii sets — planets don't need the much-wider station margin
-  // (see STATION_FOOTPRINT_EM_WIDTH_MAX's own doc-comment), so sharing one
-  // would needlessly crush the planet sliver's spread.
+  // canonical-%-space: POSITION math always uses REFERENCE_BAND now (a
+  // fixed constant, not `bandBox`), so this no longer needs to wait on a
+  // real measurement — computed from the very first render, no more T1-A
+  // pre-mount gap. Two SEPARATE radii sets — planets don't need the much-
+  // wider station margin (see STATION_FOOTPRINT_EM_WIDTH_MAX's own doc-
+  // comment), so sharing one would needlessly crush the planet sliver's
+  // spread.
   const safeRadiiPlanets = useMemo(
-    () => (bandBox ? safeOrbitRadii(star, bandBox, PLANET_FOOTPRINT_EM_MAX) : undefined),
-    [star, bandBox]
+    () => safeOrbitRadii(star, REFERENCE_BAND, PLANET_FOOTPRINT_EM_MAX),
+    [star]
   );
   const safeRadiiStations = useMemo(
-    () => (bandBox ? safeOrbitRadii(star, bandBox, STATION_FOOTPRINT_EM_WIDTH_MAX, STATION_FOOTPRINT_EM_HEIGHT_MAX) : undefined),
-    [star, bandBox]
+    () => safeOrbitRadii(star, REFERENCE_BAND, STATION_FOOTPRINT_EM_WIDTH_MAX, STATION_FOOTPRINT_EM_HEIGHT_MAX),
+    [star]
   );
   const belt = useMemo(() => (system?.belt ? beltStyle(star) : null), [star, system?.belt]);
   const hazeArcs = useMemo(() => (system?.nebula ? nebulaArcs(sectorId) : []), [sectorId, system?.nebula]);
@@ -660,7 +679,7 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
   // so the destination's first arrival frame already has ship+bubble centered
   // together instead of correcting position afterward.
   useEffect(() => {
-    if (!warpDepart || !bandBox) return;
+    if (!warpDepart) return;
     let cancelled = false;
     const { token, destinationSectorId } = warpDepart;
     setPreparedArrival((current) => (current?.token === token ? current : null));
@@ -672,7 +691,13 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
         setPreparedArrival({
           token,
           sectorId: destinationSectorId,
-          point: chooseWarpArrivalAnchor(destinationSectorId, snapshot, bandBox),
+          // canonical-%-space: REFERENCE_BAND, not bandBox -- this anchor's
+          // OWN obstacle-avoidance math must agree with where the bodies it
+          // avoids ACTUALLY render (safeRadiiPlanets/safeRadiiStations
+          // above, also reference-space now), or it could land on/miss an
+          // obstacle that's rendered somewhere else at a non-reference
+          // viewport.
+          point: chooseWarpArrivalAnchor(destinationSectorId, snapshot, REFERENCE_BAND),
         });
       })
       .catch((err) => {
@@ -686,21 +711,21 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [warpDepart, bandBox]);
+  }, [warpDepart]);
 
   // If the prefetch lost a race or transiently failed, the normal destination
   // fetch supplies the same geometry once `sectorId` changes. Still do not
   // reveal the arrival until an avoidance-checked point exists.
   useEffect(() => {
-    if (!warpDepart || !bandBox || !system) return;
+    if (!warpDepart || !system) return;
     if (warpDepart.destinationSectorId !== sectorId) return;
     if (preparedArrival?.token === warpDepart.token) return;
     setPreparedArrival({
       token: warpDepart.token,
       sectorId,
-      point: chooseWarpArrivalAnchor(sectorId, system, bandBox),
+      point: chooseWarpArrivalAnchor(sectorId, system, REFERENCE_BAND),
     });
-  }, [warpDepart, bandBox, system, sectorId, preparedArrival?.token]);
+  }, [warpDepart, system, sectorId, preparedArrival?.token]);
 
   // Buildup: a fresh token starts the bubble inflating over the CURRENT sector,
   // then the launch streak plays there. Arrival (sectorId effect below) cuts in
@@ -1059,12 +1084,13 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
   }, [bandAspect, clearTravelTimers, readLiveShipPos, armArrivalProfile, commitIspBurn]);
 
   const approachStation = useCallback((station: SystemStation, stationPos: PctPoint) => {
-    if (!bandBox) return;
     const from = (isInFlightPhase(travelPhaseRef.current) ? readLiveShipPos() : null)
       ?? shipPosRef.current
       ?? stationPos;
-    travelTo(stationApproachPoint(from, stationPos, bandBox), station.station_id);
-  }, [bandBox, travelTo, readLiveShipPos]);
+    // canonical-%-space: REFERENCE_BAND, not bandBox -- this standoff point
+    // becomes the actual burn-commit target (travelTo -> commitIspBurn).
+    travelTo(stationApproachPoint(from, stationPos, REFERENCE_BAND), station.station_id);
+  }, [travelTo, readLiveShipPos]);
 
   const localTraveling = travelPhase !== 'idle';
   const burning = localBurn || autopilot.status === 'engaged';
@@ -1327,10 +1353,19 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
         const planetPos = body
           ? bodyPosition(star, body, safeRadiiPlanets)
           : { xPct: popup.xPct, yPct: popup.yPct };
+        // canonical-%-space: REFERENCE_BAND, not bandBox -- this gate decides
+        // whether the LAND button (-> onRequestLand -> POST /planets/land)
+        // even appears. The server independently re-checks the SAME
+        // proximity at the SAME fixed reference band before honoring the
+        // request (intrasystem_movement_service.py's
+        // DOCK_LAND_PROXIMITY_RANGE_EM / is_within_dock_land_range, whose own
+        // comment says it's set to match this client gate "verbatim" so
+        // server enforcement stays invisible to a legit player) -- gating on
+        // a live-measured bandBox instead would show/hide LAND based on the
+        // viewer's screen size rather than the server's actual ruling.
         const withinLandRange = Boolean(
           shipPos &&
-          bandBox &&
-          distancePx(shipPos, planetPos, bandBox) <= DOCK_RANGE_EM * bandBox.remPx
+          distancePx(shipPos, planetPos, REFERENCE_BAND) <= DOCK_RANGE_EM * REFERENCE_BAND.remPx
         );
         const approachingThisPlanet = localTraveling && glideTargetId === meta.planetId;
         return (
@@ -1378,10 +1413,13 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
         const stationPos = station
           ? stationPosition(star, station, safeRadiiStations)
           : { xPct: popup.xPct, yPct: popup.yPct };
+        // canonical-%-space: REFERENCE_BAND, same reasoning as
+        // withinLandRange above -- this gates DOCK (-> onRequestDock -> POST
+        // /trading/dock), which the server re-checks at the identical fixed
+        // reference band.
         const withinDockRange = Boolean(
           shipPos &&
-          bandBox &&
-          distancePx(shipPos, stationPos, bandBox) <= DOCK_RANGE_EM * bandBox.remPx
+          distancePx(shipPos, stationPos, REFERENCE_BAND) <= DOCK_RANGE_EM * REFERENCE_BAND.remPx
         );
         const approachingThisStation = localTraveling && glideTargetId === meta.stationId;
         return (

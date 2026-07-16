@@ -351,16 +351,24 @@ describe('WindshieldTableau', () => {
   const EXTREME_STATION = { station_id: 'edge-station', name: 'Edge Station', type: 'trading_post', orbit_au: 0.95, phase_deg: 270 }; // straight "above" the star
 
   function assertEveryObjectInBand(el: HTMLElement, widthPx: number, heightPx: number) {
-    // jsdom applies no real CSS cascade under vitest (css:false, see
-    // vitest.config.ts) so getComputedStyle(...).fontSize resolves empty ->
-    // WindshieldTableau.tsx's own DEFAULT_REM_PX fallback (16) is what's
-    // actually in play here, mirrored below. Two separate footprint
-    // ceilings, mirroring WindshieldTableau.tsx's own PLANET_FOOTPRINT_EM_MAX
-    // / STATION_FOOTPRINT_EM_WIDTH/HEIGHT_MAX split -- a `.obj` station's
-    // own name label is a normal-flow flex child (unlike `.pl`'s
-    // position:absolute `.pltag`), so it needs a much wider margin (see
-    // that constant's own doc-comment for the live-measured derivation).
-    const REM_PX = 16;
+    // canonical-%-space: safeRadiiPlanets/safeRadiiStations (and therefore
+    // every .pl/.obj's xPct/yPct) are now computed against WindshieldTableau
+    // .tsx's own fixed REFERENCE_BAND (1440x334.7, remPx=18.09 -- same
+    // literals as windshieldTableauLayout.test.ts's own FLIGHT_BAND fixture,
+    // both matching the server's LAYOUT_BAND_WIDTH/HEIGHT/REM_PX), NOT this
+    // suite's mocked 800x400@remPx=16 containerRef rect anymore -- so the
+    // in-band safety margin this asserts must be checked against THAT same
+    // reference geometry, or a real divergence (a body actually pushed
+    // outside REFERENCE_BAND's own margins) would be masked by comparing
+    // against the wrong box. `widthPx`/`heightPx` callers below now pass the
+    // reference band's own dimensions, not the mocked containerRef rect.
+    // Two separate footprint ceilings, mirroring WindshieldTableau.tsx's own
+    // PLANET_FOOTPRINT_EM_MAX / STATION_FOOTPRINT_EM_WIDTH/HEIGHT_MAX split
+    // -- a `.obj` station's own name label is a normal-flow flex child
+    // (unlike `.pl`'s position:absolute `.pltag`), so it needs a much wider
+    // margin (see that constant's own doc-comment for the live-measured
+    // derivation).
+    const REM_PX = 18.09;
     const check = (selector: string, emWidth: number, emHeight: number) => {
       const halfXPct = ((emWidth / 2) * REM_PX / widthPx) * 100;
       const halfYPct = ((emHeight / 2) * REM_PX / heightPx) * 100;
@@ -387,7 +395,7 @@ describe('WindshieldTableau', () => {
     ] as const) {
       mockContents({ ...TEST_SYSTEM, sector_id: sectorId, bodies, stations: [EXTREME_STATION] });
       await mount({ sectorId });
-      assertEveryObjectInBand(container, 800, 400); // mocked containerRef rect, this file's own beforeEach
+      assertEveryObjectInBand(container, 1440, 334.7); // REFERENCE_BAND, not the mocked containerRef rect -- see helper's own comment
     }
   });
 
@@ -1219,7 +1227,7 @@ describe('WindshieldTableau', () => {
     for (const [sectorId, bodies] of [[21, EXTREME_BODIES], [104, EXTREME_BODIES.slice(0, 2)]] as const) {
       mockContents({ ...TEST_SYSTEM, sector_id: sectorId, bodies, stations: [EXTREME_STATION] });
       await mount({ sectorId });
-      assertEveryObjectInBand(container, 800, 400);
+      assertEveryObjectInBand(container, 1440, 334.7); // REFERENCE_BAND, not the mocked containerRef rect -- see helper's own comment
     }
   });
 });
