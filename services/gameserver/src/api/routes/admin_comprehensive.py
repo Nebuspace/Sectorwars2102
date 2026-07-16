@@ -708,6 +708,12 @@ async def delete_ship(
         # If this is the player's current ship, clear it
         if owner and owner.current_ship_id == ship.id:
             owner.current_ship_id = None
+            from src.services.ship_service import sync_current_pilot
+            # QUEUE-REGISTRY-PILOT-WIRING: ship is db.delete()d a few lines
+            # below in this same transaction (deletion alone makes the
+            # invariant unobservable on this row), but clear explicitly for
+            # consistency with every other current_ship_id write site.
+            sync_current_pilot(owner, None, old_ship=ship)
 
         # Reabsorb pioneer colonists before hull is removed.  Mirrors the
         # pattern in ship_service.destroy_ship — SAVEPOINT-isolated so that a

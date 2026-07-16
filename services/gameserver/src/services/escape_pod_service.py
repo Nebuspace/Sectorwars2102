@@ -208,6 +208,8 @@ def eject_to_escape_pod(
     # player's arrival teleport below moves it (and the player) onward.
     escape_pod = ShipService(db)._ensure_escape_pod(player, origin.sector_id)
     player.current_ship_id = escape_pod.id
+    from src.services.ship_service import sync_current_pilot
+    sync_current_pilot(player, escape_pod, old_ship=abandoned_ship)  # QUEUE-REGISTRY-PILOT-WIRING
 
     # Teleport arrival -- mirrors slipdrive_service.complete_charge /
     # distress_service.use_distress_beacon's own player-state sync (sector,

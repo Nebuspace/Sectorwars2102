@@ -814,9 +814,13 @@ def surrender_tractor_locked_ship(
     except Exception:
         logger.warning("ShipRegistry IMPOUNDED event failed for ship %s", ship.id, exc_info=True)
 
-    from src.services.ship_service import ShipService
+    from src.services.ship_service import ShipService, sync_current_pilot
     escape_pod = ShipService(db)._ensure_escape_pod(player, player.current_sector_id)
     player.current_ship_id = escape_pod.id
+    # QUEUE-REGISTRY-PILOT-WIRING: old ship's current_pilot_id already
+    # cleared explicitly above (line ~802, part of the surrender/abandon
+    # flow) -- only the new escape pod's pointer needs setting here.
+    sync_current_pilot(player, escape_pod)
 
     db.flush()
 

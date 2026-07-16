@@ -502,6 +502,8 @@ async def purchase_ship(
     if player.current_ship_id is None:
         player.current_ship_id = ship.id
         ship.is_flagship = True
+        from src.services.ship_service import sync_current_pilot
+        sync_current_pilot(player, ship)  # QUEUE-REGISTRY-PILOT-WIRING: no old ship (player had none)
     else:
         ship.is_flagship = False
 
@@ -566,7 +568,19 @@ async def set_active_ship(
             detail="Lift off before switching ships",
         )
 
+    old_ship = None
+    if locked_player.current_ship_id is not None and locked_player.current_ship_id != ship.id:
+        old_ship = db.query(Ship).filter(Ship.id == locked_player.current_ship_id).first()
+
     locked_player.current_ship_id = ship.id
+    from src.services.ship_service import sync_current_pilot
+    # QUEUE-REGISTRY-PILOT-WIRING: this is the canonical eject+board pair in
+    # one action (ship-registry.md's "Eject and board" -- "clients typically
+    # chain these as a single 'switch ship' UX action... no separate 'swap'
+    # endpoint"). old_ship is the hull the player was piloting immediately
+    # before this switch -- its pilot pointer clears; ship's pilot pointer
+    # is set to this player.
+    sync_current_pilot(locked_player, ship, old_ship=old_ship)
     db.commit()
     return {
         "message": f"{ship.name} is now your active ship",

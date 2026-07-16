@@ -500,6 +500,8 @@ class HangarService:
                 if pilot is not None and pilot.current_ship_id == ship.id:
                     escape_pod = ship_service._ensure_escape_pod(pilot, destruction_sector_id)
                     pilot.current_ship_id = escape_pod.id
+                    from src.services.ship_service import sync_current_pilot
+                    sync_current_pilot(pilot, escape_pod, old_ship=ship)  # QUEUE-REGISTRY-PILOT-WIRING
                     pilot.current_sector_id = destruction_sector_id
                     pilot.is_docked = False
                     pilot.is_landed = False

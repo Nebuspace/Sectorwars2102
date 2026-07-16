@@ -235,6 +235,12 @@ class Ship(Base):
     # True after the registered owner files a stolen report (ship-registry.md
     # "Reporting a ship stolen"). NULL and False both read as not-stolen --
     # Wave-2 wires the report/retract flow and any reader semantics.
+    # RE-VERIFIED dormant-by-design (QUEUE-REGISTRY-PILOT-WIRING, 2026-07-16):
+    # zero write sites confirmed for both columns, per ship-registry.md's own
+    # status line ("behavioral service layer -- report/retract/transfer/
+    # salvage/trade/abandon -- ... zero route callers today"). This is the
+    # SAME defined-but-unwired class as current_pilot_id was, but theft is
+    # explicitly out of scope for that fix -- do not wire it here.
     stolen_status = Column(Boolean, nullable=True)
     stolen_reported_at = Column(DateTime(timezone=True), nullable=True)
     # 4-8 alphanumeric hatch pin gating boarding (ship-registry.md "Hatch pin

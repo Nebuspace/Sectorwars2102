@@ -1826,6 +1826,10 @@ Description: {ship_specs.get('description', 'N/A')}
         
         # Set as player's current ship
         player.current_ship_id = new_ship.id
+        from src.services.ship_service import sync_current_pilot
+        # QUEUE-REGISTRY-PILOT-WIRING: no old ship -- every pre-existing
+        # ship was hard-deleted above (self-healing stale-data cleanup).
+        sync_current_pilot(player, new_ship)
         
         # Apply any bonuses or penalties from the dialogue outcome
         if session.negotiation_bonus_flag:

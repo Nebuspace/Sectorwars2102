@@ -17,6 +17,41 @@ from src.core.ship_specifications_seeder import SHIP_SPECIFICATIONS
 logger = logging.getLogger(__name__)
 
 
+def sync_current_pilot(player: Player, new_ship: Optional[Ship], *, old_ship: Optional[Ship] = None) -> None:
+    """QUEUE-REGISTRY-PILOT-WIRING (2026-07-16): maintains the Ship Registry
+    invariant (SYSTEMS/ship-registry.md #4, the canonical eject/board pair)
+    -- ``Ship.current_pilot_id == player.id`` iff ``Player.current_ship_id ==
+    ship.id``. The Registry foundation (WO-P10-green-ship-registry-schema)
+    shipped the column but zero write sites ever set it; every one of this
+    codebase's assignments to ``Player.current_ship_id`` must pair with a
+    call to this function so the two columns never diverge (live symptom
+    before this fix: ``current_pilot_id`` NULL on every actively-piloted
+    ship -- ship cards render "Pilot: none").
+
+    Call AFTER (or alongside) reassigning ``player.current_ship_id`` to
+    ``new_ship.id``. Pass ``old_ship`` -- the Ship row the player was
+    piloting immediately BEFORE this reassignment, captured by the caller
+    BEFORE overwriting ``player.current_ship_id`` -- whenever a genuine
+    switch-away is happening (canon: "switching away clears the old ship").
+    ``old_ship`` is optional because several write sites have no old ship at
+    all (brand-new player, first ship ever, or the old ship row is being
+    hard-deleted/db.delete()d in the same transaction -- deletion alone
+    already makes the invariant unobservable on that row, no write needed).
+
+    ``new_ship`` may be None (a pure eject -- ``player.current_ship_id``
+    cleared to NULL with no replacement hull); in that case only the
+    ``old_ship`` clear applies.
+
+    Idempotent and safe to call with ``old_ship is new_ship`` (a same-ship
+    no-op re-assignment) -- the old-ship clear is skipped whenever the two
+    ids match, so a redundant call never wipes the pointer it's about to
+    set right back to it."""
+    if old_ship is not None and (new_ship is None or old_ship.id != new_ship.id):
+        old_ship.current_pilot_id = None
+    if new_ship is not None:
+        new_ship.current_pilot_id = player.id
+
+
 def _dispatch_fleet_medals(db: Session, owner_id: uuid.UUID) -> None:
     """Fire the medals-lane fleet hook
     ``medal_service.check_and_award_fleet_medals(db, owner_id)`` after a ship
@@ -252,6 +287,7 @@ class ShipService:
         # was destroyed (FIX 6).
         if is_piloted:
             player.current_ship_id = escape_pod.id
+            sync_current_pilot(player, escape_pod, old_ship=ship)  # QUEUE-REGISTRY-PILOT-WIRING
 
         # Apply insurance if available. Skipped entirely for the warp-gate
         # anchor: no underwriter writes a policy on a hull whose canonical
