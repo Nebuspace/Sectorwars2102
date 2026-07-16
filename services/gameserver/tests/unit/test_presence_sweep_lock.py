@@ -96,6 +96,9 @@ from src.models.player import Player
 from src.models.sector import Sector
 from src.services.scheduler.presence_helpers import (
     _heal_candidates_query,
+    _removal_candidate_scan_query,
+    _removal_freshness_lookup_query,
+    _removal_locked_refetch_query,
     _run_presence_sweep_sync,
 )
 
@@ -231,12 +234,19 @@ class _FakePresenceSweepDB:
         player_rows: List[Tuple[uuid.UUID, Optional[datetime]]],
         sectors_by_sector_id: Optional[Dict[int, Sector]] = None,
         fresh_players_for_heal: Optional[List[Tuple[Any, ...]]] = None,
+        raise_on_heal_query: bool = False,
     ):
         self._candidate_rows: List[Tuple[uuid.UUID]] = [(pk,) for pk in candidate_pks]
         self._sectors_by_pk = sectors_by_pk
         self._sectors_by_sector_id = sectors_by_sector_id or {}
         self._player_rows = player_rows
         self._fresh_players_for_heal = fresh_players_for_heal or []
+        # 2026-07-16 hardening: simulates a construction-time crash in the
+        # heal candidate query (exactly what the live Player.username bug
+        # did) -- proves _run_presence_sweep_sync's heal-phase exception
+        # isolation actually degrades gracefully instead of aborting the
+        # whole sweep. See TestHealPhaseExceptionIsolation below.
+        self._raise_on_heal_query = raise_on_heal_query
         self.call_log: List[Tuple[str, Any]] = []
         self.commit_count = 0
         self.rollback_count = 0
@@ -254,6 +264,8 @@ class _FakePresenceSweepDB:
         if len(entities) == 2 and entities[0] is Player.id and entities[1] is Player.last_game_login:
             return _PlayerFreshnessBranch(self._player_rows)
         if len(entities) == 7 and entities[0] is Player.id and entities[1] is Player.current_sector_id:
+            if self._raise_on_heal_query:
+                raise RuntimeError("simulated heal-candidate-query construction crash")
             return _FreshPlayersForHealBranch(self._fresh_players_for_heal)
         raise AssertionError(f"unexpected query entities: {entities!r}")
 
@@ -755,3 +767,100 @@ class TestHealQueryRealSQLAlchemyCoercion:
         assert "JOIN users" in compiled
         assert "coalesce" in compiled.lower()
         assert "players.current_sector_id IS NOT NULL" in compiled
+
+    def test_removal_loop_queries_build_clean_against_real_sqlalchemy(self) -> None:
+        """Same real-engine build/compile norm applied to the removal
+        pass's three query-construction sites (2026-07-16 crash-fix DoD
+        hardening: 'every ORM query-construction path in the code touched
+        gets a real-engine test', not just the property-as-column one that
+        actually crashed). None of these select a @property -- `Sector.id`,
+        `Sector` (full entity), `Player.id`/`Player.last_game_login` are
+        all real mapped Columns -- so this is a construction-safety floor,
+        not a bug repro."""
+        db = self._real_session()
+        try:
+            candidate_sql = str(_removal_candidate_scan_query(db))
+            refetch_sql = str(_removal_locked_refetch_query(db, uuid.uuid4()))
+            freshness_sql = str(_removal_freshness_lookup_query(db, [uuid.uuid4()]))
+        finally:
+            db.close()
+
+        assert "sectors" in candidate_sql
+        assert "jsonb_array_length" in candidate_sql
+        assert "sectors" in refetch_sql
+        assert "players" in freshness_sql
+        assert "IN" in freshness_sql.upper()
+
+
+@pytest.mark.unit
+class TestHealPhaseExceptionIsolation:
+    """2026-07-16 crash-fix DoD hardening (hub-added): 'a crash in ANY
+    phase must never leave prune-applied-heal-skipped' -- the exact live
+    incident (17:28/17:5x, Max direct invocation): the removal/prune pass
+    committed its per-sector work, THEN the heal candidate query crashed
+    UNCAUGHT, aborting the whole `_run_presence_sweep_sync` call with no
+    logged result for that tick.
+
+    Fix: (1) heal now runs BEFORE the removal/prune pass (own doc-comment
+    on `_run_presence_sweep_sync`, 'ORDERING'), and (2) heal's own
+    candidate-query construction is wrapped in a try/except that degrades
+    to '0 healed, 0 sectors, logged' instead of propagating (own
+    doc-comment on `_heal_missing_or_poseless_presence_sync`). Together
+    these mean a heal-phase crash can no longer prevent the prune pass from
+    running in the SAME tick -- proven below via `raise_on_heal_query`,
+    which reproduces the exact failure MODE (an exception raised at
+    `db.query(...)` construction time for the heal candidate shape),
+    independent of which specific bug causes it."""
+
+    def test_heal_phase_crash_does_not_abort_the_removal_prune_pass(self) -> None:
+        now = datetime.now(timezone.utc)
+        stale_login = now - timedelta(minutes=90)
+        pk = uuid.uuid4()
+        stale_pid = str(uuid.uuid4())
+        sector = Sector(id=pk, players_present=[_entry(stale_pid)])
+
+        db = _FakePresenceSweepDB(
+            candidate_pks=[pk],
+            sectors_by_pk={pk: sector},
+            player_rows=[(stale_pid, stale_login)],
+            raise_on_heal_query=True,
+        )
+
+        with patch("src.core.database.SessionLocal", return_value=db):
+            result = _run_presence_sweep_sync()  # must NOT raise
+
+        # The removal/prune pass still ran and did its job even though the
+        # heal phase crashed at construction time -- the exact "prune-
+        # applied-heal-skipped" state is now REVERSED in severity: heal is
+        # cleanly skipped/logged (0, not corrupted), prune still completes.
+        assert result["presence_entries_swept"] == 1
+        assert result["sectors"] == 1
+        assert result["presence_entries_healed"] == 0
+        assert result["heal_sectors"] == 0
+        assert sector.players_present == []  # stale entry still pruned
+        assert db.closed is True
+
+    def test_heal_phase_crash_is_rolled_back_cleanly_before_prune_starts(self) -> None:
+        """Structural half: the heal-phase crash triggers a db.rollback()
+        (own doc-comment on _heal_missing_or_poseless_presence_sync) BEFORE
+        the removal pass's own candidate scan runs -- proves the session
+        isn't left in a poisoned/uncommitted state that could corrupt the
+        prune pass's own transaction handling."""
+        db = _FakePresenceSweepDB(
+            candidate_pks=[],
+            sectors_by_pk={},
+            player_rows=[],
+            raise_on_heal_query=True,
+        )
+
+        with patch("src.core.database.SessionLocal", return_value=db):
+            result = _run_presence_sweep_sync()
+
+        assert result == {
+            "presence_entries_swept": 0, "sectors": 0,
+            "presence_entries_healed": 0, "heal_sectors": 0,
+        }
+        # One rollback from the heal-phase crash handler; the (empty)
+        # removal pass then finds nothing to prune and never commits.
+        assert db.rollback_count == 1
+        assert db.commit_count == 0

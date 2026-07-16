@@ -825,12 +825,36 @@ def _heal_missing_or_poseless_presence_sync(db: Session, cutoff: datetime) -> "t
     # written SQL expression that could silently drift out of sync with it.
     # See _heal_candidates_query's own doc-comment for the 2026-07-16
     # property-as-column crash fix this query shape carries.
-    candidate_rows = _heal_candidates_query(db).all()
-    by_sector: Dict[int, list] = defaultdict(list)
-    for pid, sid, username, ship_id, team_id, pose, last_game_login in candidate_rows:
-        if not _is_presence_fresh(last_game_login, cutoff):
-            continue
-        by_sector[sid].append((pid, username, ship_id, team_id, pose))
+    #
+    # 2026-07-16 hardening (crash-fix DoD, hub-added): this candidate scan +
+    # grouping is wrapped in its OWN try/except -- before this fix, a
+    # construction-time crash here (exactly what the Player.username bug
+    # did) propagated UNCAUGHT out of this whole function, past
+    # _run_presence_sweep_sync's outer try with no except of its own,
+    # aborting the ENTIRE sweep tick. Isolating it here means this function
+    # can NEVER raise uncaught regardless of what future bug lands in the
+    # candidate query -- it degrades to "heal skipped this tick, logged" --
+    # matching the house pattern every other day-gated sweep in this file
+    # already uses (_run_retention_sweep_sync / _run_citizen_rebake_sweep_
+    # sync wrap their ENTIRE body the same way). Paired with the reorder in
+    # _run_presence_sweep_sync (heal now runs BEFORE the removal/prune
+    # pass) so a heal failure of any kind can never leave the live-reported
+    # bad state (prune already committed, heal silently never attempted).
+    try:
+        candidate_rows = _heal_candidates_query(db).all()
+        by_sector: Dict[int, list] = defaultdict(list)
+        for pid, sid, username, ship_id, team_id, pose, last_game_login in candidate_rows:
+            if not _is_presence_fresh(last_game_login, cutoff):
+                continue
+            by_sector[sid].append((pid, username, ship_id, team_id, pose))
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "presence sweep: heal candidate scan failed -- heal pass "
+            "skipped this tick (the removal/prune pass still runs "
+            "independently, see _run_presence_sweep_sync)"
+        )
+        return healed, heal_sectors_touched
 
     for sid, players in by_sector.items():
         try:
@@ -900,6 +924,36 @@ def _heal_missing_or_poseless_presence_sync(db: Session, cutoff: datetime) -> "t
     return healed, heal_sectors_touched
 
 
+def _removal_candidate_scan_query(db: Session):
+    """Builds (does not execute) the removal pass's column-only candidate
+    scan -- split out (2026-07-16 crash-fix DoD hardening) so a real-
+    SQLAlchemy unit test can construct this exact query directly, matching
+    the same "every ORM query-construction path gets a real-engine
+    build/compile test" norm applied to ``_heal_candidates_query`` above.
+    ``Sector.id`` is a real mapped Column (no property-as-column risk
+    here), but the norm is now blanket, not case-by-case."""
+    return db.query(Sector.id).filter(text("jsonb_array_length(players_present) > 0"))
+
+
+def _removal_locked_refetch_query(db: Session, sector_pk: Any):
+    """Builds (does not execute) the removal pass's per-candidate locked
+    re-fetch -- see _removal_candidate_scan_query's own doc-comment for why
+    this is split out."""
+    return (
+        db.query(Sector)
+        .filter(Sector.id == sector_pk)
+        .populate_existing()
+        .with_for_update()
+    )
+
+
+def _removal_freshness_lookup_query(db: Session, human_pids: list):
+    """Builds (does not execute) the removal pass's freshness lookup for a
+    sector's human presence entries -- see _removal_candidate_scan_query's
+    own doc-comment for why this is split out."""
+    return db.query(Player.id, Player.last_game_login).filter(Player.id.in_(human_pids))
+
+
 def _run_presence_sweep_sync() -> Dict[str, int]:
     """WO-PRESWEEP — remove offline players from ``Sector.players_present``.
 
@@ -933,6 +987,22 @@ def _run_presence_sweep_sync() -> Dict[str, int]:
     so the advisory-lock-releases-on-first-commit property is harmless here.
     Reads a wall-clock last-seen, mutates only the JSONB list. No migration,
     no new row.
+
+    ORDERING (2026-07-16 crash-fix DoD hardening, hub-ruled): the heal pass
+    (P0-FIX-SWEEP-HEAL) now runs BEFORE this removal pass, not after. Live
+    incident this closes: the Player.username property-as-column bug made
+    the heal candidate query raise UNCAUGHT at construction time; with heal
+    running SECOND (the old order) and no exception handling around it, the
+    removal pass's per-sector commits had already landed by the time heal
+    blew up the whole function -- "prune-applied, heal-never-attempted"
+    every single tick. _heal_missing_or_poseless_presence_sync is now
+    internally exception-isolated (own doc-comment) and the removal
+    candidate scan just below gets the SAME isolation, so a crash in EITHER
+    phase can no longer prevent the OTHER phase from running in the same
+    tick -- heal goes first specifically because it fixes the more user-
+    visible bug class (a live player rendering as absent/porting to other
+    clients), so it gets first claim on a tick that might not complete both
+    passes.
     """
     from datetime import datetime, timedelta, timezone
 
@@ -952,18 +1022,30 @@ def _run_presence_sweep_sync() -> Dict[str, int]:
             db.rollback()
             return {"presence_entries_swept": 0, "sectors": 0}
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=PRESENCE_STALE_MINUTES)
+
+        # P0-FIX-SWEEP-HEAL runs FIRST -- see this function's own docstring
+        # ("ORDERING") for why. _heal_missing_or_poseless_presence_sync is
+        # internally exception-isolated, so this call itself can never raise
+        # uncaught regardless of what fails inside it.
+        healed, heal_sectors_touched = _heal_missing_or_poseless_presence_sync(db, cutoff)
+
         # Column-only candidate scan — deliberately selects ONLY Sector.id,
         # never the full entity, so this query cannot leave a soon-to-be-
         # stale Sector object cached in this session's identity map (see
-        # the docstring above).
-        candidate_ids = [
-            row[0]
-            for row in (
-                db.query(Sector.id)
-                .filter(text("jsonb_array_length(players_present) > 0"))
-                .all()
+        # the docstring above). Wrapped in its own try/except (2026-07-16
+        # hardening) so a construction/execution failure here degrades to
+        # "prune skipped this tick, logged" instead of raising uncaught --
+        # symmetric with the heal candidate scan's own guard above.
+        try:
+            candidate_ids = [row[0] for row in _removal_candidate_scan_query(db).all()]
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "presence sweep: removal candidate scan failed -- prune "
+                "pass skipped this tick (heal pass above already ran "
+                "independently)"
             )
-        ]
+            candidate_ids = []
         for sector_pk in candidate_ids:
             try:
                 # Lock RIGHT BEFORE the RMW (TICKET-PRESENCE-PRUNE-LOCK) — a
@@ -973,13 +1055,7 @@ def _run_presence_sweep_sync() -> Dict[str, int]:
                 # update() chain on this SAME row before its own RMW;
                 # Postgres now serializes the two instead of letting a blind
                 # UPDATE from one clobber the other's addition.
-                sec = (
-                    db.query(Sector)
-                    .filter(Sector.id == sector_pk)
-                    .populate_existing()
-                    .with_for_update()
-                    .first()
-                )
+                sec = _removal_locked_refetch_query(db, sector_pk).first()
                 if sec is None:
                     db.rollback()
                     continue
@@ -999,11 +1075,7 @@ def _run_presence_sweep_sync() -> Dict[str, int]:
                     # NPC-only (or empty) presence — nothing for this sweep.
                     db.rollback()
                     continue
-                rows = (
-                    db.query(Player.id, Player.last_game_login)
-                    .filter(Player.id.in_(human_pids))
-                    .all()
-                )
+                rows = _removal_freshness_lookup_query(db, human_pids).all()
                 fresh = {
                     str(pid) for pid, lgl in rows
                     if _is_presence_fresh(lgl, cutoff)
@@ -1033,12 +1105,6 @@ def _run_presence_sweep_sync() -> Dict[str, int]:
                     "presence sweep: sector %s failed (loop continues)",
                     sector_pk,
                 )
-
-        # P0-FIX-SWEEP-HEAL: reconcile MISSING or pose-less HUMAN presence
-        # entries -- see _heal_missing_or_poseless_presence_sync's own
-        # doc-comment for the live repro + why this is a deliberately
-        # separate pass from the removal loop above.
-        healed, heal_sectors_touched = _heal_missing_or_poseless_presence_sync(db, cutoff)
 
         return {
             "presence_entries_swept": swept,

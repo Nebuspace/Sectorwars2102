@@ -683,6 +683,27 @@ def mirror_into_presence_entry(
     return out
 
 
+def _enrich_npc_lookup_query(db: Session, npc_ids: List[Any]):
+    """Builds (does not execute) enrich_presence_with_live_pose's NPC lookup
+    -- split out (2026-07-16 crash-fix DoD hardening) so a real-SQLAlchemy
+    unit test can construct this exact query directly (see
+    test_presence_mirror.py's TestEnrichmentQueriesRealSQLAlchemy),
+    matching the "every ORM query-construction path gets a real-engine
+    build/compile test" norm established for the presence-sweep heal query.
+    Both columns here are real Columns (no property-as-column risk), but
+    the norm is now blanket, not case-by-case."""
+    from src.models.npc_character import NPCCharacter
+    return db.query(NPCCharacter).filter(NPCCharacter.id.in_(npc_ids))
+
+
+def _enrich_player_lookup_query(db: Session, human_ids: List[Any]):
+    """Builds (does not execute) enrich_presence_with_live_pose's human
+    lookup -- see _enrich_npc_lookup_query's own doc-comment for why this
+    is split out."""
+    from src.models.player import Player
+    return db.query(Player).filter(Player.id.in_(human_ids))
+
+
 def enrich_presence_with_live_pose(db: Session, present: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """P0-FIX-PRESENCE-MIRROR: pure read that overwrites EVERY presence
     entry's `pose` (and, for NPCs, activity/mission/archetype — the
@@ -724,13 +745,11 @@ def enrich_presence_with_live_pose(db: Session, present: List[Dict[str, Any]]) -
 
     npc_by_id: Dict[str, Any] = {}
     if npc_ids:
-        from src.models.npc_character import NPCCharacter
-        npc_by_id = {str(n.id): n for n in db.query(NPCCharacter).filter(NPCCharacter.id.in_(npc_ids)).all()}
+        npc_by_id = {str(n.id): n for n in _enrich_npc_lookup_query(db, npc_ids).all()}
 
     player_by_id: Dict[str, Any] = {}
     if human_ids:
-        from src.models.player import Player
-        player_by_id = {str(p.id): p for p in db.query(Player).filter(Player.id.in_(human_ids)).all()}
+        player_by_id = {str(p.id): p for p in _enrich_player_lookup_query(db, human_ids).all()}
 
     enriched: List[Dict[str, Any]] = []
     for e in present:

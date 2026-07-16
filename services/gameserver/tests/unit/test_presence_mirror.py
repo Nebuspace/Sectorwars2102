@@ -194,3 +194,46 @@ def test_non_dict_entries_pass_through_untouched():
     present = [None, "garbage", 42]
     session = _FakeSession()
     assert enrich_presence_with_live_pose(session, present) == present
+
+
+class TestEnrichmentQueriesRealSQLAlchemy:
+    """2026-07-16 crash-fix DoD hardening: every ORM query-construction path
+    in the code touched by P0-FIX-PRESENCE-MIRROR / P0-FIX-SWEEP-HEAL gets
+    at least one test that builds/compiles against a real engine+dialect,
+    not just the `_FakeSession` above (which proves LOGIC, never
+    constructibility -- see test_presence_sweep_lock.py's
+    TestHealQueryRealSQLAlchemyCoercion for the live bug class this norm
+    closes). Both queries here select real Columns (`NPCCharacter.id`,
+    `Player.id` via `.in_()`) -- no property-as-column risk was found in
+    this sweep (see the property-as-column class-sweep in this WO's
+    report) -- but the norm is now blanket, not case-by-case."""
+
+    @staticmethod
+    def _real_session():
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        engine = create_engine("sqlite://")
+        return sessionmaker(bind=engine)()
+
+    def test_enrich_npc_lookup_query_builds_clean(self) -> None:
+        from src.services.intrasystem_movement_service import _enrich_npc_lookup_query
+
+        db = self._real_session()
+        try:
+            compiled = str(_enrich_npc_lookup_query(db, [uuid.uuid4()]))
+        finally:
+            db.close()
+        assert "npc_characters" in compiled
+        assert "IN" in compiled.upper()
+
+    def test_enrich_player_lookup_query_builds_clean(self) -> None:
+        from src.services.intrasystem_movement_service import _enrich_player_lookup_query
+
+        db = self._real_session()
+        try:
+            compiled = str(_enrich_player_lookup_query(db, [uuid.uuid4()]))
+        finally:
+            db.close()
+        assert "players" in compiled
+        assert "IN" in compiled.upper()
