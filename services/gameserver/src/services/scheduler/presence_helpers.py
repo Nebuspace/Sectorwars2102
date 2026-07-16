@@ -803,7 +803,17 @@ def _heal_candidates_query(db: Session):
     ``func.greatest(Player.last_activity_at, Player.last_game_login)``
     instead of bare ``Player.last_game_login`` -- see _is_presence_fresh's
     own doc-comment for why GREATEST (not COALESCE) is the right combinator
-    here, and for the Postgres NULL-handling semantics this relies on."""
+    here, and for the Postgres NULL-handling semantics this relies on.
+
+    QUEUE-HEAL-ENTRY-SHAPE (2026-07-16): two trailing columns added --
+    ``Ship.name`` and ``Ship.type`` -- via an OUTER join on
+    ``Player.current_ship_id == Ship.id`` (OUTER, not INNER: a candidate
+    with no current ship at all -- e.g. mid-eject -- must still surface
+    with NULL ship name/type, not be silently dropped from the candidate
+    set entirely). Feeds ``build_presence_entry``'s ``ship_name``/
+    ``ship_type`` so a healed entry stops hardcoding the literal string
+    "None" when the ship data was available all along."""
+    from src.models.ship import Ship
     from src.models.user import User
 
     return (
@@ -812,8 +822,10 @@ def _heal_candidates_query(db: Session):
             Player.display_name_expr(User.username),
             Player.current_ship_id, Player.team_id, Player.intrasystem_pose,
             func.greatest(Player.last_activity_at, Player.last_game_login),
+            Ship.name, Ship.type,
         )
         .join(User, Player.user_id == User.id)
+        .outerjoin(Ship, Player.current_ship_id == Ship.id)
         .filter(Player.current_sector_id.isnot(None))
     )
 
@@ -844,7 +856,7 @@ def _heal_missing_or_poseless_presence_sync(db: Session, cutoff: datetime) -> "t
     ``(healed_count, sectors_touched_count)``."""
     from collections import defaultdict
 
-    from src.services.intrasystem_movement_service import pose_public
+    from src.services.intrasystem_movement_service import build_presence_entry, pose_public
 
     healed = 0
     heal_sectors_touched = 0
@@ -872,10 +884,13 @@ def _heal_missing_or_poseless_presence_sync(db: Session, cutoff: datetime) -> "t
     try:
         candidate_rows = _heal_candidates_query(db).all()
         by_sector: Dict[int, list] = defaultdict(list)
-        for pid, sid, username, ship_id, team_id, pose, last_game_login in candidate_rows:
+        for (
+            pid, sid, username, ship_id, team_id, pose, last_game_login,
+            ship_name, ship_type,
+        ) in candidate_rows:
             if not _is_presence_fresh(last_game_login, cutoff):
                 continue
-            by_sector[sid].append((pid, username, ship_id, team_id, pose))
+            by_sector[sid].append((pid, username, ship_id, team_id, pose, ship_name, ship_type))
     except Exception:
         db.rollback()
         logger.exception(
@@ -904,7 +919,7 @@ def _heal_missing_or_poseless_presence_sync(db: Session, cutoff: datetime) -> "t
                 if isinstance(e, dict) and not e.get("is_npc") and e.get("player_id")
             }
             changed = False
-            for pid, username, ship_id, team_id, pose in players:
+            for pid, username, ship_id, team_id, pose, ship_name, ship_type in players:
                 spid = str(pid)
                 if spid in by_pid:
                     idx = by_pid[spid]
@@ -915,23 +930,23 @@ def _heal_missing_or_poseless_presence_sync(db: Session, cutoff: datetime) -> "t
                         changed = True
                         healed += 1
                     continue
-                # Missing entirely -- recreate the entry shell (same fields
-                # movement_service._update_player_presence writes on a
-                # normal move; ship_name/ship_type use that same function's
-                # own "None" fallback rather than a 4th query shape here --
-                # cosmetic-only, self-corrects the moment this player next
-                # actually moves through the normal path). The pose is what
-                # matters for this P0 -- and that IS the authoritative live
-                # value, not a fallback.
-                new_entry = {
-                    "player_id": spid,
-                    "username": username,
-                    "ship_id": str(ship_id) if ship_id else None,
-                    "ship_name": "None",
-                    "ship_type": "None",
-                    "team_id": str(team_id) if team_id else None,
-                    "arrived_at": datetime.now(UTC).isoformat(),
-                }
+                # Missing entirely -- recreate the entry shell via the SAME
+                # shared constructor movement_service._update_player_
+                # presence uses (QUEUE-HEAL-ENTRY-SHAPE, 2026-07-16) --
+                # ship_name/ship_type now come from _heal_candidates_
+                # query's own Ship join, not a hardcoded "None" fallback
+                # (that was the live bug: ship_id was correct, name/type
+                # were null even though the data was one join away). The
+                # pose is what matters most for this P0 -- and that IS the
+                # authoritative live value, not a fallback.
+                new_entry = build_presence_entry(
+                    player_id=pid,
+                    username=username,
+                    ship_id=ship_id,
+                    ship_name=ship_name,
+                    ship_type=ship_type.name if ship_type else None,
+                    team_id=team_id,
+                )
                 if pose is not None:
                     new_entry["pose"] = pose_public(pose)
                 entries.append(new_entry)

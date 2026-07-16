@@ -666,6 +666,62 @@ def pose_public(pose: Optional[Dict[str, Any]], now: Optional[datetime] = None) 
     }
 
 
+def build_presence_entry(
+    *,
+    player_id: Any,
+    username: str,
+    ship_id: Optional[Any],
+    ship_name: Optional[str],
+    ship_type: Optional[str],
+    team_id: Optional[Any],
+    arrived_at: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """QUEUE-HEAL-ENTRY-SHAPE (2026-07-16): the SINGLE canonical
+    ``players_present`` entry constructor -- used by BOTH the organic
+    arrival path (``movement_service._update_player_presence``, the
+    reference shape) and the presence sweep's heal pass
+    (``presence_helpers._heal_missing_or_poseless_presence_sync``), so a
+    healed entry and an organically-arrived entry for the same player
+    state are KEY-SET AND VALUE identical (mod the live ``arrived_at``
+    instant).
+
+    Live bug this closes: the heal pass hardcoded ``ship_name``/
+    ``ship_type`` to the literal string ``"None"`` even when its own
+    candidate query already had the ship join data available (live
+    evidence: a healed entry with a correct ``ship_id`` but null name/
+    type). Fixed by making BOTH callers resolve ``ship_name``/
+    ``ship_type`` themselves -- ``movement_service`` via the already-
+    loaded ``player.current_ship`` relationship, heal via its own new
+    ``Ship`` join in ``_heal_candidates_query`` -- and pass the resolved
+    values in here, so there is exactly ONE place left that decides the
+    final shape and fallback semantics.
+
+    ``ship_name``/``ship_type`` fall back to the literal string ``"None"``
+    (not Python ``None``, not omitted) to match the pre-existing, already-
+    shipped client contract -- the reference shape has always used this
+    fallback for a player with no current ship.
+
+    ``arrived_at`` accepts a ``datetime`` (a naive one is treated as UTC)
+    or defaults to ``now(UTC)`` -- standardizes both call sites onto the
+    timezone-aware convention this codebase's newer presence code already
+    uses; ``movement_service``'s prior naive ``datetime.now()`` is
+    corrected here rather than preserved, since converging both callers
+    onto one constructor means picking exactly one convention."""
+    if arrived_at is None:
+        arrived_at = datetime.now(timezone.utc)
+    elif arrived_at.tzinfo is None:
+        arrived_at = arrived_at.replace(tzinfo=timezone.utc)
+    return {
+        "player_id": str(player_id),
+        "username": username,
+        "ship_id": str(ship_id) if ship_id else None,
+        "ship_name": ship_name if ship_name else "None",
+        "ship_type": ship_type if ship_type else "None",
+        "team_id": str(team_id) if team_id else None,
+        "arrived_at": arrived_at.isoformat(),
+    }
+
+
 def mirror_into_presence_entry(
     entry: Dict[str, Any], pose: Optional[Dict[str, Any]], now: Optional[datetime] = None
 ) -> Dict[str, Any]:

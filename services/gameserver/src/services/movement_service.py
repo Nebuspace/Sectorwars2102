@@ -2474,15 +2474,21 @@ class MovementService:
         if new_sector:
             # Add player to new sector's players_present
             players_present = list(new_sector.players_present or [])
-            player_entry = {
-                "player_id": str(player.id),
-                "username": player.username,
-                "ship_id": str(player.current_ship_id) if player.current_ship_id else None,
-                "ship_name": player.current_ship.name if player.current_ship else "None",
-                "ship_type": player.current_ship.type.name if player.current_ship else "None",
-                "team_id": str(player.team_id) if player.team_id else None,
-                "arrived_at": datetime.now().isoformat()
-            }
+            # QUEUE-HEAL-ENTRY-SHAPE (2026-07-16): this is the REFERENCE
+            # SHAPE -- now built through the shared constructor also used by
+            # the presence sweep's heal pass, so the two paths can never
+            # drift apart on key-set or fallback semantics again. See
+            # build_presence_entry's own doc-comment (intrasystem_movement_
+            # service.py) for the naive->aware arrived_at convergence note.
+            from src.services.intrasystem_movement_service import build_presence_entry
+            player_entry = build_presence_entry(
+                player_id=player.id,
+                username=player.username,
+                ship_id=player.current_ship_id,
+                ship_name=player.current_ship.name if player.current_ship else None,
+                ship_type=player.current_ship.type.name if player.current_ship else None,
+                team_id=player.team_id,
+            )
 
             # Check if player is already in the list (shouldn't be, but safety check)
             existing = next((p for p in players_present if p.get("player_id") == str(player.id)), None)

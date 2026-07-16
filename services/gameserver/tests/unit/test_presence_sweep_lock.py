@@ -219,6 +219,9 @@ class _FreshPlayersForHealBranch:
     def join(self, *_a, **_k):
         return self
 
+    def outerjoin(self, *_a, **_k):
+        return self
+
     def filter(self, *_a, **_k):
         return self
 
@@ -268,7 +271,10 @@ class _FakePresenceSweepDB:
         # (2-tuple keyed by Player.id) rather than the 2nd column's identity.
         if len(entities) == 2 and entities[0] is Player.id:
             return _PlayerFreshnessBranch(self._player_rows)
-        if len(entities) == 7 and entities[0] is Player.id and entities[1] is Player.current_sector_id:
+        # QUEUE-HEAL-ENTRY-SHAPE (2026-07-16): grew from 7 to 9 entities --
+        # trailing Ship.name/Ship.type added via an outer join so the heal
+        # pass can stop hardcoding ship_name/ship_type to "None".
+        if len(entities) == 9 and entities[0] is Player.id and entities[1] is Player.current_sector_id:
             if self._raise_on_heal_query:
                 raise RuntimeError("simulated heal-candidate-query construction crash")
             return _FreshPlayersForHealBranch(self._fresh_players_for_heal)
@@ -513,10 +519,15 @@ class TestPresenceSweepHeal:
 
     def test_heals_a_missing_human_entry_with_pose(self) -> None:
         """Live repro #2: a diagnostic teleport bypassed presence entirely
-        -- the sector had ZERO entries, not even the human's own."""
+        -- the sector had ZERO entries, not even the human's own. Also
+        exercises QUEUE-HEAL-ENTRY-SHAPE's live bug directly: the ORIGINAL
+        repro had a correct ship_id but null ship_name/ship_type -- seeded
+        here with real ship data to prove the fix populates both."""
         sid = 42
         sector = Sector(id=uuid.uuid4(), sector_id=sid, players_present=[])
         pid = uuid.uuid4()
+        ship_id = uuid.uuid4()
+        ship_type = SimpleNamespace(name="LIGHT_FREIGHTER")  # stands in for the ShipType enum member
         pose = {"x_pct": 10.0, "y_pct": 20.0, "heading_deg": 0.0, "phase": "idle", "burning": False, "leg": None}
 
         db = _FakePresenceSweepDB(
@@ -524,7 +535,9 @@ class TestPresenceSweepHeal:
             sectors_by_pk={},
             player_rows=[],
             sectors_by_sector_id={sid: sector},
-            fresh_players_for_heal=[(pid, sid, "sweepclean", None, None, pose, _FRESH_LOGIN)],
+            fresh_players_for_heal=[
+                (pid, sid, "sweepclean", ship_id, None, pose, _FRESH_LOGIN, "Nomad", ship_type),
+            ],
         )
 
         with patch("src.core.database.SessionLocal", return_value=db):
@@ -539,6 +552,12 @@ class TestPresenceSweepHeal:
         assert entry.get("is_npc") is None  # never marked as NPC
         assert entry["pose"]["x_pct"] == 10.0
         assert entry["pose"]["phase"] == "idle"
+        # QUEUE-HEAL-ENTRY-SHAPE: ship_id was already correct pre-fix; the
+        # bug was ship_name/ship_type hardcoded to "None" despite the join
+        # data being available -- both must now be populated.
+        assert entry["ship_id"] == str(ship_id)
+        assert entry["ship_name"] == "Nomad"
+        assert entry["ship_type"] == "LIGHT_FREIGHTER"
 
     def test_completes_an_existing_pose_less_human_entry(self) -> None:
         """Live repro #1: ensure_player_pose's lazy create-on-GET never
@@ -558,7 +577,7 @@ class TestPresenceSweepHeal:
             sectors_by_pk={},
             player_rows=[],
             sectors_by_sector_id={sid: sector},
-            fresh_players_for_heal=[(pid, sid, "Shouden", None, None, pose, _FRESH_LOGIN)],
+            fresh_players_for_heal=[(pid, sid, "Shouden", None, None, pose, _FRESH_LOGIN, None, None)],
         )
 
         with patch("src.core.database.SessionLocal", return_value=db):
@@ -603,7 +622,7 @@ class TestPresenceSweepHeal:
             sectors_by_pk={},
             player_rows=[],
             sectors_by_sector_id={sid: sector},
-            fresh_players_for_heal=[(pid, sid, "NewArrival", None, None, pose, _FRESH_LOGIN)],
+            fresh_players_for_heal=[(pid, sid, "NewArrival", None, None, pose, _FRESH_LOGIN, None, None)],
         )
 
         with patch("src.core.database.SessionLocal", return_value=db):
@@ -631,7 +650,7 @@ class TestPresenceSweepHeal:
             sectors_by_pk={pk_a: sector_a},
             player_rows=[(stale_human, now - timedelta(minutes=90))],
             sectors_by_sector_id={sid_b: sector_b},
-            fresh_players_for_heal=[(missing_pid, sid_b, "New Player", None, None, pose, now)],
+            fresh_players_for_heal=[(missing_pid, sid_b, "New Player", None, None, pose, now, None, None)],
         )
 
         with patch("src.core.database.SessionLocal", return_value=db):
@@ -677,8 +696,8 @@ class TestPresenceSweepHeal:
             player_rows=[(str(fresh_pid), now), (str(stale_pid), stale_login)],
             sectors_by_sector_id={sid: sector},
             fresh_players_for_heal=[
-                (fresh_pid, sid, "fresh-player", None, None, fresh_pose, now),
-                (stale_pid, sid, "stale-player", None, None, fresh_pose, stale_login),
+                (fresh_pid, sid, "fresh-player", None, None, fresh_pose, now, None, None),
+                (stale_pid, sid, "stale-player", None, None, fresh_pose, stale_login, None, None),
             ],
         )
 
@@ -761,12 +780,15 @@ class TestHealQueryRealSQLAlchemyCoercion:
         (imported from production code, not a copy) against a real Session
         must not raise -- and must compile to SQL that actually joins
         users, selects a coalesce expression for the display name in place
-        of the bare property, and selects a greatest() expression for the
+        of the bare property, selects a greatest() expression for the
         liveness signal (QUEUE-LIVENESS-SIGNAL, 2026-07-16 -- GREATEST over
         COALESCE so a fresh re-login always wins over a stale activity
-        touch, see _is_presence_fresh's own doc-comment). Construction-only
-        (no execute), so SQLite's lack of a native GREATEST never surfaces
-        here -- this dev stack is Postgres-only."""
+        touch, see _is_presence_fresh's own doc-comment), and OUTER-joins
+        ships for the name/type columns (QUEUE-HEAL-ENTRY-SHAPE, 2026-07-16
+        -- outer, not inner, so a candidate with no current ship still
+        surfaces with NULL name/type rather than being dropped).
+        Construction-only (no execute), so SQLite's lack of a native
+        GREATEST never surfaces here -- this dev stack is Postgres-only."""
         db = self._real_session()
         try:
             query = _heal_candidates_query(db)
@@ -777,6 +799,7 @@ class TestHealQueryRealSQLAlchemyCoercion:
         assert "JOIN users" in compiled
         assert "coalesce" in compiled.lower()
         assert "greatest" in compiled.lower()
+        assert "LEFT OUTER JOIN ships" in compiled
         assert "players.current_sector_id IS NOT NULL" in compiled
 
     def test_removal_loop_queries_build_clean_against_real_sqlalchemy(self) -> None:
