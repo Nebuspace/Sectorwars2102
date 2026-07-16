@@ -94,7 +94,10 @@ import pytest
 
 from src.models.player import Player
 from src.models.sector import Sector
-from src.services.scheduler.presence_helpers import _run_presence_sweep_sync
+from src.services.scheduler.presence_helpers import (
+    _heal_candidates_query,
+    _run_presence_sweep_sync,
+)
 
 # ---------------------------------------------------------------------------
 # Fake session -- entity-shape-correlated, mirrors test_npc_scheduler_unit.py's
@@ -187,17 +190,31 @@ class _PlayerFreshnessBranch:
 
 class _FreshPlayersForHealBranch:
     """P0-FIX-SWEEP-HEAL's own candidate query --
-    `.query(Player.id, Player.current_sector_id, Player.username,
-    Player.current_ship_id, Player.team_id, Player.intrasystem_pose,
-    Player.last_game_login).filter(current_sector_id.isnot(None)).all()` --
-    returns the full seeded set regardless of the requested filter
-    (current_sector_id filtering is pre-existing, unchanged code; freshness
-    is decided in PYTHON by _is_presence_fresh, not a SQL WHERE clause --
-    seed the 7th element per row to exercise that). This fake only proves
-    the SWEEP's own reconciliation logic given a candidate set."""
+    `.query(Player.id, Player.current_sector_id,
+    Player.display_name_expr(User.username), Player.current_ship_id,
+    Player.team_id, Player.intrasystem_pose, Player.last_game_login)
+    .join(User, Player.user_id == User.id)
+    .filter(current_sector_id.isnot(None)).all()` --
+    returns the full seeded set regardless of the requested join/filter
+    (both are pre-existing-shape, unchanged-by-this-fake code; freshness is
+    decided in PYTHON by _is_presence_fresh, not a SQL WHERE clause -- seed
+    the 7th element per row to exercise that; the 3rd element is a plain
+    seeded username string standing in for what `display_name_expr` would
+    resolve to -- this fake never runs real SQLAlchemy coercion, see
+    TestHealQueryRealSQLAlchemy below for the test that does). This fake
+    only proves the SWEEP's own reconciliation logic given a candidate set.
+
+    2026-07-16 crash fix (Player.username is a Python @property, not a
+    Column -- it cannot appear in a real `.query()` column list; SQLAlchemy
+    raises ArgumentError at query-BUILD time, live-confirmed): the real
+    query now joins User and selects `Player.display_name_expr(User.username)`
+    in its place, hence the added no-op `.join()` below."""
 
     def __init__(self, rows: List[Tuple[Any, ...]]):
         self._rows = rows
+
+    def join(self, *_a, **_k):
+        return self
 
     def filter(self, *_a, **_k):
         return self
@@ -657,3 +674,84 @@ class TestPresenceSweepHeal:
         assert sector.players_present[0]["pose"]["x_pct"] == 3.0
         assert result["presence_entries_swept"] == 1  # stale_pid pruned
         assert result["presence_entries_healed"] == 1  # fresh_pid's pose completed
+
+
+@pytest.mark.unit
+class TestHealQueryRealSQLAlchemyCoercion:
+    """2026-07-16 live crash (Max, direct invocation on the deployed host):
+    ``sqlalchemy.exc.ArgumentError: Column expression, FROM clause, or other
+    columns clause element expected, got <property object ...>`` at
+    coercions.py:696 -- ``_heal_missing_or_poseless_presence_sync``'s
+    candidate query selected ``Player.username`` as a column, but
+    ``username`` is a plain Python ``@property`` on ``Player``, not a
+    mapped Column: it resolves fine on an already-loaded instance but
+    cannot appear in a ``session.query(...)`` column list. Every
+    ``_FakePresenceSweepDB``-backed test above (115/115 green at the time)
+    never caught this: the fake's ``.query()`` dispatcher pattern-matches
+    `db.query(*entities)` calls by entity-TUPLE IDENTITY, so it happily
+    accepted ``Player.username`` as a valid dispatch key without ever
+    routing through real SQLAlchemy's column-expression coercion --
+    meaning EVERY sweep run was crashing live (no pruning, no healing)
+    despite full green here. That is a structural blind spot of the
+    FakeSession idiom used throughout this file, not a one-off gap.
+
+    This class closes it: ``_heal_candidates_query`` (the query-
+    construction half of the heal pass, split out from
+    ``_heal_missing_or_poseless_presence_sync`` specifically for this test)
+    is called against a REAL ``sqlalchemy.orm.Session`` bound to an
+    in-memory SQLite engine -- no ``SessionLocal`` patch, no entity-shape
+    dispatcher. Coercion fires at query-BUILD time (before any ``.all()``/
+    execute), so no table creation is needed to catch this class of bug --
+    the first test below reproduces the ORIGINAL crash verbatim (bare
+    ``Player.username`` in the column list) to prove this harness actually
+    detects it, and the second proves the shipped fix (``Player.
+    display_name_expr(User.username)`` + ``.join(User, ...)``) builds
+    clean. `.all()`/table creation is deliberately NOT attempted here:
+    ``Player`` carries Postgres-only ``UUID``/``JSONB``/``ARRAY`` columns
+    that fail SQLite DDL (the same blocker already documented against
+    Player in test_storage_deposit_prelock_identity_map.py and against
+    Sector in test_movement_presence_lock_identity_map.py) -- construction-
+    time coercion is exactly where this bug lives and exactly where this
+    proof stops, consistent with that established codebase precedent."""
+
+    @staticmethod
+    def _real_session():
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        engine = create_engine("sqlite://")
+        return sessionmaker(bind=engine)()
+
+    def test_bare_property_column_reproduces_the_live_crash(self) -> None:
+        """Harness self-check: proves this real-SQLAlchemy proof actually
+        catches the bug class -- the ORIGINAL (pre-fix) query shape must
+        raise ArgumentError at construction, not merely at execution."""
+        from sqlalchemy.exc import ArgumentError
+
+        db = self._real_session()
+        try:
+            with pytest.raises(ArgumentError):
+                db.query(
+                    Player.id, Player.current_sector_id, Player.username,
+                    Player.current_ship_id, Player.team_id,
+                    Player.intrasystem_pose, Player.last_game_login,
+                ).filter(Player.current_sector_id.isnot(None))
+        finally:
+            db.close()
+
+    def test_heal_candidates_query_builds_clean_against_real_sqlalchemy(self) -> None:
+        """The shipped fix: constructing the REAL heal candidate query
+        (imported from production code, not a copy) against a real Session
+        must not raise -- and must compile to SQL that actually joins
+        users and selects a coalesce expression in place of the bare
+        property."""
+        db = self._real_session()
+        try:
+            query = _heal_candidates_query(db)
+            compiled = str(query)  # forces full compilation, not just construction
+        finally:
+            db.close()
+
+        assert "JOIN users" in compiled
+        assert "coalesce" in compiled.lower()
+        assert "players.current_sector_id IS NOT NULL" in compiled

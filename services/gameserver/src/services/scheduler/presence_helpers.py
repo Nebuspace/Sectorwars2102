@@ -753,6 +753,42 @@ def _is_presence_fresh(last_game_login: Optional[datetime], cutoff: datetime) ->
     return last_game_login is not None and last_game_login >= cutoff
 
 
+def _heal_candidates_query(db: Session):
+    """Builds (does not execute) the heal pass's candidate-row query --
+    split out from ``_heal_missing_or_poseless_presence_sync`` specifically
+    so a real-SQLAlchemy unit test can construct THIS EXACT query object
+    directly (see TestHealQueryRealSQLAlchemyCoercion in
+    test_presence_sweep_lock.py) and assert it never raises ``ArgumentError``
+    at query-BUILD time -- the class of bug the FakeSession test dispatcher
+    used throughout this sweep's other coverage is structurally blind to,
+    since it pattern-matches entity-tuple SHAPES without ever invoking real
+    SQLAlchemy column coercion.
+
+    2026-07-16 crash fix (Max, live host): ``Player.username`` is a plain
+    Python ``@property`` (nickname-or-``User.username`` fallback) -- NOT a
+    mapped Column -- so it cannot appear in a ``.query(...)`` column list;
+    real SQLAlchemy raises ``ArgumentError`` here (confirmed live -- every
+    sweep run was crashing, so neither pruning nor healing was running at
+    all). ``Player.display_name_expr()`` is the existing SQL-expression twin
+    of that same property (see models/player.py; already used by
+    regional_governance_service.py / admin_messages.py) -- it requires the
+    caller to join ``User`` itself, hence the join below.
+    ``Player.user_id`` is NOT NULL, so an inner join never drops a candidate
+    row."""
+    from src.models.user import User
+
+    return (
+        db.query(
+            Player.id, Player.current_sector_id,
+            Player.display_name_expr(User.username),
+            Player.current_ship_id, Player.team_id, Player.intrasystem_pose,
+            Player.last_game_login,
+        )
+        .join(User, Player.user_id == User.id)
+        .filter(Player.current_sector_id.isnot(None))
+    )
+
+
 def _heal_missing_or_poseless_presence_sync(db: Session, cutoff: datetime) -> "tuple[int, int]":
     """P0-FIX-SWEEP-HEAL (Max two-seat repro, 2026-07-16): reconciles MISSING
     or pose-less HUMAN presence entries from ``Player.current_sector_id``.
@@ -787,15 +823,9 @@ def _heal_missing_or_poseless_presence_sync(db: Session, cutoff: datetime) -> "t
     # so freshness is decided by _is_presence_fresh -- the ONE predicate the
     # removal loop above also calls -- rather than a second, independently-
     # written SQL expression that could silently drift out of sync with it.
-    candidate_rows = (
-        db.query(
-            Player.id, Player.current_sector_id, Player.username,
-            Player.current_ship_id, Player.team_id, Player.intrasystem_pose,
-            Player.last_game_login,
-        )
-        .filter(Player.current_sector_id.isnot(None))
-        .all()
-    )
+    # See _heal_candidates_query's own doc-comment for the 2026-07-16
+    # property-as-column crash fix this query shape carries.
+    candidate_rows = _heal_candidates_query(db).all()
     by_sector: Dict[int, list] = defaultdict(list)
     for pid, sid, username, ship_id, team_id, pose, last_game_login in candidate_rows:
         if not _is_presence_fresh(last_game_login, cutoff):
