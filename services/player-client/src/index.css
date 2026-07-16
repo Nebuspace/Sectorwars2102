@@ -20,6 +20,30 @@
      solid backing (WO-COCKPIT-TABBED). */
   --surface-primary: #141a24;
   --hover-bg: #334155;
+  /* Same bug class as --surface-primary above (QUEUE-CSSVAR-DEFECT): was only
+     ever defined scoped to .colony-specialization, so every OTHER planetary/
+     surface referencing it bare (building-manager, colonist-allocator,
+     defense-configuration, genesis-deployment, planet-manager,
+     production-dashboard, siege-status-monitor -- 61 usage sites across 8
+     files) rendered its hover/selected border-color as nothing/invisible.
+     Value #00d9ff copied verbatim from the ONLY real declaration
+     (colony-specialization.css's own `.colony-specialization { --accent-primary: #00d9ff }`),
+     corroborated by 3 of the 6 existing var(--accent-primary, <fallback>)
+     guards elsewhere already landing on this exact value. Promoted to :root;
+     the local declaration in colony-specialization.css is left in place
+     (same value, harmless local reinforcement -- matches how --surface-primary
+     was handled). */
+  --accent-primary: #00d9ff;
+  /* Referenced (bare, no fallback) by teams/mission-planner.css,
+     teams/team-manager.css, teams/team-chat.css, teams/resource-sharing.css
+     (88 usage sites) but never defined anywhere in the codebase -- their
+     hover/selected border-color has been invisible in production. Value
+     #00ff9d is not a guess: it's the ONLY fallback value ever used for this
+     var anywhere (ships/insurance-manager.css + ships/maintenance-manager.css,
+     23 sites, all var(--primary-green, #00ff9d)), and it's the exact hex
+     equivalent of the rgba(0, 255, 157, ...) accent hardcoded throughout all
+     four teams/ files' own hover/hover-adjacent declarations. */
+  --primary-green: #00ff9d;
 
   /* Scale-compensated viewport height. #root applies `zoom: var(--ui-scale)`,
      so a raw `vh` used INSIDE #root resolves against the unzoomed viewport and
