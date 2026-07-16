@@ -75,6 +75,9 @@ class Player(Base):
     current_port_id = Column(UUID(as_uuid=True), ForeignKey("stations.id", ondelete="SET NULL"), nullable=True)  # Station player is docked at
     is_landed = Column(Boolean, nullable=False, default=False)
     current_planet_id = Column(UUID(as_uuid=True), ForeignKey("planets.id", ondelete="SET NULL"), nullable=True)  # Planet player is landed on
+    # In-system pose (WO-ISP): x/y/heading/leg plan inside current_sector.
+    # Nullable JSONB — see intrasystem_movement_service.py for shape.
+    intrasystem_pose = Column(JSONB, nullable=True)
     team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id", ondelete="SET NULL"), nullable=True)
     attack_drones = Column(Integer, nullable=False, default=0)
     defense_drones = Column(Integer, nullable=False, default=0)

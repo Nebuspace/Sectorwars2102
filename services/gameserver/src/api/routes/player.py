@@ -51,6 +51,8 @@ class PlayerStateResponse(BaseModel):
     # HUD enrichment (WO-PLAYERINFO id=142) — additive read fields:
     turn_regen_per_hour: float = 0.0  # effective turns/hour (turn_service)
     bounty_total: int = 0             # credits on this player's head
+    # WO-ISP: authoritative in-system pose (nullable until first hydrate/burn)
+    intrasystem_pose: Dict[str, Any] | None = None
 
 class ShipResponse(BaseModel):
     id: str
@@ -183,6 +185,12 @@ class MoveOption(BaseModel):
     region_type: str | None = None
     turn_cost: int
     can_afford: bool
+    # Galaxy-map Euclidean position (same frame as SectorResponse /
+    # Quantum Jump). NAV 3D places one-hop neighbors from these deltas
+    # relative to the current sector — not a schematic equal-radius ring.
+    x_coord: int | None = None
+    y_coord: int | None = None
+    z_coord: int | None = None
     tunnel_type: str = None
     stability: float = None
     # Player warp gates are strictly one-way (tunnel_type "warp_gate",
@@ -230,6 +238,21 @@ async def get_player_state(
 
     max_turns = RankingService.calculate_max_turns(player)
 
+    from src.services import intrasystem_movement_service as isp
+    pose_pub = None
+    if not player.is_docked and not player.is_landed:
+        pose = isp.ensure_player_pose(player, str(player.current_ship_id or player.id))
+        sample = isp.derive_pose(pose)
+        if pose.get("leg") and sample.get("phase") == "idle" and sample.get("leg") is None:
+            pose = {
+                "x_pct": sample["x_pct"], "y_pct": sample["y_pct"],
+                "heading_deg": sample["heading_deg"],
+                "phase": "idle", "burning": False, "leg": None,
+            }
+            isp.set_player_pose(db, player, pose)
+            db.commit()
+        pose_pub = isp.pose_public(player.intrasystem_pose)
+
     return PlayerStateResponse(
         id=str(player.id),
         username=player.username,
@@ -252,6 +275,7 @@ async def get_player_state(
         military_rank=player.military_rank,
         turn_regen_per_hour=turn_service.effective_regen_per_hour(db, player),
         bounty_total=BountyService(db).total_active_bounty_on(player),
+        intrasystem_pose=pose_pub,
     )
 
 @router.get("/ships", response_model=List[ShipResponse])
@@ -517,6 +541,9 @@ async def get_current_sector(
                     e["activity"] = (act.name if hasattr(act, "name") else str(act)) if act else None
                     e["mission"] = (n.daily_schedule or {}).get("mission") or "commerce"
                     e["archetype"] = n.archetype.name if n.archetype else None
+                    if n.intrasystem_pose is not None:
+                        from src.services import intrasystem_movement_service as isp
+                        e["pose"] = isp.pose_public(n.intrasystem_pose)
             enriched.append(e)
         present = enriched
 
@@ -706,6 +733,9 @@ async def get_available_moves(
             region_type=sector.region.region_type if sector and sector.region else None,
             turn_cost=warp["turn_cost"],
             can_afford=warp["can_afford"],
+            x_coord=sector.x_coord if sector is not None else None,
+            y_coord=sector.y_coord if sector is not None else None,
+            z_coord=sector.z_coord if sector is not None else None,
             special_formations=_serialize_neighbour_formations(sector)
         ))
 
@@ -725,6 +755,9 @@ async def get_available_moves(
             region_type=sector.region.region_type if sector and sector.region else None,
             turn_cost=tunnel["turn_cost"],
             can_afford=tunnel["can_afford"],
+            x_coord=sector.x_coord if sector is not None else None,
+            y_coord=sector.y_coord if sector is not None else None,
+            z_coord=sector.z_coord if sector is not None else None,
             tunnel_type=tunnel.get("tunnel_type"),
             stability=tunnel.get("stability"),
             one_way=tunnel.get("one_way"),

@@ -146,36 +146,52 @@ def run_loop_a(db: Session, tick: int = 0) -> List[Dict[str, Any]]:
 
         # Movement/trade drivers. Location types without a driver yet
         # (home_sector, lodging) no-op gracefully until their slices land.
+        # SAVEPOINT per NPC: a lock-timeout / drive error must not wipe hops
+        # already applied earlier in this Loop A tick (full session.rollback
+        # previously froze apparent traffic whenever one NPC contended).
         try:
-            if (
-                activity == NPCActivity.PATROL
-                and npc.status == NPCStatus.ON_DUTY
-                and location_type == "patrol_route"
-            ):
-                events.extend(
-                    _drive_patrol(
-                        db, npc, block, minute, tick,
-                        patrol_phase.get(npc.id, 0),
+            with db.begin_nested():
+                if (
+                    activity == NPCActivity.PATROL
+                    and npc.status == NPCStatus.ON_DUTY
+                    and location_type == "patrol_route"
+                ):
+                    events.extend(
+                        _drive_patrol(
+                            db, npc, block, minute, tick,
+                            patrol_phase.get(npc.id, 0),
+                        )
                     )
-                )
-            elif (
-                activity == NPCActivity.COMMUTE
-                and location_type == "station_target"
-            ):
-                events.extend(_drive_commute(db, npc, block))
-            elif (
-                activity == NPCActivity.WORK_STATION
-                and location_type == "station"
-            ):
-                events.extend(_drive_trade_stop(db, npc, block))
-            elif (
-                activity == NPCActivity.WORK_STATION
-                and location_type == "mission_stop"
-            ):
-                events.extend(_drive_mission_stop(db, npc, block))
+                elif (
+                    activity == NPCActivity.COMMUTE
+                    and location_type == "station_target"
+                ):
+                    events.extend(_drive_commute(db, npc, block))
+                elif (
+                    activity == NPCActivity.WORK_STATION
+                    and location_type == "station"
+                ):
+                    events.extend(_drive_trade_stop(db, npc, block))
+                elif (
+                    activity == NPCActivity.WORK_STATION
+                    and location_type == "mission_stop"
+                ):
+                    events.extend(_drive_mission_stop(db, npc, block))
         except Exception:
             logger.exception("Loop A: drive failed for NPC %s", npc.id)
-            db.rollback()
+
+    # Terran capital hard floor — after patrol hops, refill Sector 1 if empty.
+    try:
+        npc_movement_service.ensure_capital_fed_presence(db)
+    except Exception:
+        logger.exception("Loop A: capital Fed presence ensure failed")
+
+    # WO-ISP: advance/finish in-system legs + schedule burns for active NPCs.
+    try:
+        from src.services import intrasystem_movement_service as isp
+        isp.tick_npc_legs(db, limit=40)
+    except Exception:
+        logger.exception("Loop A: intrasystem NPC legs failed")
 
     db.flush()
     return events
@@ -1042,7 +1058,11 @@ def reconcile_presence(db: Session) -> int:
             pid = entry.get("player_id")
             if entry.get("is_npc"):
                 if pid in expected_here:
-                    rebuilt.append(entry)
+                    # Always rebuild from the live NPC row so activity/mission/
+                    # archetype stay current (keeping the stale JSONB blob
+                    # froze contacts as identical SLEEP glyphs on the windshield).
+                    npc, ship = expected_here[pid]
+                    rebuilt.append(_presence_entry(npc, ship))
                     seen_npc_ids.add(pid)
                 # else: stale NPC entry (moved/KIA) — drop it.
             else:

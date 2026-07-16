@@ -70,6 +70,7 @@ from src.api.routes.pirate_ecosystem import router as pirate_ecosystem_router  #
 from src.api.routes.contracts import router as contracts_router  # WO-ECON-CONTRACT-1-KERNEL
 from src.api.routes.beacons import router as beacons_router  # WO-P4-play-beacon-kernel
 from src.api.routes.storage import router as storage_router  # WO-STORE-DEPOSIT-FLOW
+from src.api.routes.intrasystem import router as intrasystem_router  # WO-ISP
 from src.core.config import settings
 
 # Main API router - note that the version is now in the main API_V1_STR prefix
@@ -203,6 +204,9 @@ api_router.include_router(beacons_router, tags=["beacons"])
 # destination station, deposit cargo in installments, auto-complete on
 # full quantity (router carries its own /storage prefix).
 api_router.include_router(storage_router, tags=["storage"])
+# Intra-system helm (WO-ISP): authoritative burn/halt/pose (router carries
+# /helm/intrasystem prefix).
+api_router.include_router(intrasystem_router, tags=["intrasystem"])
 
 # Only include test routes in development/test environments
 if settings.TESTING or settings.DEVELOPMENT_MODE:

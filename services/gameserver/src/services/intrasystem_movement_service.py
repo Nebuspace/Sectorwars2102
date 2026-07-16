@@ -1,0 +1,807 @@
+"""Authoritative intra-system pose — burn legs, halt, derive-at-time.
+
+Canon: sector presence is who-is-in-sector; this module owns x/y/heading
+*inside* a sector. REST commits legs; WS fans out plans; clients interpolate
+with the same profile timings as WindshieldTableau TRAVEL_* / OTHER_FLIGHT_*.
+
+Burn cost: FREE (0 turns) — Max ratified 2026-07-16.
+Empty-space Travel To: allowed in v1.
+"""
+from __future__ import annotations
+
+import hashlib
+import logging
+import math
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
+
+from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
+
+logger = logging.getLogger(__name__)
+
+# Lockstep with player-client windshieldTableauLayout OTHER_FLIGHT_* /
+# WindshieldTableau TRAVEL_* (6.4s move window).
+ORIENT_MS = 1000
+ACCEL_MS = 1800
+COAST_MS = 1100
+FLIP_MS = 1300
+DECEL_MS = 2200
+SETTLE_MS = 800
+MOVE_MS = ACCEL_MS + COAST_MS + FLIP_MS + DECEL_MS
+HALT_FLIP_MS = 1800
+HALT_BRAKE_MS = 1600
+
+PROFILE_MS = {
+    "orient_ms": ORIENT_MS,
+    "accel_ms": ACCEL_MS,
+    "coast_ms": COAST_MS,
+    "flip_ms": FLIP_MS,
+    "decel_ms": DECEL_MS,
+    "settle_ms": SETTLE_MS,
+    "move_ms": MOVE_MS,
+    "halt_flip_ms": HALT_FLIP_MS,
+    "halt_brake_ms": HALT_BRAKE_MS,
+}
+
+# Fixed reference band for %-math authority (Max: Implementer default).
+REF_BAND_W = 1440.0
+REF_BAND_H = 335.0
+REF_BAND_ASPECT = REF_BAND_H / REF_BAND_W  # ~0.2326
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _iso(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
+def _parse_iso(s: Optional[str]) -> Optional[datetime]:
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except ValueError:
+        return None
+
+
+def _clamp(v: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, v))
+
+
+def _smoothstep(t: float) -> float:
+    x = _clamp(t, 0.0, 1.0)
+    return x * x * (3.0 - 2.0 * x)
+
+
+def _shortest_delta(from_deg: float, to_deg: float) -> float:
+    return ((to_deg - from_deg + 540.0) % 360.0) - 180.0
+
+
+def heading_deg(x0: float, y0: float, x1: float, y1: float, band_aspect: float = REF_BAND_ASPECT) -> float:
+    dx = x1 - x0
+    dy = (y1 - y0) * band_aspect
+    if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+        return 0.0
+    return math.degrees(math.atan2(dy, dx))
+
+
+def resting_anchor(sector_id: int, ship_key: str) -> Dict[str, float]:
+    """Deterministic parked spawn when no pose exists yet."""
+    h = hashlib.sha256(f"isp-rest:{sector_id}:{ship_key}".encode()).digest()
+    x = 20.0 + (h[0] / 255.0) * 55.0
+    y = 20.0 + (h[1] / 255.0) * 55.0
+    return {"x_pct": round(x, 3), "y_pct": round(y, 3), "heading_deg": float(h[2])}
+
+
+def empty_idle_pose(sector_id: int, ship_key: str) -> Dict[str, Any]:
+    a = resting_anchor(sector_id, ship_key)
+    return {
+        "x_pct": a["x_pct"],
+        "y_pct": a["y_pct"],
+        "heading_deg": a["heading_deg"],
+        "phase": "idle",
+        "burning": False,
+        "leg": None,
+    }
+
+
+def seeded_waypoints(sector_id: int, ship_key: str, n: int = 3) -> List[Tuple[float, float]]:
+    """Fallback docks when celestial layout isn't available — deterministic per ship."""
+    pts: List[Tuple[float, float]] = []
+    for i in range(n):
+        h = hashlib.sha256(f"isp-wp:{sector_id}:{ship_key}:{i}".encode()).digest()
+        pts.append((10.0 + (h[0] / 255.0) * 80.0, 12.0 + (h[1] / 255.0) * 76.0))
+    return pts
+
+
+# ---------------------------------------------------------------------------
+# Destination catalog — habitable/station vs barren vs warp-out (Max 2026-07-16)
+# Ballpark: ~60% trade/habitable, ~20% outbound, ~20% barren — biased by role.
+# ---------------------------------------------------------------------------
+
+_AU_SEMI_X = 80.0
+_AU_SEMI_Y = 120.0
+_NS_STAR = "windshield-tableau"
+
+
+def _fnv1a32(s: str) -> int:
+    h = 0x811C9DC5
+    for ch in s.encode("utf-8"):
+        h ^= ch
+        h = (h * 0x01000193) & 0xFFFFFFFF
+    return h
+
+
+def _splitmix01(seed: int) -> float:
+    s = (seed + 0x9E3779B9) & 0xFFFFFFFF
+    t = s ^ (s >> 16)
+    t = (t * 0x21F0AAAD) & 0xFFFFFFFF
+    t = t ^ (t >> 15)
+    t = (t * 0x735A2D97) & 0xFFFFFFFF
+    t = (t ^ (t >> 15)) & 0xFFFFFFFF
+    return t / 4294967296.0
+
+
+def _star_anchor_pct(sector_id: int) -> Tuple[float, float]:
+    x = 9.0 + _splitmix01(_fnv1a32(f"{_NS_STAR}:star:{sector_id}:x")) * 5.0
+    y = 42.0 + _splitmix01(_fnv1a32(f"{_NS_STAR}:star:{sector_id}:y")) * 8.0
+    return (x, y)
+
+
+def _orbital_pct(star: Tuple[float, float], orbit_au: float, phase_deg: float) -> Tuple[float, float]:
+    rad = math.radians(phase_deg)
+    rx = abs(orbit_au) * _AU_SEMI_X
+    ry = abs(orbit_au) * _AU_SEMI_Y
+    return (
+        _clamp(star[0] + math.cos(rad) * rx, 4.0, 96.0),
+        _clamp(star[1] + math.sin(rad) * ry, 6.0, 94.0),
+    )
+
+
+def _is_habitable_body(kind: Optional[str], habitability: Optional[float]) -> bool:
+    k = (kind or "").upper().replace("PLANETTYPE.", "")
+    if k in ("TERRAN", "OCEANIC", "TROPICAL", "JUNGLE"):
+        return True
+    try:
+        return habitability is not None and float(habitability) >= 50
+    except (TypeError, ValueError):
+        return False
+
+
+def _outbound_rim_points(sector_id: int, ship_key: str, n: int = 3) -> List[Dict[str, Any]]:
+    pts: List[Dict[str, Any]] = []
+    for i in range(n):
+        h = hashlib.sha256(f"isp-outbound:{sector_id}:{ship_key}:{i}".encode()).digest()
+        edge = h[0] % 4
+        if edge == 0:
+            x, y = 4.0 + (h[1] / 255.0) * 6.0, 15.0 + (h[2] / 255.0) * 70.0
+        elif edge == 1:
+            x, y = 90.0 + (h[1] / 255.0) * 6.0, 15.0 + (h[2] / 255.0) * 70.0
+        elif edge == 2:
+            x, y = 15.0 + (h[1] / 255.0) * 70.0, 6.0 + (h[2] / 255.0) * 8.0
+        else:
+            x, y = 15.0 + (h[1] / 255.0) * 70.0, 86.0 + (h[2] / 255.0) * 8.0
+        pts.append({
+            "x_pct": x, "y_pct": y,
+            "target_kind": "outbound",
+            "target_id": None,
+            "bucket": "outbound",
+        })
+    return pts
+
+
+def sector_destination_pools(db: Session, sector_id: int, ship_key: str) -> Dict[str, List[Dict[str, Any]]]:
+    from src.models.planet import Planet
+    from src.models.sector_celestial import SectorCelestial
+    from src.models.station import Station
+
+    pools: Dict[str, List[Dict[str, Any]]] = {
+        "habitable": [],
+        "barren": [],
+        "outbound": _outbound_rim_points(sector_id, ship_key),
+    }
+    star = _star_anchor_pct(sector_id)
+
+    row = db.query(SectorCelestial).filter(SectorCelestial.sector_id == sector_id).first()
+    comp = row.composition if row and isinstance(row.composition, dict) else {}
+
+    planet_hab: Dict[str, float] = {
+        str(p.id): float(p.habitability_score or 0)
+        for p in db.query(Planet).filter(Planet.sector_id == sector_id).all()
+    }
+
+    seen_planet_ids: set = set()
+    for b in (comp.get("bodies") or []):
+        if not isinstance(b, dict):
+            continue
+        orbit = float(b.get("orbit_au") or 0.4)
+        phase = float(b.get("phase_deg") or 0)
+        x, y = _orbital_pct(star, orbit, phase)
+        pid = b.get("planet_id")
+        hab_score = b.get("habitability")
+        if hab_score is None and pid:
+            hab_score = planet_hab.get(str(pid))
+        bucket = "habitable" if _is_habitable_body(b.get("kind"), hab_score) else "barren"
+        if pid:
+            seen_planet_ids.add(str(pid))
+        pools[bucket].append({
+            "x_pct": x, "y_pct": y,
+            "target_kind": "planet",
+            "target_id": str(pid) if pid else None,
+            "bucket": bucket,
+        })
+
+    # Real Planet rows missing from the celestial skeleton (e.g. New Earth in S1).
+    for p in db.query(Planet).filter(Planet.sector_id == sector_id).all():
+        pid = str(p.id)
+        if pid in seen_planet_ids:
+            continue
+        h = hashlib.sha256(f"isp-planet:{pid}".encode()).digest()
+        orbit = 0.15 + max(1, int(getattr(p, "position", 3) or 3)) * 0.12
+        phase = (h[0] / 255.0) * 360.0
+        x, y = _orbital_pct(star, orbit, phase)
+        kind = p.type.name if getattr(p, "type", None) else None
+        hab_score = float(p.habitability_score or 0)
+        bucket = "habitable" if _is_habitable_body(kind, hab_score) else "barren"
+        pools[bucket].append({
+            "x_pct": x, "y_pct": y,
+            "target_kind": "planet",
+            "target_id": pid,
+            "bucket": bucket,
+        })
+
+    stations = comp.get("stations") or []
+    seen_station_ids: set = set()
+    if stations:
+        for st in stations:
+            if not isinstance(st, dict):
+                continue
+            orbit = float(st.get("orbit_au") or 0.5)
+            phase = float(st.get("phase_deg") or 0)
+            x, y = _orbital_pct(star, orbit, phase)
+            sid = st.get("station_id")
+            if sid:
+                seen_station_ids.add(str(sid))
+            pools["habitable"].append({
+                "x_pct": x, "y_pct": y,
+                "target_kind": "station",
+                "target_id": str(sid) if sid else None,
+                "bucket": "habitable",
+            })
+    for st in db.query(Station).filter(Station.sector_id == sector_id).all():
+        sid = str(st.id)
+        if sid in seen_station_ids:
+            continue
+        h = hashlib.sha256(f"isp-station:{sid}".encode()).digest()
+        orbit = 0.2 + (h[0] / 255.0) * 0.75
+        phase = (h[1] / 255.0) * 360.0
+        x, y = _orbital_pct(star, orbit, phase)
+        pools["habitable"].append({
+            "x_pct": x, "y_pct": y,
+            "target_kind": "station",
+            "target_id": sid,
+            "bucket": "habitable",
+        })
+
+    return pools
+
+
+def destination_weights(
+    *,
+    archetype: Optional[str] = None,
+    activity: Optional[str] = None,
+    mission: Optional[str] = None,
+) -> Dict[str, float]:
+    arch = (archetype or "").upper()
+    act = (activity or "").upper()
+    miss = (mission or "").lower()
+
+    w = {"habitable": 0.60, "outbound": 0.20, "barren": 0.20}
+    if miss == "science" or arch == "RESEARCHER":
+        w = {"habitable": 0.40, "outbound": 0.20, "barren": 0.40}
+    elif miss == "colonist":
+        w = {"habitable": 0.72, "outbound": 0.20, "barren": 0.08}
+    elif miss == "commerce" or arch == "TRADER":
+        w = {"habitable": 0.68, "outbound": 0.22, "barren": 0.10}
+    elif act == "PATROL" or arch == "LAW_ENFORCEMENT":
+        w = {"habitable": 0.55, "outbound": 0.30, "barren": 0.15}
+    elif arch == "HOSTILE_RAIDER":
+        w = {"habitable": 0.45, "outbound": 0.35, "barren": 0.20}
+    return w
+
+
+def pick_npc_destination(
+    pools: Dict[str, List[Dict[str, Any]]],
+    *,
+    ship_key: str,
+    leg_index: int,
+    from_xy: Tuple[float, float],
+    archetype: Optional[str] = None,
+    activity: Optional[str] = None,
+    mission: Optional[str] = None,
+) -> Dict[str, Any]:
+    weights = destination_weights(archetype=archetype, activity=activity, mission=mission)
+    available = {k: v for k, v in pools.items() if v}
+    if not available:
+        x, y = seeded_waypoints(0, ship_key, 1)[0]
+        return {"x_pct": x, "y_pct": y, "target_kind": "point", "target_id": None, "bucket": "habitable"}
+
+    total = sum(weights.get(k, 0.0) for k in available) or float(len(available))
+    h = hashlib.sha256(f"isp-pick:{ship_key}:{leg_index}".encode()).digest()
+    roll = (h[0] + h[1] * 256) / 65535.0 * total
+    chosen_bucket = next(iter(available))
+    for k in available:
+        roll -= weights.get(k, 0.0) if total else 1.0
+        if roll <= 0:
+            chosen_bucket = k
+            break
+
+    opts = available[chosen_bucket]
+    cx, cy = from_xy
+    ranked = sorted(
+        opts,
+        key=lambda o: math.hypot(float(o["x_pct"]) - cx, float(o["y_pct"]) - cy),
+        reverse=True,
+    )
+    top = ranked[: max(1, len(ranked) // 2)]
+    return dict(top[h[2] % len(top)])
+
+
+def derive_pose(pose: Optional[Dict[str, Any]], now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Sample absolute pose at `now` from a stored plan (pure)."""
+    now = now or _utcnow()
+    if not pose:
+        return empty_idle_pose(0, "unknown")
+
+    leg = pose.get("leg")
+    if not leg or not leg.get("started_at"):
+        return {
+            "x_pct": float(pose.get("x_pct", 50)),
+            "y_pct": float(pose.get("y_pct", 50)),
+            "heading_deg": float(pose.get("heading_deg", 0)),
+            "phase": "idle",
+            "burning": False,
+            "leg": None,
+        }
+
+    started = _parse_iso(leg.get("started_at")) or now
+    elapsed_ms = max(0.0, (now - started).total_seconds() * 1000.0)
+    kind = (leg.get("kind") or "burn").lower()
+
+    fx, fy = float(leg["from_x"]), float(leg["from_y"])
+    tx, ty = float(leg["to_x"]), float(leg["to_y"])
+    prograde = float(leg.get("prograde_deg", heading_deg(fx, fy, tx, ty)))
+    parked = float(leg.get("parked_heading_deg", pose.get("heading_deg", prograde)))
+
+    if kind == "halt":
+        return _derive_halt(fx, fy, tx, ty, prograde, parked, elapsed_ms, leg)
+
+    return _derive_burn(fx, fy, tx, ty, prograde, parked, elapsed_ms, leg)
+
+
+def _lerp(a: float, b: float, t: float) -> float:
+    return a + (b - a) * t
+
+
+def _derive_burn(
+    fx: float, fy: float, tx: float, ty: float,
+    prograde: float, parked: float, elapsed_ms: float, leg: Dict[str, Any],
+) -> Dict[str, Any]:
+    retrograde = prograde + 180.0
+    face = prograde + 360.0
+    move_start = ORIENT_MS
+    accel_end = move_start + ACCEL_MS
+    coast_end = accel_end + COAST_MS
+    flip_end = coast_end + FLIP_MS
+    move_end = move_start + MOVE_MS
+    settle_end = move_end + SETTLE_MS
+
+    if elapsed_ms < move_start:
+        t = _smoothstep(elapsed_ms / ORIENT_MS)
+        hdg = parked + _shortest_delta(parked, prograde) * t
+        return {
+            "x_pct": fx, "y_pct": fy, "heading_deg": hdg,
+            "phase": "orienting", "burning": False, "leg": leg,
+        }
+
+    if elapsed_ms < move_end:
+        p = _smoothstep((elapsed_ms - move_start) / MOVE_MS)
+        x, y = _lerp(fx, tx, p), _lerp(fy, ty, p)
+        if elapsed_ms < accel_end:
+            return {
+                "x_pct": x, "y_pct": y, "heading_deg": prograde,
+                "phase": "accelerating", "burning": True, "leg": leg,
+            }
+        if elapsed_ms < coast_end:
+            return {"x_pct": x, "y_pct": y, "heading_deg": prograde, "phase": "gliding", "burning": False, "leg": leg}
+        if elapsed_ms < flip_end:
+            ft = _smoothstep((elapsed_ms - coast_end) / FLIP_MS)
+            return {
+                "x_pct": x, "y_pct": y,
+                "heading_deg": prograde + 180.0 * ft,
+                "phase": "brake_turn", "burning": False, "leg": leg,
+            }
+        return {"x_pct": x, "y_pct": y, "heading_deg": retrograde, "phase": "braking", "burning": True, "leg": leg}
+
+    if elapsed_ms < settle_end:
+        t = _smoothstep((elapsed_ms - move_end) / SETTLE_MS)
+        hdg = retrograde + (face - retrograde) * t
+        return {"x_pct": tx, "y_pct": ty, "heading_deg": hdg, "phase": "final_orient", "burning": False, "leg": leg}
+
+    # Arrived — idle at destination
+    return {
+        "x_pct": tx, "y_pct": ty, "heading_deg": face,
+        "phase": "idle", "burning": False, "leg": None,
+    }
+
+
+def _derive_halt(
+    fx: float, fy: float, tx: float, ty: float,
+    prograde: float, parked: float, elapsed_ms: float, leg: Dict[str, Any],
+) -> Dict[str, Any]:
+    # Halt: flip then brake into stop (matches client TRAVEL_HALT_*).
+    retrograde = prograde + 180.0
+    total = HALT_FLIP_MS + HALT_BRAKE_MS
+    if elapsed_ms < HALT_FLIP_MS:
+        t = _smoothstep(elapsed_ms / HALT_FLIP_MS)
+        # Coast a fraction toward stop while flipping
+        p = 0.38 * t
+        x, y = _lerp(fx, tx, p), _lerp(fy, ty, p)
+        return {
+            "x_pct": x, "y_pct": y,
+            "heading_deg": prograde + 180.0 * t,
+            "phase": "halt_turn", "burning": False, "leg": leg,
+        }
+    if elapsed_ms < total:
+        t = _smoothstep((elapsed_ms - HALT_FLIP_MS) / HALT_BRAKE_MS)
+        p = 0.38 + 0.62 * t
+        x, y = _lerp(fx, tx, p), _lerp(fy, ty, p)
+        return {
+            "x_pct": x, "y_pct": y, "heading_deg": retrograde,
+            "phase": "halt_brake", "burning": True, "leg": leg,
+        }
+    return {
+        "x_pct": tx, "y_pct": ty, "heading_deg": retrograde,
+        "phase": "idle", "burning": False, "leg": None,
+    }
+
+
+def materialize(pose: Optional[Dict[str, Any]], now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Collapse a finished leg into idle storage shape."""
+    sample = derive_pose(pose, now)
+    if sample.get("phase") == "idle" and sample.get("leg") is None:
+        return {
+            "x_pct": sample["x_pct"],
+            "y_pct": sample["y_pct"],
+            "heading_deg": sample["heading_deg"],
+            "phase": "idle",
+            "burning": False,
+            "leg": None,
+        }
+    # Still in flight — keep plan, refresh tip fields for readers
+    out = dict(pose or {})
+    out.update({
+        "x_pct": sample["x_pct"],
+        "y_pct": sample["y_pct"],
+        "heading_deg": sample["heading_deg"],
+        "phase": sample["phase"],
+        "burning": sample["burning"],
+    })
+    return out
+
+
+def start_burn(
+    pose: Optional[Dict[str, Any]],
+    *,
+    to_x: float,
+    to_y: float,
+    sector_id: int,
+    ship_key: str,
+    target_kind: Optional[str] = None,
+    target_id: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Commit a new burn leg from the derived current pose to (to_x, to_y)."""
+    now = now or _utcnow()
+    to_x = _clamp(float(to_x), 0.0, 100.0)
+    to_y = _clamp(float(to_y), 0.0, 100.0)
+
+    current = derive_pose(pose or empty_idle_pose(sector_id, ship_key), now)
+    # If previous leg finished, materialize idle first
+    if current.get("phase") == "idle":
+        base = current
+    else:
+        base = current  # mid-course redirect from live sample
+
+    fx, fy = float(base["x_pct"]), float(base["y_pct"])
+    if math.hypot(to_x - fx, to_y - fy) < 0.15:
+        return {
+            "x_pct": fx, "y_pct": fy,
+            "heading_deg": float(base["heading_deg"]),
+            "phase": "idle", "burning": False, "leg": None,
+        }
+
+    prograde = heading_deg(fx, fy, to_x, to_y)
+    leg = {
+        "kind": "burn",
+        "from_x": fx,
+        "from_y": fy,
+        "to_x": to_x,
+        "to_y": to_y,
+        "target_kind": target_kind,
+        "target_id": target_id,
+        "started_at": _iso(now),
+        "prograde_deg": prograde,
+        "parked_heading_deg": float(base["heading_deg"]),
+        "profile": PROFILE_MS,
+    }
+    return {
+        "x_pct": fx,
+        "y_pct": fy,
+        "heading_deg": float(base["heading_deg"]),
+        "phase": "orienting",
+        "burning": False,
+        "leg": leg,
+    }
+
+
+def start_halt(
+    pose: Optional[Dict[str, Any]],
+    *,
+    sector_id: int,
+    ship_key: str,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    now = now or _utcnow()
+    current = derive_pose(pose or empty_idle_pose(sector_id, ship_key), now)
+    if current.get("phase") == "idle":
+        return {
+            "x_pct": current["x_pct"], "y_pct": current["y_pct"],
+            "heading_deg": current["heading_deg"],
+            "phase": "idle", "burning": False, "leg": None,
+        }
+
+    fx, fy = float(current["x_pct"]), float(current["y_pct"])
+    # Stop a short coast ahead along current heading
+    rad = math.radians(float(current["heading_deg"]))
+    # %-space: advance ~4% of band width along heading (aspect-naive, good enough)
+    coast = 4.0
+    tx = _clamp(fx + math.cos(rad) * coast, 4.0, 96.0)
+    ty = _clamp(fy + math.sin(rad) * coast / max(REF_BAND_ASPECT, 0.05) * 0.15, 6.0, 94.0)
+    prograde = float(current["heading_deg"])
+    leg = {
+        "kind": "halt",
+        "from_x": fx,
+        "from_y": fy,
+        "to_x": tx,
+        "to_y": ty,
+        "started_at": _iso(now),
+        "prograde_deg": prograde,
+        "parked_heading_deg": prograde,
+        "profile": PROFILE_MS,
+    }
+    return {
+        "x_pct": fx, "y_pct": fy, "heading_deg": prograde,
+        "phase": "halt_turn", "burning": False, "leg": leg,
+    }
+
+
+def pose_public(pose: Optional[Dict[str, Any]], now: Optional[datetime] = None) -> Dict[str, Any]:
+    """API / presence / WS payload — always includes server_time + derived tip."""
+    now = now or _utcnow()
+    sample = derive_pose(pose, now)
+    return {
+        "server_time": _iso(now),
+        "x_pct": sample["x_pct"],
+        "y_pct": sample["y_pct"],
+        "heading_deg": sample["heading_deg"],
+        "phase": sample["phase"],
+        "burning": bool(sample["burning"]),
+        "leg": sample.get("leg") or (pose or {}).get("leg"),
+        "profile": PROFILE_MS,
+    }
+
+
+def mirror_into_presence_entry(
+    entry: Dict[str, Any], pose: Optional[Dict[str, Any]], now: Optional[datetime] = None
+) -> Dict[str, Any]:
+    pub = pose_public(pose, now)
+    out = dict(entry)
+    out["pose"] = {
+        "x_pct": pub["x_pct"],
+        "y_pct": pub["y_pct"],
+        "heading_deg": pub["heading_deg"],
+        "phase": pub["phase"],
+        "burning": pub["burning"],
+        "leg": pub["leg"],
+        "server_time": pub["server_time"],
+    }
+    return out
+
+
+def ensure_player_pose(player, ship_key: Optional[str] = None) -> Dict[str, Any]:
+    key = ship_key or str(getattr(player, "current_ship_id", None) or player.id)
+    pose = getattr(player, "intrasystem_pose", None)
+    if not pose:
+        pose = empty_idle_pose(int(player.current_sector_id), key)
+        player.intrasystem_pose = pose
+    return pose
+
+
+def set_player_pose(db: Session, player, pose: Dict[str, Any]) -> Dict[str, Any]:
+    player.intrasystem_pose = pose
+    flag_modified(player, "intrasystem_pose")
+    _sync_player_presence_pose(db, player, pose)
+    return pose
+
+
+def set_npc_pose(db: Session, npc, pose: Dict[str, Any]) -> Dict[str, Any]:
+    npc.intrasystem_pose = pose
+    flag_modified(npc, "intrasystem_pose")
+    _sync_npc_presence_pose(db, npc, pose)
+    return pose
+
+
+def _sync_player_presence_pose(db: Session, player, pose: Dict[str, Any]) -> None:
+    from src.models.sector import Sector
+
+    sector = (
+        db.query(Sector)
+        .filter(Sector.sector_id == player.current_sector_id)
+        .with_for_update()
+        .first()
+    )
+    if not sector:
+        return
+    pid = str(player.id)
+    present = list(sector.players_present or [])
+    changed = False
+    for i, e in enumerate(present):
+        if isinstance(e, dict) and str(e.get("player_id")) == pid and not e.get("is_npc"):
+            present[i] = mirror_into_presence_entry(e, pose)
+            changed = True
+            break
+    if changed:
+        sector.players_present = present
+        flag_modified(sector, "players_present")
+
+
+def _sync_npc_presence_pose(db: Session, npc, pose: Dict[str, Any]) -> None:
+    from src.models.sector import Sector
+
+    if npc.current_sector_id is None:
+        return
+    sector = (
+        db.query(Sector)
+        .filter(Sector.sector_id == npc.current_sector_id)
+        .with_for_update()
+        .first()
+    )
+    if not sector:
+        return
+    nid = str(npc.id)
+    present = list(sector.players_present or [])
+    changed = False
+    for i, e in enumerate(present):
+        if isinstance(e, dict) and e.get("is_npc") and str(e.get("player_id")) == nid:
+            present[i] = mirror_into_presence_entry(e, pose)
+            changed = True
+            break
+    if changed:
+        sector.players_present = present
+        flag_modified(sector, "players_present")
+
+
+def emit_leg_started(sector_id: int, ship_id: str, is_npc: bool, pose: Dict[str, Any]) -> None:
+    """Best-effort sector broadcast (mirrors combat_service fire-and-forget)."""
+    try:
+        import asyncio
+
+        from src.services.websocket_service import connection_manager
+
+        pub = pose_public(pose)
+        frame = {
+            "type": "intrasystem.leg_started",
+            "sector_id": sector_id,
+            "ship_id": ship_id,
+            "is_npc": is_npc,
+            **pub,
+        }
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(connection_manager.broadcast_to_sector(int(sector_id), frame))
+    except Exception:
+        logger.debug("intrasystem.leg_started emit skipped", exc_info=True)
+
+
+def tick_npc_legs(db: Session, *, limit: int = 40) -> int:
+    """Advance finished legs + schedule new burns for active NPCs in-sector.
+
+    SLEEP → stay parked. PATROL/COMMUTE/WORK_STATION → weighted dest burns
+    (mostly habitable/stations, some outbound rim, rarely barren).
+    """
+    from src.models.npc_character import NPCCharacter, NPCStatus
+
+    now = _utcnow()
+    live = (
+        db.query(NPCCharacter)
+        .filter(
+            NPCCharacter.status.in_([NPCStatus.ON_DUTY, NPCStatus.OFF_DUTY]),
+            NPCCharacter.current_sector_id.isnot(None),
+            NPCCharacter.ship_id.isnot(None),
+        )
+        .limit(200)
+        .all()
+    )
+    moved = 0
+    for npc in live:
+        if moved >= limit:
+            break
+        key = str(npc.ship_id or npc.id)
+        sid = int(npc.current_sector_id)
+        pose = npc.intrasystem_pose
+        if not pose:
+            pose = empty_idle_pose(sid, key)
+            npc.intrasystem_pose = pose
+            flag_modified(npc, "intrasystem_pose")
+
+        sample = derive_pose(pose, now)
+        # Materialize completed legs
+        if pose.get("leg") and sample.get("phase") == "idle" and sample.get("leg") is None:
+            pose = {
+                "x_pct": sample["x_pct"],
+                "y_pct": sample["y_pct"],
+                "heading_deg": sample["heading_deg"],
+                "phase": "idle",
+                "burning": False,
+                "leg": None,
+            }
+            set_npc_pose(db, npc, pose)
+            moved += 1
+            continue
+
+        act = npc.current_activity
+        act_name = act.name if hasattr(act, "name") else str(act or "")
+        if act_name not in ("PATROL", "COMMUTE", "WORK_STATION"):
+            continue
+        if sample.get("phase") != "idle":
+            continue
+
+        # Weighted destination: mostly habitable worlds + stations, some
+        # warp-out rim loiters, rarely barren rocks (science biased higher).
+        mission = (npc.daily_schedule or {}).get("mission") if isinstance(npc.daily_schedule, dict) else None
+        arch = npc.archetype.name if getattr(npc, "archetype", None) else None
+        pools = sector_destination_pools(db, sid, key)
+        # leg_index from wall clock so successive idle picks advance
+        leg_index = int(now.timestamp() // 10) + (hash(key) & 0xFFFF)
+        dest = pick_npc_destination(
+            pools,
+            ship_key=key,
+            leg_index=leg_index,
+            from_xy=(float(sample["x_pct"]), float(sample["y_pct"])),
+            archetype=arch,
+            activity=act_name,
+            mission=mission,
+        )
+        new_pose = start_burn(
+            pose,
+            to_x=float(dest["x_pct"]),
+            to_y=float(dest["y_pct"]),
+            sector_id=sid,
+            ship_key=key,
+            target_kind=dest.get("target_kind") or "point",
+            target_id=dest.get("target_id"),
+            now=now,
+        )
+        set_npc_pose(db, npc, new_pose)
+        emit_leg_started(sid, str(npc.ship_id), True, new_pose)
+        moved += 1
+    return moved
