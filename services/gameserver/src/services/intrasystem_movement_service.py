@@ -18,6 +18,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
+from src.services.intrasystem_layout import ORBIT_AU_MAX, ORBIT_AU_MIN, SectorLayout
+
 logger = logging.getLogger(__name__)
 
 # Lockstep with player-client windshieldTableauLayout OTHER_FLIGHT_* /
@@ -125,45 +127,44 @@ def seeded_waypoints(sector_id: int, ship_key: str, n: int = 3) -> List[Tuple[fl
 # ---------------------------------------------------------------------------
 # Destination catalog — habitable/station vs barren vs warp-out (Max 2026-07-16)
 # Ballpark: ~60% trade/habitable, ~20% outbound, ~20% barren — biased by role.
+#
+# Body/station %-positions are computed by intrasystem_layout.SectorLayout —
+# a faithful server-side port of the player-client's windshieldTableauLayout
+# %-space math (WO-TRANCHE-0716 ISP-PARITY), so a destination picked here
+# lands where the client's own windshield actually renders that body/station,
+# not a placeholder. See that module's own docstring for the parity contract.
 # ---------------------------------------------------------------------------
 
-_AU_SEMI_X = 80.0
-_AU_SEMI_Y = 120.0
-_NS_STAR = "windshield-tableau"
+# celestial_service.generate_system caps merged real planets at MAX_BODIES=9
+# (`sorted(planets, key=_planet_sort_key)[:MAX_BODIES]`, celestial_service.py)
+# -- correct for RENDERING (the client's own /contents response never shows
+# more than 9 real planets either, same shared function), but a sector with
+# more than 9 real planets otherwise silently drops the overflow from THIS
+# function's pools with no error (Mack, WO-TRANCHE-0716 ISP-PARITY gate).
+# Every real planet still needs a reachable destination even when the
+# render-side cap leaves it unmerged into `system["bodies"]`. Distinct from
+# celestial_service.py's own BODY_SEED_SALT/STATION_SEED_SALT so this
+# fallback stream can never collide with a real merged body/station's seed
+# for the same planet UUID.
+_OVERFLOW_PLANET_SEED_SALT = 0xBEEF01
 
 
-def _fnv1a32(s: str) -> int:
-    h = 0x811C9DC5
-    for ch in s.encode("utf-8"):
-        h ^= ch
-        h = (h * 0x01000193) & 0xFFFFFFFF
-    return h
+def _overflow_planet_position(layout: SectorLayout, planet_id, root_seed: int) -> Tuple[float, float]:
+    """A real Planet MAX_BODIES truncation left unmerged: mirrors
+    celestial_service._make_stations's own per-UUID SplitMix64 idiom (folded
+    UUID XOR root_seed XOR a salt) rather than inventing a new ad hoc hash
+    scheme, then feeds the result through the SAME SectorLayout box every
+    other body/station in this sector uses -- reachable and deterministic,
+    even though (like every overflow planet) the client itself never renders
+    it either, so there is no client position to match here."""
+    from src.services.celestial_service import _MASK64, SplitMix64
 
-
-def _splitmix01(seed: int) -> float:
-    s = (seed + 0x9E3779B9) & 0xFFFFFFFF
-    t = s ^ (s >> 16)
-    t = (t * 0x21F0AAAD) & 0xFFFFFFFF
-    t = t ^ (t >> 15)
-    t = (t * 0x735A2D97) & 0xFFFFFFFF
-    t = (t ^ (t >> 15)) & 0xFFFFFFFF
-    return t / 4294967296.0
-
-
-def _star_anchor_pct(sector_id: int) -> Tuple[float, float]:
-    x = 9.0 + _splitmix01(_fnv1a32(f"{_NS_STAR}:star:{sector_id}:x")) * 5.0
-    y = 42.0 + _splitmix01(_fnv1a32(f"{_NS_STAR}:star:{sector_id}:y")) * 8.0
-    return (x, y)
-
-
-def _orbital_pct(star: Tuple[float, float], orbit_au: float, phase_deg: float) -> Tuple[float, float]:
-    rad = math.radians(phase_deg)
-    rx = abs(orbit_au) * _AU_SEMI_X
-    ry = abs(orbit_au) * _AU_SEMI_Y
-    return (
-        _clamp(star[0] + math.cos(rad) * rx, 4.0, 96.0),
-        _clamp(star[1] + math.sin(rad) * ry, 6.0, 94.0),
-    )
+    uuid_int = planet_id.int if hasattr(planet_id, "int") else int(str(planet_id).replace("-", ""), 16)
+    folded = ((uuid_int >> 64) ^ uuid_int) & _MASK64
+    rng = SplitMix64((folded ^ root_seed ^ _OVERFLOW_PLANET_SEED_SALT) & _MASK64)
+    orbit_au = rng.uniform(ORBIT_AU_MIN, ORBIT_AU_MAX)
+    phase_deg = float(rng.randint(0, 359))
+    return layout.planet_position(orbit_au, phase_deg)
 
 
 def _is_habitable_body(kind: Optional[str], habitability: Optional[float]) -> bool:
@@ -199,39 +200,72 @@ def _outbound_rim_points(sector_id: int, ship_key: str, n: int = 3) -> List[Dict
 
 
 def sector_destination_pools(db: Session, sector_id: int, ship_key: str) -> Dict[str, List[Dict[str, Any]]]:
+    """Habitable/barren/outbound destination candidates for weighted NPC leg
+    picking, positioned via SectorLayout so a chosen destination lands where
+    the player's own windshield actually renders that body/station.
+
+    Sources `bodies`/`stations` from celestial_service.generate_system —
+    the SAME merge GET /sectors/{id}/contents uses to build the client's
+    SystemSnapshot (real planets/stations merged onto the procedural
+    skeleton via a seeded slot assignment, celestial_service.py's own
+    _merge_real_planets/_make_stations) — not a locally-reconstructed
+    approximation. A prior version of this function read
+    SectorCelestial.composition directly and re-derived real-planet/
+    -station orbit_au/phase_deg via ad hoc sha256 hashes when a real row
+    wasn't already present in the persisted skeleton; for STATIONS that was
+    never even close (real stations are never persisted into `composition`
+    at all — celestial_service always computes their orbit/phase fresh via
+    _make_stations, an entirely different seeded formula than the sha256
+    fallback), so every station destination server-side previously landed
+    nowhere near where the client renders that station. read_only=True
+    matches the old code's own "never write" behavior (no first-visit
+    skeleton-materialization side effect from a background NPC tick).
+
+    generate_system's own MAX_BODIES=9 cap can leave real planets beyond the
+    9th unmerged into `bodies` (correct for rendering — see
+    _overflow_planet_position's own doc-comment); any planet_id not present
+    among the merged bodies still gets a reachable, deterministic position
+    below rather than being silently dropped from the pools.
+    """
     from src.models.planet import Planet
-    from src.models.sector_celestial import SectorCelestial
+    from src.models.sector import Sector
     from src.models.station import Station
+    from src.services.celestial_service import _MASK64 as _CELESTIAL_MASK64
+    from src.services.celestial_service import SECTOR_SEED_SALT, generate_system
 
     pools: Dict[str, List[Dict[str, Any]]] = {
         "habitable": [],
         "barren": [],
         "outbound": _outbound_rim_points(sector_id, ship_key),
     }
-    star = _star_anchor_pct(sector_id)
 
-    row = db.query(SectorCelestial).filter(SectorCelestial.sector_id == sector_id).first()
-    comp = row.composition if row and isinstance(row.composition, dict) else {}
+    sector = db.query(Sector).filter(Sector.sector_id == sector_id).first()
+    if sector is None:
+        return pools
 
-    planet_hab: Dict[str, float] = {
-        str(p.id): float(p.habitability_score or 0)
-        for p in db.query(Planet).filter(Planet.sector_id == sector_id).all()
-    }
+    planets = db.query(Planet).filter(Planet.sector_id == sector_id).all()
+    stations = db.query(Station).filter(Station.sector_id == sector_id).all()
+    # Belt-and-suspenders fallback only — generate_system's _merge_real_planets
+    # always sets body["habitability"] directly for every real planet it merges.
+    planet_hab: Dict[str, float] = {str(p.id): float(p.habitability_score or 0) for p in planets}
 
-    seen_planet_ids: set = set()
-    for b in (comp.get("bodies") or []):
+    system = generate_system(db, sector, planets, stations, read_only=True)
+    layout = SectorLayout(sector_id)
+
+    merged_planet_ids: set = set()
+    for b in (system.get("bodies") or []):
         if not isinstance(b, dict):
             continue
         orbit = float(b.get("orbit_au") or 0.4)
         phase = float(b.get("phase_deg") or 0)
-        x, y = _orbital_pct(star, orbit, phase)
+        x, y = layout.planet_position(orbit, phase)
         pid = b.get("planet_id")
         hab_score = b.get("habitability")
         if hab_score is None and pid:
             hab_score = planet_hab.get(str(pid))
         bucket = "habitable" if _is_habitable_body(b.get("kind"), hab_score) else "barren"
         if pid:
-            seen_planet_ids.add(str(pid))
+            merged_planet_ids.add(str(pid))
         pools[bucket].append({
             "x_pct": x, "y_pct": y,
             "target_kind": "planet",
@@ -239,55 +273,32 @@ def sector_destination_pools(db: Session, sector_id: int, ship_key: str) -> Dict
             "bucket": bucket,
         })
 
-    # Real Planet rows missing from the celestial skeleton (e.g. New Earth in S1).
-    for p in db.query(Planet).filter(Planet.sector_id == sector_id).all():
-        pid = str(p.id)
-        if pid in seen_planet_ids:
-            continue
-        h = hashlib.sha256(f"isp-planet:{pid}".encode()).digest()
-        orbit = 0.15 + max(1, int(getattr(p, "position", 3) or 3)) * 0.12
-        phase = (h[0] / 255.0) * 360.0
-        x, y = _orbital_pct(star, orbit, phase)
-        kind = p.type.name if getattr(p, "type", None) else None
-        hab_score = float(p.habitability_score or 0)
-        bucket = "habitable" if _is_habitable_body(kind, hab_score) else "barren"
-        pools[bucket].append({
-            "x_pct": x, "y_pct": y,
-            "target_kind": "planet",
-            "target_id": pid,
-            "bucket": bucket,
-        })
-
-    stations = comp.get("stations") or []
-    seen_station_ids: set = set()
-    if stations:
-        for st in stations:
-            if not isinstance(st, dict):
-                continue
-            orbit = float(st.get("orbit_au") or 0.5)
-            phase = float(st.get("phase_deg") or 0)
-            x, y = _orbital_pct(star, orbit, phase)
-            sid = st.get("station_id")
-            if sid:
-                seen_station_ids.add(str(sid))
-            pools["habitable"].append({
+    overflow_planets = [p for p in planets if str(p.id) not in merged_planet_ids]
+    if overflow_planets:
+        root_seed = (int(sector.sector_id) * SECTOR_SEED_SALT) & _CELESTIAL_MASK64
+        for p in overflow_planets:
+            x, y = _overflow_planet_position(layout, p.id, root_seed)
+            kind = p.type.name if getattr(p, "type", None) else None
+            hab_score = float(p.habitability_score or 0)
+            bucket = "habitable" if _is_habitable_body(kind, hab_score) else "barren"
+            pools[bucket].append({
                 "x_pct": x, "y_pct": y,
-                "target_kind": "station",
-                "target_id": str(sid) if sid else None,
-                "bucket": "habitable",
+                "target_kind": "planet",
+                "target_id": str(p.id),
+                "bucket": bucket,
             })
-    for st in db.query(Station).filter(Station.sector_id == sector_id).all():
-        sid = str(st.id)
-        if sid in seen_station_ids:
+
+    for st in (system.get("stations") or []):
+        if not isinstance(st, dict):
             continue
-        h = hashlib.sha256(f"isp-station:{sid}".encode()).digest()
-        orbit = 0.2 + (h[0] / 255.0) * 0.75
-        phase = (h[1] / 255.0) * 360.0
-        x, y = _orbital_pct(star, orbit, phase)
+        orbit = float(st.get("orbit_au") or 0.5)
+        phase = float(st.get("phase_deg") or 0)
+        x, y = layout.station_position(orbit, phase)
+        sid = st.get("station_id")
         pools["habitable"].append({
             "x_pct": x, "y_pct": y,
             "target_kind": "station",
-            "target_id": sid,
+            "target_id": str(sid) if sid else None,
             "bucket": "habitable",
         })
 
