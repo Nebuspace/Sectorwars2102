@@ -69,7 +69,7 @@ import WindshieldTableau, { chooseWarpArrivalAnchor } from '../WindshieldTableau
 // eslint-disable-next-line import/first
 import { WindshieldFlightProvider, useWindshieldFlight } from '../../../contexts/WindshieldFlightContext';
 // eslint-disable-next-line import/first
-import { starAnchor } from '../windshieldTableauLayout';
+import { starAnchor, otherPresencePosition } from '../windshieldTableauLayout';
 
 const SECTOR_ID = 77;
 
@@ -472,6 +472,73 @@ describe('WindshieldTableau', () => {
     expect(contactTag).not.toBeNull();
     expect(contactTag.textContent).toBe("Freight Captain Yuki Tanahashi III's Freighter");
     expect(contactTag.className).toContain('pltag-lean-right');
+  });
+
+  // FIX-POSELESS-FALLBACK (P0, hub-live-watching): a HUMAN contact with no
+  // `pose` used to fall into otherShipFlightPose's time-driven cosmetic
+  // wander (built for decorative NPC traffic with no real tracked
+  // position) -- a REAL player's dot then "ported" between different
+  // positions every time the contactT clock ticked. Must hold ONE stable,
+  // deterministic (per player_id/ship_id) position instead until real pose
+  // data arrives. NPC contacts with no pose keep the UNCHANGED cosmetic
+  // wander -- that's the intended, still-correct decorative behavior for
+  // traffic with no server-tracked position at all (verified explicitly
+  // below, not assumed).
+  it('a pose-less HUMAN contact holds ONE stable position across multiple contactT clock ticks (was: cosmetic porting)', async () => {
+    const humanNoPose = {
+      player_id: 'player-77', ship_id: 'ship-human-1', ship_type: 'SCOUT',
+      is_npc: false, username: 'Voyager', ship_name: 'Wanderer',
+      // no `pose` field at all -- the exact gap this fix closes.
+    };
+    await mount({ ships: [humanNoPose] });
+    vi.useFakeTimers();
+    const other = () => container.querySelector('.other') as HTMLElement;
+    const first = { left: other().style.left, top: other().style.top };
+    expect(first.left).not.toBe('');
+
+    // Simulate several "polls" of the contactT drift clock (~50ms/tick).
+    for (let i = 0; i < 3; i++) {
+      await act(async () => { vi.advanceTimersByTime(500); });
+    }
+    const second = { left: other().style.left, top: other().style.top };
+    expect(second).toEqual(first);
+
+    await act(async () => { vi.advanceTimersByTime(4000); });
+    const third = { left: other().style.left, top: other().style.top };
+    expect(third).toEqual(first);
+  });
+
+  it('a pose-less NPC contact keeps the UNCHANGED cosmetic wander (same code path as before this fix, only humans were re-routed)', async () => {
+    const npcNoPose = {
+      player_id: 'npc-1', ship_id: 'ship-npc-1', ship_type: 'FREIGHTER',
+      is_npc: true, username: 'npc', archetype: 'TRADER', activity: 'COMMUTE', mission: 'commerce',
+      // no `pose` field -- decorative traffic, otherShipFlightPose's own
+      // intended use case.
+    };
+    await mount({ ships: [npcNoPose] });
+    const other = container.querySelector('.other') as HTMLElement;
+    const rendered = { left: parseFloat(other.style.left), top: parseFloat(other.style.top) };
+    // otherShipFlightPose's own leg/phase-offset math (a per-id seeded
+    // random start point along its flight profile, windshieldTableauLayout
+    // .ts's phaseOffsetMs) means an NPC's rendered position essentially
+    // never lands exactly on the raw otherPresencePosition(id) seed anchor
+    // -- confirming this branch is STILL going through the flight-profile
+    // path, not the new parked-anchor one this fix added for humans (that
+    // would land EXACTLY on the seed anchor, see the human/pose test above).
+    const parkedAnchor = otherPresencePosition('npc-1'); // player_id, matches this fix's own player_id||ship_id priority
+    expect(rendered.left).not.toBeCloseTo(parkedAnchor.xPct, 3);
+  });
+
+  it('a contact WITH real pose data is unaffected by this fix (still driven by deriveIspPose, not the parked anchor)', async () => {
+    const humanWithPose = {
+      player_id: 'player-88', ship_id: 'ship-human-2', ship_type: 'SCOUT',
+      is_npc: false, username: 'Voyager', ship_name: 'Wanderer',
+      pose: { x_pct: 42, y_pct: 33, heading_deg: 15, leg: null },
+    };
+    await mount({ ships: [humanWithPose] });
+    const other = container.querySelector('.other') as HTMLElement;
+    expect(parseFloat(other.style.left)).toBeCloseTo(42);
+    expect(parseFloat(other.style.top)).toBeCloseTo(33);
   });
 
   it('gates planet landing by proximity: APPROACH → flashing HALT → LAND', async () => {

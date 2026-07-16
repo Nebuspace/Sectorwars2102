@@ -31,6 +31,7 @@ import {
   labelEdgeLean,
   moonOrbits,
   nebulaArcs,
+  otherPresencePosition,
   otherShipFlightPose,
   pltagLabelHalfWidthEm,
   safeOrbitRadii,
@@ -1483,13 +1484,20 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
       const s = deriveIspPose(selectedShip.pose as IspPose, ispNowMs());
       return { xPct: s.x_pct, yPct: s.y_pct };
     }
-    const pose = otherShipFlightPose(String(selectedShip.ship_id), contactT, contactDocks, {
-      archetype: selectedShip.archetype,
-      activity: selectedShip.activity,
-      mission: selectedShip.mission,
-      bandAspect,
-    });
-    return { xPct: pose.xPct, yPct: pose.yPct };
+    // FIX-POSELESS-FALLBACK (P0): mirror the `.other` render loop's own
+    // pose-less branch exactly (NPC=cosmetic wander unchanged, human=parked
+    // stable anchor) so a selected contact's reticle never disagrees with
+    // where its own dot actually renders.
+    if (selectedShip.is_npc) {
+      const pose = otherShipFlightPose(String(selectedShip.ship_id), contactT, contactDocks, {
+        archetype: selectedShip.archetype,
+        activity: selectedShip.activity,
+        mission: selectedShip.mission,
+        bandAspect,
+      });
+      return { xPct: pose.xPct, yPct: pose.yPct };
+    }
+    return otherPresencePosition(selectedShip.player_id || String(selectedShip.ship_id));
   })();
 
   return (
@@ -1791,7 +1799,10 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
             headingDegVal = sample.heading_deg;
             burningContact = !!sample.burning;
             phaseClass = ispPhaseToTravelClass(String(sample.phase));
-          } else {
+          } else if (s.is_npc) {
+            // Decorative NPC traffic with no server-tracked pose --
+            // otherShipFlightPose's cosmetic wander is what it was BUILT
+            // for (no real position exists to render), unchanged.
             const pose = otherShipFlightPose(String(s.ship_id), contactT, contactDocks, {
               archetype: s.archetype,
               activity: s.activity,
@@ -1805,6 +1816,22 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
             phaseClass = pose.phase === 'brake-turn' ? 'brake-turn'
               : pose.phase === 'final-orient' ? 'final-orient'
               : pose.phase;
+          } else {
+            // FIX-POSELESS-FALLBACK (P0): a HUMAN contact with no pose data
+            // is a REAL player, not decorative traffic -- otherShipFlightPose
+            // is time-driven (contactT), so reusing it here made a real
+            // player's dot "port" between positions every poll instead of
+            // holding still. Render PARKED at a stable, deterministic
+            // per-contact anchor instead (otherPresencePosition -- the same
+            // per-UUID seed otherShipFlightPose itself starts from) until
+            // real pose data arrives; identical inputs -> identical anchor
+            // on every render, so both seats agree on where it's parked.
+            const parked = otherPresencePosition(s.player_id || String(s.ship_id));
+            xPct = parked.xPct;
+            yPct = parked.yPct;
+            headingDegVal = 0;
+            burningContact = false;
+            phaseClass = 'idle';
           }
           const faction = shipFaction(s);
           const isPirate = faction.key === 'raider';
