@@ -112,26 +112,8 @@ async def halt(
     isp.set_player_pose(db, player, new_pose)
     db.commit()
     ship_id = str(player.current_ship_id) if player.current_ship_id else str(player.id)
-    try:
-        import asyncio
-
-        from src.services.websocket_service import connection_manager
-
-        frame = {
-            "type": "intrasystem.leg_halted",
-            "sector_id": int(player.current_sector_id),
-            "ship_id": ship_id,
-            "is_npc": False,
-            **isp.pose_public(new_pose),
-        }
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(
-                connection_manager.broadcast_to_sector(int(player.current_sector_id), frame)
-            )
-    except Exception:
-        logger.debug(
-            "Skipped intrasystem.leg_halted WS event (no loop or socket)",
-            exc_info=True,
-        )
+    # QUEUE-ISP-WS-EMIT-THREAD: was a duplicated inline copy of the same
+    # asyncio.get_event_loop() pattern emit_leg_started used to have;
+    # consolidated into the one shared, thread-safe emit path.
+    isp.emit_leg_halted(int(player.current_sector_id), ship_id, False, new_pose)
     return PoseResponse(**isp.pose_public(new_pose))

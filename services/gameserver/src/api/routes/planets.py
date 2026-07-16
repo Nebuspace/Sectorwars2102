@@ -1333,6 +1333,20 @@ async def land_on_planet(
             detail="Planet is not accessible from your current location"
         )
 
+    # Server-gated proximity (WO-ISP-DOCKPROX): the client already hides the
+    # LAND button beyond DOCK_LAND_PROXIMITY_RANGE_EM (WindshieldTableau.tsx's
+    # own DOCK_RANGE_EM) -- this closes the bypass of calling the route
+    # directly from anywhere else in the sector. See
+    # intrasystem_movement_service.assert_dock_land_proximity's own
+    # doc-comment for the threshold rationale (a tunable dial, not fixed).
+    from src.services.intrasystem_movement_service import assert_dock_land_proximity
+
+    assert_dock_land_proximity(
+        db, player,
+        sector_id=planet.sector_id, target_kind="planet", target_id=str(planet.id),
+        target_label=planet.name, action_word="land",
+    )
+
     # RESTRICTED worlds are off-limits; UNINHABITABLE rocks are landable
     # (environment suits, sealed habitats — same rationale as the claim gate)
     if planet.status == PlanetStatus.RESTRICTED:

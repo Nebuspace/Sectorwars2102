@@ -1368,6 +1368,20 @@ async def dock_at_station(
     if current_player.current_sector_id != station.sector_id:
         raise HTTPException(status_code=400, detail="You must be in the same sector as the station")
 
+    # Server-gated proximity (WO-ISP-DOCKPROX): the client already hides the
+    # DOCK button beyond DOCK_LAND_PROXIMITY_RANGE_EM (WindshieldTableau.tsx's
+    # own DOCK_RANGE_EM) -- this closes the bypass of calling the route
+    # directly from anywhere else in the sector. See
+    # intrasystem_movement_service.assert_dock_land_proximity's own
+    # doc-comment for the threshold rationale (a tunable dial, not fixed).
+    from src.services.intrasystem_movement_service import assert_dock_land_proximity
+
+    assert_dock_land_proximity(
+        db, current_player,
+        sector_id=station.sector_id, target_kind="station", target_id=str(station.id),
+        target_label=station.name, action_word="dock",
+    )
+
     # Check if already docked
     if current_player.is_docked:
         raise HTTPException(status_code=400, detail="You are already docked at a station")

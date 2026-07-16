@@ -158,6 +158,15 @@ async def npc_scheduler_loop() -> None:
         "NPC scheduler started (Loop A %ds / Loop B %ds / Loop C %ds)",
         LOOP_A_SECONDS, LOOP_B_SECONDS, LOOP_C_SECONDS,
     )
+    # QUEUE-ISP-WS-EMIT-THREAD: capture the real event loop here, the async
+    # context that actually owns it, so intrasystem_movement_service's
+    # emit_leg_started (called from tick_npc_legs deep inside the worker
+    # thread asyncio.to_thread dispatches Loop A's whole tick body onto,
+    # below) has a valid loop to schedule its best-effort WS broadcast onto
+    # via run_coroutine_threadsafe — asyncio.get_event_loop() doesn't
+    # resolve one bound to that worker thread.
+    from src.services.intrasystem_movement_service import set_scheduler_event_loop
+    set_scheduler_event_loop(asyncio.get_running_loop())
     # One-time startup repair: NPCs spawned from a BANG snapshot that
     # carried no rosters have empty daily_schedules and would freeze in
     # PATROL (Loop A resolves no block for them). Give them patrol routes
