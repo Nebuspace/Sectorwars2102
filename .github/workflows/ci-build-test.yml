@@ -36,6 +36,20 @@ jobs:
         # installers or masking the conflict another way.
         run: npm ci --legacy-peer-deps
 
+      # WO-CI-TOKEN-GATE: blocking gate, deliberately its own step (not
+      # folded into `npm run lint` — that gate is dead on player-client;
+      # ESLint v10 is flat-config-only and the legacy .eslintrc.js it still
+      # points at is inert, verified separately). Fails the build if any
+      # CSS var(--x) resolves to nothing anywhere in the codebase — see
+      # scripts/check-css-vars.js's own header for the two same-day-shipped
+      # incidents (149 + 108 usage sites, one an invisible keyboard-focus
+      # outline) that motivated this tool. Placed before Build/Test since
+      # it's a pure static source-text check with no build output
+      # dependency — fastest feedback first.
+      - name: CSS custom-property gate (check:tokens)
+        working-directory: services/player-client
+        run: npm run check:tokens
+
       - name: Build
         working-directory: services/player-client
         run: npm run build

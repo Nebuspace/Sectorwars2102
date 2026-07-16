@@ -82,6 +82,33 @@
   --cockpit-success: #00ff00;
   --cockpit-warning: #ffb020;
 
+  /* WO-CI-TOKEN-GATE inventory remainder -- each of these 4 has exactly one
+     fallback value in use anywhere (no conflicting alternates), so the
+     evidence bar is the same as --primary-green/--cockpit-warning above:
+     adopt the value someone already shipped, don't invent a new one.
+     --border-tertiary: rgba(255, 255, 255, 0.08) is the ONLY fallback ever
+     used for it (planetary/planet-manager.css:602's
+     `var(--border-tertiary, rgba(255, 255, 255, 0.08))`); the other 8 usage
+     sites across building-manager/genesis-deployment/planet-manager/
+     production-dashboard are all bare.
+     --card-bg: #1a1a2e is the only fallback used, consistently, at all 3
+     sites (ships/module-grid-interface.css).
+     --input-bg: rgba(255, 255, 255, 0.05) is the only fallback used, at its
+     one site (trading/route-planner.css:78).
+     --mfd-key-accent: #3fd2ec is the only fallback used, at its one site
+     (mfd/mfd.css:118). Its ORIGINAL purpose was a per-key runtime override
+     (`--mfd-key-accent: var(--mfd-accent)`, e.g. QTM purple, CARGO
+     light-blue) documented in a "RETIRED" comment a few lines above that
+     same file's own softkey-rail section -- the ratified `.skey` styling
+     replaced it with uniform coloring on purpose (artifact-fidelity, not an
+     oversight), so nothing sets this per-key anymore and it will always
+     resolve via this default now. Not touching mfd.css's now-vestigial
+     var() indirection itself -- out of scope for a token-definition fix. */
+  --border-tertiary: rgba(255, 255, 255, 0.08);
+  --card-bg: #1a1a2e;
+  --input-bg: rgba(255, 255, 255, 0.05);
+  --mfd-key-accent: #3fd2ec;
+
   /* Scale-compensated viewport height. #root applies `zoom: var(--ui-scale)`,
      so a raw `vh` used INSIDE #root resolves against the unzoomed viewport and
      is THEN scaled by zoom — at 80% scale `100vh` renders at 80% of the real
