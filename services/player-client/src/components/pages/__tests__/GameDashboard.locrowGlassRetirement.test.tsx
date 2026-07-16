@@ -94,7 +94,13 @@ vi.mock('../../../hooks/useResourceCatalog', () => ({
 
 const SECTOR_HAZARD: any = {
   id: 100, sector_id: 100, sector_number: 100, name: 'Sol', type: 'STANDARD',
-  region_id: 'region-1', region_name: 'The Frontier', hazard_level: 6, radiation_level: 0.2,
+  // region_name is the dev-seeded label ("Stage2 Genesis R4 — Terran
+  // Space" in real payloads, "The Frontier" here) -- WO-T1D-LANEB: the
+  // locrow chip no longer renders it. region_type is the real RegionType
+  // enum value (models/region.py) that now drives the chip via
+  // formatRegionType (utils/formatters.ts).
+  region_id: 'region-1', region_name: 'The Frontier', region_type: 'terran_space',
+  hazard_level: 6, radiation_level: 0.2,
   resources: {}, players_present: [], special_features: [],
   special_formations: [{ id: 'f1', is_discovered: true, is_anchor: true, name: 'Whisper Cloud', type: 'NEBULA_CLUSTER' }],
   description: 'A quiet stretch of charted space.',
@@ -103,7 +109,11 @@ const SECTOR_HAZARD: any = {
 const SECTOR_NEBULA: any = {
   ...SECTOR_HAZARD,
   id: 101, sector_id: 101, name: 'Veil', type: 'NEBULA', hazard_level: 0,
-  region_name: null, special_formations: [],
+  // region_type: null is what actually suppresses the chip now (the
+  // no-region case, e.g. a player between regions); region_name: null
+  // kept too since it's realistic for the same no-region state, but the
+  // chip's own gate is region_type only.
+  region_name: null, region_type: null, special_formations: [],
 };
 
 function makeGameState(overrides: Record<string, unknown> = {}) {
@@ -228,8 +238,12 @@ describe('GameDashboard — locrow + HudChip retirement + SCAN relocation (WO-UI
     const chips = Array.from(locrow!.querySelectorAll('.loc'));
     const chipText = chips.map((c) => c.textContent);
 
-    // The one surviving informational chip: the sector's region_name.
-    expect(chipText).toEqual(['The Frontier']);
+    // The one surviving informational chip: the region TYPE display-name
+    // (WO-T1D-LANEB), derived from region_type ("terran_space" ->
+    // "Terran Space") -- never the dev-seeded region_name ("The Frontier"
+    // on this fixture, which must NOT appear).
+    expect(chipText).toEqual(['Terran Space']);
+    expect(chipText).not.toContain('The Frontier');
 
     // The sector-NAME chip ("Sol") is gone -- sector identity now lives
     // only in the status bar's LocationDropdown (canon).
@@ -253,13 +267,15 @@ describe('GameDashboard — locrow + HudChip retirement + SCAN relocation (WO-UI
 
     const locrow = container.querySelector('.locrow')!;
     const chipText = Array.from(locrow.querySelectorAll('.loc')).map((c) => c.textContent);
-    // region_name is null on this fixture, and the sector-name/NEBULA-type
+    // region_type is null on this fixture (WO-T1D-LANEB: that's the chip's
+    // real gate now, not region_name), and the sector-name/NEBULA-type
     // chips are retired -- the locrow renders with zero informational
-    // chips (still a valid, non-crashing empty state).
+    // chips (still a valid, non-crashing empty state, no guessed label).
     expect(chipText).toEqual([]);
     expect(chipText).not.toContain('Veil');
     expect(chipText).not.toContain('NEBULA');
     expect(chipText).not.toContain('The Frontier');
+    expect(chipText).not.toContain('Terran Space');
     expect(errorSpy).not.toHaveBeenCalled();
   });
 

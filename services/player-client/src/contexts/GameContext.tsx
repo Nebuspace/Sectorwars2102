@@ -43,6 +43,11 @@ export interface Sector {
   type: string;
   region_id?: string | null;
   region_name?: string | null;
+  /** RegionType enum value ("terran_space"/"central_nexus"/"player_owned",
+   *  models/region.py) — live on SectorResponse since b879da38. Drives the
+   *  glass locrow's region-type chip via formatRegionType (WO-T1D-LANEB);
+   *  region_name stays the dev-seeded label for other readouts. */
+  region_type?: string | null;
   hazard_level: number;
   radiation_level: number;
   resources: Record<string, any>;

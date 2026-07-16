@@ -33,6 +33,7 @@ import apiClient from '../../services/apiClient';
 import { projectedWarpBearing, subscribeWarpDepart, WARP_TURN_MS } from '../../services/warpCinematicBus';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { TurnsIcon } from '../icons/TurnsIcon';
+import { formatRegionType } from '../../utils/formatters';
 import './game-dashboard.css';
 import './cockpit.css';
 import '../tactical/tactical-layout.css';
@@ -2736,10 +2737,20 @@ const GameDashboardInner: React.FC = () => {
                   unaffected by this change). Hazard/radiation detail now
                   additionally has a full deep-dive home at SOLAR SYSTEM
                   monitor's own HAZARD tab (below) — the glass was never
-                  its only route. */}
+                  its only route.
+
+                  WO-T1D-LANEB: the chip shows the region TYPE display-name
+                  ("Terran Space"), never the dev-seeded region_name ("Stage2
+                  Genesis R4 — Terran Space") that used to render here — that
+                  full dev name stays intact as MFD-B's REGION detail row
+                  (unrelated file, out of this lane). Derived ONLY from the
+                  canonical region_type enum via formatRegionType (utils/
+                  formatters.ts) — never parsed out of region_name (rejected
+                  2026-07-13 as fragile). Renders nothing when region_type is
+                  absent (e.g. a player with no region) rather than a guess. */}
               <div className="locrow">
-                {currentSector.region_name && (
-                  <span className="loc">{currentSector.region_name}</span>
+                {formatRegionType(currentSector.region_type) && (
+                  <span className="loc">{formatRegionType(currentSector.region_type)}</span>
                 )}
                 {/* WO-UI2-FLIGHT-FEEL: reads the SAME shared flight store
                     the SOLAR SYSTEM rows now do (flying/handleHalt, above)
