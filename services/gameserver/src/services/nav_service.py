@@ -152,6 +152,91 @@ class NavService:
 
         return known
 
+    def get_routing_sector_ids(self, player: Player) -> Set[int]:
+        """
+        Sector ids ARIA may traverse when laying in a multi-hop course.
+
+        Extends ``get_known_sector_ids`` with **ring-1 exits**: every warp /
+        tunnel destination that leaves a known sector. Those exits are already
+        exposed by ``MovementService.get_available_moves`` when standing in the
+        source sector (name included) — without them in the plot graph, a
+        course like ``known → unvisited-exit → known`` is wrongly refused even
+        though the pilot can fly it hop-by-hop by hand.
+
+        Ring-1 is only one hop of fog past known space. Deeper unvisited
+        topology stays unplottable until flown or charted.
+        """
+        known = self.get_known_sector_ids(player)
+        return known | self._ring1_destination_ids(known)
+
+    def _ring1_destination_ids(self, known_ids: Set[int]) -> Set[int]:
+        """Numeric sector_ids one directed hop past *known_ids* via warps/tunnels."""
+        if not known_ids:
+            return set()
+
+        known_sectors = (
+            self.db.query(Sector.sector_id, Sector.id)
+            .filter(Sector.sector_id.in_(known_ids))
+            .all()
+        )
+        known_uuids = [row.id for row in known_sectors]
+        if not known_uuids:
+            return set()
+
+        dest_uuids: Set[object] = set()
+
+        warp_rows = self.db.execute(
+            sector_warps.select().where(
+                sector_warps.c.source_sector_id.in_(known_uuids)
+            )
+        ).fetchall()
+        for row in warp_rows:
+            dest_uuids.add(row.destination_sector_id)
+
+        # Incoming bidir warps: standing in known dest, source is a ring-1 exit
+        # the pilot can take in reverse (same as MovementService).
+        incoming_bidir = self.db.execute(
+            sector_warps.select().where(
+                sector_warps.c.destination_sector_id.in_(known_uuids),
+                sector_warps.c.is_bidirectional == True,  # noqa: E712
+            )
+        ).fetchall()
+        for row in incoming_bidir:
+            dest_uuids.add(row.source_sector_id)
+
+        tunnel_out = (
+            self.db.query(WarpTunnel.destination_sector_id)
+            .filter(
+                WarpTunnel.status == WarpTunnelStatus.ACTIVE,
+                WarpTunnel.origin_sector_id.in_(known_uuids),
+            )
+            .all()
+        )
+        for (dest_id,) in tunnel_out:
+            dest_uuids.add(dest_id)
+
+        tunnel_in = (
+            self.db.query(WarpTunnel.origin_sector_id)
+            .filter(
+                WarpTunnel.status == WarpTunnelStatus.ACTIVE,
+                WarpTunnel.is_bidirectional == True,  # noqa: E712
+                WarpTunnel.destination_sector_id.in_(known_uuids),
+            )
+            .all()
+        )
+        for (origin_id,) in tunnel_in:
+            dest_uuids.add(origin_id)
+
+        if not dest_uuids:
+            return set()
+
+        rows = (
+            self.db.query(Sector.sector_id)
+            .filter(Sector.id.in_(list(dest_uuids)))
+            .all()
+        )
+        return {sid for (sid,) in rows} - known_ids
+
     def get_chart(self, player: Player, bounded: bool = False) -> Dict:
         """
         Assemble the player's KNOWN navigation surface for the NAV CHART
@@ -456,6 +541,12 @@ class NavService:
         """
         Compute a course from the player's current sector to *target_sector_id*.
 
+        The routing surface is ``get_known_sector_ids`` (visited ∪ corp ∪ current)
+        plus **ring-1 exits** — warp/tunnel destinations leaving known space.
+        That lets multi-hop plots bridge through an unvisited exit the pilot can
+        already see on available-moves (e.g. known → unscanned lane → known),
+        which hand-flying allows but a visited-only graph wrongly refused.
+
         *objective* selects the routing semantics, mirroring RouteOptimizer's
         objective-weighted Dijkstra (see ADR-0072 consciousness tiers):
 
@@ -486,6 +577,9 @@ class NavService:
             {"success": False, "message": "..."}
         """
         known_ids = self.get_known_sector_ids(player)
+        # Ring-1 exits from known space are traversable for multi-hop plots
+        # (bridges unvisited lanes that already appear on available_moves).
+        routing_ids = known_ids | self._ring1_destination_ids(known_ids)
         start_sid = player.current_sector_id
 
         # Verify target sector exists (look up by numeric sector_id)
@@ -504,6 +598,7 @@ class NavService:
                 "target_sector_id": target_sector_id,
                 "nearest_known": nearest,
                 "error": "unknown sector",
+                "reason": "unknown_sector",
             }
 
         # If already there, return a trivial empty-hop route
@@ -516,18 +611,19 @@ class NavService:
                 "total_turns": 0,
             }
 
-        # Build the known-graph subset from the db
-        graph, edge_meta = self._build_known_graph(known_ids)
-
-        # Target must be in the known graph to be reachable
-        if target_sector_id not in known_ids:
+        # Target must be on the routing surface (known or ring-1 exit)
+        if target_sector_id not in routing_ids:
             nearest = self._nearest_known_sector_euclidean(target_sector, known_ids)
             return {
                 "success": True,
                 "reachable": False,
                 "target_sector_id": target_sector_id,
                 "nearest_known": nearest,
+                "reason": "uncharted",
             }
+
+        # Build adjacency over routing ids (known ∪ ring-1)
+        graph, edge_meta = self._build_known_graph(routing_ids)
 
         # Per-hop visit-derived safety, keyed by numeric sector_id, for the
         # player's OWN exploration map.  Built once here so it can both weight
@@ -548,20 +644,36 @@ class NavService:
         else:
             weight_fn = None  # default: weight == edge turn cost (MIN_TIME)
 
-        # Run Dijkstra over the known graph
+        # Run Dijkstra over the routing graph
         path_sids, costs, via_tunnel_flags = self._dijkstra(
             graph, edge_meta, start_sid, target_sector_id, weight_fn=weight_fn
         )
 
         if path_sids is None:
-            # Target is in known_ids but not reachable through known graph
-            # (could be a disconnected component)
-            nearest = self._nearest_known_sector_euclidean(target_sector, known_ids)
+            # Target is on the routing surface but not reachable via directed
+            # edges (one-way warps, or a disconnected component). Nearest must
+            # be something the pilot can actually fly to — prefer a known
+            # sector, never the target itself.
+            reachable_from_here = self._bfs_within_depth(
+                graph, start_sid, max(len(routing_ids), 1)
+            )
+            approach_ids = (reachable_from_here & known_ids) - {
+                target_sector_id,
+                start_sid,
+            }
+            if not approach_ids:
+                approach_ids = reachable_from_here - {target_sector_id, start_sid}
+            if not approach_ids:
+                approach_ids = reachable_from_here - {target_sector_id}
+            nearest = self._nearest_known_sector_euclidean(
+                target_sector, approach_ids
+            )
             return {
                 "success": True,
                 "reachable": False,
                 "target_sector_id": target_sector_id,
                 "nearest_known": nearest,
+                "reason": "no_route",
             }
 
         # path_sids includes start; hops excludes start per contract

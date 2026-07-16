@@ -78,11 +78,13 @@ async def plot_course(
 
     Unreachable (target outside known graph or disconnected component):
       {"success": true, "reachable": false, "target_sector_id": int,
-       "nearest_known": {"sector_id": int, "name": str} | null}
+       "nearest_known": {"sector_id": int, "name": str} | null,
+       "reason": "uncharted" | "no_route"}
 
     Unknown target (sector does not exist):
       {"success": true, "reachable": false, "target_sector_id": int,
-       "nearest_known": ..., "error": "unknown sector"}
+       "nearest_known": ..., "error": "unknown sector",
+       "reason": "unknown_sector"}
 
     Runaway guard (> 200 hops):
       {"success": false, "message": "..."}
