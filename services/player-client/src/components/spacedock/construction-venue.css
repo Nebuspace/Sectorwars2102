@@ -994,6 +994,18 @@
   cursor: pointer;
 }
 
+/* T4-K: this overlay itself (not just the card) is the keyboard-focusable
+   dismiss target -- it has no auto-dismiss timer, so Enter/Space here is the
+   ONLY way a keyboard user can close it (see ConstructionVenue.tsx). Outline
+   + outline-offset only -- no border/box-shadow size change. Offset is
+   NEGATIVE (inward) because this is a full-viewport position:fixed;inset:0
+   element: a positive offset would push the ring past the screen edge and
+   render invisible. Color matches .keel-banner's own cyan. */
+.keel-ceremony-overlay:focus-visible {
+  outline: 3px solid #00d9ff;
+  outline-offset: -4px;
+}
+
 .keel-ceremony-card {
   position: relative;
   width: min(440px, calc(100vw - 2rem));

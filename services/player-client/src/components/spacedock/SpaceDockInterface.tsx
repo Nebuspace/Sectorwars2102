@@ -1809,6 +1809,14 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
               key={venue.id}
               className={`venue-card ${!venue.available ? 'unavailable' : ''}`}
               onClick={() => venue.available && setActiveVenue(venue.id)}
+              role="button"
+              tabIndex={venue.available ? 0 : -1}
+              onKeyDown={(e) => {
+                if ((e.key === 'Enter' || e.key === ' ') && venue.available) {
+                  e.preventDefault();
+                  setActiveVenue(venue.id);
+                }
+              }}
             >
               <div className="venue-icon">{venue.icon}</div>
               <div className="venue-content">

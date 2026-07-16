@@ -1394,8 +1394,19 @@
 
 /* ========== ACCESSIBILITY ========== */
 .submit-response:focus,
-.outcome-start-button:focus,
-.ship-option:focus {
+.outcome-start-button:focus {
+  outline: 3px solid rgba(0, 212, 255, 0.6);
+  outline-offset: 2px;
+}
+
+/* T4-K: .ship-option upgraded from :focus to :focus-visible -- it's a large
+   mouse-clickable card (see ShipSelection.tsx), so a mouse click no longer
+   paints a persistent outline ring; keyboard Tab-focus still does. Left
+   .submit-response/.outcome-start-button on plain :focus above (untouched,
+   out of this sweep's scope). Same outline values as before -- no visual
+   change for keyboard users, no regression for mouse users beyond removing
+   the previously-unwanted click-triggered ring. */
+.ship-option:focus-visible {
   outline: 3px solid rgba(0, 212, 255, 0.6);
   outline-offset: 2px;
 }

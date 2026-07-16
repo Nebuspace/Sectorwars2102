@@ -189,6 +189,15 @@ export const ResourceSharing: React.FC<ResourceSharingProps> = ({
                   key={member.id}
                   className={`member-option ${recipient === member.playerName ? 'selected' : ''}`}
                   onClick={() => setRecipient(member.playerName)}
+                  role="button"
+                  tabIndex={0}
+                  aria-pressed={recipient === member.playerName}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setRecipient(member.playerName);
+                    }
+                  }}
                 >
                   <span className="member-name">{member.playerName}</span>
                   <span className={`role-badge ${member.role}`}>{member.role}</span>

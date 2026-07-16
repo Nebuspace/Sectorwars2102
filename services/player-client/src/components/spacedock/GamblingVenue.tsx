@@ -170,7 +170,18 @@ const GamblingVenue: React.FC<GamblingVenueProps> = ({
           </div>
 
           <div className="games-grid">
-            <div className="game-card slots" onClick={() => setCurrentGame('slots')}>
+            <div
+              className="game-card slots"
+              onClick={() => setCurrentGame('slots')}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  setCurrentGame('slots');
+                }
+              }}
+            >
               <div className="game-icon">🎰</div>
               <h3>Cosmic Slots</h3>
               <p>Match symbols to win big! Jackpot pays 50x</p>
@@ -180,7 +191,18 @@ const GamblingVenue: React.FC<GamblingVenueProps> = ({
               </div>
             </div>
 
-            <div className="game-card dice" onClick={() => setCurrentGame('dice')}>
+            <div
+              className="game-card dice"
+              onClick={() => setCurrentGame('dice')}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  setCurrentGame('dice');
+                }
+              }}
+            >
               <div className="game-icon">🎲</div>
               <h3>Nebula Dice</h3>
               <p>Bet high, low, or exact. Avoid the Void!</p>
@@ -190,7 +212,18 @@ const GamblingVenue: React.FC<GamblingVenueProps> = ({
               </div>
             </div>
 
-            <div className="game-card blackjack" onClick={() => setCurrentGame('blackjack')}>
+            <div
+              className="game-card blackjack"
+              onClick={() => setCurrentGame('blackjack')}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  setCurrentGame('blackjack');
+                }
+              }}
+            >
               <div className="game-icon">🃏</div>
               <h3>Stellar Blackjack</h3>
               <p>Beat the dealer to 21 without busting!</p>
@@ -200,7 +233,18 @@ const GamblingVenue: React.FC<GamblingVenueProps> = ({
               </div>
             </div>
 
-            <div className="game-card lottery" onClick={() => setCurrentGame('lottery')}>
+            <div
+              className="game-card lottery"
+              onClick={() => setCurrentGame('lottery')}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  setCurrentGame('lottery');
+                }
+              }}
+            >
               <div className="game-icon">🎫</div>
               <h3>Sector Sweep</h3>
               <p>Pick sectors, match the draw, win the jackpot!</p>

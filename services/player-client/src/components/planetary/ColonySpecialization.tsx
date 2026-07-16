@@ -323,6 +323,15 @@ export const ColonySpecialization: React.FC<ColonySpecializationProps> = ({
                 key={spec.type}
                 className={`specialization-card ${isSelected ? 'selected' : ''} ${!requirements.meets ? 'unavailable' : ''} ${isCurrent ? 'current' : ''}`}
                 onClick={() => requirements.meets && !isCurrent && setSelectedSpec(spec.type)}
+                role="button"
+                tabIndex={requirements.meets && !isCurrent ? 0 : -1}
+                aria-pressed={requirements.meets && !isCurrent ? isSelected : undefined}
+                onKeyDown={(e) => {
+                  if ((e.key === 'Enter' || e.key === ' ') && requirements.meets && !isCurrent) {
+                    e.preventDefault();
+                    setSelectedSpec(spec.type);
+                  }
+                }}
               >
                 <div className="spec-header">
                   <span className="spec-icon">{spec.icon}</span>

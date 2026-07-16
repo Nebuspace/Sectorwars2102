@@ -1566,6 +1566,13 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
           role="dialog"
           aria-label="Ship delivered"
           onClick={() => setCeremony(null)}
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              setCeremony(null);
+            }
+          }}
         >
           <div className="keel-ceremony-card">
             <div className="keel-scanline" aria-hidden="true"></div>

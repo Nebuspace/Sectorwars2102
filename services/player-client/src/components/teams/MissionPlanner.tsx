@@ -291,10 +291,19 @@ export const MissionPlanner: React.FC<MissionPlannerProps> = ({
             </div>
           ) : (
             missions.map(mission => (
-              <div 
+              <div
                 key={mission.id}
                 className={`mission-item ${selectedMission?.id === mission.id ? 'selected' : ''} ${getMissionStatusColor(mission.status)}`}
                 onClick={() => setSelectedMission(mission)}
+                role="button"
+                tabIndex={0}
+                aria-pressed={selectedMission?.id === mission.id}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setSelectedMission(mission);
+                  }
+                }}
               >
                 <div className="mission-header">
                   <span className="mission-icon">{getMissionIcon(mission.type)}</span>

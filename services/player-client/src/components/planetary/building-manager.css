@@ -114,6 +114,17 @@
   animation: upgrading-pulse 2s ease-in-out infinite;
 }
 
+/* T4-K: .building-card is now a keyboard-focusable role="button" card (see
+   BuildingManager.tsx). Outline + outline-offset only -- no border/box-shadow
+   size change. --accent-primary is only DEFINED (#00d9ff) under the sibling
+   .colony-specialization scope, not here, so it resolves to nothing without
+   a fallback -- same guard other planetary/*.css files already use (see
+   colonist-allocator.css, planet-manager.css). */
+.building-card:focus-visible {
+  outline: 2px solid var(--accent-primary, #00d9ff);
+  outline-offset: 2px;
+}
+
 @keyframes upgrading-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.7; }

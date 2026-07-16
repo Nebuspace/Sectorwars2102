@@ -2360,6 +2360,13 @@ const GameDashboardInner: React.FC = () => {
             role="dialog"
             aria-label="Colony established"
             onClick={() => setClaimCelebration(null)}
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                setClaimCelebration(null);
+              }
+            }}
           >
             <div className="claim-celebration-card">
               <div className="claim-scanline" aria-hidden="true"></div>
@@ -2439,6 +2446,13 @@ const GameDashboardInner: React.FC = () => {
             className="cockpit-alert success"
             role="status"
             onClick={() => setFormationDiscovery(null)}
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                setFormationDiscovery(null);
+              }
+            }}
           >
             <div className="alert-header">🌀 FORMATION DISCOVERED</div>
             <div className="alert-message">
@@ -2457,6 +2471,13 @@ const GameDashboardInner: React.FC = () => {
             className={`cockpit-alert ${harvestResult.success ? 'success' : 'error'}`}
             role="status"
             onClick={() => setHarvestResult(null)}
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                setHarvestResult(null);
+              }
+            }}
           >
             <div className="alert-header">
               {harvestResult.success ? '⛏️ HARVEST COMPLETE' : '⛏️ HARVEST FAILED'}
@@ -2492,6 +2513,13 @@ const GameDashboardInner: React.FC = () => {
             className={`cockpit-alert ${investigateResult.success ? 'success' : 'error'}`}
             role="status"
             onClick={() => setInvestigateResult(null)}
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                setInvestigateResult(null);
+              }
+            }}
           >
             <div className="alert-header">
               {investigateResult.success ? '🔬 ANOMALY INVESTIGATED' : '🔬 INVESTIGATION FAILED'}

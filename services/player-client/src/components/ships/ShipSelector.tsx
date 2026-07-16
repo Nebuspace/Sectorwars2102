@@ -262,10 +262,19 @@ export const ShipSelector: React.FC<ShipSelectorProps> = ({
       
       <div className="ships-grid">
         {sortedShips.map(ship => (
-          <div 
+          <div
             key={ship.id}
             className={`ship-card ${selectedShipId === ship.id ? 'selected' : ''} ${ship.is_flagship ? 'flagship' : ''}`}
             onClick={() => handleShipSelect(ship)}
+            role="button"
+            tabIndex={0}
+            aria-pressed={selectedShipId === ship.id}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                handleShipSelect(ship);
+              }
+            }}
           >
             <div className="ship-header">
               <h3>{ship.name}</h3>

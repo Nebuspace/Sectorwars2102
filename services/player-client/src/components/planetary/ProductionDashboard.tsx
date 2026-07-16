@@ -281,6 +281,14 @@ export const ProductionDashboard: React.FC<ProductionDashboardProps> = ({
                 key={planet.id}
                 className={`planet-row ${planet.underSiege ? 'under-siege' : ''}`}
                 onClick={() => onPlanetSelect?.(planet)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onPlanetSelect?.(planet);
+                  }
+                }}
               >
                 <div className="planet-info">
                   <h4>{planet.name}</h4>

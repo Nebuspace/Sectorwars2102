@@ -486,6 +486,15 @@ const GalaxyMap: React.FC = () => {
                     }}
                     onClick={() => handleSectorClick(sector)}
                     title={sector.isDiscovered ? sector.name : `${sector.name} (known, not yet visited)`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={selectedSector?.id === sector.id}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        handleSectorClick(sector);
+                      }
+                    }}
                   >
                     <div className="sector-id">{sector.id}</div>
                   </div>

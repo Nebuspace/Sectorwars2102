@@ -242,6 +242,15 @@
   box-shadow: none;
 }
 
+/* T4-K: .venue-card is now a keyboard-focusable role="button" card (see
+   SpaceDockInterface.tsx), tabIndex=-1 when unavailable so only genuinely
+   openable venues can ever match :focus-visible. Outline + outline-offset
+   only -- no border/box-shadow size change. */
+.venue-card:focus-visible {
+  outline: 2px solid rgba(0, 217, 255, 0.5);
+  outline-offset: 2px;
+}
+
 .venue-icon {
   font-size: 1.6em;
   flex-shrink: 0;
@@ -1387,6 +1396,16 @@
   border-color: rgba(255, 0, 255, 0.6);
   transform: translateY(-4px);
   box-shadow: 0 8px 25px rgba(255, 0, 255, 0.3);
+}
+
+/* T4-K: .game-card is now a keyboard-focusable role="button" card (see
+   GamblingVenue.tsx). Outline + outline-offset only -- no border/box-shadow
+   size change. Matches the per-variant hover accent (magenta base, green for
+   .blackjack -- see the .game-card.blackjack:focus-visible override below,
+   next to its own :hover override). */
+.game-card:focus-visible {
+  outline: 2px solid rgba(255, 0, 255, 0.6);
+  outline-offset: 2px;
 }
 
 .game-card .game-icon {
@@ -2876,6 +2895,12 @@
 .game-card.blackjack:hover {
   border-color: rgba(0, 200, 100, 0.6);
   box-shadow: 0 8px 25px rgba(0, 200, 100, 0.25);
+}
+
+/* T4-K: mirrors the :hover override above -- blackjack's focus ring matches
+   its own green accent instead of the base magenta. */
+.game-card.blackjack:focus-visible {
+  outline-color: rgba(0, 200, 100, 0.6);
 }
 
 .game-card.blackjack .game-icon {

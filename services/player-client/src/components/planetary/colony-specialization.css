@@ -210,6 +210,15 @@
   cursor: default;
 }
 
+/* T4-K: .specialization-card is now a keyboard-focusable role="button" card
+   (see ColonySpecialization.tsx), tabIndex=-1 when unavailable/current so
+   only genuinely-selectable cards can ever match :focus-visible. Outline +
+   outline-offset only -- no border/box-shadow size change. */
+.specialization-card:focus-visible {
+  outline: 2px solid var(--accent-primary, #00d9ff);
+  outline-offset: 2px;
+}
+
 /* Spec Header */
 .spec-header {
   display: flex;
