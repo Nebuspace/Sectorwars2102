@@ -261,7 +261,12 @@ class _FakePresenceSweepDB:
             return _CandidateBranch(self._candidate_rows)
         if len(entities) == 1 and entities[0] is Sector:
             return _SectorLockBranch(self._sectors_by_pk, self.call_log, self._sectors_by_sector_id)
-        if len(entities) == 2 and entities[0] is Player.id and entities[1] is Player.last_game_login:
+        # entities[1] used to be the bare Player.last_game_login Column; it
+        # is now func.greatest(Player.last_activity_at, Player.
+        # last_game_login) (QUEUE-LIVENESS-SIGNAL, 2026-07-16) -- an
+        # expression, not the same object, so this dispatches on shape
+        # (2-tuple keyed by Player.id) rather than the 2nd column's identity.
+        if len(entities) == 2 and entities[0] is Player.id:
             return _PlayerFreshnessBranch(self._player_rows)
         if len(entities) == 7 and entities[0] is Player.id and entities[1] is Player.current_sector_id:
             if self._raise_on_heal_query:
@@ -755,8 +760,13 @@ class TestHealQueryRealSQLAlchemyCoercion:
         """The shipped fix: constructing the REAL heal candidate query
         (imported from production code, not a copy) against a real Session
         must not raise -- and must compile to SQL that actually joins
-        users and selects a coalesce expression in place of the bare
-        property."""
+        users, selects a coalesce expression for the display name in place
+        of the bare property, and selects a greatest() expression for the
+        liveness signal (QUEUE-LIVENESS-SIGNAL, 2026-07-16 -- GREATEST over
+        COALESCE so a fresh re-login always wins over a stale activity
+        touch, see _is_presence_fresh's own doc-comment). Construction-only
+        (no execute), so SQLite's lack of a native GREATEST never surfaces
+        here -- this dev stack is Postgres-only."""
         db = self._real_session()
         try:
             query = _heal_candidates_query(db)
@@ -766,6 +776,7 @@ class TestHealQueryRealSQLAlchemyCoercion:
 
         assert "JOIN users" in compiled
         assert "coalesce" in compiled.lower()
+        assert "greatest" in compiled.lower()
         assert "players.current_sector_id IS NOT NULL" in compiled
 
     def test_removal_loop_queries_build_clean_against_real_sqlalchemy(self) -> None:
@@ -789,6 +800,7 @@ class TestHealQueryRealSQLAlchemyCoercion:
         assert "jsonb_array_length" in candidate_sql
         assert "sectors" in refetch_sql
         assert "players" in freshness_sql
+        assert "greatest" in freshness_sql.lower()  # QUEUE-LIVENESS-SIGNAL swap
         assert "IN" in freshness_sql.upper()
 
 

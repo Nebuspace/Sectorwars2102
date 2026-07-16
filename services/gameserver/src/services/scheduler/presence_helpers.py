@@ -21,7 +21,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -740,16 +740,39 @@ def _is_presence_fresh(last_game_login: Optional[datetime], cutoff: datetime) ->
     freshness predicate, expressed as one function both paths call, not two
     lookalike expressions).
 
-    Isolated behind this one function specifically so swapping the
-    underlying liveness signal is a ONE-SITE change: last_game_login only
-    refreshes on the LOGIN route, so a session minted without it (JWT
-    inject, admin tooling) never refreshes it and gets swept while
-    genuinely live (confirmed live, 2026-07-16 — a JWT-injected seat's
-    presence entry was pruned every sweep pass despite being actively
-    played). The ruled direction (QUEUE-LIVENESS-SIGNAL, a separate
-    ticket — NOT built here) is to derive liveness from a throttled
-    authenticated-API-activity touch instead of the login route; this
-    function is the one place that swap lands."""
+    QUEUE-LIVENESS-SIGNAL (2026-07-16, landed): this function's own logic
+    is UNCHANGED — the swap it was isolated behind lands entirely at the
+    two CALL SITES (``_heal_candidates_query`` / ``_removal_freshness_
+    lookup_query``), which now select ``func.greatest(Player.
+    last_activity_at, Player.last_game_login)`` instead of bare
+    ``Player.last_game_login``. ``last_activity_at`` is a throttled
+    (~5min), post-auth API-activity touch (``get_current_player`` ->
+    ``_touch_liveness_signal``, auth/dependencies.py) that survives an
+    entire session with no re-login — closing the exact live repro this
+    docstring used to describe (a JWT-injected seat's presence entry was
+    pruned every sweep pass despite being actively played, because
+    ``last_game_login`` only ever refreshes on the login route).
+
+    GREATEST, not COALESCE (hub-ruled, 2026-07-16): COALESCE would prefer
+    ``last_activity_at`` forever once it is EVER non-NULL — a player active
+    yesterday who freshly re-LOGS IN today (``last_game_login`` jumps to
+    now, but they haven't made an authenticated API call yet this session)
+    would read as STALE under coalesce until their first post-login
+    request, since the stale ``last_activity_at`` from yesterday would win.
+    GREATEST always takes whichever signal is MORE RECENT, covering both
+    the deploy-day grace case (no ``last_activity_at`` yet) and the
+    fresh-login case (stale ``last_activity_at``, fresh ``last_game_login``)
+    with one function. Postgres ``GREATEST``/``LEAST`` ignore individual
+    NULL arguments (returning the non-NULL one) and only return NULL when
+    EVERY argument is NULL — unlike ``MAX()``/most other engines' variadic
+    comparison functions, which propagate a single NULL to the result. This
+    is Postgres-specific SQL (not ANSI-portable), acceptable here because
+    this codebase's dev/stage/prod stack is Postgres-only (no SQLite/MySQL
+    execution path exists for this query) — the real-engine construction
+    tests for both call sites (TestHealQueryRealSQLAlchemyCoercion /
+    TestEnrichmentQueriesRealSQLAlchemy siblings) only ever COMPILE this
+    query against an in-memory SQLite engine, never EXECUTE it, so
+    SQLite's lack of a native GREATEST never surfaces as a test failure."""
     return last_game_login is not None and last_game_login >= cutoff
 
 
@@ -774,7 +797,13 @@ def _heal_candidates_query(db: Session):
     regional_governance_service.py / admin_messages.py) -- it requires the
     caller to join ``User`` itself, hence the join below.
     ``Player.user_id`` is NOT NULL, so an inner join never drops a candidate
-    row."""
+    row.
+
+    QUEUE-LIVENESS-SIGNAL (2026-07-16): the last selected column is now
+    ``func.greatest(Player.last_activity_at, Player.last_game_login)``
+    instead of bare ``Player.last_game_login`` -- see _is_presence_fresh's
+    own doc-comment for why GREATEST (not COALESCE) is the right combinator
+    here, and for the Postgres NULL-handling semantics this relies on."""
     from src.models.user import User
 
     return (
@@ -782,7 +811,7 @@ def _heal_candidates_query(db: Session):
             Player.id, Player.current_sector_id,
             Player.display_name_expr(User.username),
             Player.current_ship_id, Player.team_id, Player.intrasystem_pose,
-            Player.last_game_login,
+            func.greatest(Player.last_activity_at, Player.last_game_login),
         )
         .join(User, Player.user_id == User.id)
         .filter(Player.current_sector_id.isnot(None))
@@ -950,8 +979,17 @@ def _removal_locked_refetch_query(db: Session, sector_pk: Any):
 def _removal_freshness_lookup_query(db: Session, human_pids: list):
     """Builds (does not execute) the removal pass's freshness lookup for a
     sector's human presence entries -- see _removal_candidate_scan_query's
-    own doc-comment for why this is split out."""
-    return db.query(Player.id, Player.last_game_login).filter(Player.id.in_(human_pids))
+    own doc-comment for why this is split out.
+
+    QUEUE-LIVENESS-SIGNAL (2026-07-16): selects
+    ``func.greatest(Player.last_activity_at, Player.last_game_login)`` in
+    place of bare ``Player.last_game_login`` -- same one-site swap as
+    ``_heal_candidates_query``, see ``_is_presence_fresh``'s own
+    doc-comment for the full rationale."""
+    return (
+        db.query(Player.id, func.greatest(Player.last_activity_at, Player.last_game_login))
+        .filter(Player.id.in_(human_pids))
+    )
 
 
 def _run_presence_sweep_sync() -> Dict[str, int]:

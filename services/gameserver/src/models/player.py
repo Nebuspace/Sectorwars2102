@@ -109,6 +109,14 @@ class Player(Base):
     genesis_devices = Column(Integer, nullable=False, default=0)
     insurance = Column(JSONB, nullable=True)
     last_game_login = Column(DateTime(timezone=True), nullable=True)  # Renamed from last_login to avoid confusion
+    # QUEUE-LIVENESS-SIGNAL: throttled (~5min), post-auth API-activity touch
+    # (get_current_player) -- DISTINCT from last_game_login above, which
+    # only refreshes on the login route and is load-bearing for
+    # welcome_back()'s return-bonus detection / retention_service's
+    # dormant-lapsed signal / abandonment_service's 90-day clock. Consumed
+    # by presence_helpers._is_presence_fresh (coalesced with
+    # last_game_login for a grace period on pre-existing sessions).
+    last_activity_at = Column(DateTime(timezone=True), nullable=True)
     turn_reset_at = Column(DateTime(timezone=True), nullable=True)
     return_boost_until = Column(DateTime(timezone=True), nullable=True)  # WO-RE1: welcome-back ×1.5 emergent-rep window
     # ADR-0004: continuous turn regeneration anchor + stored cap.

@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import Depends, Header, HTTPException, Query, status
@@ -18,6 +18,15 @@ logger = logging.getLogger(__name__)
 
 # OAuth2 scheme for token authentication
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login/direct")
+
+# QUEUE-LIVENESS-SIGNAL: throttle window for the post-auth activity touch
+# (see _touch_liveness_signal below) — PRESENCE_STALE_MINUTES (30, see
+# services/scheduler/_common.py) is the presence sweep's staleness cutoff;
+# 5 minutes gives 6 refresh opportunities inside that window (comfortable
+# margin even in the worst case: a write lands right after a throttle
+# reset, the player then goes idle) while keeping DB write volume to at
+# most one extra UPDATE per active player per window, not per request.
+_LIVENESS_TOUCH_THROTTLE = timedelta(minutes=5)
 
 
 async def get_current_user(
@@ -133,7 +142,49 @@ async def get_current_player(
         )
 
     _enforce_subscription_expiry(db, current_user, player)
+    _touch_liveness_signal(db, player)
     return player
+
+
+def _touch_liveness_signal(db: Session, player: Player) -> None:
+    """QUEUE-LIVENESS-SIGNAL (2026-07-16): pure post-auth telemetry — writes
+    ``Player.last_activity_at`` (NOT ``last_game_login``, see that column's
+    own doc-comment on the model) at most once per
+    ``_LIVENESS_TOUCH_THROTTLE`` per player, consumed by
+    ``presence_helpers._is_presence_fresh`` as a signal that survives an
+    entire session with no re-login (the login-route-only
+    ``last_game_login`` swept an actively-played JWT-injected seat every
+    tick — see that function's own doc-comment for the live repro this
+    closes).
+
+    HARD CONSTRAINT: this function runs ONLY after every auth/allow-deny
+    decision this dependency chain makes has already happened (both the
+    token-validation raises in ``get_current_user`` above it, and this
+    function's own caller's not-found raise) — it reads nothing back into
+    any conditional and cannot itself raise an HTTPException, so it
+    structurally cannot alter an authentication outcome. Any failure here
+    (a DB hiccup on the throttled write) is swallowed — a broken activity
+    touch must never break a request that would otherwise have succeeded.
+
+    Throttle is free: reads the ``last_activity_at`` already loaded on the
+    ``player`` row this dependency just fetched (no extra query), only
+    commits when stale — so an active player costs at most one extra
+    UPDATE per throttle window, not one per request."""
+    try:
+        now = datetime.now(timezone.utc)
+        last = player.last_activity_at
+        if last is not None and last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        if last is not None and (now - last) < _LIVENESS_TOUCH_THROTTLE:
+            return
+        player.last_activity_at = now
+        db.commit()
+    except Exception:
+        logger.debug("liveness-signal touch failed (non-fatal, swallowed)", exc_info=True)
+        try:
+            db.rollback()
+        except Exception:
+            logger.debug("liveness-signal touch: rollback also failed", exc_info=True)
 
 
 def _enforce_subscription_expiry(db: Session, user: User, player: Player) -> None:
