@@ -48,7 +48,6 @@ from src.models.sector import Sector
 from src.models.ship import Ship
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
 from src.services.movement_service import MovementService, _is_player_gate
-from src.services.npc_engagement_service import FEDERATION_ZONE_FRACTION
 from src.services.npc_spawn_service import _patrol_route, _presence_entry
 
 logger = logging.getLogger(__name__)
@@ -198,6 +197,17 @@ def disperse_law_patrols(db: Session) -> int:
         # Core Fed Zone pool for non-watch Terran LE (same 0.33 fraction
         # player-owned Fed Zone uses). Nexus / other regions: full list.
         if is_terran:
+            # Lazy import: npc_engagement_service.py:69 imports this whole
+            # module at its own top level, so a module-level import of this
+            # single constant back here would deadlock whichever of the two
+            # modules the process happens to import first (circular import
+            # -- confirmed via VERIFY-FIRST for DRIFT-combat-patrol-entry-
+            # dispatch: `import npc_engagement_service` first raises
+            # ImportError on FEDERATION_ZONE_FRACTION, and does NOT
+            # self-heal on retry). Deferring to call time breaks the cycle
+            # cleanly -- both modules are always fully initialized by the
+            # time this function actually runs.
+            from src.services.npc_engagement_service import FEDERATION_ZONE_FRACTION
             core_n = max(1, int(len(sids) * FEDERATION_ZONE_FRACTION))
             scatter_pool = sids[:core_n] or sids
         else:
