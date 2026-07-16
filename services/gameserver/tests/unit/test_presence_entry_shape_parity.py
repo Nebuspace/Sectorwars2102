@@ -87,9 +87,7 @@ class TestHealedEntryMatchesOrganicArrivalEntry:
 
     def test_key_set_and_value_equality_player_with_no_ship(self) -> None:
         """State Y: a player with no current ship (e.g. mid-eject) -- the
-        pre-existing "None" string fallback must still apply identically
-        on both paths (this is NOT the bug; the bug was only when ship
-        data DID exist and got dropped)."""
+        null fallback must apply identically on both paths."""
         pid = uuid.uuid4()
         team_id = uuid.uuid4()
         frozen_now = datetime(2026, 7, 16, 12, 0, 0, tzinfo=timezone.utc)
@@ -106,8 +104,13 @@ class TestHealedEntryMatchesOrganicArrivalEntry:
 
         assert set(organic.keys()) == set(healed.keys())
         assert organic == healed
-        assert healed["ship_name"] == "None"
-        assert healed["ship_type"] == "None"
+        # 2026-07-16 in-window correction: JSON null, not the literal
+        # string "None" -- the string was the ACTUAL live bug (Max's
+        # windshield contact popup rendered "None" verbatim; the client's
+        # own `||`-fallback chains handle null correctly but treat a
+        # truthy string-"None" as real data).
+        assert healed["ship_name"] is None
+        assert healed["ship_type"] is None
         assert healed["ship_id"] is None
 
     def test_key_set_and_value_equality_no_team(self) -> None:

@@ -564,6 +564,11 @@ class TestPresenceSweepHeal:
         mirrors -- the entry EXISTS but has no `pose` key at all."""
         sid = 7
         pid = uuid.uuid4()
+        # Deliberately a pre-fix-shaped legacy entry (string "None", not
+        # null) -- this test proves pose-completion NEVER touches
+        # ship_name/ship_type at all (own assertion: "other fields
+        # preserved"), so an already-stored legacy value must survive
+        # byte-identical regardless of the current construction convention.
         existing = {
             "player_id": str(pid), "username": "Shouden", "ship_id": None,
             "ship_name": "None", "ship_type": "None", "team_id": None,

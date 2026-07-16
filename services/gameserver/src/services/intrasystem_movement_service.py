@@ -696,10 +696,21 @@ def build_presence_entry(
     values in here, so there is exactly ONE place left that decides the
     final shape and fallback semantics.
 
-    ``ship_name``/``ship_type`` fall back to the literal string ``"None"``
-    (not Python ``None``, not omitted) to match the pre-existing, already-
-    shipped client contract -- the reference shape has always used this
-    fallback for a player with no current ship.
+    ``ship_name``/``ship_type`` fall back to Python ``None`` (JSON null),
+    NOT the literal string ``"None"`` (2026-07-16 in-window correction --
+    the ORIGINAL "None"-string fallback was a preserved-convention choice
+    that turned out to be the ACTUAL live bug Max saw: "Pilot: none" on the
+    windshield contact popup was the literal string "None" rendering
+    verbatim, not a missing field. Client-side grep of the whole tactical/
+    contexts tree confirmed ZERO readers compare against the string
+    "None" -- every consumer's `||`-style fallback chain (e.g. `ship_name
+    || 'UNKNOWN'`) treats a truthy string-"None" as real data and renders
+    it as-is, while a JSON null correctly falls through to the intended
+    'UNKNOWN'/'PILOT' display. So the string fallback wasn't a client
+    contract to preserve -- it was silently BREAKING the client's own
+    already-correct fallback logic. Server-side: no reader anywhere in
+    this codebase compares an entry's ship_name/ship_type against the
+    string "None" either (grep-verified before this flip).
 
     ``arrived_at`` accepts a ``datetime`` (a naive one is treated as UTC)
     or defaults to ``now(UTC)`` -- standardizes both call sites onto the
@@ -715,8 +726,8 @@ def build_presence_entry(
         "player_id": str(player_id),
         "username": username,
         "ship_id": str(ship_id) if ship_id else None,
-        "ship_name": ship_name if ship_name else "None",
-        "ship_type": ship_type if ship_type else "None",
+        "ship_name": ship_name if ship_name else None,
+        "ship_type": ship_type if ship_type else None,
         "team_id": str(team_id) if team_id else None,
         "arrived_at": arrived_at.isoformat(),
     }
