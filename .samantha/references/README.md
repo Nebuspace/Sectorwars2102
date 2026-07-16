@@ -8,7 +8,7 @@ The Reference Pack is a set of **project-agnostic** templates and specifications
 
 Generic, reusable knowledge extracted from hard-won project experience and codified once — so every future project starts with a proven foundation rather than reinventing it. The pack contains:
 
-- Format specs (the `.aispec` AI-doc format)
+- Format specs (the OKF knowledge format)
 - Canonical docs-system recipe and templates
 - ADR + DECISIONS process templates and lifecycle rules
 - Safety carveouts (gates that must never be bypassed)
@@ -37,7 +37,7 @@ The overlay is always *thin*: paths, the human's handle, deploy target, canonica
 
 | Path | What it is |
 |------|-----------|
-| `aispec-format.md` | The `.aispec` AI-doc format: block vocabulary, style rules, built-in rules, worked example |
+| `okf-format.md` | Google's **Open Knowledge Format (OKF)**: frontmatter schema, body conventions, bundles/links, conformance, framework rules, worked example |
 | `adr-process/` | ADR + DECISIONS templates and full lifecycle (Proposed→Accepted, hard gates, index) |
 | `adr-process/ADR-template.md` | The canonical ADR file (Status / Context / Decision / Consequences) |
 | `adr-process/DECISIONS-template.md` | The open-questions workspace (`DECISIONS.md`) |
@@ -46,8 +46,8 @@ The overlay is always *thin*: paths, the human's handle, deploy target, canonica
 | `canonical-docs-system/README.md` | The full recipe: single source of truth, section taxonomy, status discipline, governance |
 | `canonical-docs-system/SYSTEMS-hub-template.md` | The per-system hub-doc with canonical frontmatter |
 | `canonical-docs-system/INDEX-generator.README.md` | Generator design + CI contract (completeness-by-construction) |
-| `coordination-protocol/` | Orchestrator–Implementer coordination (placeholder; build-phase TODO) |
-| `coordination-protocol/README.md` | Placeholder naming what lives here; not yet authored |
+| `coordination-protocol/` | Orchestrator–Implementer dual-instance coordination — **M9 STAR-topology** (watcher + heartbeat scripts, mailbox/ROSTER/queue/work-order templates, 6-lens audit, git pre-commit hook) |
+| `coordination-protocol/README.md` | The full M9 protocol: topology, bootstrap, message grammar, the 5 rules, hub-mediated deploy windows |
 | `safety-carveouts.md` | Hard stop-gates: security-fix, irreversible-action, web-proof rules |
 | `templates/` | Canonical forge templates for skills and workflows |
 | `templates/SKILL-template/SKILL.md` | Canonical SKILL.md — frontmatter options + body structure, heavily commented |
