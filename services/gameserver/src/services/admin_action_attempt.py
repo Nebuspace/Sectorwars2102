@@ -238,5 +238,15 @@ E5_WRAPPED_ROUTES: frozenset[str] = frozenset(
         "POST /admin/ships/{ship_id}/teleport",
         "POST /admin/ships/create",
         "POST /admin/ships/{ship_id}/emergency",
+        # Wave-2 galaxy (GALAXY_MANAGE) — admin.py sync mutators
+        "POST /admin/warp-tunnels/create",
+        "DELETE /admin/galaxy/clear",
+        "POST /admin/galaxy/fix-statistics",
+        "PATCH /admin/ports/{station_id}",
+        "POST /admin/game-events",
+        "PATCH /admin/game-events/{event_id}",
+        "POST /admin/game-events/{event_id}/activate",
+        "POST /admin/game-events/{event_id}/deactivate",
+        "DELETE /admin/game-events/{event_id}",
     }
 )
