@@ -55,6 +55,11 @@ def _match(row: Any, cond: Any) -> bool:
         return row_val in cond.right.value
     if cond.operator is operator.lt:
         return row_val < cond.right.value
+    if cond.operator is operator.ne:
+        # WO-CONTRACT-57 addendum: _bulk_expire_remaining_posted_contracts
+        # now excludes the per-candidate loop's own eligible set via a
+        # `!=` predicate (issuer_type != PLAYER / escrow_state != HELD).
+        return row_val != cond.right.value
     if cond.operator is is_:
         # WO-CONTRACT-1-INSURANCE: `.is_(None)` (insure()'s
         # `Contract.insurance_coverage_tier.is_(None)` double-insure

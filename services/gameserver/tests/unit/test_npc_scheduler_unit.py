@@ -332,81 +332,78 @@ class TestHeldSweepWiringNeverBreaksTheLoop:
         """WO-DRIFT-econ-accepted-deadline-expiry: the CONTRACT_EXPIRE
         driver runs sweep_expired_accepted_contracts alongside sweep_
         expired_contracts under the SAME CEXP lock/due-check/commit -- the
-        wrapper's return value is their sum, and both cores are reached
-        exactly once.
+        wrapper's return value is their sum.
+
+        WO-CONTRACT-57 (axis-2): the 3 contract-expiry sweeps are no
+        longer 3 separate calls from this wrapper -- `contract_sweeps.py`
+        now calls contract_service.run_contract_expiry_sweeps' ONE merged
+        entry point (it internally gathers all 3 sweeps' candidates and
+        visits them in a globally player_id-ascending order to close a
+        cross-sweep Player-vs-Player deadlock risk; see that function's
+        own docstring). This test now mocks THAT single entry point
+        (returning the 3-tuple it always returned) rather than the 3
+        individual sweep functions, which the wrapper no longer calls
+        directly at all.
 
         WO-STORE-EXPIRY-CLAIMABLE + D19: storage_service.sweep_expired_
-        lockers also runs under this SAME lock (a third facet of
-        "contract expiry" -- see contract_sweeps.py's own docstring) and
-        must be mocked too, or it hits _FakeLockDB's real query layer
-        (which raises for anything but Galaxy) and the whole sweep rolls
-        back instead of committing. sweep_expired_accepted_contracts is
-        called with `expiry_gate=gate_contract_expiry_on_locker` now
-        (the deposit-wins/deadlock-fix mechanism -- see test_contract_
-        service.py's own gate tests) -- since this test mocks the whole
-        function, the gate argument is passed through untouched and
-        doesn't affect this test's own count-combining assertion.
+        lockers still runs separately, under this SAME lock (a third
+        facet of "contract expiry" -- see contract_sweeps.py's own
+        docstring) and must still be mocked, or it hits _FakeLockDB's
+        real query layer (which raises for anything but Galaxy) and the
+        whole sweep rolls back instead of committing.
 
-        WO-CONTRACT-2b-HOLD-ESCROW: sweep_expired_dispute_window is now a
-        FOURTH facet of "contract expiry" under this same lock -- also
-        mocked for the identical reason (hits the real query layer
-        otherwise). Its own return shape (`{"refunded": N}`) is reported
-        via its own log line, not folded into the returned int -- same
-        convention as sweep_expired_lockers -- so it does not change this
+        WO-CONTRACT-2b-HOLD-ESCROW: the dispute-window result's own
+        `{"refunded": N}` shape is reported via its own log line, not
+        folded into the returned int -- so it does not change this
         test's `result == 5` expectation."""
         db = _FakeLockDB()
         with patch("src.core.database.SessionLocal", return_value=db), patch(
-            "src.services.contract_service.sweep_expired_contracts",
-            return_value={"expired": 3},
-        ) as mock_posted, patch(
-            "src.services.contract_service.sweep_expired_accepted_contracts",
-            return_value={"expired": 2},
-        ) as mock_accepted, patch(
-            "src.services.contract_service.sweep_expired_dispute_window",
-            return_value={"refunded": 0},
-        ) as mock_dispute_window, patch(
+            "src.services.contract_service.run_contract_expiry_sweeps",
+            return_value=({"expired": 3}, {"expired": 2}, {"refunded": 0}),
+        ) as mock_run, patch(
             "src.services.storage_service.sweep_expired_lockers",
             return_value={"converted": 1},
         ) as mock_lockers:
             result = _run_contract_expire_sweep_sync()
         assert result == 5
-        mock_posted.assert_called_once()
-        mock_accepted.assert_called_once()
-        mock_dispute_window.assert_called_once()
+        mock_run.assert_called_once()
         mock_lockers.assert_called_once()
         assert db.committed is True
         assert db.closed is True
 
     def test_contract_expire_sweep_wires_the_deposit_wins_gate(self):
         """D19 (deposit-wins REQUIRED): the scheduler must actually PASS
-        storage_service.gate_contract_expiry_on_locker as sweep_expired_
-        accepted_contracts' own expiry_gate kwarg -- a regression pin
-        against silently dropping the gate in a future refactor (which
-        would quietly revert to first-committer-wins with no test
-        failure anywhere else, since a missing kwarg just falls back to
-        the gate's own None-default)."""
+        storage_service.gate_contract_expiry_on_locker through as the
+        expiry_gate kwarg -- a regression pin against silently dropping
+        the gate in a future refactor (which would quietly revert to
+        first-committer-wins with no test failure anywhere else, since a
+        missing kwarg just falls back to the gate's own None-default).
+
+        WO-CONTRACT-57 (axis-2): the gate is now passed to `contract_
+        service.run_contract_expiry_sweeps` (the merged entry point),
+        not directly to `sweep_expired_accepted_contracts` -- that
+        function no longer receives it from this wrapper at all (`run_
+        contract_expiry_sweeps` applies it internally, before any
+        candidate ever contributes a sort key or touches a player lock --
+        see that function's own docstring). This pin moved with the
+        wiring."""
         db = _FakeLockDB()
         with patch("src.core.database.SessionLocal", return_value=db), patch(
-            "src.services.contract_service.sweep_expired_contracts", return_value={"expired": 0},
-        ), patch(
-            "src.services.contract_service.sweep_expired_accepted_contracts",
-            return_value={"expired": 0},
-        ) as mock_accepted, patch(
-            "src.services.contract_service.sweep_expired_dispute_window",
-            return_value={"refunded": 0},
-        ), patch(
+            "src.services.contract_service.run_contract_expiry_sweeps",
+            return_value=({"expired": 0}, {"expired": 0}, {"refunded": 0}),
+        ) as mock_run, patch(
             "src.services.storage_service.sweep_expired_lockers", return_value={"converted": 0},
         ), patch(
             "src.services.storage_service.gate_contract_expiry_on_locker",
         ) as mock_gate:
             result = _run_contract_expire_sweep_sync()
 
-        mock_accepted.assert_called_once_with(db, expiry_gate=mock_gate)
-        # WO-CONTRACT-2b-HOLD-ESCROW: without the new mock above, this
-        # call would silently hit the exploding query layer and roll
-        # back -- this test's own assertion wouldn't have caught that
-        # (mock_accepted was already called before the failure), so
-        # assert the full success path explicitly too.
+        mock_run.assert_called_once_with(db, expiry_gate=mock_gate)
+        # WO-CONTRACT-2b-HOLD-ESCROW: without the sweep_expired_lockers
+        # mock above, this call would silently hit the exploding query
+        # layer and roll back -- this test's own assertion wouldn't have
+        # caught that (mock_run was already called before the failure),
+        # so assert the full success path explicitly too.
         assert result == 0
         assert db.committed is True
 

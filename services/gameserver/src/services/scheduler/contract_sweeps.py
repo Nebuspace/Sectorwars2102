@@ -222,17 +222,64 @@ def _run_contract_expire_sweep_sync() -> int:
     The return value stays contracts-expired-count-only (posted +
     accepted, unchanged shape for any existing caller); lockers-
     converted is reported separately via its own log line, not folded
-    into the returned int."""
+    into the returned int.
+
+    WO-CONTRACT-57 (axis-2): the 3 contract-expiry sweeps below used to be
+    3 separate calls, each running its own candidates through its own
+    isolated per-candidate loop -- inside this SAME shared transaction,
+    that left the tick's overall Player-lock acquisition sequence in
+    plain candidate-query order, unrelated to player_id, a Player-vs-
+    Player AB-BA risk against any concurrent API call (contract_service.
+    run_contract_expiry_sweeps' own docstring has the full theorem). The
+    single call below replaces all 3 -- it internally gathers all 3
+    sweeps' candidates, applies `expiry_gate` first (unchanged), and
+    visits every candidate in one globally player_id-ascending merged
+    order, closing that cycle. Returns the SAME 3 result dicts the 3
+    separate calls used to, unpacked exactly as before.
+
+    ADDENDUM (hub-required safety net): the merged dispatch's per-
+    candidate Player locks are still BLOCKING (`_load_player(...,
+    for_update=True)`, unchanged) -- the ascending order makes a
+    deadlock impossible, but a hung/long-lived CONCURRENT API
+    transaction merely holding a contended Player row could otherwise
+    block this whole tick indefinitely (the same failure mode `move_npc`'s
+    own comment describes for Loop A). `SET LOCAL lock_timeout` below
+    bounds every blocking lock the WHOLE transaction takes -- txn-scoped,
+    so it covers every per-candidate lock `run_contract_expiry_sweeps`
+    acquires, not just one statement -- the `SET LOCAL lock_timeout`
+    MECHANISM ITSELF, and the 3s VALUE, match the identical convention
+    already established at every other blocking-lock call site in this
+    codebase (planets.py / movement_service.py / npc_movement_service.py
+    / planetary_service.py / intrasystem_movement_service.py all use 3s
+    or 5s; 3s -- the more common of the two -- is used here). The PER-
+    CANDIDATE `.orig.pgcode == '55P03'` DISCRIMINATION on the resulting
+    `OperationalError` (below), by contrast, is NOVEL to this codebase --
+    no other blocking-lock call site inspects the failure's SQLSTATE at
+    all (they all just fail the whole request/statement); this is the
+    first site needing to tell "transient contention, safe to defer"
+    apart from "genuine deadlock or other failure, must surface" inside
+    a single already-open, multi-candidate transaction. Caught PER-
+    CANDIDATE inside `run_contract_expiry_sweeps`' own per-candidate
+    functions -- see `contract_service._is_lock_timeout`'s own docstring
+    for the precise discrimination (only a genuine 55P03 defers; a real
+    deadlock or any other OperationalError is NOT silently deferred).
+    The defensive try/except mirrors every sibling call site -- `SET
+    LOCAL` failing (e.g. a DB-free fake session in a unit test, which
+    never exercises this real-SessionLocal path at all, or an
+    unexpected driver quirk) must never crash the sweep."""
     from src.core.database import SessionLocal
-    from src.services.contract_service import (
-        sweep_expired_accepted_contracts,
-        sweep_expired_contracts,
-        sweep_expired_dispute_window,
-    )
+    from src.services import contract_service
     from src.services.storage_service import gate_contract_expiry_on_locker, sweep_expired_lockers
 
     db = SessionLocal()
     try:
+        try:
+            db.execute(text("SET LOCAL lock_timeout = '3s'"))
+        except Exception:
+            logger.debug(
+                "_run_contract_expire_sweep_sync: could not set lock_timeout", exc_info=True,
+            )
+
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
             {"key": _CONTRACT_EXPIRE_LOCK_KEY},
@@ -244,9 +291,9 @@ def _run_contract_expire_sweep_sync() -> int:
             db, _CONTRACT_EXPIRE_STATE_KEY, CONTRACT_EXPIRE_SWEEP_SECONDS, datetime.now(UTC),
         ):
             return 0
-        posted_result = sweep_expired_contracts(db)
-        accepted_result = sweep_expired_accepted_contracts(db, expiry_gate=gate_contract_expiry_on_locker)
-        dispute_window_result = sweep_expired_dispute_window(db)
+        posted_result, accepted_result, dispute_window_result = contract_service.run_contract_expiry_sweeps(
+            db, expiry_gate=gate_contract_expiry_on_locker,
+        )
         if dispute_window_result.get("refunded", 0):
             logger.info(
                 "NPC scheduler: %d contract(s) refunded past their undisputed "

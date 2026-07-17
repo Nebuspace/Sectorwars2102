@@ -21,6 +21,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 import pytest
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.sql.operators import in_op
 
 from src.models.contract import Contract, ContractEscrowState, ContractIssuerType, ContractStatus
@@ -38,6 +39,12 @@ def _match(row: Any, cond: Any) -> bool:
         return row_val in cond.right.value
     if cond.operator is operator.lt:
         return row_val < cond.right.value
+    if cond.operator is operator.ne:
+        # WO-CONTRACT-57 addendum: _bulk_expire_remaining_posted_contracts
+        # now excludes the per-candidate loop's own eligible set via a
+        # `!=` predicate (issuer_type != PLAYER / escrow_state != HELD)
+        # instead of matching the earlier missing operator.
+        return row_val != cond.right.value
     raise NotImplementedError(f"unsupported operator {cond.operator!r}")
 
 
@@ -48,13 +55,23 @@ class _FakeResult:
 
 class _FakeQuery:
     def __init__(self, rows: List[Any], criteria: Optional[List[Any]] = None,
-                 lock_log: Optional[List[Any]] = None) -> None:
+                 lock_log: Optional[List[Any]] = None,
+                 lock_failures: Optional[Dict[Any, Exception]] = None) -> None:
         self._rows = rows
         self._criteria = criteria or []
         self._lock_log = lock_log
+        # WO-CONTRACT-57 addendum: id -> Exception to RAISE instead of
+        # locking -- models a real Postgres SET LOCAL lock_timeout firing
+        # (SQLSTATE 55P03) or a genuine deadlock (40P01) at the exact
+        # `with_for_update()` call, DB-free. Only meaningful for the
+        # Player query (see _RacySession.query()); Contract queries never
+        # pass this.
+        self._lock_failures = lock_failures
 
     def filter(self, *conditions: Any) -> "_FakeQuery":
-        return _FakeQuery(self._rows, self._criteria + list(conditions), self._lock_log)
+        return _FakeQuery(
+            self._rows, self._criteria + list(conditions), self._lock_log, self._lock_failures,
+        )
 
     def with_for_update(self) -> "_FakeQuery":
         # WO-ECON-CONTRACT-MONEY-HARDEN: no-op passthrough for the row
@@ -64,9 +81,15 @@ class _FakeQuery:
         # the session was built with a lock_log -- this is what
         # TestDualLockConsistentOrdering below asserts against, proving
         # the code's ordering logic without needing real concurrency.
-        if self._lock_log is not None:
-            for cond in self._criteria:
-                if getattr(cond.left, "key", None) == "id":
+        for cond in self._criteria:
+            if getattr(cond.left, "key", None) == "id":
+                # WO-CONTRACT-57 addendum: a registered lock_failures
+                # entry fires BEFORE the lock_log append below -- a real
+                # failed lock acquisition never succeeds, so it must never
+                # be recorded as "locked" either.
+                if self._lock_failures is not None and cond.right.value in self._lock_failures:
+                    raise self._lock_failures[cond.right.value]
+                if self._lock_log is not None:
                     self._lock_log.append(cond.right.value)
         return self
 
@@ -180,20 +203,26 @@ class _RacySession:
     (WO-ECON-CONTRACT-MONEY-HARDEN Mack HIGH #1's dual-lock ordering --
     see TestDualLockConsistentOrdering)."""
 
-    def __init__(self, *, contracts: Optional[List[Any]] = None, players: Optional[List[Any]] = None) -> None:
+    def __init__(self, *, contracts: Optional[List[Any]] = None, players: Optional[List[Any]] = None,
+                 player_lock_failures: Optional[Dict[Any, Exception]] = None) -> None:
         self.contracts = contracts or []
         self.players = players or []
         self.flush_calls = 0
         self.races: Dict[Any, Any] = {}
         self.select_calls = 0
         self.player_lock_log: List[Any] = []
+        # WO-CONTRACT-57 addendum: id -> Exception a Player lock attempt
+        # should raise instead of succeeding (see _FakeQuery's own note).
+        self.player_lock_failures = player_lock_failures
 
     def query(self, model: Any) -> _FakeQuery:
         if model is Contract:
             return _RacyContractQuery(self.contracts, [], self)
         from src.models.player import Player
         if model is Player:
-            return _FakeQuery(self.players, lock_log=self.player_lock_log)
+            return _FakeQuery(
+                self.players, lock_log=self.player_lock_log, lock_failures=self.player_lock_failures,
+            )
         raise AssertionError(f"unexpected query for {model!r}")
 
     def execute(self, stmt: Any) -> _FakeResult:
@@ -597,6 +626,306 @@ class TestDualLockConsistentOrdering:
 
 
 @pytest.mark.unit
+class TestCrossSweepGloballyAscendingLockOrder:
+    """WO-CONTRACT-57 (axis-2): `_run_contract_expire_sweep_sync`
+    (contract_sweeps.py) runs `sweep_expired_contracts`, `sweep_expired_
+    accepted_contracts`, and `sweep_expired_dispute_window` in ONE shared
+    tick transaction. #54 (axis-1, WO-CONTRACT-LOCK-ORDER) already ordered
+    each sweep's OWN Player-lock before its OWN Contract guard, but the 3
+    sweeps' candidate-query orders have no relationship to each other or
+    to player_id -- a Player-vs-Player AB-BA risk against any concurrent
+    API call's own ascending-id dual-lock order (`_load_two_players_for_
+    update`). `contract_service.run_contract_expiry_sweeps` visits every
+    candidate across all 3 sweeps in ONE globally player_id-ascending
+    merged order -- these tests prove the resulting `player_lock_log` (the
+    ORDER `_load_player(for_update=True)` actually fired in) is exactly
+    ascending, even when every sweep's OWN candidates are seeded so the
+    HISTORICAL per-sweep call order (contracts, then accepted, then
+    dispute-window) would have locked them descending -- the shape a
+    per-sweep-only sort could never catch (see that function's own
+    docstring for the [10,20,90]+[5,30] counterexample: concatenating two
+    internally-sorted lists is not itself sorted)."""
+
+    def test_merged_dispatch_locks_players_strictly_ascending_across_all_3_sweeps(self) -> None:
+        low_id, mid_id, high_id = sorted([uuid.uuid4(), uuid.uuid4(), uuid.uuid4()])
+
+        # sweep_expired_contracts candidate -- issuer at the HIGH id. This
+        # sweep runs FIRST in the historical per-sweep call order, so a
+        # naive per-sweep-sequential dispatch would lock high_id first.
+        issuer_high = _player(id=high_id, credits=5000)
+        c_contracts = _player_contract(
+            status=ContractStatus.POSTED, issuer_id=high_id,
+            escrow_amount=Decimal("1000.00"), deadline=_NOW - timedelta(hours=1),
+        )
+        # A sibling sweep_expired_contracts candidate with NO refund owed
+        # (escrow_amount == 0) -- locks no player at all; must not disrupt
+        # the ascending property of the OTHER, lock-needing candidates.
+        c_contracts_no_lock = _player_contract(
+            status=ContractStatus.POSTED, issuer_id=uuid.uuid4(),
+            escrow_amount=Decimal("0"), deadline=_NOW - timedelta(hours=1),
+        )
+
+        # sweep_expired_accepted_contracts candidate -- acceptor at the LOW
+        # id. This sweep runs SECOND historically.
+        acceptor_low = _player(id=low_id, credits=5000)
+        c_accepted = _npc_contract(
+            deadline=_NOW - timedelta(minutes=1), acceptor_player_id=low_id, penalty=Decimal("200"),
+        )
+
+        # sweep_expired_dispute_window candidate -- issuer at the MID id.
+        # This sweep runs THIRD/last historically.
+        issuer_mid = _player(id=mid_id, credits=5000)
+        c_dispute = _player_contract(
+            status=ContractStatus.EXPIRED, issuer_id=mid_id,
+            escrow_amount=Decimal("500.00"), escrow_state=ContractEscrowState.HELD,
+            deadline=_NOW - timedelta(hours=50),  # > 48h dispute-filing window
+        )
+
+        db = _RacySession(
+            contracts=[c_contracts, c_contracts_no_lock, c_accepted, c_dispute],
+            players=[issuer_high, acceptor_low, issuer_mid],
+        )
+
+        posted_result, accepted_result, dispute_result = contract_service.run_contract_expiry_sweeps(db, now=_NOW)
+
+        # The historical per-sweep call order would have locked
+        # [high_id, low_id, mid_id] -- NOT ascending. The merged dispatch
+        # instead locks exactly the ascending sequence, and the no-lock
+        # candidate contributes nothing to the log at all.
+        assert db.player_lock_log == [low_id, mid_id, high_id]
+        assert db.player_lock_log == sorted(db.player_lock_log)
+
+        # Every candidate was actually processed -- the restructure didn't
+        # silently drop anything.
+        assert c_contracts.status == ContractStatus.EXPIRED
+        assert c_contracts_no_lock.status == ContractStatus.EXPIRED
+        assert c_accepted.status == ContractStatus.EXPIRED
+        assert c_dispute.escrow_state == ContractEscrowState.REFUNDING
+        assert posted_result == {"expired": 2}
+        assert accepted_result == {"expired": 1}
+        assert dispute_result == {"refunded": 1}
+
+    def test_run_contract_expiry_sweeps_applies_a_real_expiry_gate_before_any_lock(self) -> None:
+        """mack LOW #3: `run_contract_expiry_sweeps` applies `expiry_gate`
+        to sweep_expired_accepted_contracts' candidates BEFORE they ever
+        contribute a sort key or touch a player lock (see this module's
+        own docstring) -- the D19 deposit-wins gate is a money-adjacent
+        behavior (storage_service.gate_contract_expiry_on_locker is the
+        real production gate) that deserves a PERMANENT regression guard
+        with a REAL callable, not just a mocked pass-through. Converts a
+        throwaway scratch probe into a lasting test: a gate that defers
+        ONE of two ACCEPTED candidates by id must leave that candidate
+        completely untouched (never locked, never counted) while its
+        sibling still processes and pays its penalty normally."""
+        deferred_acceptor = _player(credits=5000)
+        deferred_contract = _npc_contract(
+            deadline=_NOW - timedelta(hours=1), acceptor_player_id=deferred_acceptor.id, penalty=Decimal("300"),
+        )
+        processed_acceptor = _player(credits=5000)
+        processed_contract = _npc_contract(
+            deadline=_NOW - timedelta(minutes=1), acceptor_player_id=processed_acceptor.id, penalty=Decimal("200"),
+        )
+
+        def gate(db: Any, contract: Any) -> bool:
+            return contract.id != deferred_contract.id
+
+        db = _RacySession(
+            contracts=[deferred_contract, processed_contract],
+            players=[deferred_acceptor, processed_acceptor],
+        )
+
+        posted_result, accepted_result, dispute_result = contract_service.run_contract_expiry_sweeps(
+            db, now=_NOW, expiry_gate=gate,
+        )
+
+        # Gate-deferred -- status untouched, NEVER locked (never contributed
+        # a sort key or reached the pre-pass), uncounted.
+        assert deferred_contract.status == ContractStatus.ACCEPTED
+        assert deferred_acceptor.id not in db.player_lock_log
+        assert deferred_acceptor.credits == 5000
+        # Its sibling, ungated, still processes and pays its penalty.
+        assert processed_contract.status == ContractStatus.EXPIRED
+        assert processed_acceptor.credits == 5000 - 200
+        assert posted_result == {"expired": 0}
+        assert accepted_result == {"expired": 1}
+        assert dispute_result == {"refunded": 0}
+
+
+@pytest.mark.unit
+class TestLockTimeoutDegradesGracefully:
+    """WO-CONTRACT-57 addendum (hub-required, precision refinement): the
+    hub-ruled BLOCKING mechanism is bounded by a txn-scoped `SET LOCAL
+    lock_timeout` (contract_sweeps.py) so a hung concurrent API
+    transaction can't freeze a whole sweep tick. A timed-out acquisition
+    surfaces as `OperationalError` -- but only a genuine lock_timeout
+    (Postgres SQLSTATE 55P03) may be silently DEFERRED (status untouched,
+    re-picked next tick, zero money moved); anything else (a real
+    deadlock, 40P01 -- which the ascending-order invariant this WO builds
+    should make IMPOSSIBLE, so its appearance would itself be a bug worth
+    surfacing loudly -- or any other OperationalError) must NOT be
+    silently deferred, and instead falls through to #54's own existing
+    per-candidate resting state (loud `logger.exception`, flip-anyway,
+    no refund/penalty this tick) -- exactly like today's missing-player
+    case, never a new silent-swallow path. These tests prove the
+    discrimination is by SQLSTATE, not a blanket `except OperationalError`."""
+
+    def test_lock_timeout_55p03_defers_the_candidate_untouched_and_uncounted(self) -> None:
+        contended_issuer_id = uuid.uuid4()  # deliberately never added to db.players
+        c1 = _player_contract(
+            status=ContractStatus.POSTED, issuer_id=contended_issuer_id,
+            escrow_amount=Decimal("1000.00"), deadline=_NOW - timedelta(hours=1),
+        )
+        real_issuer = _player(credits=5000)
+        c2 = _player_contract(
+            status=ContractStatus.POSTED, issuer_id=real_issuer.id,
+            escrow_amount=Decimal("500.00"), deadline=_NOW - timedelta(minutes=1),
+        )
+        lock_timeout = OperationalError("stmt", {}, SimpleNamespace(pgcode="55P03"))
+        db = _RacySession(
+            contracts=[c1, c2], players=[real_issuer],
+            player_lock_failures={contended_issuer_id: lock_timeout},
+        )
+
+        result = contract_service.sweep_expired_contracts(db, now=_NOW)
+
+        # c1 -- the contended candidate -- is DEFERRED: status completely
+        # untouched (unlike the missing-player case, which flips anyway),
+        # never counted, no money moved, and its (never-granted) lock
+        # never lands in player_lock_log.
+        assert c1.status == ContractStatus.POSTED
+        assert contended_issuer_id not in db.player_lock_log
+        # c2 -- unaffected sibling in the SAME sweep pass -- still
+        # processes and refunds normally. The tick did not abort or spin.
+        assert c2.status == ContractStatus.EXPIRED
+        assert real_issuer.credits == 5000 + 500
+        assert result == {"expired": 1}  # only c2 counted
+
+    def test_non_lock_timeout_operational_error_on_issuer_lock_is_not_silently_deferred(self) -> None:
+        """mack LOW #2: the mirror of `test_non_lock_timeout_operational_
+        error_is_not_silently_deferred` below, but for sweep_expired_
+        contracts' OWN issuer lock (contract_service.py:750-765) -- a
+        SEPARATE except block from the acceptor-lock one, byte-identical
+        discrimination logic but its own code path, needing its own
+        direct coverage rather than relying on the acceptor-lock test to
+        stand in for it. A DIFFERENT SQLSTATE (40P01, a genuine deadlock
+        -- which the ascending-order invariant should make impossible, so
+        its appearance is itself a bug worth loud attention) on the
+        issuer lock must NOT take the transient-defer branch; it falls
+        through to #54's existing flip-anyway resting state instead."""
+        deadlocked_issuer_id = uuid.uuid4()  # deliberately never added to db.players
+        c1 = _player_contract(
+            status=ContractStatus.POSTED, issuer_id=deadlocked_issuer_id,
+            escrow_amount=Decimal("1000.00"), deadline=_NOW - timedelta(hours=1),
+        )
+        real_issuer = _player(credits=5000)
+        c2 = _player_contract(
+            status=ContractStatus.POSTED, issuer_id=real_issuer.id,
+            escrow_amount=Decimal("500.00"), deadline=_NOW - timedelta(minutes=1),
+        )
+        deadlock = OperationalError("stmt", {}, SimpleNamespace(pgcode="40P01"))
+        db = _RacySession(
+            contracts=[c1, c2], players=[real_issuer],
+            player_lock_failures={deadlocked_issuer_id: deadlock},
+        )
+
+        result = contract_service.sweep_expired_contracts(db, now=_NOW)
+
+        # c1 is NOT deferred -- flip-anyway, counted, no refund this tick
+        # (matches TestPerRowSavepointIsolation's own missing-issuer
+        # precedent exactly).
+        assert c1.status == ContractStatus.EXPIRED
+        assert c2.status == ContractStatus.EXPIRED
+        assert real_issuer.credits == 5000 + 500  # c2's refund still landed
+        assert result == {"expired": 2}  # BOTH counted -- c1 flip-anyway, c2 processed normally
+
+    def test_non_lock_timeout_operational_error_is_not_silently_deferred(self) -> None:
+        """A DIFFERENT SQLSTATE (here: 40P01, a genuine deadlock -- which
+        the ascending-order invariant should make unreachable, so its
+        appearance is itself a bug worth loud attention) must NOT take the
+        transient-defer branch. It falls through to #54's existing
+        flip-anyway resting state instead -- proving the discrimination
+        is precise, not a blanket `except OperationalError`."""
+        deadlocked_acceptor_id = uuid.uuid4()  # deliberately never added to db.players
+        c1 = _npc_contract(
+            deadline=_NOW - timedelta(hours=1),
+            acceptor_player_id=deadlocked_acceptor_id, penalty=Decimal("300"),
+        )
+        real_acceptor = _player(credits=5000)
+        c2 = _npc_contract(
+            deadline=_NOW - timedelta(minutes=1),
+            acceptor_player_id=real_acceptor.id, penalty=Decimal("200"),
+        )
+        deadlock = OperationalError("stmt", {}, SimpleNamespace(pgcode="40P01"))
+        db = _RacySession(
+            contracts=[c1, c2], players=[real_acceptor],
+            player_lock_failures={deadlocked_acceptor_id: deadlock},
+        )
+
+        result = contract_service.sweep_expired_accepted_contracts(db, now=_NOW)
+
+        # c1 is NOT deferred -- a non-55P03 OperationalError takes the
+        # SAME path a missing player already does: flip-anyway, counted,
+        # no penalty this tick (matches TestPerRowSavepointIsolation's
+        # own missing-acceptor precedent exactly).
+        assert c1.status == ContractStatus.EXPIRED
+        assert c2.status == ContractStatus.EXPIRED
+        assert real_acceptor.credits == 5000 - 200
+        assert result == {"expired": 2}  # BOTH counted -- c1 flip-anyway, c2 processed normally
+
+    def test_run_contract_expiry_sweeps_defers_a_contended_candidate_from_either_sweep(self) -> None:
+        """The same 55P03-defer proof, but through the ACTUAL production
+        entry point (`run_contract_expiry_sweeps`, what `contract_sweeps.
+        py` calls every tick) rather than a standalone wrapper -- proves
+        the defer survives the merged cross-sweep dispatch too, and (this
+        is what actually caught a real bug during this addendum's build)
+        that `sweep_expired_contracts`' trailing bulk-expire pass does NOT
+        re-catch and flip-anyway a candidate `_process_one_sweep_expired_
+        contracts_candidate` already deferred -- a deferred candidate is
+        still `status == posted`, still `issuer_type == PLAYER`, still
+        `escrow_state == HELD`, the EXACT shape a naive bulk `WHERE status
+        == posted` would silently re-match."""
+        contended_issuer_id = uuid.uuid4()
+        c_contracts = _player_contract(
+            status=ContractStatus.POSTED, issuer_id=contended_issuer_id,
+            escrow_amount=Decimal("1000.00"), deadline=_NOW - timedelta(hours=1),
+        )
+        contended_acceptor_id = uuid.uuid4()
+        c_accepted = _npc_contract(
+            deadline=_NOW - timedelta(minutes=1),
+            acceptor_player_id=contended_acceptor_id, penalty=Decimal("300"),
+        )
+        real_acceptor = _player(credits=5000)
+        c_accepted_sibling = _npc_contract(
+            deadline=_NOW - timedelta(minutes=1),
+            acceptor_player_id=real_acceptor.id, penalty=Decimal("200"),
+        )
+        lock_timeout_issuer = OperationalError("stmt", {}, SimpleNamespace(pgcode="55P03"))
+        lock_timeout_acceptor = OperationalError("stmt", {}, SimpleNamespace(pgcode="55P03"))
+        db = _RacySession(
+            contracts=[c_contracts, c_accepted, c_accepted_sibling], players=[real_acceptor],
+            player_lock_failures={
+                contended_issuer_id: lock_timeout_issuer,
+                contended_acceptor_id: lock_timeout_acceptor,
+            },
+        )
+
+        posted_result, accepted_result, dispute_result = contract_service.run_contract_expiry_sweeps(db, now=_NOW)
+
+        # Both contended candidates are DEFERRED -- status completely
+        # untouched, including surviving sweep_expired_contracts' OWN
+        # trailing bulk-expire pass (the bug this test was written to
+        # catch).
+        assert c_contracts.status == ContractStatus.POSTED
+        assert c_accepted.status == ContractStatus.ACCEPTED
+        # Their unaffected siblings still fully process in the SAME tick.
+        assert c_accepted_sibling.status == ContractStatus.EXPIRED
+        assert real_acceptor.credits == 5000 - 200
+        assert posted_result == {"expired": 0}
+        assert accepted_result == {"expired": 1}
+        assert dispute_result == {"refunded": 0}
+
+
+@pytest.mark.unit
 class TestPerRowSavepointIsolation:
     """Leg 2 (Mack MEDIUM #2): before this WO, an unhandled exception
     anywhere in a per-row credit-mutation body (e.g. a vanished Player row
@@ -653,6 +982,38 @@ class TestPerRowSavepointIsolation:
         assert c2.status == ContractStatus.EXPIRED
         assert real_issuer.credits == 5000 + 500  # c2's refund still landed
         assert result == {"expired": 2}
+
+    def test_run_contract_expiry_sweeps_survives_a_missing_player_from_any_sweep(self) -> None:
+        """WO-CONTRACT-57 (axis-2): the merged `run_contract_expiry_
+        sweeps` dispatch calls the SAME per-candidate bodies the two tests
+        above already proved isolate a lock failure -- this proves that
+        isolation survives being invoked from a cross-sweep merged order
+        too: a missing PLAYER row for one sweep's candidate does not
+        prevent a DIFFERENT sweep's sibling candidate (processed elsewhere
+        in the SAME merged dispatch) from completing normally. Per the
+        hub's ruling (blocking, not skip-locked), the missing-player
+        candidate still flip-anyway EXPIREs -- #54's original resting
+        state, unchanged."""
+        missing_issuer_id = uuid.uuid4()  # deliberately never added to db.players
+        c1 = _player_contract(
+            status=ContractStatus.POSTED, issuer_id=missing_issuer_id,
+            escrow_amount=Decimal("1000.00"), deadline=_NOW - timedelta(hours=1),
+        )
+        real_acceptor = _player(credits=5000)
+        c2 = _npc_contract(
+            deadline=_NOW - timedelta(minutes=1),
+            acceptor_player_id=real_acceptor.id, penalty=Decimal("200"),
+        )
+        db = _RacySession(contracts=[c1, c2], players=[real_acceptor])
+
+        posted_result, accepted_result, dispute_result = contract_service.run_contract_expiry_sweeps(db, now=_NOW)
+
+        assert c1.status == ContractStatus.EXPIRED  # flip-anyway, no refund -- #54 preserved
+        assert c2.status == ContractStatus.EXPIRED  # sibling from a DIFFERENT sweep unaffected
+        assert real_acceptor.credits == 5000 - 200
+        assert posted_result == {"expired": 1}
+        assert accepted_result == {"expired": 1}
+        assert dispute_result == {"refunded": 0}
 
 
 @pytest.mark.unit
