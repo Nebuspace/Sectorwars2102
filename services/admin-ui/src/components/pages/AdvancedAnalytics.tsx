@@ -19,7 +19,7 @@ export const AdvancedAnalytics: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'reports' | 'predictive' | 'performance' | 'export'>('reports');
   const [generatedReports, setGeneratedReports] = useState<ReportResult[]>([]);
   const [selectedReport, setSelectedReport] = useState<ReportResult | null>(null);
-  const [exportFormat, setExportFormat] = useState<'csv' | 'json' | 'excel' | 'pdf'>('csv');
+  const [exportFormat, setExportFormat] = useState<'csv' | 'json'>('csv');
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
   // Load saved templates from localStorage on mount
@@ -281,13 +281,17 @@ export const AdvancedAnalytics: React.FC = () => {
 
             <div className="export-format">
               <h3>Select Export Format</h3>
+              <p style={{ fontSize: '13px', opacity: 0.85, marginBottom: '12px' }}>
+                Server supports <strong>CSV</strong> and <strong>JSON</strong> only.
+                Excel/PDF are not generated server-side (would 400).
+              </p>
               <div className="format-options">
                 <label className={`format-option ${exportFormat === 'csv' ? 'selected' : ''}`}>
                   <input
                     type="radio"
                     value="csv"
                     checked={exportFormat === 'csv'}
-                    onChange={(e) => setExportFormat(e.target.value as any)}
+                    onChange={(e) => setExportFormat(e.target.value as 'csv' | 'json')}
                   />
                   <i className="fas fa-file-csv"></i>
                   <span>CSV</span>
@@ -298,33 +302,23 @@ export const AdvancedAnalytics: React.FC = () => {
                     type="radio"
                     value="json"
                     checked={exportFormat === 'json'}
-                    onChange={(e) => setExportFormat(e.target.value as any)}
+                    onChange={(e) => setExportFormat(e.target.value as 'csv' | 'json')}
                   />
                   <i className="fas fa-file-code"></i>
                   <span>JSON</span>
                   <small>JavaScript Object Notation</small>
                 </label>
-                <label className={`format-option ${exportFormat === 'excel' ? 'selected' : ''}`}>
-                  <input
-                    type="radio"
-                    value="excel"
-                    checked={exportFormat === 'excel'}
-                    onChange={(e) => setExportFormat(e.target.value as any)}
-                  />
+                <label className="format-option" style={{ opacity: 0.45, cursor: 'not-allowed' }} title="Not supported by the gameserver">
+                  <input type="radio" value="excel" disabled />
                   <i className="fas fa-file-excel"></i>
                   <span>Excel</span>
-                  <small>Microsoft Excel format</small>
+                  <small>Unavailable — no server generator</small>
                 </label>
-                <label className={`format-option ${exportFormat === 'pdf' ? 'selected' : ''}`}>
-                  <input
-                    type="radio"
-                    value="pdf"
-                    checked={exportFormat === 'pdf'}
-                    onChange={(e) => setExportFormat(e.target.value as any)}
-                  />
+                <label className="format-option" style={{ opacity: 0.45, cursor: 'not-allowed' }} title="Not supported by the gameserver">
+                  <input type="radio" value="pdf" disabled />
                   <i className="fas fa-file-pdf"></i>
                   <span>PDF</span>
-                  <small>Portable Document Format</small>
+                  <small>Unavailable — no server generator</small>
                 </label>
               </div>
             </div>
