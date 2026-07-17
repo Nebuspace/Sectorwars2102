@@ -15,9 +15,15 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from src.auth.admin_scopes import ALL_SCOPES, SCOPES_GRANT, SCOPES_REVOKE
+from src.auth.admin_scopes import (
+    ALL_SCOPES,
+    META_SCOPES,
+    SCOPES_GRANT,
+    SCOPES_REVOKE,
+)
 from src.auth.dependencies import require_scope
 from src.core.database import get_db
 from src.models.admin_action_log import AdminActionLog
@@ -87,7 +93,8 @@ def grant_scope_to_user(
     """Insert an active grant if missing; sync flat ``is_admin=True``.
 
     Cipher (Phase C preview): check existing-active before insert — never
-    duplicate under the unique partial index.
+    duplicate under the unique partial index.  Lock the target user row so
+    concurrent grant/revoke cannot race the flat ``is_admin`` flag.
     """
     if scope not in ALL_SCOPES:
         raise HTTPException(
@@ -95,13 +102,22 @@ def grant_scope_to_user(
             detail=f"Unknown scope: {scope}",
         )
 
+    # Serialize grant/revoke against this user (flat is_admin sync).
+    locked = (
+        db.query(User)
+        .filter(User.id == target.id)
+        .with_for_update()
+        .one()
+    )
+
     existing = (
         db.query(AdminScopeGrant)
         .filter(
-            AdminScopeGrant.user_id == target.id,
+            AdminScopeGrant.user_id == locked.id,
             AdminScopeGrant.scope == scope,
             AdminScopeGrant.revoked_at.is_(None),
         )
+        .with_for_update()
         .first()
     )
     if existing:
@@ -110,33 +126,63 @@ def grant_scope_to_user(
             actor=actor,
             scope_used=SCOPES_GRANT,
             action="scope_grant_noop",
-            target_user_id=target.id,
+            target_user_id=locked.id,
             payload={"scope": scope, "already_active": True},
             result="success",
         )
-        if not target.is_admin:
+        if not locked.is_admin:
+            locked.is_admin = True
             target.is_admin = True
         return existing
 
-    row = AdminScopeGrant(
-        id=uuid.uuid4(),
-        user_id=target.id,
-        scope=scope,
-        granted_by=actor.id,
-    )
-    db.add(row)
-    # Flat column stays authoritative through B/C — sync on mint.
-    target.is_admin = True
-    _log_action(
-        db,
-        actor=actor,
-        scope_used=SCOPES_GRANT,
-        action="scope_grant",
-        target_user_id=target.id,
-        payload={"scope": scope},
-        result="success",
-    )
-    return row
+    # Savepoint: concurrent duplicate insert hits unique partial index —
+    # recover as idempotent success (mack HARD #3).
+    try:
+        with db.begin_nested():
+            row = AdminScopeGrant(
+                id=uuid.uuid4(),
+                user_id=locked.id,
+                scope=scope,
+                granted_by=actor.id,
+            )
+            db.add(row)
+            locked.is_admin = True
+            target.is_admin = True
+            _log_action(
+                db,
+                actor=actor,
+                scope_used=SCOPES_GRANT,
+                action="scope_grant",
+                target_user_id=locked.id,
+                payload={"scope": scope},
+                result="success",
+            )
+            db.flush()
+            return row
+    except IntegrityError:
+        raced = (
+            db.query(AdminScopeGrant)
+            .filter(
+                AdminScopeGrant.user_id == locked.id,
+                AdminScopeGrant.scope == scope,
+                AdminScopeGrant.revoked_at.is_(None),
+            )
+            .first()
+        )
+        if raced is None:
+            raise
+        locked.is_admin = True
+        target.is_admin = True
+        _log_action(
+            db,
+            actor=actor,
+            scope_used=SCOPES_GRANT,
+            action="scope_grant_noop",
+            target_user_id=locked.id,
+            payload={"scope": scope, "already_active": True, "raced": True},
+            result="success",
+        )
+        return raced
 
 
 def revoke_scope_from_user(
@@ -149,6 +195,8 @@ def revoke_scope_from_user(
     """Bulk-revoke all active rows for (user, scope). Returns rows touched.
 
     Cipher: NO ``.first()`` / LIMIT — revoke every active match.
+    Mack: flush before remaining-count (autoflush=False sessions otherwise
+    still see the just-revoked row → is_admin never clears).
     """
     if scope not in ALL_SCOPES:
         raise HTTPException(
@@ -156,38 +204,79 @@ def revoke_scope_from_user(
             detail=f"Unknown scope: {scope}",
         )
 
-    now = datetime.now(timezone.utc)
-    q = db.query(AdminScopeGrant).filter(
-        AdminScopeGrant.user_id == target.id,
-        AdminScopeGrant.scope == scope,
-        AdminScopeGrant.revoked_at.is_(None),
+    locked = (
+        db.query(User)
+        .filter(User.id == target.id)
+        .with_for_update()
+        .one()
     )
-    rows = q.all()
+
+    now = datetime.now(timezone.utc)
+    rows = (
+        db.query(AdminScopeGrant)
+        .filter(
+            AdminScopeGrant.user_id == locked.id,
+            AdminScopeGrant.scope == scope,
+            AdminScopeGrant.revoked_at.is_(None),
+        )
+        .with_for_update()
+        .all()
+    )
+
+    # Cipher HIGH: refuse stripping the last system-wide holder of a meta
+    # scope (grant / revoke / audit.view) — otherwise one revoke-holder can
+    # orphan Phase-E review + monopolize scope management.
+    if rows and scope in META_SCOPES:
+        other_holders = (
+            db.query(AdminScopeGrant.user_id)
+            .filter(
+                AdminScopeGrant.scope == scope,
+                AdminScopeGrant.revoked_at.is_(None),
+                AdminScopeGrant.user_id != locked.id,
+            )
+            .distinct()
+            .count()
+        )
+        if other_holders == 0:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Cannot revoke last system-wide holder of {scope}"
+                ),
+            )
+
     for row in rows:
         row.revoked_at = now
         row.revoked_by = actor.id
 
+    # CRITICAL (mack + hub-cipher): autoflush=False — must flush before
+    # counting remaining active grants, else the just-revoked rows still
+    # count as active and flat is_admin never clears on last-scope revoke.
+    db.flush()
+
     remaining = (
         db.query(AdminScopeGrant.id)
         .filter(
-            AdminScopeGrant.user_id == target.id,
+            AdminScopeGrant.user_id == locked.id,
             AdminScopeGrant.revoked_at.is_(None),
         )
         .count()
     )
     if remaining == 0:
+        locked.is_admin = False
         target.is_admin = False
 
     _log_action(
         db,
         actor=actor,
         scope_used=SCOPES_REVOKE,
-        action="scope_revoke",
-        target_user_id=target.id,
+        action="scope_revoke" if rows else "scope_revoke_noop",
+        target_user_id=locked.id,
         payload={"scope": scope, "rows_revoked": len(rows)},
         result="success",
     )
     return len(rows)
+
 
 
 @router.get("/catalog", response_model=List[str])
