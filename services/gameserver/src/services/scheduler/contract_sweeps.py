@@ -176,6 +176,21 @@ def _run_contract_expire_sweep_sync() -> int:
     single commit, AFTER the accepted-contracts sweep -- a THIRD facet of
     "contract expiry", not a new lock/tick of its own.
 
+    WO-CONTRACT-2b-HOLD-ESCROW: also runs contract_service.sweep_expired_
+    dispute_window under this SAME CEXP lock + due-check + single commit,
+    right after the accepted-contracts sweep -- a FOURTH facet of
+    "contract expiry" (an EXPIRED contract's held escrow, once its 48h
+    dispute window has closed undisputed, finally returns to the issuer).
+    No new lock, no new cadence constant: 5-minute granularity on a 48-
+    hour window is trivially fine, and folding it in here (rather than a
+    separate scheduler loop) keeps the entire held-escrow design inside
+    this lane -- zero `core_loop.py` touch. Order relative to the locker
+    sweep doesn't matter for correctness (a contract can't be both
+    "just expired this tick" and ">48h past its own deadline" in the same
+    tick -- if it were that overdue it would already have expired on an
+    earlier 5-minute tick), placed here to keep the two payment/escrow
+    sweeps adjacent.
+
     THE DEADLOCK + THE DEPOSIT-WINS REQUIREMENT, SOLVED BY ONE MECHANISM:
     an earlier version of this fix split contract-expiry and locker-
     conversion into two SEPARATE transactions (deadlock-free by
@@ -209,7 +224,11 @@ def _run_contract_expire_sweep_sync() -> int:
     converted is reported separately via its own log line, not folded
     into the returned int."""
     from src.core.database import SessionLocal
-    from src.services.contract_service import sweep_expired_accepted_contracts, sweep_expired_contracts
+    from src.services.contract_service import (
+        sweep_expired_accepted_contracts,
+        sweep_expired_contracts,
+        sweep_expired_dispute_window,
+    )
     from src.services.storage_service import gate_contract_expiry_on_locker, sweep_expired_lockers
 
     db = SessionLocal()
@@ -227,6 +246,12 @@ def _run_contract_expire_sweep_sync() -> int:
             return 0
         posted_result = sweep_expired_contracts(db)
         accepted_result = sweep_expired_accepted_contracts(db, expiry_gate=gate_contract_expiry_on_locker)
+        dispute_window_result = sweep_expired_dispute_window(db)
+        if dispute_window_result.get("refunded", 0):
+            logger.info(
+                "NPC scheduler: %d contract(s) refunded past their undisputed "
+                "dispute window", dispute_window_result["refunded"],
+            )
         locker_result = sweep_expired_lockers(db)
         if locker_result.get("converted", 0):
             logger.info(

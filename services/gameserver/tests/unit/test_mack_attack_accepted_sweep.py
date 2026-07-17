@@ -87,6 +87,18 @@ class _FakeQuery:
                 return row
         return None
 
+    def all(self) -> List[Any]:
+        # WO-STORE-EXPIRY-CLAIMABLE + D19 / ticket #43 fast-follow:
+        # sweep_expired_accepted_contracts gathers its candidates upfront
+        # via `.all()` now (not a repeated `.first()` while-loop) -- this
+        # fake never grew the method, silently stranding every test in
+        # this file that drives the real sweep (AttributeError before any
+        # assertion ever ran). See _RacyContractQuery's own `.all()`
+        # override for how the race-injection mechanism adapts to this
+        # shape (this base implementation never fires a race -- only used
+        # directly by the Player query, which has none).
+        return [row for row in self._rows if all(_match(row, c) for c in self._criteria)]
+
 
 class _RacyContractQuery(_FakeQuery):
     """Wraps the plain Contract query. On `.first()`, if the returned row's
@@ -96,7 +108,23 @@ class _RacyContractQuery(_FakeQuery):
     SELECT and its own guarded UPDATE a statement later. Also counts every
     SELECT and trips a hard circuit breaker past MAX_SELECTS, so a genuine
     infinite loop fails the test loudly and fast instead of hanging the
-    run."""
+    run.
+
+    WO-STORE-EXPIRY-CLAIMABLE + D19 / ticket #43 fast-follow: `sweep_
+    expired_accepted_contracts` gathers its candidates via ONE upfront
+    `.all()` now, not a repeated `.first()` while-loop -- `.first()`'s
+    race logic above is UNREACHABLE for that sweep today (kept, unchanged,
+    for the OTHER functions in this file that still call `_load_contract`
+    -> a real `.first()`, e.g. `complete()`/`abandon()`/`accept()`).
+    `.all()` gets its OWN parallel override below: fires every pending
+    race for every row IN THE GATHERED LIST, immediately, once, right as
+    the single SELECT returns them. This is observably IDENTICAL to
+    firing each race individually at that row's own later per-row turn --
+    the sweep's per-row guarded UPDATE always re-checks the LIVE row via
+    a fresh WHERE-clause match (see `_RacySession.execute()`), never the
+    possibly-stale Python object gathered by `.all()` -- so a race fired
+    early still correctly fails to match once the per-row loop reaches
+    that candidate's own guarded UPDATE."""
 
     MAX_SELECTS = 1000
 
@@ -119,6 +147,15 @@ class _RacyContractQuery(_FakeQuery):
             mutate = self._session.races.pop(row.id)
             mutate(row)
         return row
+
+    def all(self) -> List[Any]:
+        self._session.select_calls += 1
+        rows = super().all()
+        for row in rows:
+            if row.id in self._session.races:
+                mutate = self._session.races.pop(row.id)
+                mutate(row)
+        return rows
 
 
 class _FakeNestedTransaction:
@@ -235,17 +272,29 @@ _NOW = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 
 @pytest.mark.unit
 class TestNoInfiniteLoopUnderInjectedRace:
-    """Attack goal 1: construct the adversarial case the sweep's own
-    docstring claims can't cause a spin -- a row that races away (via a
-    live complete()/abandon() on another session) in the exact instant
-    between the per-iteration SELECT and the guarded UPDATE."""
+    """Attack goal 1, UPDATED for the `.all()`-based candidate-gathering
+    shape (WO-STORE-EXPIRY-CLAIMABLE + D19 -- see sweep_expired_accepted_
+    contracts's own docstring for why the OLD `while True: .first()` loop
+    was replaced): the original "infinite loop" concern is now
+    STRUCTURALLY impossible -- there is exactly ONE SELECT per sweep call
+    (the upfront `.all()`), so there is nothing left to re-select. These
+    tests now pin the SIMPLER, still load-bearing property that replaced
+    it: a row that races away (via a live complete()/abandon() on another
+    session) in the window between that one upfront SELECT and its OWN
+    later per-row guarded UPDATE is skipped cleanly -- no side effect, no
+    crash, siblings unaffected -- and exactly one SELECT ever fires,
+    regardless of how many candidates race away."""
 
     def test_raced_row_is_skipped_once_never_reselected_loop_terminates(self) -> None:
         acceptor1 = _player(credits=5000)
         acceptor2 = _player(credits=5000)
         # c1 will race away to CANCELLED (a concurrent abandon() landing)
-        # right as the sweep's SELECT returns it, before its own guarded
-        # UPDATE runs.
+        # right as the sweep's upfront `.all()` SELECT returns it, before
+        # its own per-row guarded UPDATE runs (see _RacyContractQuery.all()
+        # -- fires every pending race immediately for every gathered row;
+        # observably identical to firing exactly at that row's own later
+        # turn, since the per-row guarded UPDATE always re-checks the LIVE
+        # row, never the possibly-stale gathered Python object).
         c1 = _npc_contract(deadline=_NOW - timedelta(hours=1), acceptor_player_id=acceptor1.id, penalty=Decimal("300"))
         c2 = _npc_contract(deadline=_NOW - timedelta(minutes=1), acceptor_player_id=acceptor2.id, penalty=Decimal("200"))
         db = _RacySession(contracts=[c1, c2], players=[acceptor1, acceptor2])
@@ -264,16 +313,22 @@ class TestNoInfiniteLoopUnderInjectedRace:
         assert acceptor2.credits == 4800
 
         assert result == {"expired": 1}  # only the genuine winner counted
-        # 3 SELECTs: c1 (raced, discovered gone), c2 (real), then None
-        # (loop exit) -- NOT open-ended. This is the load-bearing assertion:
-        # the raced row is never re-offered by a subsequent SELECT.
-        assert db.select_calls == 3
+        # Exactly 2 SELECTs: the single upfront `.all()` (1), plus ONE
+        # `.first()` from `_refresh_contract_insurance_snapshot` (WO-
+        # CONTRACT-2b-HOLD-ESCROW) for c2 -- the one candidate that
+        # actually clears its guarded UPDATE (c1's own raced-away guard
+        # fails first, so it `continue`s BEFORE ever reaching that
+        # refresh -- no second SELECT for the raced row). The OLD while-
+        # loop's per-iteration re-SELECT of a RACED row no longer exists
+        # structurally; that's what this count still pins -- 2, not 3+.
+        assert db.select_calls == 2
 
     def test_every_candidate_races_away_loop_still_terminates_at_zero(self) -> None:
-        """Worst case for the "spin forever" theory: EVERY due row races
-        away. If the SELECT/UPDATE pairing could ever re-select an already-
-        raced row, this is where it would show up as a hang (caught by the
-        MAX_SELECTS circuit breaker instead)."""
+        """Worst case: EVERY due row races away in the window before its
+        own per-row guarded UPDATE. Proves the `.all()`-gathered candidate
+        list is processed to completion regardless -- no candidate is ever
+        re-fetched or re-attempted, so a 100%-raced batch still terminates
+        cleanly with a correct `{"expired": 0}`, not a hang or crash."""
         acceptors = [_player(credits=5000) for _ in range(5)]
         contracts = [
             _npc_contract(deadline=_NOW - timedelta(minutes=i + 1), acceptor_player_id=a.id, penalty=Decimal("100"))
@@ -290,9 +345,9 @@ class TestNoInfiniteLoopUnderInjectedRace:
             assert c.status == ContractStatus.COMPLETED  # sweep never touched them further
         for a in acceptors:
             assert a.credits == 5000  # nobody penalized -- all raced away before the guard
-        # 6 SELECTs: 5 raced-and-discovered-gone + 1 final None. Bounded,
-        # not open-ended -- the loop does not retry a raced row.
-        assert db.select_calls == 6
+        # Exactly 1 SELECT regardless of how many of the 5 candidates
+        # raced away -- the upfront `.all()` gathers them all in one shot.
+        assert db.select_calls == 1
 
 
 @pytest.mark.unit
@@ -351,7 +406,9 @@ class TestCompleteVsSweepInterleaving:
         assert contract.status == ContractStatus.EXPIRED
         penalized_balance = acceptor.credits
         assert penalized_balance == 5000 - 1000  # penalty charged
-        assert issuer.credits == 5000 + 1000  # full escrow refund
+        # WO-CONTRACT-2b-HOLD-ESCROW: escrow is HELD, not refunded, at
+        # expiry -- superseded assertion, see module docstring.
+        assert issuer.credits == 5000
 
         # The acceptor's already-in-flight completion attempt now hits a
         # dead contract. complete()'s own pre-check (status != ACCEPTED)
@@ -363,8 +420,8 @@ class TestCompleteVsSweepInterleaving:
         # second escrow movement.
         assert contract.status == ContractStatus.EXPIRED
         assert acceptor.credits == penalized_balance
-        assert issuer.credits == 5000 + 1000
-        assert contract.escrow_state == ContractEscrowState.REFUNDING
+        assert issuer.credits == 5000  # still HELD
+        assert contract.escrow_state == ContractEscrowState.HELD
 
 
 @pytest.mark.unit
@@ -400,7 +457,11 @@ class TestCancelPlayerContractRacesTheSweepWithDivergentEconomics:
         )
         return issuer, acceptor, contract
 
-    def test_sweep_wins_acceptor_penalized_issuer_refunded_in_full(self) -> None:
+    def test_sweep_wins_acceptor_penalized_issuer_escrow_held(self) -> None:
+        """WO-CONTRACT-2b-HOLD-ESCROW: supersedes the prior immediate-
+        full-refund pin -- the issuer's escrow is now HELD at expiry, not
+        refunded, pending the 48h dispute window (see contract_service.py's
+        own module docstring for the design change)."""
         issuer, acceptor, contract = self._build_pair()
         db = _RacySession(contracts=[contract], players=[issuer, acceptor])
 
@@ -408,7 +469,8 @@ class TestCancelPlayerContractRacesTheSweepWithDivergentEconomics:
 
         assert contract.status == ContractStatus.EXPIRED
         assert acceptor.credits == 4980 - 1000  # penalized in full, as designed
-        assert issuer.credits == 5000 + 1000  # full escrow refund
+        assert issuer.credits == 5000  # NOT refunded yet -- escrow stays HELD
+        assert contract.escrow_state == ContractEscrowState.HELD
 
     def test_issuer_cancel_past_deadline_is_now_blocked_gate_holds_no_divergence(self) -> None:
         issuer, acceptor, contract = self._build_pair()
@@ -428,11 +490,14 @@ class TestCancelPlayerContractRacesTheSweepWithDivergentEconomics:
         # contracts expects it -- the blocked cancel didn't strand it in
         # some third state. The sweep now enforces the acceptor's penalty
         # exactly as the WO guarantees, with no cancel-shaped escape hatch.
+        # WO-CONTRACT-2b-HOLD-ESCROW: the issuer's escrow is HELD (not
+        # refunded) at expiry -- a different design layer on top of this
+        # test's own mack HIGH #1 fix, not a divergence.
         result = contract_service.sweep_expired_accepted_contracts(db, now=_NOW)
         assert result == {"expired": 1}
         assert contract.status == ContractStatus.EXPIRED
         assert acceptor.credits == 4980 - 1000  # penalty enforced, not dodged
-        assert issuer.credits == 5000 + 1000  # full escrow refund, not the worse 880
+        assert issuer.credits == 5000  # escrow HELD, not refunded
 
 
 # ---------------------------------------------------------------------------
@@ -486,7 +551,23 @@ class TestDualLockConsistentOrdering:
         contract_service.abandon(db_b, contract_b.id, acceptor_b.id, now=_NOW)
         assert db_b.player_lock_log == [low_id, high_id]
 
-    def test_sweep_expired_accepted_contracts_locks_ascending_by_id(self) -> None:
+    def test_sweep_expired_accepted_contracts_player_issued_locks_only_the_acceptor(self) -> None:
+        """WO-CONTRACT-2b-HOLD-ESCROW (R2): superseded the prior dual-lock
+        pin this test used to make. The sweep no longer refunds the
+        issuer's wallet at expiry (escrow is HELD instead -- see
+        contract_service.py's own module docstring for the design
+        change), so it no longer needs to lock the issuer's Player row at
+        all -- only `escrow_amount` (a Contract-row field, already write-
+        locked by the guarded ACCEPTED -> EXPIRED status-flip UPDATE that
+        landed earlier in this same transaction) moves for a PLAYER-
+        issued row. A single acceptor lock is sufficient -- see
+        `_compute_claim_offset`'s and this sweep's own docstrings for why
+        that alone still protects the concurrent-insure() race the dual-
+        lock used to also happen to cover. This is a POSITIVE side effect
+        (one fewer dual-lock call site to reason about for deadlock
+        ordering), not a regression -- mirrors `test_npc_issued_single_
+        player_site_locks_only_the_acceptor`'s own single-lock pattern,
+        just for a PLAYER-issued row instead of NPC."""
         low_id, high_id = sorted([uuid.uuid4(), uuid.uuid4()])
         acceptor = _player(id=high_id, credits=5000)  # issuer has the LOWER id here
         issuer = _player(id=low_id, credits=5000)
@@ -498,7 +579,7 @@ class TestDualLockConsistentOrdering:
 
         contract_service.sweep_expired_accepted_contracts(db, now=_NOW)
 
-        assert db.player_lock_log == [low_id, high_id]
+        assert db.player_lock_log == [high_id]  # acceptor only -- issuer never locked
 
     def test_npc_issued_single_player_site_locks_only_the_acceptor(self) -> None:
         """NPC-issued contracts never trigger the dual-lock path -- only

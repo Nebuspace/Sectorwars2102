@@ -345,7 +345,15 @@ class TestHeldSweepWiringNeverBreaksTheLoop:
         (the deposit-wins/deadlock-fix mechanism -- see test_contract_
         service.py's own gate tests) -- since this test mocks the whole
         function, the gate argument is passed through untouched and
-        doesn't affect this test's own count-combining assertion."""
+        doesn't affect this test's own count-combining assertion.
+
+        WO-CONTRACT-2b-HOLD-ESCROW: sweep_expired_dispute_window is now a
+        FOURTH facet of "contract expiry" under this same lock -- also
+        mocked for the identical reason (hits the real query layer
+        otherwise). Its own return shape (`{"refunded": N}`) is reported
+        via its own log line, not folded into the returned int -- same
+        convention as sweep_expired_lockers -- so it does not change this
+        test's `result == 5` expectation."""
         db = _FakeLockDB()
         with patch("src.core.database.SessionLocal", return_value=db), patch(
             "src.services.contract_service.sweep_expired_contracts",
@@ -354,6 +362,9 @@ class TestHeldSweepWiringNeverBreaksTheLoop:
             "src.services.contract_service.sweep_expired_accepted_contracts",
             return_value={"expired": 2},
         ) as mock_accepted, patch(
+            "src.services.contract_service.sweep_expired_dispute_window",
+            return_value={"refunded": 0},
+        ) as mock_dispute_window, patch(
             "src.services.storage_service.sweep_expired_lockers",
             return_value={"converted": 1},
         ) as mock_lockers:
@@ -361,6 +372,7 @@ class TestHeldSweepWiringNeverBreaksTheLoop:
         assert result == 5
         mock_posted.assert_called_once()
         mock_accepted.assert_called_once()
+        mock_dispute_window.assert_called_once()
         mock_lockers.assert_called_once()
         assert db.committed is True
         assert db.closed is True
@@ -380,13 +392,23 @@ class TestHeldSweepWiringNeverBreaksTheLoop:
             "src.services.contract_service.sweep_expired_accepted_contracts",
             return_value={"expired": 0},
         ) as mock_accepted, patch(
+            "src.services.contract_service.sweep_expired_dispute_window",
+            return_value={"refunded": 0},
+        ), patch(
             "src.services.storage_service.sweep_expired_lockers", return_value={"converted": 0},
         ), patch(
             "src.services.storage_service.gate_contract_expiry_on_locker",
         ) as mock_gate:
-            _run_contract_expire_sweep_sync()
+            result = _run_contract_expire_sweep_sync()
 
         mock_accepted.assert_called_once_with(db, expiry_gate=mock_gate)
+        # WO-CONTRACT-2b-HOLD-ESCROW: without the new mock above, this
+        # call would silently hit the exploding query layer and roll
+        # back -- this test's own assertion wouldn't have caught that
+        # (mock_accepted was already called before the failure), so
+        # assert the full success path explicitly too.
+        assert result == 0
+        assert db.committed is True
 
     def test_contract_expire_sweep_locked_elsewhere_skips_cleanly_without_touching_the_core(self, caplog):
         """Mirrors test_locked_elsewhere_skips_cleanly_without_touching_the_

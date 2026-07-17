@@ -25,6 +25,7 @@ from sqlalchemy.sql.operators import in_op, is_
 
 from src.models.contract import (
     Contract,
+    ContractDisputeResolution,
     ContractEscrowState,
     ContractInsuranceCoverageTier,
     ContractIssuerType,
@@ -163,6 +164,52 @@ class _FakeNestedTransaction:
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
         return False
+
+
+class _SnapshotRestoringNestedTransaction:
+    """See `_SnapshotRestoringFakeSession`'s own docstring for why this
+    exists (a purpose-built exception to this file's shared `_FakeNested
+    Transaction` no-op convention). Snapshots every watched object's
+    attribute dict on `__enter__`; restores it verbatim if the block
+    raises. A shallow, single-savepoint simulation -- good enough for
+    this test's one-nested-block-at-a-time shape, never claims to model
+    real Postgres savepoint stacking or cross-session isolation (that
+    needs live Postgres, mack's lane)."""
+
+    def __init__(self, watched: List[Any]) -> None:
+        self._watched = watched
+        self._snapshots: List[dict] = []
+
+    def __enter__(self) -> "_SnapshotRestoringNestedTransaction":
+        self._snapshots = [dict(vars(obj)) for obj in self._watched]
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        if exc_type is not None:
+            for obj, snapshot in zip(self._watched, self._snapshots, strict=True):
+                obj.__dict__.clear()
+                obj.__dict__.update(snapshot)
+        return False
+
+
+class _SnapshotRestoringFakeSession(_FakeSession):
+    """WO-CONTRACT-2b-HOLD-ESCROW gate revise (cipher MEDIUM, stranded-
+    escrow atomicity): the shared `_FakeSession`/`_FakeNestedTransaction`
+    used everywhere else in this file is a documented pure no-op
+    passthrough that does NOT simulate real SAVEPOINT rollback of Python
+    attribute mutations (matching this codebase's established DB-free-
+    proof-limits convention -- see `TestPerRowSavepointIsolation` in
+    test_mack_attack_accepted_sweep.py for the sibling precedent, and its
+    own docstring's explicit "not reverted by a savepoint failure"
+    caveat for the OLDER guard-before-savepoint shape). This subclass
+    DOES simulate it, specifically to prove the ONE new atomicity claim
+    the WO-2b gate revise's fix makes: a failure anywhere inside `sweep_
+    expired_dispute_window`'s nested block now reverts BOTH the guard's
+    `escrow_state` flip AND the refund together, leaving the row exactly
+    as it was before the savepoint began -- not stranded."""
+
+    def begin_nested(self) -> _SnapshotRestoringNestedTransaction:
+        return _SnapshotRestoringNestedTransaction(list(self.contracts) + list(self.players))
 
 
 # --- fixtures ------------------------------------------------------------ #
@@ -488,13 +535,15 @@ class TestEscrowConservationEndToEnd:
         # the issuer ends exactly where they started.
         assert issuer.credits == 5000
 
-    def test_accepted_expiry_charges_acceptor_and_refunds_issuer_in_full(self) -> None:
+    def test_accepted_expiry_charges_acceptor_and_holds_escrow(self) -> None:
         """WO-DRIFT-econ-accepted-deadline-expiry -- the ACCEPTED-deadline
         twin of test_post_to_expire_refunds_issuer_and_conserves_the_sum
-        above. [NO-CANON] the issuer-refund half is the flagged conservative
-        default (see sweep_expired_accepted_contracts's own docstring) --
-        reuses abandon()'s exact refund idiom rather than inventing a new
-        forfeit-to-sink behavior."""
+        above. WO-CONTRACT-2b-HOLD-ESCROW (Max R, option C): the issuer-
+        refund half no longer happens HERE -- escrow stays HELD through
+        the 48h dispute window (see `sweep_expired_dispute_window`'s own
+        docstring for the eventual undisputed refund, or `file_dispute`/
+        `resolve_dispute` for a disputed one); superseding the prior
+        immediate-refund-at-expiry design this test used to pin."""
         issuer = _player(credits=5000)
         acceptor = _player(credits=5000)
         destination = _station()
@@ -519,9 +568,17 @@ class TestEscrowConservationEndToEnd:
         # refunded (contracts.md's Penalties section: "acceptance fee is
         # not refunded").
         assert acceptor.credits == acceptor_after_accept - 1000
-        # Issuer's FULL escrow refunds separately -- the flagged NO-CANON
-        # default.
-        assert issuer.credits == 4000 + 1000
+        # Issuer's escrow is HELD, not refunded, at expiry -- see module
+        # docstring for the design change.
+        assert issuer.credits == 4000
+        assert contract.escrow_state == ContractEscrowState.HELD
+        assert contract.escrow_amount == Decimal("1000.00")  # untouched -- no tier, no pool draw
+
+        past_window = past_deadline + timedelta(hours=48, seconds=1)
+        window_result = contract_service.sweep_expired_dispute_window(db, now=past_window)
+
+        assert window_result == {"refunded": 1}
+        assert issuer.credits == 4000 + 1000  # held escrow reaches the issuer once the window closes
         assert contract.escrow_state == ContractEscrowState.REFUNDING
 
     def test_accepted_expiry_does_not_double_refund_an_already_refunding_row(self) -> None:
@@ -540,6 +597,10 @@ class TestEscrowConservationEndToEnd:
             escrow_state=ContractEscrowState.REFUNDING,  # already handled (raced cancel, say)
             deadline=_NOW - timedelta(hours=1), posted_at=_NOW - timedelta(hours=5),
             posting_stations=[destination.id], accepted_at=_NOW - timedelta(hours=4), completed_at=None,
+            # WO-CONTRACT-1b-CLAIM-SAFETY: sweep_expired_accepted_contracts
+            # now unconditionally reads these on every candidate.
+            insurance_coverage_tier=None, insurance_premium_paid=Decimal("0"),
+            insurance_claim_filed=False, insurance_pool_reserve=Decimal("0"),
         )
         db = _FakeSession(players=[issuer, acceptor], contracts=[contract])
 
@@ -585,12 +646,15 @@ class TestEscrowConservationEndToEnd:
         assert issuer.credits == issuer_after_post
 
         # The sweep still enforces the acceptor's WO-guaranteed penalty --
-        # no cancel-shaped escape hatch remains.
+        # no cancel-shaped escape hatch remains. WO-CONTRACT-2b-HOLD-
+        # ESCROW: the issuer's escrow is HELD (not refunded) at expiry --
+        # unrelated to the mack HIGH #1 fix this test pins, just a
+        # different design layer on top of it.
         result = contract_service.sweep_expired_accepted_contracts(db, now=past_deadline)
         assert result == {"expired": 1}
         assert contract.status == ContractStatus.EXPIRED
         assert acceptor.credits == acceptor_after_accept - 1000  # penalty enforced
-        assert issuer.credits == issuer_after_post + 1000  # full escrow refund
+        assert issuer.credits == issuer_after_post  # escrow HELD, not refunded, at expiry
 
     def test_accepted_cancel_with_insurance_refunds_acceptor_pro_rata(self) -> None:
         """WO-CONTRACT-1-INSURANCE (ADR-0062 E-I2): issuer-cancels an
@@ -631,15 +695,19 @@ class TestEscrowConservationEndToEnd:
 
     def test_post_to_expire_to_dispute_destination_unreachable_conserves_the_sum(self) -> None:
         """WO-CONTRACT-2-DISPUTE-T1: post -> accept -> deadline-lapse
-        (sweep_expired_accepted_contracts, unchanged/pre-existing) ->
-        file_dispute (Tier-1 destination_unreachable), through the
-        REALISTIC post_player_contract/accept/sweep/dispute path (not
-        hand-built SimpleNamespaces) -- proves conservation end-to-end at
-        the level a real caller would hit it. The sweep's own credit-
-        penalty (charged to the acceptor at expiry) is NOT reversed by
-        the dispute resolution (see file_dispute's own [NO-CANON] note) --
-        asserted explicitly here as a real, deliberate outcome, not an
-        oversight."""
+        (sweep_expired_accepted_contracts) -> file_dispute (Tier-1
+        destination_unreachable), through the REALISTIC post_player_
+        contract/accept/sweep/dispute path (not hand-built SimpleNamespaces)
+        -- proves conservation end-to-end at the level a real caller would
+        hit it. WO-CONTRACT-2b-HOLD-ESCROW: the issuer's escrow now stays
+        HELD across the expiry sweep and is returned at DISPUTE-filing
+        time instead (via `_settle_dispute_escrow`, since destination_
+        unreachable draws nothing issuer-funded -- the FULL held escrow
+        returns to the issuer as the settlement's remainder). The sweep's
+        own credit-penalty (charged to the acceptor at expiry) is NOT
+        reversed by the dispute resolution (see file_dispute's own
+        [NO-CANON] note) -- asserted explicitly here as a real, deliberate
+        outcome, not an oversight."""
         issuer = _player(credits=5000)
         acceptor = _player(credits=5000)
         destination = _station(status=StationStatus.OPERATIONAL)  # OPERATIONAL at post time
@@ -667,8 +735,10 @@ class TestEscrowConservationEndToEnd:
         assert contract.status == ContractStatus.EXPIRED
         acceptor_after_expiry = acceptor.credits  # -1000 (flat penalty)
         assert acceptor_after_expiry == acceptor_after_accept - 1000
-        issuer_after_expiry = issuer.credits  # +1000 (full escrow refund, pre-existing sweep behavior)
-        assert issuer_after_expiry == issuer_after_post + 1000
+        # WO-CONTRACT-2b-HOLD-ESCROW: NOT refunded at expiry -- held.
+        assert issuer.credits == issuer_after_post
+        assert contract.escrow_state == ContractEscrowState.HELD
+        assert contract.escrow_amount == Decimal("1000.00")
 
         result = contract_service.file_dispute(
             db, contract.id, acceptor.id, "the destination station was offline", now=past_deadline,
@@ -685,14 +755,587 @@ class TestEscrowConservationEndToEnd:
         assert not contract.escalated_to_admin
         assert result["escalated_to_admin"] is False  # file_dispute's own return always coerces via bool()
 
-        # Conservation: the dispute ONLY refunds the 20cr acceptance fee.
-        # The issuer's earlier full escrow refund (sweep) and the
-        # acceptor's earlier flat penalty (sweep) are BOTH untouched --
-        # a real, [NO-CANON]-flagged gap (canon's own settlement bullet
-        # for this case never mentions reversing the sweep's penalty),
-        # not a bug in this test.
-        assert issuer.credits == issuer_after_expiry
+        # Conservation: the dispute refunds the 20cr acceptance fee
+        # (acceptor self-refund) AND finally releases the FULL held
+        # escrow (1000, untouched) to the issuer as the settlement's
+        # remainder -- destination_unreachable draws nothing issuer-
+        # funded, so the entire held ledger returns. The acceptor's
+        # earlier flat penalty (sweep) is untouched -- a real, [NO-CANON]-
+        # flagged gap (canon's own settlement bullet for this case never
+        # mentions reversing the sweep's penalty), not a bug in this test.
+        assert issuer.credits == issuer_after_post + 1000
         assert acceptor.credits == acceptor_after_expiry + 20
+        assert contract.escrow_amount == Decimal("0")
+        assert contract.escrow_state == ContractEscrowState.REFUNDING
+
+    def test_post_to_expire_to_dispute_escalated_to_resolve_full_payout_conserves_the_sum(self) -> None:
+        """WO-CONTRACT-2b-HOLD-ESCROW: the Tier-2 twin of the Tier-1
+        destination_unreachable test above -- post -> accept -> deadline-
+        lapse (escrow HELD) -> file_dispute (no Tier-1 case matches,
+        escalates) -> resolve_dispute (FULL_PAYOUT), through the REALISTIC
+        pipeline end-to-end, not hand-built fixtures. Proves the full
+        chain integrates: escrow survives untouched through the entire
+        48h-eligible window AND the Tier-1 miss, then `_settle_dispute_
+        escrow` draws it down correctly at Tier-2 resolution."""
+        issuer = _player(credits=5000)
+        acceptor = _player(credits=5000)
+        destination = _station(status=StationStatus.OPERATIONAL)  # no Tier-1 case matches
+        db = _FakeSession(players=[issuer, acceptor], stations=[destination], resources=[_resource()])
+        deadline = _NOW + timedelta(hours=2)
+
+        contract_service.post_player_contract(
+            db, issuer.id, **_post_kwargs(destination, deadline=deadline, payment=Decimal("1000")),
+        )
+        contract = db.added[0]
+        issuer_after_post = issuer.credits  # 5000 - 1000 escrow
+        contract_service.accept(db, contract.id, acceptor.id, now=_NOW)
+        acceptor_after_accept = acceptor.credits  # 5000 - 20
+
+        past_deadline = deadline + timedelta(seconds=1)
+        contract_service.sweep_expired_accepted_contracts(db, now=past_deadline)
+        acceptor_after_expiry = acceptor.credits  # -1000 flat penalty
+        assert acceptor_after_expiry == acceptor_after_accept - 1000
+        assert issuer.credits == issuer_after_post  # HELD, not refunded
+        assert contract.escrow_amount == Decimal("1000.00")
+
+        dispute_result = contract_service.file_dispute(
+            db, contract.id, acceptor.id, "believed delivered on time", now=past_deadline,
+        )
+        assert dispute_result["tier1_resolution"] is None  # no Tier-1 case matches -> Tier-2 queue
+        assert contract.status == ContractStatus.DISPUTED
+        assert contract.escrow_state == ContractEscrowState.DISPUTED
+        assert contract.escrow_amount == Decimal("1000.00")  # untouched by filing alone
+        assert issuer.credits == issuer_after_post  # still untouched
+        assert acceptor.credits == acceptor_after_expiry  # still untouched
+
+        resolve_result = contract_service.resolve_dispute(
+            db, contract.id, uuid.uuid4(), ContractDisputeResolution.FULL_PAYOUT,
+            notes="proven delivered", now=past_deadline,
+        )
+
+        assert resolve_result["amount_to_acceptor"] == 1000
+        assert contract.status == ContractStatus.COMPLETED
+        # The FULL held escrow (1000) is drawn to the acceptor -- remainder
+        # 0 -- the issuer's wallet stays exactly where it was since the
+        # post-time debit (never separately touched again).
+        assert issuer.credits == issuer_after_post
+        assert acceptor.credits == acceptor_after_expiry + 1000
+        assert contract.escrow_amount == Decimal("0")
+        assert contract.escrow_state == ContractEscrowState.RELEASED
+
+
+_PAST_DEADLINE = _FAR_DEADLINE + timedelta(seconds=1)
+
+
+@pytest.mark.unit
+class TestClaimOffsetInsuranceSafety:
+    """WO-CONTRACT-1b-CLAIM-SAFETY: the rebuilt insurance CLAIM as a
+    penalty-OFFSET (never a positive payout), settled through the real
+    post_player_contract -> accept -> insure -> sweep_expired_accepted_
+    contracts pipeline (real ORM Contract rows, real `insurance_pool_
+    reserve` column -- not hand-built SimpleNamespaces) so the offset
+    engine, the guarded sweep, AND the issuer-refund netting (finding #4
+    of this WO's verify-first report -- refunding the issuer's FULL
+    escrow_amount while the pool absorbed part of the acceptor's penalty
+    is itself a mint) are all exercised together, the way a real caller
+    hits them.
+
+    Every scenario uses `payment=1000` (so `penalty == 1000`, the
+    unmodified default) and HAZARD tier (15% deductible, 10% premium)
+    unless noted -- `insurer_nominal = 850`, `acceptor_floor = 150`.
+    `post_player_contract`/`accept`/`insure` all run at `_NOW`; every
+    sweep call runs at `_PAST_DEADLINE` (one second past `_post_kwargs`'
+    own default `_FAR_DEADLINE`) -- the sweep only expires a STRICTLY
+    past-deadline ACCEPTED contract."""
+
+    def _posted_accepted_insured(
+        self, db: "_FakeSession", issuer: SimpleNamespace, acceptor: SimpleNamespace,
+        destination: SimpleNamespace, *, pool: Decimal,
+        tier: ContractInsuranceCoverageTier = ContractInsuranceCoverageTier.HAZARD,
+        payment: Decimal = Decimal("1000"),
+    ) -> Contract:
+        contract_service.post_player_contract(
+            db, issuer.id, **_post_kwargs(destination, payment=payment, insurance_pool_reserve=pool),
+        )
+        contract = db.added[-1]  # NOT [0] -- this helper is called twice in the two-contract test
+        contract_service.accept(db, contract.id, acceptor.id, now=_NOW)
+        contract_service.insure(db, contract.id, acceptor.id, tier, now=_NOW)
+        return contract
+
+    def test_no_tier_full_penalty_charged_pool_never_touched(self) -> None:
+        """A funded pool with NO tier purchased is inert -- `_compute_
+        claim_offset` short-circuits on `insurance_coverage_tier is None`
+        before ever reading the pool. Full penalty; the FULL escrow (incl.
+        the untouched reserve) is HELD at expiry (WO-CONTRACT-2b-HOLD-
+        ESCROW, no longer refunded immediately) and only reaches the
+        issuer once the 48h dispute window closes undisputed."""
+        issuer = _player(credits=5000)
+        acceptor = _player(credits=5000)
+        destination = _station()
+        db = _FakeSession(players=[issuer, acceptor], stations=[destination], resources=[_resource()])
+
+        contract_service.post_player_contract(
+            db, issuer.id, **_post_kwargs(destination, payment=Decimal("1000"), insurance_pool_reserve=Decimal("500")),
+        )
+        contract = db.added[0]
+        contract_service.accept(db, contract.id, acceptor.id, now=_NOW)
+        acceptor_after_accept = acceptor.credits  # 5000 - 20
+        assert issuer.credits == 5000 - 1500  # escrow = payment(1000) + pool(500)
+
+        result = contract_service.sweep_expired_accepted_contracts(db, now=_PAST_DEADLINE)
+
+        assert result == {"expired": 1}
+        assert acceptor.credits == acceptor_after_accept - 1000  # full penalty, uninsured
+        assert issuer.credits == 5000 - 1500  # NOT refunded yet -- escrow stays HELD
+        assert contract.escrow_state == ContractEscrowState.HELD
+        assert contract.escrow_amount == Decimal("1500.00")  # untouched, pool never read
+        assert contract.insurance_pool_reserve == Decimal("500")  # untouched
+
+        past_window = _PAST_DEADLINE + timedelta(hours=48, seconds=1)
+        window_result = contract_service.sweep_expired_dispute_window(db, now=past_window)
+
+        assert window_result == {"refunded": 1}
+        assert issuer.credits == 5000 - 1500 + 1500  # full escrow back, reserve untouched
+        assert contract.escrow_amount == Decimal("0")
+        assert contract.escrow_state == ContractEscrowState.REFUNDING
+
+    def test_fully_funded_pool_offsets_to_exactly_the_deductible_floor(self) -> None:
+        issuer = _player(credits=5000)
+        acceptor = _player(credits=5000)
+        destination = _station()
+        db = _FakeSession(players=[issuer, acceptor], stations=[destination], resources=[_resource()])
+
+        contract = self._posted_accepted_insured(db, issuer, acceptor, destination, pool=Decimal("850"))
+        acceptor_after_insure = acceptor.credits  # 5000 - 20(fee) - 100(HAZARD premium)
+        assert acceptor_after_insure == 4880
+        issuer_after_post = 5000 - Decimal("1850")  # payment(1000) + pool(850)
+
+        result = contract_service.sweep_expired_accepted_contracts(db, now=_PAST_DEADLINE)
+
+        assert result == {"expired": 1}
+        assert acceptor.credits == acceptor_after_insure - 150  # exactly the deductible floor
+        assert issuer.credits == issuer_after_post  # NOT refunded yet -- escrow stays HELD
+        assert contract.escrow_state == ContractEscrowState.HELD
+        # WO-CONTRACT-2b-HOLD-ESCROW (R3): escrow(1850) - pool_draw(850) =
+        # 1000 exactly, whole-credit, consumed at expiry so a later
+        # disposition can never re-mint the drawn pool.
+        assert contract.escrow_amount == Decimal("1000.00")
+        assert contract.insurance_pool_reserve == Decimal("0")  # fully drained, floored at 0
+
+        past_window = _PAST_DEADLINE + timedelta(hours=48, seconds=1)
+        window_result = contract_service.sweep_expired_dispute_window(db, now=past_window)
+
+        assert window_result == {"refunded": 1}
+        assert issuer.credits == issuer_after_post + 1000  # exactly the held remainder
+        assert contract.escrow_amount == Decimal("0")
+
+    def test_partially_funded_pool_degrades_smoothly_never_negative(self) -> None:
+        issuer = _player(credits=5000)
+        acceptor = _player(credits=5000)
+        destination = _station()
+        db = _FakeSession(players=[issuer, acceptor], stations=[destination], resources=[_resource()])
+
+        contract = self._posted_accepted_insured(db, issuer, acceptor, destination, pool=Decimal("300"))
+        acceptor_after_insure = acceptor.credits
+        issuer_after_post = 5000 - Decimal("1300")  # payment(1000) + pool(300)
+
+        result = contract_service.sweep_expired_accepted_contracts(db, now=_PAST_DEADLINE)
+
+        assert result == {"expired": 1}
+        # Pool (300) < insurer_nominal (850) -- acceptor pays MORE than the
+        # deductible floor (150), but strictly less than the full penalty.
+        assert acceptor.credits == acceptor_after_insure - 700
+        assert issuer.credits == issuer_after_post  # NOT refunded yet
+        assert contract.escrow_amount == Decimal("1000.00")  # 1300 - pool_draw(300)
+        assert contract.insurance_pool_reserve == Decimal("0")  # drained exactly to 0, not negative
+
+        past_window = _PAST_DEADLINE + timedelta(hours=48, seconds=1)
+        contract_service.sweep_expired_dispute_window(db, now=past_window)
+
+        assert issuer.credits == issuer_after_post + 1000  # held remainder, once the window closes
+
+    def test_zero_pool_insured_contract_still_pays_full_penalty(self) -> None:
+        """Locks in the verify-first finding: coverage is structurally
+        inert without a funded pool -- an insured acceptor with a $0 pool
+        pays the SAME as an uninsured one. Not a bug; the ruled model's
+        own "pool floor at 0, never negative" degrades all the way to
+        zero coverage when the pool starts at zero."""
+        issuer = _player(credits=5000)
+        acceptor = _player(credits=5000)
+        destination = _station()
+        db = _FakeSession(players=[issuer, acceptor], stations=[destination], resources=[_resource()])
+
+        contract = self._posted_accepted_insured(db, issuer, acceptor, destination, pool=Decimal("0"))
+        acceptor_after_insure = acceptor.credits
+
+        contract_service.sweep_expired_accepted_contracts(db, now=_PAST_DEADLINE)
+
+        assert acceptor.credits == acceptor_after_insure - 1000  # full penalty
+        assert contract.insurance_pool_reserve == Decimal("0")
+
+    def test_overfunded_pool_offset_bounded_by_deductible_not_pool_balance(self) -> None:
+        """Offset is bounded by BOTH the penalty (via the deductible
+        floor) AND the pool -- a pool far larger than what this ONE
+        claim could ever need is only drawn down by the nominal insurer
+        share (850), never more; the issuer keeps the untouched surplus."""
+        issuer = _player(credits=10000)
+        acceptor = _player(credits=5000)
+        destination = _station()
+        db = _FakeSession(players=[issuer, acceptor], stations=[destination], resources=[_resource()])
+
+        contract = self._posted_accepted_insured(db, issuer, acceptor, destination, pool=Decimal("5000"))
+        acceptor_after_insure = acceptor.credits
+        issuer_after_post = 10000 - Decimal("6000")  # payment(1000) + pool(5000)
+
+        result = contract_service.sweep_expired_accepted_contracts(db, now=_PAST_DEADLINE)
+
+        assert result == {"expired": 1}
+        assert acceptor.credits == acceptor_after_insure - 150  # deductible floor, same as fully-funded
+        assert issuer.credits == issuer_after_post  # NOT refunded yet -- escrow stays HELD
+        # escrow(6000) - pool_draw(850) = 5150 held -- the 4150cr surplus
+        # the pool never needed sits in escrow too, not drawn down early.
+        assert contract.escrow_amount == Decimal("5150.00")
+        assert contract.insurance_pool_reserve == Decimal("4150")  # 5000 - 850, NOT drained to 0
+
+        past_window = _PAST_DEADLINE + timedelta(hours=48, seconds=1)
+        window_result = contract_service.sweep_expired_dispute_window(db, now=past_window)
+
+        assert window_result == {"refunded": 1}
+        # The full held remainder (5150, incl. the untouched 4150 pool
+        # surplus) reaches the issuer once the window closes -- nothing
+        # is stranded, nothing double-counted.
+        assert issuer.credits == issuer_after_post + Decimal("5150")
+        assert contract.escrow_amount == Decimal("0")
+
+    def test_half_credit_deductible_boundary_derivation_never_mints(self) -> None:
+        """WO-CONTRACT-2b-HOLD-ESCROW gate revise (mack): the sharpest
+        possible rounding case -- penalty=10, BASIC 5% deductible lands
+        EXACTLY on `floor = 0.50`. Independently rounding BOTH the floor
+        AND the nominal insurer share would mint a credit here (floor =
+        round(0.50) = 1, nominal = round(9.50) = 10, sum = 11 != 10) --
+        `_compute_claim_offset`'s whole-credit-early derivation (R3)
+        structurally cannot hit this: the nominal share is DERIVED by
+        exact integer subtraction from the already-whole penalty and
+        floor, never independently rounded on its own. Exercised directly
+        via `apply_claim_offset` (contract_service.py's own re-export) --
+        the pure-function half of this claim; see the sibling full-
+        lifecycle test below for the same boundary proven end-to-end."""
+        contract = SimpleNamespace(
+            insurance_coverage_tier=ContractInsuranceCoverageTier.BASIC,
+            insurance_pool_reserve=Decimal("100"),  # generously funded -- bounded by the deductible, not the pool
+        )
+
+        offset = contract_service.apply_claim_offset(contract, Decimal("10"))
+
+        assert offset["acceptor_debit"] + offset["pool_draw"] == Decimal("10")  # exact, by construction
+        assert offset["acceptor_debit"] == Decimal("1")  # the .50 floor rounds UP (ROUND_HALF_UP)
+        assert offset["pool_draw"] == Decimal("9")
+        assert contract.insurance_pool_reserve == Decimal("91")  # 100 - 9, drained by exactly the draw
+
+    def test_half_credit_deductible_boundary_full_lifecycle_no_mint(self) -> None:
+        """The SAME .50-boundary deductible case, at a payment scale
+        (110, BASIC 5% -> floor = 5.50 exactly) chosen to avoid OTHER,
+        unrelated sub-credit rounding noise from `accept()`'s/`insure()`'s
+        own fee math at a payment as small as 10 -- proven end-to-end
+        through the real post -> accept -> insure -> expire pipeline, not
+        just the pure function in isolation."""
+        issuer = _player(credits=5000)
+        acceptor = _player(credits=5000)
+        destination = _station()
+        db = _FakeSession(players=[issuer, acceptor], stations=[destination], resources=[_resource()])
+
+        contract = self._posted_accepted_insured(
+            db, issuer, acceptor, destination, pool=Decimal("200"),
+            tier=ContractInsuranceCoverageTier.BASIC, payment=Decimal("110"),
+        )
+        acceptor_after_insure = acceptor.credits
+        issuer_after_post = 5000 - Decimal("310")  # payment(110) + pool(200)
+        assert issuer.credits == issuer_after_post
+
+        result = contract_service.sweep_expired_accepted_contracts(db, now=_PAST_DEADLINE)
+
+        assert result == {"expired": 1}
+        # floor = round(110*0.05) = round(5.50) = 6 (ROUND_HALF_UP);
+        # nominal = 110 - 6 = 104 (derived, never independently rounded);
+        # pool_draw = min(104, 200) = 104; acceptor_debit = 110 - 104 = 6.
+        # 6 + 104 == 110 exactly -- no mint at the sharpest boundary.
+        assert acceptor.credits == acceptor_after_insure - 6
+        assert issuer.credits == issuer_after_post  # still HELD, not refunded yet
+        assert contract.escrow_amount == Decimal("206.00")  # escrow(310) - pool_draw(104)
+        assert contract.insurance_pool_reserve == Decimal("96")  # 200 - 104
+
+        past_window = _PAST_DEADLINE + timedelta(hours=48, seconds=1)
+        contract_service.sweep_expired_dispute_window(db, now=past_window)
+        assert issuer.credits == issuer_after_post + Decimal("206")
+        assert contract.escrow_amount == Decimal("0")
+
+    @pytest.mark.parametrize(
+        "tier,pool",
+        [
+            (ContractInsuranceCoverageTier.BASIC, Decimal("950")),      # 5% deductible -> nominal 950
+            (ContractInsuranceCoverageTier.STANDARD, Decimal("900")),   # 10% deductible -> nominal 900
+            (ContractInsuranceCoverageTier.HAZARD, Decimal("850")),     # 15% deductible -> nominal 850
+        ],
+    )
+    def test_acceptor_credit_delta_never_positive_across_every_tier(
+        self, tier: ContractInsuranceCoverageTier, pool: Decimal,
+    ) -> None:
+        """WO's own mandatory Accept criterion: assert the acceptor's
+        credit-delta is <= 0 at every step of the claim/offset path --
+        the offset only ever REDUCES a debit, never adds a credit, for
+        every tier, not just HAZARD."""
+        issuer = _player(credits=5000)
+        acceptor = _player(credits=5000)
+        destination = _station()
+        db = _FakeSession(players=[issuer, acceptor], stations=[destination], resources=[_resource()])
+
+        contract_service.post_player_contract(
+            db, issuer.id, **_post_kwargs(destination, payment=Decimal("1000"), insurance_pool_reserve=pool),
+        )
+        contract = db.added[0]
+        contract_service.accept(db, contract.id, acceptor.id, now=_NOW)
+        before_insure = acceptor.credits
+        contract_service.insure(db, contract.id, acceptor.id, tier, now=_NOW)
+        assert acceptor.credits <= before_insure  # premium is a debit too
+        before_expiry = acceptor.credits
+
+        contract_service.sweep_expired_accepted_contracts(db, now=_PAST_DEADLINE)
+
+        assert acceptor.credits <= before_expiry  # offset never credits the acceptor
+
+    def test_one_self_inflicted_loss_offsets_each_contract_independently_not_n_times(self) -> None:
+        """The cipher-exploit regression: the SAME acceptor (and, here,
+        the SAME issuer) holds TWO independently-insured contracts that
+        both expire in ONE sweep pass -- a single incident must offset
+        EACH contract's own failure against ITS OWN pool, summing to
+        150+150=300, never a shared/duplicated/multiplied total."""
+        issuer = _player(credits=10000)
+        acceptor = _player(credits=5000)
+        destination = _station()
+        db = _FakeSession(players=[issuer, acceptor], stations=[destination], resources=[_resource()])
+
+        contract_a = self._posted_accepted_insured(db, issuer, acceptor, destination, pool=Decimal("850"))
+        contract_b = self._posted_accepted_insured(db, issuer, acceptor, destination, pool=Decimal("850"))
+        acceptor_after_insure = acceptor.credits  # 2x accept fee + 2x HAZARD premium already sunk
+
+        result = contract_service.sweep_expired_accepted_contracts(db, now=_PAST_DEADLINE)
+
+        assert result == {"expired": 2}
+        # 150 owed per contract, NOT 150 total (shared) and NOT 300x2=600.
+        assert acceptor.credits == acceptor_after_insure - 150 - 150
+        assert contract_a.insurance_pool_reserve == Decimal("0")
+        assert contract_b.insurance_pool_reserve == Decimal("0")
+
+    @pytest.mark.parametrize("pool", [Decimal("0"), Decimal("300"), Decimal("850"), Decimal("5000")])
+    def test_full_lifecycle_conservation_holds_regardless_of_pool_depth(self, pool: Decimal) -> None:
+        """The invariant underneath every scenario above, made explicit,
+        now in TWO phases (WO-CONTRACT-2b-HOLD-ESCROW: escrow is HELD at
+        expiry, not refunded immediately):
+
+        Phase 1 (right after expiry, escrow HELD): `issuer + acceptor +
+        contract.escrow_amount` -- INCLUDING the still-held ledger --
+        equals `starting - accept_fee - premium - penalty` exactly. This
+        is the invariant that matters DURING the 48h window: the money
+        hasn't vanished, it's sitting in `escrow_amount` accounted for.
+
+        Phase 2 (after the deferred-refund sweep, escrow fully disposed):
+        `issuer + acceptor` ALONE now equals the SAME total -- the held
+        ledger has zeroed out into the issuer's wallet. Both phases hold
+        REGARDLESS of pool depth -- the pool only decides who between
+        issuer and acceptor absorbs the penalty portion, never whether
+        it's conserved. This is what makes finding #4's issuer-refund
+        netting (into `escrow_amount`, not a direct credit) correct
+        rather than an independently-plausible-looking guess."""
+        issuer = _player(credits=10000)  # enough to cover the largest pool param (5000)
+        acceptor = _player(credits=5000)
+        destination = _station()
+        db = _FakeSession(players=[issuer, acceptor], stations=[destination], resources=[_resource()])
+        starting_total = issuer.credits + acceptor.credits
+
+        contract = self._posted_accepted_insured(db, issuer, acceptor, destination, pool=pool)
+        contract_service.sweep_expired_accepted_contracts(db, now=_PAST_DEADLINE)
+
+        accept_fee = 20  # 2% of 1000
+        premium = 100  # HAZARD: 10% of 1000
+        penalty = 1000
+        expected_remaining = starting_total - accept_fee - premium - penalty
+
+        # Phase 1: the held escrow is part of the conserved total (whole-
+        # credit by construction, R3 -- `int()` here is a lossless read,
+        # not a rounding operation).
+        assert (issuer.credits + acceptor.credits + int(contract.escrow_amount)) == expected_remaining
+
+        past_window = _PAST_DEADLINE + timedelta(hours=48, seconds=1)
+        contract_service.sweep_expired_dispute_window(db, now=past_window)
+
+        # Phase 2: fully disposed -- the same total, now with nothing held.
+        assert (issuer.credits + acceptor.credits) == expected_remaining
+        assert contract.escrow_amount == Decimal("0")
+
+
+@pytest.mark.unit
+class TestDisputeWindowRace:
+    """WO-CONTRACT-2b-HOLD-ESCROW money invariant (d): the 48h boundary
+    race between `file_dispute` (unlocked, an ordinary API request
+    transaction) and `sweep_expired_dispute_window` (CEXP-advisory-locked)
+    is closed by the ROW-LEVEL atomic guard (`_guarded_file_dispute`'s own
+    extra `escrow_state == 'held'` predicate, beyond `status`) -- NOT by
+    the advisory lock. Neither test here holds or needs any lock at all,
+    which is the point: proving the guard alone is what does the work.
+
+    Both orderings are simulated by calling the two REAL functions with
+    DIFFERENT `now` values against the SAME db/contract (not actual
+    concurrent threads) -- which call's own guarded UPDATE lands FIRST is
+    what decides the winner, exactly mirroring what Postgres row-level
+    locking decides for two genuinely concurrent transactions."""
+
+    def _held_contract_past_window(
+        self, db: "_FakeSession", issuer: SimpleNamespace, acceptor: SimpleNamespace, destination: SimpleNamespace,
+    ) -> tuple:
+        deadline = _NOW + timedelta(hours=2)
+        contract_service.post_player_contract(
+            db, issuer.id, **_post_kwargs(destination, deadline=deadline, payment=Decimal("1000")),
+        )
+        contract = db.added[-1]
+        contract_service.accept(db, contract.id, acceptor.id, now=_NOW)
+        past_deadline = deadline + timedelta(seconds=1)
+        contract_service.sweep_expired_accepted_contracts(db, now=past_deadline)
+        assert contract.status == ContractStatus.EXPIRED
+        assert contract.escrow_state == ContractEscrowState.HELD
+        return contract, deadline
+
+    def test_deferred_refund_wins_dispute_filed_after_rejected_cleanly(self) -> None:
+        """Sweep's guarded UPDATE commits first (escrow_state: held ->
+        refunding; status stays EXPIRED -- the sweep never touches it).
+        The LATER dispute-filing attempt's own UPFRONT Python checks
+        (status still EXPIRED, and its own `now` sits well within the 48h
+        window) BOTH pass in isolation -- it is ONLY `_guarded_file_
+        dispute`'s extra `escrow_state == 'held'` predicate that catches
+        the race, with zero mutation from the rejected filing."""
+        issuer = _player(credits=5000)
+        acceptor = _player(credits=5000)
+        destination = _station()
+        db = _FakeSession(players=[issuer, acceptor], stations=[destination], resources=[_resource()])
+        contract, deadline = self._held_contract_past_window(db, issuer, acceptor, destination)
+
+        just_past_window = deadline + timedelta(hours=48, seconds=2)
+        window_result = contract_service.sweep_expired_dispute_window(db, now=just_past_window)
+        assert window_result == {"refunded": 1}
+        assert contract.escrow_state == ContractEscrowState.REFUNDING
+        assert contract.status == ContractStatus.EXPIRED  # sweep never touches status
+        issuer_after_refund = issuer.credits
+
+        just_inside_window = deadline + timedelta(hours=47, minutes=59)
+        with pytest.raises(contract_service.ContractConflictError, match="dispute window has already closed"):
+            contract_service.file_dispute(db, contract.id, acceptor.id, "too late", now=just_inside_window)
+
+        # Zero mutation from the rejected filing -- no double-disposition.
+        assert contract.status == ContractStatus.EXPIRED
+        assert contract.escrow_state == ContractEscrowState.REFUNDING
+        assert issuer.credits == issuer_after_refund
+        assert contract.dispute_filed_at is None
+
+    def test_dispute_filed_wins_deferred_sweep_skips_cleanly(self) -> None:
+        """Dispute's guarded UPDATE commits first (status/escrow_state:
+        expired/held -> disputed/disputed). The deferred sweep's OWN
+        candidate SELECT (`status == EXPIRED`) no longer matches this row
+        at all by the time it runs -- it finds zero candidates and
+        returns cleanly, never re-touching the contract or double-
+        refunding the issuer."""
+        issuer = _player(credits=5000)
+        acceptor = _player(credits=5000)
+        destination = _station()  # OPERATIONAL by default -- no Tier-1 case matches
+        db = _FakeSession(players=[issuer, acceptor], stations=[destination], resources=[_resource()])
+        contract, deadline = self._held_contract_past_window(db, issuer, acceptor, destination)
+
+        just_inside_window = deadline + timedelta(hours=47, minutes=59)
+        result = contract_service.file_dispute(
+            db, contract.id, acceptor.id, "filed just in time", now=just_inside_window,
+        )
+        assert result["tier1_resolution"] is None  # unresolved -- lands in the Tier-2 queue
+        assert contract.status == ContractStatus.DISPUTED
+        assert contract.escrow_state == ContractEscrowState.DISPUTED
+        issuer_after_filing = issuer.credits
+
+        just_past_window = deadline + timedelta(hours=48, seconds=2)
+        window_result = contract_service.sweep_expired_dispute_window(db, now=just_past_window)
+
+        assert window_result == {"refunded": 0}  # candidate query never matched -- status isn't EXPIRED
+        assert contract.status == ContractStatus.DISPUTED  # untouched
+        assert contract.escrow_state == ContractEscrowState.DISPUTED  # untouched
+        assert issuer.credits == issuer_after_filing  # no double-refund
+
+
+@pytest.mark.unit
+class TestDisputeWindowRefundAtomicity:
+    """WO-CONTRACT-2b-HOLD-ESCROW gate revise (cipher MEDIUM): a transient
+    failure during the refund must NOT strand the escrow. Before the fix,
+    the guard's `escrow_state -> REFUNDING` UPDATE committed on the OUTER
+    transaction, separate from the `db.begin_nested()` savepoint wrapping
+    the refund -- a failure inside that savepoint rolled back the refund
+    and the `escrow_amount` zeroing but NOT the guard flip, leaving the
+    row `escrow_state=REFUNDING` with a non-zero `escrow_amount` and no
+    issuer credit: permanently stranded, since neither this sweep nor
+    `_guarded_file_dispute` will ever touch a row that isn't `(expired,
+    held)` again. Fixed by folding the guard into the SAME savepoint --
+    proven here with `_SnapshotRestoringFakeSession` (see its own
+    docstring for why the file's shared, pure-no-op `_FakeSession` can't
+    prove this specific claim)."""
+
+    def test_transient_refund_failure_leaves_row_expired_held_not_stranded(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        issuer = _player(credits=5000)
+        acceptor = _player(credits=5000)
+        destination = _station()
+        db = _SnapshotRestoringFakeSession(
+            players=[issuer, acceptor], stations=[destination], resources=[_resource()],
+        )
+        deadline = _NOW + timedelta(hours=2)
+        contract_service.post_player_contract(
+            db, issuer.id, **_post_kwargs(destination, deadline=deadline, payment=Decimal("1000")),
+        )
+        contract = db.added[0]
+        contract_service.accept(db, contract.id, acceptor.id, now=_NOW)
+        past_deadline = deadline + timedelta(seconds=1)
+        contract_service.sweep_expired_accepted_contracts(db, now=past_deadline)
+        assert contract.status == ContractStatus.EXPIRED
+        assert contract.escrow_state == ContractEscrowState.HELD
+        assert contract.escrow_amount == Decimal("1000.00")
+        issuer_before = issuer.credits
+
+        # Simulate a transient failure loading the issuer during the
+        # refund (e.g. the row vanishing mid-transaction) -- defensive
+        # hardening, not reachable via any hard-delete path today, same
+        # precedent as TestPerRowSavepointIsolation's own missing-player
+        # scenario (test_mack_attack_accepted_sweep.py).
+        def _raise(*args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("issuer row vanished")
+
+        monkeypatch.setattr(contract_service, "_load_player", _raise)
+
+        past_window = past_deadline + timedelta(hours=48, seconds=2)
+        result = contract_service.sweep_expired_dispute_window(db, now=past_window)
+
+        # Must complete without raising -- caught, logged, sweep returns
+        # cleanly (matches the established "poisoned row" convention).
+        assert result == {"refunded": 0}
+        # NOT stranded: the guard's escrow_state flip reverted TOGETHER
+        # with the (never-applied) refund -- the row is exactly where it
+        # was before this sweep tick, retryable on the next one.
+        assert contract.status == ContractStatus.EXPIRED
+        assert contract.escrow_state == ContractEscrowState.HELD
+        assert contract.escrow_amount == Decimal("1000.00")
+        assert issuer.credits == issuer_before
+
+        # A subsequent, un-poisoned tick refunds it correctly -- proves
+        # the retry path, not just the revert.
+        monkeypatch.undo()
+        result2 = contract_service.sweep_expired_dispute_window(db, now=past_window)
+        assert result2 == {"refunded": 1}
+        assert contract.escrow_state == ContractEscrowState.REFUNDING
+        assert contract.escrow_amount == Decimal("0")
+        assert issuer.credits == issuer_before + 1000
 
 
 @pytest.mark.unit

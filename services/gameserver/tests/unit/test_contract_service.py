@@ -293,6 +293,8 @@ def _contract(**overrides: Any) -> SimpleNamespace:
         insurance_coverage_tier=None,
         insurance_premium_paid=Decimal("0"),
         insurance_claim_filed=False,
+        # WO-CONTRACT-1b-CLAIM-SAFETY
+        insurance_pool_reserve=Decimal("0"),
         escrow_amount=Decimal("0"),
         escrow_state=None,
         # WO-CONTRACT-2-DISPUTE-T1
@@ -1013,6 +1015,17 @@ class TestFileDispute:
         base = dict(
             status=ContractStatus.EXPIRED, deadline=deadline,
             payment=Decimal("1000.00"), acceptance_fee_pct=Decimal("2.0"),
+            # WO-CONTRACT-2b-HOLD-ESCROW: escrow_state=HELD is now REQUIRED
+            # for `_guarded_file_dispute`'s own guard to succeed regardless
+            # of issuer_type -- matches the real column's own server_
+            # default (Contract.escrow_state defaults to HELD). escrow_
+            # amount defaults to `payment` (the realistic no-insurance-pool
+            # held ledger a PLAYER-issued contract would carry) -- NPC-
+            # issued rows never read this value at all (`_settle_dispute_
+            # escrow`'s NPC branch mints unconditionally), so the default
+            # is harmless for them.
+            escrow_state=ContractEscrowState.HELD,
+            escrow_amount=Decimal("1000.00"),
         )
         base.update(overrides)
         return _contract(**base)
@@ -1150,12 +1163,16 @@ class TestFileDispute:
 
         result = contract_service.file_dispute(db, c.id, acceptor.id, "issuer cancelled after accept", now=_NOW)
 
-        # kill_fee = accept_fee_equivalent(20) + cancel_fee(100) = 120.
+        # kill_fee = accept_fee_equivalent(20) + cancel_fee(100) = 120,
+        # drawn from the held escrow (default 1000) -- remainder (880)
+        # returns to the issuer (WO-CONTRACT-2b-HOLD-ESCROW: no wallet
+        # debit here, the issuer's wallet was already charged at post
+        # time, long before this hand-built EXPIRED fixture's snapshot).
         assert result["tier1_resolution"] == "issuer_cancellation"
         assert result["payout"] == 120
         assert c.status == ContractStatus.CANCELLED
         assert acceptor.credits == 5120
-        assert issuer.credits == 4880
+        assert issuer.credits == 5880
 
     def test_tier1_issuer_cancellation_npc_issued_no_issuer_debit_no_crash(
         self, monkeypatch: pytest.MonkeyPatch,
@@ -1171,46 +1188,48 @@ class TestFileDispute:
         assert result["payout"] == 120
         assert acceptor.credits == 5120  # mints for NPC, same precedent as complete()/abandon()
 
-    def test_tier1_cargo_manifest_match_broke_issuer_bounded_never_mints(
+    def test_tier1_cargo_manifest_match_insufficient_escrow_bounded_never_mints(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """WO-CONTRACT-2-DISPUTE-T1-REVISE (cipher MEDIUM): the SAME
-        bounded-transfer fix applied to the (documented no-op-today)
-        cargo_manifest_match seam, proven the same way the CRITICAL was
-        proven in TestResolveDispute -- a broke issuer caps the payout,
-        never mints the shortfall."""
-        issuer = _player(credits=15)
-        c = self._expired_contract(issuer_type=ContractIssuerType.PLAYER, issuer_id=issuer.id)
+        """WO-CONTRACT-2-DISPUTE-T1-REVISE (cipher MEDIUM) / WO-CONTRACT-2b-
+        HOLD-ESCROW: the bounded-never-mint discipline now applies to the
+        HELD escrow ledger, not the issuer's wallet (see `_settle_dispute_
+        escrow`'s own docstring, contract_escrow_core.py) -- an under-
+        funded escrow caps the payout, never mints the shortfall. The
+        issuer's own wallet is untouched: there is nothing left in escrow
+        to return once it's fully drawn."""
+        issuer = _player(credits=5000)
+        c = self._expired_contract(
+            issuer_type=ContractIssuerType.PLAYER, issuer_id=issuer.id, escrow_amount=Decimal("15.00"),
+        )
         acceptor = _player(credits=5000)
         c.acceptor_player_id = acceptor.id
         db = _FakeSession(contracts=[c], players=[issuer, acceptor])
         monkeypatch.setattr(contract_dispute, "_tier1_cargo_manifest_match", lambda contract: True)
-        total_before = issuer.credits + acceptor.credits
 
         result = contract_service.file_dispute(db, c.id, acceptor.id, "delivered on time", now=_NOW)
 
-        assert result["payout"] == 15  # NOT the nominal 1000
-        assert issuer.credits == 0
+        assert result["payout"] == 15  # NOT the nominal 1000 -- only 15cr was held
+        assert issuer.credits == 5000  # untouched
         assert acceptor.credits == 5015
-        assert issuer.credits + acceptor.credits == total_before
 
-    def test_tier1_issuer_cancellation_broke_issuer_bounded_never_mints(
+    def test_tier1_issuer_cancellation_insufficient_escrow_bounded_never_mints(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        issuer = _player(credits=7)
-        c = self._expired_contract(issuer_type=ContractIssuerType.PLAYER, issuer_id=issuer.id)
+        issuer = _player(credits=5000)
+        c = self._expired_contract(
+            issuer_type=ContractIssuerType.PLAYER, issuer_id=issuer.id, escrow_amount=Decimal("7.00"),
+        )
         acceptor = _player(credits=5000)
         c.acceptor_player_id = acceptor.id
         db = _FakeSession(contracts=[c], players=[issuer, acceptor])
         monkeypatch.setattr(contract_dispute, "_tier1_issuer_unilateral_cancellation", lambda contract: True)
-        total_before = issuer.credits + acceptor.credits
 
         result = contract_service.file_dispute(db, c.id, acceptor.id, "reason", now=_NOW)
 
-        assert result["payout"] == 7  # NOT the nominal 120 kill-fee
-        assert issuer.credits == 0
+        assert result["payout"] == 7  # NOT the nominal 120 kill-fee -- only 7cr was held
+        assert issuer.credits == 5000  # untouched
         assert acceptor.credits == 5007
-        assert issuer.credits + acceptor.credits == total_before
 
     def test_dispute_driven_cancellation_computes_insurance_refund(self) -> None:
         """WO-CONTRACT-2-DISPUTE-T1-REVISE (mack LOW (c)): a CANCELLED
@@ -1335,6 +1354,11 @@ class TestReputationPenaltyPauseGate:
         c = _contract(
             status=ContractStatus.ACCEPTED, deadline=_NOW - timedelta(hours=1),
             penalty=Decimal("300.00"), payment=Decimal("1000.00"),
+            # WO-CONTRACT-2b-HOLD-ESCROW: matches the real column's own
+            # default -- the sweep no longer touches escrow_state for an
+            # NPC-issued row (never did), so it must already be HELD here
+            # for the later file_dispute call's own guard to succeed.
+            escrow_state=ContractEscrowState.HELD,
         )
         c.acceptor_player_id = acceptor.id
         db = _FakeSession(contracts=[c], players=[acceptor])
@@ -1354,6 +1378,13 @@ class TestResolveDispute:
         base = dict(
             status=ContractStatus.DISPUTED, payment=Decimal("1000.00"),
             acceptance_fee_pct=Decimal("2.0"), dispute_filed_at=_NOW - timedelta(hours=2),
+            # WO-CONTRACT-2b-HOLD-ESCROW: `_settle_dispute_escrow` reads
+            # `contract.escrow_amount` as the real, held draw source now
+            # (never the issuer's wallet) -- default it to `payment` (the
+            # realistic no-insurance-pool held ledger), same convention as
+            # TestFileDispute's own `_expired_contract` fixture.
+            escrow_state=ContractEscrowState.DISPUTED,
+            escrow_amount=Decimal("1000.00"),
         )
         base.update(overrides)
         return _contract(**base)
@@ -1369,11 +1400,16 @@ class TestResolveDispute:
             db, c.id, uuid.uuid4(), ContractDisputeResolution.FULL_PAYOUT, notes="proven delivered", now=_NOW,
         )
 
+        # WO-CONTRACT-2b-HOLD-ESCROW: drawn from the held escrow (default
+        # 1000), not the issuer's wallet -- fully drawn, remainder 0, so
+        # the issuer's wallet stays untouched (no debit; it was already
+        # charged at post time, before this hand-built DISPUTED fixture's
+        # snapshot).
         assert result["amount_to_acceptor"] == 1000
         assert c.status == ContractStatus.COMPLETED
         assert c.completed_at == _NOW
         assert acceptor.credits == 6000
-        assert issuer.credits == 4000
+        assert issuer.credits == 5000
         assert c.dispute_resolution == ContractDisputeResolution.FULL_PAYOUT
         assert c.dispute_resolved_at == _NOW
         assert c.dispute_notes == "proven delivered"
@@ -1468,35 +1504,37 @@ class TestResolveDispute:
 
         result = contract_service.resolve_dispute(db, c.id, uuid.uuid4(), ContractDisputeResolution.SPLIT, now=_NOW)
 
-        # half_payment=500, fee_refund=20 -> 520 to acceptor; issuer -500.
+        # half_payment=500 drawn from the held escrow (default 1000, WO-
+        # CONTRACT-2b-HOLD-ESCROW), fee_refund=20 self-refund -> 520 to
+        # acceptor; the escrow's other half (500 remainder) returns to
+        # the issuer (a CREDIT here, not a wallet debit).
         assert result["amount_to_acceptor"] == 520
         assert c.status == ContractStatus.CANCELLED
         assert acceptor.credits == 5520
-        assert issuer.credits == 4500
+        assert issuer.credits == 5500
 
-    def test_split_broke_issuer_bounded_half_payment_fee_refund_unbounded(self) -> None:
-        """The half-payment component is issuer-funded (bounded); the
-        acceptance-fee-refund component is an unconditional acceptor
-        self-refund (same as REFUND's own fee) -- proves the two halves
-        of SPLIT's settlement are independently bounded/unbounded, not
-        accidentally coupled."""
-        issuer = _player(credits=8)  # far less than the 500 half-payment
-        c = self._disputed_contract(issuer_type=ContractIssuerType.PLAYER, issuer_id=issuer.id)
+    def test_split_insufficient_escrow_half_payment_bounded_fee_refund_unbounded(self) -> None:
+        """The half-payment component draws from the HELD escrow (bounded,
+        WO-CONTRACT-2b-HOLD-ESCROW); the acceptance-fee-refund component
+        is an unconditional acceptor self-refund (same as REFUND's own
+        fee) -- proves the two halves of SPLIT's settlement are
+        independently bounded/unbounded, not accidentally coupled."""
+        issuer = _player(credits=5000)
+        c = self._disputed_contract(
+            issuer_type=ContractIssuerType.PLAYER, issuer_id=issuer.id,
+            escrow_amount=Decimal("8.00"),  # far less than the 500 half-payment
+        )
         acceptor = _player(credits=5000)
         c.acceptor_player_id = acceptor.id
         db = _FakeSession(contracts=[c], players=[issuer, acceptor])
-        total_before = issuer.credits + acceptor.credits
 
         result = contract_service.resolve_dispute(db, c.id, uuid.uuid4(), ContractDisputeResolution.SPLIT, now=_NOW)
 
-        # bounded half-payment (8, not 500) + unbounded fee refund (20) = 28.
+        # bounded half-payment (8, not 500 -- the escrow only held 8) +
+        # unbounded fee refund (20) = 28.
         assert result["amount_to_acceptor"] == 28
-        assert issuer.credits == 0
+        assert issuer.credits == 5000  # untouched -- escrow fully drawn, nothing left to return
         assert acceptor.credits == 5028
-        # +20 is the acceptor's own accept-time fee coming back to them --
-        # not issuer-funded, so total system credits legitimately grow by
-        # exactly that self-refund (same as REFUND's own fee-only case).
-        assert issuer.credits + acceptor.credits == total_before + 20
 
     def test_guard_runs_before_any_credit_mutation(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """WO-CONTRACT-2-DISPUTE-T1-REVISE (mack HIGH): directly proves
@@ -1547,36 +1585,37 @@ class TestResolveDispute:
         assert c.status == ContractStatus.COMPLETED
         assert c.insurance_premium_paid == Decimal("20.00")  # untouched, not refunded
 
-    def test_broke_issuer_bounded_transfer_never_mints(self) -> None:
-        """WO-CONTRACT-2-DISPUTE-T1-REVISE (mack CRITICAL regression):
-        the PRE-fix version of this test asserted issuer->0 AND
-        acceptor+=full payment simultaneously -- a straight mint (10 in,
-        1000 out). Fixed behavior: the acceptor collects ONLY what the
-        issuer's balance can actually cover (`min(issuer.credits,
-        amount)`), never more -- total system credits are UNCHANGED by
-        the settlement, just redistributed."""
-        issuer = _player(credits=10)  # far less than the 1000 full_payout would need
-        c = self._disputed_contract(issuer_type=ContractIssuerType.PLAYER, issuer_id=issuer.id)
+    def test_insufficient_escrow_bounded_never_mints(self) -> None:
+        """WO-CONTRACT-2-DISPUTE-T1-REVISE (mack CRITICAL regression) /
+        WO-CONTRACT-2b-HOLD-ESCROW: the PRE-fix version of this test
+        asserted issuer->0 AND acceptor+=full payment simultaneously -- a
+        straight mint (10 in, 1000 out). Fixed behavior: the acceptor
+        collects ONLY what the HELD escrow actually holds (`min(escrow_
+        amount, nominal)`), never more -- the issuer's own wallet is
+        untouched (nothing left in escrow to return)."""
+        issuer = _player(credits=5000)
+        c = self._disputed_contract(
+            issuer_type=ContractIssuerType.PLAYER, issuer_id=issuer.id,
+            escrow_amount=Decimal("10.00"),  # far less than the 1000 full_payout would need
+        )
         acceptor = _player(credits=5000)
         c.acceptor_player_id = acceptor.id
         db = _FakeSession(contracts=[c], players=[issuer, acceptor])
-        total_before = issuer.credits + acceptor.credits
 
         result = contract_service.resolve_dispute(
             db, c.id, uuid.uuid4(), ContractDisputeResolution.FULL_PAYOUT, now=_NOW,
         )
 
-        assert issuer.credits == 0  # gave up everything it had, never negative
-        assert acceptor.credits == 5010  # collected ONLY the issuer's actual 10cr -- NOT the full 1000
+        assert issuer.credits == 5000  # untouched -- escrow fully drawn, nothing left to return
+        assert acceptor.credits == 5010  # collected ONLY the escrow's actual 10cr -- NOT the full 1000
         assert result["amount_to_acceptor"] == 10  # the ACTUAL transferred amount, not the nominal 1000
-        # Conservation: total system credits are exactly unchanged --
-        # nothing minted, nothing destroyed.
-        assert issuer.credits + acceptor.credits == total_before
 
-    def test_solvent_issuer_still_pays_full_nominal_amount(self) -> None:
-        """Sibling to the broke-issuer case above -- when the issuer CAN
-        cover it, the bounded transfer is indistinguishable from a full
-        payout (the bound simply never binds)."""
+    def test_solvent_escrow_still_pays_full_nominal_amount(self) -> None:
+        """Sibling to the insufficient-escrow case above -- when the held
+        escrow CAN cover it, the bounded draw is indistinguishable from a
+        full payout (the bound simply never binds); the escrow's
+        remainder (0 here) returns to the issuer, leaving their wallet
+        unchanged."""
         issuer = _player(credits=5000)
         c = self._disputed_contract(issuer_type=ContractIssuerType.PLAYER, issuer_id=issuer.id)
         acceptor = _player(credits=5000)
@@ -1587,7 +1626,7 @@ class TestResolveDispute:
             db, c.id, uuid.uuid4(), ContractDisputeResolution.FULL_PAYOUT, now=_NOW,
         )
 
-        assert issuer.credits == 4000
+        assert issuer.credits == 5000  # untouched -- escrow (default 1000) fully drawn, no remainder
         assert acceptor.credits == 6000
         assert result["amount_to_acceptor"] == 1000
 

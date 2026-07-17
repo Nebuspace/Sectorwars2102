@@ -75,7 +75,7 @@ database.
 """
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional
 
@@ -92,6 +92,7 @@ from src.models.contract import (
 )
 from src.models.resource import Resource
 from src.models.station import Station, StationStatus
+from src.services.contract_dispute import DISPUTE_FILING_WINDOW_HOURS as DISPUTE_FILING_WINDOW_HOURS
 from src.services.contract_dispute import _ei3_both_parties_dispute as _ei3_both_parties_dispute
 from src.services.contract_dispute import _ei3_evidence_trail_incomplete as _ei3_evidence_trail_incomplete
 from src.services.contract_dispute import _ei3_high_value as _ei3_high_value
@@ -580,34 +581,36 @@ def sweep_expired_accepted_contracts(
     matching the escrow table's "insured acceptor: insurer pays penalty"
     row for a deadline-lapse expiry.
 
-    [NO-CANON] issuer escrow disposition on an ACCEPTOR-caused failure is
-    NOT canon-pinned. contracts.md's escrow table's `Expired / failed` row
-    shows no explicit issuer credit for this case ("Issuer" column reads
-    "--"), while the separate Penalties section only speaks to the
-    acceptor's own debit -- the two sections don't agree on what happens to
-    the issuer's escrow here. Two plausible readings: (a) REFUND the issuer
-    in full -- they never received their goods, mirroring `abandon()`'s and
-    `sweep_expired_contracts`'s own proven refund idiom; (b) FORFEIT the
-    escrow -- the issuer eats the loss too, on top of the acceptor's
-    penalty (a harsher "escrow sink" reading closer to the post-accept
-    mutual-cancel kill-fee's own precedent). This kernel builds (a), the
-    conservative default that reuses an already-proven idiom rather than
-    inventing new escrow-sink behavior, and flags it here for a real
-    DECISIONS ruling rather than silently picking one. Gated on
-    `escrow_state == HELD` -- a row already REFUNDING/RELEASED/DISPUTED
-    (an earlier tick, or a race with the issuer's own cancel) is excluded,
-    same idempotency guard `sweep_expired_contracts` uses. NPC-issued rows
-    (escrow_amount always 0) never match the PLAYER-only gate.
+    [SUPERSEDED by WO-CONTRACT-2b-HOLD-ESCROW, Max R (option C)] issuer
+    escrow disposition on an ACCEPTOR-caused failure was previously an
+    immediate refund at THIS sweep (see git history for the WO-1a-CORE /
+    WO-CONTRACT-1b-CLAIM-SAFETY -era reasoning) -- Max ruled that hollow,
+    since by the time a dispute could be filed (contracts.md:390, within
+    48 game-hours of the failure) the escrow was already gone, so `file_
+    dispute`/`resolve_dispute`'s own issuer-funded payouts could only ever
+    draw from the issuer's CURRENT wallet (likely already spent) rather
+    than a real, held source. THIS sweep no longer touches the issuer's
+    credits or `escrow_state` AT ALL -- escrow stays `HELD` through the
+    dispute window; `escrow_amount` is the ONLY thing this sweep still
+    adjusts (the pool draw below), and its eventual disposition (refund
+    if undisputed, or a bounded payout if disputed) happens later, in
+    `sweep_expired_dispute_window` or `file_dispute`/`resolve_dispute`
+    respectively -- see each one's own docstring for the atomic guard
+    (`_guarded_file_dispute`) that makes the two mutually exclusive no
+    matter which commits first.
 
-    WO-CONTRACT-1b-CLAIM-SAFETY: this "full escrow_amount refund" reading
-    (a) is now netted against `apply_claim_offset`'s `pool_draw` for this
-    SAME contract, in this SAME nested transaction -- `escrow_amount`
-    already includes whatever pool the issuer funded at post time
-    (`payment + insurance_pool_reserve`), so refunding it in full while
-    the pool just absorbed part of the acceptor's penalty would mint
-    credits (see `apply_claim_offset`'s own docstring). Uninsured or
-    zero-pool contracts see `pool_draw == 0` -- refund math is byte-
-    identical to before this WO.
+    WO-CONTRACT-1b-CLAIM-SAFETY (still applies, target changed): the pool
+    draw below is still netted OUT of the held ledger in this SAME nested
+    transaction -- `escrow_amount` already includes whatever pool the
+    issuer funded at post time (`payment + insurance_pool_reserve`), so
+    letting it sit un-adjusted while the acceptor's penalty is ALREADY
+    reduced by that same draw would let a LATER disposition (deferred
+    refund or dispute payout) hand the issuer money that was already spent
+    covering the acceptor's claim -- see `_compute_claim_offset`'s own
+    docstring for the full reasoning, now also covering why this stays
+    whole-credit-exact (R3) across an arbitrarily deferred disposition.
+    Uninsured or zero-pool contracts see `pool_draw == 0` -- `escrow_
+    amount` is untouched, byte-identical to before this WO.
 
     Every candidate -- NPC or PLAYER-issued -- needs an individualized
     acceptor-penalty Python touch, so unlike `sweep_expired_contracts` this
@@ -704,36 +707,41 @@ def sweep_expired_accepted_contracts(
         # WO-ECON-CONTRACT-MONEY-HARDEN: same savepoint-isolation shape as
         # sweep_expired_contracts (Mack MEDIUM #2) -- the status flip above
         # already landed on the shared transaction; only the credit-side
-        # penalty+refund below is wrapped, so a failure here reverts just
-        # this row's credit effects and the sweep continues past it. The
-        # acceptor/issuer dual-lock (Mack HIGH #1) uses the SAME consistent-
-        # ordering helper abandon() does, for the identical deadlock reason
-        # -- this sweep and a live abandon()/cancel_player_contract() call
-        # on a related contract could otherwise lock the same pair of
-        # players in opposite order.
+        # penalty below is wrapped, so a failure here reverts just this
+        # row's credit effects and the sweep continues past it.
+        #
+        # WO-CONTRACT-2b-HOLD-ESCROW: this block no longer refunds the
+        # issuer at all -- ONLY the acceptor's own wallet is touched here,
+        # so the acceptor/issuer dual-lock (Mack HIGH #1, WO-ECON-CONTRACT-
+        # MONEY-HARDEN) is GONE. Escrow is now HELD through the 48h dispute
+        # window (see `sweep_expired_dispute_window`'s own docstring for
+        # the eventual undisputed-refund, and `file_dispute`'s `_guarded_
+        # file_dispute` for the disputed path) -- `candidate.escrow_state`
+        # is deliberately left untouched (still HELD) below; only `escrow_
+        # amount` itself is adjusted for the pool draw. A single acceptor
+        # lock is sufficient: `insure()` also locks the acceptor before its
+        # own guarded UPDATE, which is the ONLY race this function's own
+        # `_refresh_contract_insurance_snapshot` call needs to be
+        # serialized against (see that helper's own docstring) -- no
+        # concurrent write anywhere in this codebase touches `escrow_
+        # amount` for an ACCEPTED-then-just-EXPIRED contract except this
+        # sweep itself, and the guarded status-flip UPDATE just above
+        # already row-locks the Contract for the remainder of this
+        # transaction, so no separate issuer lock is needed to protect the
+        # `escrow_amount` mutation below either.
         try:
             with db.begin_nested():
-                needs_issuer_refund = (
-                    candidate.issuer_type == ContractIssuerType.PLAYER
-                    and candidate.escrow_state == ContractEscrowState.HELD
-                )
-                if needs_issuer_refund:
-                    acceptor, issuer = _load_two_players_for_update(
-                        db, candidate.acceptor_player_id, candidate.issuer_id
-                    )
-                else:
-                    acceptor = _load_player(db, candidate.acceptor_player_id, for_update=True)
-                    issuer = None
+                acceptor = _load_player(db, candidate.acceptor_player_id, for_update=True)
 
                 # WO-CONTRACT-1b-CLAIM-SAFETY: `candidate` was gathered by
                 # the upfront, UNLOCKED `.all()` above -- a concurrent
                 # insure() can commit its coverage tier in the window
-                # between that read and the player lock(s) just acquired,
+                # between that read and the acceptor lock just acquired,
                 # the identical race `_refresh_contract_insurance_
                 # snapshot`'s own docstring documents for abandon()/
-                # cancel_player_contract(). MUST run AFTER the lock(s),
-                # BEFORE `apply_claim_offset` reads insurance_coverage_
-                # tier/insurance_pool_reserve below -- refreshes ALL of
+                # cancel_player_contract(). MUST run AFTER the lock, BEFORE
+                # `apply_claim_offset` reads insurance_coverage_tier/
+                # insurance_pool_reserve below -- refreshes ALL of
                 # `candidate`'s columns in place (including the pool).
                 _refresh_contract_insurance_snapshot(db, candidate)
 
@@ -741,35 +749,220 @@ def sweep_expired_accepted_contracts(
                 offset = apply_claim_offset(candidate, penalty)
                 acceptor.credits = max(0, (acceptor.credits or 0) - _to_credits_int(offset["acceptor_debit"]))
 
-                if issuer is not None:
-                    # WO-CONTRACT-1b-CLAIM-SAFETY: the pool draw above is
-                    # money this codebase already took from the issuer's
-                    # wallet at post_player_contract() time and folded into
-                    # escrow_amount -- refunding the FULL escrow_amount
-                    # here while ALSO having just reduced the acceptor's
-                    # penalty by that same pool_draw would mint credits
-                    # (acceptor pays less, issuer loses nothing, net new
-                    # money). Netting it out of the refund is what makes
-                    # the offset a TRANSFER (issuer's reserve -> acceptor's
-                    # reduced debit) rather than a mint -- see _compute_
-                    # claim_offset's own docstring for the full reasoning.
-                    refund = _to_credits_int(
-                        _round_credits(_as_decimal(candidate.escrow_amount)) - offset["pool_draw"]
-                    )
-                    issuer.credits = (issuer.credits or 0) + refund
-                    candidate.escrow_state = ContractEscrowState.REFUNDING
+                # WO-CONTRACT-2b-HOLD-ESCROW: `pool_draw` (whole-credit,
+                # R3 -- see _compute_claim_offset's own docstring) is money
+                # this codebase already took from the issuer's wallet at
+                # post_player_contract() time and folded into escrow_
+                # amount. It must be consumed out of the HELD ledger right
+                # now, at the SAME moment the acceptor's penalty is reduced
+                # by it -- otherwise a LATER disposition (the deferred
+                # refund sweep, or a dispute payout) would still be working
+                # from the pool's full, undrawn value and could refund/pay
+                # out money that was already spent reducing the acceptor's
+                # debit (the exact mint WO-1b closed at expiry-time, now
+                # reopened at disposition-time). Whole minus whole is
+                # exactly whole (R3) -- `escrow_amount` needs no further
+                # rounding at whatever later moment disposes of it.
+                if candidate.issuer_type == ContractIssuerType.PLAYER and offset["pool_draw"] > 0:
+                    candidate.escrow_amount = _round_credits(_as_decimal(candidate.escrow_amount)) - offset["pool_draw"]
         except Exception:
             logger.exception(
-                "sweep_expired_accepted_contracts: acceptor penalty/issuer "
-                "refund failed for contract %s (status already EXPIRED in "
-                "this same sweep pass; credit-side effects reverted, sweep "
-                "continues)", candidate.id,
+                "sweep_expired_accepted_contracts: acceptor penalty/pool-draw "
+                "failed for contract %s (status already EXPIRED in this same "
+                "sweep pass; credit-side effects reverted, sweep continues)",
+                candidate.id,
             )
 
         expired += 1
 
     db.flush()
     return {"expired": expired}
+
+
+def sweep_expired_dispute_window(db: Session, now: Optional[datetime] = None) -> Dict[str, int]:
+    """WO-CONTRACT-2b-HOLD-ESCROW (Max R, option C) -- the DEFERRED half of
+    the held-escrow design `sweep_expired_accepted_contracts` starts:
+    once an EXPIRED contract's `DISPUTE_FILING_WINDOW_HOURS` (48h,
+    contract_dispute.py) has strictly elapsed with NO dispute filed, its
+    held `escrow_amount` finally returns to the PLAYER issuer -- the same
+    "escrow returns to the party that never received their goods" idiom
+    `sweep_expired_contracts`'s own player-refund branch already uses
+    (contract_service.py, this module), just fired on a completely
+    different candidate set and a much longer fuse.
+
+    CANDIDATE SET: `status == EXPIRED AND escrow_state == HELD AND
+    deadline < now - DISPUTE_FILING_WINDOW_HOURS` -- deliberately its OWN
+    function, not folded into `sweep_expired_accepted_contracts` (which
+    only ever sees ACCEPTED-status rows) or `sweep_expired_contracts`
+    (POSTED-status rows only): three different statuses, three different
+    triggers, matching this module's established one-function-per-concern
+    convention for contract expiry sweeps.
+
+    THE BOUNDARY, EXACTLY COMPLEMENTARY TO `file_dispute`'s OWN CHECK:
+    `file_dispute` rejects a filing when `now - contract.deadline >
+    DISPUTE_FILING_WINDOW_HOURS` (contract_dispute.py). This sweep's own
+    filter, `deadline < now - window` (algebraically `now > deadline +
+    window`), is the IDENTICAL strict inequality -- there is no instant
+    where neither this sweep nor a filing attempt can act, and no instant
+    where both would consider a fresh, undisputed row eligible.
+
+    THE RACE AT THAT EXACT BOUNDARY -- closed at the ROW level, NOT by the
+    CEXP advisory lock this sweep runs under (that lock only serializes
+    this sweep against ITS OWN sibling sweeps / a second gameserver
+    instance's pass; the ordinary `file_dispute` API call takes no such
+    lock). Both this sweep's per-row guarded UPDATE below and `file_
+    dispute`'s own `_guarded_file_dispute` (contract_dispute.py) gate on
+    the IDENTICAL two-column WHERE (`status == 'expired' AND escrow_state
+    == 'held'`) -- Postgres serializes any two concurrent UPDATEs
+    targeting the same row (the second blocks on the row lock, then
+    re-evaluates its WHERE against the now-committed state once
+    unblocked), so exactly ONE of {this sweep's refund, a dispute filing}
+    ever wins per contract: whichever commits first flips the pair away
+    from `(expired, held)`, and the loser's own guarded UPDATE matches
+    zero rows -- this sweep's `rowcount == 0 -> continue` (the SAME
+    "raced row, skip it" idiom every sibling sweep in this module uses)
+    or `_guarded_file_dispute`'s own `ContractConflictError` on the
+    dispute side. Neither ordering can double-dispose the same escrow.
+
+    WHOLE-CREDIT (R3): `escrow_amount` is guaranteed exactly whole at
+    this point (never touched between expiry and here except by `sweep_
+    expired_accepted_contracts`'s own whole-minus-whole pool-draw
+    subtraction, see `_compute_claim_offset`'s own docstring) -- the
+    refund below needs no rounding step, `_to_credits_int` is a lossless,
+    defensive conversion here, not a real rounding operation.
+
+    NPC-issued rows never reach this candidate set at all (`escrow_
+    amount` is always 0 for them and `sweep_expired_accepted_contracts`
+    never touches their `escrow_state`, which stays HELD by column
+    default -- but `escrow_amount == 0` means the per-row refund branch
+    below is a no-op for any NPC row that somehow matched, belt-and-
+    suspenders). FLUSH-ONLY -- folded into the SAME CEXP advisory lock +
+    single commit as its sibling sweeps; see contract_sweeps.py's `_run_
+    contract_expire_sweep_sync`.
+
+    STRANDED-ESCROW ATOMICITY (cipher MEDIUM, WO-2b gate): the guarded
+    `escrow_state -> REFUNDING` UPDATE and its Python mirror live INSIDE
+    the SAME `db.begin_nested()` savepoint as the actual refund below --
+    NOT split across the guard-then-savepoint shape `sweep_expired_
+    accepted_contracts` uses for ITS OWN per-row block. That split is
+    safe over THERE because a mid-refund failure leaves a RECOVERABLE
+    state (status stays ACCEPTED... no, EXPIRED + escrow_state HELD,
+    simply re-processed by a later tick). It is NOT safe HERE: this
+    sweep's guard is the LAST possible mutation of `escrow_state` away
+    from HELD before a dispute could ever claim the row again (`_guarded_
+    file_dispute` gates on that SAME `escrow_state == 'held'` predicate)
+    -- if the guard flip committed but a transient failure THEN rolled
+    back only the refund/zeroing, the row would be left `escrow_state=
+    REFUNDING` with a non-zero `escrow_amount` and NO issuer credit:
+    permanently stranded, since NEITHER this sweep NOR `_guarded_file_
+    dispute` will ever touch a row that isn't `(expired, held)` again.
+    Folding the guard into the SAME nested block means a failure anywhere
+    inside it (including a raced-away `rowcount == 0`, which does NOT
+    raise -- see below) rolls the WHOLE row back to its pre-savepoint
+    state, exactly matching `file_dispute`/`resolve_dispute`'s own
+    convention of keeping a guard and its settlement in ONE atomic
+    boundary, never split.
+
+    A `rowcount == 0` (raced away -- a dispute won the race for this row,
+    or a sibling sweep instance already claimed it) is NOT an error and
+    is NOT logged as one: the savepoint simply does nothing and commits
+    empty, matching the "raced row, skip it" idiom every sibling sweep in
+    this module already uses -- only a GENUINE failure during the refund
+    itself (e.g. the issuer row vanishing) reaches the `except` below.
+
+    TWO DISTINCT FAILURE MODES, BOTH MONEY-SAFE BY THE SAME MECHANISM
+    (mack CRITICAL, WO-2b gate; mechanism precision from Rook's SA 2.0
+    trace): (a) an ORDINARY transient failure (e.g. `_load_player` raising
+    for one candidate -- a vanished row, not reachable via any hard-delete
+    path today, but cheap to harden against) and (b) this sweep being the
+    LOSING side of a genuine Postgres DEADLOCK (contracts.md's own cross-
+    cutting lock-ordering finding, tracked separately) both resolve the
+    SAME way: the abort happens INSIDE this candidate's `db.begin_nested()`
+    block (a deadlock is detected exactly where the conflicting lock
+    acquisition happens -- here, at `_load_player`'s own row lock, the
+    same place a plain exception would surface) -- SQLAlchemy issues
+    `ROLLBACK TO SAVEPOINT` for that ONE candidate, reverting its guard
+    flip + refund together (the atomicity fix above is what makes the
+    guard flip part of that rollback at all), this function's own per-
+    candidate `except` catches it, logs, and `continue`s -- and CRITICALLY
+    the OUTER sweep transaction SURVIVES: it is not aborted, only that one
+    savepoint was rolled back. The loop proceeds to the NEXT candidate
+    normally, and `_run_contract_expire_sweep_sync`'s single `db.commit()`
+    at the end of the tick DOES commit -- including every OTHER candidate
+    this same tick already refunded. Net effect: the deadlocked/failed
+    candidate reverts to EXPIRED+HELD and is retried on a later tick,
+    while its SIBLINGS in the same tick still commit their refunds --
+    NOT a whole-tick rollback.
+
+    Mode (a) is proven DB-free (`TestDisputeWindowRefundAtomicity`, test_
+    contract_escrow.py -- a genuine snapshot/restore fake, not the shared
+    no-op one, since a no-op fake can't distinguish "reverted" from "never
+    happened"). Mode (b) cannot be exercised DB-free (no fake here models
+    real Postgres deadlock detection or SAVEPOINT semantics) -- the load-
+    bearing claim still owed at the deploy window is a live-Postgres,
+    forced-AB-BA test asserting BOTH halves: the deadlocked candidate
+    reverts to EXPIRED+HELD, AND a sibling candidate in the same tick
+    still successfully commits its refund."""
+    now = now or _now()
+    window_cutoff = now - timedelta(hours=DISPUTE_FILING_WINDOW_HOURS)
+
+    candidates = (
+        db.query(Contract)
+        .filter(
+            Contract.status == ContractStatus.EXPIRED,
+            Contract.escrow_state == ContractEscrowState.HELD,
+            Contract.deadline < window_cutoff,
+        )
+        .all()
+    )
+
+    refunded = 0
+    for candidate in candidates:
+        disposed = False
+        try:
+            with db.begin_nested():
+                row_stmt = (
+                    update(Contract)
+                    .where(
+                        Contract.id == candidate.id,
+                        Contract.status == ContractStatus.EXPIRED,
+                        Contract.escrow_state == ContractEscrowState.HELD,
+                    )
+                    .values(escrow_state=ContractEscrowState.REFUNDING)
+                )
+                result = db.execute(row_stmt)
+                if result.rowcount == 0:
+                    # Raced away -- see this function's own docstring for
+                    # why this can never double-dispose the escrow. Not a
+                    # failure: fall through, the savepoint commits empty.
+                    pass
+                else:
+                    candidate.escrow_state = ContractEscrowState.REFUNDING
+
+                    needs_refund = (
+                        candidate.issuer_type == ContractIssuerType.PLAYER
+                        and candidate.escrow_amount and candidate.escrow_amount > 0
+                    )
+                    if needs_refund:
+                        issuer = _load_player(db, candidate.issuer_id, for_update=True)
+                        refund = _to_credits_int(_round_credits(_as_decimal(candidate.escrow_amount)))
+                        issuer.credits = (issuer.credits or 0) + refund
+                        candidate.escrow_amount = Decimal("0")
+                    disposed = True
+        except Exception:
+            logger.exception(
+                "sweep_expired_dispute_window: refund failed for contract %s "
+                "-- the guard flip and the credit movement share ONE savepoint, "
+                "so both revert together; the row stays EXPIRED+HELD and is "
+                "retried on a later sweep tick, never stranded", candidate.id,
+            )
+            continue
+
+        if disposed:
+            refunded += 1
+
+    db.flush()
+    return {"refunded": refunded}
 
 
 # --- WO-ECON-CONTRACT-2-PLAYER-ESCROW: player-issued posting + cancel ----

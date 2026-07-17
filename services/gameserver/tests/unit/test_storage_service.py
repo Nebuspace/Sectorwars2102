@@ -306,6 +306,14 @@ def _contract(**overrides: Any) -> SimpleNamespace:
         accepted_at=datetime(2026, 1, 1, tzinfo=UTC),
         completed_at=None,
         escrow_state=None,
+        # WO-CONTRACT-1b-CLAIM-SAFETY: sweep_expired_accepted_contracts now
+        # unconditionally reads these on every candidate (the claim-offset
+        # engine) -- required on every fixture that function is exercised
+        # against, not just insurance-specific tests.
+        insurance_coverage_tier=None,
+        insurance_premium_paid=Decimal("0"),
+        insurance_claim_filed=False,
+        insurance_pool_reserve=Decimal("0"),
     )
     base.update(overrides)
     return SimpleNamespace(**base)

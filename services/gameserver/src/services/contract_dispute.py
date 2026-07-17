@@ -48,9 +48,11 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from src.models.contract import (
+    Contract,
     ContractDisputeResolution,
     ContractEscrowState,
     ContractIssuerType,
@@ -62,13 +64,13 @@ from src.services.contract_escrow_core import (
     ContractConflictError,
     ContractError,
     _as_decimal,
-    _bounded_transfer,
     _guarded_transition,
     _load_contract,
     _load_player,
     _load_two_players_for_update,
     _now,
     _round_credits,
+    _settle_dispute_escrow,
     _to_credits_int,
 )
 from src.services.contract_insurance import _compute_insurance_cancellation_refund
@@ -269,6 +271,70 @@ def _apply_dispute_insurance_refund(contract: Any, acceptor: Any, now: datetime)
     return refund
 
 
+def _guarded_file_dispute(db: Session, contract: Any, now: datetime, notes: str) -> Any:
+    """WO-CONTRACT-2b-HOLD-ESCROW: the filing-time twin of `_guarded_
+    insure` (contract_insurance.py) -- a narrow, bespoke sibling of
+    `_guarded_transition` for the ONE transition in this domain that needs
+    an extra column-guard beyond `status` alone. `_guarded_transition`'s
+    WHERE is status-only by design (10+ other callers across this domain
+    depend on that exact, narrower contract); this is NOT folded into it.
+
+    THE RACE THIS CLOSES: escrow now stays HELD through the 48h dispute
+    window (WO-CONTRACT-2b-HOLD-ESCROW) and is eventually disposed by ONE
+    of two independent writers -- this function (HELD -> DISPUTED, on a
+    successful filing) or `sweep_expired_dispute_window` (HELD ->
+    REFUNDING, once the window has closed undisputed, contract_service.py)
+    -- racing at the exact 48h boundary. `sweep_expired_dispute_window`
+    runs under the CEXP advisory lock; `file_dispute` (this function's
+    caller) does NOT -- the advisory lock alone does NOT serialize these
+    two writers. Gating THIS transition on `status == 'expired' AND
+    escrow_state == 'held'` (not status alone) is what does: whichever
+    writer's guarded UPDATE commits first flips escrow_state away from
+    'held', so the loser's WHERE clause -- re-evaluated by Postgres
+    against the now-current row at lock-acquisition time, the same "no
+    `SELECT ... FOR UPDATE` needed, the guarded UPDATE *is* the lock"
+    guarantee this whole domain already relies on for every other
+    transition -- matches zero rows. A dispute that loses this race raises
+    `ContractConflictError` with ZERO mutation (caught by the caller's own
+    route the same way every other race-loser exception in this domain
+    is); the deferred sweep that loses it hits its own `rowcount == 0 ->
+    continue`, exactly like a raced-away row anywhere else in this file's
+    sibling sweeps.
+
+    Sets `status -> DISPUTED`, `escrow_state -> DISPUTED`, stamps `dispute_
+    filed_at`/`dispute_notes` -- IDENTICAL column set to the pre-WO-2b
+    `_guarded_transition(EXPIRED, DISPUTED, escrow_state=DISPUTED, ...)`
+    call this replaces; only the WHERE clause's extra `escrow_state`
+    predicate is new. No `LEGAL_TRANSITIONS` consultation needed here --
+    unlike `_guarded_transition`, this function is single-purpose (always
+    EXPIRED -> DISPUTED), so there is no table to mis-consult."""
+    stmt = (
+        update(Contract)
+        .where(
+            Contract.id == contract.id,
+            Contract.status == ContractStatus.EXPIRED,
+            Contract.escrow_state == ContractEscrowState.HELD,
+        )
+        .values(
+            status=ContractStatus.DISPUTED,
+            escrow_state=ContractEscrowState.DISPUTED,
+            dispute_filed_at=now,
+            dispute_notes=notes,
+        )
+    )
+    result = db.execute(stmt)
+    if result.rowcount == 0:
+        raise ContractConflictError(
+            f"stale_status: contract {contract.id}'s dispute window has already "
+            "closed, or a dispute was already filed for it"
+        )
+    contract.status = ContractStatus.DISPUTED
+    contract.escrow_state = ContractEscrowState.DISPUTED
+    contract.dispute_filed_at = now
+    contract.dispute_notes = notes
+    return contract
+
+
 # --- WO-CONTRACT-2-DISPUTE-T1: filing + Tier-1 automated arbitration -------
 
 def file_dispute(
@@ -281,13 +347,11 @@ def file_dispute(
     level comment for both the wall-clock-vs-game-hour and the failure-
     timestamp NO-CANON pins). Filing atomically flips `status: EXPIRED ->
     DISPUTED` + `escrow_state -> DISPUTED` + stamps `dispute_filed_at` /
-    `dispute_notes` in ONE guarded UPDATE -- the SAME atomic-UPDATE-WHERE
-    idiom every other transition in this domain uses, so a double-file
-    attempt is rejected the identical "race loser touches nothing" way
-    (WHERE status='expired' matches zero rows once the first filing
-    lands) -- no separate `dispute_filed_at IS NULL` pre-check needed or
-    safe (same reasoning `_guarded_insure`'s own docstring gives for its
-    sibling column-claim guard, contract_insurance.py).
+    `dispute_notes` via `_guarded_file_dispute` (see its own docstring for
+    why this is a bespoke sibling of `_guarded_transition`, not that
+    shared helper itself -- it needs an extra `escrow_state == 'held'`
+    guard beyond status to close the WO-CONTRACT-2b-HOLD-ESCROW race
+    against `sweep_expired_dispute_window`).
 
     TIER 1 runs SYNCHRONOUSLY, immediately after a successful filing, in
     this SAME function/transaction -- trivially within contracts.md:394's
@@ -305,40 +369,28 @@ def file_dispute(
     dispute_filed_at)`-indexed Tier-2 queue for `resolve_dispute` (owned
     by the admin route, impl-admin-ui's lane) to pick up later.
 
-    [NO-CANON, MAJOR] "ESCROW" IN EVERY SETTLEMENT BELOW IS ALREADY GONE.
-    A dispute can only be filed on an EXPIRED contract -- but this
-    codebase's OWN shipped `sweep_expired_accepted_contracts` (WO-DRIFT-
-    econ-accepted-deadline-expiry, unrelated to and unchanged by this WO,
-    contract_service.py) ALREADY refunds a PLAYER-issuer's escrow to
-    them, in the SAME transaction that flips status to EXPIRED -- by the
-    time ANY dispute could be filed, `escrow_state` is already
-    `refunding` and the issuer already has their money back.
-    contracts.md's dispute-resolution prose ("escrow frozen", "Escrow ->
-    acceptor in full") reads as if escrow is STILL held at dispute time,
-    which is TRUE for the ACCEPTED-contract disputes canon's prose seems
-    to picture, but this codebase only reaches EXPIRED (and therefore
-    only reaches a dispute) via a path that already released it.
-    Reconciled here (and in resolve_dispute below) by treating every
-    "escrow -> X" settlement as a FRESH credit movement of `contract.
-    payment` between issuer and acceptor, computed from the frozen
-    `payment`/`acceptance_fee_pct` columns (deterministic, same values
-    `accept()` itself used) rather than manipulating the (already-
-    emptied) `escrow_amount`/`escrow_state` ledger a second time --
-    achieving the same NET settlement canon specifies without double-
-    counting or fabricating funds.
+    WO-CONTRACT-2b-HOLD-ESCROW (Max R, option C): "ESCROW" IN EVERY
+    SETTLEMENT BELOW IS NOW REAL AGAIN. Previously this codebase's own
+    `sweep_expired_accepted_contracts` refunded a PLAYER-issuer's escrow
+    IMMEDIATELY at expiry, so any dispute filed afterward could only draw
+    an issuer-funded payout from whatever the issuer's CURRENT wallet
+    happened to still hold (`_bounded_transfer`, now deleted) -- hollow if
+    they'd already spent it, an ordinary non-adversarial sequence, not an
+    attack. Max ruled this out: escrow now stays `HELD` through the entire
+    48h dispute window; every "escrow -> X" settlement below draws from
+    the REAL, held `contract.escrow_amount` via `_settle_dispute_escrow`
+    (contract_escrow_core.py -- see its own docstring for the whole-credit
+    guarantee, R3, that makes this safe across an arbitrarily deferred
+    disposition) rather than the issuer's wallet or a synthesized fresh
+    credit movement.
 
-    WO-CONTRACT-2-DISPUTE-T1-REVISE (mack CRITICAL): every issuer-funded
-    movement below is a BOUNDED transfer via `_bounded_transfer` (see its
-    own docstring, contract_escrow_core.py), NEVER a clamped-debit-plus-
-    unconditional-credit -- the acceptor collects ONLY what the issuer's
-    balance can actually cover, never the full nominal amount regardless
-    of it. An issuer who has since spent their refunded escrow does not
-    go negative, AND does not cause credits to be minted from nothing
-    either. Flagged prominently here rather than silently picked;
-    proposed to DECISIONS.md as a real architectural gap between canon's
-    dispute-resolution model and this codebase's already-shipped,
-    already-gated expiry-sweep behavior (which this WO does not touch or
-    reopen).
+    `_settle_dispute_escrow` is called UNCONDITIONALLY for every terminal
+    outcome below, even `destination_unreachable` (which moves nothing
+    issuer-funded) -- the escrow's remainder must return to the issuer
+    regardless of whether anything was drawn for the acceptor; see that
+    helper's own docstring for why a `nominal == 0` call is NOT a no-op
+    under this design (unlike the deleted `_bounded_transfer`, which
+    callers only invoked when there was a positive amount to move).
 
     Reputation pause/reward/forgive/reverse and cooldowns: see this
     module's own header comment -- nothing is applied, nothing exists yet
@@ -378,10 +430,7 @@ def file_dispute(
     # persistence target this schema offers for ANY dispute-filing text.
     # Folded in rather than silently dropped.
     notes = reason if not evidence_snapshot else f"{reason}\n\nEvidence: {evidence_snapshot}"
-    _guarded_transition(
-        db, contract, ContractStatus.EXPIRED, ContractStatus.DISPUTED,
-        escrow_state=ContractEscrowState.DISPUTED, dispute_filed_at=now, dispute_notes=notes,
-    )
+    _guarded_file_dispute(db, contract, now, notes)
 
     resolution: Optional[str] = None
     payout = 0
@@ -390,12 +439,16 @@ def file_dispute(
     if _tier1_cargo_manifest_match(contract):
         resolution = "cargo_manifest_match"
         # WO-CONTRACT-2-DISPUTE-T1-REVISE (cipher MEDIUM, fixed now even
-        # though this seam is a documented no-op today -- see
-        # _bounded_transfer's own docstring): bounded, never a mint.
+        # though this seam is a documented no-op today) / WO-CONTRACT-2b-
+        # HOLD-ESCROW: bounded draw from the HELD escrow, never a mint --
+        # see _settle_dispute_escrow's own docstring (contract_escrow_
+        # core.py). Sets escrow_state itself (RELEASED here, since the
+        # full nominal is always drawable -- escrow_amount is always >=
+        # payment, see that helper's own whole-credit guarantee) -- no
+        # separate `if issuer is not None: contract.escrow_state = ...`
+        # needed anymore.
         nominal_payout = _to_credits_int(_round_credits(_as_decimal(contract.payment)))
-        payout = _bounded_transfer(issuer, acceptor, nominal_payout)
-        if issuer is not None:
-            contract.escrow_state = ContractEscrowState.RELEASED
+        payout = _settle_dispute_escrow(contract, issuer, acceptor, nominal_payout)
         _guarded_transition(db, contract, ContractStatus.DISPUTED, ContractStatus.COMPLETED, completed_at=now)
     elif _tier1_destination_unreachable(db, contract):
         resolution = "destination_unreachable"
@@ -405,17 +458,24 @@ def file_dispute(
             _round_credits(_as_decimal(contract.payment) * _as_decimal(contract.acceptance_fee_pct) / Decimal(100))
         )
         acceptor.credits = (acceptor.credits or 0) + payout
+        # WO-CONTRACT-2b-HOLD-ESCROW: nothing else claims escrow in this
+        # outcome -- the FULL held remainder returns to the issuer. Called
+        # with nominal=0 deliberately (see _settle_dispute_escrow's own
+        # docstring for why this is NOT a no-op under the held-escrow
+        # design, unlike the deleted _bounded_transfer).
+        _settle_dispute_escrow(contract, issuer, acceptor, 0)
         _guarded_transition(db, contract, ContractStatus.DISPUTED, ContractStatus.CANCELLED)
         insurance_refund = _apply_dispute_insurance_refund(contract, acceptor, now)
     elif _tier1_issuer_unilateral_cancellation(contract):
         resolution = "issuer_cancellation"
         # WO-CONTRACT-2-DISPUTE-T1-REVISE (mack LOW, fixed now even
-        # though this seam is unreachable in production today): bounded,
-        # never a mint -- same fix as cargo_manifest_match above.
+        # though this seam is unreachable in production today) / WO-
+        # CONTRACT-2b-HOLD-ESCROW: bounded draw from the HELD escrow, same
+        # as cargo_manifest_match above.
         accept_fee_equivalent = _as_decimal(contract.payment) * _as_decimal(contract.acceptance_fee_pct) / Decimal(100)
         cancel_fee = _as_decimal(contract.payment) * PLAYER_POST_CANCEL_FEE_PCT_POST_ACCEPT / Decimal(100)
         nominal_payout = _to_credits_int(_round_credits(accept_fee_equivalent + cancel_fee))
-        payout = _bounded_transfer(issuer, acceptor, nominal_payout)
+        payout = _settle_dispute_escrow(contract, issuer, acceptor, nominal_payout)
         _guarded_transition(db, contract, ContractStatus.DISPUTED, ContractStatus.CANCELLED)
         insurance_refund = _apply_dispute_insurance_refund(contract, acceptor, now)
     else:
@@ -464,8 +524,11 @@ def _plan_dispute_outcome(
     Returns `(issuer_funded_nominal, acceptor_only_amount, target_status,
     extra_guarded_transition_column_updates)`:
       - `issuer_funded_nominal`: the REQUESTED amount the caller should
-        run through `_bounded_transfer` AFTER its guarded transition
-        succeeds (0 if this outcome moves nothing issuer-side).
+        run through `_settle_dispute_escrow` AFTER its guarded transition
+        succeeds -- called UNCONDITIONALLY regardless of this value (even
+        0, e.g. PARTIAL_PAYOUT/REFUND/PENALTY below), since the held
+        escrow's remainder must return to the issuer either way; see that
+        helper's own docstring, contract_escrow_core.py.
       - `acceptor_only_amount`: an UNCONDITIONAL acceptor credit that
         never draws from the issuer at all (the acceptance-fee refund --
         money the acceptor already paid at accept() time and the issuer
@@ -528,24 +591,29 @@ def resolve_dispute(
     exception with ZERO mutation, never a half-applied settlement sitting
     in the session waiting to be accidentally flushed later.
 
-    See `file_dispute`'s own docstring for the [NO-CANON, MAJOR] escrow-
-    reconciliation note -- it applies IDENTICALLY here: every "Escrow ->
-    X" settlement below is a FRESH credit movement of `contract.payment`
-    (or a fraction of it) via `_bounded_transfer` (mack CRITICAL -- see
-    that helper's own docstring: NEVER a mint, the acceptor collects only
-    what the issuer's balance can actually cover), not a manipulation of
-    the already-emptied `escrow_amount`/`escrow_state` ledger. Reputation/
-    cooldown columns in canon's own table are NOT applied (see this
-    module's own header comment) -- only the Settlement column is built.
-    Insurance premium: see `_apply_dispute_insurance_refund`'s own
-    docstring -- applied for every CANCELLED outcome, always evaluates to
-    0 today, wired in anyway.
+    WO-CONTRACT-2b-HOLD-ESCROW (Max R, option C): see `file_dispute`'s own
+    docstring for the full escrow-model change -- it applies IDENTICALLY
+    here. Every "Escrow -> X" settlement below draws from the REAL, HELD
+    `contract.escrow_amount` via `_settle_dispute_escrow` (contract_
+    escrow_core.py -- NEVER a mint, whole-credit-exact per R3, and always
+    returns whatever it doesn't draw to the issuer in the SAME call) --
+    called UNCONDITIONALLY for every one of the five outcomes below, even
+    PARTIAL_PAYOUT/REFUND/PENALTY (`issuer_funded_nominal == 0`), because
+    the held escrow's remainder still needs to return to the issuer
+    regardless of whether the acceptor draws anything; this is also what
+    fixes a pre-existing gap this function had even before WO-2b -- no
+    outcome below ever used to SET `escrow_state` at all, leaving it
+    stuck at DISPUTED forever after resolution. Reputation/cooldown
+    columns in canon's own table are NOT applied (see this module's own
+    header comment) -- only the Settlement column is built. Insurance
+    premium: see `_apply_dispute_insurance_refund`'s own docstring --
+    applied for every CANCELLED outcome, always evaluates to 0 today,
+    wired in anyway.
 
     Five outcomes (contracts.md:410-414):
-      - FULL_PAYOUT: acceptor gets the full `payment`, bounded-transferred
-        from the issuer if player-issued (NPC-issued: minted, matching
-        `complete()`'s own NPC precedent, contract_service.py). ->
-        COMPLETED.
+      - FULL_PAYOUT: acceptor gets the full `payment` drawn from the held
+        escrow if player-issued (NPC-issued: minted, matching `complete
+        ()`'s own NPC precedent, contract_service.py). -> COMPLETED.
       - PARTIAL_PAYOUT: `(delivered / expected) x payment` to acceptor,
         remainder to issuer. [NO-CANON] no real "units delivered" signal
         exists for a cargo_delivery dispute -- `partial_fulfilled_amount`
@@ -560,26 +628,25 @@ def resolve_dispute(
         canon bullet never mentions a fee refund at all, and at
         delivered=0 the acceptor collects NOTHING here, not even the
         fee -- a genuinely HARSHER outcome than REFUND, not an
-        equivalent one. Proposed to DECISIONS.md. -> CANCELLED.
+        equivalent one. Proposed to DECISIONS.md. The FULL held escrow
+        returns to the issuer (nothing drawn). -> CANCELLED.
       - REFUND (acceptor non-negligent): acceptance fee back to the
-        acceptor (issuer already holds the rest via the earlier sweep
-        refund -- no further issuer-side movement needed, this is an
-        acceptor-only self-refund same as `file_dispute`'s destination_
-        unreachable case, never issuer-funded). -> CANCELLED.
+        acceptor (acceptor-only self-refund, never issuer/escrow-funded,
+        same as `file_dispute`'s destination_unreachable case) -- the
+        FULL held escrow separately returns to the issuer. -> CANCELLED.
       - PENALTY (acceptor fault/fabrication): acceptance fee forfeit --
         it was ALREADY sunk at accept() time and is never refunded by
         ANY path in this domain (contracts.md's own Penalties section:
-        "acceptance fee is not refunded"), so this outcome is a pure
-        no-credit-movement close-out: the dispute is formally resolved
-        confirming the original failure stands, nothing changes hands
-        beyond that. -> CANCELLED.
-      - SPLIT (shared responsibility): HALF of `payment` bounded-
-        transferred from the issuer if player-issued, PLUS the
-        acceptance fee refunded in full (acceptor-only, same as REFUND).
-        [NO-CANON] status mapping for SPLIT isn't literal in canon's
-        table (unlike the other four, which read naturally as COMPLETED/
-        CANCELLED) -- pinned to CANCELLED (not a clean completion)
-        rather than COMPLETED, proposed to DECISIONS.md. -> CANCELLED.
+        "acceptance fee is not refunded") -- no acceptor movement at all;
+        the FULL held escrow returns to the issuer. -> CANCELLED.
+      - SPLIT (shared responsibility): HALF of `payment` drawn from the
+        held escrow if player-issued, PLUS the acceptance fee refunded in
+        full (acceptor-only, same as REFUND) -- the remaining half of the
+        escrow returns to the issuer. [NO-CANON] status mapping for SPLIT
+        isn't literal in canon's table (unlike the other four, which read
+        naturally as COMPLETED/CANCELLED) -- pinned to CANCELLED (not a
+        clean completion) rather than COMPLETED, proposed to
+        DECISIONS.md. -> CANCELLED.
 
     FLUSH-ONLY."""
     now = now or _now()
@@ -618,10 +685,15 @@ def resolve_dispute(
     )
 
     # Only now, with the guard already won, touch credits.
-    debited = _bounded_transfer(issuer, acceptor, issuer_funded_nominal) if issuer_funded_nominal > 0 else 0
+    # WO-CONTRACT-2b-HOLD-ESCROW: called UNCONDITIONALLY, even when
+    # issuer_funded_nominal == 0 (PARTIAL_PAYOUT/REFUND/PENALTY) -- the
+    # held escrow's remainder must return to the issuer regardless, and
+    # this is the ONLY place in this function that ever sets escrow_state
+    # for a resolved dispute. See _settle_dispute_escrow's own docstring.
+    drawn = _settle_dispute_escrow(contract, issuer, acceptor, issuer_funded_nominal)
     if acceptor_only_amount > 0:
         acceptor.credits = (acceptor.credits or 0) + acceptor_only_amount
-    amount = debited + acceptor_only_amount
+    amount = drawn + acceptor_only_amount
 
     insurance_refund = 0
     if target_status == ContractStatus.CANCELLED:

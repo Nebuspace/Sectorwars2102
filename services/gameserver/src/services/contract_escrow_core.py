@@ -43,7 +43,7 @@ from typing import Any, Dict, FrozenSet, Optional
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
-from src.models.contract import Contract, ContractStatus
+from src.models.contract import Contract, ContractEscrowState, ContractStatus
 from src.models.player import Player
 
 logger = logging.getLogger(__name__)
@@ -252,37 +252,70 @@ def _load_two_players_for_update(
     return player_a, player_b
 
 
-def _bounded_transfer(issuer: Optional[Any], acceptor: Any, amount: int) -> int:
-    """WO-CONTRACT-2-DISPUTE-T1-REVISE (mack CRITICAL): every issuer-
-    funded dispute settlement MUST be a conservation-safe BOUNDED
-    TRANSFER, never a mint. The bug this closes: crediting the acceptor
-    the FULL nominal `amount` while debiting the issuer `max(0, credits -
-    amount)` (clamped) manufactures credits from nothing whenever the
-    issuer's balance is less than `amount` -- an entirely ORDINARY,
-    non-adversarial sequence (issuer's escrow was refunded in full at
-    expiry by the sweep, they spend it on something else, THEN a dispute
-    resolves against them) mints the full payment out of thin air with
-    zero attacker required. Fixed: the acceptor collects ONLY what the
-    issuer actually has right now (`min(issuer.credits, amount)`) --
-    never more. If the issuer is broke, the acceptor's payout is
-    genuinely, silently reduced; this codebase has no debt-ledger model
-    (same NO-CANON precedent `abandon()`'s own credit debits already
-    established) to guarantee the nominal amount some other way. The
-    alternative -- a debt ledger, or holding escrow through the entire
-    dispute window so a guaranteed payout is always available -- is a
-    bigger architectural change flagged for Max's call, not built here.
+def _settle_dispute_escrow(contract: Any, issuer: Optional[Any], acceptor: Any, nominal: int) -> int:
+    """WO-CONTRACT-2b-HOLD-ESCROW (Max ruling C, R1) -- REPLACES `_bounded_
+    transfer` (deleted; see this function's own git history for the prior
+    implementation and the mack-CRITICAL bounded-never-mint fix it
+    originally shipped, which this function preserves and generalizes).
 
-    For an NPC-issued contract (`issuer is None`), NPC credits are
-    canonically infinite (contracts.md:155, matching `complete()`'s own
-    established mint-for-NPC precedent) -- the full `amount` mints, no
-    bound needed; there is no real wallet to overdraw.
+    `_bounded_transfer` drew an issuer-funded dispute payout from the
+    issuer's CURRENT WALLET -- necessary at the time because `sweep_
+    expired_accepted_contracts` refunded the issuer's escrow immediately
+    at expiry, so by the time ANY dispute could be filed there was no
+    "escrow" left, only whatever the issuer's balance happened to still
+    hold (an ordinary non-adversarial sequence -- issuer spends their
+    refunded escrow, THEN a dispute resolves against them -- could hollow
+    the payout to ~0, or a wallet-bounded clamp could mint if the debit/
+    credit legs weren't kept in lockstep; `_bounded_transfer`'s own
+    `min(issuer.credits, amount)` closed the mint half of that, but not
+    the hollow-payout half). WO-CONTRACT-2b-HOLD-ESCROW closes the other
+    half: escrow now stays HELD through the entire 48h dispute window
+    (contract_service.py's sweep no longer refunds it at expiry), so this
+    function draws from the REAL, held `contract.escrow_amount` instead.
 
-    Returns the ACTUAL amount transferred (<= `amount`) -- callers MUST
-    treat this, never the requested `amount`, as the true payout."""
+    PLAYER-issued (`issuer is not None`): `contract.escrow_amount` is
+    WHOLE-CREDIT at every persisted state (R3 -- see `_compute_claim_
+    offset`'s own docstring, contract_insurance.py: `payment` and
+    `insurance_pool_reserve` are both `multiple_of=1` at the API schema,
+    and every subsequent adjustment to `escrow_amount` anywhere in this
+    codebase is whole-minus-whole) -- `min(nominal, escrow_amount)` is
+    therefore an EXACT whole-credit bound, never a rounding boundary.
+    Whatever's left (`escrow_amount - actual`) returns to the issuer in
+    this SAME call -- no terminal dispute outcome may ever leave a
+    residual `escrow_amount` stranded on the row. `escrow_state` becomes
+    `RELEASED` iff the acceptor received anything, else `REFUNDING` --
+    matching `complete()`'s/`abandon()`'s own established vocabulary
+    (RELEASED = "acceptor got paid", REFUNDING = "issuer got it back").
+    Callers MUST invoke this UNCONDITIONALLY for every terminal dispute
+    outcome, even when `nominal == 0` (PARTIAL_PAYOUT/REFUND/PENALTY) --
+    the escrow's remainder still needs to return to the issuer; a
+    `nominal == 0` outcome is NOT a no-op here the way it was for
+    `_bounded_transfer` (which callers only invoked when `nominal > 0`,
+    since there was nothing else for it to do).
+
+    NPC-issued (`issuer is None`): unbounded mint of `nominal`, BYTE-
+    IDENTICAL to `_bounded_transfer`'s own NPC branch (NPC credits are
+    canonically infinite, contracts.md:155, matching `complete()`'s own
+    established mint-for-NPC precedent) -- `contract.escrow_amount` is
+    always 0 for an NPC row and is never touched.
+
+    Returns the ACTUAL amount credited to the acceptor (<= `nominal` for
+    a PLAYER-issued row; == `nominal` for NPC) -- callers MUST treat this,
+    never the requested `nominal`, as the true payout, matching `_bounded_
+    transfer`'s own established return-value contract."""
     if issuer is None:
-        acceptor.credits = (acceptor.credits or 0) + amount
-        return amount
-    debited = min(issuer.credits or 0, amount)
-    issuer.credits = (issuer.credits or 0) - debited
-    acceptor.credits = (acceptor.credits or 0) + debited
-    return debited
+        if nominal > 0:
+            acceptor.credits = (acceptor.credits or 0) + nominal
+        return nominal
+
+    escrow_amount = _to_credits_int(_round_credits(_as_decimal(contract.escrow_amount or 0)))
+    actual = min(nominal, escrow_amount) if nominal > 0 else 0
+    remainder = escrow_amount - actual
+
+    if actual > 0:
+        acceptor.credits = (acceptor.credits or 0) + actual
+    if remainder > 0:
+        issuer.credits = (issuer.credits or 0) + remainder
+    contract.escrow_amount = Decimal("0")
+    contract.escrow_state = ContractEscrowState.RELEASED if actual > 0 else ContractEscrowState.REFUNDING
+    return actual

@@ -209,10 +209,11 @@ def _compute_claim_offset(contract: Any, penalty: Decimal) -> Dict[str, Decimal]
     bounded to what `contract.insurance_pool_reserve` (the real, persisted
     claims-fund balance -- see that column's own docstring, models/
     contract.py) actually holds RIGHT NOW, exactly the same "never more
-    than the payer's actual balance" shape `_bounded_transfer` already
-    established for issuer-funded dispute settlements (contract_escrow_
-    core.py) -- this is that same principle applied to a POOL instead of
-    a player wallet. `acceptor_debit = penalty - pool_draw` is therefore
+    than the payer's actual balance" shape `_settle_dispute_escrow`
+    (contract_escrow_core.py) applies to a dispute's issuer-funded payout
+    -- this is that same bounded-never-mint principle applied to a POOL
+    instead of a held escrow ledger. `acceptor_debit = penalty -
+    pool_draw` is therefore
     ALWAYS >= `acceptor_floor` and ALWAYS <= `penalty`: a fully-funded pool
     lands the acceptor exactly on the deductible floor; an empty or
     partially-drained pool degrades smoothly toward (at worst) the full,
@@ -231,26 +232,79 @@ def _compute_claim_offset(contract: Any, penalty: Decimal) -> Dict[str, Decimal]
     Returns `{"acceptor_debit": Decimal, "pool_draw": Decimal}` --
     `acceptor_debit` is what the caller charges the acceptor (replacing
     the old unconditional `penalty`); `pool_draw` is how much the caller
-    must both (a) subtract from `contract.insurance_pool_reserve` and (b)
-    subtract from any SAME-transaction issuer escrow refund for this
-    contract -- see `sweep_expired_accepted_contracts`'s own docstring for
-    why (b) is load-bearing: refunding the issuer their full escrow while
-    the pool absorbed part of the acceptor's penalty is itself a mint,
-    just moved to the other side of the ledger."""
-    penalty = _round_credits(_as_decimal(penalty))
+    must subtract from `contract.insurance_pool_reserve`.
+
+    WO-CONTRACT-2b-HOLD-ESCROW (Max R3, MONEY-PATH): under WO-1b, `pool_
+    draw`'s DISPOSITION (the issuer's escrow refund) happened in the SAME
+    transaction, so `acceptor_debit` and `refund` were both derived from
+    the SAME cent-precision `pool_draw` and independently `_to_credits_
+    int`-rounded together -- their fractional remainders happened to
+    cancel because they shared one input. WO-2b DEFERS the escrow's
+    disposition (held through a 48h dispute window, possibly settled by a
+    completely different function days later) -- a fractional `pool_draw`
+    persisted into `contract.escrow_amount` at expiry and independently
+    rounded again at disposition time reopens the exact rounding lever
+    WO-1b closed: `_to_credits_int` on two SEPARATE cent-precision values
+    that happen to sum to a whole number can round to a WRONG whole sum
+    (e.g. penalty=10, BASIC 5%: floor=0.50 -> ROUND_HALF_UP -> 1;
+    nominal=9.50 -> ROUND_HALF_UP -> 10; 1+10=11, not 10 -- an actual mint
+    if `acceptor_floor` and `insurer_nominal` were EACH independently
+    rounded instead of one being DERIVED from the other).
+
+    Fixed by doing ALL rounding-sensitive arithmetic in WHOLE CREDITS,
+    with exactly ONE value ever independently rounded (`acceptor_floor`)
+    and every other value DERIVED via exact integer subtraction from
+    already-whole quantities -- `insurer_nominal_whole = penalty_whole -
+    acceptor_floor_whole` and `acceptor_debit_whole = penalty_whole -
+    pool_draw_whole` are Python integer subtractions, not roundings, so
+    `acceptor_debit_whole + pool_draw_whole == penalty_whole` holds by
+    CONSTRUCTION (an algebraic identity) for every input, not by two
+    independent roundings coincidentally cancelling. This is also why
+    `contract.escrow_amount` (whole at post time -- `payment` and
+    `insurance_pool_reserve` are both `multiple_of=1` at the API schema,
+    contracts.py:110/:113) stays EXACTLY whole after the sweep subtracts
+    `pool_draw` from it: whole minus whole is always exactly whole, no
+    `_round_credits`/`_to_credits_int` step is ever needed on `escrow_
+    amount` again downstream -- see `sweep_expired_accepted_contracts`'s
+    and `sweep_expired_dispute_window`'s own docstrings for the load-
+    bearing consequence (a deferred disposition can trust `escrow_amount`
+    is already an exact whole credit, no rounding lever anywhere past
+    this one function).
+
+    Returns whole-valued `Decimal`s (e.g. `Decimal("90")`, never
+    `Decimal("90.90")`) -- callers write `pool_draw` directly onto
+    `insurance_pool_reserve`/`escrow_amount` (both Decimal columns,
+    already whole) and pass `acceptor_debit` through `_to_credits_int`
+    only as the existing, now-lossless, defensive int-column conversion
+    (`Player.credits`), matching the established convention elsewhere in
+    this module rather than a new one."""
+    # Plain Python `int` throughout -- only the RETURN wraps back to
+    # Decimal (the declared contract, matching what `insurance_pool_
+    # reserve`/`escrow_amount` need for direct arithmetic). Every
+    # subtraction below is exact int-int=int; the only place `_round_
+    # credits`/`_to_credits_int` (real rounding) ever runs is computing
+    # `penalty_whole`, `acceptor_floor_whole`, and `pool_balance_whole`
+    # from their own already-independent, unrelated source values --
+    # never on a value DERIVED from another rounded value in this
+    # function.
+    penalty_whole = _to_credits_int(_round_credits(_as_decimal(penalty)))
     if contract.insurance_coverage_tier is None:
-        return {"acceptor_debit": penalty, "pool_draw": Decimal("0")}
+        return {"acceptor_debit": Decimal(penalty_whole), "pool_draw": Decimal("0")}
 
     deductible_pct = CLAIM_DEDUCTIBLE_PCT[contract.insurance_coverage_tier]
-    acceptor_floor = _round_credits(penalty * deductible_pct / Decimal(100))
-    insurer_nominal = penalty - acceptor_floor
+    # The ONE independently-rounded value in this whole function -- every
+    # other value below is DERIVED from this and `penalty_whole` by exact
+    # integer subtraction, never rounded on its own. See docstring above.
+    acceptor_floor_whole = _to_credits_int(_round_credits(Decimal(penalty_whole) * deductible_pct / Decimal(100)))
+    insurer_nominal_whole = penalty_whole - acceptor_floor_whole
 
-    pool_balance = _as_decimal(contract.insurance_pool_reserve or 0)
-    pool_draw = min(insurer_nominal, pool_balance)
-    if pool_draw < 0:
-        pool_draw = Decimal("0")
+    pool_balance_whole = _to_credits_int(_round_credits(_as_decimal(contract.insurance_pool_reserve or 0)))
+    pool_draw_whole = min(insurer_nominal_whole, pool_balance_whole)
+    if pool_draw_whole < 0:
+        pool_draw_whole = 0
 
-    return {"acceptor_debit": penalty - pool_draw, "pool_draw": pool_draw}
+    acceptor_debit_whole = penalty_whole - pool_draw_whole
+    return {"acceptor_debit": Decimal(acceptor_debit_whole), "pool_draw": Decimal(pool_draw_whole)}
 
 
 def apply_claim_offset(contract: Any, penalty: Decimal) -> Dict[str, Decimal]:
@@ -258,7 +312,14 @@ def apply_claim_offset(contract: Any, penalty: Decimal) -> Dict[str, Decimal]:
     insurance_pool_reserve` down in place by exactly `pool_draw` (never
     below 0, guaranteed by the pure function's own clamping) and returns
     the SAME `{"acceptor_debit", "pool_draw"}` dict for the caller to act
-    on. Consumed per-actual-failure-event tied to THIS ONE contract --
+    on. `pool_draw` is WHOLE-CREDIT (Max R3, WO-CONTRACT-2b-HOLD-ESCROW --
+    see `_compute_claim_offset`'s own docstring) -- `insurance_pool_
+    reserve` stays exactly whole after this subtraction (whole minus whole
+    is exactly whole), which is what lets the caller ALSO subtract it
+    directly from `escrow_amount` (also whole at post time) without
+    reopening a rounding lever now that escrow's disposition is deferred
+    up to 48h past this call. Consumed per-actual-failure-event tied to
+    THIS ONE contract --
     each contract carries its OWN `insurance_pool_reserve`, drawn at most
     ONCE (a contract can only ever reach the ACCEPTED -> EXPIRED guarded
     transition a single time; see `sweep_expired_accepted_contracts`'s own
