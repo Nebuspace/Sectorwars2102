@@ -32,7 +32,7 @@ from src.auth.dependencies import require_scope
 from src.core.database import get_db
 from src.models.contract import Contract, ContractDisputeResolution, ContractStatus
 from src.models.user import User
-from src.services.admin_action_log_service import log_admin_action
+from src.services.admin_action_attempt import admin_action_attempt
 from src.services.contract_service import (
     ContractConflictError,
     ContractError,
@@ -137,20 +137,22 @@ async def resolve_contract_dispute(
             detail=f"Unknown outcome '{body.outcome}' -- expected one of "
             f"{[o.value for o in ContractDisputeResolution]}",
         ) from None
-    try:
-        result = resolve_dispute(db, contract_uuid, admin.id, outcome=outcome, notes=body.notes)
-    except ContractError as exc:
-        db.rollback()
-        _raise_for(exc)
-    else:
-        log_admin_action(
-            db,
-            actor=admin,
-            scope_used=DISPUTES_RESOLVE,
-            action="contract_dispute_resolve",
-            target_type="contract",
-            target_id=str(contract_uuid),
-            payload={"outcome": outcome.value},
-        )
+
+    with admin_action_attempt(
+        db,
+        actor=admin,
+        scope_used=DISPUTES_RESOLVE,
+        action="contract_dispute_resolve",
+        target_type="contract",
+        target_id=str(contract_uuid),
+        payload={"outcome": outcome.value},
+    ) as attempt:
+        try:
+            result = resolve_dispute(
+                db, contract_uuid, admin.id, outcome=outcome, notes=body.notes
+            )
+        except ContractError as exc:
+            _raise_for(exc)
+        attempt.succeed(payload={"outcome": outcome.value})
         db.commit()
         return result

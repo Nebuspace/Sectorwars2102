@@ -29,7 +29,7 @@ from src.auth.dependencies import require_scope
 from src.core.database import get_db
 from src.models.admin_scope_grant import AdminScopeGrant
 from src.models.user import User
-from src.services.admin_action_log_service import log_admin_action
+from src.services.admin_action_attempt import admin_action_attempt
 
 router = APIRouter(prefix="/admin/scopes", tags=["admin-scopes"])
 
@@ -70,29 +70,11 @@ class ScopeHolderOut(BaseModel):
     scopes: List[ActiveGrantOut]
 
 
-def _log_action(
-    db: Session,
-    *,
-    actor: User,
-    scope_used: str,
-    action: str,
-    target_user_id: UUID,
-    payload: Dict[str, Any],
-    result: str,
-    failure_reason: Optional[str] = None,
-) -> None:
-    """Thin adapter — preserves grant/revoke call sites; writes via shared helper."""
-    log_admin_action(
-        db,
-        actor=actor,
-        scope_used=scope_used,
-        action=action,
-        target_type="user",
-        target_id=str(target_user_id),
-        payload=payload,
-        result=result,
-        failure_reason=failure_reason,
-    )
+class ScopeMutationOutcome(BaseModel):
+    """Internal: action name + payload for E-5 attempt.succeed (no double-log)."""
+
+    action: str
+    payload: Dict[str, Any]
 
 
 def grant_scope_to_user(
@@ -101,12 +83,14 @@ def grant_scope_to_user(
     actor: User,
     target: User,
     scope: str,
-) -> AdminScopeGrant:
+) -> ScopeMutationOutcome:
     """Insert an active grant if missing; sync flat ``is_admin=True``.
 
     Cipher (Phase C preview): check existing-active before insert — never
     duplicate under the unique partial index.  Lock the target user row so
     concurrent grant/revoke cannot race the flat ``is_admin`` flag.
+
+    Does **not** write AdminActionLog — caller uses ``admin_action_attempt``.
     """
     if scope not in ALL_SCOPES:
         raise HTTPException(
@@ -133,19 +117,13 @@ def grant_scope_to_user(
         .first()
     )
     if existing:
-        _log_action(
-            db,
-            actor=actor,
-            scope_used=SCOPES_GRANT,
-            action="scope_grant_noop",
-            target_user_id=locked.id,
-            payload={"scope": scope, "already_active": True},
-            result="success",
-        )
         if not locked.is_admin:
             locked.is_admin = True
             target.is_admin = True
-        return existing
+        return ScopeMutationOutcome(
+            action="scope_grant_noop",
+            payload={"scope": scope, "already_active": True},
+        )
 
     # Savepoint: concurrent duplicate insert hits unique partial index —
     # recover as idempotent success (mack HARD #3).
@@ -160,17 +138,11 @@ def grant_scope_to_user(
             db.add(row)
             locked.is_admin = True
             target.is_admin = True
-            _log_action(
-                db,
-                actor=actor,
-                scope_used=SCOPES_GRANT,
-                action="scope_grant",
-                target_user_id=locked.id,
-                payload={"scope": scope},
-                result="success",
-            )
             db.flush()
-            return row
+            return ScopeMutationOutcome(
+                action="scope_grant",
+                payload={"scope": scope},
+            )
     except IntegrityError:
         raced = (
             db.query(AdminScopeGrant)
@@ -185,16 +157,10 @@ def grant_scope_to_user(
             raise
         locked.is_admin = True
         target.is_admin = True
-        _log_action(
-            db,
-            actor=actor,
-            scope_used=SCOPES_GRANT,
+        return ScopeMutationOutcome(
             action="scope_grant_noop",
-            target_user_id=locked.id,
             payload={"scope": scope, "already_active": True, "raced": True},
-            result="success",
         )
-        return raced
 
 
 def revoke_scope_from_user(
@@ -203,12 +169,14 @@ def revoke_scope_from_user(
     actor: User,
     target: User,
     scope: str,
-) -> int:
-    """Bulk-revoke all active rows for (user, scope). Returns rows touched.
+) -> ScopeMutationOutcome:
+    """Bulk-revoke all active rows for (user, scope).
 
     Cipher: NO ``.first()`` / LIMIT — revoke every active match.
     Mack: flush before remaining-count (autoflush=False sessions otherwise
     still see the just-revoked row → is_admin never clears).
+
+    Does **not** write AdminActionLog — caller uses ``admin_action_attempt``.
     """
     if scope not in ALL_SCOPES:
         raise HTTPException(
@@ -278,16 +246,10 @@ def revoke_scope_from_user(
         locked.is_admin = False
         target.is_admin = False
 
-    _log_action(
-        db,
-        actor=actor,
-        scope_used=SCOPES_REVOKE,
+    return ScopeMutationOutcome(
         action="scope_revoke" if rows else "scope_revoke_noop",
-        target_user_id=locked.id,
         payload={"scope": scope, "rows_revoked": len(rows)},
-        result="success",
     )
-    return len(rows)
 
 
 
@@ -386,19 +348,33 @@ async def grant_scope(
     db: Session = Depends(get_db),
     actor: User = Depends(require_scope(SCOPES_GRANT)),
 ):
-    target = db.query(User).filter(User.id == body.user_id, User.deleted == False).first()
-    if target is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    try:
-        grant_scope_to_user(db, actor=actor, target=target, scope=body.scope)
-        db.commit()
-        db.refresh(target)
-    except HTTPException:
-        db.rollback()
-        raise
-    except Exception as exc:
-        db.rollback()
-        raise HTTPException(status_code=500, detail="Grant failed") from exc
+    with admin_action_attempt(
+        db,
+        actor=actor,
+        scope_used=SCOPES_GRANT,
+        action="scope_grant",
+        target_type="user",
+        target_id=str(body.user_id),
+        payload={"scope": body.scope},
+    ) as attempt:
+        target = (
+            db.query(User)
+            .filter(User.id == body.user_id, User.deleted == False)
+            .first()
+        )
+        if target is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        try:
+            outcome = grant_scope_to_user(
+                db, actor=actor, target=target, scope=body.scope
+            )
+            attempt.succeed(action=outcome.action, payload=outcome.payload)
+            db.commit()
+            db.refresh(target)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail="Grant failed") from exc
 
     return ScopeMutationResponse(
         user_id=target.id,
@@ -414,19 +390,33 @@ async def revoke_scope(
     db: Session = Depends(get_db),
     actor: User = Depends(require_scope(SCOPES_REVOKE)),
 ):
-    target = db.query(User).filter(User.id == body.user_id, User.deleted == False).first()
-    if target is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    try:
-        revoke_scope_from_user(db, actor=actor, target=target, scope=body.scope)
-        db.commit()
-        db.refresh(target)
-    except HTTPException:
-        db.rollback()
-        raise
-    except Exception as exc:
-        db.rollback()
-        raise HTTPException(status_code=500, detail="Revoke failed") from exc
+    with admin_action_attempt(
+        db,
+        actor=actor,
+        scope_used=SCOPES_REVOKE,
+        action="scope_revoke",
+        target_type="user",
+        target_id=str(body.user_id),
+        payload={"scope": body.scope},
+    ) as attempt:
+        target = (
+            db.query(User)
+            .filter(User.id == body.user_id, User.deleted == False)
+            .first()
+        )
+        if target is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        try:
+            outcome = revoke_scope_from_user(
+                db, actor=actor, target=target, scope=body.scope
+            )
+            attempt.succeed(action=outcome.action, payload=outcome.payload)
+            db.commit()
+            db.refresh(target)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail="Revoke failed") from exc
 
     still = (
         db.query(AdminScopeGrant.id)

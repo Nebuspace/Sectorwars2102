@@ -9,7 +9,7 @@ from __future__ import annotations
 import inspect
 import uuid
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from sqlalchemy import create_engine, event, text
@@ -49,12 +49,17 @@ def test_log_admin_action_adds_row_without_committing():
     db.rollback.assert_not_called()
 
 
-def test_admin_scopes_adapter_delegates_to_helper():
+def test_admin_scopes_routes_use_attempt_helper():
+    """E-5: grant/revoke routes own logging via admin_action_attempt (no _log_action)."""
     from src.api.routes import admin_scopes as mod
 
-    src = inspect.getsource(mod._log_action)
-    assert "log_admin_action" in src
-    assert "AdminActionLog(" not in src
+    assert not hasattr(mod, "_log_action")
+    grant_src = inspect.getsource(mod.grant_scope)
+    revoke_src = inspect.getsource(mod.revoke_scope)
+    assert "admin_action_attempt" in grant_src
+    assert "attempt.succeed" in grant_src
+    assert "admin_action_attempt" in revoke_src
+    assert "attempt.succeed" in revoke_src
 
 
 def test_helper_is_single_constructor_source():
@@ -132,8 +137,8 @@ def test_append_only_trigger_still_in_migration():
     assert "admin_action_logs_append_only" in text_src
 
 
-def test_scopes_grant_path_still_logs_via_adapter():
-    """Regression: grant helper still calls _log_action (now shared helper)."""
+def test_scopes_grant_helper_returns_outcome_without_logging():
+    """E-5: grant helper returns ScopeMutationOutcome; route logs via attempt."""
     from src.api.routes.admin_scopes import grant_scope_to_user
 
     target = SimpleNamespace(id=uuid.uuid4(), is_admin=False)
@@ -159,13 +164,10 @@ def test_scopes_grant_path_still_logs_via_adapter():
 
     db.query.side_effect = query_side
 
-    with patch("src.api.routes.admin_scopes.log_admin_action") as log_mock:
-        grant_scope_to_user(db, actor=actor, target=target, scope=PLAYERS_VIEW)
-        assert log_mock.called
-        kwargs = log_mock.call_args.kwargs
-        assert kwargs["action"] == "scope_grant"
-        assert kwargs["target_type"] == "user"
-        assert kwargs["actor"] is actor
+    outcome = grant_scope_to_user(db, actor=actor, target=target, scope=PLAYERS_VIEW)
+    assert outcome.action == "scope_grant"
+    assert outcome.payload == {"scope": PLAYERS_VIEW}
+    db.add.assert_called()  # AdminScopeGrant row
 
 
 @pytest.fixture()

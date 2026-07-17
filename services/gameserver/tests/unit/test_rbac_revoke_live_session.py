@@ -20,7 +20,7 @@ from src.models.user import User
 
 
 @pytest.fixture()
-def live_db(monkeypatch):
+def live_db():
     """autoflush=False session — the production failure mode."""
     engine = create_engine(
         "sqlite://",
@@ -32,13 +32,8 @@ def live_db(monkeypatch):
     def _fk(dbapi_conn, _):
         dbapi_conn.execute("PRAGMA foreign_keys=ON")
 
-    # Skip AdminActionLog (JSONB) — audit write is orthogonal to the
-    # is_admin flush bug under test.  Patch the bound name in admin_scopes
-    # (it imported log_admin_action into its module namespace).
-    monkeypatch.setattr(
-        "src.api.routes.admin_scopes.log_admin_action",
-        lambda *a, **k: None,
-    )
+    # Skip AdminActionLog — E-5 moved logging to the route-level attempt
+    # helper; grant/revoke helpers no longer touch the ledger.
 
     User.__table__.create(engine, checkfirst=True)
     AdminScopeGrant.__table__.create(engine, checkfirst=True)
@@ -77,12 +72,12 @@ class TestRevokeLastScopeLiveSession:
         live_db.refresh(target)
         assert target.is_admin is True
 
-        n = revoke_scope_from_user(
+        outcome = revoke_scope_from_user(
             live_db, actor=actor, target=target, scope=PLAYERS_VIEW
         )
         live_db.commit()
         live_db.refresh(target)
-        assert n == 1
+        assert outcome.payload["rows_revoked"] == 1
         assert target.is_admin is False
 
     def test_non_last_scope_keeps_is_admin(self, live_db):

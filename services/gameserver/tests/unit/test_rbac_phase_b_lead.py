@@ -80,10 +80,11 @@ class TestGrantRevokeHelpers:
         db.query.side_effect = query_side
         actor = _user()
 
-        row = grant_scope_to_user(db, actor=actor, target=target, scope=PLAYERS_VIEW)
+        outcome = grant_scope_to_user(db, actor=actor, target=target, scope=PLAYERS_VIEW)
         assert locked.is_admin is True
         assert target.is_admin is True
-        assert row.scope == PLAYERS_VIEW
+        assert outcome.action == "scope_grant"
+        assert outcome.payload["scope"] == PLAYERS_VIEW
         db.flush.assert_called()
 
     def test_grant_noop_when_already_active(self):
@@ -103,8 +104,9 @@ class TestGrantRevokeHelpers:
 
         db.query.side_effect = query_side
         actor = _user()
-        row = grant_scope_to_user(db, actor=actor, target=target, scope=PLAYERS_VIEW)
-        assert row is existing
+        outcome = grant_scope_to_user(db, actor=actor, target=target, scope=PLAYERS_VIEW)
+        assert outcome.action == "scope_grant_noop"
+        assert outcome.payload.get("already_active") is True
 
     def test_grant_unknown_scope_400(self):
         db = MagicMock()
@@ -154,10 +156,11 @@ class TestGrantRevokeHelpers:
             return q
 
         db.query.side_effect = query_side
-        n = revoke_scope_from_user(
+        outcome = revoke_scope_from_user(
             db, actor=_user(), target=target, scope=PLAYERS_VIEW
         )
-        assert n == 1
+        assert outcome.action == "scope_revoke"
+        assert outcome.payload["rows_revoked"] == 1
         assert order == ["flush", "count"]
         assert locked.is_admin is False
         assert target.is_admin is False
