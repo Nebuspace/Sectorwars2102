@@ -734,6 +734,7 @@ def _make_reservation(
         rent_paid_until=None,
         rent_owed_since=None,
         queue_bonus_credit=0,
+        priority_bumps_count=0,
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
