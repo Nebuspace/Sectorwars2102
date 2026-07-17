@@ -692,6 +692,12 @@ _STRANDED_RELOCATE_LOCK_KEY = _mnemonic_lock_key("STRN")
 _TRADER_NOTORIETY_LOCK_KEY = _mnemonic_lock_key("NTRY")
 _TRADER_MISSION_LOCK_KEY = _mnemonic_lock_key("TMSN")
 _BULK_FILL_TRADERS_LOCK_KEY = _mnemonic_lock_key("BFIL")
+# P9-realtime-npc-crash-watermark: startup catch-up, own key -- NOT the
+# global _ADVISORY_LOCK_KEY (that stays reserved for _run_due_ticks_sync
+# alone, per the house convention documented above). Prevents two
+# gameserver instances booting simultaneously from both replaying the same
+# bounded Loop-A catch-up batch at once.
+_LOOP_CRASH_CATCHUP_LOCK_KEY = _mnemonic_lock_key("LCUP")
 # Player retention-SIGNAL sweep (WO-RE2) — distinct from the unrelated
 # RouteOptimizationRun retention job just above (_ROUTE_RUNS_RETENTION_LOCK_KEY).
 _RETENTION_SWEEP_LOCK_KEY = _mnemonic_lock_key("RETN")
@@ -915,6 +921,88 @@ def _sweep_due_and_advance(
     flag_modified(galaxy, "state")
     return True
 
+
+# ---------------------------------------------------------------------------
+# Per-loop crash-recovery watermark (P9-realtime-npc-crash-watermark) --
+# extends the durable Galaxy.state sweep-anchor discipline above
+# (_read_sweep_anchor / _sweep_due_and_advance, WO-SCHED-CADENCE-DRIFT) to
+# Loop A/B/C's own last-completed-cycle marker, per npc-scheduler.md's
+# "Crash recovery" section (previously a 📐 design-only marker -- this WO
+# builds it). No migration: same Galaxy.state JSONB row, three new keys.
+#
+# Loop A (patrol movement) is the only one of the three whose per-tick work
+# is INVOCATION-COUNTED rather than wall-clock-derived -- _drive_patrol
+# advances an NPC exactly one hop per run_loop_a() call (see that
+# function's own doc-comment), so a scheduler outage genuinely LOSES hops
+# unless they're explicitly replayed. Loop B (roster maintenance) and Loop
+# C (presence reconciliation) are both already wall-clock/relational-
+# state-derived (`now >= npc.promotion_pending_at`, a fresh snapshot
+# rebuild) -- a single run after any outage, however long, catches up
+# completely on its own; no replay-N-times logic applies to them. Their
+# watermarks still exist (this WO's own scope: "extend that SAME proven
+# discipline to the three loops") so a future loop-B/C slice that DOES
+# become invocation-counted (e.g. a real off-duty rotation timer, still
+# 📐 design-only per run_loop_c's own doc-comment) has the anchor already
+# in place.
+# ---------------------------------------------------------------------------
+
+LOOP_A_WATERMARK_STATE_KEY = "loop_a_watermark"
+LOOP_B_WATERMARK_STATE_KEY = "loop_b_watermark"
+LOOP_C_WATERMARK_STATE_KEY = "loop_c_watermark"
+
+# NO-CANON (2026-07-16): bounds how many missed Loop-A cadence intervals a
+# single restart-wake will synchronously replay. canon's own "if the
+# scheduler was down for 6 hours, Loop A executes 6 ticks" (npc-
+# scheduler.md "Crash recovery") is a worked EXAMPLE, not a stated hard
+# cap -- flagging this bound for orchestrator/Max blessing. Beyond this
+# cap the watermark advances only by the bounded amount (not all the way
+# to `now`), so an exceptionally long outage self-heals over several
+# subsequent restart-catch-ups rather than either (a) silently losing the
+# untraveled gap forever or (b) synchronously blocking the scheduler's
+# worker thread on a huge unbounded backfill (the GIL/burst-length
+# caution this WO was briefed with).
+LOOP_A_CRASH_CATCHUP_MAX_TICKS = 24
+
+
+def _loop_a_catchup_ticks(db: Session, now: datetime) -> int:
+    """Read-only: how many Loop-A cadence intervals have been missed since
+    the last completed cycle, bounded by LOOP_A_CRASH_CATCHUP_MAX_TICKS.
+    Returns 0 if no watermark exists yet (fresh galaxy / first-ever boot --
+    nothing to catch up, Loop A just starts fresh on its normal cadence,
+    same as _sweep_due_and_advance's own last_run-is-None convention)."""
+    galaxy, last_run = _read_sweep_anchor(db, LOOP_A_WATERMARK_STATE_KEY)
+    if galaxy is None or last_run is None:
+        return 0
+    missed = int((now - last_run).total_seconds() // LOOP_A_SECONDS)
+    return max(0, min(missed, LOOP_A_CRASH_CATCHUP_MAX_TICKS))
+
+
+def _stamp_loop_watermark(db: Session, state_key: str, at: datetime) -> None:
+    """Write half of the per-loop crash-recovery watermark -- stamps the
+    given loop's last-completed-cycle marker to `at`. Caller advances this
+    in the SAME transaction as the tick's own work and commits once
+    (mirrors _sweep_due_and_advance's own contract exactly) -- a crash
+    between this stamp and the caller's db.commit() rolls BOTH back
+    together, so the watermark never silently advances past work that
+    didn't actually land.
+
+    `at` is an explicit parameter (not always `now`) because Loop A's
+    bounded catch-up stamps to the boundary it actually REACHED, not to
+    `now`, when the missed-tick count was capped -- an exceptionally long
+    outage's untraveled remainder is then still visible to the NEXT
+    catch-up check instead of being silently dropped. Every OTHER call
+    site (the normal per-tick dispatch, and Loop B/C's single-pass
+    catch-up) passes `now` directly, since they always fully catch up in
+    one call."""
+    from src.models.galaxy import Galaxy
+
+    galaxy = db.query(Galaxy).order_by(Galaxy.created_at.asc()).first()
+    if galaxy is None:
+        return
+    state = dict(galaxy.state or {})
+    state[state_key] = at.isoformat()
+    galaxy.state = state
+    flag_modified(galaxy, "state")
 
 
 # ---------------------------------------------------------------------------

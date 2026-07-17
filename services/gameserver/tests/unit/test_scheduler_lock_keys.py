@@ -110,6 +110,10 @@ ALL_STATIC_KEYS = {
     # two gameserver instances can't double-delete/double-broadcast the
     # same expired beacons.
     "_BEACON_EXPIRE_LOCK_KEY": sched._BEACON_EXPIRE_LOCK_KEY,
+    # P9-realtime-npc-crash-watermark — startup Loop A/B/C catch-up, own
+    # lock so two gameserver instances booting simultaneously can't both
+    # replay the same bounded catch-up batch at once.
+    "_LOOP_CRASH_CATCHUP_LOCK_KEY": sched._LOOP_CRASH_CATCHUP_LOCK_KEY,
 }
 
 # Every {"key": <bare Name>} lock-acquisition site, keyed by its enclosing
@@ -163,9 +167,11 @@ EXPECTED_NAME_SITE_MAP = {
     "_run_contract_expire_sweep_sync": "_CONTRACT_EXPIRE_LOCK_KEY",
     # WO-P4-play-beacon-kernel — message-beacon expiry sweep.
     "_run_beacon_expire_sweep_sync": "_BEACON_EXPIRE_LOCK_KEY",
+    # P9-realtime-npc-crash-watermark — startup Loop A/B/C catch-up.
+    "_run_loop_crash_catchup_sync": "_LOOP_CRASH_CATCHUP_LOCK_KEY",
 }
 
-# 28 bare-Name sites + 1 Call-form site (bootstrap_region_sync) = the true
+# 29 bare-Name sites + 1 Call-form site (bootstrap_region_sync) = the true
 # lock-site count (superseding any stale figure quoted anywhere else --
 # this file is the enumeration of record going forward).
 EXPECTED_TOTAL_LOCK_SITES = len(EXPECTED_NAME_SITE_MAP) + 1
@@ -297,7 +303,7 @@ def test_all_static_keys_pairwise_distinct():
         seen[value] = name
     assert not dupes, f"colliding lock keys: {dupes}"
     assert len(values) == len(set(values))
-    assert len(ALL_STATIC_KEYS) == 31  # 1 global + 2 legacy + 27 new sweep-type keys + 1 (WO-P4-play-beacon-kernel)
+    assert len(ALL_STATIC_KEYS) == 32  # 1 global + 2 legacy + 27 new sweep-type keys + 1 (WO-P4-play-beacon-kernel) + 1 (P9-realtime-npc-crash-watermark)
 
 
 def test_all_static_keys_nonnegative_and_63bit_safe():

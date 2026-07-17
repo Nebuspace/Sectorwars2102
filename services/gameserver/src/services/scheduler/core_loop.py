@@ -48,6 +48,7 @@ from src.services.scheduler._common import (
 )
 from src.services.scheduler.presence_helpers import (
     _run_due_ticks_sync,
+    _run_loop_crash_catchup_sync,
     _repair_orphan_schedules_sync,
     _seed_trader_rosters_sync,
     _bulk_fill_traders_sync,
@@ -223,6 +224,19 @@ async def npc_scheduler_loop() -> None:
             logger.info("NPC scheduler: dispersed %d LAW patrol(s)", spread)
     except Exception:
         logger.exception("NPC scheduler: LAW patrol dispersal failed")
+    # P9-realtime-npc-crash-watermark: bounded Loop A/B/C restart catch-up
+    # (npc-scheduler.md "Crash recovery") -- runs ONCE here, before the main
+    # tick loop below starts its own normal cadence, so an NPC advances to
+    # its canonical-schedule position on the FIRST wake after downtime
+    # instead of silently staying wherever the process left it. See
+    # _run_loop_crash_catchup_sync's own doc-comment for the bounded-replay
+    # + suppressed-broadcast + same-transaction-as-work contract.
+    try:
+        caught_up = await asyncio.to_thread(_run_loop_crash_catchup_sync)
+        if caught_up.get("loop_a_ticks_replayed") or caught_up.get("loop_b_caught_up") or caught_up.get("loop_c_caught_up"):
+            logger.info("NPC scheduler: crash-recovery catch-up — %s", caught_up)
+    except Exception:
+        logger.exception("NPC scheduler: crash-recovery catch-up failed")
 
     # WO-SCHED-LOOP-WEDGE: contract generation runs on its OWN task
     # (_contract_generation_loop above), never inline in the while-True

@@ -49,10 +49,18 @@ from src.services.scheduler._common import (
     _STRANDED_RELOCATE_LOCK_KEY,
     _TRADER_MISSION_LOCK_KEY,
     _TRADER_NOTORIETY_LOCK_KEY,
+    _loop_a_catchup_ticks,
+    _LOOP_CRASH_CATCHUP_LOCK_KEY,
+    _read_sweep_anchor,
+    _stamp_loop_watermark,
+    _sweep_due_and_advance,
     ENGAGEMENT_SWEEP_SECONDS,
     LOOP_A_SECONDS,
+    LOOP_A_WATERMARK_STATE_KEY,
     LOOP_B_SECONDS,
+    LOOP_B_WATERMARK_STATE_KEY,
     LOOP_C_SECONDS,
+    LOOP_C_WATERMARK_STATE_KEY,
     PRESENCE_STALE_MINUTES,
     ROUTE_RUNS_RETENTION_DAYS,
     ROUTE_RUNS_RETENTION_MAX_PER_PLAYER,
@@ -113,6 +121,17 @@ def _run_due_ticks_sync(elapsed_seconds: int) -> List[Dict[str, Any]]:
         # phases re-establish the spread within a few ticks regardless.
         loop_a_tick = elapsed_seconds // LOOP_A_SECONDS
 
+        # P9-realtime-npc-crash-watermark: label -> durable watermark state
+        # key, for the three loops that carry one (the engagement sweep
+        # doesn't -- it's not part of this WO's scope, and its own pending-
+        # engagement rows are already durable independent of scheduler
+        # uptime, per npc-scheduler.md's own "Crash recovery" section).
+        _watermark_keys = {
+            "A": LOOP_A_WATERMARK_STATE_KEY,
+            "B": LOOP_B_WATERMARK_STATE_KEY,
+            "C": LOOP_C_WATERMARK_STATE_KEY,
+        }
+
         for cadence, loop_fn, label in (
             (ENGAGEMENT_SWEEP_SECONDS, sweep_pending_engagements, "engagement-sweep"),
             (LOOP_A_SECONDS, run_loop_a, "A"),
@@ -128,6 +147,14 @@ def _run_due_ticks_sync(elapsed_seconds: int) -> List[Dict[str, Any]]:
                     if label == "A"
                     else loop_fn(work_db)
                 )
+                # Stamp the durable crash-recovery watermark for this loop
+                # IN THE SAME TRANSACTION as the tick's own work, before the
+                # single commit below -- a crash between this stamp and the
+                # commit rolls both back together (the tick is retried, the
+                # watermark never advances past work that didn't land).
+                watermark_key = _watermark_keys.get(label)
+                if watermark_key is not None:
+                    _stamp_loop_watermark(work_db, watermark_key, datetime.now(UTC))
                 work_db.commit()
                 events.extend(loop_events)
             except Exception:
@@ -142,6 +169,124 @@ def _run_due_ticks_sync(elapsed_seconds: int) -> List[Dict[str, Any]]:
         lock_db.close()
 
     return events
+
+
+def _run_loop_crash_catchup_sync() -> Dict[str, int]:
+    """P9-realtime-npc-crash-watermark: bounded restart catch-up for Loop
+    A/B/C, called ONCE at scheduler startup (npc_scheduler_loop, before the
+    main tick loop begins) -- npc-scheduler.md's "Crash recovery" section.
+
+    Loop A (patrol movement) replays its bounded missed-tick count via
+    run_loop_a's own hop-per-invocation mechanic, called repeatedly with
+    consecutive tick values (any starting point works -- _drive_patrol's
+    stagger only needs a sequence of DISTINCT consecutive values, the same
+    property `elapsed // LOOP_A_SECONDS` gives it in normal operation; see
+    _loop_a_catchup_ticks' own doc-comment for why ONLY Loop A needs this
+    replay -- B/C are wall-clock/relational-state-derived and fully catch
+    up in a single pass regardless of outage length, reusing
+    _sweep_due_and_advance verbatim). Every returned event from every
+    replayed/caught-up call is DISCARDED, never broadcast -- npc-
+    scheduler.md: "Realtime events for the catch-up movements are
+    suppressed... player clients resync from REST on next sector entry."
+
+    Loop A's whole bounded batch (every replayed tick's work) commits ONCE,
+    together with the watermark stamp, in a SINGLE transaction -- a crash
+    anywhere during the replay rolls back the ENTIRE bounded batch, leaving
+    the watermark at its prior (stale) value, so the next restart simply
+    retries the same bounded catch-up from scratch (capped cost, never a
+    partial/inconsistent watermark). Loop B/C each get their own single-
+    pass transaction via _sweep_due_and_advance's existing contract.
+
+    Own dedicated lock (_LOOP_CRASH_CATCHUP_LOCK_KEY) -- NOT the global
+    _ADVISORY_LOCK_KEY, which stays reserved for _run_due_ticks_sync alone
+    per the house convention (see _common.py's own comment above the sweep
+    lock-key block) -- so two gameserver instances booting simultaneously
+    can't both run catch-up at once -- whichever gets the lock catches up;
+    the other finds the watermark already current on its own next normal
+    wake and no-ops.
+
+    Returns {"loop_a_ticks_replayed", "loop_b_caught_up", "loop_c_caught_up"}
+    (0/1 for B/C) for startup logging."""
+    from src.core.database import SessionLocal
+
+    result = {"loop_a_ticks_replayed": 0, "loop_b_caught_up": 0, "loop_c_caught_up": 0}
+
+    lock_db = SessionLocal()
+    try:
+        got_lock = lock_db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _LOOP_CRASH_CATCHUP_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            logger.info(
+                "NPC scheduler: crash-recovery catch-up skipped "
+                "(advisory lock held elsewhere)"
+            )
+            return result
+
+        # --- Loop A: bounded replay, one hop-batch per missed tick -------
+        work_db = SessionLocal()
+        try:
+            now = datetime.now(UTC)
+            catchup_ticks = _loop_a_catchup_ticks(work_db, now)
+            if catchup_ticks > 0:
+                for tick in range(1, catchup_ticks + 1):
+                    run_loop_a(work_db, tick)  # events discarded -- stale by definition
+                # Stamp to the boundary ACTUALLY reached (not `now`) -- see
+                # _stamp_loop_watermark's own doc-comment: if catchup_ticks
+                # was capped below the true missed count, this leaves the
+                # untraveled remainder visible to the NEXT catch-up check
+                # instead of silently dropping it.
+                _, last_run = _read_sweep_anchor(work_db, LOOP_A_WATERMARK_STATE_KEY)
+                reached = (
+                    last_run + timedelta(seconds=catchup_ticks * LOOP_A_SECONDS)
+                    if last_run is not None else now
+                )
+                _stamp_loop_watermark(work_db, LOOP_A_WATERMARK_STATE_KEY, reached)
+                work_db.commit()
+                result["loop_a_ticks_replayed"] = catchup_ticks
+                logger.info(
+                    "NPC scheduler: crash-recovery — replayed %d Loop A tick(s)",
+                    catchup_ticks,
+                )
+            else:
+                work_db.rollback()
+        except Exception:
+            logger.exception("NPC scheduler: Loop A crash-recovery catch-up failed")
+            work_db.rollback()
+        finally:
+            work_db.close()
+
+        # --- Loop B / Loop C: single self-correcting pass if ANY time was
+        # missed -- _sweep_due_and_advance's own due-check-and-stamp IS
+        # exactly "at least one interval elapsed since last completion,"
+        # reused verbatim, just invoked here at startup instead of the
+        # normal per-tick dispatch. Events discarded, same as Loop A.
+        for label, loop_fn, watermark_key, interval in (
+            ("B", run_loop_b, LOOP_B_WATERMARK_STATE_KEY, LOOP_B_SECONDS),
+            ("C", run_loop_c, LOOP_C_WATERMARK_STATE_KEY, LOOP_C_SECONDS),
+        ):
+            work_db = SessionLocal()
+            try:
+                now = datetime.now(UTC)
+                if _sweep_due_and_advance(work_db, watermark_key, interval, now):
+                    loop_fn(work_db)  # events discarded -- stale catch-up broadcast
+                    work_db.commit()
+                    result[f"loop_{label.lower()}_caught_up"] = 1
+                    logger.info("NPC scheduler: crash-recovery — Loop %s caught up", label)
+                else:
+                    work_db.rollback()
+            except Exception:
+                logger.exception(
+                    "NPC scheduler: Loop %s crash-recovery catch-up failed", label
+                )
+                work_db.rollback()
+            finally:
+                work_db.close()
+    finally:
+        lock_db.close()
+
+    return result
 
 
 def _repair_orphan_schedules_sync() -> int:
