@@ -45,7 +45,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from src.services import construction_service, contraband_service, contract_service
+from src.services import construction_service, contraband_service, contract_escrow_core, contract_service
 
 
 def _session_factory(base: "declarative_base") -> sessionmaker:
@@ -90,7 +90,12 @@ class TestContractServiceLoadPlayerGuard:
         seed.commit()
         seed.close()
 
-        monkeypatch.setattr(contract_service, "Player", MirrorPlayer)
+        # WO-CONTRACT-REFACTOR-SPLIT: `_load_player` (the function under
+        # test) now lives in contract_escrow_core.py -- its `db.query(
+        # Player)` call resolves `Player` in THAT module's globals, not
+        # contract_service's re-exported copy, so the patch target moved
+        # with it.
+        monkeypatch.setattr(contract_escrow_core, "Player", MirrorPlayer)
 
         S = SessionFactory()
         # An earlier UNLOCKED full-ORM read of the SAME PK on the SAME
@@ -140,7 +145,7 @@ class TestContractServiceLoadPlayerGuard:
         seed.commit()
         seed.close()
 
-        monkeypatch.setattr(contract_service, "Player", MirrorPlayer)
+        monkeypatch.setattr(contract_escrow_core, "Player", MirrorPlayer)
 
         S = SessionFactory()
         unlocked = contract_service._load_player(S, 1, for_update=False)
@@ -358,7 +363,7 @@ class TestStorageSelfSettleResidualClosed:
         seed.commit()
         seed.close()
 
-        monkeypatch.setattr(contract_service, "Player", MirrorPlayer)
+        monkeypatch.setattr(contract_escrow_core, "Player", MirrorPlayer)
 
         S = SessionFactory()
 

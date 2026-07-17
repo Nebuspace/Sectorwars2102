@@ -37,7 +37,7 @@ from src.models.contract import (
 )
 from src.models.ship import Ship, ShipType
 from src.models.station import StationStatus
-from src.services import contract_service
+from src.services import contract_dispute, contract_escrow_core, contract_service
 from src.services.contract_service import (
     ContractConflictError,
     ContractError,
@@ -800,7 +800,11 @@ class TestTransitionMatrixMutation:
             ContractStatus.POSTED: contract_service.LEGAL_TRANSITIONS[ContractStatus.POSTED],
             ContractStatus.ACCEPTED: frozenset({ContractStatus.CANCELLED}),  # COMPLETED removed
         }
-        monkeypatch.setattr(contract_service, "LEGAL_TRANSITIONS", stripped)
+        # WO-CONTRACT-REFACTOR-SPLIT: patch the REAL binding `_guarded_
+        # transition` reads from -- it lives in contract_escrow_core.py
+        # now, and its own `LEGAL_TRANSITIONS.get(...)` lookup resolves in
+        # THAT module's globals, not contract_service's re-exported copy.
+        monkeypatch.setattr(contract_escrow_core, "LEGAL_TRANSITIONS", stripped)
 
         with pytest.raises(ContractConflictError, match="illegal_transition"):
             contract_service.complete(db, c.id, player.id, now=_NOW)
@@ -1081,6 +1085,13 @@ class TestFileDispute:
         assert "manifest-url-123" in c.dispute_notes
 
     # --- Tier-1 case resolution -------------------------------------- #
+    #
+    # WO-CONTRACT-REFACTOR-SPLIT: the monkeypatch-to-True seam tests below
+    # patch `contract_dispute` (not `contract_service`) -- `file_dispute`
+    # itself lives in contract_dispute.py now, and its unqualified
+    # `_tier1_cargo_manifest_match(...)` / `_tier1_issuer_unilateral_
+    # cancellation(...)` calls resolve in THAT module's globals, not
+    # contract_service's re-exported copy.
 
     def test_tier1_destination_unreachable_resolves_and_refunds_fee(self) -> None:
         station = _station(status=StationStatus.ABANDONED)
@@ -1119,7 +1130,7 @@ class TestFileDispute:
         acceptor = _player(credits=5000)
         c.acceptor_player_id = acceptor.id
         db = _FakeSession(contracts=[c], players=[acceptor])
-        monkeypatch.setattr(contract_service, "_tier1_cargo_manifest_match", lambda contract: True)
+        monkeypatch.setattr(contract_dispute, "_tier1_cargo_manifest_match", lambda contract: True)
 
         result = contract_service.file_dispute(db, c.id, acceptor.id, "delivered on time", now=_NOW)
 
@@ -1135,7 +1146,7 @@ class TestFileDispute:
         acceptor = _player(credits=5000)
         c.acceptor_player_id = acceptor.id
         db = _FakeSession(contracts=[c], players=[issuer, acceptor])
-        monkeypatch.setattr(contract_service, "_tier1_issuer_unilateral_cancellation", lambda contract: True)
+        monkeypatch.setattr(contract_dispute, "_tier1_issuer_unilateral_cancellation", lambda contract: True)
 
         result = contract_service.file_dispute(db, c.id, acceptor.id, "issuer cancelled after accept", now=_NOW)
 
@@ -1153,7 +1164,7 @@ class TestFileDispute:
         acceptor = _player(credits=5000)
         c.acceptor_player_id = acceptor.id
         db = _FakeSession(contracts=[c], players=[acceptor])
-        monkeypatch.setattr(contract_service, "_tier1_issuer_unilateral_cancellation", lambda contract: True)
+        monkeypatch.setattr(contract_dispute, "_tier1_issuer_unilateral_cancellation", lambda contract: True)
 
         result = contract_service.file_dispute(db, c.id, acceptor.id, "reason", now=_NOW)
 
@@ -1173,7 +1184,7 @@ class TestFileDispute:
         acceptor = _player(credits=5000)
         c.acceptor_player_id = acceptor.id
         db = _FakeSession(contracts=[c], players=[issuer, acceptor])
-        monkeypatch.setattr(contract_service, "_tier1_cargo_manifest_match", lambda contract: True)
+        monkeypatch.setattr(contract_dispute, "_tier1_cargo_manifest_match", lambda contract: True)
         total_before = issuer.credits + acceptor.credits
 
         result = contract_service.file_dispute(db, c.id, acceptor.id, "delivered on time", now=_NOW)
@@ -1191,7 +1202,7 @@ class TestFileDispute:
         acceptor = _player(credits=5000)
         c.acceptor_player_id = acceptor.id
         db = _FakeSession(contracts=[c], players=[issuer, acceptor])
-        monkeypatch.setattr(contract_service, "_tier1_issuer_unilateral_cancellation", lambda contract: True)
+        monkeypatch.setattr(contract_dispute, "_tier1_issuer_unilateral_cancellation", lambda contract: True)
         total_before = issuer.credits + acceptor.credits
 
         result = contract_service.file_dispute(db, c.id, acceptor.id, "reason", now=_NOW)
@@ -1494,7 +1505,12 @@ class TestResolveDispute:
         asserts ZERO credits moved, on BOTH players, before the
         exception propagates. Complements `test_double_resolve_rejected_
         conservation` below (which proves the same thing via a REAL
-        second call, not a monkeypatch)."""
+        second call, not a monkeypatch).
+
+        WO-CONTRACT-REFACTOR-SPLIT: patches `contract_dispute` -- `resolve_
+        dispute` lives there now and its unqualified `_guarded_transition(
+        ...)` call resolves in that module's globals, not contract_
+        service's re-exported copy."""
         issuer = _player(credits=5000)
         c = self._disputed_contract(issuer_type=ContractIssuerType.PLAYER, issuer_id=issuer.id)
         acceptor = _player(credits=5000)
@@ -1504,7 +1520,7 @@ class TestResolveDispute:
         def _raise_conflict(*args: Any, **kwargs: Any) -> None:
             raise ContractConflictError("stale_status: simulated lost race")
 
-        monkeypatch.setattr(contract_service, "_guarded_transition", _raise_conflict)
+        monkeypatch.setattr(contract_dispute, "_guarded_transition", _raise_conflict)
 
         with pytest.raises(ContractConflictError, match="stale_status"):
             contract_service.resolve_dispute(db, c.id, uuid.uuid4(), ContractDisputeResolution.FULL_PAYOUT, now=_NOW)
