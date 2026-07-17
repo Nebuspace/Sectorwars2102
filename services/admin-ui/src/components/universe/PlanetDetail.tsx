@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { api } from '../../utils/auth';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import './universe-detail.css';
 
@@ -8,18 +9,40 @@ interface PlanetDetailProps {
   onUpdate?: (updatedPlanet: any) => void;
 }
 
-const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate: _onUpdate }) => {
+/** Fields PlanetDetail may click-edit — must match PlanetUpdateRequest. */
+const PATCHABLE_FIELDS = new Set(['name', 'planet_type', 'defense_level']);
+
+const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate }) => {
   const { getIcon, getLabel } = useResourceCatalog();
   const [editingField, setEditingField] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<any>({});
-  const [isLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
 
-  const handleSave = async (_field: string) => {
-    // There is no admin planet-edit endpoint (no PATCH/PUT /admin/planets/{id}).
-    // The inline-edit affordance below is disabled (fields render read-only), so
-    // this is unreachable; kept as a safe no-op rather than firing a 404 that
-    // reads to the operator as a transient "Failed to update" error.
-    setEditingField(null);
+  const handleSave = async (field: string) => {
+    const newValue = editValues[field];
+    if (newValue === undefined) {
+      setEditingField(null);
+      return;
+    }
+    if (!PATCHABLE_FIELDS.has(field)) {
+      setEditingField(null);
+      return;
+    }
+    // API expects `type`; the UI field is still `planet_type`.
+    const payload =
+      field === 'planet_type' ? { type: newValue } : { [field]: newValue };
+    setIsLoading(true);
+    try {
+      await api.patch(`/api/v1/admin/planets/${planet.id}`, payload);
+      if (onUpdate) onUpdate({ ...planet, [field]: newValue });
+      setEditingField(null);
+      setEditValues({});
+    } catch (err: any) {
+      alert(err.response?.data?.detail || `Failed to update ${field}`);
+      setEditingField(null);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleCancel = () => {
@@ -84,13 +107,19 @@ const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate: _
       );
     }
 
-    // Read-only: there is no admin planet-edit endpoint, so fields are not
-    // click-to-edit (previously this fired a PATCH that 404'd behind a
-    // misleading "Failed to update" alert).
+    if (!PATCHABLE_FIELDS.has(field)) {
+      return <span className="editable-field">{value}</span>;
+    }
+
     return (
       <span
-        className="editable-field"
-        title="Read-only — no admin planet-edit endpoint exists yet"
+        className="editable-field clickable"
+        title="Click to edit"
+        style={{ cursor: 'pointer' }}
+        onClick={() => {
+          setEditingField(field);
+          setEditValues((prev: any) => ({ ...prev, [field]: value }));
+        }}
       >
         {value}
       </span>
@@ -217,7 +246,7 @@ const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate: _
                   field="planet_type" 
                   value={planet.planet_type} 
                   type="select"
-                  options={['TERRA', 'M_CLASS', 'L_CLASS', 'O_CLASS', 'K_CLASS', 'H_CLASS', 'D_CLASS', 'C_CLASS']}
+                  options={['TERRAN', 'DESERT', 'OCEANIC', 'ICE', 'VOLCANIC', 'GAS_GIANT', 'BARREN', 'JUNGLE', 'ARCTIC', 'TROPICAL', 'MOUNTAINOUS', 'ARTIFICIAL']}
                 />
               </span>
             </div>

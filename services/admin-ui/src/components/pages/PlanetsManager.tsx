@@ -79,13 +79,15 @@ const PlanetsManager: React.FC = () => {
     setIsModalOpen(true);
   };
 
-  // Planet deletion is disabled: there is no backend route for
-  // DELETE /api/v1/admin/planets/{id}. The control stays visible but inert
-  // (and surfaces an inline notice) until the endpoint is implemented.
-  const PLANET_DELETE_ENDPOINT = 'DELETE /api/v1/admin/planets/{id}';
-
-  const handleDeletePlanet = (_planet: Planet) => {
-    setError(`Planet deletion is unavailable: the backend endpoint ${PLANET_DELETE_ENDPOINT} is not implemented.`);
+  const handleDeletePlanet = async (planet: Planet) => {
+    if (!window.confirm(`Delete planet "${planet.name}"? This cannot be undone.`)) return;
+    try {
+      await api.delete(`/api/v1/admin/planets/${planet.id}`);
+      setPlanets(prev => prev.filter(p => p.id !== planet.id));
+      setTotalPlanets(prev => prev - 1);
+    } catch (err: any) {
+      setError(err.response?.data?.detail || `Failed to delete planet "${planet.name}"`);
+    }
   };
 
   const handleModalClose = () => {
@@ -249,9 +251,7 @@ const PlanetsManager: React.FC = () => {
                     </button>
                     <button
                       className="delete-btn"
-                      title={`Disabled — missing backend endpoint ${PLANET_DELETE_ENDPOINT}`}
-                      disabled
-                      style={{ opacity: 0.5, cursor: 'not-allowed' }}
+                      title="Delete Planet"
                       onClick={() => handleDeletePlanet(planet)}
                     >
                       🗑️

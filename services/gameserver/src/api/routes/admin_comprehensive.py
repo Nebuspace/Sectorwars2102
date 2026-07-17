@@ -1992,6 +1992,124 @@ async def create_planet_in_sector(
         logger.error(f"Error creating planet in sector {sector_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to create planet: {str(e)}")
 
+class PlanetUpdateRequest(BaseModel):
+    name: Optional[str] = Field(None, max_length=100)
+    type: Optional[str] = None  # PlanetType enum value (e.g. "TERRAN", "DESERT")
+    size: Optional[int] = Field(None, ge=1, le=10)
+    position: Optional[int] = Field(None, ge=1, le=10)
+    gravity: Optional[float] = Field(None, ge=0.1, le=10.0)
+    temperature: Optional[float] = Field(None, ge=-100.0, le=1000.0)
+    water_coverage: Optional[float] = Field(None, ge=0.0, le=100.0)
+    habitability_score: Optional[int] = Field(None, ge=0, le=100)
+    resource_richness: Optional[float] = Field(None, ge=0.0, le=3.0)
+    defense_level: Optional[int] = Field(None, ge=0, le=100)
+
+
+@router.patch("/planets/{planet_id}", response_model=Dict[str, Any])
+async def update_planet(
+    planet_id: str,
+    planet_data: PlanetUpdateRequest,
+    current_admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Update a planet's properties"""
+    try:
+        planet = db.query(Planet).filter(Planet.id == planet_id).first()
+        if not planet:
+            raise HTTPException(status_code=404, detail="Planet not found")
+
+        update_data = planet_data.model_dump(exclude_unset=True)
+
+        for field, value in update_data.items():
+            if field == "type" and value:
+                from src.models.planet import PlanetType
+                try:
+                    planet.type = PlanetType(value)
+                except ValueError:
+                    raise HTTPException(status_code=400, detail=f"Invalid planet type: {value}")
+            else:
+                setattr(planet, field, value)
+
+        db.commit()
+
+        logger.info(f"Admin {current_admin.username} updated planet {planet_id}: {list(update_data.keys())}")
+
+        return {
+            "message": "Planet updated successfully",
+            "planet_id": planet_id,
+            "updated_fields": list(update_data.keys())
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating planet {planet_id}: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to update planet: {str(e)}")
+
+
+@router.delete("/planets/{planet_id}", response_model=Dict[str, Any])
+async def delete_planet(
+    planet_id: str,
+    current_admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Delete a planet. Fails closed (409 Conflict) if the planet is colonized
+    or is a capital population hub (canon: non-destructible).
+
+    Colonized = ANY of: owner_id set, colonized_at set, population > 0, or
+    status is COLONIZED / DEVELOPED / DYING / RESTRICTED / TERRAFORMING.
+    Prefer over-refuse over under-refuse.
+    """
+    try:
+        planet = db.query(Planet).filter(Planet.id == planet_id).first()
+        if not planet:
+            raise HTTPException(status_code=404, detail="Planet not found")
+
+        from src.models.planet import PlanetStatus
+        _inhabited = {
+            PlanetStatus.COLONIZED,
+            PlanetStatus.DEVELOPED,
+            PlanetStatus.DYING,
+            PlanetStatus.RESTRICTED,
+            PlanetStatus.TERRAFORMING,
+        }
+        if getattr(planet, "is_population_hub", False):
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot delete a population-hub planet — hubs are non-destructible",
+            )
+        if (planet.owner_id is not None
+                or planet.colonized_at is not None
+                or planet.population > 0
+                or planet.status in _inhabited):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Cannot delete a colonized planet — "
+                    "remove colonists and release ownership first"
+                )
+            )
+
+        planet_name = planet.name
+        db.delete(planet)
+        db.commit()
+
+        logger.info(f"Admin {current_admin.username} deleted planet '{planet_name}' ({planet_id})")
+
+        return {
+            "message": f"Planet '{planet_name}' deleted successfully",
+            "planet_id": planet_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting planet {planet_id}: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete planet: {str(e)}")
+
+
 @router.post("/sectors/{sector_id}/port", response_model=Dict[str, Any])
 async def create_port_in_sector(
     sector_id: str,
