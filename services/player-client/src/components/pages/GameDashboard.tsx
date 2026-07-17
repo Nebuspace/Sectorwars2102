@@ -1753,6 +1753,19 @@ const GameDashboardInner: React.FC = () => {
     }
   };
 
+  // QUEUE-UX-OVERLAY-CONSISTENCY REVISE: light focus-hygiene helper (NOT a
+  // focus-trap system) for the 4 dismiss-only toast/celebration overlays
+  // below. A keyboard user focused on an overlay's dismiss button (or the
+  // overlay itself) loses focus to nowhere the instant it unmounts --
+  // restore it to document.body (the floor; no stable cockpit landmark ref
+  // is guaranteed mounted in every game mode these can appear in) right
+  // before the dismissing setState, on every path: auto-dismiss timer,
+  // button click, overlay click, overlay Enter/Space.
+  const dismissOverlay = (setter: (value: null) => void) => {
+    document.body.focus();
+    setter(null);
+  };
+
   // --- Claim ceremony / refusal notice ---
   const [claimCelebration, setClaimCelebration] = useState<{
     planetName: string;
@@ -1764,7 +1777,7 @@ const GameDashboardInner: React.FC = () => {
 
   useEffect(() => {
     if (!claimCelebration) return;
-    const timer = setTimeout(() => setClaimCelebration(null), 10000);
+    const timer = setTimeout(() => dismissOverlay(setClaimCelebration), 10000);
     return () => clearTimeout(timer);
   }, [claimCelebration]);
 
@@ -1808,7 +1821,7 @@ const GameDashboardInner: React.FC = () => {
 
   useEffect(() => {
     if (!formationDiscovery) return;
-    const timer = setTimeout(() => setFormationDiscovery(null), 7000);
+    const timer = setTimeout(() => dismissOverlay(setFormationDiscovery), 7000);
     return () => clearTimeout(timer);
   }, [formationDiscovery]);
 
@@ -2022,7 +2035,7 @@ const GameDashboardInner: React.FC = () => {
   useEffect(() => {
     if (harvestTimerRef.current) clearTimeout(harvestTimerRef.current);
     if (harvestResult) {
-      harvestTimerRef.current = setTimeout(() => setHarvestResult(null), 6000);
+      harvestTimerRef.current = setTimeout(() => dismissOverlay(setHarvestResult), 6000);
     }
     return () => { if (harvestTimerRef.current) clearTimeout(harvestTimerRef.current); };
   }, [harvestResult]);
@@ -2031,7 +2044,7 @@ const GameDashboardInner: React.FC = () => {
   useEffect(() => {
     if (investigateTimerRef.current) clearTimeout(investigateTimerRef.current);
     if (investigateResult) {
-      investigateTimerRef.current = setTimeout(() => setInvestigateResult(null), 7000);
+      investigateTimerRef.current = setTimeout(() => dismissOverlay(setInvestigateResult), 7000);
     }
     return () => { if (investigateTimerRef.current) clearTimeout(investigateTimerRef.current); };
   }, [investigateResult]);
@@ -2358,18 +2371,34 @@ const GameDashboardInner: React.FC = () => {
         {claimCelebration && (
           <div
             className="claim-celebration-overlay"
-            role="dialog"
+            /* role="status" (not "dialog"/"alert"): this overlay auto-dismisses
+               on a timer AND dismisses on click-anywhere -- both prove it's a
+               non-modal transient announcement, not a blocking dialog. No
+               aria-modal (the background isn't inert -- the game keeps
+               running) and no focus trap (trapping a user inside something
+               that vanishes on its own in 10s would be hostile). Not "alert"
+               either -- a colony-established celebration is positive, not an
+               assertive interruption. Matches the 3 cockpit-alert toasts'
+               own role="status" (QUEUE-UX-OVERLAY-CONSISTENCY REVISE). */
+            role="status"
             aria-label="Colony established"
-            onClick={() => setClaimCelebration(null)}
+            onClick={() => dismissOverlay(setClaimCelebration)}
             tabIndex={0}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
-                setClaimCelebration(null);
+                dismissOverlay(setClaimCelebration);
               }
             }}
           >
             <div className="claim-celebration-card">
+              <button
+                className="claim-celebration-dismiss"
+                onClick={(e) => { e.stopPropagation(); dismissOverlay(setClaimCelebration); }}
+                aria-label="Dismiss colony established notice"
+              >
+                ×
+              </button>
               <div className="claim-scanline" aria-hidden="true"></div>
               <div className="claim-banner">🏴 COLONY ESTABLISHED</div>
               <div className="claim-planet-icon">{getPlanetIcon(claimCelebration.planetType)}</div>
@@ -2446,16 +2475,25 @@ const GameDashboardInner: React.FC = () => {
           <div
             className="cockpit-alert success"
             role="status"
-            onClick={() => setFormationDiscovery(null)}
+            onClick={() => dismissOverlay(setFormationDiscovery)}
             tabIndex={0}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
-                setFormationDiscovery(null);
+                dismissOverlay(setFormationDiscovery);
               }
             }}
           >
-            <div className="alert-header">🌀 FORMATION DISCOVERED</div>
+            <div className="alert-header">
+              <span>🌀 FORMATION DISCOVERED</span>
+              <button
+                className="alert-dismiss"
+                onClick={(e) => { e.stopPropagation(); dismissOverlay(setFormationDiscovery); }}
+                aria-label="Dismiss formation discovery notice"
+              >
+                ×
+              </button>
+            </div>
             <div className="alert-message">
               {formationDiscovery.name.toUpperCase()}
               {formationDiscovery.type
@@ -2471,17 +2509,24 @@ const GameDashboardInner: React.FC = () => {
           <div
             className={`cockpit-alert ${harvestResult.success ? 'success' : 'error'}`}
             role="status"
-            onClick={() => setHarvestResult(null)}
+            onClick={() => dismissOverlay(setHarvestResult)}
             tabIndex={0}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
-                setHarvestResult(null);
+                dismissOverlay(setHarvestResult);
               }
             }}
           >
             <div className="alert-header">
-              {harvestResult.success ? '⛏️ HARVEST COMPLETE' : '⛏️ HARVEST FAILED'}
+              <span>{harvestResult.success ? '⛏️ HARVEST COMPLETE' : '⛏️ HARVEST FAILED'}</span>
+              <button
+                className="alert-dismiss"
+                onClick={(e) => { e.stopPropagation(); dismissOverlay(setHarvestResult); }}
+                aria-label="Dismiss harvest result"
+              >
+                ×
+              </button>
             </div>
             {harvestResult.success ? (
               <>
@@ -2513,17 +2558,24 @@ const GameDashboardInner: React.FC = () => {
           <div
             className={`cockpit-alert ${investigateResult.success ? 'success' : 'error'}`}
             role="status"
-            onClick={() => setInvestigateResult(null)}
+            onClick={() => dismissOverlay(setInvestigateResult)}
             tabIndex={0}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
-                setInvestigateResult(null);
+                dismissOverlay(setInvestigateResult);
               }
             }}
           >
             <div className="alert-header">
-              {investigateResult.success ? '🔬 ANOMALY INVESTIGATED' : '🔬 INVESTIGATION FAILED'}
+              <span>{investigateResult.success ? '🔬 ANOMALY INVESTIGATED' : '🔬 INVESTIGATION FAILED'}</span>
+              <button
+                className="alert-dismiss"
+                onClick={(e) => { e.stopPropagation(); dismissOverlay(setInvestigateResult); }}
+                aria-label="Dismiss investigation result"
+              >
+                ×
+              </button>
             </div>
             {investigateResult.success ? (
               <div className="alert-message">

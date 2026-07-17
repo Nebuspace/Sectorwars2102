@@ -490,6 +490,28 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
   // Claim ceremony
   const [ceremony, setCeremony] = useState<{ name: string; shipType: string } | null>(null);
 
+  // QUEUE-UX-OVERLAY-CONSISTENCY REVISE: light focus-hygiene helper (NOT a
+  // focus-trap system), same pattern as GameDashboard.tsx's dismissOverlay.
+  // A keyboard user focused on the overlay's dismiss button loses focus to
+  // nowhere the instant it unmounts -- restore it to document.body (the
+  // floor; no stable landmark ref is guaranteed mounted here) right before
+  // the dismissing setState, on every path.
+  const dismissCeremony = () => {
+    document.body.focus();
+    setCeremony(null);
+  };
+
+  // QUEUE-UX-OVERLAY-CONSISTENCY: auto-dismiss, matching the exact idiom its
+  // closest sibling (GameDashboard.tsx's claimCelebration -- "sister of
+  // COLONY ESTABLISHED" per the JSX comment below) already uses. 10s to
+  // match that sibling's duration exactly (both are full-screen "ceremony"
+  // dialogs, not the smaller corner toasts, which run shorter at 6-7s).
+  useEffect(() => {
+    if (!ceremony) return;
+    const timer = setTimeout(dismissCeremony, 10000);
+    return () => clearTimeout(timer);
+  }, [ceremony]);
+
   // 1s clock for countdowns
   const [nowMs, setNowMs] = useState(() => Date.now());
 
@@ -1563,18 +1585,35 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
       {ceremony && (
         <div
           className="keel-ceremony-overlay"
-          role="dialog"
+          /* role="status" (not "dialog"/"alert"): this overlay auto-dismisses
+             on a timer AND dismisses on click-anywhere -- both prove it's a
+             non-modal transient announcement, not a blocking dialog. No
+             aria-modal (the background isn't inert -- the game keeps
+             running) and no focus trap (trapping a user inside something
+             that vanishes on its own in 10s would be hostile). Not "alert"
+             either -- a ship-delivered celebration is positive, not an
+             assertive interruption. Matches its sister claimCelebration and
+             the 3 cockpit-alert toasts' own role="status"
+             (QUEUE-UX-OVERLAY-CONSISTENCY REVISE). */
+          role="status"
           aria-label="Ship delivered"
-          onClick={() => setCeremony(null)}
+          onClick={dismissCeremony}
           tabIndex={0}
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
-              setCeremony(null);
+              dismissCeremony();
             }
           }}
         >
           <div className="keel-ceremony-card">
+            <button
+              className="keel-ceremony-dismiss"
+              onClick={(e) => { e.stopPropagation(); dismissCeremony(); }}
+              aria-label="Dismiss ship delivered notice"
+            >
+              ×
+            </button>
             <div className="keel-scanline" aria-hidden="true"></div>
             <div className="keel-banner">⭐ KEEL TO STARS</div>
             <div className="keel-ship-icon">🚀</div>

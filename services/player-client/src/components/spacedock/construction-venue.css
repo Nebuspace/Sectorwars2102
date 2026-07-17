@@ -1006,6 +1006,29 @@
   outline-offset: -4px;
 }
 
+.keel-ceremony-dismiss {
+  /* QUEUE-UX-OVERLAY-CONSISTENCY: visible dismiss affordance, matching
+     PriorityHailConsumer.tsx's .phc-toast-dismiss idiom, skinned to this
+     card's own cyan (matches .keel-banner). Same corner-absolute technique
+     as GameDashboard.tsx's sister .claim-celebration-dismiss -- this card
+     also has no header row to slot a flex-sibling button into. */
+  position: absolute;
+  top: 0.75rem;
+  right: 0.9rem;
+  z-index: 2;
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 1.3em;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.2rem;
+}
+
+.keel-ceremony-dismiss:hover {
+  color: #00d9ff;
+}
+
 .keel-ceremony-card {
   position: relative;
   width: min(440px, calc(100vw - 2rem));

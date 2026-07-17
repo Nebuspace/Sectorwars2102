@@ -1440,6 +1440,17 @@
   text-transform: uppercase;
   letter-spacing: 0.1em;
   margin-bottom: 0.5rem;
+  /* QUEUE-UX-OVERLAY-CONSISTENCY: generalized from .claim-denied's own
+     scoped copy (removed below) so every .cockpit-alert variant has room
+     for a trailing .alert-dismiss button, matching the
+     PriorityHailConsumer.tsx exemplar's visible-dismiss-button pattern.
+     Harmless on the two variants with no button (movementResult/
+     dockingResult/landingResult) -- a lone child in a space-between flex
+     row just sits at the start, no visual change for them. */
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
 }
 
 .cockpit-alert.error .alert-header {
@@ -1487,10 +1498,6 @@
 
 .cockpit-alert.claim-denied .alert-header {
   color: #ffb000;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
 }
 
 .cockpit-alert .alert-dismiss {
@@ -2853,46 +2860,6 @@
   display: flex;
   gap: 0.3rem;
   flex: 1;
-}
-
-.transfer-btn {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.3rem;
-  padding: 0.35rem 0.4rem;
-  font-size: 0.65em;
-  font-weight: 600;
-  border-radius: 3px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.transfer-btn span {
-  /* em, not the naive 0.75 -- this span nests inside .transfer-btn, which
-     itself now carries font-size: 0.65em, so a plain 0.75em would compound
-     against that (0.65 * 0.75 = 0.4875 of the em-root instead of 0.75).
-     1.1538 = 0.75 / 0.65, cancelling the parent's scale so the rendered
-     size stays proportionally where the original 0.75rem put it. */
-  font-size: 1.1538em;
-}
-
-.transfer-btn.disembark {
-  background: rgba(34, 197, 94, 0.2);
-  border: 1px solid rgba(34, 197, 94, 0.4);
-  color: #4ade80;
-}
-
-.transfer-btn.embark {
-  background: rgba(251, 191, 36, 0.2);
-  border: 1px solid rgba(251, 191, 36, 0.4);
-  color: #fbbf24;
-}
-
-.transfer-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 .transfer-note {
@@ -4547,6 +4514,31 @@
   to {
     opacity: 1;
   }
+}
+
+.claim-celebration-dismiss {
+  /* QUEUE-UX-OVERLAY-CONSISTENCY: visible dismiss affordance, matching
+     PriorityHailConsumer.tsx's .phc-toast-dismiss idiom (transparent,
+     borderless, opacity/color hover feedback) -- skinned to this card's own
+     green (matches .claim-banner). The card has no header row (pure
+     centered content), so this is corner-absolute rather than a flex
+     sibling, same technique ServicesVenue.tsx's inline .ins-close override
+     uses for the same "no header row to slot into" shape. */
+  position: absolute;
+  top: 0.75rem;
+  right: 0.9rem;
+  z-index: 2;
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 1.3em;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.2rem;
+}
+
+.claim-celebration-dismiss:hover {
+  color: #00ff41;
 }
 
 .claim-celebration-card {
