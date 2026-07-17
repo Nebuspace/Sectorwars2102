@@ -121,6 +121,7 @@ class TestMarkReviewedEndpointSource:
         block = _extract_route_block(_AUDIT_SRC, '@router.post("/actions/{action_id}/review"')
         assert "already_reviewed" in block
         assert "reviewed_at is not None" in block
+        assert "with_for_update()" in block
 
     def test_rejects_non_high_impact(self):
         block = _extract_route_block(_AUDIT_SRC, '@router.post("/actions/{action_id}/review"')

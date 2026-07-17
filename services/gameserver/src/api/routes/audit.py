@@ -231,7 +231,12 @@ async def mark_action_reviewed(
     review action same-txn (C1/C2 lesson). Review itself is NOT HIGH_IMPACT.
     """
     try:
-        row = db.query(AdminActionLog).filter(AdminActionLog.id == action_id).first()
+        row = (
+            db.query(AdminActionLog)
+            .filter(AdminActionLog.id == action_id)
+            .with_for_update()
+            .first()
+        )
         if row is None:
             raise HTTPException(status_code=404, detail="Admin action not found")
         if row.scope_used not in HIGH_IMPACT_SCOPES:
