@@ -12,8 +12,9 @@ from src.core.database import get_async_session
 from src.core.config import settings
 from src.models.user import User
 from src.models.admin_credentials import AdminCredentials
+from src.models.admin_scope_grant import AdminScopeGrant
 from src.core.security import get_password_hash
-from src.auth.admin_scopes import SCOPES_GRANT
+from src.auth.admin_scopes import META_SCOPES, SCOPES_GRANT
 from src.auth.dependencies import require_scope
 
 router = APIRouter()
@@ -56,6 +57,9 @@ async def create_admin(
     Create an admin user for testing purposes.
     Dev/stage only. Gated on SCOPES_GRANT — minting an admin is grant-equivalent
     (PLAYERS_VIEW must never reach this surface).
+
+    Same-txn META_SCOPES grants (hub residual on #2): flat is_admin alone would
+    mint a phantom admin after the Phase-C derived flip.
     """
     if not settings.TESTING and not settings.DEVELOPMENT_MODE:
         raise HTTPException(
@@ -86,6 +90,17 @@ async def create_admin(
         password_hash=get_password_hash(request.password)
     )
     db.add(admin_creds)
+
+    # Grant-consistent mint (same pattern as create_default_admin).
+    for scope in META_SCOPES:
+        db.add(
+            AdminScopeGrant(
+                id=uuid4(),
+                user_id=user.id,
+                scope=scope,
+                granted_by=current_admin.id,
+            )
+        )
 
     # Commit the transaction
     db.commit()
