@@ -21,7 +21,6 @@ from src.models.genesis_device import GenesisDevice, PlanetFormation
 from src.models.ship import Ship
 from src.models.sector import Sector
 from src.models.team import Team
-from src.services.admin_action_log_service import log_admin_action
 from src.services.admin_action_attempt import admin_action_attempt
 
 router = APIRouter()

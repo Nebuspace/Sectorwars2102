@@ -16,29 +16,45 @@ from src.auth.admin_scopes import (
 )
 
 
+def _audit_entrypoint(src: str) -> str:
+    """E-5 ``admin_action_attempt`` supersedes C2 ``log_admin_action``."""
+    if "admin_action_attempt" in src:
+        return "admin_action_attempt"
+    if "log_admin_action" in src:
+        return "log_admin_action"
+    raise AssertionError("no audit entrypoint (log_admin_action|admin_action_attempt)")
+
+
 def _assert_log_before(fn, *, marker: str, action: str):
     """Source-order tripwire.
 
     Convention: ``marker`` must be a specific call/assignment fragment
     (e.g. ``"changed = settle("``), never a bare substring that can
     false-match a comment (``"settle("`` once did).
+
+    Accepts either C2 ``log_admin_action`` or E-5 ``admin_action_attempt``.
     """
     src = inspect.getsource(fn)
-    assert "log_admin_action" in src, fn.__name__
+    audit = _audit_entrypoint(src)
     assert f'action="{action}"' in src, fn.__name__
-    assert src.index("log_admin_action") < src.index(marker), (
-        f"{fn.__name__}: log must precede {marker!r}"
+    assert src.index(audit) < src.index(marker), (
+        f"{fn.__name__}: {audit} must precede {marker!r}"
     )
 
 
 def _assert_commit_between_log_and(fn, *, after_marker: str):
-    """Require ``.commit()`` between log_admin_action and ``after_marker``."""
+    """Require ``.commit()`` between audit entrypoint and ``after_marker``.
+
+    C2 attempt-log pattern only (translation / nexus). E-5 helper-owns-commit
+    routes use ``attempt.succeed()`` instead — do not call this helper on them.
+    """
     src = inspect.getsource(fn)
-    log_i = src.index("log_admin_action")
+    audit = _audit_entrypoint(src)
+    log_i = src.index(audit)
     commit_i = src.index(".commit()", log_i)
     after_i = src.index(after_marker)
     assert log_i < commit_i < after_i, (
-        f"{fn.__name__}: commit must sit between log_admin_action and {after_marker!r}"
+        f"{fn.__name__}: commit must sit between {audit} and {after_marker!r}"
     )
 
 
@@ -52,19 +68,36 @@ def test_c2b_events_and_game_events_log_before_commit():
         (ev.activate_event, "event_activate"),
         (ev.deactivate_event, "event_deactivate"),
         (ev.delete_event, "event_delete"),
-        (admin_mod.create_game_event, "game_event_create"),
-        (admin_mod.update_game_event, "game_event_update"),
-        (admin_mod.activate_game_event, "game_event_activate"),
-        (admin_mod.deactivate_game_event, "game_event_deactivate"),
-        (admin_mod.delete_game_event, "game_event_delete"),
     ]:
         _assert_log_before(fn, marker="db.commit()", action=action)
+
+    # E-5: admin.py game-event mutators use admin_action_attempt (helper-owns-commit).
+    _assert_log_before(
+        admin_mod.create_game_event, marker="db.add(new_event)", action="game_event_create"
+    )
+    _assert_log_before(
+        admin_mod.update_game_event, marker="event.title =", action="game_event_update"
+    )
+    _assert_log_before(
+        admin_mod.activate_game_event,
+        marker="event.status = EventStatus.ACTIVE",
+        action="game_event_activate",
+    )
+    _assert_log_before(
+        admin_mod.deactivate_game_event,
+        marker="event.status = EventStatus.CANCELLED",
+        action="game_event_deactivate",
+    )
+    _assert_log_before(
+        admin_mod.delete_game_event, marker="db.delete(event)", action="game_event_delete"
+    )
 
 
 def test_c2b_factions_log_before_service_or_commit():
     from src.api.routes import admin_factions as fac
 
-    _assert_log_before(fac.create_faction, marker="db.commit()", action="faction_create")
+    # E-5: create uses admin_action_attempt (helper-owns-commit); no db.commit().
+    _assert_log_before(fac.create_faction, marker="db.add(faction)", action="faction_create")
     _assert_log_before(fac.update_faction, marker="db.commit()", action="faction_update")
     _assert_log_before(fac.delete_faction, marker="db.commit()", action="faction_delete")
     _assert_log_before(
@@ -142,11 +175,14 @@ def test_c2b_drones_ships_colonization_bulk_nexus():
         action="drone_force_recall",
     )
 
+    # E-5: planet_tick + player_create_bulk use admin_action_attempt.
     _assert_log_before(
         col.tick_planet_production, marker="changed = settle(", action="planet_tick"
     )
     _assert_log_before(
-        comp.create_players_from_all_users, marker="db.commit()", action="player_create_bulk"
+        comp.create_players_from_all_users,
+        marker="db.add(new_player)",
+        action="player_create_bulk",
     )
     _assert_log_before(
         nexus.generate_central_nexus, marker="background_tasks.add_task", action="nexus_generate_start"
