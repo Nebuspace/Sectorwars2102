@@ -83,27 +83,42 @@ docker compose exec gameserver    poetry run ruff check .
 
 Full protocol = the parent **`Nebuspace/CLAUDE.md`** (auto-loaded) + `.samantha/references/coordination-protocol/README.md`. This is the **M9 STAR-topology** protocol — the essentials for this repo's seat:
 
-**Channels:** `/Users/mrathbone/github/Nebuspace/.samantha/coord/impl-sectorwars.md` is this instance's **own file** — simultaneously its presence entry and its outbox (the default single-implementer identity for this repo). Read it back after every write. You **watch only** `/Users/mrathbone/github/Nebuspace/.samantha/coord/orchestrator.md` — your inbox for handoffs and decisions. Never write to the Orchestrator's file; a message you send is an append to your own file, which its watcher tails. If two Implementers share this repo on disjoint path lanes (the proven `player/gameserver` ↔ `admin-ui` split), each takes its own identity + coord file — `impl-gameserver` / `impl-admin-ui` — in the same coord-dir; the hub auto-discovers both.
+**Channels:** Your **own file** is `.samantha/coord/<your-identity>.md` — presence + outbox. Default single-implementer identity is `impl-sectorwars`; on a lane split the proven pair is `impl-gameserver` / `impl-admin-ui` (hub auto-discovers both). Read your file back after every write. You **watch only** `orchestrator.md` — your inbox. Never write into a peer's file.
 
 **Bootstrap (every session):**
 1. Read `.samantha/coord/orchestrator.md` in full — catch up on open WOs, decisions, and any open `🔧 DEPLOY-WINDOW`. **First M9 session only:** also read `../ROSTER.gen1-archive.md` + `./CROSS-CLAUDE.gen1-archive.md` to recover in-flight state carried over from the retired protocol (a live enrichment campaign + a GATE-STAGING lane were mid-flight), then proceed on M9.
-2. Self-register / refresh `.samantha/coord/impl-sectorwars.md` (or your assigned lane identity — role=Implementer, zone=this repo/lane, state=Active). Read it back to confirm the write landed.
-3. **Arm the coord-monitor** — the persistent streaming inbox. Launch it via the **`Monitor` tool** with **`persistent: true`** (NOT `Bash run_in_background`; that armed the retired echo-and-terminate `watch-coordination.sh`). It streams `orchestrator.md` (your inbox) into the chat as events — no per-message re-arm, no deaf gap. `command`:
-   ```bash
-   /Users/mrathbone/github/Nebuspace/.claude/coord-monitor.sh \
-     --identity impl-sectorwars \
-     --dir /Users/mrathbone/github/Nebuspace/.samantha/coord
-   ```
-4. **Arm the heartbeat** (Bash, `run_in_background: true`, `dangerouslyDisableSandbox: true`):
-   ```bash
-   /Users/mrathbone/github/Nebuspace/.claude/heartbeat.sh \
-     --identity impl-sectorwars --role implementer \
-     --dir /Users/mrathbone/github/Nebuspace/.samantha/coord
-   ```
-   Defaults: `--idle-threshold 1200` (20min idle before a HEARTBEAT auto-posts), `--cadence 300` (5min check interval).
-5. Post `🤝 ACK` / `🛰️ HEADS-UP` to your own file: "impl-sectorwars armed in. Watching `orchestrator.md`."
+2. Self-register / refresh your own coord file (role=Implementer, zone=this repo/lane, state=Active). Read it back to confirm the write landed. No pre-assigned name? Identity-bootstrap (`pending-<uuid>` → hub `🤝 ASSIGN-IDENTITY` → adopt) — see the coordination-protocol README.
+3. **Arm the coord-monitor + heartbeat** (harness-specific — see below). Confirm with `coord-status.sh` → **BOTH ALIVE**.
+4. Post `🤝 ACK` / `🛰️ HEADS-UP` to your own file: "`<identity>` armed in. Watching `orchestrator.md`."
 
-Identity = the lane you own (`impl-sectorwars` by default, or `impl-gameserver` / `impl-admin-ui` on a lane split). If you need a name, use the identity-bootstrap handshake in the reference README (provisional `pending-<uuid>` → Orchestrator assigns → atomic rename). Arm the coord-monitor (persistent, once per session) + the heartbeat; the monitor streams every message so there is **no per-wake-cycle re-arm and no deaf gap** (that discipline was the retired echo-and-terminate watcher). The two mutually-monitor — if either dies its sibling alerts in-chat (heartbeat self-exits `42`; monitor prints `⚠️ HEARTBEAT DOWN`); re-arm ONLY the dead one (monitor via the `Monitor` tool, heartbeat via `Bash run_in_background`), then `coord-status.sh` to confirm BOTH ALIVE. On a `💓 HEARTBEAT` wake: if mid-task, CONTINUE where you left off; if your queue is genuinely empty, stand by (the monitor stays armed — nothing to re-arm).
+### Arming the inbox — Claude Code vs Cursor (do not mix these up)
+
+`coord-monitor.sh` is a **forever-running process**. Liveness (PID in `.watch-state/<id>/watcher.pid`) is necessary but **not sufficient** — the agent must also be **woken when the script prints**. A background shell with no output→chat bridge is a deaf gap (incident 2026-07-17: monitor advanced past `ASSIGN-IDENTITY` while the Cursor agent never saw it).
+
+**Shared command** (identity = your seat — `impl-sectorwars` / `impl-admin-ui` / etc.):
+```bash
+/Users/mrathbone/github/Nebuspace/.claude/coord-monitor.sh \
+  --identity <your-identity> \
+  --dir /Users/mrathbone/github/Nebuspace/.samantha/coord
+
+/Users/mrathbone/github/Nebuspace/.claude/heartbeat.sh \
+  --identity <your-identity> --role implementer \
+  --dir /Users/mrathbone/github/Nebuspace/.samantha/coord
+```
+Defaults: heartbeat `--idle-threshold 1200` (20min), `--cadence 300` (5min).
+
+| Harness | How to arm so you get alerted |
+|---|---|
+| **Claude Code** | **`Monitor` tool**, `persistent: true`, for `coord-monitor.sh`. Heartbeat via Bash `run_in_background: true` (+ `dangerouslyDisableSandbox` if needed). Monitor streams `┃ COORD ▼` lines into chat as events. |
+| **Cursor Agent** | **Shell tool**, `block_until_ms: 0` (background), **`required_permissions: ["all"]`**, and **`notify_on_output` required** so stdout wakes this session. Plain `command &` / background-without-notify is **forbidden** — the process will look ALIVE in `coord-status.sh` while the agent stays deaf. |
+
+**Cursor `notify_on_output` (copy these):**
+- Monitor — `pattern`: `COORD ▼|HEARTBEAT DOWN|ASSIGN-IDENTITY|HANDOFF|DEPLOY-WINDOW` · `reason`: `Coord inbox peer message` · `debounce_ms`: `5000`
+- Heartbeat — `pattern`: `WATCHER-DOWN|exit 42|HEARTBEAT DOWN` · `reason`: `Heartbeat dead-man alert` · `debounce_ms`: `5000`
+
+On a notify wake: read the new tail of `orchestrator.md` (or the emitted block), act, do **not** re-arm a still-ALIVE monitor. Re-arm ONLY the dead one (kill by recorded PID — never `pkill -f`), then `coord-status.sh` → BOTH ALIVE. On `💓 HEARTBEAT` wake: if mid-task CONTINUE; if queue empty, stand by.
+
+**Never** use the retired echo-and-terminate `watch-coordination.sh` as the live inbox.
 
 **The 5 rules (disaster prevention):**
 1. **Commit only explicit paths** — `git commit -- <your/owned/paths>`. **NEVER `git add -A` / `git add .`** in this shared tree (it sweeps the other instance's in-flight files — has happened). `git pull --rebase --autostash` before every push.

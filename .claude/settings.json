@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/mrathbone/github/Nebuspace/.claude/coordination-precommit-hook.sh /Users/mrathbone/github/Nebuspace/.samantha/coord impl-sectorwars"
+            "command": "bash -lc 'ID=\"${SAMANTHA_IDENTITY:-impl-sectorwars}\"; exec /Users/mrathbone/github/Nebuspace/.claude/coordination-precommit-hook.sh /Users/mrathbone/github/Nebuspace/.samantha/coord \"$ID\"'"
           },
           {
             "type": "command",
