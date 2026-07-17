@@ -33,9 +33,10 @@ def live_db(monkeypatch):
         dbapi_conn.execute("PRAGMA foreign_keys=ON")
 
     # Skip AdminActionLog (JSONB) — audit write is orthogonal to the
-    # is_admin flush bug under test.
+    # is_admin flush bug under test.  Patch the bound name in admin_scopes
+    # (it imported log_admin_action into its module namespace).
     monkeypatch.setattr(
-        "src.api.routes.admin_scopes._log_action",
+        "src.api.routes.admin_scopes.log_admin_action",
         lambda *a, **k: None,
     )
 

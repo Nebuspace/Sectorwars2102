@@ -26,9 +26,9 @@ from src.auth.admin_scopes import (
 )
 from src.auth.dependencies import require_scope
 from src.core.database import get_db
-from src.models.admin_action_log import AdminActionLog
 from src.models.admin_scope_grant import AdminScopeGrant
 from src.models.user import User
+from src.services.admin_action_log_service import log_admin_action
 
 router = APIRouter(prefix="/admin/scopes", tags=["admin-scopes"])
 
@@ -68,18 +68,17 @@ def _log_action(
     result: str,
     failure_reason: Optional[str] = None,
 ) -> None:
-    db.add(
-        AdminActionLog(
-            id=uuid.uuid4(),
-            admin_user_id=actor.id,
-            scope_used=scope_used,
-            action=action,
-            target_type="user",
-            target_id=str(target_user_id),
-            payload_snapshot=payload,
-            result=result,
-            failure_reason=failure_reason,
-        )
+    """Thin adapter — preserves grant/revoke call sites; writes via shared helper."""
+    log_admin_action(
+        db,
+        actor=actor,
+        scope_used=scope_used,
+        action=action,
+        target_type="user",
+        target_id=str(target_user_id),
+        payload=payload,
+        result=result,
+        failure_reason=failure_reason,
     )
 
 

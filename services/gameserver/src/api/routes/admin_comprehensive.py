@@ -25,6 +25,7 @@ from src.auth.admin_scopes import (
 )
 from src.auth.dependencies import require_all_scopes, require_scope
 from src.models.user import User
+from src.services.admin_action_log_service import log_admin_action
 from src.models.player import Player
 from src.models.ship import Ship
 from src.models.planet import Planet
@@ -2044,6 +2045,15 @@ async def update_planet(
             else:
                 setattr(planet, field, value)
 
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=GALAXY_MANAGE,
+            action="planet_update",
+            target_type="planet",
+            target_id=str(planet_id),
+            payload={"updated_fields": list(update_data.keys())},
+        )
         db.commit()
 
         logger.info(f"Admin {current_admin.username} updated planet {planet_id}: {list(update_data.keys())}")
@@ -2106,6 +2116,15 @@ async def delete_planet(
             )
 
         planet_name = planet.name
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=GALAXY_MANAGE,
+            action="planet_delete",
+            target_type="planet",
+            target_id=str(planet_id),
+            payload={"name": planet_name},
+        )
         db.delete(planet)
         db.commit()
 

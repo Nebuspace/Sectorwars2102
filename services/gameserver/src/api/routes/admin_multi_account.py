@@ -36,6 +36,7 @@ from src.models.multi_account import (
     MultiAccountFlag,
 )
 from src.models.user import User
+from src.services.admin_action_log_service import log_admin_action
 
 router = APIRouter(prefix="/admin/multi-account", tags=["admin-multi-account"])
 
@@ -222,6 +223,18 @@ def decide_cluster(
     c.admin_decision_reason = body.reason
     c.admin_decision_at = datetime.now(timezone.utc)
     c.admin_decision_by = admin.id
+    log_admin_action(
+        db,
+        actor=admin,
+        scope_used=MULTI_ACCOUNT_REVIEW,
+        action="multi_account_decide",
+        target_type="multi_account_cluster",
+        target_id=str(cid),
+        payload={
+            "decision": decision_enum.value,
+            "reason": body.reason,
+        },
+    )
     db.commit()
     db.refresh(c)
     return _serialize_cluster(c, include_flags=True)
