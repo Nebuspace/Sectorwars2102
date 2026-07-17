@@ -295,7 +295,7 @@ def revoke_scope_from_user(
 async def list_scope_catalog(
     _: User = Depends(require_scope(SCOPES_GRANT)),
 ):
-    """26-scope catalog (grant holders can see what is grantable)."""
+    """27-scope catalog (grant holders can see what is grantable)."""
     return [
         ScopeCatalogItem(scope=scope, description=SCOPE_DESCRIPTIONS[scope])
         for scope in sorted(ALL_SCOPES)

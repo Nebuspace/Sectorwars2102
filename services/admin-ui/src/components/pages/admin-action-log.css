@@ -176,3 +176,41 @@
 .aal-row-stale td {
   background: rgba(127, 29, 29, 0.18);
 }
+
+.aal-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+  padding: 16px;
+}
+
+.aal-modal {
+  background: var(--surface-elevated, #1e293b);
+  border: 1px solid var(--border-color, #475569);
+  border-radius: 8px;
+  padding: 18px 20px;
+  max-width: 480px;
+  width: 100%;
+  color: inherit;
+}
+
+.aal-modal h2 {
+  margin: 0 0 10px;
+  font-size: 1.1rem;
+}
+
+.aal-modal p {
+  margin: 0 0 14px;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.aal-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

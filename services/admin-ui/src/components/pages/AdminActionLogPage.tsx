@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
 import './admin-action-log.css';
@@ -34,7 +34,7 @@ function scopeMissingMessage(err: any, fallback: string): string {
   if (err?.response?.status === 403) {
     return typeof detail === 'string'
       ? detail
-      : 'You lack admin.audit.view — cannot view the AdminActionLog.';
+      : 'You lack the required admin scope for this audit surface.';
   }
   return typeof detail === 'string' ? detail : fallback;
 }
@@ -61,6 +61,11 @@ export const AdminActionLogPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
+  const [reviewTarget, setReviewTarget] = useState<AdminActionItem | null>(null);
+  const [isMarking, setIsMarking] = useState(false);
+  const [markError, setMarkError] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const previouslyFocused = useRef<HTMLElement | null>(null);
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -103,12 +108,47 @@ export const AdminActionLogPage: React.FC = () => {
     load();
   }, [load]);
 
+  useEffect(() => {
+    if (!reviewTarget) return;
+    previouslyFocused.current = document.activeElement as HTMLElement | null;
+    const dialog = dialogRef.current;
+    dialog?.focus();
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !isMarking) {
+        setReviewTarget(null);
+        return;
+      }
+      if (e.key !== 'Tab' || !dialog) return;
+      const focusable = dialog.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      previouslyFocused.current?.focus?.();
+    };
+  }, [reviewTarget, isMarking]);
+
   const switchTab = (next: AuditTab) => {
     if (next === tab) return;
     setTab(next);
     setPage(1);
     setExpandedId(null);
     setData(null);
+    setReviewTarget(null);
+    setMarkError(null);
   };
 
   const applyFilters = (e: React.FormEvent) => {
@@ -135,8 +175,23 @@ export const AdminActionLogPage: React.FC = () => {
     });
   };
 
+  const handleMarkConfirm = async () => {
+    if (!reviewTarget || isMarking) return;
+    setIsMarking(true);
+    setMarkError(null);
+    try {
+      await api.post(`/api/v1/admin/audit/actions/${reviewTarget.id}/review`);
+      setReviewTarget(null);
+      await load();
+    } catch (err: any) {
+      setMarkError(scopeMissingMessage(err, 'Failed to mark action reviewed'));
+    } finally {
+      setIsMarking(false);
+    }
+  };
+
   const isReview = tab === 'review';
-  const colCount = isReview ? 8 : 7;
+  const colCount = isReview ? 9 : 7;
 
   return (
     <div className="aal-page">
@@ -144,7 +199,7 @@ export const AdminActionLogPage: React.FC = () => {
         title="Admin Action Log"
         subtitle={
           isReview
-            ? 'HIGH_IMPACT unreviewed actions — read-only review queue (mark-reviewed held pending scope ruling).'
+            ? 'HIGH_IMPACT unreviewed actions — retrospective review queue (admin.audit.review to clear).'
             : 'Append-only AdminActionLog — read-only accountability ledger (not the legacy HTTP audit trail).'
         }
       />
@@ -264,8 +319,8 @@ export const AdminActionLogPage: React.FC = () => {
       {isReview && !forbidden && (
         <p className="aal-review-note" role="note">
           Showing unreviewed actions under the 11 HIGH_IMPACT scopes. Rows older than 30 days
-          are flagged <strong>Stale</strong> and listed first. Mark-reviewed is not available
-          until the review scope is decided.
+          are flagged <strong>Stale</strong> and listed first. Marking reviewed requires{' '}
+          <code>admin.audit.review</code> and is itself logged.
         </p>
       )}
 
@@ -276,6 +331,7 @@ export const AdminActionLogPage: React.FC = () => {
           id={isReview ? 'aal-panel-review' : 'aal-panel-ledger'}
           role="tabpanel"
           aria-labelledby={isReview ? 'aal-tab-review' : 'aal-tab-ledger'}
+          aria-hidden={reviewTarget ? true : undefined}
         >
           <p className="aal-muted" aria-live="polite">
             {data.total} row{data.total === 1 ? '' : 's'} · page {data.page} of{' '}
@@ -294,6 +350,7 @@ export const AdminActionLogPage: React.FC = () => {
                   <th scope="col">Scope</th>
                   <th scope="col">Result</th>
                   <th scope="col">Payload</th>
+                  {isReview && <th scope="col">Review</th>}
                 </tr>
               </thead>
               <tbody>
@@ -359,6 +416,20 @@ export const AdminActionLogPage: React.FC = () => {
                             '—'
                           )}
                         </td>
+                        {isReview && (
+                          <td>
+                            <button
+                              type="button"
+                              className="btn btn-primary aal-payload-btn"
+                              onClick={() => {
+                                setMarkError(null);
+                                setReviewTarget(row);
+                              }}
+                            >
+                              Mark reviewed
+                            </button>
+                          </td>
+                        )}
                       </tr>
                       {expandedId === row.id && (
                         <tr className="aal-payload-row" id={`payload-row-${row.id}`}>
@@ -397,6 +468,54 @@ export const AdminActionLogPage: React.FC = () => {
             >
               Next
             </button>
+          </div>
+        </div>
+      )}
+
+      {reviewTarget && (
+        <div
+          className="aal-modal-backdrop"
+          onClick={() => !isMarking && setReviewTarget(null)}
+        >
+          <div
+            ref={dialogRef}
+            className="aal-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="aal-review-title"
+            tabIndex={-1}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="aal-review-title">Confirm mark reviewed</h2>
+            <p>
+              Clear <code>{reviewTarget.action}</code> (
+              <code>{reviewTarget.scope_used || '—'}</code>) from the retrospective
+              review queue? This writes <code>reviewed_by</code>/<code>reviewed_at</code>{' '}
+              and logs your review under <code>admin.audit.review</code>.
+            </p>
+            {markError && (
+              <div className="aal-alert aal-alert-error" role="alert">
+                {markError}
+              </div>
+            )}
+            <div className="aal-modal-actions">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={isMarking}
+                onClick={() => setReviewTarget(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={isMarking}
+                onClick={handleMarkConfirm}
+              >
+                {isMarking ? 'Marking…' : 'Mark reviewed'}
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -45,8 +45,8 @@ class TestScopeCatalog:
     """The catalog is the authoritative scope vocabulary (ADR-0058 + staged ops)."""
 
     def test_catalog_size(self):
-        # ADR-0058: 19 platform scopes + 7 Max-ruled operational scopes (19→26).
-        assert len(ALL_SCOPES) == 26
+        # ADR-0058: 19 platform + 7 operational + admin.audit.review (26→27).
+        assert len(ALL_SCOPES) == 27
 
     def test_all_scopes_start_with_admin_prefix(self):
         for scope in ALL_SCOPES:
@@ -108,6 +108,7 @@ class TestScopeCatalog:
             admin_scopes.SCOPES_GRANT,
             admin_scopes.SCOPES_REVOKE,
             admin_scopes.AUDIT_VIEW,
+            admin_scopes.AUDIT_REVIEW,
             admin_scopes.GALAXY_MANAGE,
             admin_scopes.PLAYERS_ADJUST_CREDITS,
             admin_scopes.SHIPS_MANAGE,
@@ -253,12 +254,12 @@ def _seed_helper(admin_user_ids: List[str], existing_active_grants: Dict[str, Li
 class TestSeedLogic:
     """Test the seed idempotency logic in isolation."""
 
-    def test_fresh_admin_gets_all_26_scopes(self):
+    def test_fresh_admin_gets_all_catalog_scopes(self):
         uid = str(uuid.uuid4())
         result = _seed_helper([uid], {})
         assert set(result[uid]) == admin_scopes.ALL_SCOPES
 
-    def test_two_fresh_admins_each_get_all_26(self):
+    def test_two_fresh_admins_each_get_all_catalog_scopes(self):
         uid1, uid2 = str(uuid.uuid4()), str(uuid.uuid4())
         result = _seed_helper([uid1, uid2], {})
         assert set(result[uid1]) == admin_scopes.ALL_SCOPES
@@ -281,15 +282,15 @@ class TestSeedLogic:
         # all remaining scopes are inserted (catalog size − already held)
         assert len(inserted) == len(admin_scopes.ALL_SCOPES) - len(have)
 
-    def test_bootstrap_gets_meta_scopes_via_all_26(self):
-        """Bootstrap (is_admin=true) gets all 26 which includes the 3 meta-scopes."""
+    def test_bootstrap_gets_meta_scopes_via_all_catalog(self):
+        """Bootstrap (is_admin=true) gets full catalog which includes the 3 meta-scopes."""
         uid = str(uuid.uuid4())
         result = _seed_helper([uid], {})
         inserted = set(result.get(uid, []))
         assert admin_scopes.META_SCOPES <= inserted
 
     def test_no_admin_under_seeded(self):
-        """Cipher: every admin in the input must end up with all 26 scopes after seed."""
+        """Cipher: every admin in the input must end up with all catalog scopes after seed."""
         uids = [str(uuid.uuid4()) for _ in range(5)]
         # Simulate a partial pre-existing state (some already have some scopes)
         existing = {uids[2]: [admin_scopes.PLAYERS_VIEW]}
@@ -298,7 +299,7 @@ class TestSeedLogic:
             pre = set(existing.get(uid, []))
             post = pre | set(result.get(uid, []))
             assert post == admin_scopes.ALL_SCOPES, (
-                f"User {uid} ends up with {len(post)} scopes, expected 26"
+                f"User {uid} ends up with {len(post)} scopes, expected {len(admin_scopes.ALL_SCOPES)}"
             )
 
     def test_empty_admin_list_produces_no_inserts(self):

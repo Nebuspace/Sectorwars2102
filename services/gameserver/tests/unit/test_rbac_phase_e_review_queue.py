@@ -100,6 +100,34 @@ class TestRetentionPolicy:
         assert offenders == [], f"AdminActionLog delete/purge helpers: {offenders}"
 
 
+class TestMarkReviewedEndpointSource:
+    def test_requires_audit_review_not_audit_view(self):
+        block = _extract_route_block(_AUDIT_SRC, '@router.post("/actions/{action_id}/review"')
+        assert "require_scope(AUDIT_REVIEW)" in block
+        assert "require_scope(AUDIT_VIEW)" not in block
+        from src.auth.admin_scopes import AUDIT_REVIEW, HIGH_IMPACT_SCOPES
+
+        assert AUDIT_REVIEW not in HIGH_IMPACT_SCOPES
+        assert AUDIT_REVIEW == "admin.audit.review"
+
+    def test_logs_before_commit_same_txn(self):
+        block = _extract_route_block(_AUDIT_SRC, '@router.post("/actions/{action_id}/review"')
+        assert "log_admin_action" in block
+        assert block.index("log_admin_action") < block.index("db.commit()")
+        assert 'action="audit_review"' in block
+        assert "scope_used=AUDIT_REVIEW" in block
+
+    def test_idempotent_already_reviewed_skips_log(self):
+        block = _extract_route_block(_AUDIT_SRC, '@router.post("/actions/{action_id}/review"')
+        assert "already_reviewed" in block
+        assert "reviewed_at is not None" in block
+
+    def test_rejects_non_high_impact(self):
+        block = _extract_route_block(_AUDIT_SRC, '@router.post("/actions/{action_id}/review"')
+        assert "HIGH_IMPACT_SCOPES" in block
+        assert "400" in block
+
+
 class TestReviewQueueOrderingSmoke:
     """SQLite — HIGH_IMPACT + unreviewed filter; stale-first then newest."""
 

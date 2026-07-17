@@ -1,11 +1,12 @@
 """Admin scope catalog — RBAC Phase A1 (ADR-0058 A-F2) + Max-ruled expansion.
 
 ADR-0058's 19 platform scopes are VERBATIM.  Operational scopes (Max-ruled
-19→26 expansion) are listed below.  GRANTS live as AdminScopeGrant rows;
+19→26 expansion) plus Phase E ``admin.audit.review`` (26→27) are listed below.
+GRANTS live as AdminScopeGrant rows;
 
 HIGH_IMPACT subset: actions that carry material financial, access, or
 structural risk — surfaced to the daily review queue (Phase E) and subject to
-the two-eyes retrospective ack.
+the two-eyes retrospective ack.  ``admin.audit.review`` is NOT high-impact.
 """
 
 # ---------------------------------------------------------------------------
@@ -46,6 +47,7 @@ BANG_REGENERATE = "admin.bang.regenerate"
 SCOPES_GRANT = "admin.scopes.grant"
 SCOPES_REVOKE = "admin.scopes.revoke"
 AUDIT_VIEW = "admin.audit.view"
+AUDIT_REVIEW = "admin.audit.review"
 
 # Operational (Max-ruled catalog expansion 19→26 — see
 # audit/design-briefs/rbac-scope-expansion-2026-07-17.md).
@@ -82,6 +84,7 @@ ALL_SCOPES: frozenset[str] = frozenset(
         SCOPES_GRANT,
         SCOPES_REVOKE,
         AUDIT_VIEW,
+        AUDIT_REVIEW,
         GALAXY_MANAGE,
         PLAYERS_ADJUST_CREDITS,
         SHIPS_MANAGE,
@@ -143,6 +146,7 @@ SCOPE_DESCRIPTIONS: dict[str, str] = {
     SCOPES_GRANT: "Grant admin scopes to other users.",
     SCOPES_REVOKE: "Revoke admin scopes from other users.",
     AUDIT_VIEW: "View the AdminActionLog audit trail (admin actions).",
+    AUDIT_REVIEW: "Clear high-impact admin actions off the retrospective review queue.",
     GALAXY_MANAGE: (
         "Structural edits to galaxy sectors, ports, planets, and warp links "
         "(not bang regeneration; use admin.bang.regenerate for that)."

@@ -12,9 +12,10 @@ from sqlalchemy import and_, case
 from sqlalchemy.orm import Session
 
 from src.core.database import get_db
-from src.auth.admin_scopes import AUDIT_VIEW, HIGH_IMPACT_SCOPES
+from src.auth.admin_scopes import AUDIT_VIEW, AUDIT_REVIEW, HIGH_IMPACT_SCOPES
 from src.auth.dependencies import require_scope
 from src.services.audit_service import AuditService
+from src.services.admin_action_log_service import log_admin_action
 from src.models.admin_action_log import AdminActionLog
 from src.models.user import User
 
@@ -63,6 +64,13 @@ class ReviewQueuePageOut(BaseModel):
     page: int
     limit: int
     pages: int
+
+
+class MarkReviewedOut(BaseModel):
+    id: UUID
+    reviewed_by: Optional[UUID] = None
+    reviewed_at: Optional[datetime] = None
+    already_reviewed: bool
 
 
 @router.post("/log")
@@ -206,6 +214,68 @@ async def list_review_queue(
     except Exception as e:
         logger.error("list_review_queue failed: %s", e)
         raise HTTPException(status_code=500, detail="Failed to list review queue")
+
+
+@router.post("/actions/{action_id}/review", response_model=MarkReviewedOut)
+async def mark_action_reviewed(
+    action_id: UUID,
+    admin: User = Depends(require_scope(AUDIT_REVIEW)),
+    db: Session = Depends(get_db),
+):
+    """Mark a HIGH_IMPACT AdminActionLog row as retrospectively reviewed.
+
+    Gated on ``admin.audit.review`` (27th scope — separation from AUDIT_VIEW).
+    Idempotent: if ``reviewed_at`` is already set, leave the row unchanged and
+    return ``already_reviewed=True`` without appending a second ledger row.
+    First-time review updates ``reviewed_by``/``reviewed_at`` and logs the
+    review action same-txn (C1/C2 lesson). Review itself is NOT HIGH_IMPACT.
+    """
+    try:
+        row = db.query(AdminActionLog).filter(AdminActionLog.id == action_id).first()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Admin action not found")
+        if row.scope_used not in HIGH_IMPACT_SCOPES:
+            raise HTTPException(
+                status_code=400,
+                detail="Only HIGH_IMPACT actions can be marked reviewed",
+            )
+
+        if row.reviewed_at is not None:
+            return MarkReviewedOut(
+                id=row.id,
+                reviewed_by=row.reviewed_by,
+                reviewed_at=row.reviewed_at,
+                already_reviewed=True,
+            )
+
+        now = datetime.now(timezone.utc)
+        row.reviewed_by = admin.id
+        row.reviewed_at = now
+        log_admin_action(
+            db,
+            actor=admin,
+            scope_used=AUDIT_REVIEW,
+            action="audit_review",
+            target_type="admin_action_log",
+            target_id=str(row.id),
+            payload={"scope_used": row.scope_used, "action": row.action},
+            result="success",
+        )
+        db.commit()
+        db.refresh(row)
+        return MarkReviewedOut(
+            id=row.id,
+            reviewed_by=row.reviewed_by,
+            reviewed_at=row.reviewed_at,
+            already_reviewed=False,
+        )
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error("mark_action_reviewed failed: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to mark action reviewed")
 
 
 @router.get("/logs")
