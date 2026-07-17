@@ -1,4 +1,5 @@
 import React, { useState, useEffect, FormEvent, ChangeEvent, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useAdmin } from '../../contexts/AdminContext';
 import PageHeader from '../ui/PageHeader';
@@ -65,8 +66,6 @@ const UsersManager: React.FC = () => {
   // Form states for new user
   const [newUsername, setNewUsername] = useState<string>('');
   const [newEmail, setNewEmail] = useState<string>('');
-  const [newPassword, setNewPassword] = useState<string>('');
-  const [isAdmin, setIsAdmin] = useState<boolean>(false);
 
   // Form states for edit user
   const [editUsername, setEditUsername] = useState<string>('');
@@ -81,6 +80,16 @@ const UsersManager: React.FC = () => {
     }
   }, [currentUser?.is_admin, users.length]); // Also check if users are already loaded
 
+  // Escape closes the create modal (lightweight a11y; full trap = Scopes pattern later)
+  useEffect(() => {
+    if (!showCreateModal) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowCreateModal(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showCreateModal]);
+
   // Handle create user form submission
   const handleCreateUser = async (e: FormEvent) => {
     e.preventDefault();
@@ -89,18 +98,8 @@ const UsersManager: React.FC = () => {
       setError(null);
       setSuccessMessage(null);
 
-      if (isAdmin) {
-        // POST /users/admin RETIRED (Max 2026-07-17) — admin-hood is grant-only
-        // via POST /api/v1/admin/scopes/grant. Create a normal user first, then
-        // grant scopes from the scopes console.
-        setError(
-          'Admin accounts are no longer created here. Create a normal user, then grant scopes via Admin → Scopes (POST /api/v1/admin/scopes/grant).'
-        );
-        return;
-      }
-      // POST /api/v1/users/ (users.py:42) — creates a non-admin account.
-      // The backend ignores any password (no credentials row is created),
-      // so we don't collect or send one; these accounts sign in via OAuth.
+      // POST /api/v1/users/ — non-admin account only. Admin-hood is grant-only
+      // via Admin → Scopes (POST /api/v1/admin/scopes/grant).
       await api.post('/api/v1/users/', {
         username: newUsername,
         email: newEmail || null
@@ -109,8 +108,6 @@ const UsersManager: React.FC = () => {
       // Reset form
       setNewUsername('');
       setNewEmail('');
-      setNewPassword('');
-      setIsAdmin(false);
       setShowCreateModal(false);
       setSuccessMessage(`User "${newUsername}" created successfully.`);
 
@@ -358,7 +355,18 @@ const UsersManager: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredUsers.map((user: User) => (
+                  {filteredUsers.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="text-muted text-center py-8">
+                        {users.length === 0
+                          ? 'No users loaded.'
+                          : searchTerm
+                            ? `No users match “${searchTerm}”.`
+                            : 'No users to show with the current filters.'}
+                      </td>
+                    </tr>
+                  ) : (
+                  filteredUsers.map((user: User) => (
                     <tr key={user.id}>
                       <td className="font-medium">
                         {user.username || <span className="text-muted">[No Username]</span>}
@@ -376,7 +384,14 @@ const UsersManager: React.FC = () => {
                       <td className="text-muted date-cell">{formatDate(user.last_login)}</td>
                       <td>
                         <div className="action-buttons">
-                          {/* Prevent actions on current user and on protected admin account */}
+                          <Link
+                            to={`/scopes?user=${encodeURIComponent(user.id)}`}
+                            className="btn btn-sm btn-outline"
+                            title="Manage scopes for this user"
+                          >
+                            Scopes
+                          </Link>
+                          {/* Prevent destructive actions on current user and on protected admin account */}
                           {user.username === 'admin' ? (
                             <span className="badge badge-info">Protected Account</span>
                           ) : currentUser && user.id !== currentUser.id ? (
@@ -413,7 +428,8 @@ const UsersManager: React.FC = () => {
                         </div>
                       </td>
                     </tr>
-                  ))}
+                  ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -422,11 +438,32 @@ const UsersManager: React.FC = () => {
       
         {/* Create User Modal */}
         {showCreateModal && (
-          <div className="modal-overlay">
-            <div className="modal">
+          <div
+            className="modal-overlay"
+            role="presentation"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowCreateModal(false);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setShowCreateModal(false);
+            }}
+          >
+            <div
+              className="modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="create-user-title"
+            >
               <div className="modal-header">
-                <h3 className="modal-title">Create New User</h3>
-                <button className="btn btn-sm btn-ghost" onClick={() => setShowCreateModal(false)}>×</button>
+                <h3 id="create-user-title" className="modal-title">Create New User</h3>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-ghost"
+                  onClick={() => setShowCreateModal(false)}
+                  aria-label="Close"
+                >
+                  ×
+                </button>
               </div>
               <div className="modal-body">
                 <form onSubmit={handleCreateUser} className="space-y-4">
@@ -454,30 +491,14 @@ const UsersManager: React.FC = () => {
                       onChange={(e: ChangeEvent<HTMLInputElement>) => setNewEmail(e.target.value)}
                     />
                   </div>
-                  
-                  <div className="form-group">
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={isAdmin}
-                        onChange={(e: ChangeEvent<HTMLInputElement>) => setIsAdmin(e.target.checked)}
-                        className="form-checkbox mr-2"
-                      />
-                      Grant Admin Privileges (retired — use Scopes)
-                    </label>
-                    {isAdmin && (
-                      <p className="text-muted text-xs mt-1">
-                        POST /users/admin is retired. Uncheck this and create a normal
-                        user, then grant scopes via the scopes API.
-                      </p>
-                    )}
-                  </div>
 
-                  {/* Password field removed with retired POST /users/admin.
-                      Non-admin accounts authenticate via OAuth. */}
                   <p className="text-muted text-xs">
-                    The backend does not set a password for accounts created
-                    here — the user will need to sign in via OAuth.
+                    Creates a normal account (OAuth sign-in). To grant admin
+                    powers, open{' '}
+                    <Link to="/scopes" className="link">
+                      Admin → Scopes
+                    </Link>{' '}
+                    after create — there is no “make admin” toggle here.
                   </p>
                   
                   <div className="modal-footer">

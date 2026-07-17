@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
 import './scopes-manager.css';
@@ -50,6 +51,7 @@ function scopeHintId(scope: string): string {
 }
 
 export const ScopesManager: React.FC = () => {
+  const [searchParams] = useSearchParams();
   const [holders, setHolders] = useState<ScopeHolder[]>([]);
   const [catalog, setCatalog] = useState<ScopeCatalogItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -91,6 +93,15 @@ export const ScopesManager: React.FC = () => {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Deep-link from Users → Scopes (?user=<id>)
+  useEffect(() => {
+    const uid = searchParams.get('user');
+    if (!uid || holders.length === 0) return;
+    if (holders.some((h) => h.user_id === uid)) {
+      setSelectedId(uid);
+    }
+  }, [searchParams, holders]);
 
   // Focus trap for revoke confirmation dialog (Pixel INACCESSIBLE #1).
   useEffect(() => {
