@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from src.auth.admin_scopes import MULTI_ACCOUNT_REVIEW
@@ -112,7 +112,7 @@ class ClusterDecisionRequest(BaseModel):
     """
 
     decision: str
-    reason: Optional[str] = None
+    reason: Optional[str] = Field(None, max_length=2000)
 
 
 # ---------------------------------------------------------------------------

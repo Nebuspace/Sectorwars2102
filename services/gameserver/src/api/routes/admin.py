@@ -16,6 +16,7 @@ from src.auth.admin_scopes import (
     PLAYERS_VIEW,
 )
 from src.auth.dependencies import require_all_scopes, require_scope
+from src.services.admin_action_log_service import log_admin_action
 from src.models.user import User
 from src.models.player import Player
 from src.models.ship import Ship
@@ -516,6 +517,15 @@ async def update_player(
                     raise HTTPException(status_code=400, detail="Team not found")
                 player.team_id = update_data['team_id']
 
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=PLAYERS_ADJUST_CREDITS,
+            action="player_update",
+            target_type="player",
+            target_id=str(player_id),
+            payload={"fields": sorted(k for k in update_data.keys() if k != "password")},
+        )
         # Commit changes
         db.commit()
         db.refresh(player)
@@ -1354,6 +1364,18 @@ async def create_warp_tunnel(
         )
         
         db.add(warp_tunnel)
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=GALAXY_MANAGE,
+            action="warp_tunnel_create",
+            target_type="warp_tunnel",
+            target_id=str(warp_tunnel.id),
+            payload={
+                "source_sector_id": request.source_sector_id,
+                "target_sector_id": request.target_sector_id,
+            },
+        )
         db.commit()
         db.refresh(warp_tunnel)
         
@@ -1392,6 +1414,15 @@ async def clear_all_galaxy_data(
         db.query(Cluster).delete()       # Clusters reference Regions
         db.query(Region).delete()        # Regions (includes Central Nexus), referenced by Sectors
         db.query(Galaxy).delete()        # Finally delete Galaxy
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=GALAXY_MANAGE,
+            action="galaxy_clear",
+            target_type="galaxy",
+            target_id="all",
+            payload={"preserved": ["users", "oauth_accounts"]},
+        )
         db.commit()
 
         return {"message": "All galaxy data and player game state cleared successfully. User accounts preserved."}
@@ -1439,6 +1470,15 @@ async def fix_galaxy_statistics(
 
         # Mark as modified so SQLAlchemy knows to update the JSON field
         flag_modified(galaxy, 'statistics')
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=GALAXY_MANAGE,
+            action="galaxy_fix_statistics",
+            target_type="galaxy",
+            target_id=str(galaxy.id),
+            payload={"station_count": galaxy.statistics.get("station_count")},
+        )
         db.commit()
 
         logger.info(f"Updated statistics: {galaxy.statistics}")
@@ -1680,6 +1720,15 @@ async def update_port(
         # Mark commodities as modified for SQLAlchemy
         station.commodities = dict(station.commodities)
         
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=GALAXY_MANAGE,
+            action="port_update",
+            target_type="station",
+            target_id=str(station_id),
+            payload={"fields": sorted(k for k in port_updates.keys() if k != "password")},
+        )
         db.commit()
         
         return {

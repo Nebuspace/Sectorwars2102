@@ -32,6 +32,7 @@ from src.auth.dependencies import require_scope
 from src.core.database import get_db
 from src.models.contract import Contract, ContractDisputeResolution, ContractStatus
 from src.models.user import User
+from src.services.admin_action_log_service import log_admin_action
 from src.services.contract_service import (
     ContractConflictError,
     ContractError,
@@ -142,5 +143,14 @@ async def resolve_contract_dispute(
         db.rollback()
         _raise_for(exc)
     else:
+        log_admin_action(
+            db,
+            actor=admin,
+            scope_used=DISPUTES_RESOLVE,
+            action="contract_dispute_resolve",
+            target_type="contract",
+            target_id=str(contract_uuid),
+            payload={"outcome": outcome.value},
+        )
         db.commit()
         return result

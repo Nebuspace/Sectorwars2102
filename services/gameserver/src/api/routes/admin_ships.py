@@ -25,6 +25,7 @@ from src.models.user import User
 from src.models.ship import Ship, ShipType, ShipStatus, ShipSpecification
 from src.models.player import Player
 from src.models.sector import Sector
+from src.services.admin_action_log_service import log_admin_action
 from src.services.audit_service import AuditService, AuditAction
 
 router = APIRouter(prefix="/admin/ships", tags=["admin", "ships"])
@@ -286,6 +287,19 @@ async def emergency_ship_action(
         }
     )
     
+    log_admin_action(
+        db,
+        actor=admin,
+        scope_used=SHIPS_MANAGE,
+        action="ship_emergency",
+        target_type="ship",
+        target_id=str(ship_id),
+        payload={
+            "action": request.action.value,
+            "old_status": old_status,
+            "new_status": ship.status,
+        },
+    )
     db.commit()
     
     return EmergencyActionResponse(
@@ -592,6 +606,15 @@ async def delete_ship(
 
     # Delete ship
     db.delete(ship)
+    log_admin_action(
+        db,
+        actor=admin,
+        scope_used=SHIPS_MANAGE,
+        action="ship_delete",
+        target_type="ship",
+        target_id=str(ship_id),
+        payload={"name": ship_info.get("name"), "owner": ship_info.get("owner")},
+    )
     db.commit()
 
     return DeleteShipResponse(success=True)

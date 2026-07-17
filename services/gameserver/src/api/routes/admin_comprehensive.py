@@ -454,6 +454,22 @@ async def update_player(
                     reason=f"Admin adjustment by {current_admin.username}",
                 )
 
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=PLAYERS_ADJUST_CREDITS,
+            action="player_update",
+            target_type="player",
+            target_id=str(player_id),
+            payload={
+                "credits_set": update_data.credits is not None,
+                "turns_set": update_data.turns is not None,
+                "is_active_set": update_data.is_active is not None,
+                "reputation_keys": sorted(
+                    (update_data.reputation_adjustments or {}).keys()
+                ),
+            },
+        )
         db.commit()
         
         # Log admin action
@@ -651,6 +667,20 @@ async def create_ship(
         )
         
         db.add(new_ship)
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=SHIPS_MANAGE,
+            action="ship_create",
+            target_type="ship",
+            target_id=str(new_ship.id),
+            payload={
+                "name": ship_data.name,
+                "ship_type": ship_data.ship_type,
+                "owner_id": ship_data.owner_id,
+                "sector_id": ship_data.current_sector_id,
+            },
+        )
         db.commit()
         
         logger.info(f"Admin {current_admin.username} created ship {ship_data.name} for player {player.user.username}")
@@ -693,6 +723,15 @@ async def update_ship(
         if ship_data.is_active is not None:
             ship.is_active = ship_data.is_active
         
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=SHIPS_MANAGE,
+            action="ship_update",
+            target_type="ship",
+            target_id=str(ship_id),
+            payload=ship_data.model_dump(exclude_unset=True),
+        )
         db.commit()
         
         logger.info(f"Admin {current_admin.username} updated ship {ship.name}")
@@ -741,6 +780,15 @@ async def delete_ship(
             logger.exception("pioneer reabsorb on admin ship-delete failed")
 
         db.delete(ship)
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=SHIPS_MANAGE,
+            action="ship_delete",
+            target_type="ship",
+            target_id=str(ship_id),
+            payload={"name": ship_name, "owner": owner_name},
+        )
         db.commit()
         
         logger.info(f"Admin {current_admin.username} deleted ship {ship_name} from player {owner_name}")
@@ -782,6 +830,18 @@ async def teleport_ship(
             owner.current_sector_id = target_sector_id
             owner.current_region_id = sector.region_id
         
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=SHIPS_MANAGE,
+            action="ship_teleport",
+            target_type="ship",
+            target_id=str(ship_id),
+            payload={
+                "from_sector": old_sector,
+                "to_sector": target_sector_id,
+            },
+        )
         db.commit()
         
         logger.info(f"Admin {current_admin.username} teleported ship {ship.name} from sector {old_sector} to {target_sector_id}")
@@ -822,6 +882,15 @@ async def create_player_from_user(
         )
         
         db.add(new_player)
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=PLAYERS_ADJUST_CREDITS,
+            action="player_create_from_user",
+            target_type="player",
+            target_id=str(new_player.id),
+            payload={"user_id": str(user_id), "starting_credits": 10000},
+        )
         db.commit()
         db.refresh(new_player)
         
@@ -1909,6 +1978,16 @@ async def update_sector(
         # Update last_updated timestamp
         sector.last_updated = datetime.now(timezone.utc)
         
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=GALAXY_MANAGE,
+            action="sector_update",
+            target_type="sector",
+            target_id=str(sector_id),
+            payload={"updated_fields": list(update_data.keys())},
+        )
+
         db.commit()
         db.refresh(sector)
         
@@ -1987,6 +2066,16 @@ async def create_planet_in_sector(
         )
         
         db.add(new_planet)
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=GALAXY_MANAGE,
+            action="planet_create",
+            target_type="planet",
+            target_id=str(getattr(new_planet, "id", sector_id)),
+            payload={"sector_id": str(sector_id)},
+        )
+
         db.commit()
         db.refresh(new_planet)
         
@@ -2201,6 +2290,16 @@ async def create_port_in_sector(
         )
         
         db.add(new_port)
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=GALAXY_MANAGE,
+            action="port_create",
+            target_type="station",
+            target_id=str(getattr(new_station, "id", sector_id)),
+            payload={"sector_id": str(sector_id)},
+        )
+
         db.commit()
         db.refresh(new_port)
         
@@ -2550,6 +2649,16 @@ async def create_warp_tunnel(
         )
 
         db.add(new_tunnel)
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=GALAXY_MANAGE,
+            action="warp_tunnel_create",
+            target_type="warp_tunnel",
+            target_id=str(new_tunnel.id),
+            payload={},
+        )
+
         db.commit()
         db.refresh(new_tunnel)
 
@@ -2680,6 +2789,16 @@ async def delete_warp_tunnel(
 
         # Delete the tunnel
         db.delete(tunnel)
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=GALAXY_MANAGE,
+            action="warp_tunnel_delete",
+            target_type="warp_tunnel",
+            target_id=str(tunnel_id),
+            payload={},
+        )
+
         db.commit()
 
         return {
@@ -2771,6 +2890,16 @@ async def update_port(
                 # Direct field update
                 setattr(station, field, value)
 
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=GALAXY_MANAGE,
+            action="port_update",
+            target_type="station",
+            target_id=str(station_id),
+            payload={"updated_fields": list(update_data.keys())},
+        )
+
         db.commit()
         
         return {
@@ -2801,6 +2930,16 @@ async def delete_port(
 
         # Delete the port
         db.delete(station)
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=GALAXY_MANAGE,
+            action="port_delete",
+            target_type="station",
+            target_id=str(station_id),
+            payload={"name": getattr(station, "name", None)},
+        )
+
         db.commit()
         
         return {
@@ -2890,6 +3029,15 @@ async def create_port(
         new_port.update_commodity_stock_levels()
         
         db.add(new_port)
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=GALAXY_MANAGE,
+            action="port_create",
+            target_type="station",
+            target_id=str(new_port.id),
+            payload={"name": new_port.name, "sector_id": sector.sector_id},
+        )
         db.commit()
         
         return {
