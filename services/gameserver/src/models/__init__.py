@@ -107,3 +107,5 @@ from src.models.storage_locker import (
     StorageLockerRiskState,
     ContractCargoDeposit,
 )
+from src.models.admin_scope_grant import AdminScopeGrant
+from src.models.admin_action_log import AdminActionLog
