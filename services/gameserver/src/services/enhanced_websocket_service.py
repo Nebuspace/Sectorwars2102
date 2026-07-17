@@ -922,8 +922,22 @@ class EnhancedWebSocketService:
 
                 player, user = row
 
-                # Grant permissions based on player/user status
-                if user.is_admin:
+                # C3: do NOT read the hybrid is_admin attribute here — User is
+                # loaded via AsyncSession; that getter runs a sync Session.query
+                # and raises MissingGreenlet (swallowed below → silent
+                # {trading}-only). Query active grants async instead, mirroring
+                # user_has_active_scope.
+                from src.models.admin_scope_grant import AdminScopeGrant
+
+                grant_result = await db.execute(
+                    select(AdminScopeGrant.id)
+                    .where(
+                        AdminScopeGrant.user_id == user.id,
+                        AdminScopeGrant.revoked_at.is_(None),
+                    )
+                    .limit(1)
+                )
+                if grant_result.first() is not None:
                     base_permissions.add("admin")
                     base_permissions.add("automation")
 

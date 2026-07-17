@@ -110,11 +110,13 @@ class TestRequireScopeDependency:
 
 
 # ---------------------------------------------------------------------------
-# is_admin hybrid — flat authoritative in Python, EXISTS in SQL
+# is_admin hybrid — C3: Python getter derived when session-attached;
+# flat column remains the denormalized write-through cache + detached fallback
 # ---------------------------------------------------------------------------
 
 class TestIsAdminHybrid:
-    def test_python_reads_flat_column(self):
+    def test_detached_reads_flat_column_fallback(self):
+        """No Session → flat denormalized cache (construction / sync paths)."""
         u = User(username="a", email="a@x", is_admin=True)
         assert u.is_admin is True
         assert u._is_admin is True
@@ -124,7 +126,7 @@ class TestIsAdminHybrid:
         assert u.is_admin is False
         u.is_admin = True
         assert u._is_admin is True
-        assert u.is_admin is True
+        assert u.is_admin is True  # still detached → flat fallback
 
     def test_column_maps_to_is_admin_db_name(self):
         col = User.__table__.c.is_admin
@@ -159,25 +161,15 @@ class TestIsAdminHybrid:
         assert "User.is_admin" in inspect.getsource(user_service)
         assert "User.is_admin" in inspect.getsource(auth_admin)
 
-    def test_derived_equals_flat_semantics_for_seeded_admin(self):
-        """Dual-read contract: seeded admin → flat True AND would match EXISTS.
-
-        Without a live DB we assert the Python side of the contract and that
-        the SQL expression correlates on user id + active grant.  Live
-        derived==flat row equality is the hub's window proof after A1 apply.
-        """
-        uid = uuid.uuid4()
-        u = User(id=uid, username="seeded", email="s@x", is_admin=True)
-        assert u.is_admin is True  # flat authoritative
-
+    def test_expression_documents_active_grant_predicate(self):
+        """SQL side of the C3 dual-read contract (live row-eq = hub window)."""
         expr_sql = str(
             User.is_admin.expression.compile(compile_kwargs={"literal_binds": False})
         )
-        # Active-grant predicate present (seed writes revoked_at NULL rows).
         assert "revoked_at" in expr_sql
         assert "admin_scope_grants" in expr_sql
 
-    def test_non_admin_flat_false(self):
+    def test_non_admin_flat_false_detached(self):
         u = User(username="p", email="p@x", is_admin=False)
         assert u.is_admin is False
         assert u._is_admin is False

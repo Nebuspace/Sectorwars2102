@@ -25,10 +25,10 @@ class User(Base):
     username = Column(String(50), unique=True, nullable=False)
     email = Column(String(255), unique=True, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
-    # Flat column remains authoritative through Phases B/C (GATE OUTCOME).
-    # Exposed as hybrid ``is_admin``: Python reads/writes this column; SQL
-    # ``User.is_admin`` uses EXISTS(active AdminScopeGrant) for dual-read
-    # validation against the eventual derived flip.
+    # Flat ``users.is_admin`` column kept as a denormalized cache (grant/revoke
+    # still sync it). Phase C3: Python ``is_admin`` is grant-derived — matches
+    # the SQL ``.expression`` EXISTS(active AdminScopeGrant). Physical column
+    # is NOT dropped in C3 (dual-read / holders / window proof).
     _is_admin = Column("is_admin", Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -54,11 +54,33 @@ class User(Base):
 
     @hybrid_property
     def is_admin(self) -> bool:
-        """Flat ``users.is_admin`` — authoritative until the post-B derived flip."""
+        """Derived: any active AdminScopeGrant (C3 flip).
+
+        When the instance is attached to a Session, authoritative read is
+        ``EXISTS(revoked_at IS NULL)`` — same predicate as ``.expression``.
+        Detached / transient instances fall back to the flat denormalized
+        column (still maintained by grant/revoke sync).
+        """
+        from sqlalchemy.orm import object_session
+
+        session = object_session(self)
+        if session is not None and self.id is not None:
+            from src.models.admin_scope_grant import AdminScopeGrant
+
+            return (
+                session.query(AdminScopeGrant.id)
+                .filter(
+                    AdminScopeGrant.user_id == self.id,
+                    AdminScopeGrant.revoked_at.is_(None),
+                )
+                .first()
+                is not None
+            )
         return bool(self._is_admin)
 
     @is_admin.setter
     def is_admin(self, value: bool) -> None:
+        """Write the flat denormalized cache only (grant rows are authoritative)."""
         self._is_admin = bool(value)
 
     @is_admin.expression
@@ -67,7 +89,7 @@ class User(Base):
 
         Correlated EXISTS so ``User.is_admin == True`` keeps working at the
         four SQL filter sites (user_service / auth.admin / auth / test).
-        Must match the flat column for every seeded admin (A2 accept).
+        Must match the Python getter for every seeded admin (C3 accept).
         """
         # Local import avoids circular import at model-load time.
         from src.models.admin_scope_grant import AdminScopeGrant
