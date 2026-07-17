@@ -147,11 +147,11 @@ SCOPE_DESCRIPTIONS: dict[str, str] = {
         "Structural edits to galaxy sectors, ports, planets, and warp links "
         "(not bang regeneration; use admin.bang.regenerate for that)."
     ),
-    PLAYERS_ADJUST_CREDITS: "Adjust player credit balances.",
+    PLAYERS_ADJUST_CREDITS: "Set, grant, or deduct player credit balances.",
     SHIPS_MANAGE: "Create, edit, delete, or teleport ships.",
     COMBAT_INTERVENE: "Intervene in active combat encounters.",
     ECONOMY_INTERVENE: "Intervene in economy and market operations.",
-    SECURITY_ACT: "Take security enforcement actions (blocks, alerts).",
+    SECURITY_ACT: "Take security enforcement actions (e.g., blocks, alerts).",
     DISPUTES_RESOLVE: "Resolve contract disputes and escrow outcomes.",
 }
 
