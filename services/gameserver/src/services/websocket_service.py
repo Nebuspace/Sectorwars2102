@@ -19,6 +19,24 @@ MAX_TOPIC_NAME_LENGTH = 128
 # subscription_rejected." (WO-RT-BUS-HARDENING)
 MAX_TOPICS_PER_USER = 50
 
+# WO-P1-BUS-RACE-CRITICAL (MEDIUM finding, Mack): send_personal_message's
+# local-hit-suppresses-bus-publish optimization assumes a local send_text()
+# "success" means real delivery -- but a half-open dead socket (network
+# drop without a clean close) can return True (OS-buffered) even though
+# the peer never receives it, and the single-socket-per-user eviction only
+# runs on the WORKER the user reconnects TO, never signaling the STALE
+# worker to drop its own now-orphaned entry. A "delivered" local hit whose
+# heartbeat is older than this window is treated as untrustworthy and ALSO
+# published to the bus -- a rare harmless duplicate (the local send may
+# have genuinely succeeded) beats silent loss for up to the full 300s
+# heartbeat-sweep interval (cleanup_stale_connections' own timeout_seconds
+# default) if the user has since reconnected to a different worker.
+# Comfortably above the 30s heartbeat cadence (realtime-bus.md's connection
+# lifecycle) to avoid false positives from ordinary jitter, well under the
+# 300s sweep timeout so this still catches staleness meaningfully faster
+# than waiting for the full sweep.
+LOCAL_DELIVERY_TRUST_WINDOW_SECONDS = 60
+
 
 class ConnectionManager:
     """Manages WebSocket connections for real-time multiplayer features"""
@@ -202,17 +220,38 @@ class ConnectionManager:
 
     async def send_personal_message(self, user_id: str, message: Dict[str, Any]):
         """Send a message to a specific user -- this worker's local socket
-        first; if not found here, fan out via the cross-worker bus
-        (WO-P1-REALTIME-BUS-FANOUT)."""
+        first; if not found here, OR found but stale (see
+        _local_delivery_is_untrusted), fan out via the cross-worker bus
+        too (WO-P1-REALTIME-BUS-FANOUT)."""
         delivered = await self._deliver_personal_local(user_id, message)
-        if not delivered:
+        if not delivered or self._local_delivery_is_untrusted(user_id):
             # realtime-bus.md invariant 1 (single socket per user_id): a
             # user not found in THIS worker's active_connections is either
             # fully offline or connected to a DIFFERENT worker -- fan out
             # via the bus so whichever worker actually holds their socket
-            # can deliver it. Best-effort: see _publish_to_bus.
+            # can deliver it. A "delivered" local hit whose heartbeat is
+            # stale ALSO publishes -- see LOCAL_DELIVERY_TRUST_WINDOW_
+            # SECONDS: a rare harmless duplicate beats silent loss. Best-
+            # effort either way: see _publish_to_bus.
             await self._publish_to_bus("personal", user_id, message)
         return delivered
+
+    def _local_delivery_is_untrusted(self, user_id: str) -> bool:
+        """True when a local send_text() 'success' for user_id shouldn't
+        be trusted on its own -- their last_heartbeat on THIS worker is
+        older than LOCAL_DELIVERY_TRUST_WINDOW_SECONDS. No metadata / no
+        heartbeat timestamp is treated as trustworthy (not stale): this is
+        only consulted right after _deliver_personal_local found a live
+        active_connections entry, so a missing heartbeat here would be an
+        unrelated data gap, not evidence of a half-open dead socket."""
+        metadata = self.connection_metadata.get(user_id)
+        if not metadata:
+            return False
+        last_heartbeat = metadata.get("last_heartbeat")
+        if last_heartbeat is None:
+            return False
+        age_seconds = (datetime.now(UTC) - last_heartbeat).total_seconds()
+        return age_seconds > LOCAL_DELIVERY_TRUST_WINDOW_SECONDS
 
     async def _deliver_personal_local(self, user_id: str, message: Dict[str, Any]) -> bool:
         """The original send_personal_message body -- local sockets on
@@ -352,43 +391,49 @@ class ConnectionManager:
         envelope to this worker's local sockets."""
         if self._bus_subscriber_task is not None:
             return
-        self._bus_subscriber_task = asyncio.ensure_future(self._start_bus_subscriber())
+        self._bus_subscriber_task = asyncio.ensure_future(self._run_bus_subscriber_loop())
 
-    async def _start_bus_subscriber(self) -> None:
-        """Confirm Redis is actually reachable before committing to the
-        forever-listening loop. Mirrors main.py's own init_redis()
-        precedent: best-effort, non-fatal -- a worker that boots with no
-        Redis reachable simply never activates cross-worker fanout (local
-        delivery keeps working per realtime-bus.md's own documented
-        degrade path). This is also what keeps connect() safe to call from
-        every existing WS test without leaking a perpetual background task
-        into their event loops -- this repo's Mac/CI unit-test env has no
-        Redis at all, so this returns in ~100ms and starts nothing."""
-        try:
-            from src.services.redis_pubsub_service import get_pubsub_service
+    async def _run_bus_subscriber_loop(self) -> None:
+        """Persistent, once-per-process cross-worker bus listener.
+        Retries forever with a short backoff on ANY failure to reach a
+        listening state -- whether Redis was never reachable at the very
+        first attempt (get_pubsub_service()/ping failing) or a connection
+        that WAS listening dropped mid-session (subscribe_bus's listen()
+        generator ending) -- so a merely TRANSIENT unavailability at
+        worker-boot time is never mistaken for a permanent one.
 
-            pubsub_service = await get_pubsub_service()
-            if pubsub_service.redis_client is None:
-                raise RuntimeError("redis_pubsub_service has no live client")
-            await pubsub_service.redis_client.ping()
-        except Exception:
-            logger.debug("Bus subscriber not started (Redis unavailable)", exc_info=True)
-            return
-        await self._run_bus_subscriber_loop(pubsub_service)
+        WO-P1-BUS-RACE-CRITICAL (Mack's finding): the previous shape split
+        this into a one-shot `_start_bus_subscriber` (single try, gave up
+        FOREVER on any failure -- including the get_pubsub_service()
+        single-flight race this WO also fixes) feeding a separate
+        forever-retrying `_run_bus_subscriber_loop` that only the
+        one-shot's success path ever reached. A transient failure at the
+        FIRST attempt -- the race, or Redis genuinely still booting when
+        this worker's first client connects -- permanently starved that
+        worker's cross-worker fanout for its whole process lifetime, with
+        nothing left to ever retry (_ensure_bus_subscriber_started's own
+        claim-guard prevents a second task from ever being spawned).
+        Collapsing into ONE loop that retries on every kind of failure,
+        not just the after-a-successful-start kind, closes that gap
+        without reopening the double-listener race the claim-guard
+        exists to prevent (still exactly one task, still claimed
+        synchronously).
 
-    async def _run_bus_subscriber_loop(self, pubsub_service: Any) -> None:
-        """Once Redis is confirmed reachable, listen forever -- retrying
-        with a short backoff if the connection drops mid-session (the
-        canon 'Redis outage ... cross-worker delivery degrades' failure
-        mode; self-heals once Redis returns, no external trigger needed).
         subscribe_bus itself already survives per-message errors
-        (malformed JSON, callback exceptions); this only needs to catch
-        the whole listen() generator ending (e.g. a dropped connection)."""
+        (malformed JSON, callback exceptions) without exiting; this outer
+        loop only needs to catch it exiting entirely, or failing before
+        it ever starts listening."""
         while True:
             try:
+                from src.services.redis_pubsub_service import get_pubsub_service
+
+                pubsub_service = await get_pubsub_service()
+                if pubsub_service.redis_client is None:
+                    raise RuntimeError("redis_pubsub_service has no live client")
+                await pubsub_service.redis_client.ping()
                 await pubsub_service.subscribe_bus(self._handle_bus_envelope)
             except Exception:
-                logger.exception("Bus subscriber loop crashed; retrying in 5s")
+                logger.debug("Bus subscriber unavailable, retrying in 5s", exc_info=True)
             await asyncio.sleep(5)
 
     async def broadcast_to_team(self, team_id: str, message: Dict[str, Any], exclude_user: Optional[str] = None):

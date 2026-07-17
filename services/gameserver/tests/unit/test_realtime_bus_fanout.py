@@ -48,13 +48,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timedelta, UTC
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
 
-from src.services.redis_pubsub_service import RedisPubSubService
-from src.services.websocket_service import ConnectionManager
+import src.services.redis_pubsub_service as rps_mod
+from src.services.redis_pubsub_service import RedisPubSubService, get_pubsub_service
+from src.services.websocket_service import LOCAL_DELIVERY_TRUST_WINDOW_SECONDS, ConnectionManager
 
 
 # --------------------------------------------------------------------------- #
@@ -399,6 +401,100 @@ class TestHandleBusEnvelope:
 
 
 # --------------------------------------------------------------------------- #
+# (2b) WO-P1-BUS-RACE-CRITICAL MEDIUM finding: a "delivered" local hit
+#      whose heartbeat is stale must ALSO publish to the bus (a half-open
+#      dead socket can return True from send_text() without the peer ever
+#      receiving it, and the eviction invariant only self-heals on the
+#      WORKER the user reconnects TO, never signaling a stale worker to
+#      drop its own orphaned entry).
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestStaleLocalDeliveryAlsoPublishes:
+    async def test_fresh_local_hit_suppresses_the_bus_publish(self):
+        """The existing, intended optimization: a genuinely fresh local
+        connection does NOT also publish (would be pure waste)."""
+        manager = ConnectionManager()
+        user_id = "bob"
+        ws = FakeWebSocket()
+        manager.active_connections[user_id] = ws
+        manager.connection_metadata[user_id] = {"last_heartbeat": datetime.now(UTC)}
+
+        fake_pubsub = AsyncMock()
+        with patch(
+            "src.services.redis_pubsub_service.get_pubsub_service",
+            AsyncMock(return_value=fake_pubsub),
+        ):
+            delivered = await manager.send_personal_message(user_id, {"type": "hi"})
+
+        assert delivered is True
+        assert len(ws.sent) == 1
+        fake_pubsub.publish_bus_event.assert_not_called()
+
+    async def test_stale_local_hit_also_publishes_to_the_bus(self):
+        """The fix: a local hit whose heartbeat is older than
+        LOCAL_DELIVERY_TRUST_WINDOW_SECONDS is untrusted -- local delivery
+        is still attempted (and its own return value still reported), but
+        the bus ALSO gets a publish as insurance against a half-open dead
+        socket that silently swallowed the send."""
+        manager = ConnectionManager()
+        user_id = "bob"
+        ws = FakeWebSocket()  # send_text() "succeeds" -- exactly the half-open case
+        manager.active_connections[user_id] = ws
+        stale_heartbeat = datetime.now(UTC) - timedelta(
+            seconds=LOCAL_DELIVERY_TRUST_WINDOW_SECONDS + 1
+        )
+        manager.connection_metadata[user_id] = {"last_heartbeat": stale_heartbeat}
+
+        fake_pubsub = AsyncMock()
+        with patch(
+            "src.services.redis_pubsub_service.get_pubsub_service",
+            AsyncMock(return_value=fake_pubsub),
+        ):
+            delivered = await manager.send_personal_message(user_id, {"type": "hi"})
+
+        assert delivered is True  # local send_text() still reported success
+        assert len(ws.sent) == 1  # local delivery still attempted
+        fake_pubsub.publish_bus_event.assert_called_once()  # AND published, as insurance
+
+    async def test_missing_heartbeat_metadata_is_treated_as_trustworthy(self):
+        """No connection_metadata at all (or no last_heartbeat key) is NOT
+        evidence of staleness -- it's an unrelated data gap; don't
+        double-publish on it."""
+        manager = ConnectionManager()
+        user_id = "bob"
+        ws = FakeWebSocket()
+        manager.active_connections[user_id] = ws
+        # deliberately no connection_metadata[user_id] entry at all
+
+        fake_pubsub = AsyncMock()
+        with patch(
+            "src.services.redis_pubsub_service.get_pubsub_service",
+            AsyncMock(return_value=fake_pubsub),
+        ):
+            delivered = await manager.send_personal_message(user_id, {"type": "hi"})
+
+        assert delivered is True
+        fake_pubsub.publish_bus_event.assert_not_called()
+
+    async def test_missing_local_connection_still_publishes_exactly_once(self):
+        """Sanity: the pre-existing not-found-locally path is unaffected
+        by this change -- still exactly one publish, not two."""
+        manager = ConnectionManager()
+
+        fake_pubsub = AsyncMock()
+        with patch(
+            "src.services.redis_pubsub_service.get_pubsub_service",
+            AsyncMock(return_value=fake_pubsub),
+        ):
+            delivered = await manager.send_personal_message("nobody-local", {"type": "hi"})
+
+        assert delivered is False
+        fake_pubsub.publish_bus_event.assert_called_once()
+
+
+# --------------------------------------------------------------------------- #
 # (3) End-to-end: two independent ConnectionManager + RedisPubSubService
 #     pairs sharing one fake broker -- the literal WO proof ("publish
 #     personal + sector events through the bus and assert a SECOND
@@ -586,3 +682,181 @@ class TestBusChannelIsGeneric:
     def test_two_instances_get_distinct_worker_ids(self):
         a, b = RedisPubSubService(), RedisPubSubService()
         assert a.worker_id != b.worker_id
+
+
+# --------------------------------------------------------------------------- #
+# (5) WO-P1-BUS-RACE-CRITICAL: deterministic reproduction of Mack's finding
+#     (probe_bus_race.py) -- get_pubsub_service()'s lazy singleton was not
+#     single-flight-safe, and a downstream failure in the bus subscriber's
+#     one-shot reachability check gave up FOREVER once it raced a
+#     not-yet-connected instance. Both fixed; these tests force the exact
+#     suspends-mid-init interleaving (a slow connect() + two concurrent
+#     callers) rather than relying on real Redis timing, since the FakeDB-
+#     blind-spot here is specifically that no Mac/CI environment has real
+#     Redis to ever surface this race on its own.
+# --------------------------------------------------------------------------- #
+
+class _SlowConnectRedisClient:
+    """Mimics the real redis.asyncio client surface enough for
+    RedisPubSubService.connect() to complete against it."""
+
+    def __init__(self) -> None:
+        self.pinged = False
+
+    async def ping(self) -> bool:
+        self.pinged = True
+        return True
+
+    def pubsub(self):
+        raise NotImplementedError("not needed for the single-flight proof")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestGetPubsubServiceSingleFlight:
+    async def _install_slow_connect(self, monkeypatch, delay: float = 0.05):
+        """Patches RedisPubSubService.connect to await a real suspension
+        point (mirrors the real method's shape: redis_client assigned,
+        then ping awaited) BEFORE self.redis_client is set -- exactly
+        where a real `redis.from_url` + network round trip would land."""
+        connect_call_count = {"n": 0}
+
+        async def slow_connect(self):
+            connect_call_count["n"] += 1
+            await asyncio.sleep(delay)
+            self.redis_client = _SlowConnectRedisClient()
+            await self.redis_client.ping()
+            return True
+
+        monkeypatch.setattr(rps_mod.RedisPubSubService, "connect", slow_connect)
+        monkeypatch.setattr(rps_mod, "_pubsub_service", None)
+        # asyncio.Lock objects are NOT safe to reuse across different event
+        # loops -- pytest-asyncio gives each test function its own fresh
+        # loop by default, but rps_mod._pubsub_service_lock is a single
+        # object created once at module-IMPORT time (correct for
+        # production, where one worker process has exactly one event loop
+        # for its whole lifetime -- this is purely a cross-test isolation
+        # concern). Without this reset, a lock touched by an EARLIER test's
+        # loop can leave later tests hanging on a stale internal waiter.
+        monkeypatch.setattr(rps_mod, "_pubsub_service_lock", asyncio.Lock())
+        return connect_call_count
+
+    async def test_two_concurrent_callers_get_the_same_fully_connected_instance(self, monkeypatch):
+        connect_call_count = await self._install_slow_connect(monkeypatch)
+
+        results = {}
+
+        async def caller(name: str):
+            svc = await get_pubsub_service()
+            results[name] = svc
+
+        task_a = asyncio.ensure_future(caller("a"))
+        task_b = asyncio.ensure_future(caller("b"))
+        await task_a
+        await task_b
+
+        # Single-flight: exactly ONE RedisPubSubService was ever constructed
+        # and connected, both callers got the SAME object back.
+        assert connect_call_count["n"] == 1
+        assert results["a"] is results["b"]
+        # The bug this fixes: neither caller may EVER observe a non-None
+        # singleton whose connect() hasn't finished -- by definition of
+        # "the await already returned," redis_client must be set.
+        assert results["a"].redis_client is not None
+        assert results["b"].redis_client is not None
+
+    async def test_second_caller_arriving_mid_connect_awaits_the_same_attempt(self, monkeypatch):
+        """More targeted than the above: caller B starts strictly AFTER
+        caller A has already begun its connect() (proven via the sleep
+        having started), reproducing the exact 'second caller arrives
+        while the first's connect() is in flight' shape from the bug
+        report -- not just two tasks scheduled together."""
+        connect_call_count = await self._install_slow_connect(monkeypatch, delay=0.05)
+
+        task_a = asyncio.ensure_future(get_pubsub_service())
+        await asyncio.sleep(0.01)  # let A's connect() begin (into its own sleep)
+
+        svc_b = await get_pubsub_service()
+        svc_a = await task_a
+
+        assert connect_call_count["n"] == 1
+        assert svc_a is svc_b
+        assert svc_b.redis_client is not None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestBusSubscriberSurvivesTheRace:
+    """The ConnectionManager-level reproduction (Mack's probe_bus_race.py,
+    adapted into a permanent regression test): before the fix, this
+    interleaving left _run_bus_subscriber_loop NEVER entered and
+    self._bus_subscriber_task permanently done with no retry. After the
+    fix, the retry loop keeps trying every 5s and DOES reach a listening
+    state once get_pubsub_service() resolves."""
+
+    async def test_subscriber_loop_starts_despite_the_connect_race(self, monkeypatch):
+        connect_call_count = {"n": 0}
+
+        async def slow_connect(self):
+            connect_call_count["n"] += 1
+            await asyncio.sleep(0.02)
+            self.redis_client = _SlowConnectRedisClient()
+            await self.redis_client.ping()
+            return True
+
+        monkeypatch.setattr(rps_mod.RedisPubSubService, "connect", slow_connect)
+        monkeypatch.setattr(rps_mod, "_pubsub_service", None)
+        # See TestGetPubsubServiceSingleFlight._install_slow_connect's
+        # comment: a fresh lock per test avoids cross-test-loop corruption
+        # of the module-level asyncio.Lock (a pytest-isolation concern
+        # only -- one real worker process has exactly one event loop for
+        # its whole lifetime).
+        monkeypatch.setattr(rps_mod, "_pubsub_service_lock", asyncio.Lock())
+
+        subscribe_calls = {"n": 0}
+
+        async def spy_subscribe_bus(self, callback):
+            subscribe_calls["n"] += 1
+            return  # don't actually block forever -- just record entry
+
+        monkeypatch.setattr(rps_mod.RedisPubSubService, "subscribe_bus", spy_subscribe_bus)
+
+        manager = ConnectionManager()
+
+        # Reproduce the exact interleaving: connect() kicks off the
+        # subscriber-start task (fire-and-forget) and, in the SAME call,
+        # a second independent get_pubsub_service() caller races it (e.g.
+        # a concurrent _publish_to_bus from another connect()).
+        task_subscriber_start = asyncio.ensure_future(manager._ensure_bus_subscriber_started())
+
+        async def second_caller():
+            await get_pubsub_service()
+
+        task_second = asyncio.ensure_future(second_caller())
+
+        await task_subscriber_start
+        await task_second
+        assert manager._bus_subscriber_task is not None
+
+        # Give the retry loop enough wall-clock to survive one failed-or-
+        # raced attempt (if any) and land on a successful one -- the loop's
+        # own backoff is 5s, so this only needs to outlast the connect()
+        # delay plus one retry cycle at most.
+        for _ in range(20):
+            if subscribe_calls["n"] > 0:
+                break
+            await asyncio.sleep(0.05)
+
+        assert connect_call_count["n"] == 1, "single-flight: only one real connect() attempt"
+        assert subscribe_calls["n"] >= 1, (
+            "the bus subscriber must reach a listening state despite the "
+            "connect() race -- before the fix this was permanently 0"
+        )
+        assert not manager._bus_subscriber_task.done(), (
+            "the retry loop must still be alive (while True), not exited "
+            "permanently after one attempt"
+        )
+
+        manager._bus_subscriber_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await manager._bus_subscriber_task

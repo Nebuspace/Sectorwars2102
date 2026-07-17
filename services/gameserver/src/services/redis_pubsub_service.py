@@ -426,13 +426,47 @@ class RedisPubSubService:
 
 
 # Singleton instance
-_pubsub_service = None
+_pubsub_service: Optional["RedisPubSubService"] = None
+
+# WO-P1-BUS-RACE-CRITICAL: single-flight guard for the lazy singleton.
+# asyncio.Lock() is safe to construct at module import time on Python 3.10+
+# (it no longer binds to a specific event loop at construction), so this is
+# a plain module-level lock, not something built lazily per-loop.
+_pubsub_service_lock = asyncio.Lock()
 
 
 async def get_pubsub_service() -> RedisPubSubService:
-    """Get or create pub/sub service instance"""
+    """Get or create the pub/sub service instance -- single-flight safe.
+
+    BUG THIS FIXES (Mack's empirical repro, probe_bus_race.py): the old
+    body did `if _pubsub_service is None: _pubsub_service =
+    RedisPubSubService(); await _pubsub_service.connect()` -- the global
+    was assigned BEFORE the connect() await suspended, so a second
+    concurrent caller arriving while the first's connect() was still in
+    flight saw a non-None global and returned the SAME instance with
+    `.redis_client` still None, silently. In
+    ConnectionManager._start_bus_subscriber that meant the bus subscriber
+    concluded "Redis unavailable" and gave up FOREVER for that worker's
+    process lifetime -- a race, not a real outage, mistaken for a
+    permanent one, exactly the situation the live 2-worker deploy window
+    was about to hit for the first time (Mac/CI have no Redis at all, so
+    both racing callers agreed "unavailable" and nothing ever caught it).
+
+    Fixed via double-checked locking: the fast path (already initialized)
+    never touches the lock; the slow path acquires `_pubsub_service_lock`
+    and re-checks under it, so at most ONE caller ever constructs +
+    connects the singleton, and every other concurrent caller AWAITS that
+    same in-flight attempt (blocked on the lock) rather than racing it.
+    The module-level global is assigned ONLY after connect() has fully
+    completed -- never before -- so no caller can ever observe a non-None
+    singleton whose connect() hasn't finished.
+    """
     global _pubsub_service
-    if _pubsub_service is None:
-        _pubsub_service = RedisPubSubService()
-        await _pubsub_service.connect()
-    return _pubsub_service
+    if _pubsub_service is not None:
+        return _pubsub_service
+    async with _pubsub_service_lock:
+        if _pubsub_service is None:
+            service = RedisPubSubService()
+            await service.connect()
+            _pubsub_service = service
+        return _pubsub_service
