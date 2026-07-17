@@ -56,6 +56,8 @@ const MessageModeration = lazy(() => import('./components/pages/MessageModeratio
 const MultiAccountReview = lazy(() => import('./components/pages/MultiAccountReview').then(module => ({
   default: module.MultiAccountReview
 })));
+const ScopesManager = lazy(() => import('./components/pages/ScopesManager'));
+const AdminActionLogPage = lazy(() => import('./components/pages/AdminActionLogPage'));
 const TranslationManagement = lazy(() => import('./components/pages/TranslationManagement'));
 const NotFound = lazy(() => import('./components/pages/NotFound'));
 
@@ -129,6 +131,8 @@ function App() {
                 <Route path="factions" element={<ProtectedLazyRoute element={<FactionManagement />} />} />
                 <Route path="messages" element={<ProtectedLazyRoute element={<MessageModeration />} />} />
                 <Route path="multi-account" element={<ProtectedLazyRoute element={<MultiAccountReview />} />} />
+                <Route path="scopes" element={<ProtectedLazyRoute element={<ScopesManager />} />} />
+                <Route path="audit" element={<ProtectedLazyRoute element={<AdminActionLogPage />} />} />
                 <Route path="translations" element={<ProtectedLazyRoute element={<TranslationManagement />} />} />
 
                 {/* Redirect root to dashboard */}

@@ -2,6 +2,7 @@
 Audit logging API endpoints for admin access
 """
 
+import logging
 from typing import Optional, List, Any
 from datetime import datetime
 from uuid import UUID
@@ -16,6 +17,8 @@ from src.auth.dependencies import require_scope
 from src.services.audit_service import AuditService
 from src.models.admin_action_log import AdminActionLog
 from src.models.user import User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/audit", tags=["audit"])
 
@@ -85,7 +88,7 @@ async def create_audit_log(
 
 @router.get("/actions", response_model=AdminActionLogPageOut)
 async def list_admin_actions(
-    page: int = Query(1, ge=1),
+    page: int = Query(1, ge=1, le=10000),
     limit: int = Query(50, ge=1, le=500),
     admin_user_id: Optional[UUID] = None,
     action: Optional[str] = None,
@@ -134,7 +137,8 @@ async def list_admin_actions(
             pages=pages,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("list_admin_actions failed: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to list admin actions")
 
 
 @router.get("/logs")

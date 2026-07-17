@@ -75,6 +75,12 @@ class TestAdminActionLogListEndpoint:
         assert "AdminActionLogPageOut" in block
         assert "order_by(AdminActionLog.at.desc())" in block
 
+    def test_actions_page_is_bounded_and_errors_are_generic(self):
+        block = _extract_route_block(_AUDIT_SRC, '@router.get("/actions"')
+        assert "le=10000" in block or "le = 10000" in block
+        assert 'detail="Failed to list admin actions"' in block
+        assert "detail=str(e)" not in block
+
     def test_legacy_audit_logs_endpoints_untouched(self):
         assert '@router.get("/logs")' in _AUDIT_SRC
         assert '@router.post("/log")' in _AUDIT_SRC
