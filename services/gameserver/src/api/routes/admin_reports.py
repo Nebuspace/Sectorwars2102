@@ -253,6 +253,8 @@ def generate_report(
     """
     if not template.metrics:
         raise HTTPException(status_code=400, detail="At least one metric must be requested")
+    if len(template.metrics) > 50:
+        raise HTTPException(status_code=400, detail="Too many metrics requested (max 50)")
 
     data: Dict[str, Any] = {}
     for metric_id in template.metrics:
@@ -296,6 +298,7 @@ def export_data(
             db.query(Player, User)
             .join(User, User.id == Player.user_id)
             .filter(User.deleted == False)
+            .limit(10000)
             .all()
         )
         rows = [
@@ -363,7 +366,7 @@ def export_data(
         ]
 
     elif dataset == "teams":
-        records = db.query(Team).all()
+        records = db.query(Team).limit(10000).all()
         rows = [
             {
                 "team_id": str(t.id),
@@ -375,7 +378,7 @@ def export_data(
         ]
 
     elif dataset == "ships":
-        records = db.query(Ship).all()
+        records = db.query(Ship).limit(10000).all()
         rows = [
             {
                 "ship_id": str(s.id),
