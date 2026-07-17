@@ -16,8 +16,19 @@ durations are CANONICAL and pass through src.core.game_time, so
 GAME_TIME_SCALE compresses every window uniformly on dev.
 
 DOCUMENTED INTERPRETATIONS (where canon is silent or summarized):
-  * Queue ordering is (faction_rep_tier desc, deposit desc, created_at asc) —
-    simplified from canon's full sort key.
+  * Queue ordering is (priority_bumps_count desc, faction_rep_tier desc,
+    deposit desc, created_at asc) — simplified from canon's full sort key
+    (FEATURES/economy/docking-slips.md:85-95 also sorts on slip_class_match
+    first; that's handled at promotion time instead, via each pool's own
+    free-slot count in `_advance_station`, not a separate sort partition).
+    `priority_bumps_count` is a purchased-bump WEIGHT, not a literal queue
+    position: each tier (docking-slips.md:118-127) adds a fixed amount —
+    1/5/10 for the position-count tiers, a large dominating constant for
+    "bump to front" (PRIORITY_BUMP_TIERS) — so a higher tier always outranks
+    any realistic stack of lower ones, matching "front" being categorically
+    the most expensive, maximal tier rather than a relative position.
+  * The 24h hold is confirmed by paying the keel_laid milestone; payment
+    transitions hold_active -> deposit_collected and starts the rent clock.
   * The 24h hold is confirmed by paying the keel_laid milestone; payment
     transitions hold_active -> deposit_collected and starts the rent clock.
   * Resource checkpoints are the documented interpretation of the doc's
@@ -129,6 +140,20 @@ RENT_MAX_PREPAY_DAYS = 30          # pay-rent pre-pays up to 30 canonical days
 CANCEL_REFUND_FRACTION = 0.50
 CANCEL_REFUND_FRACTION_AFTER_HULL = 0.70   # post-hull cancel = 70% sell-back
 CLAIM_FORFEIT_REFUND_FRACTION = 0.70       # missed claim: sell-back minus 30%
+
+# Priority-bump fee tiers (FEATURES/economy/docking-slips.md:118-127):
+# "Bump 1 position" 5% / "Bump 5 positions" 25% / "Bump 10 positions" 60% /
+# "Bump to front" 100% of total_cost. `weight` is the amount each tier adds
+# to `priority_bumps_count` (see the module docstring's DOCUMENTED
+# INTERPRETATIONS for why "front" uses a large dominating constant instead
+# of a literal position count).
+PRIORITY_BUMP_FRONT_WEIGHT = 10_000
+PRIORITY_BUMP_TIERS: Dict[str, Dict[str, Union[float, int]]] = {
+    "bump_1":     {"fraction": 0.05, "weight": 1},
+    "bump_5":     {"fraction": 0.25, "weight": 5},
+    "bump_10":    {"fraction": 0.60, "weight": 10},
+    "bump_front": {"fraction": 1.00, "weight": PRIORITY_BUMP_FRONT_WEIGHT},
+}
 
 # ---------------------------------------------------------------------------
 # Task B-1: Premium floor pricing
@@ -769,12 +794,15 @@ def _faction_rep_tier(db: Session, player_id, station: Station) -> int:
 def _sorted_queue(
     db: Session, station: Station, reservations: List[ConstructionReservation]
 ) -> List[ConstructionReservation]:
-    """Queued reservations in promotion order — (faction_rep_tier desc,
-    deposit desc, created_at asc); simplified from canon's full sort key."""
+    """Queued reservations in promotion order — (priority_bumps_count desc,
+    faction_rep_tier desc, deposit desc, created_at asc); simplified from
+    canon's full sort key (see module docstring's DOCUMENTED
+    INTERPRETATIONS)."""
     queued = [r for r in reservations if r.state == "queued"]
     return sorted(
         queued,
         key=lambda r: (
+            -(r.priority_bumps_count or 0),
             -_faction_rep_tier(db, r.player_id, station),
             -(r.deposit_paid or 0),
             _aware(r.created_at) if r.created_at else datetime.now(UTC),
@@ -1303,6 +1331,74 @@ def pay_milestone(
     }
 
 
+def purchase_priority_bump(
+    db: Session,
+    reservation: ConstructionReservation,
+    player: Player,
+    tier: str,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Buy a priority-bump tier (FEATURES/economy/docking-slips.md:118-127):
+    the fee is a flat fraction of `total_cost`, banked into the station
+    treasury like every other construction payment; the tier's `weight` is
+    added to `priority_bumps_count`, which `_sorted_queue` sorts DESC —
+    outranking unbumped and lower-tier peers but never a higher tier (see
+    PRIORITY_BUMP_TIERS + the module docstring's DOCUMENTED
+    INTERPRETATIONS). Only meaningful pre-promotion: once a reservation
+    holds a slip it is no longer competing for queue position.
+
+    Concurrency: `advance(db, reservation, now)` below takes the STATION row
+    FOR UPDATE first (this file's documented lock-ordering contract — see
+    the module docstring), same as every other money-path function here;
+    two concurrent bumps on reservations at the same station serialize on
+    that lock, not a separate advisory lock. No two-check pre-lock read
+    guards anything here — the whole mutation happens strictly after the
+    lock is held, so there is no earlier-read staleness window to close."""
+    now = now or datetime.now(UTC)
+    station = advance(db, reservation, now)
+
+    if tier not in PRIORITY_BUMP_TIERS:
+        raise ConstructionError(
+            400, f"Unknown priority bump tier '{tier}'. Tiers: {', '.join(PRIORITY_BUMP_TIERS)}"
+        )
+    if reservation.state in TERMINAL_STATES:
+        raise ConstructionError(400, f"This reservation is {reservation.state}")
+    if reservation.state != "queued":
+        raise ConstructionError(
+            400, "Priority bumps only apply to a reservation still waiting in the queue"
+        )
+
+    spec = PRIORITY_BUMP_TIERS[tier]
+    fee = int(round(reservation.total_cost * spec["fraction"]))
+
+    player = _lock_player(db, player.id)
+    if player.credits < fee:
+        raise ConstructionError(
+            400,
+            f"Insufficient credits for priority bump '{tier}': need {fee:,}, "
+            f"have {player.credits:,}",
+        )
+
+    player.credits -= fee
+    station.treasury_balance = (station.treasury_balance or 0) + fee
+    reservation.priority_bumps_count = (reservation.priority_bumps_count or 0) + spec["weight"]
+    reservation.updated_at = now
+    db.flush()
+
+    logger.info(
+        "Construction priority bump: reservation %s tier=%s fee=%d "
+        "priority_bumps_count=%d", reservation.id, tier, fee, reservation.priority_bumps_count,
+    )
+
+    return {
+        "tier": tier,
+        "fee_paid": fee,
+        "priority_bumps_count": reservation.priority_bumps_count,
+        "credits_remaining": player.credits,
+        "state": reservation.state,
+    }
+
+
 def pay_rent(
     db: Session,
     reservation: ConstructionReservation,
@@ -1697,6 +1793,7 @@ def status_payload(
         "deposit_paid": reservation.deposit_paid,
         "credits_paid": reservation.credits_paid,
         "queue_bonus_credit": reservation.queue_bonus_credit,
+        "priority_bumps_count": reservation.priority_bumps_count or 0,
         "milestones": {
             name: {"amount": amounts[name], "paid": bool((reservation.milestones or {}).get(name))}
             for name in MILESTONE_ORDER

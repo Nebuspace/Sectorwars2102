@@ -50,6 +50,10 @@ class MilestoneRequest(BaseModel):
     milestone: str
 
 
+class PriorityBumpRequest(BaseModel):
+    tier: str
+
+
 class RentRequest(BaseModel):
     days: int = Field(..., ge=1, le=construction_service.RENT_MAX_PREPAY_DAYS)
 
@@ -245,6 +249,32 @@ async def pay_milestone(
         raise HTTPException(status_code=e.status_code, detail=e.detail)
     return {
         "message": f"Milestone '{request.milestone}' paid",
+        **result,
+        "reservation": construction_service.status_payload(db, reservation),
+    }
+
+
+@router.post("/reservations/{reservation_id}/bump-priority")
+async def bump_priority(
+    reservation_id: str,
+    request: PriorityBumpRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Pay a priority-bump fee (5%/25%/60%/100% of total project cost) to
+    advance a still-queued reservation ahead of unbumped/lower-tier peers."""
+    reservation = _get_owned_reservation_or_404(db, reservation_id, current_player)
+    try:
+        result = construction_service.purchase_priority_bump(
+            db, reservation, current_player, request.tier
+        )
+        db.commit()
+    except ConstructionError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "message": f"Priority bump '{request.tier}' purchased",
         **result,
         "reservation": construction_service.status_payload(db, reservation),
     }
