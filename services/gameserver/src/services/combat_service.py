@@ -583,6 +583,27 @@ class CombatService:
     # this kernel; noted in DECISIONS, not built.
     VULNERABLE_DEFENSE_MULT = 0.5
 
+    # --- Rail Gun Batteries (WO-P5-planets-railgun-resolver, defense.md
+    # §"Fixed rail gun batteries") -----------------------------------------
+    # "This makes rail guns a specialized anti-capital weapon. Small/fast
+    # ships shrug them off; large ships take heavy damage." Canon's literal
+    # magnitudes (1,000-3,000 raw burst x up to 200% ship-class multiplier)
+    # would instakill on this resolver's randint(1,7)/round ship-damage
+    # scale -- the SAME incompatibility WO-CT1 hit for orbital
+    # platforms/turrets (defense.md: "the resolver's 1-5 scale would
+    # instakill, so raw-burst injection is a scoped resolver redesign").
+    #
+    # NO-CANON (flag for orchestrator bless): the two magnitudes below are
+    # chosen conservative and in-scale with the existing 1-7 ship-damage
+    # roll, mirroring WO-CT1's "small per-building contribution, hard
+    # ceiling" shape (turret_reduction/orbital_reduction capped at 18%
+    # each). The ship-class RATIOS themselves are canon-pinned and are
+    # NOT re-declared here -- _calculate_rail_gun_bonus_damage reads them
+    # straight off citadel_service.DEFENSE_BUILDINGS["rail_gun"]["effects"]
+    # ["ship_size_multiplier_pct"] (10%-200%) so the two files can't drift.
+    RAIL_GUN_BASE_DAMAGE_PER_BATTERY = 0.5
+    RAIL_GUN_MAX_BONUS_DAMAGE = 10
+
     # Weapon type effectiveness against different defenses
     WEAPON_TYPES = {
         "laser": {"base_damage": 1.0, "shield_effectiveness": 0.8, "hull_effectiveness": 1.0, "description": "Standard energy weapon"},
@@ -4146,7 +4167,17 @@ class CombatService:
                 else:
                     # Attack ship - calculate ship damage
                     damage = random.randint(1, 7)
-                    
+
+                    # WO-P5-planets-railgun-resolver: rail gun batteries add
+                    # anti-capital bonus damage on top of the base roll,
+                    # scaled by the attacker's ship class. Deterministic (no
+                    # random-module call) so a planet with 0 rail guns leaves
+                    # this round's RNG sequence byte-identical to before.
+                    rail_gun_bonus = self._calculate_rail_gun_bonus_damage(planet, attacker_ship)
+                    if rail_gun_bonus > 0:
+                        damage += rail_gun_bonus
+                    rail_gun_note = f" (+{rail_gun_bonus} rail-gun anti-capital fire)" if rail_gun_bonus > 0 else ""
+
                     # Check if attacker ship destroyed
                     ship_destruction_chance = damage / 50
                     if random.random() < ship_destruction_chance:
@@ -4155,14 +4186,14 @@ class CombatService:
                             "round": round_number,
                             "actor": "defender",
                             "action": "ship_destroyed",
-                            "message": f"Planetary defenses critically damaged {attacker.username}'s ship, forcing ejection"
+                            "message": f"Planetary defenses critically damaged {attacker.username}'s ship, forcing ejection{rail_gun_note}"
                         })
                     else:
                         combat_details.append({
                             "round": round_number,
                             "actor": "defender",
                             "action": "ship_attack",
-                            "message": f"Planetary defenses hit {attacker.username}'s ship for {damage} damage"
+                            "message": f"Planetary defenses hit {attacker.username}'s ship for {damage} damage{rail_gun_note}"
                         })
             else:
                 # Miss
@@ -4524,6 +4555,46 @@ class CombatService:
                 n = 0
             clean[str(btype)] = max(0, n)
         return clean
+
+    def _calculate_rail_gun_bonus_damage(
+        self, planet: Planet, attacker_ship: Optional[Ship]
+    ) -> int:
+        """Extra per-round hull damage the planet's Rail Gun Batteries deal to
+        the attacker's ship (WO-P5-planets-railgun-resolver; defense.md
+        §"Fixed rail gun batteries" — "specialized anti-capital weapon:
+        small/fast ships shrug them off, large ships take heavy damage").
+
+        Reads the built battery count off the same ``active_events
+        ["defense_buildings"]["rail_gun"]`` JSONB WO-CT1 established for
+        turret_network/orbital_platform (via ``_read_defense_buildings``), and
+        the per-ship-class multiplier straight off
+        ``citadel_service.DEFENSE_BUILDINGS["rail_gun"]["effects"]
+        ["ship_size_multiplier_pct"]`` (canon-pinned 10%-200%) so the ratio
+        table lives in exactly one place. See RAIL_GUN_BASE_DAMAGE_PER_BATTERY
+        / RAIL_GUN_MAX_BONUS_DAMAGE above for the NO-CANON in-scale magnitude.
+
+        0 rail_gun batteries (or no resolvable attacker ship) -> 0, with ZERO
+        random-module calls — this is the byte-for-byte regression contract:
+        a planet with no rail guns must produce an identical combat log/RNG
+        sequence to before this WO.
+        """
+        buildings = self._read_defense_buildings(planet)
+        rail_gun_count = buildings.get("rail_gun", 0)
+        if rail_gun_count <= 0 or attacker_ship is None:
+            return 0
+
+        from src.services.citadel_service import DEFENSE_BUILDINGS
+        ship_type = getattr(attacker_ship, "type", None)
+        type_name = ship_type.name if ship_type is not None else None
+        multiplier_pct = DEFENSE_BUILDINGS["rail_gun"]["effects"][
+            "ship_size_multiplier_pct"
+        ].get(type_name, 100)  # untabled hulls (escape pod, citizen clipper,
+        # NPC interdictors) default to a neutral 100% — no table entry means
+        # no documented anti-capital stance either way.
+        class_mult = multiplier_pct / 100.0
+
+        bonus = rail_gun_count * self.RAIL_GUN_BASE_DAMAGE_PER_BATTERY * class_mult
+        return min(int(round(bonus)), self.RAIL_GUN_MAX_BONUS_DAMAGE)
 
     def _calculate_planetary_defense_reduction(self, planet: Planet) -> Dict[str, Any]:
         """Calculate how much planetary defenses reduce incoming attack damage.
