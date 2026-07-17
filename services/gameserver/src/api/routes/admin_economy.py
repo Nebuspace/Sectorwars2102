@@ -11,7 +11,8 @@ from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
 
 from src.core.database import get_db
-from src.auth.dependencies import require_admin
+from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.dependencies import require_scope
 from src.models.user import User
 from src.models.market_transaction import MarketPrice, MarketTransaction, EconomicMetrics, PriceAlert
 from src.models.station import Station
@@ -92,7 +93,7 @@ class PriceAlertCreateRequest(BaseModel):
 async def get_market_data(
     commodity_filter: Optional[str] = Query(None, description="Filter by commodity type"),
     limit: int = Query(100, ge=1, le=500, description="Maximum number of results"),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """
@@ -149,7 +150,7 @@ async def get_market_data(
 @router.get("/metrics", response_model=EconomicMetricsResponse)
 async def get_economic_metrics(
     time_period: Optional[str] = Query("24h", description="Time period for metrics"),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """
@@ -254,7 +255,7 @@ async def get_economic_metrics(
 @router.get("/price-alerts", response_model=list[PriceAlertResponse])
 async def get_price_alerts(
     threshold_percent: float = Query(10.0, description="Alert threshold percentage", ge=1.0, le=100.0),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """
@@ -284,7 +285,7 @@ async def get_price_alerts(
 @router.post("/intervention", response_model=InterventionResponse)
 async def perform_market_intervention(
     request: MarketInterventionRequest,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """
@@ -341,7 +342,7 @@ async def perform_market_intervention(
 
 @router.get("/dashboard-summary")
 async def get_dashboard_summary(
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """
@@ -407,7 +408,7 @@ async def get_dashboard_summary(
 @router.post("/create-alert")
 async def create_price_alert(
     request: PriceAlertCreateRequest,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """
@@ -456,7 +457,7 @@ async def create_price_alert(
 @router.delete("/alerts/{alert_id}")
 async def delete_price_alert(
     alert_id: UUID,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """

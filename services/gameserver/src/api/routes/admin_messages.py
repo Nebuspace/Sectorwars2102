@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session, joinedload
 from pydantic import BaseModel
 
 from src.core.database import get_db
-from src.auth.dependencies import get_current_admin_user
+from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.dependencies import require_scope
 from src.models.user import User
 from src.services.message_service import MessageService
 from src.models.message import Message
@@ -27,7 +28,7 @@ class ModerateMessageRequest(BaseModel):
 async def get_all_messages(
     page: int = Query(1, ge=1),
     flagged: Optional[bool] = None,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all messages with optional filtering for flagged messages"""
@@ -66,7 +67,7 @@ async def get_all_messages(
 @router.get("/flagged")
 async def get_flagged_messages(
     page: int = Query(1, ge=1),
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get only flagged messages for review"""
@@ -77,7 +78,7 @@ async def get_flagged_messages(
 async def moderate_message(
     message_id: UUID,
     request: ModerateMessageRequest,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Moderate a message (delete, flag, or unflag)"""
@@ -110,7 +111,7 @@ async def moderate_message(
 
 @router.get("/stats")
 async def get_message_statistics(
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get messaging system statistics"""

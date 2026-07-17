@@ -14,7 +14,8 @@ from pydantic import BaseModel
 from datetime import datetime
 
 from src.core.database import get_async_session
-from src.auth.dependencies import get_current_admin_user
+from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.dependencies import require_scope
 from src.models.drone import Drone, DroneDeployment, DroneCombat
 from src.models.user import User
 from src.services.drone_service import DroneService
@@ -58,7 +59,7 @@ async def get_all_drones(
     sector_id: Optional[UUID] = None,
     drone_type: Optional[str] = None,
     status: Optional[str] = None,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: AsyncSession = Depends(get_async_session)
 ):
     """Get all drones with optional filters."""
@@ -112,7 +113,7 @@ async def get_all_drones(
 
 @router.get("/statistics", response_model=DroneStatistics)
 async def get_drone_statistics(
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: AsyncSession = Depends(get_async_session)
 ):
     """Get overall drone statistics."""
@@ -199,7 +200,7 @@ def _parse_combat_log(raw: Optional[str]) -> Optional[list]:
 @router.get("/{drone_id}")
 async def get_drone_details(
     drone_id: UUID,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: AsyncSession = Depends(get_async_session)
 ):
     """Get detailed information about a specific drone."""
@@ -292,7 +293,7 @@ async def get_drone_details(
 async def update_drone(
     drone_id: UUID,
     update: AdminDroneUpdate,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: AsyncSession = Depends(get_async_session)
 ):
     """Update a drone's attributes."""
@@ -318,7 +319,7 @@ async def update_drone(
 @router.delete("/{drone_id}")
 async def delete_drone(
     drone_id: UUID,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: AsyncSession = Depends(get_async_session)
 ):
     """Permanently delete a drone."""
@@ -339,7 +340,7 @@ async def delete_drone(
 @router.post("/{drone_id}/force-recall")
 async def force_recall_drone(
     drone_id: UUID,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: AsyncSession = Depends(get_async_session)
 ):
     """Force recall a deployed drone."""
@@ -363,7 +364,7 @@ async def force_recall_drone(
 @router.post("/{drone_id}/restore")
 async def restore_destroyed_drone(
     drone_id: UUID,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: AsyncSession = Depends(get_async_session)
 ):
     """Restore a destroyed drone to active status."""
@@ -394,7 +395,7 @@ async def restore_destroyed_drone(
 @router.get("/sector/{sector_id}/summary")
 async def get_sector_drone_summary(
     sector_id: UUID,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: AsyncSession = Depends(get_async_session)
 ):
     """Get a summary of drones in a specific sector."""

@@ -7,7 +7,8 @@ import math
 import uuid
 
 from src.core.database import get_db
-from src.auth.dependencies import get_current_admin
+from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.dependencies import require_scope
 from src.models.user import User
 from src.models.galaxy import Galaxy
 from src.models.cluster import Cluster, ClusterType
@@ -77,7 +78,7 @@ router = APIRouter()
 async def update_sector(
     sector_id: int,
     request: SectorUpdateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Update sector properties"""
@@ -128,7 +129,7 @@ async def update_sector(
 @router.post("/port/create", response_model=dict)
 async def create_port(
     request: StationCreateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Create a new port in a sector"""
@@ -186,7 +187,7 @@ async def create_port(
 @router.post("/planet/create", response_model=dict)
 async def create_planet(
     request: PlanetCreateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Create a new planet in a sector"""
@@ -241,7 +242,7 @@ async def create_planet(
 @router.post("/warp-tunnel/create-enhanced", response_model=dict)
 async def create_enhanced_warp_tunnel(
     request: WarpTunnelEnhancedRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Create a warp tunnel with enhanced options"""
@@ -324,7 +325,7 @@ async def get_enhanced_sectors(
     region_id: Optional[str] = None,
     cluster_id: Optional[str] = None,
     include_contents: bool = True,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get sectors with enhanced information"""

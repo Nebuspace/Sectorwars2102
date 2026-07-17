@@ -22,14 +22,25 @@ from src.main import app
 
 _GAMESERVER_ROOT = Path(__file__).resolve().parents[2]
 
-# Phase B batch 1 — modules swept from require_admin → require_scope
+# Phase B batches 1–2 — modules swept from require_admin → require_scope
 _SWEPT_MODULES: frozenset[str] = frozenset(
     {
+        # batch 1
         "src.api.routes.admin_multi_account",
         "src.api.routes.admin_reports",
         "src.api.routes.admin_contract_disputes",
         "src.api.routes.admin_first_login",
         "src.api.routes.websocket",
+        # batch 2
+        "src.api.routes.admin_ships",
+        "src.api.routes.admin_combat",
+        "src.api.routes.admin_fleets",
+        "src.api.routes.admin_drones",
+        "src.api.routes.admin_factions",
+        "src.api.routes.admin_messages",
+        "src.api.routes.admin_economy",
+        "src.api.routes.admin_colonization",
+        "src.api.routes.admin_enhanced",
     }
 )
 
