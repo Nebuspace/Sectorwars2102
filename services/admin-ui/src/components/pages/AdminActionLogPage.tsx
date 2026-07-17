@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
 import './admin-action-log.css';
@@ -40,7 +41,10 @@ function scopeMissingMessage(err: any, fallback: string): string {
 }
 
 export const AdminActionLogPage: React.FC = () => {
-  const [tab, setTab] = useState<AuditTab>('ledger');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialTab: AuditTab =
+    searchParams.get('tab') === 'review' ? 'review' : 'ledger';
+  const [tab, setTab] = useState<AuditTab>(initialTab);
   const [data, setData] = useState<AdminActionPage | null>(null);
   const [page, setPage] = useState(1);
   const [actor, setActor] = useState('');
@@ -149,6 +153,15 @@ export const AdminActionLogPage: React.FC = () => {
     setData(null);
     setReviewTarget(null);
     setMarkError(null);
+    setSearchParams(
+      (prev) => {
+        const nextParams = new URLSearchParams(prev);
+        if (next === 'ledger') nextParams.delete('tab');
+        else nextParams.set('tab', next);
+        return nextParams;
+      },
+      { replace: true }
+    );
   };
 
   const applyFilters = (e: React.FormEvent) => {
