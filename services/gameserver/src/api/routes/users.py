@@ -88,51 +88,17 @@ async def create_admin_user(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
 ):
+    """RETIRED (Max 2026-07-17 / ADR-0058): admin-hood is grant-only.
+
+    Use ``POST /api/v1/admin/scopes/grant`` (requires ``admin.scopes.grant``).
     """
-    Create new admin user.
-    """
-    # Check if username already exists
-    db_user = db.query(User).filter(User.username == admin_data.username).first()
-    if db_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Username already registered"
-        )
-    
-    # Check if email already exists
-    if admin_data.email:
-        db_user = db.query(User).filter(User.email == admin_data.email).first()
-        if db_user:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered"
-            )
-    
-    # Create new user
-    new_user = User(
-        username=admin_data.username,
-        email=admin_data.email,
-        is_active=True,
-        is_admin=True,
-        created_at=datetime.now(UTC),
-        updated_at=datetime.now(UTC)
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=(
+            "POST /users/admin is retired. Admin-hood is granted via "
+            "POST /api/v1/admin/scopes/grant (scope admin.scopes.grant)."
+        ),
     )
-    
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    
-    # Create admin credentials
-    password_hash = get_password_hash(admin_data.password)
-    admin_creds = AdminCredentials(
-        user_id=new_user.id,
-        password_hash=password_hash
-    )
-    
-    db.add(admin_creds)
-    db.commit()
-    
-    return new_user
 
 
 @router.get("/{user_id}", response_model=UserSchema)

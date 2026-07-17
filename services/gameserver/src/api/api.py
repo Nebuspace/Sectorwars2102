@@ -70,6 +70,7 @@ from src.api.routes.pirate_ecosystem import router as pirate_ecosystem_router  #
 from src.api.routes.contracts import router as contracts_router  # WO-ECON-CONTRACT-1-KERNEL
 from src.api.routes.admin_contract_disputes import router as admin_contract_disputes_router  # WO-CONTRACT-6
 from src.api.routes.admin_multi_account import router as admin_multi_account_router  # WO-PADMIN-multiacct-review
+from src.api.routes.admin_scopes import router as admin_scopes_router  # RBAC Phase B grant/revoke
 from src.api.routes.beacons import router as beacons_router  # WO-P4-play-beacon-kernel
 from src.api.routes.storage import router as storage_router  # WO-STORE-DEPOSIT-FLOW
 from src.api.routes.intrasystem import router as intrasystem_router  # WO-ISP
@@ -201,6 +202,7 @@ api_router.include_router(pirate_ecosystem_router, tags=["pirate-ecosystem"])
 api_router.include_router(contracts_router, tags=["contracts"])
 api_router.include_router(admin_contract_disputes_router, tags=["admin-contract-disputes"])
 api_router.include_router(admin_multi_account_router, tags=["admin-multi-account"])  # WO-PADMIN-multiacct-review
+api_router.include_router(admin_scopes_router, tags=["admin-scopes"])  # RBAC Phase B grant/revoke
 # Message beacons (WO-P4-play-beacon-kernel): deploy/read/salvage a
 # physical "message in a bottle" in a sector (router carries its own
 # /beacons prefix).

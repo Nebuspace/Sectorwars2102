@@ -90,22 +90,21 @@ const UsersManager: React.FC = () => {
       setSuccessMessage(null);
 
       if (isAdmin) {
-        // POST /api/v1/users/admin (users.py:85) — creates the user AND its
-        // AdminCredentials row; password is required (min 8 chars).
-        await api.post('/api/v1/users/admin', {
-          username: newUsername,
-          email: newEmail || null,
-          password: newPassword
-        });
-      } else {
-        // POST /api/v1/users/ (users.py:42) — creates a non-admin account.
-        // The backend ignores any password (no credentials row is created),
-        // so we don't collect or send one; these accounts sign in via OAuth.
-        await api.post('/api/v1/users/', {
-          username: newUsername,
-          email: newEmail || null
-        });
+        // POST /users/admin RETIRED (Max 2026-07-17) — admin-hood is grant-only
+        // via POST /api/v1/admin/scopes/grant. Create a normal user first, then
+        // grant scopes from the scopes console.
+        setError(
+          'Admin accounts are no longer created here. Create a normal user, then grant scopes via Admin → Scopes (POST /api/v1/admin/scopes/grant).'
+        );
+        return;
       }
+      // POST /api/v1/users/ (users.py:42) — creates a non-admin account.
+      // The backend ignores any password (no credentials row is created),
+      // so we don't collect or send one; these accounts sign in via OAuth.
+      await api.post('/api/v1/users/', {
+        username: newUsername,
+        email: newEmail || null
+      });
 
       // Reset form
       setNewUsername('');
@@ -464,32 +463,22 @@ const UsersManager: React.FC = () => {
                         onChange={(e: ChangeEvent<HTMLInputElement>) => setIsAdmin(e.target.checked)}
                         className="form-checkbox mr-2"
                       />
-                      Grant Admin Privileges
+                      Grant Admin Privileges (retired — use Scopes)
                     </label>
+                    {isAdmin && (
+                      <p className="text-muted text-xs mt-1">
+                        POST /users/admin is retired. Uncheck this and create a normal
+                        user, then grant scopes via the scopes API.
+                      </p>
+                    )}
                   </div>
 
-                  {/* Only admin accounts get a password here: POST /users/admin stores
-                      AdminCredentials, while POST /users/ ignores passwords entirely
-                      (non-admin accounts authenticate via OAuth). */}
-                  {isAdmin ? (
-                    <div className="form-group">
-                      <label htmlFor="password" className="form-label">Password</label>
-                      <input
-                        id="password"
-                        type="password"
-                        className="form-input"
-                        value={newPassword}
-                        onChange={(e: ChangeEvent<HTMLInputElement>) => setNewPassword(e.target.value)}
-                        required
-                        minLength={8}
-                      />
-                    </div>
-                  ) : (
-                    <p className="text-muted text-xs">
-                      The backend does not set a password for non-admin accounts created
-                      here — the user will need to sign in via OAuth.
-                    </p>
-                  )}
+                  {/* Password field removed with retired POST /users/admin.
+                      Non-admin accounts authenticate via OAuth. */}
+                  <p className="text-muted text-xs">
+                    The backend does not set a password for accounts created
+                    here — the user will need to sign in via OAuth.
+                  </p>
                   
                   <div className="modal-footer">
                     <button type="button" className="btn btn-outline" onClick={() => setShowCreateModal(false)}>
