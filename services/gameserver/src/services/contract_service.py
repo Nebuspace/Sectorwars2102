@@ -90,6 +90,15 @@ from src.models.contract import (
     ContractStatus,
     ContractType,
 )
+
+# WO-CONTRACT-3-NPCGEN-TYPES: FactionType (below) + apply_faction_rep_delta
+# (bottom of the services import block below) are consumed by complete()'s
+# hazardous_transport completion-penalty branch ONLY -- see that function's
+# own comment. Top-level import mirrors contraband_service.py's own
+# established convention for this exact helper (no circular-import risk:
+# faction_service.py has no contract_service/contract_dispute/contract_
+# escrow_core dependency).
+from src.models.faction import FactionType
 from src.models.resource import Resource
 from src.models.station import Station, StationStatus
 from src.services.contract_dispute import DISPUTE_FILING_WINDOW_HOURS as DISPUTE_FILING_WINDOW_HOURS
@@ -137,8 +146,21 @@ from src.services.contract_escrow_core import ContractNotFoundError as ContractN
 from src.services.contract_insurance import _compute_insurance_cancellation_refund, _refresh_contract_insurance_snapshot
 from src.services.contract_insurance import apply_claim_offset as apply_claim_offset
 from src.services.contract_insurance import insure as insure
+from src.services.faction_service import apply_faction_rep_delta
 
 logger = logging.getLogger(__name__)
+
+# WO-CONTRACT-3-NPCGEN-TYPES: canon's own early-completion bonus formula
+# (contracts.md:323 -- "up to +25% of payment if delivered with greater
+# than 50% of the time window remaining. Linear scale between 0-25% above
+# the 50% threshold.") is EXACT, not NO-CANON -- but canon marks it
+# design-only for every contract type ("complete() pays the flat `payment`
+# amount with no bonus calculation today"). This WO wires it for
+# `express_delivery` ONLY (its own dispatch's explicit scope, "early-
+# arrival bonus" under the express_delivery build lane) -- extending it to
+# `cargo_delivery`/other types is a natural follow-up, not built here.
+EARLY_ARRIVAL_BONUS_THRESHOLD_PCT = Decimal("0.50")
+EARLY_ARRIVAL_BONUS_CAP_PCT = Decimal("0.25")
 
 
 # --- WO-ECON-CONTRACT-2-PLAYER-ESCROW: posting-validation helpers ---------
@@ -244,6 +266,46 @@ def accept(
     }
 
 
+def _compute_early_arrival_bonus(contract: Any, now: datetime) -> int:
+    """express_delivery's early-arrival bonus -- extracted out of
+    complete() so that function's own McCabe complexity stays flat as this
+    WO adds a new gated branch (this codebase tolerates far worse
+    elsewhere, but a cheap extraction here is worth doing -- see gameserver
+    -ruff-c901-not-enforced in monk's own memory notes). Pure given
+    (contract, now); see EARLY_ARRIVAL_BONUS_*'s own comment for the
+    canon-cited formula. Returns 0 for every non-express contract or one
+    delivered at/before the 50% threshold -- never negative.
+
+    `getattr(contract, "contract_type", None)`, not a direct attribute
+    read: `contract_type` predates this WO on the real ORM column (NOT
+    NULL, every live row has one) but several PRE-EXISTING test fixtures
+    across this test suite (e.g. test_contract_escrow.py's own local
+    `_npc_contract()` helper) build a minimal SimpleNamespace without it --
+    a direct `contract.contract_type` access crashes those call sites with
+    AttributeError. Matches this codebase's own established defensive-
+    getattr convention for exactly this "older test double, newer optional
+    read" situation (see production-rate-multiplier-getattr-safety /
+    region-snapshot-getattr-not-attr in monk's own memory notes)."""
+    if getattr(contract, "contract_type", None) != ContractType.EXPRESS_DELIVERY:
+        return 0
+    if not contract.posted_at or not contract.deadline:
+        return 0
+    window_seconds = (contract.deadline - contract.posted_at).total_seconds()
+    if window_seconds <= 0:
+        return 0
+    remaining_seconds = (contract.deadline - now).total_seconds()
+    remaining_frac = Decimal(remaining_seconds) / Decimal(window_seconds)
+    if remaining_frac <= EARLY_ARRIVAL_BONUS_THRESHOLD_PCT:
+        return 0
+    bonus_pct = (
+        EARLY_ARRIVAL_BONUS_CAP_PCT
+        * (remaining_frac - EARLY_ARRIVAL_BONUS_THRESHOLD_PCT)
+        / (Decimal("1.0") - EARLY_ARRIVAL_BONUS_THRESHOLD_PCT)
+    )
+    bonus_pct = min(bonus_pct, EARLY_ARRIVAL_BONUS_CAP_PCT)
+    return _to_credits_int(_round_credits(_as_decimal(contract.payment) * bonus_pct))
+
+
 def complete(
     db: Session, contract_id: uuid.UUID, player_id: uuid.UUID,
     now: Optional[datetime] = None,
@@ -306,7 +368,16 @@ def complete(
     flag_modified(ship, "cargo")
 
     payout = _to_credits_int(_round_credits(_as_decimal(contract.payment)))
-    player.credits = (player.credits or 0) + payout
+    # WO-CONTRACT-3-NPCGEN-TYPES: express_delivery's early-arrival bonus --
+    # canon's exact formula (contracts.md:323, see EARLY_ARRIVAL_BONUS_*'s
+    # own comment at this module's top and _compute_early_arrival_bonus's
+    # own docstring for the extracted formula). Bounded (a fraction of
+    # `contract.payment`, itself bounded by the generator's own quantity/
+    # price caps) and whole-credit, same rounding idiom as `payout` above
+    # -- never an unbounded or mis-scaled mint. Gated to express_delivery
+    # ONLY, matching this WO's scope.
+    early_arrival_bonus = _compute_early_arrival_bonus(contract, now)
+    player.credits = (player.credits or 0) + payout + early_arrival_bonus
     # WO-ECON-CONTRACT-2-PLAYER-ESCROW: the payout above is identical code
     # for NPC and player-issued contracts -- for NPC rows it mints (NPC
     # credits are canonically infinite, contracts.md:155); for player-issued
@@ -323,16 +394,44 @@ def complete(
     # by simply never reading/crediting back `insurance_premium_paid`
     # anywhere in this function; it was already debited from the acceptor
     # at insure() time and stays gone.
+
+    # WO-CONTRACT-3-NPCGEN-TYPES: hazardous_transport's completion-time
+    # faction penalty -- contracts.md:420 "apply a faction penalty on
+    # completion (the law-side faction loses standing)". `reputation_
+    # penalty` is set on the row at GENERATION time (contract_generator.py,
+    # HAZARDOUS_TRANSPORT_FEDERATION_REP_PENALTY) -- this is the first real
+    # READER of that column (contract_dispute.py's own module docstring
+    # notes it was, until now, written but never read anywhere). Applied
+    # via the SAME sync, flush-only `apply_faction_rep_delta` combat_
+    # service.py / contraband_service.py already use for exactly this kind
+    # of in-transaction faction-rep hook -- not a new mechanism, reusing
+    # the one this codebase already has. Guarded on a truthy (non-None,
+    # non-zero) value so a hazardous_transport row somehow missing one
+    # (e.g. a pre-this-WO row, impossible today but defensive) never
+    # crashes completion. Both attrs read via getattr(..., None) -- see
+    # _compute_early_arrival_bonus's own docstring for why (older test
+    # fixtures across this suite predate both `contract_type` and
+    # `reputation_penalty` being read here).
+    if getattr(contract, "contract_type", None) == ContractType.HAZARDOUS_TRANSPORT and getattr(
+        contract, "reputation_penalty", None
+    ):
+        apply_faction_rep_delta(
+            db, player_id, FactionType.FEDERATION, int(contract.reputation_penalty),
+            reason="hazardous_transport_contract_completed",
+        )
+
     db.flush()
 
     logger.info(
-        "Player %s completed contract %s, paid %d credits", player_id, contract.id, payout,
+        "Player %s completed contract %s, paid %d credits (+%d early-arrival bonus)",
+        player_id, contract.id, payout, early_arrival_bonus,
     )
     return {
         "id": str(contract.id),
         "status": contract.status.value,
         "completed_at": now,
         "payout": payout,
+        "early_arrival_bonus": early_arrival_bonus,
         "credits": player.credits,
     }
 

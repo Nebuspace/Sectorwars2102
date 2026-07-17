@@ -20,13 +20,17 @@ from typing import Any, List, Optional
 import pytest
 from sqlalchemy.sql.operators import in_op
 
-from src.models.contract import Contract, ContractIssuerType, ContractStatus
+from src.models.contract import Contract, ContractIssuerType, ContractStatus, ContractType
 from src.models.faction import Faction
 from src.models.sector import Sector, sector_warps
-from src.models.station import StationClass
+from src.models.station import StationClass, StationType
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
 from src.services import contract_generator
-from src.services.contract_generator import compute_cargo_delivery_payment
+from src.services.contract_generator import (
+    compute_cargo_delivery_payment,
+    compute_express_delivery_payment,
+    compute_hazardous_transport_payment,
+)
 
 
 def _match(row: Any, cond: Any) -> bool:
@@ -128,11 +132,17 @@ def _tunnel(
 
 def _station(
     *, sector: SimpleNamespace, commodities: dict, faction_affiliation: Optional[str] = None,
+    type: Optional[StationType] = None,  # noqa: A002 -- matches Station.type's own column name
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id=uuid.uuid4(), sector_uuid=sector.id, commodities=commodities,
         faction_affiliation=faction_affiliation,
         station_class=StationClass.CLASS_3,  # neutral -- no 8/9/11 premium
+        # WO-CONTRACT-3-NPCGEN-TYPES: `type=None` (the default) is NOT the
+        # same as omitting the attribute -- but contract_generator.py reads
+        # it via `getattr(s, "type", None)`, so both read back as None and
+        # every pre-WO test (which never passed `type=`) is unaffected.
+        type=type,
     )
 
 
@@ -195,6 +205,7 @@ class TestGenerateNpcContracts:
         assert result == {
             "generated": 0, "stations_scanned": 1,
             "blocked_by": {"no_buyer": 0, "unreachable": 0, "price": 0, "pool": 0},
+            "generated_by_type": {"cargo_delivery": 0, "express_delivery": 0, "hazardous_transport": 0},
         }
 
     def test_skips_zero_price_commodity(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -461,6 +472,124 @@ class TestComputeCargoDeliveryPayment:
     def test_zero_hops_zero_tightness_is_base_commodity_value(self) -> None:
         payment, _ = compute_cargo_delivery_payment(Decimal("20"), 10, hops=0, deadline_hours=Decimal("4.0"))
         assert payment == Decimal("200.00")  # 20 x 10 x 1.0 x 1.0 x 1.0
+
+
+@pytest.mark.unit
+class TestComputeExpressDeliveryPayment:
+    """WO-CONTRACT-3-NPCGEN-TYPES. Same shared formula as cargo_delivery
+    (_compute_typed_contract_payment) -- these tests pin the DIFFERENT
+    type_multiplier/penalty_multiplier this type applies on top of it."""
+
+    def test_pays_type_multiplier_times_the_cargo_equivalent(self) -> None:
+        cargo_payment, _ = compute_cargo_delivery_payment(Decimal("20"), 10, hops=1, deadline_hours=Decimal("4.0"))
+        express_payment, _ = compute_express_delivery_payment(
+            Decimal("20"), 10, hops=1, deadline_hours=Decimal("4.0"),
+        )
+        # contracts.md:319 -- "roughly 1.5-2.0x their non-express
+        # equivalents"; this kernel pins the midpoint (1.75x).
+        assert express_payment / cargo_payment == contract_generator.EXPRESS_DELIVERY_TYPE_MULTIPLIER
+        assert Decimal("1.5") <= express_payment / cargo_payment <= Decimal("2.0")
+
+    def test_penalty_stricter_than_payment_itself(self) -> None:
+        """contracts.md:136 -- "Express contracts use a stricter penalty on
+        failure": penalty > payment (unlike cargo_delivery, where they're
+        equal at the default 1.0x multiplier)."""
+        payment, penalty = compute_express_delivery_payment(Decimal("50"), 10, hops=2, deadline_hours=Decimal("4.0"))
+        assert penalty > payment
+        assert penalty / payment == contract_generator.EXPRESS_PENALTY_MULTIPLIER
+
+
+@pytest.mark.unit
+class TestComputeHazardousTransportPayment:
+    """WO-CONTRACT-3-NPCGEN-TYPES (partial -- generation only)."""
+
+    def test_pays_significantly_more_than_cargo_equivalent(self) -> None:
+        cargo_payment, _ = compute_cargo_delivery_payment(Decimal("20"), 10, hops=1, deadline_hours=Decimal("4.0"))
+        hazardous_payment, _ = compute_hazardous_transport_payment(
+            Decimal("20"), 10, hops=1, deadline_hours=Decimal("4.0"),
+        )
+        # contracts.md:420 -- "pay 2-4x standard rates"; this kernel pins
+        # the midpoint (3.0x).
+        assert hazardous_payment / cargo_payment == contract_generator.HAZARDOUS_TRANSPORT_TYPE_MULTIPLIER
+        assert Decimal("2.0") <= hazardous_payment / cargo_payment <= Decimal("4.0")
+
+    def test_penalty_multiplier_matches_cargo_default(self) -> None:
+        """No canon number for a distinct hazardous FAILURE penalty (unlike
+        express's explicit "stricter" language) -- reuses the plain 1.0x
+        cargo_delivery default."""
+        payment, penalty = compute_hazardous_transport_payment(
+            Decimal("50"), 10, hops=2, deadline_hours=Decimal("4.0"),
+        )
+        assert penalty == payment
+
+
+@pytest.mark.unit
+class TestTypeClassification:
+    """WO-CONTRACT-3-NPCGEN-TYPES: which of the three generated types a
+    matched (origin, commodity, destination) pair becomes."""
+
+    def test_black_market_destination_generates_hazardous_transport(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        sec_a, sec_b = _sector(1), _sector(2)
+        origin = _station(sector=sec_a, commodities={"ore": _sells(100)})
+        destination = _station(
+            sector=sec_b, commodities={"ore": _buys()}, type=StationType.BLACK_MARKET,
+        )
+        db = _FakeSession(sectors=[sec_a, sec_b], edges=[_edge(sec_a, sec_b)])
+
+        # Even with a deliberately NON-tight deadline (5.0h, above the
+        # express threshold) -- proves black-market classification takes
+        # priority over the deadline-tightness check, not the other way
+        # around.
+        monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 5.0)
+        result = contract_generator.generate_npc_contracts(db, now=_NOW, stations=[origin, destination])
+
+        assert result["generated"] == 1
+        assert result["generated_by_type"] == {"cargo_delivery": 0, "express_delivery": 0, "hazardous_transport": 1}
+        c = db.added[0]
+        assert c.contract_type == ContractType.HAZARDOUS_TRANSPORT
+        assert c.reputation_penalty == contract_generator.HAZARDOUS_TRANSPORT_FEDERATION_REP_PENALTY
+        assert c.reputation_penalty < 0  # a penalty, stored as a negative delta
+
+    def test_non_black_market_destination_never_generates_hazardous(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 5.0)
+        db, origin, destination = _one_hop_pair()  # default _station() -> type=None
+        contract_generator.generate_npc_contracts(db, now=_NOW, stations=[origin, destination])
+        assert db.added[0].contract_type == ContractType.CARGO_DELIVERY
+        assert db.added[0].reputation_penalty is None
+
+    def test_tight_deadline_reclassifies_as_express_delivery(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 1.5)  # <= 2.0h threshold
+        db, origin, destination = _one_hop_pair()
+        result = contract_generator.generate_npc_contracts(db, now=_NOW, stations=[origin, destination])
+        assert result["generated_by_type"] == {"cargo_delivery": 0, "express_delivery": 1, "hazardous_transport": 0}
+        c = db.added[0]
+        assert c.contract_type == ContractType.EXPRESS_DELIVERY
+        assert c.reputation_penalty is None  # express carries no reputation column write
+        assert c.deadline == _NOW + timedelta(hours=1.5)  # SAME drawn deadline, not a second roll
+
+    def test_standard_deadline_stays_cargo_delivery_byte_identical_to_pre_wo(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Every pre-WO test in this file relies on this exact behavior
+        (monkeypatching pick_deadline_hours to 3.0, always > the 2.0h
+        express threshold) -- this test makes the regression-safety
+        property explicit rather than merely incidental."""
+        monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 3.0)
+        db, origin, destination = _one_hop_pair()
+        result = contract_generator.generate_npc_contracts(db, now=_NOW, stations=[origin, destination])
+        assert result["generated_by_type"] == {"cargo_delivery": 1, "express_delivery": 0, "hazardous_transport": 0}
+        assert db.added[0].contract_type == ContractType.CARGO_DELIVERY
+
+    def test_exactly_at_express_threshold_is_express_not_cargo(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Boundary pin: `<=`, not `<` -- a deadline landing EXACTLY on
+        EXPRESS_DEADLINE_THRESHOLD_HOURS still reclassifies."""
+        monkeypatch.setattr(
+            contract_generator, "pick_deadline_hours",
+            lambda: float(contract_generator.EXPRESS_DEADLINE_THRESHOLD_HOURS),
+        )
+        db, origin, destination = _one_hop_pair()
+        contract_generator.generate_npc_contracts(db, now=_NOW, stations=[origin, destination])
+        assert db.added[0].contract_type == ContractType.EXPRESS_DELIVERY
 
 
 @pytest.mark.unit

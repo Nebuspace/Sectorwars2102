@@ -303,6 +303,8 @@ def _contract(**overrides: Any) -> SimpleNamespace:
         dispute_resolved_at=None,
         dispute_notes=None,
         escalated_to_admin=False,
+        # WO-CONTRACT-3-NPCGEN-TYPES
+        reputation_penalty=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -482,6 +484,173 @@ class TestComplete:
         db.players.append(stranger)
         with pytest.raises(ContractError, match="not accepted by you"):
             contract_service.complete(db, c.id, stranger.id, now=_NOW)
+
+
+@pytest.mark.unit
+class TestCompleteExpressEarlyArrivalBonus:
+    """WO-CONTRACT-3-NPCGEN-TYPES: canon's exact formula (contracts.md:323)
+    -- linear 0-25% bonus on `payment` once MORE than 50% of the
+    [posted_at, deadline] window remains at delivery, gated to
+    express_delivery only."""
+
+    def _setup(self, **contract_overrides: Any):
+        destination_id = uuid.uuid4()
+        posted_at = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+        deadline = datetime(2026, 1, 1, 2, 0, tzinfo=UTC)  # 2h window
+        c = _contract(
+            status=ContractStatus.ACCEPTED, destination_station_id=destination_id,
+            commodity_type="ore", quantity=50, payment=Decimal("2000.00"),
+            contract_type=ContractType.EXPRESS_DELIVERY,
+            posted_at=posted_at, deadline=deadline,
+        )
+        for k, v in contract_overrides.items():
+            setattr(c, k, v)
+        ship = _real_ship(cargo={"capacity": 500, "used": 80, "contents": {"ore": 80}})
+        player = _player(credits=1000, is_docked=True, current_port_id=destination_id, current_ship=ship)
+        c.acceptor_player_id = player.id
+        db = _FakeSession(contracts=[c], players=[player])
+        return db, c, player
+
+    def test_delivered_with_875pct_window_remaining_pays_partial_bonus(self) -> None:
+        db, c, player = self._setup()
+        now = datetime(2026, 1, 1, 0, 15, tzinfo=UTC)  # 15min elapsed of 2h -> 87.5% remaining
+        result = contract_service.complete(db, c.id, player.id, now=now)
+        # bonus_pct = 0.25 x (0.875-0.5)/(1-0.5) = 0.1875 -> 2000 x 0.1875 = 375
+        assert result["early_arrival_bonus"] == 375
+        assert result["payout"] == 2000
+        assert player.credits == 1000 + 2000 + 375
+
+    def test_delivered_at_exactly_50pct_remaining_pays_no_bonus(self) -> None:
+        """Canon says "greater than 50%" -- exactly 50% is excluded."""
+        db, c, player = self._setup()
+        now = datetime(2026, 1, 1, 1, 0, tzinfo=UTC)  # 1h elapsed of 2h -> exactly 50% remaining
+        result = contract_service.complete(db, c.id, player.id, now=now)
+        assert result["early_arrival_bonus"] == 0
+        assert player.credits == 1000 + 2000
+
+    def test_delivered_instantly_caps_at_25pct(self) -> None:
+        db, c, player = self._setup()
+        now = c.posted_at  # delivered the instant it was posted -- 100% window remaining
+        result = contract_service.complete(db, c.id, player.id, now=now)
+        assert result["early_arrival_bonus"] == 500  # 2000 x 0.25 cap
+
+    def test_clock_skew_before_posted_at_still_caps_at_25pct_never_more(self) -> None:
+        """Money-path gate follow-up (cipher, WO-3 gate pass): `now <
+        posted_at` drives remaining_frac ABOVE 1.0 (the pre-min() bonus_pct
+        formula would compute > 0.25) -- `min(bonus_pct, EARLY_ARRIVAL_
+        BONUS_CAP_PCT)` is the ONLY thing standing between an arbitrary
+        clock-skew value and an uncapped payout. Cipher fuzzed this up to
+        1000 years before posted_at; mack swept remaining_frac to 150% --
+        both confirmed the cap holds. Pinned here as a permanent
+        regression test (the 0/50/87.5/100% cases above never exercise
+        remaining_frac > 1.0) at two payment scales so a future change to
+        the clamp ordering can't silently reintroduce an unbounded mint."""
+        db, c, player = self._setup(payment=Decimal("2000.00"))
+        now = c.posted_at - timedelta(hours=1)  # 1h BEFORE posted_at -- negative elapsed
+        result = contract_service.complete(db, c.id, player.id, now=now)
+        assert result["early_arrival_bonus"] == 500  # capped at 2000 x 0.25, same as the 100% case
+
+        # A second, more extreme skew (cipher's own 1000-year stress case) at
+        # a different payment scale, to prove the cap is payment-relative
+        # (still exactly 25%) and not merely coincidentally correct at 2000.
+        db2, c2, player2 = self._setup(payment=Decimal("100.00"))
+        now_extreme = c2.posted_at - timedelta(days=365 * 1000)
+        result2 = contract_service.complete(db2, c2.id, player2.id, now=now_extreme)
+        assert result2["early_arrival_bonus"] == 25  # capped at 100 x 0.25, never more
+
+    def test_delivered_late_in_window_pays_no_bonus(self) -> None:
+        db, c, player = self._setup()
+        now = datetime(2026, 1, 1, 1, 55, tzinfo=UTC)  # 5min left of 2h
+        result = contract_service.complete(db, c.id, player.id, now=now)
+        assert result["early_arrival_bonus"] == 0
+
+    def test_cargo_delivery_never_gets_the_bonus_even_delivered_instantly(self) -> None:
+        db, c, player = self._setup(contract_type=ContractType.CARGO_DELIVERY)
+        now = c.posted_at
+        result = contract_service.complete(db, c.id, player.id, now=now)
+        assert result["early_arrival_bonus"] == 0
+        assert player.credits == 1000 + 2000
+
+
+@pytest.mark.unit
+class TestCompleteHazardousTransportReputationPenalty:
+    """WO-CONTRACT-3-NPCGEN-TYPES (partial): contracts.md:420 -- "apply a
+    faction penalty on completion". `reputation_penalty` is set on the
+    contract row at GENERATION time (contract_generator.py); complete() is
+    the first real READER of it, applied via the same, already-wired
+    apply_faction_rep_delta helper combat_service.py / contraband_service.py
+    use for this exact kind of in-transaction faction-rep hook."""
+
+    def _accepted_setup(self, **contract_overrides: Any):
+        destination_id = uuid.uuid4()
+        c = _contract(
+            status=ContractStatus.ACCEPTED, destination_station_id=destination_id,
+            commodity_type="ore", quantity=50, payment=Decimal("3000.00"),
+            contract_type=ContractType.HAZARDOUS_TRANSPORT, reputation_penalty=-30,
+        )
+        for k, v in contract_overrides.items():
+            setattr(c, k, v)
+        ship = _real_ship(cargo={"capacity": 500, "used": 80, "contents": {"ore": 80}})
+        player = _player(credits=1000, is_docked=True, current_port_id=destination_id, current_ship=ship)
+        c.acceptor_player_id = player.id
+        db = _FakeSession(contracts=[c], players=[player])
+        return db, c, player
+
+    def test_completing_hazardous_transport_applies_federation_rep_penalty(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: List[Any] = []
+        monkeypatch.setattr(
+            contract_service, "apply_faction_rep_delta",
+            lambda db, player_id, faction_type, delta, reason: calls.append(
+                (player_id, faction_type, delta, reason)
+            ),
+        )
+        db, c, player = self._accepted_setup()
+        contract_service.complete(db, c.id, player.id, now=_NOW)
+
+        assert len(calls) == 1
+        called_player_id, called_faction_type, called_delta, called_reason = calls[0]
+        from src.models.faction import FactionType
+        assert called_player_id == player.id
+        assert called_faction_type == FactionType.FEDERATION
+        assert called_delta == -30  # the contract row's own reputation_penalty, not a hardcoded literal
+        assert called_reason == "hazardous_transport_contract_completed"
+
+    def test_cargo_delivery_never_applies_a_reputation_penalty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: List[Any] = []
+        monkeypatch.setattr(
+            contract_service, "apply_faction_rep_delta",
+            lambda *a, **kw: calls.append((a, kw)),
+        )
+        c = _contract(
+            status=ContractStatus.ACCEPTED, contract_type=ContractType.CARGO_DELIVERY,
+            commodity_type="ore", quantity=50, payment=Decimal("1000.00"),
+        )
+        ship = _real_ship(cargo={"capacity": 500, "used": 80, "contents": {"ore": 80}})
+        player = _player(credits=1000, is_docked=True, current_port_id=c.destination_station_id, current_ship=ship)
+        c.acceptor_player_id = player.id
+        db = _FakeSession(contracts=[c], players=[player])
+
+        contract_service.complete(db, c.id, player.id, now=_NOW)
+        assert calls == []
+
+    def test_hazardous_transport_with_no_reputation_penalty_set_does_not_crash(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Defensive guard -- a hazardous_transport row somehow missing its
+        reputation_penalty (impossible via this WO's own generator, which
+        always sets it) must never crash completion or call the helper
+        with a None/0 delta."""
+        calls: List[Any] = []
+        monkeypatch.setattr(
+            contract_service, "apply_faction_rep_delta",
+            lambda *a, **kw: calls.append((a, kw)),
+        )
+        db, c, player = self._accepted_setup(reputation_penalty=None)
+        result = contract_service.complete(db, c.id, player.id, now=_NOW)
+        assert calls == []
+        assert result["status"] == "completed"
 
 
 @pytest.mark.unit
@@ -857,6 +1026,27 @@ class TestSweepExpiredContracts:
         assert posted_future.status == ContractStatus.POSTED
         assert posted_exact.status == ContractStatus.POSTED
         assert accepted_past.status == ContractStatus.ACCEPTED  # untouched -- not posted
+
+    def test_sweeps_express_and_hazardous_types_identically_to_cargo(self) -> None:
+        """WO-CONTRACT-3-NPCGEN-TYPES: this sweep filters purely on
+        status/deadline (never reads `contract_type`) -- pin that the two
+        new types this WO generates expire exactly like cargo_delivery,
+        with zero sweep-side code changes needed."""
+        express_past = _contract(
+            status=ContractStatus.POSTED, deadline=_NOW - timedelta(minutes=1),
+            contract_type=ContractType.EXPRESS_DELIVERY,
+        )
+        hazardous_past = _contract(
+            status=ContractStatus.POSTED, deadline=_NOW - timedelta(minutes=1),
+            contract_type=ContractType.HAZARDOUS_TRANSPORT, reputation_penalty=-30,
+        )
+        db = _FakeSession(contracts=[express_past, hazardous_past])
+
+        result = contract_service.sweep_expired_contracts(db, now=_NOW)
+
+        assert result == {"expired": 2}
+        assert express_past.status == ContractStatus.EXPIRED
+        assert hazardous_past.status == ContractStatus.EXPIRED
 
 
 @pytest.mark.unit

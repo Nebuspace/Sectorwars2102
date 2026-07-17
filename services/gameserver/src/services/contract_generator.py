@@ -1,9 +1,16 @@
 """
 NPC contract generator -- WO-ECON-CONTRACT-1-KERNEL lane 3, contracts.md's
 own build order step 2 ("NPC `cargo_delivery` generator (simplest type) --
-proves the lifecycle end-to-end", :426). Generates `cargo_delivery`
-contracts ONLY; the other six `contract_type` values in the schema are a
-later build step (:429) and this generator never produces them.
+proves the lifecycle end-to-end", :426). WO-CONTRACT-3-NPCGEN-TYPES adds two
+more of the six previously-ungenerated `contract_type` values: `express_
+delivery` (tight-deadline reclassification of an otherwise-ordinary pair --
+see `compute_contract_generation_batch`'s own comment) and `hazardous_
+transport` (issued at BLACK_MARKET-type destination stations only). The
+remaining four (`bulk_procurement`, `refugee_transport`, `acquisition_
+bounty`, `escort`) still have no generator -- `bulk_procurement` needs
+partial-delivery/banking machinery this WO only proposed (not built);
+`refugee_transport` needs a `passenger_rating` ship field that doesn't
+exist; `acquisition_bounty`/`escort` are untouched, later build steps.
 
 SYNC Session -- `generate_npc_contracts(db, ...)` is the pure, testable
 core; the npc_scheduler_service.py wrapper owns its own SessionLocal +
@@ -23,7 +30,7 @@ from sqlalchemy.orm import Session
 from src.models.contract import Contract, ContractIssuerType, ContractStatus, ContractType
 from src.models.faction import Faction
 from src.models.sector import Sector, sector_warps
-from src.models.station import Station
+from src.models.station import Station, StationType
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
 from src.services.trading_service import TradingService
 
@@ -66,8 +73,65 @@ DISTANCE_FACTOR_PER_HOP = Decimal("0.05")
 URGENCY_STANDARD_HOURS = Decimal("4.0")
 URGENCY_PER_HOUR = Decimal("0.04")
 URGENCY_FACTOR_CEILING = Decimal("2.0")
-CARGO_DELIVERY_TYPE_MULTIPLIER = Decimal("1.0")
+CARGO_DELIVERY_TYPE_MULTIPLIER = Decimal("1.0")  # contracts.md:346 -- verbatim anchor
 PENALTY_MULTIPLIER = Decimal("1.0")  # contracts.md:40 -- default 1.0x payment for cargo
+
+# --- WO-CONTRACT-3-NPCGEN-TYPES: express_delivery / hazardous_transport ---
+#
+# Canon's own payment formula (contracts.md:312-317) already has a
+# `contract_type_multiplier` slot -- CARGO_DELIVERY_TYPE_MULTIPLIER above
+# IS that slot for `cargo_delivery` (pinned at the doc's own 1.0 anchor,
+# contracts.md:346). The two constants below fill the SAME slot for the
+# two new types this WO generates, each grounded in a canon-cited range
+# rather than invented from scratch:
+#
+# EXPRESS_DELIVERY_TYPE_MULTIPLIER -- contracts.md:319: "express deliveries
+# pay roughly 1.5-2.0x their non-express equivalents". Pinned at the
+# range's midpoint. [NO-CANON: exact point within the cited range,
+# proposed to DECISIONS.md.]
+EXPRESS_DELIVERY_TYPE_MULTIPLIER = Decimal("1.75")
+# EXPRESS_PENALTY_MULTIPLIER -- contracts.md:136: "Express contracts use a
+# stricter penalty on failure" (qualitative only, no number given).
+# [NO-CANON] 1.5x vs cargo_delivery's 1.0x -- proposed to DECISIONS.md.
+EXPRESS_PENALTY_MULTIPLIER = Decimal("1.5")
+# EXPRESS_DEADLINE_THRESHOLD_HOURS -- this kernel does NOT draw a second,
+# separate deadline for express jobs ("via existing deadline knobs" per
+# dispatch): every (origin, commodity, destination) match still draws ONE
+# deadline from the existing pick_deadline_hours() (1-8h) band, exactly as
+# before. A match is *reclassified* express iff that draw lands at or
+# below this threshold -- express literally means "this run happened to
+# get a tight deadline", not an independently-rolled type. This keeps
+# every EXISTING test's `monkeypatch.setattr(pick_deadline_hours, lambda:
+# 3.0)` fixture landing in the cargo_delivery branch byte-identically (3.0
+# > 2.0), so this WO adds zero flakiness to the pre-existing suite.
+# [NO-CANON] 2.0h threshold -- proposed to DECISIONS.md.
+EXPRESS_DEADLINE_THRESHOLD_HOURS = Decimal("2.0")
+
+# HAZARDOUS_TRANSPORT_TYPE_MULTIPLIER -- contracts.md:420: "[hazardous
+# transport contracts] pay 2-4x standard rates" (contracts.md:140 also:
+# "pays significantly more"). Pinned at the range's midpoint. [NO-CANON:
+# exact point within the cited range, proposed to DECISIONS.md.]
+HAZARDOUS_TRANSPORT_TYPE_MULTIPLIER = Decimal("3.0")
+# Hazardous transport's FAILURE penalty (the `penalty` column, charged on
+# abandon()/expiry -- distinct from the completion-time faction penalty
+# below) reuses the plain PENALTY_MULTIPLIER (1.0x): canon gives no
+# separate number for a stricter hazardous failure penalty the way it
+# explicitly does for express (contracts.md:136); not invented here.
+#
+# HAZARDOUS_TRANSPORT_FEDERATION_REP_PENALTY -- contracts.md:420: "...and
+# apply a faction penalty on completion (the law-side faction loses
+# standing)". Stored on `Contract.reputation_penalty` at GENERATION time
+# (exactly the column canon's own Reputation Effects section describes --
+# contracts.md:369/371: "reputation_reward and reputation_penalty are
+# written on the contract row at posting time" -- this is the first real
+# writer of that column; contract_service.complete() below is the first
+# real READER, gated to hazardous_transport only). [NO-CANON] magnitude:
+# no canon number exists for the rep-delta itself; -30 is pinned smaller
+# than illegal_commodities.py's own STOLEN_GOODS federation_rep_delta
+# (-50) -- a criminal-issued CARGO CONTRACT is one step more indirect than
+# directly fencing contraband on the black-market floor. Proposed to
+# DECISIONS.md.
+HAZARDOUS_TRANSPORT_FEDERATION_REP_PENALTY = -30
 
 
 def _now() -> datetime:
@@ -79,23 +143,63 @@ def pick_deadline_hours() -> float:
     return random.uniform(MIN_DEADLINE_HOURS, MAX_DEADLINE_HOURS)  # noqa: S311 -- gameplay timing, not crypto
 
 
-def compute_cargo_delivery_payment(
+def _compute_typed_contract_payment(
     unit_price: Decimal, quantity: int, hops: int, deadline_hours: Decimal,
+    type_multiplier: Decimal, penalty_multiplier: Decimal,
 ) -> Tuple[Decimal, Decimal]:
-    """Pure -- no DB, no side effects. `payment` is monotone-increasing in
-    `quantity` by construction (quantity is a positive linear factor of
-    `commodity_value`, and every other factor is a positive multiplier).
-    Returns (payment, penalty), both quantized to cents."""
+    """Pure -- no DB, no side effects. Shared core of contracts.md:312-317's
+    formula (`payment = base_rate x commodity_value x distance_factor x
+    urgency_factor x contract_type_multiplier`) for every `contract_type`
+    this generator produces -- `compute_cargo_delivery_payment` /
+    `compute_express_delivery_payment` / `compute_hazardous_transport_
+    payment` are thin, type-specific wrappers over this ONE formula, never
+    three copies of it. `payment` is monotone-increasing in `quantity` by
+    construction. Returns (payment, penalty), both quantized to cents."""
     commodity_value = unit_price * Decimal(quantity)
     distance_factor = Decimal("1.0") + DISTANCE_FACTOR_PER_HOP * Decimal(hops)
     tightness = URGENCY_STANDARD_HOURS - deadline_hours
     urgency_factor = Decimal("1.0") + max(Decimal("0"), tightness) * URGENCY_PER_HOUR
     urgency_factor = min(urgency_factor, URGENCY_FACTOR_CEILING)
     payment = (
-        BASE_RATE * commodity_value * distance_factor * urgency_factor * CARGO_DELIVERY_TYPE_MULTIPLIER
+        BASE_RATE * commodity_value * distance_factor * urgency_factor * type_multiplier
     ).quantize(Decimal("0.01"))
-    penalty = (payment * PENALTY_MULTIPLIER).quantize(Decimal("0.01"))
+    penalty = (payment * penalty_multiplier).quantize(Decimal("0.01"))
     return payment, penalty
+
+
+def compute_cargo_delivery_payment(
+    unit_price: Decimal, quantity: int, hops: int, deadline_hours: Decimal,
+) -> Tuple[Decimal, Decimal]:
+    """`cargo_delivery`'s own type_multiplier/penalty_multiplier pins,
+    unchanged from before this WO -- see `_compute_typed_contract_payment`
+    for the shared formula every contract type now runs through."""
+    return _compute_typed_contract_payment(
+        unit_price, quantity, hops, deadline_hours,
+        CARGO_DELIVERY_TYPE_MULTIPLIER, PENALTY_MULTIPLIER,
+    )
+
+
+def compute_express_delivery_payment(
+    unit_price: Decimal, quantity: int, hops: int, deadline_hours: Decimal,
+) -> Tuple[Decimal, Decimal]:
+    """`express_delivery`'s type_multiplier/penalty_multiplier pins -- see
+    the EXPRESS_* constants' own comments for the canon citations."""
+    return _compute_typed_contract_payment(
+        unit_price, quantity, hops, deadline_hours,
+        EXPRESS_DELIVERY_TYPE_MULTIPLIER, EXPRESS_PENALTY_MULTIPLIER,
+    )
+
+
+def compute_hazardous_transport_payment(
+    unit_price: Decimal, quantity: int, hops: int, deadline_hours: Decimal,
+) -> Tuple[Decimal, Decimal]:
+    """`hazardous_transport`'s type_multiplier pin (2-4x canon range,
+    contracts.md:420) -- penalty_multiplier stays the plain cargo default,
+    see HAZARDOUS_TRANSPORT_TYPE_MULTIPLIER's own comment."""
+    return _compute_typed_contract_payment(
+        unit_price, quantity, hops, deadline_hours,
+        HAZARDOUS_TRANSPORT_TYPE_MULTIPLIER, PENALTY_MULTIPLIER,
+    )
 
 
 # --- sector-graph helpers (private to this service -- mirrors escape_pod_
@@ -278,6 +382,14 @@ class _StationSnapshot:
     sector_uuid: Optional[uuid.UUID]
     faction_affiliation: Optional[str]
     station_class: Any
+    # WO-CONTRACT-3-NPCGEN-TYPES: StationType, needed only to detect a
+    # BLACK_MARKET-type destination (hazardous_transport's issuing venue,
+    # contracts.md:140 -- "issued by criminal NPCs at black-market
+    # terminals"). Absent on every pre-existing test fixture (SimpleNamespace
+    # with no `type` attr) -> getattr defaults to None, which safely never
+    # equals StationType.BLACK_MARKET -- zero behavior change for any
+    # existing station fixture that doesn't opt in.
+    type: Any = None
 
 
 @dataclass
@@ -305,6 +417,13 @@ class _ContractSpec:
     penalty: Decimal
     faction_id: Optional[uuid.UUID]
     deadline_hours: Decimal
+    # WO-CONTRACT-3-NPCGEN-TYPES: defaults preserve every existing call
+    # site/test that constructs a _ContractSpec positionally-then-cargo-
+    # delivery (none do today -- all use kwargs -- but keeping these
+    # optional-with-default costs nothing and avoids a forced signature
+    # bump at every call site for a field only two of three types use).
+    contract_type: ContractType = ContractType.CARGO_DELIVERY
+    reputation_penalty: Optional[int] = None
 
 
 @dataclass
@@ -313,6 +432,13 @@ class GenerationBatch:
     contracts: List[_ContractSpec]
     stations_scanned: int
     blocked_by: Dict[str, int]
+    # WO-CONTRACT-3-NPCGEN-TYPES: same WO-SWEEP-SILENT-SWEEPS motivation as
+    # `blocked_by` -- now that a tick can post three different types, a
+    # flat `generated` count alone can't distinguish "posted 5 ordinary
+    # cargo runs" from "posted 5 hazardous_transport contracts" in the log.
+    generated_by_type: Dict[str, int] = field(
+        default_factory=lambda: {"cargo_delivery": 0, "express_delivery": 0, "hazardous_transport": 0},
+    )
 
 
 def gather_contract_generation_inputs(
@@ -338,6 +464,7 @@ def gather_contract_generation_inputs(
             sector_uuid=getattr(s, "sector_uuid", None),
             faction_affiliation=getattr(s, "faction_affiliation", None),
             station_class=getattr(s, "station_class", None),
+            type=getattr(s, "type", None),
         )
         for s in raw_stations
     ]
@@ -379,6 +506,34 @@ def gather_contract_generation_inputs(
     )
 
 
+def _classify_and_price_contract(
+    destination: _StationSnapshot, origin_price: float, quantity: int, hops: int, deadline_hours: Decimal,
+) -> Tuple[ContractType, Decimal, Decimal, Optional[int]]:
+    """WO-CONTRACT-3-NPCGEN-TYPES: extracted out of the compute phase's main
+    scan loop so that function's own McCabe complexity stays manageable as
+    this WO adds a new type-classification branch (see gameserver-ruff-
+    c901-not-enforced in monk's own memory notes -- a cheap extraction is
+    worth doing even though this codebase tolerates far worse elsewhere).
+    Pure. Returns (contract_type, payment, penalty, reputation_penalty) --
+    see this WO's constants (EXPRESS_DEADLINE_THRESHOLD_HOURS / HAZARDOUS_
+    TRANSPORT_FEDERATION_REP_PENALTY) for the classification rules'
+    canon citations and NO-CANON pins."""
+    if destination.type == StationType.BLACK_MARKET:
+        payment, penalty = compute_hazardous_transport_payment(
+            Decimal(str(origin_price)), quantity, hops, deadline_hours,
+        )
+        return ContractType.HAZARDOUS_TRANSPORT, payment, penalty, HAZARDOUS_TRANSPORT_FEDERATION_REP_PENALTY
+    if deadline_hours <= EXPRESS_DEADLINE_THRESHOLD_HOURS:
+        payment, penalty = compute_express_delivery_payment(
+            Decimal(str(origin_price)), quantity, hops, deadline_hours,
+        )
+        return ContractType.EXPRESS_DELIVERY, payment, penalty, None
+    payment, penalty = compute_cargo_delivery_payment(
+        Decimal(str(origin_price)), quantity, hops, deadline_hours,
+    )
+    return ContractType.CARGO_DELIVERY, payment, penalty, None
+
+
 def compute_contract_generation_batch(inputs: GenerationInputs) -> GenerationBatch:
     """Phase 2 (WO-SCHED-LOOP-WEDGE) -- pure Python, no db/Session
     parameter at all: "no open transaction spans this" is a property of
@@ -405,6 +560,7 @@ def compute_contract_generation_batch(inputs: GenerationInputs) -> GenerationBat
     hop_cache: Dict[uuid.UUID, Dict[uuid.UUID, int]] = {}
     contracts: List[_ContractSpec] = []
     blocked_by: Dict[str, int] = {"no_buyer": 0, "unreachable": 0, "price": 0, "pool": 0}
+    generated_by_type: Dict[str, int] = {"cargo_delivery": 0, "express_delivery": 0, "hazardous_transport": 0}
 
     for origin in stations:
         for commodity_name, spec in origin.commodities.items():
@@ -466,9 +622,20 @@ def compute_contract_generation_batch(inputs: GenerationInputs) -> GenerationBat
 
             quantity = min(MAX_CONTRACT_QUANTITY, available)
             deadline_hours = Decimal(str(pick_deadline_hours()))
-            payment, penalty = compute_cargo_delivery_payment(
-                Decimal(str(origin_price)), quantity, hops, deadline_hours,
+
+            # WO-CONTRACT-3-NPCGEN-TYPES: a BLACK_MARKET-type destination
+            # always yields hazardous_transport (contracts.md:140 -- "issued
+            # by criminal NPCs at black-market terminals" is a property of
+            # WHO is issuing, not a random roll); otherwise a pair whose
+            # drawn deadline lands tight enough is RECLASSIFIED express_
+            # delivery (no second, independent roll -- see EXPRESS_DEADLINE_
+            # THRESHOLD_HOURS' own comment); otherwise plain cargo_delivery,
+            # byte-identical to this generator's pre-WO behavior. See
+            # _classify_and_price_contract's own docstring.
+            contract_type, payment, penalty, reputation_penalty = _classify_and_price_contract(
+                destination, origin_price, quantity, hops, deadline_hours,
             )
+
             faction_id = inputs.faction_cache.get(destination.faction_affiliation) \
                 if destination.faction_affiliation else None
 
@@ -482,10 +649,16 @@ def compute_contract_generation_batch(inputs: GenerationInputs) -> GenerationBat
                 penalty=penalty,
                 faction_id=faction_id,
                 deadline_hours=deadline_hours,
+                contract_type=contract_type,
+                reputation_penalty=reputation_penalty,
             ))
             pool_counts[destination.id] = pool_counts.get(destination.id, 0) + 1
+            generated_by_type[contract_type.value] += 1
 
-    return GenerationBatch(contracts=contracts, stations_scanned=len(stations), blocked_by=blocked_by)
+    return GenerationBatch(
+        contracts=contracts, stations_scanned=len(stations), blocked_by=blocked_by,
+        generated_by_type=generated_by_type,
+    )
 
 
 def write_contract_generation_batch(
@@ -501,7 +674,7 @@ def write_contract_generation_batch(
             id=uuid.uuid4(),
             issuer_type=ContractIssuerType.NPC,
             issuer_id=spec.issuer_id,
-            contract_type=ContractType.CARGO_DELIVERY,
+            contract_type=spec.contract_type,
             status=ContractStatus.POSTED,
             origin_station_id=spec.origin_station_id,
             destination_station_id=spec.destination_station_id,
@@ -512,15 +685,21 @@ def write_contract_generation_batch(
             acceptance_fee_pct=Decimal("2.0"),
             escrow_amount=Decimal("0"),
             faction_id=spec.faction_id,
+            # WO-CONTRACT-3-NPCGEN-TYPES: only hazardous_transport specs
+            # carry a non-None reputation_penalty (see the classification
+            # block in compute_contract_generation_batch) -- every other
+            # type stays None, byte-identical to this column's pre-WO
+            # always-unset state.
+            reputation_penalty=spec.reputation_penalty,
             deadline=now + timedelta(hours=float(spec.deadline_hours)),
             posted_at=now,
             posting_stations=[spec.destination_station_id],
         ))
     db.flush()
     logger.info(
-        "NPC contract generator: posted %d new cargo_delivery contract(s) "
+        "NPC contract generator: posted %d new contract(s) by_type=%s "
         "(scanned %d station(s), blocked_by=%s)",
-        len(batch.contracts), batch.stations_scanned, batch.blocked_by,
+        len(batch.contracts), batch.generated_by_type, batch.stations_scanned, batch.blocked_by,
     )
     return len(batch.contracts)
 
@@ -569,5 +748,5 @@ def generate_npc_contracts(
     generated = write_contract_generation_batch(db, batch, now=now)
     return {
         "generated": generated, "stations_scanned": batch.stations_scanned,
-        "blocked_by": batch.blocked_by,
+        "blocked_by": batch.blocked_by, "generated_by_type": batch.generated_by_type,
     }
