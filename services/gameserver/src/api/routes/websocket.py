@@ -10,7 +10,12 @@ import logging
 
 from pydantic import BaseModel, Field as PydanticField
 from src.core.database import get_db
-from src.auth.dependencies import get_current_user_from_token, get_current_admin_user
+from src.auth.admin_scopes import AUDIT_VIEW
+from src.auth.dependencies import (
+    get_current_user_from_token,
+    require_scope,
+    user_has_active_scope,
+)
 from src.models.user import User
 from src.models.player import Player
 from src.services.websocket_service import connection_manager, handle_websocket_message, handle_admin_websocket_message
@@ -198,7 +203,7 @@ async def admin_websocket_endpoint(
     try:
         # Authenticate admin user from token
         user = await get_current_user_from_token(token, db)
-        if not user or not user.is_admin:
+        if not user or not user_has_active_scope(db, user.id, AUDIT_VIEW):
             await websocket.close(code=4001, reason="Admin authentication required")
             return
         
@@ -257,7 +262,7 @@ async def admin_websocket_endpoint(
 
 @router.get("/stats")
 async def get_websocket_stats(
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(require_scope(AUDIT_VIEW)),
 ) -> dict:
     """Get WebSocket connection statistics (admin only)"""
     return connection_manager.get_connection_stats()
@@ -268,7 +273,7 @@ async def broadcast_message(
     request: BroadcastRequest,
     target_type: str = "global",  # global, sector, team
     target_id: Optional[str] = None,
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(require_scope(AUDIT_VIEW)),
 ) -> dict:
     """Broadcast a message to connected users (admin only)"""
 
@@ -302,7 +307,7 @@ async def broadcast_message(
 @router.get("/sector/{sector_id}/players")
 async def get_sector_players(
     sector_id: int,
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(require_scope(AUDIT_VIEW)),
 ) -> dict:
     """Get list of players currently in a specific sector"""
     players = connection_manager.get_sector_players(sector_id)
@@ -316,7 +321,7 @@ async def get_sector_players(
 @router.get("/team/{team_id}/players")
 async def get_team_players(
     team_id: str,
-    current_user: User = Depends(get_current_admin_user),
+    current_user: User = Depends(require_scope(AUDIT_VIEW)),
     db: Session = Depends(get_db)
 ) -> dict:
     """Get list of online players in a specific team"""

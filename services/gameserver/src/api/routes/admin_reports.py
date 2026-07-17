@@ -20,7 +20,8 @@ from pydantic import BaseModel
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
-from src.auth.dependencies import require_admin
+from src.auth.admin_scopes import AUDIT_VIEW
+from src.auth.dependencies import require_scope
 from src.core.database import get_db
 from src.models.combat_log import CombatLog
 from src.models.market_transaction import MarketTransaction
@@ -248,7 +249,7 @@ def _compute_metric(metric_id: str, db: Session) -> Any:
 
 @router.get("/reports/metrics")
 def get_report_metrics(
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(AUDIT_VIEW)),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """Return the available metric catalog for the report builder."""
@@ -261,7 +262,7 @@ def get_report_metrics(
 
 @router.get("/reports/templates")
 def get_report_templates(
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(AUDIT_VIEW)),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """Return built-in report templates."""
@@ -275,7 +276,7 @@ def get_report_templates(
 @router.post("/reports/generate")
 def generate_report(
     template: ReportTemplate,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(AUDIT_VIEW)),
     db: Session = Depends(get_db),
 ) -> ReportResult:
     """
@@ -308,7 +309,7 @@ def generate_report(
 def export_data(
     dataset: str = Query(..., description="Dataset to export: players, economy, combat, teams, ships, performance"),
     format: str = Query("json", description="Output format: json or csv"),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(AUDIT_VIEW)),
     db: Session = Depends(get_db),
 ) -> Response:
     """
@@ -483,7 +484,7 @@ _TIME_RANGE_HOURS = {"1h": 1, "6h": 6, "24h": 24, "7d": 168}
 @router.get("/performance/metrics")
 def get_performance_metrics(
     timeRange: str = Query("24h", description="Time window: 1h, 6h, 24h, or 7d"),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(AUDIT_VIEW)),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """

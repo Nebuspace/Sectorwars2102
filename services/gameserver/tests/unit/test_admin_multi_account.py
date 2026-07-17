@@ -41,6 +41,16 @@ def _player():
     return SimpleNamespace(id=uuid.uuid4(), username="trader", is_admin=False)
 
 
+def _db_passing_scope(*, cluster_lookup=None):
+    """Mock DB: first ``first()`` = active scope grant; second = cluster row."""
+    mock_db = MagicMock()
+    mock_db.query.return_value.filter.return_value.first.side_effect = [
+        uuid.uuid4(),  # require_scope grant lookup
+        cluster_lookup,
+    ]
+    return mock_db
+
+
 @pytest.fixture
 def mac_client():
     return TestClient(app, base_url="http://localhost")
@@ -117,8 +127,7 @@ class TestGetClusterAuthz:
 
     def test_unknown_cluster_returns_404(self, mac_client):
         app.dependency_overrides[get_current_user] = _admin
-        mock_db = MagicMock()
-        mock_db.query.return_value.filter.return_value.first.return_value = None
+        mock_db = _db_passing_scope(cluster_lookup=None)
         app.dependency_overrides[get_db] = lambda: mock_db
         resp = mac_client.get(f"{API}/clusters/{uuid.uuid4()}")
         assert resp.status_code == 404
@@ -178,8 +187,7 @@ class TestDecideClusterAuthz:
 
     def test_unknown_cluster_returns_404_without_commit(self, mac_client):
         app.dependency_overrides[get_current_user] = _admin
-        mock_db = MagicMock()
-        mock_db.query.return_value.filter.return_value.first.return_value = None
+        mock_db = _db_passing_scope(cluster_lookup=None)
         app.dependency_overrides[get_db] = lambda: mock_db
         resp = mac_client.post(
             f"{API}/clusters/{uuid.uuid4()}/decide",

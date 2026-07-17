@@ -5,11 +5,11 @@ synchronous and automated; anything it can't resolve escalates here
 (status == DISPUTED, escalated_to_admin == True) for a human ruling.
 
 `contract_service.resolve_dispute` is authz-FREE by design (it only logs
-admin_id) -- this route owns ALL authz via `require_admin`
-(`get_current_admin_user`). `admin` is resolved via `Depends(require_admin)`
-BEFORE `db`/the service call on every mutating endpoint, so an unauthenticated
-or non-admin caller is rejected before `resolve_dispute` (and therefore any
-credit mutation) is ever reached -- see
+admin_id) -- this route owns ALL authz via ``require_scope`` (``PLAYERS_VIEW``
+for read/list; ``PLAYERS_SUSPEND`` for the Tier-2 ruling).  Scope deps are
+resolved BEFORE ``db``/the service call on every mutating endpoint, so an
+unauthenticated or scopeless caller is rejected before ``resolve_dispute`` (and
+therefore any credit mutation) is ever reached -- see
 tests/unit/test_admin_contract_disputes.py for the route-level proof.
 
 [Honest gap] canon's own Tier-2 section also names reputation/cooldowns and
@@ -27,7 +27,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from src.auth.dependencies import require_admin
+from src.auth.admin_scopes import PLAYERS_SUSPEND, PLAYERS_VIEW
+from src.auth.dependencies import require_scope
 from src.core.database import get_db
 from src.models.contract import Contract, ContractDisputeResolution, ContractStatus
 from src.models.user import User
@@ -87,7 +88,7 @@ class ResolveDisputeRequest(BaseModel):
 
 @router.get("/disputes")
 async def list_disputed_contracts(
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db),
 ) -> List[Dict[str, Any]]:
     """The Tier-2 queue: contracts Tier-1 escalated (contracts.md:404)."""
@@ -106,7 +107,7 @@ async def list_disputed_contracts(
 @router.get("/{contract_id}")
 async def get_disputed_contract(
     contract_id: str,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """Single-contract evidence detail for the arbitration panel."""
@@ -121,11 +122,11 @@ async def get_disputed_contract(
 async def resolve_contract_dispute(
     contract_id: str,
     body: ResolveDisputeRequest,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(PLAYERS_SUSPEND)),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    """The Tier-2 ruling. `admin` resolves first -- an unauthenticated or
-    non-admin caller never reaches `resolve_dispute` below."""
+    """The Tier-2 ruling. ``admin`` resolves first -- an unauthenticated or
+    scopeless caller never reaches ``resolve_dispute`` below."""
     contract_uuid = _parse_uuid(contract_id, "contract_id")
     try:
         outcome = ContractDisputeResolution(body.outcome)
