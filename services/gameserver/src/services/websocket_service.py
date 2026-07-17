@@ -45,11 +45,24 @@ class ConnectionManager:
         # Store admin connections separately
         self.admin_connections: Dict[str, WebSocket] = {}
         self.admin_metadata: Dict[str, Dict[str, Any]] = {}
+        # WO-P1-REALTIME-BUS-FANOUT: lazily-started, once-per-process
+        # cross-worker bus subscriber task. None until the first connect()
+        # call claims it (see _ensure_bus_subscriber_started).
+        self._bus_subscriber_task: Optional[asyncio.Task] = None
 
     async def connect(self, websocket: WebSocket, user_id: str, user_data: Dict[str, Any]):
         """Accept a new WebSocket connection"""
         await websocket.accept()
-        
+
+        # WO-P1-REALTIME-BUS-FANOUT: this is the one choke point every
+        # connection route funnels through -- the plain player route
+        # (api/routes/websocket.py) calls connect() directly, and
+        # EnhancedWebSocketService.connect() (enhanced_websocket_service.py)
+        # calls straight through to it too -- so anchoring the lazy
+        # subscriber-start here (rather than duplicating it in each route)
+        # covers every connection path with one call.
+        await self._ensure_bus_subscriber_started()
+
         # If user already connected, evict the old connection. Close with
         # 4001/reason="superseded" (canon reuses 4001 for both auth failure
         # and eviction — realtime-bus.md:70 — the reason string is the
@@ -188,7 +201,25 @@ class ConnectionManager:
         return True
 
     async def send_personal_message(self, user_id: str, message: Dict[str, Any]):
-        """Send a message to a specific user"""
+        """Send a message to a specific user -- this worker's local socket
+        first; if not found here, fan out via the cross-worker bus
+        (WO-P1-REALTIME-BUS-FANOUT)."""
+        delivered = await self._deliver_personal_local(user_id, message)
+        if not delivered:
+            # realtime-bus.md invariant 1 (single socket per user_id): a
+            # user not found in THIS worker's active_connections is either
+            # fully offline or connected to a DIFFERENT worker -- fan out
+            # via the bus so whichever worker actually holds their socket
+            # can deliver it. Best-effort: see _publish_to_bus.
+            await self._publish_to_bus("personal", user_id, message)
+        return delivered
+
+    async def _deliver_personal_local(self, user_id: str, message: Dict[str, Any]) -> bool:
+        """The original send_personal_message body -- local sockets on
+        THIS worker only. Reused by the bus dispatcher (_handle_bus_
+        envelope) so a remote-origin personal event is delivered locally
+        without being re-published (which would ping-pong the same event
+        across every worker forever)."""
         if user_id in self.active_connections:
             try:
                 await self.active_connections[user_id].send_text(json.dumps(message))
@@ -197,30 +228,169 @@ class ConnectionManager:
                 logger.error(f"Error sending message to user {user_id}: {e}")
                 await self.disconnect(user_id)
         return False
-    
+
     async def broadcast_to_sector(self, sector_id: int, message: Dict[str, Any], exclude_user: Optional[str] = None):
-        """Broadcast a message to all users in a specific sector"""
+        """Broadcast a message to all users in a specific sector -- this
+        worker's local sector members AND, unconditionally, the cross-
+        worker bus (WO-P1-REALTIME-BUS-FANOUT). Unlike send_personal_
+        message this is NOT conditional on a local miss: a sector's
+        occupants can be split across however many workers they happen to
+        be connected to, so this worker having zero (or some) local
+        members says nothing about whether OTHER workers have members
+        too -- every broadcast must always reach the bus."""
+        await self._deliver_sector_local(sector_id, message, exclude_user)
+        await self._publish_to_bus("sector", sector_id, message, exclude_user=exclude_user)
+
+    async def _deliver_sector_local(self, sector_id: int, message: Dict[str, Any], exclude_user: Optional[str] = None):
+        """The original broadcast_to_sector body -- local sockets on THIS
+        worker only. Reused by the bus dispatcher for a remote-origin
+        sector event (never re-published, same ping-pong concern as
+        _deliver_personal_local)."""
         if sector_id not in self.sector_connections:
             return
-        
+
         # Add sector context to message
         message["sector_id"] = sector_id
-        
+
         disconnect_users = []
         for user_id in self.sector_connections[sector_id]:
             if exclude_user and user_id == exclude_user:
                 continue
-            
+
             try:
                 await self.active_connections[user_id].send_text(json.dumps(message))
             except Exception as e:
                 logger.error(f"Error broadcasting to user {user_id} in sector {sector_id}: {e}")
                 disconnect_users.append(user_id)
-        
+
         # Clean up failed connections
         for user_id in disconnect_users:
             await self.disconnect(user_id)
-    
+
+    # --- Cross-process bus fan-out (WO-P1-REALTIME-BUS-FANOUT) -------------
+
+    async def _publish_to_bus(
+        self,
+        kind: str,
+        target: Any,
+        message: Dict[str, Any],
+        exclude_user: Optional[str] = None,
+    ) -> None:
+        """Best-effort cross-worker fan-out via redis_pubsub_service.
+        Mirrors realtime-bus.md invariant 4 (every send is non-blocking
+        with respect to the originating service) -- a Redis outage or
+        import failure degrades cross-worker delivery silently, never
+        raises into the caller, which has ALREADY completed local
+        delivery by the time this runs."""
+        try:
+            from src.services.redis_pubsub_service import get_pubsub_service
+
+            pubsub_service = await get_pubsub_service()
+            await pubsub_service.publish_bus_event(kind, target, message, exclude_user=exclude_user)
+        except Exception:
+            logger.debug("Bus publish failed (cross-worker fanout degraded)", exc_info=True)
+
+    async def _handle_bus_envelope(self, envelope: Dict[str, Any]) -> None:
+        """Dispatch a cross-worker bus envelope to THIS worker's local
+        sockets only -- never re-publishes (that would ping-pong the same
+        event across every worker forever). Skips envelopes this SAME
+        worker published (it already delivered locally, synchronously,
+        before calling publish_bus_event) -- the duplicate-delivery guard
+        requested for WO-P1-REALTIME-BUS-FANOUT. A malformed or unknown-
+        shape envelope is logged and dropped, never raised (this runs
+        inside redis_pubsub_service.subscribe_bus's per-message try/except,
+        but stays defensive on its own terms too)."""
+        try:
+            from src.services.redis_pubsub_service import get_pubsub_service
+
+            pubsub_service = await get_pubsub_service()
+        except Exception:
+            return
+        if envelope.get("origin_worker_id") == pubsub_service.worker_id:
+            return
+
+        kind = envelope.get("kind")
+        message = envelope.get("message")
+        if not isinstance(message, dict):
+            logger.warning("Bus envelope missing/invalid message payload: %r", envelope)
+            return
+
+        # INFO, not debug, on the two success paths below: a genuine
+        # cross-worker delivery is rare in normal operation (stage runs
+        # single-worker today -- this is canon-conformance / multi-worker
+        # readiness, not a live bug) and dev's default log level is INFO
+        # (main.py only enables DEBUG when settings.DEBUG is set), so this
+        # is the observable signal the live 2-worker deploy-window proof
+        # greps for.
+        if kind == "personal":
+            target = envelope.get("target")
+            await self._deliver_personal_local(target, message)
+            logger.info(
+                "Bus envelope from worker %s delivered locally (kind=personal, target=%s)",
+                envelope.get("origin_worker_id"), target,
+            )
+        elif kind == "sector":
+            try:
+                sector_id = int(envelope.get("target"))
+            except (TypeError, ValueError):
+                logger.warning("Bus sector envelope has a non-int target: %r", envelope)
+                return
+            await self._deliver_sector_local(sector_id, message, envelope.get("exclude_user"))
+            logger.info(
+                "Bus envelope from worker %s delivered locally (kind=sector, target=%s)",
+                envelope.get("origin_worker_id"), sector_id,
+            )
+        else:
+            logger.warning("Bus envelope has an unknown kind: %r", kind)
+
+    async def _ensure_bus_subscriber_started(self) -> None:
+        """Claim the once-per-process bus subscriber task. Claimed
+        synchronously (no `await` between the None-check and the
+        assignment) so concurrent connect() calls racing during worker
+        startup can't each spawn their own duplicate listener -- two
+        listeners on the same channel would double-dispatch every bus
+        envelope to this worker's local sockets."""
+        if self._bus_subscriber_task is not None:
+            return
+        self._bus_subscriber_task = asyncio.ensure_future(self._start_bus_subscriber())
+
+    async def _start_bus_subscriber(self) -> None:
+        """Confirm Redis is actually reachable before committing to the
+        forever-listening loop. Mirrors main.py's own init_redis()
+        precedent: best-effort, non-fatal -- a worker that boots with no
+        Redis reachable simply never activates cross-worker fanout (local
+        delivery keeps working per realtime-bus.md's own documented
+        degrade path). This is also what keeps connect() safe to call from
+        every existing WS test without leaking a perpetual background task
+        into their event loops -- this repo's Mac/CI unit-test env has no
+        Redis at all, so this returns in ~100ms and starts nothing."""
+        try:
+            from src.services.redis_pubsub_service import get_pubsub_service
+
+            pubsub_service = await get_pubsub_service()
+            if pubsub_service.redis_client is None:
+                raise RuntimeError("redis_pubsub_service has no live client")
+            await pubsub_service.redis_client.ping()
+        except Exception:
+            logger.debug("Bus subscriber not started (Redis unavailable)", exc_info=True)
+            return
+        await self._run_bus_subscriber_loop(pubsub_service)
+
+    async def _run_bus_subscriber_loop(self, pubsub_service: Any) -> None:
+        """Once Redis is confirmed reachable, listen forever -- retrying
+        with a short backoff if the connection drops mid-session (the
+        canon 'Redis outage ... cross-worker delivery degrades' failure
+        mode; self-heals once Redis returns, no external trigger needed).
+        subscribe_bus itself already survives per-message errors
+        (malformed JSON, callback exceptions); this only needs to catch
+        the whole listen() generator ending (e.g. a dropped connection)."""
+        while True:
+            try:
+                await pubsub_service.subscribe_bus(self._handle_bus_envelope)
+            except Exception:
+                logger.exception("Bus subscriber loop crashed; retrying in 5s")
+            await asyncio.sleep(5)
+
     async def broadcast_to_team(self, team_id: str, message: Dict[str, Any], exclude_user: Optional[str] = None):
         """Broadcast a message to all users in a specific team"""
         if team_id not in self.team_connections:
