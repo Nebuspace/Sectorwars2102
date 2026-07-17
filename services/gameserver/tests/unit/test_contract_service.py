@@ -37,7 +37,7 @@ from src.models.contract import (
 )
 from src.models.ship import Ship, ShipType
 from src.models.station import StationStatus
-from src.services import contract_dispute, contract_escrow_core, contract_service
+from src.services import contract_bulk, contract_dispute, contract_escrow_core, contract_service
 from src.services.contract_service import (
     ContractConflictError,
     ContractError,
@@ -744,6 +744,290 @@ class TestAbandon:
 
 
 @pytest.mark.unit
+class TestDeliver:
+    """WO-CONTRACT-3b-BULK -- contract_bulk.py's `deliver()`, re-exported
+    as `contract_service.deliver`."""
+
+    def _accepted_setup(self, *, quantity: int, payment: Decimal, **contract_overrides: Any):
+        destination_id = uuid.uuid4()
+        c = _contract(
+            status=ContractStatus.ACCEPTED, destination_station_id=destination_id,
+            contract_type=ContractType.BULK_PROCUREMENT,
+            commodity_type="ore", quantity=quantity, payment=payment,
+            partial_fulfilled_amount=0, partial_fulfilled_payout=Decimal("0"),
+        )
+        for k, v in contract_overrides.items():
+            setattr(c, k, v)
+        ship = _real_ship(cargo={"capacity": 5000, "used": 500, "contents": {"ore": 500}})
+        player = _player(credits=1000, is_docked=True, current_port_id=destination_id, current_ship=ship)
+        c.acceptor_player_id = player.id
+        db = _FakeSession(contracts=[c], players=[player])
+        return db, c, player
+
+    def test_single_delivery_covering_full_quantity_completes_directly(self) -> None:
+        """A one-shot delivery of the ENTIRE quantity never bridges
+        through IN_PROGRESS -- straight ACCEPTED -> COMPLETED."""
+        db, c, player = self._accepted_setup(quantity=100, payment=Decimal("1000.00"))
+        result = contract_service.deliver(db, c.id, player.id, 100, now=_NOW)
+
+        assert result["status"] == "completed"
+        assert result["payout_this_delivery"] == 1000
+        assert c.status == ContractStatus.COMPLETED
+        assert c.partial_fulfilled_amount == 100
+        assert c.partial_fulfilled_payout == Decimal("1000")
+        assert player.credits == 1000 + 1000
+        assert c.completed_at == _NOW
+
+    def test_partial_then_completing_delivery_sums_to_exact_payment(self) -> None:
+        db, c, player = self._accepted_setup(quantity=100, payment=Decimal("1000.00"))
+
+        first = contract_service.deliver(db, c.id, player.id, 40, now=_NOW)
+        assert first["status"] == "in_progress"
+        assert first["payout_this_delivery"] == 400
+        assert c.status == ContractStatus.IN_PROGRESS
+        assert c.partial_fulfilled_amount == 40
+        assert player.credits == 1000 + 400
+
+        second = contract_service.deliver(db, c.id, player.id, 60, now=_NOW)
+        assert second["status"] == "completed"
+        assert second["payout_this_delivery"] == 600
+        assert c.status == ContractStatus.COMPLETED
+        assert c.partial_fulfilled_amount == 100
+        assert c.partial_fulfilled_payout == Decimal("1000")
+        assert player.credits == 1000 + 400 + 600  # exactly payment, split across two calls
+
+    def test_rounding_drift_across_many_small_partials_still_sums_exactly(self) -> None:
+        """MONEY-PATH GATE TARGET: payment=1000, quantity=3 -- each unit's
+        naive 1/3 share rounds HALF_UP to 333 (333.33 -> 333). Three
+        deliveries of 1 unit each would sum to only 999 if every delivery
+        used the naive pro-rata share -- the completing delivery's exact-
+        remainder reconciliation (_compute_bulk_delivery_payout) must
+        instead land on the true 1000."""
+        db, c, player = self._accepted_setup(quantity=3, payment=Decimal("1000.00"))
+
+        r1 = contract_service.deliver(db, c.id, player.id, 1, now=_NOW)
+        assert r1["payout_this_delivery"] == 333
+        r2 = contract_service.deliver(db, c.id, player.id, 1, now=_NOW)
+        assert r2["payout_this_delivery"] == 333
+        r3 = contract_service.deliver(db, c.id, player.id, 1, now=_NOW)
+        assert r3["payout_this_delivery"] == 334  # exact remainder, NOT another naive 333
+        assert r3["status"] == "completed"
+
+        total_paid = r1["payout_this_delivery"] + r2["payout_this_delivery"] + r3["payout_this_delivery"]
+        assert total_paid == 1000  # exactly payment -- never over, never short
+        assert c.partial_fulfilled_payout == Decimal("1000")
+        assert player.credits == 1000 + 1000
+
+    def test_over_delivery_rejected_no_state_change(self) -> None:
+        db, c, player = self._accepted_setup(quantity=100, payment=Decimal("1000.00"))
+        with pytest.raises(ContractError, match="exceeds_remaining_quota"):
+            contract_service.deliver(db, c.id, player.id, 150, now=_NOW)
+        assert c.status == ContractStatus.ACCEPTED
+        assert c.partial_fulfilled_amount == 0
+        assert player.credits == 1000
+
+    def test_over_delivery_after_a_partial_also_rejected(self) -> None:
+        db, c, player = self._accepted_setup(quantity=100, payment=Decimal("1000.00"))
+        contract_service.deliver(db, c.id, player.id, 40, now=_NOW)
+        with pytest.raises(ContractError, match="exceeds_remaining_quota"):
+            contract_service.deliver(db, c.id, player.id, 61, now=_NOW)  # only 60 remain
+        assert c.status == ContractStatus.IN_PROGRESS
+        assert c.partial_fulfilled_amount == 40  # untouched by the rejected call
+
+    def test_invalid_quantity_rejected(self) -> None:
+        db, c, player = self._accepted_setup(quantity=100, payment=Decimal("1000.00"))
+        with pytest.raises(ContractError, match="invalid_quantity"):
+            contract_service.deliver(db, c.id, player.id, 0, now=_NOW)
+        with pytest.raises(ContractError, match="invalid_quantity"):
+            contract_service.deliver(db, c.id, player.id, -5, now=_NOW)
+
+    def test_wrong_station_rejected(self) -> None:
+        db, c, player = self._accepted_setup(quantity=100, payment=Decimal("1000.00"))
+        player.current_port_id = uuid.uuid4()
+        with pytest.raises(ContractConflictError, match="wrong_station"):
+            contract_service.deliver(db, c.id, player.id, 10, now=_NOW)
+
+    def test_insufficient_cargo_rejected(self) -> None:
+        db, c, player = self._accepted_setup(quantity=100, payment=Decimal("1000.00"))
+        player.current_ship.cargo["contents"]["ore"] = 5
+        with pytest.raises(ContractError, match="insufficient_cargo"):
+            contract_service.deliver(db, c.id, player.id, 10, now=_NOW)
+        assert c.status == ContractStatus.ACCEPTED  # no state change
+
+    def test_not_your_contract_rejected(self) -> None:
+        db, c, player = self._accepted_setup(quantity=100, payment=Decimal("1000.00"))
+        stranger = _player(is_docked=True, current_port_id=c.destination_station_id)
+        db.players.append(stranger)
+        with pytest.raises(ContractError, match="not accepted by you"):
+            contract_service.deliver(db, c.id, stranger.id, 10, now=_NOW)
+
+    def test_non_bulk_contract_type_rejected(self) -> None:
+        db, c, player = self._accepted_setup(
+            quantity=100, payment=Decimal("1000.00"), contract_type=ContractType.CARGO_DELIVERY,
+        )
+        with pytest.raises(ContractError, match="not_bulk_procurement"):
+            contract_service.deliver(db, c.id, player.id, 10, now=_NOW)
+
+    def test_posted_status_rejected(self) -> None:
+        db, c, player = self._accepted_setup(quantity=100, payment=Decimal("1000.00"), status=ContractStatus.POSTED)
+        with pytest.raises(ContractConflictError, match="stale_status"):
+            contract_service.deliver(db, c.id, player.id, 10, now=_NOW)
+
+    def test_completed_status_rejected(self) -> None:
+        db, c, player = self._accepted_setup(
+            quantity=100, payment=Decimal("1000.00"), status=ContractStatus.COMPLETED,
+        )
+        with pytest.raises(ContractConflictError, match="stale_status"):
+            contract_service.deliver(db, c.id, player.id, 10, now=_NOW)
+
+    def test_cargo_decremented_by_delivered_quantity(self) -> None:
+        db, c, player = self._accepted_setup(quantity=100, payment=Decimal("1000.00"))
+        contract_service.deliver(db, c.id, player.id, 40, now=_NOW)
+        assert player.current_ship.cargo["contents"]["ore"] == 460  # 500 - 40
+        assert player.current_ship.cargo["used"] == 460
+
+    def test_player_issued_completion_releases_escrow_state(self) -> None:
+        db, c, player = self._accepted_setup(
+            quantity=100, payment=Decimal("1000.00"), issuer_type=ContractIssuerType.PLAYER,
+            escrow_amount=Decimal("1000.00"), escrow_state=ContractEscrowState.HELD,
+        )
+        contract_service.deliver(db, c.id, player.id, 100, now=_NOW)
+        assert c.escrow_state == ContractEscrowState.RELEASED
+        assert c.escrow_amount == Decimal("1000.00")  # untouched -- deliver() never decrements it
+
+    def test_player_issued_partial_leaves_escrow_state_untouched(self) -> None:
+        db, c, player = self._accepted_setup(
+            quantity=100, payment=Decimal("1000.00"), issuer_type=ContractIssuerType.PLAYER,
+            escrow_amount=Decimal("1000.00"), escrow_state=ContractEscrowState.HELD,
+        )
+        contract_service.deliver(db, c.id, player.id, 40, now=_NOW)
+        assert c.escrow_state == ContractEscrowState.HELD  # not released until fully complete
+
+
+@pytest.mark.unit
+class TestWalkAwayBulkProcurement:
+    """WO-CONTRACT-3b-BULK -- contract_bulk.py's
+    `walk_away_bulk_procurement()`, re-exported as `contract_service.
+    walk_away_bulk_procurement`. DISTINCT from `abandon()`: no penalty, no
+    issuer-escrow refund, reverts to POSTED (not CANCELLED)."""
+
+    def _setup(self, *, status: ContractStatus = ContractStatus.ACCEPTED, **contract_overrides: Any) -> Any:
+        c = _contract(
+            status=status, contract_type=ContractType.BULK_PROCUREMENT,
+            commodity_type="ore", quantity=100, payment=Decimal("1000.00"), penalty=Decimal("1000.00"),
+            partial_fulfilled_amount=0, partial_fulfilled_payout=Decimal("0"),
+        )
+        for k, v in contract_overrides.items():
+            setattr(c, k, v)
+        player = _player(credits=1000)
+        c.acceptor_player_id = player.id
+        db = _FakeSession(contracts=[c], players=[player])
+        return db, c, player
+
+    def test_walk_away_from_accepted_zero_partials_reverts_to_posted(self) -> None:
+        db, c, player = self._setup()
+        result = contract_service.walk_away_bulk_procurement(db, c.id, player.id, now=_NOW)
+
+        assert result["status"] == "posted"
+        assert c.status == ContractStatus.POSTED
+        assert c.acceptor_player_id is None
+        assert c.partial_fulfilled_amount == 0
+
+    def test_walk_away_does_not_clear_accepted_at(self) -> None:
+        """`accepted_at` is deliberately preserved (unlike `acceptor_
+        player_id`) -- see walk_away_bulk_procurement's own docstring/
+        inline note: clearing it would silently zero the insurance-refund
+        computation, which needs the pre-transition value."""
+        original_accepted_at = _NOW - timedelta(hours=1)
+        db, c, player = self._setup(accepted_at=original_accepted_at)
+        contract_service.walk_away_bulk_procurement(db, c.id, player.id, now=_NOW)
+        assert c.accepted_at == original_accepted_at
+
+    def test_walk_away_from_in_progress_preserves_partial_fulfilled_amount(self) -> None:
+        db, c, player = self._setup(
+            status=ContractStatus.IN_PROGRESS,
+            partial_fulfilled_amount=40, partial_fulfilled_payout=Decimal("400.00"),
+        )
+        result = contract_service.walk_away_bulk_procurement(db, c.id, player.id, now=_NOW)
+
+        assert result["status"] == "posted"
+        assert c.status == ContractStatus.POSTED
+        assert c.acceptor_player_id is None
+        # ADR-0049 monotonic counter -- untouched by the walk-away.
+        assert c.partial_fulfilled_amount == 40
+        assert c.partial_fulfilled_payout == Decimal("400.00")
+        assert result["partial_fulfilled_amount"] == 40
+
+    def test_walk_away_charges_no_penalty(self) -> None:
+        """DISTINCT from abandon(): contract.penalty is never charged."""
+        db, c, player = self._setup()
+        contract_service.walk_away_bulk_procurement(db, c.id, player.id, now=_NOW)
+        assert player.credits == 1000  # unchanged -- no penalty deduction
+
+    def test_non_bulk_contract_type_rejected(self) -> None:
+        db, c, player = self._setup(contract_type=ContractType.CARGO_DELIVERY)
+        with pytest.raises(ContractError, match="not_bulk_procurement"):
+            contract_service.walk_away_bulk_procurement(db, c.id, player.id, now=_NOW)
+
+    def test_not_your_contract_rejected(self) -> None:
+        db, c, player = self._setup()
+        stranger = _player()
+        db.players.append(stranger)
+        with pytest.raises(ContractError, match="not accepted by you"):
+            contract_service.walk_away_bulk_procurement(db, c.id, stranger.id, now=_NOW)
+
+    def test_posted_status_rejected(self) -> None:
+        db, c, player = self._setup(status=ContractStatus.POSTED)
+        with pytest.raises(ContractConflictError, match="stale_status"):
+            contract_service.walk_away_bulk_procurement(db, c.id, player.id, now=_NOW)
+
+    def test_completed_status_rejected(self) -> None:
+        db, c, player = self._setup(status=ContractStatus.COMPLETED)
+        with pytest.raises(ContractConflictError, match="stale_status"):
+            contract_service.walk_away_bulk_procurement(db, c.id, player.id, now=_NOW)
+
+    def test_insurance_pro_rata_refund_worked_example(self) -> None:
+        """Same ADR-0062 E-I2 worked example abandon()'s own test uses
+        (accepted_at=T, deadline=T+10h, premium=100, walked at T+4h ->
+        refund 54.00 exactly) -- proves walk_away_bulk_procurement() reuses
+        the SAME refund helper, independent of the no-penalty/reverts-to-
+        posted differences from abandon()."""
+        accepted_at = _NOW
+        deadline = _NOW + timedelta(hours=10)
+        db, c, player = self._setup(
+            accepted_at=accepted_at, deadline=deadline,
+            insurance_coverage_tier=ContractInsuranceCoverageTier.STANDARD,
+            insurance_premium_paid=Decimal("100.00"),
+        )
+        player.credits = 2000
+        walked_at = accepted_at + timedelta(hours=4)
+
+        result = contract_service.walk_away_bulk_procurement(db, c.id, player.id, now=walked_at)
+
+        assert result["insurance_refund"] == 54
+        assert player.credits == 2000 + 54  # no penalty deducted, unlike abandon()'s -500+54
+
+    def test_reaccept_after_walkaway_charges_a_fresh_fee(self) -> None:
+        """[VERIFY-FIRST FINDING] canon's own worked example (contracts.md
+        :184): "Player C accepts, debited a FRESH 10 cr fee (no fee-
+        stacking)" -- proves accept() (UNCHANGED by this WO) charges a
+        real, non-zero fee on a re-accept after a bulk walk-away, not the
+        'fee-once' mechanic originally (incorrectly) proposed."""
+        db, c, player = self._setup(payment=Decimal("500.00"), acceptance_fee_pct=Decimal("2.0"))
+        contract_service.walk_away_bulk_procurement(db, c.id, player.id, now=_NOW)
+        assert c.status == ContractStatus.POSTED
+
+        new_acceptor = _player(credits=1000)
+        db.players.append(new_acceptor)
+        result = contract_service.accept(db, c.id, new_acceptor.id, now=_NOW)
+
+        assert result["acceptance_fee_charged"] == 10.0  # 2% of 500 -- a REAL, fresh charge
+        assert new_acceptor.credits == 990
+        assert c.status == ContractStatus.ACCEPTED
+        assert c.acceptor_player_id == new_acceptor.id
+
+
+@pytest.mark.unit
 class TestInsure:
     @pytest.mark.parametrize(
         "tier,expected_premium",
@@ -980,6 +1264,49 @@ class TestTransitionMatrixMutation:
         with pytest.raises(ContractConflictError, match="illegal_transition"):
             contract_service.complete(db, c.id, player.id, now=_NOW)
         assert c.status == ContractStatus.ACCEPTED  # untouched -- DB round-trip never happened
+
+    def test_removing_accepted_to_in_progress_edge_409s_a_valid_bulk_delivery(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """WO-CONTRACT-3b-BULK: proves the two new BULK edges added to
+        LEGAL_TRANSITIONS are real, consulted data too -- not just the
+        pre-existing ones. Status itself is a LEGAL pre-check pass
+        (ACCEPTED, deliver()'s own guard clauses never object) -- only the
+        stripped table entry makes `_guarded_deliver` itself reject it.
+
+        Patches `contract_bulk.LEGAL_TRANSITIONS`, NOT `contract_escrow_
+        core.LEGAL_TRANSITIONS` -- see module-split-monkeypatch-target-trap
+        in monk's own memory notes: `_guarded_deliver` (contract_bulk.py,
+        WO-3b money-path gate REVISE) reads LEGAL_TRANSITIONS via a VALUE
+        import (`from ...contract_escrow_core import LEGAL_TRANSITIONS`),
+        which binds an INDEPENDENT name in contract_bulk's own globals --
+        patching the source module's attribute never reaches it. `_guarded_
+        transition` itself (contract_escrow_core.py) is the one exception
+        that reads the name in its OWN module's globals, which is why
+        every OTHER test in this class patches contract_escrow_core
+        directly."""
+        destination_id = uuid.uuid4()
+        c = _contract(
+            status=ContractStatus.ACCEPTED, destination_station_id=destination_id,
+            contract_type=ContractType.BULK_PROCUREMENT,
+            commodity_type="ore", quantity=100, payment=Decimal("1000.00"),
+            partial_fulfilled_amount=0, partial_fulfilled_payout=Decimal("0"),
+        )
+        ship = _real_ship(cargo={"capacity": 500, "used": 50, "contents": {"ore": 50}})
+        player = _player(credits=1000, is_docked=True, current_port_id=destination_id, current_ship=ship)
+        c.acceptor_player_id = player.id
+        db = _FakeSession(contracts=[c], players=[player])
+
+        stripped = {
+            ContractStatus.POSTED: contract_service.LEGAL_TRANSITIONS[ContractStatus.POSTED],
+            ContractStatus.ACCEPTED: frozenset({ContractStatus.CANCELLED}),  # IN_PROGRESS removed
+        }
+        monkeypatch.setattr(contract_bulk, "LEGAL_TRANSITIONS", stripped)
+
+        with pytest.raises(ContractConflictError, match="illegal_transition"):
+            contract_service.deliver(db, c.id, player.id, 40, now=_NOW)  # partial -- would be ACCEPTED -> IN_PROGRESS
+        assert c.status == ContractStatus.ACCEPTED  # untouched
+        assert c.partial_fulfilled_amount == 0
 
     @pytest.mark.parametrize(
         "from_status,action",

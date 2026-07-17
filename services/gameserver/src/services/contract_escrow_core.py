@@ -74,10 +74,41 @@ LEGAL_TRANSITIONS: Dict[ContractStatus, FrozenSet[ContractStatus]] = {
     # WO-DRIFT-econ-accepted-deadline-expiry adds ACCEPTED -> EXPIRED. Canon
     # (contracts.md's state-transition matrix) puts this edge on
     # `in_progress`, not `accepted` -- this codebase collapses `in_progress`
-    # into `accepted` (no code path ever sets IN_PROGRESS), so this is the
-    # code-equivalent of canon's in_progress -> expired edge. See
-    # sweep_expired_accepted_contracts's own docstring for the transition.
-    ContractStatus.ACCEPTED: frozenset({ContractStatus.COMPLETED, ContractStatus.CANCELLED, ContractStatus.EXPIRED}),
+    # into `accepted` for every OTHER type (no code path but bulk_
+    # procurement's own deliver()/walk_away_bulk_procurement() ever sets
+    # IN_PROGRESS -- WO-CONTRACT-3b-BULK), so this is the code-equivalent
+    # of canon's in_progress -> expired edge for cargo_delivery/express_
+    # delivery/hazardous_transport. See sweep_expired_accepted_contracts's
+    # own docstring for the transition.
+    #
+    # WO-CONTRACT-3b-BULK adds two more edges, both bulk_procurement-only:
+    # -> IN_PROGRESS (deliver()'s own first-partial edge, contracts.md:91's
+    # "partial_fulfilled bridges accepted -> in_progress") and -> POSTED
+    # (walk_away_bulk_procurement()'s own edge, contracts.md:78's "acceptor
+    # walks (bulk_procurement) -> posted"). A single deliver() call
+    # covering the FULL remaining quantity in one shot can also go straight
+    # ACCEPTED -> COMPLETED without ever passing through IN_PROGRESS --
+    # deliver()'s own docstring covers why that's legal.
+    ContractStatus.ACCEPTED: frozenset({
+        ContractStatus.COMPLETED, ContractStatus.CANCELLED, ContractStatus.EXPIRED,
+        ContractStatus.IN_PROGRESS, ContractStatus.POSTED,
+    }),
+    # WO-CONTRACT-3b-BULK: bulk_procurement's own IN_PROGRESS states, the
+    # first real consumer of this status value anywhere in the codebase
+    # (every other type "collapses in_progress into accepted", see the
+    # ACCEPTED entry's own comment). -> IN_PROGRESS is a SELF-loop
+    # (deliver()'s "stays in_progress" case, another partial delivered but
+    # some quantity still remains) -- the guarded UPDATE's own WHERE clause
+    # (`status == from_status`) is still the correct optimistic-concurrency
+    # guard even when from_status == to_status: a row raced away between
+    # load and write (status changed by a concurrent call) still matches 0
+    # rows and correctly raises ContractConflictError. -> COMPLETED is the
+    # final partial. -> POSTED is walk_away_bulk_procurement()'s own edge
+    # when the acceptor walks away AFTER at least one partial delivery
+    # (contracts.md:78/:130).
+    ContractStatus.IN_PROGRESS: frozenset({
+        ContractStatus.IN_PROGRESS, ContractStatus.COMPLETED, ContractStatus.POSTED,
+    }),
     # WO-CONTRACT-2-DISPUTE-T1: an EXPIRED contract's acceptor can dispute
     # the failure (contracts.md:390) -- filing flips EXPIRED -> DISPUTED.
     # From DISPUTED, Tier-1/Tier-2 resolution lands on COMPLETED (the

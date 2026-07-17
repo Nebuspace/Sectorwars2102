@@ -22,8 +22,21 @@ log exists for cargo-manifest verification; the expiry sweep already
 releases escrow before any dispute can be filed, reconciled as a fresh
 credit movement rather than re-touching the emptied escrow ledger;
 reputation/cooldowns are unbuilt anywhere in this codebase). Bulk-
-procurement partial fulfillment remains a later build step this module
-never touches.
+procurement partial fulfillment (`deliver`, `walk_away_bulk_procurement`)
+is now live too (WO-CONTRACT-3b-BULK) -- both now live in their own
+sibling module, `contract_bulk.py` (see WO-CONTRACT-REFACTOR-SPLIT below
+for why; this module re-exports both by name, unchanged for callers), see
+that module's own docstring and `sweep_expired_accepted_contracts`'s own
+"[KNOWN GAP]" note below for the one deliberately-unbuilt piece (an
+in_progress-status deadline sweep). Nothing in this codebase yet
+GENERATES or POSTS a bulk_procurement row (contract_generator.py's own
+WO-CONTRACT-3-NPCGEN-TYPES build produced express_delivery/hazardous_
+transport only; `post_player_contract` below still hardcodes
+cargo_delivery) -- `deliver`/`walk_away_bulk_procurement` are built and
+DB-free-tested against hand-constructed fixtures, function-only until a
+future WO wires a real posting/generation path to them, matching this
+module's own established `resolve_dispute`-style "function only"
+precedent.
 
 WO-CONTRACT-REFACTOR-SPLIT: this module was split (pure move, zero
 behavior change) once it grew past this project's 1500-line Python
@@ -37,18 +50,23 @@ live in `contract_escrow_core.py`; the three-tier insurance engine
 tier constants) now lives in `contract_insurance.py`; dispute filing +
 Tier-1/Tier-2 resolution (`file_dispute`, `resolve_dispute`, the Tier-1/
 E-I3 case-check seams, the dispute constants) now lives in `contract_
-dispute.py`. THIS module keeps the LIFECYCLE functions (`accept`,
-`complete`, `abandon`, `post_player_contract`, `cancel_player_contract`,
-both expiry sweeps) plus the posting-validation helpers only `post_
-player_contract` needs (`_is_valid_commodity`, `_is_player_blocklisted`,
-`_active_player_postings_in_region`) -- and RE-EXPORTS every name an
-existing external caller (routes/contracts.py, storage_service.py, the
-scheduler, and the test suite) already reaches via `contract_service.
-<name>`, so every one of those call sites keeps working UNCHANGED. See
-each sibling module's own docstring for the full dependency layering
-(core has no internal dependencies; insurance and dispute both depend on
-core; dispute also depends on insurance's refund helper; this module
-depends on all three).
+dispute.py`; bulk_procurement's own partial-fulfillment lifecycle
+(`deliver`, `walk_away_bulk_procurement`) now lives in `contract_bulk.py`
+(WO-CONTRACT-3b-BULK -- same growth-past-1500-lines trigger, same pure-
+move remedy, applied the moment this build landed rather than in a
+separate follow-up pass). THIS module keeps the LIFECYCLE functions
+(`accept`, `complete`, `abandon`, `post_player_contract`, `cancel_
+player_contract`, both expiry sweeps) plus the posting-validation
+helpers only `post_player_contract` needs (`_is_valid_commodity`, `_is_
+player_blocklisted`, `_active_player_postings_in_region`) -- and
+RE-EXPORTS every name an existing external caller (routes/contracts.py,
+storage_service.py, the scheduler, and the test suite) already reaches
+via `contract_service.<name>`, so every one of those call sites keeps
+working UNCHANGED. See each sibling module's own docstring for the full
+dependency layering (core has no internal dependencies; insurance and
+dispute both depend on core; dispute also depends on insurance's refund
+helper; bulk also depends on insurance's refund helper, the SAME shape
+dispute has; this module depends on all four).
 
 SYNC Session throughout -- matches slipdrive_service.py / escape_pod_
 service.py / fuel_delivery_service.py (this WO's own direct precedent) and
@@ -101,6 +119,8 @@ from src.models.contract import (
 from src.models.faction import FactionType
 from src.models.resource import Resource
 from src.models.station import Station, StationStatus
+from src.services.contract_bulk import deliver as deliver
+from src.services.contract_bulk import walk_away_bulk_procurement as walk_away_bulk_procurement
 from src.services.contract_dispute import DISPUTE_FILING_WINDOW_HOURS as DISPUTE_FILING_WINDOW_HOURS
 from src.services.contract_dispute import _ei3_both_parties_dispute as _ei3_both_parties_dispute
 from src.services.contract_dispute import _ei3_evidence_trail_incomplete as _ei3_evidence_trail_incomplete
@@ -639,10 +659,26 @@ def sweep_expired_accepted_contracts(
     """WO-DRIFT-econ-accepted-deadline-expiry: bulk-expire every `accepted`
     contract whose deadline has strictly passed without completion.
     Canon (contracts.md's state-transition matrix) puts this edge on
-    `in_progress -> expired`; this codebase never sets IN_PROGRESS (`accept`
-    -> `ACCEPTED` is the terminal pre-completion state here), so this sweep
-    is the code-equivalent of canon's in_progress deadline-expiry, not a new
-    concept -- see the LEGAL_TRANSITIONS comment (contract_escrow_core.py).
+    `in_progress -> expired`; for cargo_delivery/express_delivery/
+    hazardous_transport `accept` -> `ACCEPTED` is still the terminal
+    pre-completion state (no code path for those types ever sets
+    IN_PROGRESS), so this sweep is the code-equivalent of canon's
+    in_progress deadline-expiry for them -- see the LEGAL_TRANSITIONS
+    comment (contract_escrow_core.py).
+
+    [KNOWN GAP, WO-CONTRACT-3b-BULK] bulk_procurement's own deliver()/
+    walk_away_bulk_procurement() (this module) ARE real IN_PROGRESS
+    writers now -- this sweep's own candidate query below still filters
+    on `status == ACCEPTED` only, so a bulk_procurement contract that has
+    had at least one partial delivery (status IN_PROGRESS) and then blows
+    past its deadline is NOT picked up by this sweep or charged any
+    penalty. Extending this sweep's candidate set (or adding a sibling
+    IN_PROGRESS-scoped one) to cover that case is a real, un-invented
+    follow-up -- flagged here rather than silently left undocumented or
+    silently built without a design ruling on what an in-progress bulk
+    failure should even cost (canon gives no bulk-specific in_progress
+    deadline-expiry number; the generic Penalties section's "1x payment
+    debit" doesn't obviously apply to a PARTIALLY-fulfilled contract).
 
     `expiry_gate` (WO-STORE-EXPIRY-CLAIMABLE + D19, deposit-wins is a
     REQUIRED semantic): an optional per-candidate veto, called as
