@@ -422,7 +422,7 @@ async def restore_destroyed_drone(
         db,
         actor=admin,
         scope_used=SHIPS_MANAGE,
-        action="drone_force_recall",
+        action="drone_restore",
         target_type="drone",
         target_id=str(drone_id),
         payload={},
