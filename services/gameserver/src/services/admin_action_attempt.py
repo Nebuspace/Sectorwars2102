@@ -227,5 +227,16 @@ E5_WRAPPED_ROUTES: frozenset[str] = frozenset(
         "POST /admin/scopes/grant",
         "POST /admin/scopes/revoke",
         "POST /admin/contracts/{contract_id}/resolve-dispute",
+        # Wave-2 money-path (PLAYERS_ADJUST_CREDITS) — after real-session boundary test
+        "PATCH /admin/players/{player_id}",
+        "POST /admin/players/create-from-user",
+        "POST /admin/players/create-bulk",
+        # Wave-2 ships (SHIPS_MANAGE) — sync routes; drones deferred (AsyncSession)
+        "POST /admin/ships",
+        "PUT /admin/ships/{ship_id}",
+        "DELETE /admin/ships/{ship_id}",
+        "POST /admin/ships/{ship_id}/teleport",
+        "POST /admin/ships/create",
+        "POST /admin/ships/{ship_id}/emergency",
     }
 )

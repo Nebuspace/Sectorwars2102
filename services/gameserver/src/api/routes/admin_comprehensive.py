@@ -26,6 +26,7 @@ from src.auth.admin_scopes import (
 from src.auth.dependencies import require_all_scopes, require_scope
 from src.models.user import User
 from src.services.admin_action_log_service import log_admin_action
+from src.services.admin_action_attempt import admin_action_attempt
 from src.models.player import Player
 from src.models.ship import Ship
 from src.models.planet import Planet
@@ -642,61 +643,68 @@ async def create_ship(
     db: Session = Depends(get_db)
 ):
     """Create a new ship for a player"""
-    try:
-        # Verify player exists
-        player = db.query(Player).filter(Player.id == ship_data.owner_id).first()
-        if not player:
-            raise HTTPException(status_code=404, detail="Player not found")
-        
-        # Verify sector exists
-        sector = db.query(Sector).filter(Sector.sector_id == ship_data.current_sector_id).first()
-        if not sector:
-            raise HTTPException(status_code=404, detail="Sector not found")
-        
-        # Create new ship
-        from src.models.ship import ShipType
-        new_ship = Ship(
-            id=uuid.uuid4(),
-            name=ship_data.name,
-            type=ShipType(ship_data.ship_type),
-            owner_id=ship_data.owner_id,
-            sector_id=ship_data.current_sector_id,
-            maintenance={"current_rating": 100.0},
-            cargo={"used_capacity": 0, "max_capacity": 1000},
-            combat={"shields": 100, "max_shields": 100, "hull": 100, "max_hull": 100},
-            base_speed=10.0,
-            current_speed=10.0,
-            turn_cost=1,
-            purchase_value=50000,
-            current_value=50000,
-            is_active=True
-        )
-        
-        db.add(new_ship)
-        log_admin_action(
-            db,
-            actor=current_admin,
-            scope_used=SHIPS_MANAGE,
-            action="ship_create",
-            target_type="ship",
-            target_id=str(new_ship.id),
-            payload={
-                "name": ship_data.name,
-                "ship_type": ship_data.ship_type,
-                "owner_id": ship_data.owner_id,
-                "sector_id": ship_data.current_sector_id,
-            },
-        )
-        db.commit()
-        
-        logger.info(f"Admin {current_admin.username} created ship {ship_data.name} for player {player.user.username}")
-        
-        return {"message": "Ship created successfully", "ship_id": str(new_ship.id)}
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error creating ship: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create ship: {str(e)}")
+    new_ship_id = uuid.uuid4()
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=SHIPS_MANAGE,
+        action="ship_create",
+        target_type="ship",
+        target_id=str(new_ship_id),
+        payload={
+            "name": ship_data.name,
+            "ship_type": ship_data.ship_type,
+            "owner_id": ship_data.owner_id,
+            "sector_id": ship_data.current_sector_id,
+        },
+    ) as attempt:
+        try:
+            player = db.query(Player).filter(Player.id == ship_data.owner_id).first()
+            if not player:
+                raise HTTPException(status_code=404, detail="Player not found")
+
+            sector = db.query(Sector).filter(Sector.sector_id == ship_data.current_sector_id).first()
+            if not sector:
+                raise HTTPException(status_code=404, detail="Sector not found")
+
+            from src.models.ship import ShipType
+            new_ship = Ship(
+                id=new_ship_id,
+                name=ship_data.name,
+                type=ShipType(ship_data.ship_type),
+                owner_id=ship_data.owner_id,
+                sector_id=ship_data.current_sector_id,
+                maintenance={"current_rating": 100.0},
+                cargo={"used_capacity": 0, "max_capacity": 1000},
+                combat={"shields": 100, "max_shields": 100, "hull": 100, "max_hull": 100},
+                base_speed=10.0,
+                current_speed=10.0,
+                turn_cost=1,
+                purchase_value=50000,
+                current_value=50000,
+                is_active=True
+            )
+
+            db.add(new_ship)
+            attempt.succeed(
+                payload={
+                    "name": ship_data.name,
+                    "ship_type": ship_data.ship_type,
+                    "owner_id": ship_data.owner_id,
+                    "sector_id": ship_data.current_sector_id,
+                    "ship_id": str(new_ship_id),
+                },
+            )
+
+            logger.info(f"Admin {current_admin.username} created ship {ship_data.name} for player {player.user.username}")
+
+            return {"message": "Ship created successfully", "ship_id": str(new_ship.id)}
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error creating ship: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to create ship: {str(e)}") from e
 
 @router.put("/ships/{ship_id}", response_model=Dict[str, str])
 async def update_ship(
@@ -706,48 +714,46 @@ async def update_ship(
     db: Session = Depends(get_db)
 ):
     """Update ship properties"""
-    try:
-        ship = db.query(Ship).filter(Ship.id == ship_id).first()
-        if not ship:
-            raise HTTPException(status_code=404, detail="Ship not found")
-        
-        # Update fields if provided
-        if ship_data.name is not None:
-            ship.name = ship_data.name
-        if ship_data.owner_id is not None:
-            # Verify new owner exists
-            player = db.query(Player).filter(Player.id == ship_data.owner_id).first()
-            if not player:
-                raise HTTPException(status_code=404, detail="New owner not found")
-            ship.owner_id = ship_data.owner_id
-        if ship_data.current_sector_id is not None:
-            # Verify sector exists
-            sector = db.query(Sector).filter(Sector.sector_id == ship_data.current_sector_id).first()
-            if not sector:
-                raise HTTPException(status_code=404, detail="Sector not found")
-            ship.sector_id = ship_data.current_sector_id
-        if ship_data.is_active is not None:
-            ship.is_active = ship_data.is_active
-        
-        log_admin_action(
-            db,
-            actor=current_admin,
-            scope_used=SHIPS_MANAGE,
-            action="ship_update",
-            target_type="ship",
-            target_id=str(ship_id),
-            payload=ship_data.model_dump(exclude_unset=True),
-        )
-        db.commit()
-        
-        logger.info(f"Admin {current_admin.username} updated ship {ship.name}")
-        
-        return {"message": "Ship updated successfully"}
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error updating ship {ship_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to update ship: {str(e)}")
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=SHIPS_MANAGE,
+        action="ship_update",
+        target_type="ship",
+        target_id=str(ship_id),
+        payload=ship_data.model_dump(exclude_unset=True),
+    ) as attempt:
+        try:
+            ship = db.query(Ship).filter(Ship.id == ship_id).first()
+            if not ship:
+                raise HTTPException(status_code=404, detail="Ship not found")
+
+            if ship_data.name is not None:
+                ship.name = ship_data.name
+            if ship_data.owner_id is not None:
+                player = db.query(Player).filter(Player.id == ship_data.owner_id).first()
+                if not player:
+                    raise HTTPException(status_code=404, detail="New owner not found")
+                ship.owner_id = ship_data.owner_id
+            if ship_data.current_sector_id is not None:
+                sector = db.query(Sector).filter(Sector.sector_id == ship_data.current_sector_id).first()
+                if not sector:
+                    raise HTTPException(status_code=404, detail="Sector not found")
+                ship.sector_id = ship_data.current_sector_id
+            if ship_data.is_active is not None:
+                ship.is_active = ship_data.is_active
+
+            attempt.succeed(payload=ship_data.model_dump(exclude_unset=True))
+
+            logger.info(f"Admin {current_admin.username} updated ship {ship.name}")
+
+            return {"message": "Ship updated successfully"}
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error updating ship {ship_id}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to update ship: {str(e)}") from e
 
 @router.delete("/ships/{ship_id}", response_model=Dict[str, str])
 async def delete_ship(
@@ -756,55 +762,47 @@ async def delete_ship(
     db: Session = Depends(get_db)
 ):
     """Delete a ship"""
-    try:
-        ship = db.query(Ship).filter(Ship.id == ship_id).first()
-        if not ship:
-            raise HTTPException(status_code=404, detail="Ship not found")
-        
-        ship_name = ship.name
-        owner = db.query(Player).join(User).filter(Player.id == ship.owner_id).first()
-        owner_name = owner.user.username if owner else "Unknown"
-        
-        # If this is the player's current ship, clear it
-        if owner and owner.current_ship_id == ship.id:
-            owner.current_ship_id = None
-            from src.services.ship_service import sync_current_pilot
-            # QUEUE-REGISTRY-PILOT-WIRING: ship is db.delete()d a few lines
-            # below in this same transaction (deletion alone makes the
-            # invariant unobservable on this row), but clear explicitly for
-            # consistency with every other current_ship_id write site.
-            sync_current_pilot(owner, None, old_ship=ship)
-
-        # Reabsorb pioneer colonists before hull is removed.  Mirrors the
-        # pattern in ship_service.destroy_ship — SAVEPOINT-isolated so that a
-        # ledger hiccup cannot block the admin delete.
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=SHIPS_MANAGE,
+        action="ship_delete",
+        target_type="ship",
+        target_id=str(ship_id),
+    ) as attempt:
         try:
-            from src.services.pioneer_service import reabsorb_on_ship_loss
-            with db.begin_nested():
-                reabsorb_on_ship_loss(db, ship.owner_id)
-        except Exception:
-            logger.exception("pioneer reabsorb on admin ship-delete failed")
+            ship = db.query(Ship).filter(Ship.id == ship_id).first()
+            if not ship:
+                raise HTTPException(status_code=404, detail="Ship not found")
 
-        db.delete(ship)
-        log_admin_action(
-            db,
-            actor=current_admin,
-            scope_used=SHIPS_MANAGE,
-            action="ship_delete",
-            target_type="ship",
-            target_id=str(ship_id),
-            payload={"name": ship_name, "owner": owner_name},
-        )
-        db.commit()
-        
-        logger.info(f"Admin {current_admin.username} deleted ship {ship_name} from player {owner_name}")
-        
-        return {"message": "Ship deleted successfully"}
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error deleting ship {ship_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to delete ship: {str(e)}")
+            ship_name = ship.name
+            owner = db.query(Player).join(User).filter(Player.id == ship.owner_id).first()
+            owner_name = owner.user.username if owner else "Unknown"
+
+            if owner and owner.current_ship_id == ship.id:
+                owner.current_ship_id = None
+                from src.services.ship_service import sync_current_pilot
+                sync_current_pilot(owner, None, old_ship=ship)
+
+            try:
+                from src.services.pioneer_service import reabsorb_on_ship_loss
+                with db.begin_nested():
+                    reabsorb_on_ship_loss(db, ship.owner_id)
+            except Exception:
+                logger.exception("pioneer reabsorb on admin ship-delete failed")
+
+            db.delete(ship)
+            attempt.succeed(payload={"name": ship_name, "owner": owner_name})
+
+            logger.info(f"Admin {current_admin.username} deleted ship {ship_name} from player {owner_name}")
+
+            return {"message": "Ship deleted successfully"}
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error deleting ship {ship_id}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to delete ship: {str(e)}") from e
 
 @router.post("/ships/{ship_id}/teleport", response_model=Dict[str, str])
 async def teleport_ship(
@@ -814,50 +812,48 @@ async def teleport_ship(
     db: Session = Depends(get_db)
 ):
     """Teleport a ship to a different sector"""
-    try:
-        ship = db.query(Ship).filter(Ship.id == ship_id).first()
-        if not ship:
-            raise HTTPException(status_code=404, detail="Ship not found")
-        
-        # Verify target sector exists
-        sector = db.query(Sector).filter(Sector.sector_id == target_sector_id).first()
-        if not sector:
-            raise HTTPException(status_code=404, detail="Target sector not found")
-        
-        old_sector = ship.sector_id
-        ship.sector_id = target_sector_id
-        
-        # Also update player location if this is their current ship.
-        # Keep current_region_id in sync with the target sector — teleports
-        # can cross regions, and region-filtered routes (e.g.
-        # /player/current-sector) 404 on a stale region.
-        owner = db.query(Player).filter(Player.id == ship.owner_id).first()
-        if owner and owner.current_ship_id == ship.id:
-            owner.current_sector_id = target_sector_id
-            owner.current_region_id = sector.region_id
-        
-        log_admin_action(
-            db,
-            actor=current_admin,
-            scope_used=SHIPS_MANAGE,
-            action="ship_teleport",
-            target_type="ship",
-            target_id=str(ship_id),
-            payload={
-                "from_sector": old_sector,
-                "to_sector": target_sector_id,
-            },
-        )
-        db.commit()
-        
-        logger.info(f"Admin {current_admin.username} teleported ship {ship.name} from sector {old_sector} to {target_sector_id}")
-        
-        return {"message": f"Ship teleported to sector {target_sector_id}"}
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error teleporting ship {ship_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to teleport ship: {str(e)}")
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=SHIPS_MANAGE,
+        action="ship_teleport",
+        target_type="ship",
+        target_id=str(ship_id),
+        payload={"to_sector": target_sector_id},
+    ) as attempt:
+        try:
+            ship = db.query(Ship).filter(Ship.id == ship_id).first()
+            if not ship:
+                raise HTTPException(status_code=404, detail="Ship not found")
+
+            sector = db.query(Sector).filter(Sector.sector_id == target_sector_id).first()
+            if not sector:
+                raise HTTPException(status_code=404, detail="Target sector not found")
+
+            old_sector = ship.sector_id
+            ship.sector_id = target_sector_id
+
+            owner = db.query(Player).filter(Player.id == ship.owner_id).first()
+            if owner and owner.current_ship_id == ship.id:
+                owner.current_sector_id = target_sector_id
+                owner.current_region_id = sector.region_id
+
+            attempt.succeed(
+                payload={
+                    "from_sector": old_sector,
+                    "to_sector": target_sector_id,
+                },
+            )
+
+            logger.info(f"Admin {current_admin.username} teleported ship {ship.name} from sector {old_sector} to {target_sector_id}")
+
+            return {"message": f"Ship teleported to sector {target_sector_id}"}
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error teleporting ship {ship_id}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to teleport ship: {str(e)}") from e
 
 # Player Management Endpoints
 
@@ -868,46 +864,60 @@ async def create_player_from_user(
     db: Session = Depends(get_db)
 ):
     """Create a player account from an existing user account"""
-    try:
-        # Check if user exists
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        # Check if player already exists for this user
-        existing_player = db.query(Player).filter(Player.user_id == user.id).first()
-        if existing_player:
-            raise HTTPException(status_code=400, detail="Player already exists for this user")
-        
-        # Create new player
-        new_player = Player(
-            user_id=user.id,
-            credits=10000,  # Starting credits
-            turns=1000,     # Starting turns
-            current_sector_id=1  # Default starting sector
-        )
-        
-        db.add(new_player)
-        log_admin_action(
-            db,
-            actor=current_admin,
-            scope_used=PLAYERS_ADJUST_CREDITS,
-            action="player_create_from_user",
-            target_type="player",
-            target_id=str(new_player.id),
-            payload={"user_id": str(user_id), "starting_credits": 10000},
-        )
-        db.commit()
-        db.refresh(new_player)
-        
-        logger.info(f"Admin {current_admin.username} created player for user {user.username}")
-        
-        return {"message": f"Player created successfully for user {user.username}", "player_id": str(new_player.id)}
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error creating player for user {user_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create player: {str(e)}")
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=PLAYERS_ADJUST_CREDITS,
+        action="player_create_from_user",
+        target_type="player",
+        target_id=str(user_id),
+        payload={"user_id": str(user_id), "starting_credits": 10000},
+    ) as attempt:
+        try:
+            # Check if user exists
+            user = db.query(User).filter(User.id == user_id).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            # Check if player already exists for this user
+            existing_player = db.query(Player).filter(Player.user_id == user.id).first()
+            if existing_player:
+                raise HTTPException(status_code=400, detail="Player already exists for this user")
+
+            # Create new player
+            new_player = Player(
+                user_id=user.id,
+                credits=10000,  # Starting credits
+                turns=1000,     # Starting turns
+                current_sector_id=1  # Default starting sector
+            )
+
+            db.add(new_player)
+            db.flush()  # assign id before logging target
+            attempt.succeed(
+                payload={
+                    "user_id": str(user_id),
+                    "starting_credits": 10000,
+                    "player_id": str(new_player.id),
+                },
+            )
+            db.refresh(new_player)
+
+            logger.info(f"Admin {current_admin.username} created player for user {user.username}")
+
+            return {
+                "message": f"Player created successfully for user {user.username}",
+                "player_id": str(new_player.id),
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error creating player for user {user_id}: {e}")
+            raise HTTPException(
+                status_code=500, detail=f"Failed to create player: {str(e)}"
+            ) from e
+
 
 @router.post("/players/create-bulk", response_model=Dict[str, Any])
 async def create_players_from_all_users(
@@ -915,47 +925,52 @@ async def create_players_from_all_users(
     db: Session = Depends(get_db)
 ):
     """Create player accounts for all users who don't have them"""
-    try:
-        # Get all users who don't have player accounts
-        users_without_players = db.query(User).filter(
-            ~User.id.in_(db.query(Player.user_id))
-        ).all()
-        
-        created_count = 0
-        for user in users_without_players:
-            new_player = Player(
-                user_id=user.id,
-                credits=10000,  # Starting credits
-                turns=1000,     # Starting turns
-                current_sector_id=1  # Default starting sector
-            )
-            db.add(new_player)
-            created_count += 1
-        
-        log_admin_action(
-            db,
-            actor=current_admin,
-            scope_used=PLAYERS_ADJUST_CREDITS,
-            action="player_create_bulk",
-            target_type="player",
-            target_id="bulk",
-            payload={"created_count": created_count},
-        )
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=PLAYERS_ADJUST_CREDITS,
+        action="player_create_bulk",
+        target_type="player",
+        target_id="bulk",
+        payload={},
+    ) as attempt:
+        try:
+            # Get all users who don't have player accounts
+            users_without_players = db.query(User).filter(
+                ~User.id.in_(db.query(Player.user_id))
+            ).all()
 
-        db.commit()
-        
-        logger.info(f"Admin {current_admin.username} created {created_count} players from existing users")
-        
-        return {
-            "message": f"Successfully created {created_count} players", 
-            "created_count": created_count,
-            "total_users": len(users_without_players)
-        }
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error creating players from users: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create players: {str(e)}")
+            created_count = 0
+            for user in users_without_players:
+                new_player = Player(
+                    user_id=user.id,
+                    credits=10000,  # Starting credits
+                    turns=1000,     # Starting turns
+                    current_sector_id=1  # Default starting sector
+                )
+                db.add(new_player)
+                created_count += 1
+
+            attempt.succeed(payload={"created_count": created_count})
+
+            logger.info(
+                f"Admin {current_admin.username} created {created_count} players "
+                f"from existing users"
+            )
+
+            return {
+                "message": f"Successfully created {created_count} players",
+                "created_count": created_count,
+                "total_users": len(users_without_players),
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error creating players from users: {e}")
+            raise HTTPException(
+                status_code=500, detail=f"Failed to create players: {str(e)}"
+            ) from e
 
 # Universe Management Endpoints
 

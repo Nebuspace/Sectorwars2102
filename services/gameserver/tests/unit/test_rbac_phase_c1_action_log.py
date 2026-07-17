@@ -130,6 +130,12 @@ class TestCreditsMutateLogAtomicity:
 
 def _assert_logged(fn, *, action: str, scope_const: str):
     src = inspect.getsource(fn)
+    uses_attempt = "admin_action_attempt" in src and "attempt.succeed" in src
+    if uses_attempt:
+        assert f'action="{action}"' in src or f"action='{action}'" in src or action in src, fn.__name__
+        assert scope_const in src, fn.__name__
+        assert "attempt.succeed" in src, fn.__name__
+        return
     assert "log_admin_action" in src, fn.__name__
     assert f'action="{action}"' in src, fn.__name__
     assert scope_const in src, fn.__name__
