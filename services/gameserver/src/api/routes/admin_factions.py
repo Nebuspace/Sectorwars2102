@@ -183,48 +183,45 @@ async def update_faction(
     admin_user: User = Depends(require_scope(GALAXY_MANAGE))
 ):
     """Update a faction (admin only)."""
-    service = FactionService(db)
-    faction = await service.get_faction_by_id(faction_id)
-    
-    if not faction:
-        raise HTTPException(status_code=404, detail="Faction not found")
-    
-    # Update fields if provided
-    update_data = request.dict(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(faction, field, value)
-    
-    faction.updated_at = datetime.utcnow()
-    log_admin_action(
+    with admin_action_attempt(
         db,
         actor=admin_user,
         scope_used=GALAXY_MANAGE,
         action="faction_update",
         target_type="faction",
         target_id=str(faction_id),
-        payload=update_data,
-    )
+    ) as attempt:
+        service = FactionService(db)
+        faction = await service.get_faction_by_id(faction_id)
 
-    db.commit()
-    db.refresh(faction)
-    
-    return FactionDetailResponse(
-        id=str(faction.id),
-        name=faction.name,
-        faction_type=faction.faction_type.value,
-        description=faction.description,
-        territory_sectors=[str(sid) for sid in (faction.territory_sectors or [])],
-        home_sector_id=str(faction.home_sector_id) if faction.home_sector_id else None,
-        base_pricing_modifier=faction.base_pricing_modifier,
-        trade_specialties=faction.trade_specialties or [],
-        aggression_level=faction.aggression_level,
-        diplomacy_stance=faction.diplomacy_stance,
-        color_primary=faction.color_primary,
-        color_secondary=faction.color_secondary,
-        logo_url=faction.logo_url,
-        created_at=faction.created_at,
-        updated_at=faction.updated_at
-    )
+        if not faction:
+            raise HTTPException(status_code=404, detail="Faction not found")
+
+        update_data = request.dict(exclude_unset=True)
+        for field, value in update_data.items():
+            setattr(faction, field, value)
+
+        faction.updated_at = datetime.utcnow()
+        attempt.succeed(payload=update_data)
+        db.refresh(faction)
+
+        return FactionDetailResponse(
+            id=str(faction.id),
+            name=faction.name,
+            faction_type=faction.faction_type.value,
+            description=faction.description,
+            territory_sectors=[str(sid) for sid in (faction.territory_sectors or [])],
+            home_sector_id=str(faction.home_sector_id) if faction.home_sector_id else None,
+            base_pricing_modifier=faction.base_pricing_modifier,
+            trade_specialties=faction.trade_specialties or [],
+            aggression_level=faction.aggression_level,
+            diplomacy_stance=faction.diplomacy_stance,
+            color_primary=faction.color_primary,
+            color_secondary=faction.color_secondary,
+            logo_url=faction.logo_url,
+            created_at=faction.created_at,
+            updated_at=faction.updated_at,
+        )
 
 
 @router.delete("/{faction_id}")
@@ -234,42 +231,41 @@ async def delete_faction(
     admin_user: User = Depends(require_scope(GALAXY_MANAGE))
 ):
     """Delete a faction (admin only)."""
-    service = FactionService(db)
-    faction = await service.get_faction_by_id(faction_id)
-    
-    if not faction:
-        raise HTTPException(status_code=404, detail="Faction not found")
-    
-    # Don't allow deletion of core factions
-    core_faction_names = [
-        "United Space Federation",
-        "Independent Traders Alliance",
-        "Shadow Syndicate",
-        "Merchant Guild",
-        "Stellar Cartographers",
-        "Colonial Defense Force"
-    ]
-    
-    if faction.name in core_faction_names:
-        raise HTTPException(
-            status_code=400, 
-            detail="Cannot delete core game factions"
-        )
-    
-    db.delete(faction)
-    log_admin_action(
+    with admin_action_attempt(
         db,
         actor=admin_user,
         scope_used=GALAXY_MANAGE,
         action="faction_delete",
         target_type="faction",
         target_id=str(faction_id),
-        payload={"name": faction.name},
-    )
+    ) as attempt:
+        service = FactionService(db)
+        faction = await service.get_faction_by_id(faction_id)
 
-    db.commit()
-    
-    return {"success": True, "message": f"Faction '{faction.name}' deleted"}
+        if not faction:
+            raise HTTPException(status_code=404, detail="Faction not found")
+
+        # Don't allow deletion of core factions
+        core_faction_names = [
+            "United Space Federation",
+            "Independent Traders Alliance",
+            "Shadow Syndicate",
+            "Merchant Guild",
+            "Stellar Cartographers",
+            "Colonial Defense Force",
+        ]
+
+        if faction.name in core_faction_names:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot delete core game factions",
+            )
+
+        name = faction.name
+        db.delete(faction)
+        attempt.succeed(payload={"name": name})
+
+        return {"success": True, "message": f"Faction '{name}' deleted"}
 
 
 @router.put("/{faction_id}/territory")

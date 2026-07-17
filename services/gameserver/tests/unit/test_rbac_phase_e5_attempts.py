@@ -94,6 +94,8 @@ class TestE5WrappedRouteSet:
                 "POST /admin/planet/create",
                 "POST /admin/warp-tunnel/create-enhanced",
                 "POST /admin/factions/",
+                "PUT /admin/factions/{faction_id}",
+                "DELETE /admin/factions/{faction_id}",
             }
         )
         assert SCOPES_REVOKE in HIGH_IMPACT_SCOPES

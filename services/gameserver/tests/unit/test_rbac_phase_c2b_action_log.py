@@ -96,10 +96,10 @@ def test_c2b_events_and_game_events_log_before_commit():
 def test_c2b_factions_log_before_service_or_commit():
     from src.api.routes import admin_factions as fac
 
-    # E-5: create uses admin_action_attempt (helper-owns-commit); no db.commit().
+    # E-5: create/update/delete use admin_action_attempt (helper-owns-commit).
     _assert_log_before(fac.create_faction, marker="db.add(faction)", action="faction_create")
-    _assert_log_before(fac.update_faction, marker="db.commit()", action="faction_update")
-    _assert_log_before(fac.delete_faction, marker="db.commit()", action="faction_delete")
+    _assert_log_before(fac.update_faction, marker="setattr(faction, field, value)", action="faction_update")
+    _assert_log_before(fac.delete_faction, marker="db.delete(faction)", action="faction_delete")
     _assert_log_before(
         fac.update_faction_territory,
         marker="await service.update_faction_territory",
