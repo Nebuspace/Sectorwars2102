@@ -112,7 +112,10 @@ vi.mock('../../onboarding/FirstSessionObjectives', () => ({ default: () => null 
 // ── Mount-counting spies (the whole point of this file) ─────────────────
 let navMapMountCount = 0;
 vi.mock('../../tactical/NavigationMap', () => ({
-  default: () => {
+  // Named (not anonymous) so react-hooks/rules-of-hooks' component-name
+  // heuristic recognizes this as a real component (QUEUE-ESLINT-FLATCONFIG,
+  // 2026-07-16) -- see GameShellRoute.persistence.test.tsx's identical fix.
+  default: function MockNavigationMap() {
     React.useEffect(() => {
       navMapMountCount++;
     }, []);
