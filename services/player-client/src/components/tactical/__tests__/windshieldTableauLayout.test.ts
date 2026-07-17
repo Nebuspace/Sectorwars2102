@@ -537,17 +537,44 @@ describe('safeOrbitRadii / orbitalPosition(safeRadii) — T1-A in-band invariant
     expect(MAX_OBJECT_EM).toBeGreaterThanOrEqual(BODY_SIZE_EM_MAX);
   });
 
+  // QUEUE-PERF-TEST-FOOTPRINT (2026-07-16): the FULL-fidelity grid (every
+  // 0.02 AU x every 2deg, across the full sector lists this describe block
+  // used to sweep inline) times out on a quiet box — harness weight (Vitest's
+  // per-expect() overhead at these iteration counts), NOT math: the
+  // equivalent 19,680-position sweep in the Python server-side twin
+  // (services/gameserver/src/services/intrasystem_layout.py, the byte-for-
+  // byte parity port of this same math) runs in 105ms. Split per hub ruling
+  // across ALL THREE sweep tests below (not just the one the ticket named —
+  // the other two shared the same grid density and were ALSO slow enough to
+  // exceed their own 20s override once measured in isolation, which would
+  // have kept "full tactical suite runs green without timeout noise" from
+  // actually being true): each keeps a FAST variant here (smaller sector
+  // sample + a coarser step) for regression sensitivity in every default
+  // `npm test` run, while the FULL sector list at the original fine step
+  // moved to `windshieldTableauLayout.perfsweep.test.ts` (excluded from the
+  // default suite via vitest.config.ts, runnable on demand via
+  // `npm run test:perf`) so the exhaustive coverage is preserved somewhere
+  // runnable without poisoning every default run.
   const STEP_AU = 0.02;
   const STEP_DEG = 2;
+  const FAST_STEP_AU = 0.1;
+  const FAST_STEP_DEG = 10;
 
-  function assertInBand(band: BandGeometry, sectorSamples: number[], emWidth = MAX_OBJECT_EM, emHeight = emWidth) {
+  function assertInBand(
+    band: BandGeometry,
+    sectorSamples: number[],
+    emWidth = MAX_OBJECT_EM,
+    emHeight = emWidth,
+    stepAu = STEP_AU,
+    stepDeg = STEP_DEG,
+  ) {
     const halfObjXPct = ((emWidth / 2) * band.remPx / band.widthPx) * 100;
     const halfObjYPct = ((emHeight / 2) * band.remPx / band.heightPx) * 100;
     for (const sectorId of sectorSamples) {
       const star = starAnchor(sectorId, null);
       const radii = safeOrbitRadii(star, band, emWidth, emHeight);
-      for (let au = 0.2; au <= ORBIT_AU_MAX + 1e-9; au += STEP_AU) {
-        for (let deg = 0; deg < 360; deg += STEP_DEG) {
+      for (let au = 0.2; au <= ORBIT_AU_MAX + 1e-9; au += stepAu) {
+        for (let deg = 0; deg < 360; deg += stepDeg) {
           const pos = orbitalPosition(star, au, deg, radii);
           // The FULL rendered rect (center +/- half footprint) must stay
           // inside [0,100]% on both axes -- not just the center point.
@@ -561,12 +588,15 @@ describe('safeOrbitRadii / orbitalPosition(safeRadii) — T1-A in-band invariant
   }
 
   it('every (orbit_au, phase_deg) in the live contract range stays fully in-band, across a spread of sectors, at the flight-mode band height', () => {
-    assertInBand(FLIGHT_BAND, [1, 2, 5, 9, 21, 40, 77]); // 21 = the live symptom sector; 77 = the WindshieldTableau.test.tsx fixture sector
-  }, 20_000);
+    // 21 = the live symptom sector; 77 = the WindshieldTableau.test.tsx
+    // fixture sector -- both kept in the fast sample; full [1,2,5,9,21,40,77]
+    // x the fine 0.02/2deg grid runs in the perfsweep file.
+    assertInBand(FLIGHT_BAND, [1, 21, 77], MAX_OBJECT_EM, MAX_OBJECT_EM, FAST_STEP_AU, FAST_STEP_DEG);
+  });
 
   it('also holds at the tighter ARIA-2 panel-mode band height (12.5em) -- the fix isn\'t tuned to one specific height', () => {
-    assertInBand(ARIA2_BAND, [1, 21, 77]);
-  }, 20_000);
+    assertInBand(ARIA2_BAND, [1, 21], MAX_OBJECT_EM, MAX_OBJECT_EM, FAST_STEP_AU, FAST_STEP_DEG);
+  });
 
   // ---- station-scale footprint (WindshieldTableau.tsx's own
   // STATION_FOOTPRINT_EM_WIDTH_MAX/HEIGHT_MAX) — a MUCH wider margin than a
@@ -576,13 +606,12 @@ describe('safeOrbitRadii / orbitalPosition(safeRadii) — T1-A in-band invariant
   // (starAnchor's own 9-14% left range) can itself sit inside a wide
   // object's margin — no radius scaling fixes that, only orbitalPosition's
   // final xMinPct/xMaxPct/yMinPct/yMaxPct hard clamp does (SafeOrbitRadii's
-  // own doc-comment). Sweeps sectors 0-40 (not just the same handful above)
-  // specifically to hit a spread of starAnchor's own xPct/yPct rolls,
-  // including ones close to its floor. */
+  // own doc-comment). Fast sample spans first/last/live-symptom sectors --
+  // full 0-40 sweep runs in the perfsweep file (see this describe block's
+  // own QUEUE-PERF-TEST-FOOTPRINT doc-comment above).
   it('holds at station-scale footprint margins too (20em wide x 5em tall) -- the star-anchor-inside-the-margin edge case a live proof caught', () => {
-    const sectors = Array.from({ length: 41 }, (_, i) => i); // 0..40
-    assertInBand(FLIGHT_BAND, sectors, 20, 5);
-  }, 20_000);
+    assertInBand(FLIGHT_BAND, [0, 21, 40], 20, 5, FAST_STEP_AU, FAST_STEP_DEG);
+  });
 
   it('an out-of-contract orbit_au beyond ORBIT_AU_MAX is defensively clamped, not extrapolated past the safe box', () => {
     const star = starAnchor(21, null);

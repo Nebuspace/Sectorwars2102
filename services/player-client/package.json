@@ -50,6 +50,7 @@
     "lint": "eslint src --ext ts,tsx",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:perf": "vitest run --config vitest.perf.config.ts",
     "test:e2e": "node ./scripts/run-tests.js",
     "test:e2e:ui": "playwright test -c playwright.config.ts --ui",
     "validate-translations": "node ./scripts/validate-translations.js",

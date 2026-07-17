@@ -92,7 +92,11 @@ vi.mock('../../mfd/MFDScreen', () => ({
 
 let medalToastMountCount = 0;
 vi.mock('../../ranking/MedalToast', () => ({
-  default: () => {
+  // Named (not anonymous) so react-hooks/rules-of-hooks' component-name
+  // heuristic recognizes this as a real component -- an anonymous arrow
+  // here is functionally identical but structurally unrecognizable to the
+  // lint rule (QUEUE-ESLINT-FLATCONFIG, 2026-07-16).
+  default: function MockMedalToast() {
     React.useEffect(() => {
       medalToastMountCount++;
     }, []);

@@ -10,6 +10,6 @@ export default defineConfig({
     // (and e2e_tests/**) use the Playwright runner, NOT vitest — its test API
     // (test.beforeAll etc.) is incompatible and would fail collection here.
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
-    exclude: [...configDefaults.exclude, 'playwright/**', 'e2e_tests/**'],
+    exclude: [...configDefaults.exclude, 'playwright/**', 'e2e_tests/**', '**/*.perfsweep.test.ts'],
   },
 });

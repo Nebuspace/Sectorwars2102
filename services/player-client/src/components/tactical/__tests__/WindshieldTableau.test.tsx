@@ -64,11 +64,8 @@ vi.mock('../../../contexts/AutopilotContext', () => ({
   useAutopilot: () => ({ status: autopilotStatus, abort: vi.fn() }),
 }));
 
-// eslint-disable-next-line import/first
 import WindshieldTableau, { chooseWarpArrivalAnchor } from '../WindshieldTableau';
-// eslint-disable-next-line import/first
 import { WindshieldFlightProvider, useWindshieldFlight } from '../../../contexts/WindshieldFlightContext';
-// eslint-disable-next-line import/first
 import { starAnchor, otherPresencePosition } from '../windshieldTableauLayout';
 
 const SECTOR_ID = 77;

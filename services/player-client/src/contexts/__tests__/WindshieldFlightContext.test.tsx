@@ -21,7 +21,6 @@ vi.mock('../AutopilotContext', () => ({
   useAutopilot: () => autopilotState,
 }));
 
-// eslint-disable-next-line import/first
 import { WindshieldFlightProvider, useWindshieldFlight } from '../WindshieldFlightContext';
 
 let captured: ReturnType<typeof useWindshieldFlight> | null = null;

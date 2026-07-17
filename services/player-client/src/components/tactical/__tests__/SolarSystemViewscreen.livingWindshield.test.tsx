@@ -50,7 +50,6 @@ vi.mock('../../../services/apiClient', () => ({
   },
 }));
 
-// eslint-disable-next-line import/first
 import SolarSystemViewscreen from '../SolarSystemViewscreen';
 
 // ---------------------------------------------------------------------------

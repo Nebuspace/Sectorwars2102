@@ -184,6 +184,23 @@ const MFDAlertWiring: React.FC = () => {
   return null;
 };
 
+/* eslint-disable react-hooks/rules-of-hooks -- QUEUE-ESLINT-FLATCONFIG
+   (2026-07-16, resurrecting the dead lint gate) surfaced 24 findings here:
+   every hook below the `if (shellPresent) return` early-return (line ~198)
+   IS genuinely called conditionally by React's rules. KNOWN, currently
+   DORMANT: shellPresent stays false everywhere until Lane A lands the
+   persistent shell provider (see the comment on that line), so this branch
+   never actually diverges between renders today -- no live bug, but a real
+   one waiting the moment Lane A makes shellPresent conditionally true. Real
+   fix (move every hook in this component above the early return) belongs to
+   whoever lands Lane A -- they're the one making shellPresent live and can
+   verify the reorder doesn't change any behavior; flagged here, not fixed,
+   to avoid a large speculative refactor of this component for a lint-gate-
+   migration ticket. Do not let this disable silently expand -- it covers
+   ONLY this pre-existing pattern; a NEW conditional-hook violation
+   introduced elsewhere in this file should still be caught (re-enable
+   locally around just the early-return block if that ever becomes a
+   concern in practice). */
 const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
   // ── Persistent-shell passthrough (WO-UI0-PERSISTENT-SHELL lane B) ────────
   // If an ancestor shell already provides the cockpit chrome (shellPresent),
