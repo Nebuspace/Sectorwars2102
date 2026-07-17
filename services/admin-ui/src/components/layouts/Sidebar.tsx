@@ -92,7 +92,6 @@ const Sidebar: React.FC = () => {
       icon: '🔐',
       items: [
         { to: '/security', label: 'Security', icon: '🔒' },
-        { to: '/permissions', label: 'Permissions', icon: '🔑' },
         { to: '/first-login-conversations', label: 'First Login', icon: '💬' },
         { to: '/messages', label: 'Message Moderation', icon: '📨' },
         { to: '/multi-account', label: 'Multi-Account Review', icon: '🔍' },

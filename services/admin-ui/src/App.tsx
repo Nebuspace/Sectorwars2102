@@ -37,9 +37,6 @@ const WarpTunnelsManager = lazy(() => import('./components/pages/WarpTunnelsMana
 const SecurityDashboard = lazy(() => import('./components/pages/SecurityDashboard').then(module => ({
   default: module.SecurityDashboard
 })));
-const PermissionsDashboard = lazy(() => import('./components/pages/PermissionsDashboard').then(module => ({
-  default: module.PermissionsDashboard
-})));
 const AdvancedAnalytics = lazy(() => import('./components/pages/AdvancedAnalytics').then(module => ({
   default: module.AdvancedAnalytics
 })));
@@ -109,7 +106,7 @@ function App() {
                 <Route path="events" element={<ProtectedLazyRoute element={<EventManagement />} />} />
                 <Route path="analytics" element={<ProtectedLazyRoute element={<AdvancedAnalytics />} />} />
                 <Route path="security" element={<ProtectedLazyRoute element={<SecurityDashboard />} />} />
-                <Route path="permissions" element={<ProtectedLazyRoute element={<PermissionsDashboard />} />} />
+                <Route path="permissions" element={<Navigate to="/scopes" replace />} />
                 <Route path="ai-trading" element={<ProtectedLazyRoute element={<AITradingDashboard />} />} />
                 <Route path="sectors" element={<ProtectedLazyRoute element={<SectorsManager />} />} />
 
