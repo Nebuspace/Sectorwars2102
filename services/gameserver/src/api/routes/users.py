@@ -44,7 +44,7 @@ async def options_users():
 async def create_user(
     user_data: UserCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_scope(PLAYERS_VIEW))
+    current_user: User = Depends(require_scope(SCOPES_GRANT))
 ):
     """
     Create new user.

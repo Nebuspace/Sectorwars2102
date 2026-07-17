@@ -10,7 +10,7 @@ import logging
 
 from pydantic import BaseModel, Field as PydanticField
 from src.core.database import get_db
-from src.auth.admin_scopes import AUDIT_VIEW
+from src.auth.admin_scopes import AUDIT_VIEW, SECURITY_ACT
 from src.auth.dependencies import (
     get_current_user_from_token,
     require_scope,
@@ -273,7 +273,7 @@ async def broadcast_message(
     request: BroadcastRequest,
     target_type: str = "global",  # global, sector, team
     target_id: Optional[str] = None,
-    current_user: User = Depends(require_scope(AUDIT_VIEW)),
+    current_user: User = Depends(require_scope(SECURITY_ACT)),
 ) -> dict:
     """Broadcast a message to connected users (admin only)"""
 

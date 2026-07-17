@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from src.core.database import get_async_session
 from src.services.translation_service import TranslationService, get_translation_service
-from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.admin_scopes import GALAXY_MANAGE, PLAYERS_VIEW
 from src.auth.dependencies import get_current_user, require_scope
 from src.models.user import User
 
@@ -202,7 +202,7 @@ async def set_translation(
     language_code: str,
     namespace: str,
     request: TranslationRequest,
-    admin_user: User = Depends(require_scope(PLAYERS_VIEW)),
+    admin_user: User = Depends(require_scope(GALAXY_MANAGE)),
     translation_service: TranslationService = Depends(get_translation_service)
 ):
     """Set or update a translation (admin only)"""
@@ -231,7 +231,7 @@ async def bulk_import_translations(
     language_code: str,
     namespace: str,
     request: BulkTranslationRequest,
-    admin_user: User = Depends(require_scope(PLAYERS_VIEW)),
+    admin_user: User = Depends(require_scope(GALAXY_MANAGE)),
     translation_service: TranslationService = Depends(get_translation_service)
 ):
     """Bulk import translations (admin only)"""
@@ -250,7 +250,7 @@ async def bulk_import_translations(
 
 @router.post("/admin/initialize")
 async def initialize_translation_data(
-    admin_user: User = Depends(require_scope(PLAYERS_VIEW)),
+    admin_user: User = Depends(require_scope(GALAXY_MANAGE)),
     translation_service: TranslationService = Depends(get_translation_service)
 ):
     """Initialize default translation data (admin only)"""
