@@ -5,7 +5,8 @@ from uuid import UUID
 from datetime import datetime, UTC
 
 from src.core.database import get_db
-from src.auth.dependencies import get_current_admin_user, admin_or_options
+from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.dependencies import require_scope
 from src.models.user import User
 from src.models.admin_credentials import AdminCredentials
 from src.schemas.user import User as UserSchema, UserCreate, UserUpdate, AdminCreate
@@ -20,7 +21,7 @@ async def read_users(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(require_scope(PLAYERS_VIEW))
 ):
     """
     Retrieve users.
@@ -43,7 +44,7 @@ async def options_users():
 async def create_user(
     user_data: UserCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(require_scope(PLAYERS_VIEW))
 ):
     """
     Create new user.
@@ -86,7 +87,7 @@ async def create_user(
 async def create_admin_user(
     admin_data: AdminCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(require_scope(PLAYERS_VIEW))
 ):
     """RETIRED (Max 2026-07-17 / ADR-0058): admin-hood is grant-only.
 
@@ -105,7 +106,7 @@ async def create_admin_user(
 async def read_user(
     user_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(require_scope(PLAYERS_VIEW))
 ):
     """
     Get a specific user by id.
@@ -124,7 +125,7 @@ async def update_user(
     user_id: UUID,
     user_data: UserUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(require_scope(PLAYERS_VIEW))
 ):
     """
     Update a user.
@@ -177,7 +178,7 @@ async def update_user(
 async def delete_user(
     user_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(require_scope(PLAYERS_VIEW))
 ):
     """
     Delete a user (soft delete).
@@ -210,7 +211,7 @@ async def reset_admin_password(
     user_id: UUID,
     password: str = Body(..., min_length=8),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(require_scope(PLAYERS_VIEW))
 ):
     """
     Reset password for an admin user.

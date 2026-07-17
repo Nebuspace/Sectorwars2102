@@ -166,6 +166,8 @@ async def get_current_admin_from_header_or_query(
 
     Mirrors :func:`get_current_admin_user` semantics: 401 on missing/invalid
     token, 403 on a valid non-admin token.
+
+    Prefer :func:`require_scope_from_header_or_query` for new RBAC routes.
     """
     if not token and authorization and authorization.startswith("Bearer "):
         token = authorization[7:]
@@ -184,6 +186,69 @@ async def get_current_admin_from_header_or_query(
     if not user.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized for admin access")
     return user
+
+
+def require_scope_from_header_or_query(scope: str) -> Callable:
+    """Like ``require_scope`` but accepts JWT from Authorization OR ``?token=``.
+
+    For SSE/EventSource admin streams that cannot set custom headers.
+    Fail-closed on grant-lookup errors (same Cipher #5 rule as require_scope).
+    """
+    if scope not in ALL_SCOPES:
+        raise ValueError(
+            f"require_scope_from_header_or_query({scope!r}): not in the canonical 19-scope catalog"
+        )
+    missing = f"Missing required scope: {scope}"
+
+    async def _dep(
+        token: Optional[str] = Query(default=None),
+        authorization: Optional[str] = Header(default=None),
+        db: Session = Depends(get_db),
+    ) -> User:
+        if not token and authorization and authorization.startswith("Bearer "):
+            token = authorization[7:]
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
+            )
+        try:
+            payload = decode_token(token)
+            user_id = payload.get("sub")
+        except JWTError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+            )
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload"
+            )
+        user = db.query(User).filter(User.id == user_id, User.deleted == False).first()
+        if user is None or not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User inactive or missing",
+            )
+        try:
+            allowed = user_has_active_scope(db, user.id, scope)
+        except Exception:
+            logger.exception(
+                "require_scope_from_header_or_query(%s) lookup failed user=%s — fail-closed 403",
+                scope,
+                user.id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail=missing
+            )
+        if not allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail=missing
+            )
+        return user
+
+    _dep.__name__ = f"require_scope_header_or_query[{scope}]"
+    _dep.__require_scope__ = scope
+    return _dep
+
 
 # Allow both OPTIONS and other methods
 # This is needed for CORS preflight requests in GitHub Codespaces

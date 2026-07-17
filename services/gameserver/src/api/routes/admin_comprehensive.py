@@ -13,7 +13,8 @@ import logging
 import uuid
 
 from src.core.database import get_db
-from src.auth.dependencies import get_current_admin
+from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.dependencies import require_scope
 from src.models.user import User
 from src.models.player import Player
 from src.models.ship import Ship
@@ -235,7 +236,7 @@ async def get_players_comprehensive(
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     include_assets: bool = Query(False, description="Include detailed asset information"),
     include_activity: bool = Query(False, description="Include activity metrics"),
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get comprehensive player list with filtering, sorting, and pagination"""
@@ -389,7 +390,7 @@ async def get_players_comprehensive(
 async def update_player(
     player_id: str,
     update_data: PlayerUpdateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Update player data"""
@@ -460,7 +461,7 @@ async def get_ships_comprehensive(
     filter_type: Optional[str] = None,
     filter_sector: Optional[int] = None,
     filter_owner: Optional[str] = None,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get comprehensive ship list with filtering"""
@@ -601,7 +602,7 @@ class ShipUpdateRequest(BaseModel):
 @router.post("/ships", response_model=Dict[str, str])
 async def create_ship(
     ship_data: ShipCreateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Create a new ship for a player"""
@@ -651,7 +652,7 @@ async def create_ship(
 async def update_ship(
     ship_id: str,
     ship_data: ShipUpdateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Update ship properties"""
@@ -692,7 +693,7 @@ async def update_ship(
 @router.delete("/ships/{ship_id}", response_model=Dict[str, str])
 async def delete_ship(
     ship_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Delete a ship"""
@@ -741,7 +742,7 @@ async def delete_ship(
 async def teleport_ship(
     ship_id: str,
     target_sector_id: int,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Teleport a ship to a different sector"""
@@ -783,7 +784,7 @@ async def teleport_ship(
 @router.post("/players/create-from-user", response_model=Dict[str, str])
 async def create_player_from_user(
     user_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Create a player account from an existing user account"""
@@ -821,7 +822,7 @@ async def create_player_from_user(
 
 @router.post("/players/create-bulk", response_model=Dict[str, Any])
 async def create_players_from_all_users(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Create player accounts for all users who don't have them"""
@@ -867,7 +868,7 @@ async def get_sectors_comprehensive(
     filter_region: Optional[str] = None,
     filter_zone: Optional[str] = None,
     filter_discovered: Optional[bool] = None,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get comprehensive sector information"""
@@ -948,7 +949,7 @@ async def get_ports_comprehensive(
     filter_type: Optional[str] = None,
     filter_owner: Optional[str] = None,
     owner_id: Optional[str] = Query(None, description="Filter by exact player/owner UUID"),
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get comprehensive port information"""
@@ -1054,7 +1055,7 @@ async def get_planets_comprehensive(
     filter_owner: Optional[str] = None,
     filter_colonized: Optional[bool] = None,
     owner_id: Optional[str] = Query(None, description="Filter by exact player/owner UUID"),
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get comprehensive planet information"""
@@ -1136,7 +1137,7 @@ async def get_planets_comprehensive(
 
 @router.get("/analytics/dashboard", response_model=AnalyticsDashboardResponse)
 async def get_analytics_dashboard(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get comprehensive analytics dashboard"""
@@ -1203,7 +1204,7 @@ async def get_analytics_dashboard(
 
 @router.get("/system/health", response_model=SystemHealthResponse)
 async def get_system_health(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get system health status"""
@@ -1257,7 +1258,7 @@ async def get_warp_tunnels_comprehensive(
     filter_type: Optional[str] = None,
     filter_status: Optional[str] = None,
     filter_origin_sector: Optional[int] = None,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get comprehensive warp tunnel information"""
@@ -1336,7 +1337,7 @@ async def get_warp_tunnels_comprehensive(
 async def get_teams_comprehensive(
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=100),
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get comprehensive team information"""
@@ -1429,7 +1430,7 @@ def calculate_reputation_level(value: int) -> str:
 
 @router.get("/analytics/real-time", response_model=Dict[str, Any])
 async def get_real_time_analytics(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
     """
@@ -1479,7 +1480,7 @@ async def get_real_time_analytics(
 @router.post("/analytics/snapshot", response_model=Dict[str, Any])
 async def create_analytics_snapshot(
     snapshot_type: str = "manual",
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
     """
@@ -1505,7 +1506,7 @@ async def create_analytics_snapshot(
 
 @router.post("/ports/update-stock-levels", response_model=Dict[str, Any])
 async def update_all_port_stock_levels(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """
@@ -1574,7 +1575,7 @@ async def update_all_port_stock_levels(
 # =============================================================================
 
 @router.get("/security/report", summary="Get comprehensive security report")
-async def get_security_report(current_admin: User = Depends(get_current_admin)):
+async def get_security_report(current_admin: User = Depends(require_scope(PLAYERS_VIEW))):
     """
     Get comprehensive security monitoring report including:
     - Player statistics (blocked, high risk, etc.)
@@ -1595,7 +1596,7 @@ async def get_security_report(current_admin: User = Depends(get_current_admin)):
 
 
 @router.get("/security/alerts", summary="Get current security alerts")
-async def get_security_alerts(current_admin: User = Depends(get_current_admin)):
+async def get_security_alerts(current_admin: User = Depends(require_scope(PLAYERS_VIEW))):
     """
     Get current security alerts that need admin attention:
     - High cost usage warnings
@@ -1621,7 +1622,7 @@ async def get_security_alerts(current_admin: User = Depends(get_current_admin)):
 @router.get("/security/player/{player_id}/risk", summary="Get player risk assessment")
 async def get_player_risk_assessment(
     player_id: str,
-    current_admin: User = Depends(get_current_admin)
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW))
 ):
     """
     Get detailed risk assessment for a specific player including:
@@ -1645,7 +1646,7 @@ async def get_player_risk_assessment(
 @router.get("/security/player/{player_id}/status", summary="Get player security status")
 async def get_player_security_status(
     player_id: str,
-    current_admin: User = Depends(get_current_admin)
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW))
 ):
     """
     Get current security status for a specific player including:
@@ -1668,7 +1669,7 @@ async def get_player_security_status(
 @router.post("/security/cleanup", summary="Clean up old security data")
 async def cleanup_security_data(
     days_to_keep: int = Query(default=7, ge=1, le=30, description="Number of days of data to keep"),
-    current_admin: User = Depends(get_current_admin)
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW))
 ):
     """
     Clean up old security tracking data to prevent memory growth.
@@ -1700,7 +1701,7 @@ class PlayerSecurityAction(BaseModel):
 async def take_security_action(
     player_id: str,
     action: PlayerSecurityAction,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db),
 ):
     """
@@ -1785,7 +1786,7 @@ async def get_planets(
     filter_owner: Optional[str] = None,
     filter_colonized: Optional[bool] = None,
     owner_id: Optional[str] = Query(None, description="Filter by exact player/owner UUID"),
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Simple planets endpoint that redirects to comprehensive endpoint"""
@@ -1808,7 +1809,7 @@ async def get_ports(
     filter_type: Optional[str] = None,
     filter_owner: Optional[str] = None,
     owner_id: Optional[str] = Query(None, description="Filter by exact player/owner UUID"),
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Simple ports endpoint that redirects to comprehensive endpoint"""
@@ -1830,7 +1831,7 @@ async def get_sectors(
     filter_type: Optional[str] = None,
     filter_region: Optional[str] = None,
     filter_discovered: Optional[bool] = None,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Simple sectors endpoint that redirects to comprehensive endpoint"""
@@ -1848,7 +1849,7 @@ async def get_sectors(
 async def update_sector(
     sector_id: str,
     sector_data: SectorUpdateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Update a sector's properties"""
@@ -1917,7 +1918,7 @@ async def update_sector(
 async def create_planet_in_sector(
     sector_id: str,
     planet_data: PlanetCreateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Create a planet in the specified sector"""
@@ -2009,7 +2010,7 @@ class PlanetUpdateRequest(BaseModel):
 async def update_planet(
     planet_id: str,
     planet_data: PlanetUpdateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Update a planet's properties"""
@@ -2051,7 +2052,7 @@ async def update_planet(
 @router.delete("/planets/{planet_id}", response_model=Dict[str, Any])
 async def delete_planet(
     planet_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Delete a planet. Fails closed (409 Conflict) if the planet is colonized
@@ -2114,7 +2115,7 @@ async def delete_planet(
 async def create_port_in_sector(
     sector_id: str,
     station_data: StationCreateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Create a port in the specified sector"""
@@ -2191,7 +2192,7 @@ async def create_port_in_sector(
 @router.get("/sectors/{sector_id}/planet")
 async def get_sector_planet(
     sector_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get detailed planet information for a specific sector"""
@@ -2266,7 +2267,7 @@ async def get_sector_planet(
 @router.get("/sectors/{sector_id}/port")
 async def get_sector_port(
     sector_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get detailed port information for a specific sector"""
@@ -2331,7 +2332,7 @@ async def get_sector_port(
 @router.get("/sectors/{sector_id}/warp-tunnels")
 async def get_sector_warp_tunnels(
     sector_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all warp tunnels for a specific sector (outgoing, incoming, and bidirectional)"""
@@ -2442,7 +2443,7 @@ class WarpTunnelUpdateRequest(BaseModel):
 async def create_warp_tunnel(
     sector_id: str,
     tunnel_data: WarpTunnelCreateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Create a new warp tunnel from this sector to another"""
@@ -2547,7 +2548,7 @@ async def create_warp_tunnel(
 async def update_warp_tunnel(
     tunnel_id: str,
     tunnel_data: WarpTunnelUpdateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Update an existing warp tunnel"""
@@ -2622,7 +2623,7 @@ async def update_warp_tunnel(
 @router.delete("/warp-tunnels/{tunnel_id}")
 async def delete_warp_tunnel(
     tunnel_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Delete a warp tunnel"""
@@ -2671,7 +2672,7 @@ async def get_warp_tunnels(
     filter_type: Optional[str] = None,
     filter_status: Optional[str] = None,
     filter_origin_sector: Optional[int] = None,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Simple warp tunnels endpoint that redirects to comprehensive endpoint"""
@@ -2700,7 +2701,7 @@ class StationUpdateRequest(BaseModel):
 async def update_port(
     station_id: str,
     station_data: StationUpdateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Update a port's properties"""
@@ -2754,7 +2755,7 @@ async def update_port(
 @router.delete("/ports/{station_id}", response_model=Dict[str, Any])
 async def delete_port(
     station_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Delete a port"""
@@ -2783,7 +2784,7 @@ async def delete_port(
 @router.post("/ports", response_model=Dict[str, Any])
 async def create_port(
     port_data: Dict[str, Any],
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Create a new port"""
@@ -2884,7 +2885,7 @@ async def create_port(
 
 @router.get("/ai/models", response_model=List[Dict[str, Any]])
 async def get_ai_models(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get AI models status for admin dashboard"""
@@ -2903,7 +2904,7 @@ async def get_ai_models(
 
 @router.get("/ai/predictions/accuracy", response_model=List[Dict[str, Any]])
 async def get_ai_prediction_accuracy(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get AI prediction accuracy by commodity for admin dashboard"""
@@ -2922,7 +2923,7 @@ async def get_ai_prediction_accuracy(
 
 @router.get("/ai/profiles", response_model=List[Dict[str, Any]])
 async def get_ai_player_profiles(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get AI player profiles for admin dashboard"""
@@ -2950,7 +2951,7 @@ async def get_ai_player_profiles(
 
 @router.get("/ai/metrics", response_model=Dict[str, Any])
 async def get_ai_system_metrics(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get AI system metrics for admin dashboard"""
@@ -2993,7 +2994,7 @@ async def get_ai_system_metrics(
 async def ai_model_action(
     model_id: str,
     action: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Take action on AI model (start, stop, train)"""
@@ -3013,7 +3014,7 @@ async def ai_model_action(
 async def get_ai_predictions(
     timeframe: str = Query("1h", description="Prediction timeframe"),
     resource: Optional[str] = Query(None, description="Filter by resource"),
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get AI price predictions for admin dashboard"""
@@ -3034,7 +3035,7 @@ async def get_ai_predictions(
 
 @router.get("/ai/route-optimization", response_model=Dict[str, Any])
 async def get_ai_route_optimization_data(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get AI route optimization data for admin dashboard, sourced from the
@@ -3117,7 +3118,7 @@ async def get_ai_route_optimization_data(
 
 @router.get("/ai/behavior-analytics", response_model=Dict[str, Any])
 async def get_ai_behavior_analytics(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get AI behavior analytics data for admin dashboard"""

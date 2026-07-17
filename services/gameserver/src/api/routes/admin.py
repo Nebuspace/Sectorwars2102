@@ -9,7 +9,8 @@ import math
 import logging
 
 from src.core.database import get_db
-from src.auth.dependencies import get_current_admin
+from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.dependencies import require_scope
 from src.models.user import User
 from src.models.player import Player
 from src.models.ship import Ship
@@ -82,7 +83,7 @@ logger = logging.getLogger(__name__)
 
 @router.get("/users", response_model=dict)
 async def get_all_users(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all users for admin panel (excludes soft-deleted accounts)"""
@@ -108,7 +109,7 @@ async def get_all_users(
 
 @router.get("/players", response_model=dict)
 async def get_all_players(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all player accounts for admin panel"""
@@ -267,7 +268,7 @@ async def get_all_players(
 
 @router.get("/regions", response_model=dict)
 async def get_all_regions(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all regions for admin panel"""
@@ -292,7 +293,7 @@ async def get_all_regions(
 @router.get("/regions/{region_id}/zones", response_model=dict)
 async def get_region_zones(
     region_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """
@@ -349,7 +350,7 @@ async def get_region_zones(
 async def get_zone_details(
     region_id: str,
     zone_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """
@@ -401,7 +402,7 @@ async def get_zone_details(
 async def update_player(
     player_id: str,
     update_data: dict,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Update player information (admin only)"""
@@ -552,7 +553,7 @@ async def update_player(
 
 @router.get("/colonies", response_model=dict)
 async def get_all_colonies(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all colonies (planets) for admin panel"""
@@ -603,7 +604,7 @@ async def get_all_colonies(
 
 @router.get("/teams", response_model=dict)
 async def get_all_teams(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all teams for admin panel"""
@@ -661,7 +662,7 @@ async def get_all_teams(
 
 @router.get("/teams/analytics", response_model=dict)
 async def get_teams_analytics(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get team analytics for admin dashboard"""
@@ -749,7 +750,7 @@ async def get_teams_analytics(
 
 @router.get("/stats", response_model=dict)
 async def get_admin_stats(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get statistics for admin dashboard"""
@@ -890,7 +891,7 @@ async def get_admin_stats(
 
 @router.get("/galaxy")
 async def get_galaxy_info(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get galaxy information for admin panel"""
@@ -1032,7 +1033,7 @@ async def get_galaxy_info(
 @router.post("/galaxy/generate", response_model=dict)
 async def generate_galaxy(
     request: GalaxyGenerateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
 ):
     """Deprecated: legacy Python galaxy generator removed in Phase 4 of the
     sw2102-bang cutover. The synchronous, monolithic generator has been replaced
@@ -1062,7 +1063,7 @@ async def generate_galaxy(
 
 @router.get("/clusters", response_model=dict)
 async def get_all_clusters(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all clusters across all zones"""
@@ -1106,7 +1107,7 @@ async def get_all_stations(
     limit: int = 100,
     offset: int = 0,
     search: Optional[str] = None,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all stations with pagination"""
@@ -1177,7 +1178,7 @@ async def get_all_sectors(
     page: int = 1,
     limit: int = 100,
     offset: Optional[int] = None,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get sectors with optional filtering and honest server-side pagination."""
@@ -1314,7 +1315,7 @@ def _sector_resource_richness(resources):
 @router.post("/warp-tunnels/create", response_model=dict)
 async def create_warp_tunnel(
     request: WarpTunnelCreateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Create a warp tunnel between two sectors"""
@@ -1363,7 +1364,7 @@ async def create_warp_tunnel(
 
 @router.delete("/galaxy/clear", response_model=dict)
 async def clear_all_galaxy_data(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Clear all galaxy data for testing purposes (complete wipe including player game state)"""
@@ -1395,7 +1396,7 @@ async def clear_all_galaxy_data(
 
 @router.post("/galaxy/fix-statistics", response_model=dict)
 async def fix_galaxy_statistics(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Migrate galaxy statistics from old field names (port_count) to new field names (station_count)"""
@@ -1456,7 +1457,7 @@ async def fix_galaxy_statistics(
 @router.get("/sectors/{sector_id}/port", response_model=dict)
 async def get_sector_port(
     sector_id: int,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get port details for a specific sector"""
@@ -1522,7 +1523,7 @@ async def get_sector_port(
 @router.get("/sectors/{sector_id}/planet", response_model=dict)
 async def get_sector_planet(
     sector_id: int,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get planet details for a specific sector"""
@@ -1576,7 +1577,7 @@ async def get_sector_planet(
 @router.get("/sectors/{sector_id}/ships", response_model=dict)
 async def get_sector_ships(
     sector_id: int,
-    _: User = Depends(get_current_admin),
+    _: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all ships currently in a specific sector"""
@@ -1599,7 +1600,7 @@ async def get_sector_ships(
 
 @router.get("/alliances", response_model=dict)
 async def get_all_alliances(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all alliances for admin panel"""
@@ -1639,7 +1640,7 @@ async def get_all_alliances(
 async def update_port(
     station_id: str,
     port_updates: dict,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Update port details including commodity quantities"""
@@ -1696,7 +1697,7 @@ async def update_port(
 
 @router.get("/game-events/summary", response_model=dict)
 async def get_game_events_summary(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get a summary of game events for the admin dashboard.
@@ -1800,7 +1801,7 @@ async def list_game_events(
     type_filter: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """List game events with optional filters.
@@ -1865,7 +1866,7 @@ async def list_game_events(
 @router.post("/game-events", response_model=dict)
 async def create_game_event(
     event_data: QuickEventCreateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Create a new game event with a simplified payload.
@@ -1956,7 +1957,7 @@ async def create_game_event(
 
 @router.get("/game-events/active/current", response_model=dict)
 async def get_active_game_events(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all currently active game events with their effects.
@@ -2014,7 +2015,7 @@ async def get_active_game_events(
 @router.get("/game-events/{event_id}", response_model=dict)
 async def get_game_event_detail(
     event_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get detailed information about a specific game event."""
@@ -2098,7 +2099,7 @@ async def get_game_event_detail(
 async def update_game_event(
     event_id: str,
     update_data: EventUpdateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Update a game event's basic fields (title, description, status, end_time)."""
@@ -2193,7 +2194,7 @@ async def update_game_event(
 @router.post("/game-events/{event_id}/activate", response_model=dict)
 async def activate_game_event(
     event_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Activate a scheduled or paused game event."""
@@ -2238,7 +2239,7 @@ async def activate_game_event(
 @router.post("/game-events/{event_id}/deactivate", response_model=dict)
 async def deactivate_game_event(
     event_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Deactivate (complete or cancel) an active or scheduled game event."""
@@ -2286,7 +2287,7 @@ async def deactivate_game_event(
 @router.delete("/game-events/{event_id}", response_model=dict)
 async def delete_game_event(
     event_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Delete a game event. Active events must be deactivated first."""

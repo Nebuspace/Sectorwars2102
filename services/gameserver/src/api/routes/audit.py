@@ -9,7 +9,8 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 
 from src.core.database import get_db
-from src.auth.dependencies import get_current_admin_user
+from src.auth.admin_scopes import AUDIT_VIEW
+from src.auth.dependencies import require_scope
 from src.services.audit_service import AuditService
 from src.models.user import User
 
@@ -19,7 +20,7 @@ router = APIRouter(prefix="/admin/audit", tags=["audit"])
 @router.post("/log")
 async def create_audit_log(
     request: dict,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(AUDIT_VIEW)),
     db: Session = Depends(get_db)
 ):
     """
@@ -63,7 +64,7 @@ async def get_audit_logs(
     resource_type: Optional[str] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(AUDIT_VIEW)),
     db: Session = Depends(get_db)
 ):
     """
@@ -123,7 +124,7 @@ async def get_audit_logs(
 async def get_security_violations(
     start_date: Optional[datetime] = None,
     limit: int = Query(100, ge=1, le=500),
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(AUDIT_VIEW)),
     db: Session = Depends(get_db)
 ):
     """
@@ -149,7 +150,7 @@ async def get_security_violations(
 async def get_user_activity_summary(
     user_id: UUID,
     days: int = Query(30, ge=1, le=365),
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(AUDIT_VIEW)),
     db: Session = Depends(get_db)
 ):
     """

@@ -1,62 +1,45 @@
-"""RBAC Phase B — route coverage for the first admin-route sweep batch.
+"""RBAC Phase B — FULL route-coverage completeness (security property).
 
-DB-free.  Imports ``app`` from ``src.main`` (same env harness as
-``test_rbac_phase_a2.py`` / ``test_admin_multi_account.py``).
+Hub: coverage cipher runs at sweep-COMPLETE.  Completeness =
+  (1) ``grep -c require_admin`` across ``api/routes/*.py`` → 0
+  (2) every HTTP route whose path contains ``/admin`` has
+      ``require_scope`` in the fully-merged dependant tree
+  (3) admin WebSocket uses inline ``user_has_active_scope`` (not flat is_admin)
 
-For each HTTP route in the swept modules whose path or tags look admin-facing,
-assert the fully-merged FastAPI dependant tree includes ``require_scope``.
-The admin WebSocket in ``websocket.py`` uses token auth + inline
-``user_has_active_scope(..., AUDIT_VIEW)`` instead — verified by source grep.
+DB-free.  Same env harness as other RBAC unit tests.
 """
 
 from __future__ import annotations
 
-import inspect
+import re
 from pathlib import Path
 from typing import Callable, Iterable, Set
 
-import pytest
 from fastapi.routing import APIRoute, APIWebSocketRoute
 
 from src.main import app
 
 _GAMESERVER_ROOT = Path(__file__).resolve().parents[2]
+_ROUTES_DIR = _GAMESERVER_ROOT / "src" / "api" / "routes"
 
-# Phase B batches 1–2 — modules swept from require_admin → require_scope
-_SWEPT_MODULES: frozenset[str] = frozenset(
+# Modules that gate admin ops but may not use /admin in the URL path.
+_EXTRA_ADMIN_MODULES: frozenset[str] = frozenset(
     {
-        # batch 1
-        "src.api.routes.admin_multi_account",
-        "src.api.routes.admin_reports",
-        "src.api.routes.admin_contract_disputes",
-        "src.api.routes.admin_first_login",
-        "src.api.routes.websocket",
-        # batch 2
-        "src.api.routes.admin_ships",
-        "src.api.routes.admin_combat",
-        "src.api.routes.admin_fleets",
-        "src.api.routes.admin_drones",
-        "src.api.routes.admin_factions",
-        "src.api.routes.admin_messages",
-        "src.api.routes.admin_economy",
-        "src.api.routes.admin_colonization",
-        "src.api.routes.admin_enhanced",
+        "src.api.routes.users",
+        "src.api.routes.mfa",
+        "src.api.routes.events",
+        "src.api.routes.debug",
+        "src.api.routes.test",
+        "src.api.routes.translation",
+        "src.api.routes.first_login",
+        "src.api.routes.ranking",
+        "src.api.routes.medals",
+        "src.api.routes.nexus",
     }
 )
 
-_ADMIN_TAG_HINTS = frozenset({"admin", "admin-reports", "admin-multi-account", "admin-contract-disputes", "admin-scopes"})
-
-
-def _is_admin_route(route: APIRoute | APIWebSocketRoute) -> bool:
-    path = getattr(route, "path", "") or ""
-    if "/admin" in path:
-        return True
-    tags = getattr(route, "tags", None) or []
-    return any(str(t).lower() in _ADMIN_TAG_HINTS or "admin" in str(t).lower() for t in tags)
-
 
 def _collect_dep_calls(dependant, seen: Set[int] | None = None) -> list[Callable]:
-    """Depth-first walk of a FastAPI Dependant tree."""
     if seen is None:
         seen = set()
     out: list[Callable] = []
@@ -81,66 +64,109 @@ def _has_require_scope(calls: Iterable[Callable]) -> bool:
 
 
 def _iter_app_routes(fastapi_app):
-    """Yield APIRoute / APIWebSocketRoute from app and nested mounts."""
+    """Yield APIRoute / APIWebSocketRoute, unwrapping FastAPI ``_IncludedRouter``."""
     stack = list(fastapi_app.routes)
     while stack:
         route = stack.pop()
         if isinstance(route, (APIRoute, APIWebSocketRoute)):
             yield route
+        elif type(route).__name__ == "_IncludedRouter":
+            stack.extend(route.original_router.routes)
         elif hasattr(route, "routes"):
             stack.extend(route.routes)
 
 
-def _endpoint_module(route: APIRoute | APIWebSocketRoute) -> str | None:
+def _endpoint_module(route) -> str | None:
     endpoint = getattr(route, "endpoint", None)
     if endpoint is None:
         return None
     return getattr(endpoint, "__module__", None)
 
 
-class TestPhaseBBatch1Coverage:
-    """Swept admin HTTP routes must declare require_scope in merged deps."""
+def _is_admin_http_route(route: APIRoute) -> bool:
+    methods = getattr(route, "methods", None) or set()
+    if methods == {"OPTIONS"}:
+        return False  # CORS preflight — no auth gate
+    path = getattr(route, "path", "") or ""
+    if "/admin" in path:
+        return True
+    mod = _endpoint_module(route)
+    if mod in _EXTRA_ADMIN_MODULES:
+        # Only endpoints that already carry require_scope (post-sweep) OR
+        # whole-router admin modules (users/events/debug/test).
+        if mod in {
+            "src.api.routes.users",
+            "src.api.routes.events",
+            "src.api.routes.debug",
+            "src.api.routes.test",
+        }:
+            return True
+        calls = _collect_dep_calls(route.dependant)
+        return _has_require_scope(calls)
+    return False
 
-    def test_swept_admin_http_routes_have_require_scope(self):
+
+class TestRequireAdminTripwire:
+    def test_zero_require_admin_symbols_in_api_routes(self):
+        """Blunt tripwire: no bare require_admin / get_current_admin* left."""
+        hits: list[str] = []
+        pat = re.compile(
+            r"\b(require_admin|get_current_admin_user|get_current_admin)\b"
+        )
+        for path in sorted(_ROUTES_DIR.glob("*.py")):
+            text = path.read_text(encoding="utf-8")
+            for i, line in enumerate(text.splitlines(), 1):
+                if line.strip().startswith("#"):
+                    continue
+                # Allow mentions inside admin_scopes.py docstring? none.
+                if pat.search(line):
+                    # dependencies re-exports aliases still live in auth/,
+                    # not here.  Comments already skipped.
+                    hits.append(f"{path.name}:{i}:{line.strip()[:100]}")
+        assert not hits, "require_admin tripwire failed:\n" + "\n".join(hits)
+
+
+class TestAdminRouteCompleteness:
+    def test_all_admin_http_routes_have_require_scope(self):
         missing: list[str] = []
+        checked = 0
         for route in _iter_app_routes(app):
             if not isinstance(route, APIRoute):
                 continue
-            mod = _endpoint_module(route)
-            if mod not in _SWEPT_MODULES:
+            if not _is_admin_http_route(route):
                 continue
-            if not _is_admin_route(route):
-                continue
+            checked += 1
             calls = _collect_dep_calls(route.dependant)
             if not _has_require_scope(calls):
                 methods = ",".join(sorted(route.methods or []))
+                mod = _endpoint_module(route)
                 missing.append(f"{methods} {route.path} ({mod})")
+        assert checked >= 50, f"expected a large admin surface, only checked {checked}"
         assert not missing, (
-            "Swept admin HTTP routes missing require_scope in merged dependencies:\n"
+            "Admin HTTP routes missing require_scope:\n"
             + "\n".join(f"  - {m}" for m in sorted(missing))
         )
 
-    def test_admin_websocket_uses_audit_view_scope_check(self):
-        """Token-auth WS cannot use Depends(require_scope) — inline check instead."""
-        src_path = _GAMESERVER_ROOT / "src/api/routes/websocket.py"
-        src = src_path.read_text(encoding="utf-8")
-        assert "user_has_active_scope" in src
-        assert "AUDIT_VIEW" in src
-        assert "user.is_admin" not in src.split("admin_websocket_endpoint")[1].split("def get_websocket_stats")[0]
-
-    def test_admin_multi_account_has_zero_require_admin(self):
-        src_path = _GAMESERVER_ROOT / "src/api/routes/admin_multi_account.py"
-        src = src_path.read_text(encoding="utf-8")
-        assert "require_admin" not in src
-        assert "get_current_admin" not in src
+    def test_admin_websocket_uses_scope_not_flat_is_admin(self):
+        src = (_ROUTES_DIR / "websocket.py").read_text(encoding="utf-8")
+        # Isolate the admin WS endpoint body
+        start = src.index("async def admin_websocket_endpoint")
+        end = src.index("async def get_websocket_stats", start)
+        body = src[start:end]
+        assert "user_has_active_scope" in body
+        assert "AUDIT_VIEW" in body
+        assert "user.is_admin" not in body
 
 
 class TestRequireScopeHookPresent:
-    """Sanity: require_scope factory still stamps __require_scope__ for audits."""
-
     def test_require_scope_stamps_coverage_hook(self):
-        from src.auth.admin_scopes import PLAYERS_VIEW
-        from src.auth.dependencies import require_scope
+        from src.auth.admin_scopes import PLAYERS_VIEW, BANG_REGENERATE
+        from src.auth.dependencies import (
+            require_scope,
+            require_scope_from_header_or_query,
+        )
 
         dep = require_scope(PLAYERS_VIEW)
         assert getattr(dep, "__require_scope__") == PLAYERS_VIEW
+        sse = require_scope_from_header_or_query(BANG_REGENERATE)
+        assert getattr(sse, "__require_scope__") == BANG_REGENERATE

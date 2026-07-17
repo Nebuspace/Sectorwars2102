@@ -6,7 +6,8 @@ from sqlalchemy import select, func, or_
 from typing import Dict, List, Any, Optional
 from pydantic import BaseModel
 
-from src.auth.dependencies import get_current_user, get_current_player, get_current_admin_user
+from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.dependencies import get_current_user, get_current_player, require_scope
 from src.core.database import get_async_session
 from src.models.user import User
 from src.models.player import Player
@@ -64,7 +65,7 @@ class ClusterInfoResponse(BaseModel):
 async def generate_central_nexus(
     request: NexusGenerationRequest,
     background_tasks: BackgroundTasks,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     session: AsyncSession = Depends(get_async_session)
 ):
     """Generate the Central Nexus galaxy (Admin only). Requires admin authentication."""

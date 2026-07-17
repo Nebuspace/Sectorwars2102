@@ -17,7 +17,8 @@ from sqlalchemy.orm.attributes import flag_modified
 from pydantic import BaseModel
 
 from src.core.database import get_db
-from src.auth.dependencies import get_current_player, get_current_admin
+from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.dependencies import get_current_player, require_scope
 from src.models.player import Player
 from src.models.user import User
 from src.services.medal_service import MedalService
@@ -159,7 +160,7 @@ async def get_unviewed_awards(
 @router.post("/admin/grant", response_model=AdminMedalActionResponse)
 async def admin_grant_medal(
     payload: AdminGrantRequest,
-    admin: User = Depends(get_current_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db),
 ):
     """Admin: grant a medal to a player (idempotent — no-op if already held)."""
@@ -189,7 +190,7 @@ async def admin_grant_medal(
 @router.post("/admin/revoke", response_model=AdminMedalActionResponse)
 async def admin_revoke_medal(
     payload: AdminRevokeRequest,
-    admin: User = Depends(get_current_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db),
 ):
     """Admin: revoke a medal from a player."""

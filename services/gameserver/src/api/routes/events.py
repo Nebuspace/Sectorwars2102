@@ -6,7 +6,8 @@ from datetime import datetime, timedelta
 from pydantic import BaseModel
 
 from src.core.database import get_db
-from src.auth.dependencies import get_current_admin_user
+from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.dependencies import require_scope
 from src.models.game_event import GameEvent, EventTemplate, EventEffect, EventParticipation, EventType, EventStatus
 from src.models.user import User
 
@@ -72,7 +73,7 @@ async def get_events(
     type_filter: Optional[str] = Query(None),
     search_term: Optional[str] = Query(None),
     db: Session = Depends(get_db),
-    current_admin = Depends(get_current_admin_user)
+    current_admin = Depends(require_scope(PLAYERS_VIEW))
 ):
     """Get paginated events with filters"""
     
@@ -158,7 +159,7 @@ async def get_events(
 @router.get("/stats", response_model=EventStatsResponse)
 async def get_event_stats(
     db: Session = Depends(get_db),
-    current_admin = Depends(get_current_admin_user)
+    current_admin = Depends(require_scope(PLAYERS_VIEW))
 ):
     """Get event statistics"""
     
@@ -186,7 +187,7 @@ async def get_event_stats(
 @router.get("/templates", response_model=List[EventTemplateResponse])
 async def get_event_templates(
     db: Session = Depends(get_db),
-    current_admin = Depends(get_current_admin_user)
+    current_admin = Depends(require_scope(PLAYERS_VIEW))
 ):
     """Get available event templates"""
     
@@ -222,7 +223,7 @@ async def get_event_templates(
 async def create_event(
     event_data: CreateEventRequest,
     db: Session = Depends(get_db),
-    current_admin = Depends(get_current_admin_user)
+    current_admin = Depends(require_scope(PLAYERS_VIEW))
 ):
     """Create a new game event"""
     
@@ -291,7 +292,7 @@ async def update_event(
     event_id: str,
     event_data: CreateEventRequest,
     db: Session = Depends(get_db),
-    current_admin = Depends(get_current_admin_user)
+    current_admin = Depends(require_scope(PLAYERS_VIEW))
 ):
     """Update an existing event"""
     
@@ -364,7 +365,7 @@ async def update_event(
 async def activate_event(
     event_id: str,
     db: Session = Depends(get_db),
-    current_admin = Depends(get_current_admin_user)
+    current_admin = Depends(require_scope(PLAYERS_VIEW))
 ):
     """Activate a scheduled event"""
     
@@ -393,7 +394,7 @@ async def activate_event(
 async def deactivate_event(
     event_id: str,
     db: Session = Depends(get_db),
-    current_admin = Depends(get_current_admin_user)
+    current_admin = Depends(require_scope(PLAYERS_VIEW))
 ):
     """Deactivate an active event"""
     
@@ -421,7 +422,7 @@ async def deactivate_event(
 async def delete_event(
     event_id: str,
     db: Session = Depends(get_db),
-    current_admin = Depends(get_current_admin_user)
+    current_admin = Depends(require_scope(PLAYERS_VIEW))
 ):
     """Delete an event (only if not active)"""
     

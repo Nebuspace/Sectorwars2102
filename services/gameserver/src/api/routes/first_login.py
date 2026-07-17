@@ -6,7 +6,8 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 
 from src.core.database import get_db
-from src.auth.dependencies import get_current_player, get_current_admin_user
+from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.dependencies import get_current_player, require_scope
 from src.models.player import Player
 from src.models.user import User
 from src.models.first_login import ShipChoice, FirstLoginSession
@@ -535,7 +536,7 @@ async def complete_first_login(
 @router.get("/debug", include_in_schema=False)
 async def debug_first_login_state(
     player_id: UUID,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db),
     ai_service: AIDialogueService = Depends(get_ai_dialogue_service)
 ):

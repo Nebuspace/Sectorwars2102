@@ -13,7 +13,8 @@ from src.core.config import settings
 from src.models.user import User
 from src.models.admin_credentials import AdminCredentials
 from src.core.security import get_password_hash
-from src.auth.dependencies import get_current_admin_user
+from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.dependencies import require_scope
 
 router = APIRouter()
 
@@ -27,7 +28,7 @@ class CreateAdminRequest(BaseModel):
 @router.get("/check-admin-exists")
 async def check_admin_exists(
     username: str = Query(..., description="Username to check"),
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_async_session)
 ):
     """
@@ -47,7 +48,7 @@ async def check_admin_exists(
 @router.post("/create-admin", status_code=status.HTTP_201_CREATED)
 async def create_admin(
     request: CreateAdminRequest,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_async_session)
 ):
     """
