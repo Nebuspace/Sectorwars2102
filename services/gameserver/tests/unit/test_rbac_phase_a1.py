@@ -42,10 +42,11 @@ from src.models.admin_action_log import AdminActionLog
 # ---------------------------------------------------------------------------
 
 class TestScopeCatalog:
-    """The catalog is the single authoritative source of the 19 scopes."""
+    """The catalog is the authoritative scope vocabulary (ADR-0058 + staged ops)."""
 
-    def test_exactly_19_scopes(self):
-        assert len(ALL_SCOPES) == 19
+    def test_catalog_size(self):
+        # ADR-0058: 19 platform scopes + Max-ruled DISPUTES_RESOLVE (hub #4 / expansion).
+        assert len(ALL_SCOPES) == 20
 
     def test_all_scopes_start_with_admin_prefix(self):
         for scope in ALL_SCOPES:
@@ -65,10 +66,12 @@ class TestScopeCatalog:
         assert REGIONS_TERMINATE in HIGH_IMPACT_SCOPES
         assert SCOPES_GRANT in HIGH_IMPACT_SCOPES
         assert SCOPES_REVOKE in HIGH_IMPACT_SCOPES
+        assert admin_scopes.DISPUTES_RESOLVE in HIGH_IMPACT_SCOPES
 
     def test_high_impact_count(self):
         # subscriptions.* (3) + webhooks.replay + regions.terminate + scopes.* (2)
-        assert len(HIGH_IMPACT_SCOPES) == 7
+        # + disputes.resolve (1)
+        assert len(HIGH_IMPACT_SCOPES) == 8
 
     def test_meta_scopes_contains_three_members(self):
         assert len(META_SCOPES) == 3
@@ -82,7 +85,6 @@ class TestScopeCatalog:
 
     def test_no_duplicate_scope_values(self):
         # frozenset is de-duped by construction; verify the constants themselves
-        # (module-level names) have no duplicates among the 19 expected values
         expected = [
             admin_scopes.PLAYERS_VIEW,
             admin_scopes.PLAYERS_SUSPEND,
@@ -103,6 +105,7 @@ class TestScopeCatalog:
             admin_scopes.SCOPES_GRANT,
             admin_scopes.SCOPES_REVOKE,
             admin_scopes.AUDIT_VIEW,
+            admin_scopes.DISPUTES_RESOLVE,
         ]
         assert len(expected) == len(set(expected)), "Duplicate scope value in catalog constants"
         assert set(expected) == ALL_SCOPES
@@ -266,8 +269,8 @@ class TestSeedLogic:
         inserted = set(result.get(uid, []))
         assert admin_scopes.PLAYERS_VIEW not in inserted
         assert admin_scopes.PLAYERS_SUSPEND not in inserted
-        # all remaining 17 scopes are inserted
-        assert len(inserted) == 17
+        # all remaining scopes are inserted (catalog size − already held)
+        assert len(inserted) == len(admin_scopes.ALL_SCOPES) - len(have)
 
     def test_bootstrap_gets_meta_scopes_via_all_19(self):
         """Bootstrap (is_admin=true) gets all 19 which includes the 3 meta-scopes."""

@@ -120,7 +120,7 @@ def require_scope(scope: str) -> Callable:
     """
     if scope not in ALL_SCOPES:
         raise ValueError(
-            f"require_scope({scope!r}): not in the canonical 19-scope catalog"
+            f"require_scope({scope!r}): not in the canonical admin scope catalog"
         )
 
     missing = f"Missing required scope: {scope}"
@@ -196,7 +196,7 @@ def require_scope_from_header_or_query(scope: str) -> Callable:
     """
     if scope not in ALL_SCOPES:
         raise ValueError(
-            f"require_scope_from_header_or_query({scope!r}): not in the canonical 19-scope catalog"
+            f"require_scope_from_header_or_query({scope!r}): not in the canonical admin scope catalog"
         )
     missing = f"Missing required scope: {scope}"
 

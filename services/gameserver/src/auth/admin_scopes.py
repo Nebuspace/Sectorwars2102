@@ -1,10 +1,9 @@
-"""Admin scope catalog — RBAC Phase A1 (ADR-0058 A-F2).
+"""Admin scope catalog — RBAC Phase A1 (ADR-0058 A-F2) + Max-ruled expansion.
 
-The 19 canonical scopes are VERBATIM from the ADR.  This is a code module,
-not a database table: ``require_scope("admin.regions.terminate")`` must be a
-compile-visible constant, greppable for coverage audits.  GRANTS (who holds
-what scope) live as AdminScopeGrant rows; the catalog is the fixed vocabulary
-they reference.
+ADR-0058's 19 platform scopes are VERBATIM.  Operational scopes (e.g.
+``admin.disputes.resolve``) are Max-ruled additions (19→26); remaining 6
+land with the re-map + seed migration.  GRANTS live as AdminScopeGrant
+rows; the catalog is the fixed vocabulary they reference.
 
 HIGH_IMPACT subset: actions that carry material financial, access, or
 structural risk — surfaced to the daily review queue (Phase E) and subject to
@@ -50,6 +49,12 @@ SCOPES_GRANT = "admin.scopes.grant"
 SCOPES_REVOKE = "admin.scopes.revoke"
 AUDIT_VIEW = "admin.audit.view"
 
+# Operational (Max-ruled catalog expansion 19→26 — see
+# audit/design-briefs/rbac-scope-expansion-2026-07-17.md). Staged here for #4
+# cutover; the other 6 land with the re-map + seed migration.
+# Grantable today via SCOPES_GRANT API; seed migration follows (serialized vs BULK).
+DISPUTES_RESOLVE = "admin.disputes.resolve"
+
 # ---------------------------------------------------------------------------
 # Derived sets
 # ---------------------------------------------------------------------------
@@ -75,6 +80,7 @@ ALL_SCOPES: frozenset[str] = frozenset(
         SCOPES_GRANT,
         SCOPES_REVOKE,
         AUDIT_VIEW,
+        DISPUTES_RESOLVE,
     }
 )
 
@@ -91,6 +97,7 @@ HIGH_IMPACT_SCOPES: frozenset[str] = frozenset(
         REGIONS_TERMINATE,
         SCOPES_GRANT,
         SCOPES_REVOKE,
+        DISPUTES_RESOLVE,
     }
 )
 

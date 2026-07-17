@@ -6,8 +6,8 @@ synchronous and automated; anything it can't resolve escalates here
 
 `contract_service.resolve_dispute` is authz-FREE by design (it only logs
 admin_id) -- this route owns ALL authz via ``require_scope`` (``PLAYERS_VIEW``
-for read/list; ``PLAYERS_SUSPEND`` for the Tier-2 ruling).  Scope deps are
-resolved BEFORE ``db``/the service call on every mutating endpoint, so an
+for read/list; ``DISPUTES_RESOLVE`` for the Tier-2 ruling).  Scope deps
+are resolved BEFORE ``db``/the service call on every mutating endpoint, so an
 unauthenticated or scopeless caller is rejected before ``resolve_dispute`` (and
 therefore any credit mutation) is ever reached -- see
 tests/unit/test_admin_contract_disputes.py for the route-level proof.
@@ -27,7 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from src.auth.admin_scopes import PLAYERS_SUSPEND, PLAYERS_VIEW
+from src.auth.admin_scopes import DISPUTES_RESOLVE, PLAYERS_VIEW
 from src.auth.dependencies import require_scope
 from src.core.database import get_db
 from src.models.contract import Contract, ContractDisputeResolution, ContractStatus
@@ -122,7 +122,7 @@ async def get_disputed_contract(
 async def resolve_contract_dispute(
     contract_id: str,
     body: ResolveDisputeRequest,
-    admin: User = Depends(require_scope(PLAYERS_SUSPEND)),
+    admin: User = Depends(require_scope(DISPUTES_RESOLVE)),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """The Tier-2 ruling. ``admin`` resolves first -- an unauthenticated or
