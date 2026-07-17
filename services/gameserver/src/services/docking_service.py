@@ -47,6 +47,7 @@ from sqlalchemy.orm import Session
 
 from src.core import game_time
 from src.models.docking import DockingQueueEntry, DockingSlipOccupancy
+from src.models.npc_character import NPCCharacter
 from src.models.player import Player
 from src.models.ship import Ship, ShipSize, ShipSpecification
 from src.models.station import Station
@@ -625,6 +626,75 @@ def release(db: Session, station: Optional[Station], player: Player) -> bool:
     """
     occupancy = db.query(DockingSlipOccupancy).filter(
         DockingSlipOccupancy.player_id == player.id
+    ).first()
+    if occupancy is None:
+        return False
+    db.delete(occupancy)
+    return True
+
+
+def acquire_for_npc(
+    db: Session, station: Station, npc: NPCCharacter, ship_id: Optional[UUID] = None,
+) -> bool:
+    """Best-effort transient-slip claim for a TRADER-archetype NPC
+    (WO-P9-realtime-npc-trader-slips, npc-traders.md § Market participation
+    -- "traders occupy real docking slips like players"). Idempotent: a
+    no-op (returns True) if this NPC already holds a slip at THIS station
+    (npc_id is UNIQUE galaxy-wide, mirroring player_id's own invariant).
+
+    Deliberately NOT a hard economic gate: unlike the player path, a full
+    station does not block the trade -- run_trade_stop's sell/buy program
+    always completes regardless of slip availability (canon's own "the
+    economy is driven by real product moved by real actors" principle
+    takes priority; inventing an NPC queue/reject path is a materially
+    bigger feature this WO does not ask for). A trader simply occupies a
+    slip WHEN one is free, for the player-visible congestion effect and
+    the anti-camp tenure bookkeeping; when the transient pool is already
+    full it trades without holding one. No reputation gate, no FIFO queue,
+    no bump eligibility for NPCs -- those are player-specific mechanics.
+
+    Locks the station row (the SAME row run_trade_stop's own caller query
+    already holds at call time -- a same-transaction re-lock is a no-op,
+    not a new contention point). Does NOT commit.
+    """
+    station = db.query(Station).filter(Station.id == station.id).with_for_update().first()
+    if station is None:
+        return False
+
+    existing = db.query(DockingSlipOccupancy).filter(
+        DockingSlipOccupancy.npc_id == npc.id
+    ).first()
+    if existing is not None:
+        if existing.station_id == station.id:
+            return True
+        # Held elsewhere (a prior stop's slip the reconciliation sweep
+        # hasn't cleared yet) -- release it before claiming a new one so
+        # an NPC never holds two slips across the galaxy at once. Mirrors
+        # acquire()'s own WO-DOCK-500 Leg 2 defensive clear for players
+        # (same invariant, same failure class, already fixed there once).
+        db.delete(existing)
+        db.flush()
+
+    capacity = slip_capacity_for(station)
+    occupied = len(_transient_occupancies(db, station.id))
+    if occupied >= capacity:
+        return False
+
+    db.add(DockingSlipOccupancy(
+        station_id=station.id,
+        npc_id=npc.id,
+        ship_id=ship_id,
+        slip_class=DockingSlipOccupancy.SLIP_CLASS_TRANSIENT,
+    ))
+    db.flush()
+    return True
+
+
+def release_for_npc(db: Session, npc: NPCCharacter) -> bool:
+    """Release npc's slip, if any. Tolerates a missing row silently (never
+    acquired one, or already released). Does NOT commit."""
+    occupancy = db.query(DockingSlipOccupancy).filter(
+        DockingSlipOccupancy.npc_id == npc.id
     ).first()
     if occupancy is None:
         return False

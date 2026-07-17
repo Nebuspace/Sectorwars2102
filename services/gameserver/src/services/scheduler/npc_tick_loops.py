@@ -186,6 +186,18 @@ def run_loop_a(db: Session, tick: int = 0) -> List[Dict[str, Any]]:
     except Exception:
         logger.exception("Loop A: capital Fed presence ensure failed")
 
+    # WO-P9-realtime-npc-trader-slips: release any trader-held docking slip
+    # whose work_station block ended or whose anti-camp tenure ceiling
+    # expired (see npc_trading_service.release_stale_trader_slips's own
+    # docstring for why this can't live inside _drive_trade_stop/
+    # run_trade_stop itself — no driver ever re-visits an NPC once its
+    # schedule moves past the station block).
+    try:
+        from src.services import npc_trading_service
+        npc_trading_service.release_stale_trader_slips(db)
+    except Exception:
+        logger.exception("Loop A: trader slip release sweep failed")
+
     # WO-ISP: advance/finish in-system legs + schedule burns for active NPCs.
     try:
         from src.services import intrasystem_movement_service as isp

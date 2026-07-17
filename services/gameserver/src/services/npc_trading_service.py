@@ -60,11 +60,19 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
+from src.models.docking import DockingSlipOccupancy
 from src.models.market_transaction import MarketPrice, MarketTransaction, TransactionType
-from src.models.npc_character import NPCCharacter
+from src.models.npc_character import NPCCharacter, NPCLifecycleStage
 from src.models.sector import Sector
 from src.models.ship import Ship
 from src.models.station import Station, StationType
+from src.services import docking_service
+from src.services.scheduler._common import (
+    canonical_day_number,
+    canonical_minute_of_day,
+    canonical_weekday,
+    resolve_schedule_block,
+)
 from src.services.trading_service import (
     TradingService,
     compute_region_tariff_multiplier,
@@ -148,6 +156,21 @@ NPC_HOSTILITY_LEDGER_KEY = "npc_takeover_hostility"
 # once Max sets canon.
 NPC_HOSTILITY_PER_TRADE_WEIGHT = 0.001   # NO-CANON: hostility units per credit of NPC trade value
 NPC_HOSTILITY_CAP = 1000.0               # NO-CANON: hard ceiling on accumulated NPC-driven hostility per station
+
+# --- Docking-slip anti-camp tenure (npc-traders.md § Market participation,
+#     WO-P9-realtime-npc-trader-slips) ---------------------------------------
+# ⚠️ NO-CANON MAGNITUDE -- FLAG FOR MAX / DECISIONS. Canon states the
+# REQUIREMENT ("a slip-tenure limit forces traders to release slips promptly
+# so they cannot be used to grief player docking") but gives no number.
+# Picked conservatively: well under docking_service.BUMP_MIN_TENURE_HOURS
+# (4 canonical hours, the player-side "you may now pay to evict a squatter"
+# threshold) so a camping trader is never the galaxy's longest-tenured
+# occupant, and well under the ~13-canonical-hour work_station window a
+# trading-day schedule block reserves (build_trader_schedule) -- otherwise
+# the ceiling would never actually bind and release_stale_trader_slips'
+# schedule-block-membership check (the normal, prompt release path) would
+# be the ONLY real release trigger, leaving the ceiling a dead safety net.
+TRADER_SLIP_TENURE_CEILING_HOURS = 2.0   # NO-CANON: conservative anti-camp bound
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +522,21 @@ def run_trade_stop(
     if ship is None or ship.is_destroyed:
         return []
 
+    # WO-P9-realtime-npc-trader-slips (npc-traders.md § Market participation):
+    # claim a real transient docking slip through the SAME occupancy surface
+    # the player dock path uses, before the trade program runs. Best-effort
+    # and non-gating (see docking_service.acquire_for_npc's own docstring) --
+    # a full station never blocks the trade, it just means this trader trades
+    # without holding a slip this stop. Idempotent: a no-op on every repeat
+    # Loop A pass through the same work_station block once the first pass has
+    # already claimed one. Release is NOT handled here -- run_trade_stop has
+    # no signal for when the NPC's block ENDS (it simply stops being called);
+    # release_stale_trader_slips (called once per Loop A tick, see
+    # npc_tick_loops.py) is the release side, gated on block-membership +
+    # an anti-camp tenure ceiling so a slip is never stranded even if this
+    # trader's schedule stalls.
+    docking_service.acquire_for_npc(db, station, npc, ship_id=ship.id)
+
     trading = TradingService(db)
     commodities = station.commodities or {}
     cargo = ship.cargo or {"capacity": 0, "used": 0, "contents": {}}
@@ -719,3 +757,77 @@ def run_trade_stop(
         npc.display_name, station.name, npc.credits,
     )
     return []
+
+
+def release_stale_trader_slips(db: Session) -> int:
+    """Release every TRADER-held docking slip that should no longer be
+    held (WO-P9-realtime-npc-trader-slips). Called once per Loop A tick
+    (npc_tick_loops.run_loop_a), mirroring npc_movement_service.
+    ensure_capital_fed_presence's own per-tick reconciliation-sweep shape
+    -- idempotent, self-healing, safe to call every tick.
+
+    run_trade_stop has no signal for when its own work_station block ENDS
+    (it simply stops being called once the schedule rolls past it — the
+    scheduler's elif-dispatch in npc_tick_loops.run_loop_a has no driver
+    for the following `socialize` block at the same station), so release
+    can't live there. Two independent triggers, either one releases:
+
+    1. Block-membership check (the normal, prompt release): the owning
+       NPC's CURRENTLY resolved schedule block is no longer a
+       WORK_STATION/station block at THIS SAME station. Covers the
+       common case — trading finished, schedule moved on to socialize/
+       commute/a new day — releasing promptly rather than waiting out
+       the full tenure ceiling on every single stop.
+    2. Tenure ceiling (the safety net, team-caution "must still release
+       even if its schedule stalls"): TRADER_SLIP_TENURE_CEILING_HOURS
+       exceeded, regardless of what the schedule currently says. Also
+       covers the NPC row vanishing or reaching KIA/RETIRED — a stale
+       occupancy with no live schedule to consult must still age out.
+
+    Does NOT commit — the caller's flush/commit boundary applies (mirrors
+    every other Loop A driver in this scheduler)."""
+    occupancies = (
+        db.query(DockingSlipOccupancy)
+        .filter(DockingSlipOccupancy.npc_id.isnot(None))
+        .all()
+    )
+    if not occupancies:
+        return 0
+
+    now = datetime.now(UTC)
+    minute = canonical_minute_of_day(now)
+    weekday = canonical_weekday(now)
+    day_number = canonical_day_number(now)
+
+    released = 0
+    for occ in occupancies:
+        if docking_service.occupant_tenure_hours(occ, now) >= TRADER_SLIP_TENURE_CEILING_HOURS:
+            db.delete(occ)
+            released += 1
+            continue
+
+        npc = db.query(NPCCharacter).filter(NPCCharacter.id == occ.npc_id).first()
+        if npc is None or npc.lifecycle_stage in (
+            NPCLifecycleStage.KIA, NPCLifecycleStage.RETIRED,
+        ):
+            db.delete(occ)
+            released += 1
+            continue
+
+        block = resolve_schedule_block(
+            npc.daily_schedule or {}, minute, weekday, day_number
+        )
+        ref = (block or {}).get("location_ref") or {}
+        still_working_here = (
+            block is not None
+            and str(block.get("activity", "")).upper() == "WORK_STATION"
+            and str(block.get("location_type", "")) == "station"
+            and str(ref.get("station_id")) == str(occ.station_id)
+        )
+        if not still_working_here:
+            db.delete(occ)
+            released += 1
+
+    if released:
+        db.flush()
+    return released
