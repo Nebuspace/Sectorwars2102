@@ -33,12 +33,10 @@ class AdminScopeGrant(Base):
 
     __tablename__ = "admin_scope_grants"
     __table_args__ = (
-        # Each user may hold at most one active grant per scope.  A revoked
-        # grant stays in the table (audit trail); a fresh re-grant creates a
-        # new row — so the unique key is over ALL rows, not just active ones,
-        # but we model uniqueness at INSERT time (not a DB unique constraint
-        # on the pair, which would block re-grants).  The partial index below
-        # is the fast lookup path for active grants.
+        # At most one ACTIVE grant per (user, scope).  Revoked rows stay for
+        # audit; a re-grant inserts a new row.  Uniqueness is a UNIQUE partial
+        # index WHERE revoked_at IS NULL (not a full-table unique on the pair,
+        # which would block re-grants after revoke).
         Index(
             "ix_admin_scope_grants_active",
             "user_id",

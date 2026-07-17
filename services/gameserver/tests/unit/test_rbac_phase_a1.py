@@ -152,6 +152,21 @@ class TestAdminScopeGrantModel:
         assert cols >= {"id", "user_id", "scope", "granted_by", "granted_at",
                         "revoked_at", "revoked_by"}
 
+    def test_active_grant_index_is_unique_partial(self):
+        """Cipher #3: ix_admin_scope_grants_active must be UNIQUE WHERE revoked_at IS NULL."""
+        idx = next(
+            i for i in AdminScopeGrant.__table__.indexes
+            if i.name == "ix_admin_scope_grants_active"
+        )
+        assert idx.unique is True
+        assert [c.name for c in idx.columns] == ["user_id", "scope"]
+        # SQLAlchemy stores the partial predicate on dialect_options / kwargs
+        where = idx.dialect_options.get("postgresql", {}).get("where")
+        if where is None:
+            where = getattr(idx, "kwargs", {}).get("postgresql_where")
+        assert where is not None
+        assert "revoked_at IS NULL" in str(where)
+
 
 # ---------------------------------------------------------------------------
 # AdminActionLog model
@@ -293,3 +308,41 @@ class TestModelsRegistration:
     def test_admin_action_log_importable_from_models(self):
         from src.models import AdminActionLog as Imported
         assert Imported is AdminActionLog
+
+
+# ---------------------------------------------------------------------------
+# A1-HARDEN — migration source assertions (DB-free)
+# ---------------------------------------------------------------------------
+
+class TestA1HardenMigrationSource:
+    """Cipher #3/#4: not-yet-applied migration must ship unique + append-only."""
+
+    @staticmethod
+    def _migration_text() -> str:
+        from pathlib import Path
+        path = (
+            Path(__file__).resolve().parents[2]
+            / "alembic"
+            / "versions"
+            / "e2a7f3c8b5d1_rbac_phase_a1_admin_scope_tables.py"
+        )
+        return path.read_text()
+
+    def test_active_grant_index_unique_true_in_migration(self):
+        text = self._migration_text()
+        assert 'unique=True' in text
+        assert "ix_admin_scope_grants_active" in text
+        assert 'revoked_at IS NULL' in text
+
+    def test_append_only_trigger_in_migration(self):
+        text = self._migration_text()
+        assert "admin_action_logs_append_only" in text
+        assert "trg_admin_action_logs_append_only" in text
+        assert "only reviewed_by/reviewed_at may change" in text
+        assert "DELETE forbidden" in text
+
+    def test_app_role_revoke_and_column_grant_in_migration(self):
+        text = self._migration_text()
+        assert "REVOKE DELETE ON TABLE admin_action_logs FROM sectorwars_app" in text
+        assert "REVOKE UPDATE ON TABLE admin_action_logs FROM sectorwars_app" in text
+        assert "GRANT UPDATE (reviewed_by, reviewed_at)" in text

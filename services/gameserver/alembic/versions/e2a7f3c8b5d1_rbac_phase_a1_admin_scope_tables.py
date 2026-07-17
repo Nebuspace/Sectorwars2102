@@ -18,7 +18,10 @@ Cipher compliance
 - No admin under-seeded: the ``WHERE is_admin = true`` predicate covers
   every current admin row including bootstrap → zero lockout path.
 - AdminActionLog FK uses SET NULL → deleting a user does not cascade-wipe
-  their audit trail (append-only guarantee preserved at DB level).
+  their audit trail.
+- A1-HARDEN: UNIQUE partial index on active grants; AdminActionLog
+  append-only via BEFORE DELETE/UPDATE trigger + REVOKE from app role
+  with column-scoped UPDATE (reviewed_by, reviewed_at) for Phase E ack.
 
 Revision ID: e2a7f3c8b5d1
 Revises: d4f8b16a92c1
@@ -162,6 +165,67 @@ def upgrade() -> None:
     )
 
     # ------------------------------------------------------------------
+    # A1-HARDEN Cipher #4: DB-enforce append-only on admin_action_logs
+    # ------------------------------------------------------------------
+    # Trigger is the hard guarantee (fires even for the table owner).
+    # REVOKE is belt-and-suspenders for sectorwars_app when that role exists
+    # and is not the owner — column-scoped GRANT keeps Phase E ack writable.
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION admin_action_logs_append_only()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $fn$
+        BEGIN
+            IF TG_OP = 'DELETE' THEN
+                RAISE EXCEPTION
+                    'admin_action_logs is append-only: DELETE forbidden';
+            END IF;
+            IF TG_OP = 'UPDATE' THEN
+                IF NEW.id IS DISTINCT FROM OLD.id
+                   OR NEW.admin_user_id IS DISTINCT FROM OLD.admin_user_id
+                   OR NEW.scope_used IS DISTINCT FROM OLD.scope_used
+                   OR NEW.action IS DISTINCT FROM OLD.action
+                   OR NEW.target_type IS DISTINCT FROM OLD.target_type
+                   OR NEW.target_id IS DISTINCT FROM OLD.target_id
+                   OR NEW.payload_snapshot IS DISTINCT FROM OLD.payload_snapshot
+                   OR NEW.result IS DISTINCT FROM OLD.result
+                   OR NEW.failure_reason IS DISTINCT FROM OLD.failure_reason
+                   OR NEW.at IS DISTINCT FROM OLD.at
+                THEN
+                    RAISE EXCEPTION
+                        'admin_action_logs is append-only: only reviewed_by/reviewed_at may change';
+                END IF;
+            END IF;
+            RETURN NEW;
+        END;
+        $fn$;
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER trg_admin_action_logs_append_only
+            BEFORE UPDATE OR DELETE ON admin_action_logs
+            FOR EACH ROW
+            EXECUTE PROCEDURE admin_action_logs_append_only();
+        """
+    )
+    op.execute(
+        """
+        DO $do$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'sectorwars_app') THEN
+                REVOKE DELETE ON TABLE admin_action_logs FROM sectorwars_app;
+                REVOKE UPDATE ON TABLE admin_action_logs FROM sectorwars_app;
+                GRANT UPDATE (reviewed_by, reviewed_at)
+                    ON TABLE admin_action_logs TO sectorwars_app;
+            END IF;
+        END
+        $do$;
+        """
+    )
+
+    # ------------------------------------------------------------------
     # Seed: every is_admin=true user gets all 19 scopes
     # ON CONFLICT DO NOTHING makes this idempotent.
     # ------------------------------------------------------------------
@@ -208,6 +272,21 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute(
+        """
+        DO $do$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'sectorwars_app') THEN
+                GRANT UPDATE ON TABLE admin_action_logs TO sectorwars_app;
+                GRANT DELETE ON TABLE admin_action_logs TO sectorwars_app;
+            END IF;
+        END
+        $do$;
+        """
+    )
+    op.execute("DROP TRIGGER IF EXISTS trg_admin_action_logs_append_only ON admin_action_logs")
+    op.execute("DROP FUNCTION IF EXISTS admin_action_logs_append_only()")
+
     op.drop_index("ix_admin_action_logs_scope_reviewed", table_name="admin_action_logs")
     op.drop_index("ix_admin_action_logs_at", table_name="admin_action_logs")
     op.drop_index("ix_admin_action_logs_admin_user_id", table_name="admin_action_logs")
