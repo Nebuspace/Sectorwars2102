@@ -78,6 +78,22 @@ class TestE5WrappedRouteSet:
                 "POST /admin/game-events/{event_id}/activate",
                 "POST /admin/game-events/{event_id}/deactivate",
                 "DELETE /admin/game-events/{event_id}",
+                "PUT /admin/sectors/{sector_id}",
+                "POST /admin/sectors/{sector_id}/planet",
+                "PATCH /admin/planets/{planet_id}",
+                "DELETE /admin/planets/{planet_id}",
+                "POST /admin/sectors/{sector_id}/port",
+                "POST /admin/sectors/{sector_id}/warp-tunnels",
+                "PUT /admin/warp-tunnels/{tunnel_id}",
+                "DELETE /admin/warp-tunnels/{tunnel_id}",
+                "DELETE /admin/ports/{station_id}",
+                "POST /admin/ports",
+                "POST /admin/planets/{planet_id}/tick",
+                "PUT /admin/sector/{sector_id}",
+                "POST /admin/port/create",
+                "POST /admin/planet/create",
+                "POST /admin/warp-tunnel/create-enhanced",
+                "POST /admin/factions/",
             }
         )
         assert SCOPES_REVOKE in HIGH_IMPACT_SCOPES

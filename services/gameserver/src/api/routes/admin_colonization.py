@@ -22,6 +22,7 @@ from src.models.ship import Ship
 from src.models.sector import Sector
 from src.models.team import Team
 from src.services.admin_action_log_service import log_admin_action
+from src.services.admin_action_attempt import admin_action_attempt
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -808,7 +809,7 @@ async def tick_planet_production(
         # CRT WO-K1a cutover: the admin /tick drives the full planetary tick via settle()
         # (production + siege + terraform + research faucet, each idempotent on its own anchor).
         from src.services.structures import settle
-        log_admin_action(
+        with admin_action_attempt(
             db,
             actor=current_admin,
             scope_used=GALAXY_MANAGE,
@@ -816,17 +817,17 @@ async def tick_planet_production(
             target_type="planet",
             target_id=str(planet_id),
             payload={},
-        )
-
-        changed = settle(planet, db=db).changed
-        # Commit even on the no-unit-but-anchor-advanced path so the durable anchor advance
-        # persists (settle() reports changed there too); rollback only when truly nothing changed
-        # to release the row lock.
-        if changed:
-            db.commit()
-            db.refresh(planet)
-        else:
-            db.rollback()
+        ) as attempt:
+            changed = settle(planet, db=db).changed
+            # Commit only when something changed; no-op releases the lock with no
+            # audit row (matches prior log-then-rollback-on-noop behavior).
+            if changed:
+                attempt.succeed(payload={"changed": True})
+                db.refresh(planet)
+            else:
+                db.rollback()
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
         logger.error(f"Error ticking production for planet {planet_id}: {e}")

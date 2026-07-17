@@ -219,26 +219,25 @@ class admin_action_attempt:
         return False
 
 
-# E-5 first-cut wrapped surfaces (HIGH_IMPACT). Deferred routes listed in
-# tests/unit/test_rbac_phase_e5_attempts.py — do not silently expand coverage
-# until hub-cipher RE-GATE on this helper PASSes.
+# E-5 HIGH_IMPACT wrapped surfaces (wave-2). Deferred (E-5b): AsyncSession
+# drones, FactionService intervening-commit routes, AnalyticsService snapshot.
 E5_WRAPPED_ROUTES: frozenset[str] = frozenset(
     {
         "POST /admin/scopes/grant",
         "POST /admin/scopes/revoke",
         "POST /admin/contracts/{contract_id}/resolve-dispute",
-        # Wave-2 money-path (PLAYERS_ADJUST_CREDITS) — after real-session boundary test
+        # PLAYERS_ADJUST_CREDITS
         "PATCH /admin/players/{player_id}",
         "POST /admin/players/create-from-user",
         "POST /admin/players/create-bulk",
-        # Wave-2 ships (SHIPS_MANAGE) — sync routes; drones deferred (AsyncSession)
+        # SHIPS_MANAGE (sync; drones deferred)
         "POST /admin/ships",
         "PUT /admin/ships/{ship_id}",
         "DELETE /admin/ships/{ship_id}",
         "POST /admin/ships/{ship_id}/teleport",
         "POST /admin/ships/create",
         "POST /admin/ships/{ship_id}/emergency",
-        # Wave-2 galaxy (GALAXY_MANAGE) — admin.py sync mutators
+        # GALAXY_MANAGE — admin.py
         "POST /admin/warp-tunnels/create",
         "DELETE /admin/galaxy/clear",
         "POST /admin/galaxy/fix-statistics",
@@ -248,5 +247,22 @@ E5_WRAPPED_ROUTES: frozenset[str] = frozenset(
         "POST /admin/game-events/{event_id}/activate",
         "POST /admin/game-events/{event_id}/deactivate",
         "DELETE /admin/game-events/{event_id}",
+        # GALAXY_MANAGE — comprehensive / colonization / enhanced / factions-create
+        "PUT /admin/sectors/{sector_id}",
+        "POST /admin/sectors/{sector_id}/planet",
+        "PATCH /admin/planets/{planet_id}",
+        "DELETE /admin/planets/{planet_id}",
+        "POST /admin/sectors/{sector_id}/port",
+        "POST /admin/sectors/{sector_id}/warp-tunnels",
+        "PUT /admin/warp-tunnels/{tunnel_id}",
+        "DELETE /admin/warp-tunnels/{tunnel_id}",
+        "DELETE /admin/ports/{station_id}",
+        "POST /admin/ports",
+        "POST /admin/planets/{planet_id}/tick",
+        "PUT /admin/sector/{sector_id}",
+        "POST /admin/port/create",
+        "POST /admin/planet/create",
+        "POST /admin/warp-tunnel/create-enhanced",
+        "POST /admin/factions/",
     }
 )

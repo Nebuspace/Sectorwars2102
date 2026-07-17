@@ -16,6 +16,7 @@ from src.models.user import User
 from src.models.faction import Faction, FactionType
 from src.services.faction_service import FactionService
 from src.services.admin_action_log_service import log_admin_action
+from src.services.admin_action_attempt import admin_action_attempt
 
 router = APIRouter(prefix="/admin/factions", tags=["admin-factions"])
 
@@ -117,55 +118,61 @@ async def create_faction(
     admin_user: User = Depends(require_scope(GALAXY_MANAGE))
 ):
     """Create a new faction (admin only)."""
-    # Check if faction with same name exists
-    existing = db.query(Faction).filter(Faction.name == request.name).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Faction with this name already exists")
-    
-    faction = Faction(
-        name=request.name,
-        faction_type=request.faction_type.value if hasattr(request.faction_type, 'value') else request.faction_type,
-        description=request.description,
-        base_pricing_modifier=request.base_pricing_modifier,
-        trade_specialties=request.trade_specialties,
-        aggression_level=request.aggression_level,
-        diplomacy_stance=request.diplomacy_stance,
-        color_primary=request.color_primary,
-        color_secondary=request.color_secondary,
-        logo_url=request.logo_url
-    )
-    
-    db.add(faction)
-    log_admin_action(
+    with admin_action_attempt(
         db,
         actor=admin_user,
         scope_used=GALAXY_MANAGE,
         action="faction_create",
         target_type="faction",
-        target_id=str(faction.id),
+        target_id="pending",
         payload={"name": request.name},
-    )
+    ) as attempt:
+        existing = db.query(Faction).filter(Faction.name == request.name).first()
+        if existing:
+            raise HTTPException(
+                status_code=400, detail="Faction with this name already exists"
+            )
 
-    db.commit()
-    db.refresh(faction)
-    
-    return FactionDetailResponse(
-        id=str(faction.id),
-        name=faction.name,
-        faction_type=faction.faction_type.value,
-        description=faction.description,
-        territory_sectors=[],
-        home_sector_id=None,
-        base_pricing_modifier=faction.base_pricing_modifier,
-        trade_specialties=faction.trade_specialties or [],
-        aggression_level=faction.aggression_level,
-        diplomacy_stance=faction.diplomacy_stance,
-        color_primary=faction.color_primary,
-        color_secondary=faction.color_secondary,
-        logo_url=faction.logo_url,
-        created_at=faction.created_at,
-        updated_at=faction.updated_at
-    )
+        faction = Faction(
+            name=request.name,
+            faction_type=(
+                request.faction_type.value
+                if hasattr(request.faction_type, "value")
+                else request.faction_type
+            ),
+            description=request.description,
+            base_pricing_modifier=request.base_pricing_modifier,
+            trade_specialties=request.trade_specialties,
+            aggression_level=request.aggression_level,
+            diplomacy_stance=request.diplomacy_stance,
+            color_primary=request.color_primary,
+            color_secondary=request.color_secondary,
+            logo_url=request.logo_url,
+        )
+
+        db.add(faction)
+        db.flush()
+        attempt.target_id = str(faction.id)
+        attempt.succeed(payload={"name": request.name})
+        db.refresh(faction)
+
+        return FactionDetailResponse(
+            id=str(faction.id),
+            name=faction.name,
+            faction_type=faction.faction_type.value,
+            description=faction.description,
+            territory_sectors=[],
+            home_sector_id=None,
+            base_pricing_modifier=faction.base_pricing_modifier,
+            trade_specialties=faction.trade_specialties or [],
+            aggression_level=faction.aggression_level,
+            diplomacy_stance=faction.diplomacy_stance,
+            color_primary=faction.color_primary,
+            color_secondary=faction.color_secondary,
+            logo_url=faction.logo_url,
+            created_at=faction.created_at,
+            updated_at=faction.updated_at,
+        )
 
 
 @router.put("/{faction_id}", response_model=FactionDetailResponse)

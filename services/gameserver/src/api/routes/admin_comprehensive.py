@@ -1977,76 +1977,79 @@ async def update_sector(
     db: Session = Depends(get_db)
 ):
     """Update a sector's properties"""
-    try:
-        # Convert sector_id to UUID if it looks like a UUID, otherwise treat as sector_id number
-        if len(sector_id) > 10:  # UUID length check
-            sector = db.query(Sector).filter(Sector.id == uuid.UUID(sector_id)).first()
-        else:
-            sector = db.query(Sector).filter(Sector.sector_id == int(sector_id)).first()
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="sector_update",
+        target_type="sector",
+        target_id=str(sector_id),
+        payload={},
+    ) as attempt:
+        try:
+            # Convert sector_id to UUID if it looks like a UUID, otherwise treat as sector_id number
+            if len(sector_id) > 10:  # UUID length check
+                sector = db.query(Sector).filter(Sector.id == uuid.UUID(sector_id)).first()
+            else:
+                sector = db.query(Sector).filter(Sector.sector_id == int(sector_id)).first()
         
-        if not sector:
-            raise HTTPException(status_code=404, detail="Sector not found")
+            if not sector:
+                raise HTTPException(status_code=404, detail="Sector not found")
         
-        # Import SectorType enum for validation
-        from src.models.sector import SectorType
+            # Import SectorType enum for validation
+            from src.models.sector import SectorType
         
-        # Update basic fields
-        update_data = sector_data.dict(exclude_unset=True)
+            # Update basic fields
+            update_data = sector_data.dict(exclude_unset=True)
         
-        for field, value in update_data.items():
-            if field == "type" and value:
-                # Validate and convert sector type
-                try:
-                    sector_type = SectorType(value)
-                    setattr(sector, field, sector_type)
-                except ValueError:
-                    raise HTTPException(status_code=400, detail=f"Invalid sector type: {value}")
-            elif field == "discovered_by_id" and value:
-                # Validate player exists
-                player = db.query(Player).filter(Player.id == uuid.UUID(value)).first()
-                if not player:
-                    raise HTTPException(status_code=400, detail="Invalid discovered_by_id: player not found")
-                setattr(sector, field, uuid.UUID(value))
-            elif field == "controlling_team_id" and value:
-                # Validate team exists
-                team = db.query(Team).filter(Team.id == uuid.UUID(value)).first()
-                if not team:
-                    raise HTTPException(status_code=400, detail="Invalid controlling_team_id: team not found")
-                setattr(sector, field, uuid.UUID(value))
-            elif hasattr(sector, field):
-                setattr(sector, field, value)
-        
-        # Update last_updated timestamp
-        sector.last_updated = datetime.now(timezone.utc)
-        
-        log_admin_action(
-            db,
-            actor=current_admin,
-            scope_used=GALAXY_MANAGE,
-            action="sector_update",
-            target_type="sector",
-            target_id=str(sector_id),
-            payload={"updated_fields": list(update_data.keys())},
-        )
+            for field, value in update_data.items():
+                if field == "type" and value:
+                    # Validate and convert sector type
+                    try:
+                        sector_type = SectorType(value)
+                        setattr(sector, field, sector_type)
+                    except HTTPException:
 
-        db.commit()
-        db.refresh(sector)
+                        raise
+
+                    except ValueError:
+                        raise HTTPException(status_code=400, detail=f"Invalid sector type: {value}")
+                elif field == "discovered_by_id" and value:
+                    # Validate player exists
+                    player = db.query(Player).filter(Player.id == uuid.UUID(value)).first()
+                    if not player:
+                        raise HTTPException(status_code=400, detail="Invalid discovered_by_id: player not found")
+                    setattr(sector, field, uuid.UUID(value))
+                elif field == "controlling_team_id" and value:
+                    # Validate team exists
+                    team = db.query(Team).filter(Team.id == uuid.UUID(value)).first()
+                    if not team:
+                        raise HTTPException(status_code=400, detail="Invalid controlling_team_id: team not found")
+                    setattr(sector, field, uuid.UUID(value))
+                elif hasattr(sector, field):
+                    setattr(sector, field, value)
         
-        logger.info(f"Admin {current_admin.username} updated sector {sector.name} (ID: {sector.sector_id})")
+            # Update last_updated timestamp
+            sector.last_updated = datetime.now(timezone.utc)
         
-        return {
-            "message": "Sector updated successfully",
-            "sector_id": str(sector.id),
-            "sector_number": sector.sector_id,
-            "name": sector.name
-        }
+            attempt.succeed(payload={"updated_fields": list(update_data.keys())})
+            db.refresh(sector)
         
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}")
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error updating sector {sector_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to update sector: {str(e)}")
+            logger.info(f"Admin {current_admin.username} updated sector {sector.name} (ID: {sector.sector_id})")
+        
+            return {
+                "message": "Sector updated successfully",
+                "sector_id": str(sector.id),
+                "sector_number": sector.sector_id,
+                "name": sector.name
+            }
+        
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}")
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error updating sector {sector_id}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to update sector: {str(e)}")
 
 @router.post("/sectors/{sector_id}/planet", response_model=Dict[str, Any])
 async def create_planet_in_sector(
@@ -2056,86 +2059,91 @@ async def create_planet_in_sector(
     db: Session = Depends(get_db)
 ):
     """Create a planet in the specified sector"""
-    try:
-        # Find the sector - try UUID first, fallback to integer sector_id
-        sector = None
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="planet_create",
+        target_type="planet",
+        target_id="pending",
+        payload={},
+    ) as attempt:
         try:
-            # Try as UUID first (UUIDs are 36 characters with hyphens)
-            sector_uuid = uuid.UUID(sector_id)
-            sector = db.query(Sector).filter(Sector.id == sector_uuid).first()
-        except ValueError:
-            # If UUID parsing fails, try as integer sector_id
+            # Find the sector - try UUID first, fallback to integer sector_id
+            sector = None
             try:
-                sector_int = int(sector_id)
-                sector = db.query(Sector).filter(Sector.sector_id == sector_int).first()
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid sector ID format")
-        
-        if not sector:
-            raise HTTPException(status_code=404, detail="Sector not found")
-        
-        # Check if sector already has a planet
-        existing_planet = db.query(Planet).filter(
-            Planet.sector_uuid == sector.id
-        ).first()
-        
-        if existing_planet:
-            raise HTTPException(status_code=400, detail="Sector already has a planet")
-        
-        # Import and validate planet type
-        from src.models.planet import Planet, PlanetType, PlanetStatus
-        
-        try:
-            planet_type = PlanetType(planet_data.type)
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid planet type: {planet_data.type}")
-        
-        # Create new planet
-        new_planet = Planet(
-            name=planet_data.name,
-            sector_id=sector.sector_id,
-            sector_uuid=sector.id,
-            type=planet_type,
-            status=PlanetStatus.UNINHABITABLE,
-            size=planet_data.size,
-            position=planet_data.position,
-            gravity=planet_data.gravity,
-            temperature=planet_data.temperature,
-            water_coverage=planet_data.water_coverage,
-            habitability_score=planet_data.habitability_score,
-            resource_richness=planet_data.resource_richness
-        )
-        
-        db.add(new_planet)
-        log_admin_action(
-            db,
-            actor=current_admin,
-            scope_used=GALAXY_MANAGE,
-            action="planet_create",
-            target_type="planet",
-            target_id=str(getattr(new_planet, "id", sector_id)),
-            payload={"sector_id": str(sector_id)},
-        )
+                # Try as UUID first (UUIDs are 36 characters with hyphens)
+                sector_uuid = uuid.UUID(sector_id)
+                sector = db.query(Sector).filter(Sector.id == sector_uuid).first()
+            except HTTPException:
 
-        db.commit()
-        db.refresh(new_planet)
+                raise
+
+            except ValueError:
+                # If UUID parsing fails, try as integer sector_id
+                try:
+                    sector_int = int(sector_id)
+                    sector = db.query(Sector).filter(Sector.sector_id == sector_int).first()
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid sector ID format")
         
-        logger.info(f"Admin {current_admin.username} created planet {new_planet.name} in sector {sector.sector_id}")
+            if not sector:
+                raise HTTPException(status_code=404, detail="Sector not found")
         
-        return {
-            "message": "Planet created successfully",
-            "planet_id": str(new_planet.id),
-            "planet_name": new_planet.name,
-            "sector_id": str(sector.id),
-            "sector_number": sector.sector_id
-        }
+            # Check if sector already has a planet
+            existing_planet = db.query(Planet).filter(
+                Planet.sector_uuid == sector.id
+            ).first()
         
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}")
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error creating planet in sector {sector_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create planet: {str(e)}")
+            if existing_planet:
+                raise HTTPException(status_code=400, detail="Sector already has a planet")
+        
+            # Import and validate planet type
+            from src.models.planet import Planet, PlanetType, PlanetStatus
+        
+            try:
+                planet_type = PlanetType(planet_data.type)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Invalid planet type: {planet_data.type}")
+        
+            # Create new planet
+            new_planet = Planet(
+                name=planet_data.name,
+                sector_id=sector.sector_id,
+                sector_uuid=sector.id,
+                type=planet_type,
+                status=PlanetStatus.UNINHABITABLE,
+                size=planet_data.size,
+                position=planet_data.position,
+                gravity=planet_data.gravity,
+                temperature=planet_data.temperature,
+                water_coverage=planet_data.water_coverage,
+                habitability_score=planet_data.habitability_score,
+                resource_richness=planet_data.resource_richness
+            )
+        
+            db.add(new_planet)
+            db.flush()
+            attempt.target_id = str(new_planet.id)
+            attempt.succeed(payload={"sector_id": str(sector_id)})
+            db.refresh(new_planet)
+        
+            logger.info(f"Admin {current_admin.username} created planet {new_planet.name} in sector {sector.sector_id}")
+        
+            return {
+                "message": "Planet created successfully",
+                "planet_id": str(new_planet.id),
+                "planet_name": new_planet.name,
+                "sector_id": str(sector.id),
+                "sector_number": sector.sector_id
+            }
+        
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}")
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error creating planet in sector {sector_id}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to create planet: {str(e)}")
 
 class PlanetUpdateRequest(BaseModel):
     name: Optional[str] = Field(None, max_length=100)
@@ -2158,48 +2166,48 @@ async def update_planet(
     db: Session = Depends(get_db)
 ):
     """Update a planet's properties"""
-    try:
-        planet = db.query(Planet).filter(Planet.id == planet_id).first()
-        if not planet:
-            raise HTTPException(status_code=404, detail="Planet not found")
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="planet_update",
+        target_type="planet",
+        target_id=str(planet_id),
+        payload={},
+    ) as attempt:
+        try:
+            planet = db.query(Planet).filter(Planet.id == planet_id).first()
+            if not planet:
+                raise HTTPException(status_code=404, detail="Planet not found")
 
-        update_data = planet_data.model_dump(exclude_unset=True)
+            update_data = planet_data.model_dump(exclude_unset=True)
 
-        for field, value in update_data.items():
-            if field == "type" and value:
-                from src.models.planet import PlanetType
-                try:
-                    planet.type = PlanetType(value)
-                except ValueError:
-                    raise HTTPException(status_code=400, detail=f"Invalid planet type: {value}")
-            else:
-                setattr(planet, field, value)
+            for field, value in update_data.items():
+                if field == "type" and value:
+                    from src.models.planet import PlanetType
+                    try:
+                        planet.type = PlanetType(value)
+                    except ValueError:
+                        raise HTTPException(status_code=400, detail=f"Invalid planet type: {value}")
+                else:
+                    setattr(planet, field, value)
 
-        log_admin_action(
-            db,
-            actor=current_admin,
-            scope_used=GALAXY_MANAGE,
-            action="planet_update",
-            target_type="planet",
-            target_id=str(planet_id),
-            payload={"updated_fields": list(update_data.keys())},
-        )
-        db.commit()
+            attempt.succeed(payload={"updated_fields": list(update_data.keys())})
 
-        logger.info(f"Admin {current_admin.username} updated planet {planet_id}: {list(update_data.keys())}")
+            logger.info(f"Admin {current_admin.username} updated planet {planet_id}: {list(update_data.keys())}")
 
-        return {
-            "message": "Planet updated successfully",
-            "planet_id": planet_id,
-            "updated_fields": list(update_data.keys())
-        }
+            return {
+                "message": "Planet updated successfully",
+                "planet_id": planet_id,
+                "updated_fields": list(update_data.keys())
+            }
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error updating planet {planet_id}: {e}")
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to update planet: {str(e)}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error updating planet {planet_id}: {e}")
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Failed to update planet: {str(e)}")
 
 
 @router.delete("/planets/{planet_id}", response_model=Dict[str, Any])
@@ -2215,62 +2223,63 @@ async def delete_planet(
     status is COLONIZED / DEVELOPED / DYING / RESTRICTED / TERRAFORMING.
     Prefer over-refuse over under-refuse.
     """
-    try:
-        planet = db.query(Planet).filter(Planet.id == planet_id).first()
-        if not planet:
-            raise HTTPException(status_code=404, detail="Planet not found")
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="planet_delete",
+        target_type="planet",
+        target_id=str(planet_id),
+        payload={},
+    ) as attempt:
+        try:
+            planet = db.query(Planet).filter(Planet.id == planet_id).first()
+            if not planet:
+                raise HTTPException(status_code=404, detail="Planet not found")
 
-        from src.models.planet import PlanetStatus
-        _inhabited = {
-            PlanetStatus.COLONIZED,
-            PlanetStatus.DEVELOPED,
-            PlanetStatus.DYING,
-            PlanetStatus.RESTRICTED,
-            PlanetStatus.TERRAFORMING,
-        }
-        if getattr(planet, "is_population_hub", False):
-            raise HTTPException(
-                status_code=409,
-                detail="Cannot delete a population-hub planet — hubs are non-destructible",
-            )
-        if (planet.owner_id is not None
-                or planet.colonized_at is not None
-                or planet.population > 0
-                or planet.status in _inhabited):
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Cannot delete a colonized planet — "
-                    "remove colonists and release ownership first"
+            from src.models.planet import PlanetStatus
+            _inhabited = {
+                PlanetStatus.COLONIZED,
+                PlanetStatus.DEVELOPED,
+                PlanetStatus.DYING,
+                PlanetStatus.RESTRICTED,
+                PlanetStatus.TERRAFORMING,
+            }
+            if getattr(planet, "is_population_hub", False):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Cannot delete a population-hub planet — hubs are non-destructible",
                 )
-            )
+            if (planet.owner_id is not None
+                    or planet.colonized_at is not None
+                    or planet.population > 0
+                    or planet.status in _inhabited):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Cannot delete a colonized planet — "
+                        "remove colonists and release ownership first"
+                    )
+                )
 
-        planet_name = planet.name
-        log_admin_action(
-            db,
-            actor=current_admin,
-            scope_used=GALAXY_MANAGE,
-            action="planet_delete",
-            target_type="planet",
-            target_id=str(planet_id),
-            payload={"name": planet_name},
-        )
-        db.delete(planet)
-        db.commit()
+            planet_name = planet.name
+            db.delete(planet)
+            attempt.succeed(payload={"name": planet_name})
 
-        logger.info(f"Admin {current_admin.username} deleted planet '{planet_name}' ({planet_id})")
 
-        return {
-            "message": f"Planet '{planet_name}' deleted successfully",
-            "planet_id": planet_id
-        }
+            logger.info(f"Admin {current_admin.username} deleted planet '{planet_name}' ({planet_id})")
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting planet {planet_id}: {e}")
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to delete planet: {str(e)}")
+            return {
+                "message": f"Planet '{planet_name}' deleted successfully",
+                "planet_id": planet_id
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error deleting planet {planet_id}: {e}")
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Failed to delete planet: {str(e)}")
 
 
 @router.post("/sectors/{sector_id}/port", response_model=Dict[str, Any])
@@ -2281,85 +2290,90 @@ async def create_port_in_sector(
     db: Session = Depends(get_db)
 ):
     """Create a port in the specified sector"""
-    try:
-        # Find the sector - try UUID first, fallback to integer sector_id
-        sector = None
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="port_create",
+        target_type="station",
+        target_id="pending",
+        payload={},
+    ) as attempt:
         try:
-            # Try as UUID first (UUIDs are 36 characters with hyphens)
-            sector_uuid = uuid.UUID(sector_id)
-            sector = db.query(Sector).filter(Sector.id == sector_uuid).first()
-        except ValueError:
-            # If UUID parsing fails, try as integer sector_id
+            # Find the sector - try UUID first, fallback to integer sector_id
+            sector = None
             try:
-                sector_int = int(sector_id)
-                sector = db.query(Sector).filter(Sector.sector_id == sector_int).first()
+                # Try as UUID first (UUIDs are 36 characters with hyphens)
+                sector_uuid = uuid.UUID(sector_id)
+                sector = db.query(Sector).filter(Sector.id == sector_uuid).first()
+            except HTTPException:
+
+                raise
+
             except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid sector ID format")
+                # If UUID parsing fails, try as integer sector_id
+                try:
+                    sector_int = int(sector_id)
+                    sector = db.query(Sector).filter(Sector.sector_id == sector_int).first()
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid sector ID format")
         
-        if not sector:
-            raise HTTPException(status_code=404, detail="Sector not found")
+            if not sector:
+                raise HTTPException(status_code=404, detail="Sector not found")
         
-        # Check if sector already has a port
-        existing_station = db.query(Station).filter(
-            Station.sector_uuid == sector.id
-        ).first()
+            # Check if sector already has a port
+            existing_station = db.query(Station).filter(
+                Station.sector_uuid == sector.id
+            ).first()
         
-        if existing_station:
-            raise HTTPException(status_code=400, detail="Sector already has a port")
+            if existing_station:
+                raise HTTPException(status_code=400, detail="Sector already has a port")
         
-        # Import and validate enums
-        from src.models.station import Station, StationClass, StationType, StationStatus
+            # Import and validate enums
+            from src.models.station import Station, StationClass, StationType, StationStatus
 
-        try:
-            port_class = StationClass(station_data.station_class)
-            port_type = StationType(station_data.type)
+            try:
+                port_class = StationClass(station_data.station_class)
+                port_type = StationType(station_data.type)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid port class or type: {str(e)}")
+
+            # Create new port
+            new_port = Station(
+                name=station_data.name,
+                sector_id=sector.sector_id,
+                sector_uuid=sector.id,
+                station_class=port_class,
+                type=port_type,
+                status=StationStatus.OPERATIONAL,
+                size=station_data.size,
+                faction_affiliation=station_data.faction_affiliation,
+                trade_volume=station_data.trade_volume,
+                market_volatility=station_data.market_volatility
+            )
+        
+            db.add(new_port)
+            db.flush()
+            attempt.target_id = str(new_port.id)
+            attempt.succeed(payload={"sector_id": str(sector_id)})
+            db.refresh(new_port)
+        
+            logger.info(f"Admin {current_admin.username} created port {new_port.name} in sector {sector.sector_id}")
+        
+            return {
+                "message": "Station created successfully",
+                "station_id": str(new_port.id),
+                "station_name": new_port.name,
+                "sector_id": str(sector.id),
+                "sector_number": sector.sector_id
+            }
+        
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid port class or type: {str(e)}")
-
-        # Create new port
-        new_port = Station(
-            name=station_data.name,
-            sector_id=sector.sector_id,
-            sector_uuid=sector.id,
-            station_class=port_class,
-            type=port_type,
-            status=StationStatus.OPERATIONAL,
-            size=station_data.size,
-            faction_affiliation=station_data.faction_affiliation,
-            trade_volume=station_data.trade_volume,
-            market_volatility=station_data.market_volatility
-        )
-        
-        db.add(new_port)
-        log_admin_action(
-            db,
-            actor=current_admin,
-            scope_used=GALAXY_MANAGE,
-            action="port_create",
-            target_type="station",
-            target_id=str(getattr(new_station, "id", sector_id)),
-            payload={"sector_id": str(sector_id)},
-        )
-
-        db.commit()
-        db.refresh(new_port)
-        
-        logger.info(f"Admin {current_admin.username} created port {new_port.name} in sector {sector.sector_id}")
-        
-        return {
-            "message": "Station created successfully",
-            "station_id": str(new_port.id),
-            "station_name": new_port.name,
-            "sector_id": str(sector.id),
-            "sector_number": sector.sector_id
-        }
-        
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}")
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error creating port in sector {sector_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create port: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}")
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error creating port in sector {sector_id}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to create port: {str(e)}")
 
 @router.get("/sectors/{sector_id}/planet")
 async def get_sector_planet(
@@ -2619,112 +2633,113 @@ async def create_warp_tunnel(
     db: Session = Depends(get_db)
 ):
     """Create a new warp tunnel from this sector to another"""
-    try:
-        # Find origin sector
-        origin_sector = None
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="warp_tunnel_create",
+        target_type="warp_tunnel",
+        target_id="pending",
+        payload={},
+    ) as attempt:
         try:
-            sector_uuid = uuid.UUID(sector_id)
-            origin_sector = db.query(Sector).filter(Sector.id == sector_uuid).first()
-        except ValueError:
+            # Find origin sector
+            origin_sector = None
             try:
-                sector_int = int(sector_id)
-                origin_sector = db.query(Sector).filter(Sector.sector_id == sector_int).first()
+                sector_uuid = uuid.UUID(sector_id)
+                origin_sector = db.query(Sector).filter(Sector.id == sector_uuid).first()
             except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid sector ID format")
+                try:
+                    sector_int = int(sector_id)
+                    origin_sector = db.query(Sector).filter(Sector.sector_id == sector_int).first()
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid sector ID format")
 
-        if not origin_sector:
-            raise HTTPException(status_code=404, detail="Origin sector not found")
+            if not origin_sector:
+                raise HTTPException(status_code=404, detail="Origin sector not found")
 
-        # Find destination sector (by sector_id number within same region)
-        dest_sector = db.query(Sector).filter(
-            Sector.sector_id == tunnel_data.destination_sector_id,
-            Sector.region_id == origin_sector.region_id  # Must be same region
-        ).first()
+            # Find destination sector (by sector_id number within same region)
+            dest_sector = db.query(Sector).filter(
+                Sector.sector_id == tunnel_data.destination_sector_id,
+                Sector.region_id == origin_sector.region_id  # Must be same region
+            ).first()
 
-        if not dest_sector:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Destination sector {tunnel_data.destination_sector_id} not found in same region"
+            if not dest_sector:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Destination sector {tunnel_data.destination_sector_id} not found in same region"
+                )
+
+            # Validation: no self-loops
+            if origin_sector.id == dest_sector.id:
+                raise HTTPException(status_code=400, detail="Cannot create tunnel from sector to itself")
+
+            # Check for duplicate tunnels
+            existing = db.query(WarpTunnel).filter(
+                WarpTunnel.origin_sector_id == origin_sector.id,
+                WarpTunnel.destination_sector_id == dest_sector.id
+            ).first()
+
+            if existing:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Tunnel already exists from sector {origin_sector.sector_id} to {dest_sector.sector_id}"
+                )
+
+            # Import WarpTunnelType and WarpTunnelStatus enums
+            from src.models.warp_tunnel import WarpTunnelType, WarpTunnelStatus
+
+            # Validate and convert type. sectors.md:42-48 -- WarpTunnel.type has exactly
+            # two canon values; admin creation is restricted to them (WO-GWQ-TUNNELTYPE).
+            try:
+                tunnel_type = WarpTunnelType[tunnel_data.type.upper()]
+            except KeyError:
+                tunnel_type = None
+            if tunnel_type not in (WarpTunnelType.NATURAL, WarpTunnelType.ARTIFICIAL):
+                raise HTTPException(status_code=400, detail=f"Invalid tunnel type: {tunnel_data.type}")
+
+            # Create the tunnel
+            new_tunnel = WarpTunnel(
+                name=tunnel_data.name,
+                origin_sector_id=origin_sector.id,
+                destination_sector_id=dest_sector.id,
+                type=tunnel_type,
+                status=WarpTunnelStatus.ACTIVE,
+                is_bidirectional=tunnel_data.is_bidirectional,
+                stability=tunnel_data.stability,
+                turn_cost=tunnel_data.turn_cost,
+                energy_cost=0,
+                is_public=tunnel_data.is_public
             )
 
-        # Validation: no self-loops
-        if origin_sector.id == dest_sector.id:
-            raise HTTPException(status_code=400, detail="Cannot create tunnel from sector to itself")
+            db.add(new_tunnel)
+            db.flush()
+            attempt.target_id = str(new_tunnel.id)
+            attempt.succeed()
+            db.refresh(new_tunnel)
 
-        # Check for duplicate tunnels
-        existing = db.query(WarpTunnel).filter(
-            WarpTunnel.origin_sector_id == origin_sector.id,
-            WarpTunnel.destination_sector_id == dest_sector.id
-        ).first()
-
-        if existing:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Tunnel already exists from sector {origin_sector.sector_id} to {dest_sector.sector_id}"
-            )
-
-        # Import WarpTunnelType and WarpTunnelStatus enums
-        from src.models.warp_tunnel import WarpTunnelType, WarpTunnelStatus
-
-        # Validate and convert type. sectors.md:42-48 -- WarpTunnel.type has exactly
-        # two canon values; admin creation is restricted to them (WO-GWQ-TUNNELTYPE).
-        try:
-            tunnel_type = WarpTunnelType[tunnel_data.type.upper()]
-        except KeyError:
-            tunnel_type = None
-        if tunnel_type not in (WarpTunnelType.NATURAL, WarpTunnelType.ARTIFICIAL):
-            raise HTTPException(status_code=400, detail=f"Invalid tunnel type: {tunnel_data.type}")
-
-        # Create the tunnel
-        new_tunnel = WarpTunnel(
-            name=tunnel_data.name,
-            origin_sector_id=origin_sector.id,
-            destination_sector_id=dest_sector.id,
-            type=tunnel_type,
-            status=WarpTunnelStatus.ACTIVE,
-            is_bidirectional=tunnel_data.is_bidirectional,
-            stability=tunnel_data.stability,
-            turn_cost=tunnel_data.turn_cost,
-            energy_cost=0,
-            is_public=tunnel_data.is_public
-        )
-
-        db.add(new_tunnel)
-        log_admin_action(
-            db,
-            actor=current_admin,
-            scope_used=GALAXY_MANAGE,
-            action="warp_tunnel_create",
-            target_type="warp_tunnel",
-            target_id=str(new_tunnel.id),
-            payload={},
-        )
-
-        db.commit()
-        db.refresh(new_tunnel)
-
-        return {
-            "success": True,
-            "message": f"Warp tunnel created from sector {origin_sector.sector_id} to {dest_sector.sector_id}",
-            "tunnel": {
-                "id": str(new_tunnel.id),
-                "name": new_tunnel.name,
-                "origin_sector_id": origin_sector.sector_id,
-                "destination_sector_id": dest_sector.sector_id,
-                "type": new_tunnel.type.value,
-                "is_bidirectional": new_tunnel.is_bidirectional,
-                "turn_cost": new_tunnel.turn_cost
+            return {
+                "success": True,
+                "message": f"Warp tunnel created from sector {origin_sector.sector_id} to {dest_sector.sector_id}",
+                "tunnel": {
+                    "id": str(new_tunnel.id),
+                    "name": new_tunnel.name,
+                    "origin_sector_id": origin_sector.sector_id,
+                    "destination_sector_id": dest_sector.sector_id,
+                    "type": new_tunnel.type.value,
+                    "is_bidirectional": new_tunnel.is_bidirectional,
+                    "turn_cost": new_tunnel.turn_cost
+                }
             }
-        }
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error creating warp tunnel: {e}")
-        import traceback
-        logger.error(f"Full traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Failed to create warp tunnel: {str(e)}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error creating warp tunnel: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=f"Failed to create warp tunnel: {str(e)}")
 
 @router.put("/warp-tunnels/{tunnel_id}")
 async def update_warp_tunnel(
@@ -2734,73 +2749,82 @@ async def update_warp_tunnel(
     db: Session = Depends(get_db)
 ):
     """Update an existing warp tunnel"""
-    try:
-        # Find the tunnel
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="warp_tunnel_update",
+        target_type="warp_tunnel",
+        target_id=str(tunnel_id),
+        payload={},
+    ) as attempt:
         try:
-            tunnel_uuid = uuid.UUID(tunnel_id)
-            tunnel = db.query(WarpTunnel).filter(WarpTunnel.id == tunnel_uuid).first()
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid tunnel ID format")
+            # Find the tunnel
+            try:
+                tunnel_uuid = uuid.UUID(tunnel_id)
+                tunnel = db.query(WarpTunnel).filter(WarpTunnel.id == tunnel_uuid).first()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid tunnel ID format")
 
-        if not tunnel:
-            raise HTTPException(status_code=404, detail="Warp tunnel not found")
+            if not tunnel:
+                raise HTTPException(status_code=404, detail="Warp tunnel not found")
 
-        # Import enums
-        from src.models.warp_tunnel import WarpTunnelType, WarpTunnelStatus
+            # Import enums
+            from src.models.warp_tunnel import WarpTunnelType, WarpTunnelStatus
 
-        # Update provided fields
-        update_data = tunnel_data.dict(exclude_unset=True)
+            # Update provided fields
+            update_data = tunnel_data.dict(exclude_unset=True)
 
-        for field, value in update_data.items():
-            if field == "type" and value:
-                # sectors.md:42-48 -- restrict updates to the two canon values
-                # (WO-GWQ-TUNNELTYPE). A same-value passthrough on a legacy row
-                # (e.g. the admin form resubmitting an existing QUANTUM tunnel's
-                # type unchanged while editing another field) is not a mint and
-                # is allowed; only an actual transition to a non-canon value
-                # is rejected. Legacy rows otherwise keep loading via the enum.
-                try:
-                    candidate_type = WarpTunnelType[value.upper()]
-                except KeyError:
-                    candidate_type = None
-                is_canon = candidate_type in (WarpTunnelType.NATURAL, WarpTunnelType.ARTIFICIAL)
-                is_unchanged = candidate_type is not None and candidate_type == tunnel.type
-                if not (is_canon or is_unchanged):
-                    raise HTTPException(status_code=400, detail=f"Invalid tunnel type: {value}")
-                tunnel.type = candidate_type
-            elif field == "status" and value:
-                try:
-                    tunnel.status = WarpTunnelStatus[value.upper()]
-                except KeyError:
-                    raise HTTPException(status_code=400, detail=f"Invalid tunnel status: {value}")
-            else:
-                setattr(tunnel, field, value)
+            for field, value in update_data.items():
+                if field == "type" and value:
+                    # sectors.md:42-48 -- restrict updates to the two canon values
+                    # (WO-GWQ-TUNNELTYPE). A same-value passthrough on a legacy row
+                    # (e.g. the admin form resubmitting an existing QUANTUM tunnel's
+                    # type unchanged while editing another field) is not a mint and
+                    # is allowed; only an actual transition to a non-canon value
+                    # is rejected. Legacy rows otherwise keep loading via the enum.
+                    try:
+                        candidate_type = WarpTunnelType[value.upper()]
+                    except KeyError:
+                        candidate_type = None
+                    is_canon = candidate_type in (WarpTunnelType.NATURAL, WarpTunnelType.ARTIFICIAL)
+                    is_unchanged = candidate_type is not None and candidate_type == tunnel.type
+                    if not (is_canon or is_unchanged):
+                        raise HTTPException(status_code=400, detail=f"Invalid tunnel type: {value}")
+                    tunnel.type = candidate_type
+                elif field == "status" and value:
+                    try:
+                        tunnel.status = WarpTunnelStatus[value.upper()]
+                    except KeyError:
+                        raise HTTPException(status_code=400, detail=f"Invalid tunnel status: {value}")
+                else:
+                    setattr(tunnel, field, value)
 
-        db.commit()
-        db.refresh(tunnel)
+            attempt.succeed()
+            db.refresh(tunnel)
 
-        return {
-            "success": True,
-            "message": "Warp tunnel updated successfully",
-            "tunnel": {
-                "id": str(tunnel.id),
-                "name": tunnel.name,
-                "type": tunnel.type.value,
-                "status": tunnel.status.value,
-                "is_bidirectional": tunnel.is_bidirectional,
-                "turn_cost": tunnel.turn_cost,
-                "stability": tunnel.stability
+            return {
+                "success": True,
+                "message": "Warp tunnel updated successfully",
+                "tunnel": {
+                    "id": str(tunnel.id),
+                    "name": tunnel.name,
+                    "type": tunnel.type.value,
+                    "status": tunnel.status.value,
+                    "is_bidirectional": tunnel.is_bidirectional,
+                    "turn_cost": tunnel.turn_cost,
+                    "stability": tunnel.stability
+                }
             }
-        }
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error updating warp tunnel {tunnel_id}: {e}")
-        import traceback
-        logger.error(f"Full traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Failed to update warp tunnel: {str(e)}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error updating warp tunnel {tunnel_id}: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=f"Failed to update warp tunnel: {str(e)}")
 
 @router.delete("/warp-tunnels/{tunnel_id}")
 async def delete_warp_tunnel(
@@ -2809,53 +2833,52 @@ async def delete_warp_tunnel(
     db: Session = Depends(get_db)
 ):
     """Delete a warp tunnel"""
-    try:
-        # Find the tunnel
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="warp_tunnel_delete",
+        target_type="warp_tunnel",
+        target_id=str(tunnel_id),
+        payload={},
+    ) as attempt:
         try:
-            tunnel_uuid = uuid.UUID(tunnel_id)
-            tunnel = db.query(WarpTunnel).filter(WarpTunnel.id == tunnel_uuid).first()
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid tunnel ID format")
+            # Find the tunnel
+            try:
+                tunnel_uuid = uuid.UUID(tunnel_id)
+                tunnel = db.query(WarpTunnel).filter(WarpTunnel.id == tunnel_uuid).first()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid tunnel ID format")
 
-        if not tunnel:
-            raise HTTPException(status_code=404, detail="Warp tunnel not found")
+            if not tunnel:
+                raise HTTPException(status_code=404, detail="Warp tunnel not found")
 
-        # Store info for response
-        tunnel_info = {
-            "name": tunnel.name,
-            "origin_sector_id": tunnel.origin_sector.sector_id if tunnel.origin_sector else None,
-            "destination_sector_id": tunnel.destination_sector.sector_id if tunnel.destination_sector else None,
-            "is_bidirectional": tunnel.is_bidirectional
-        }
+            # Store info for response
+            tunnel_info = {
+                "name": tunnel.name,
+                "origin_sector_id": tunnel.origin_sector.sector_id if tunnel.origin_sector else None,
+                "destination_sector_id": tunnel.destination_sector.sector_id if tunnel.destination_sector else None,
+                "is_bidirectional": tunnel.is_bidirectional
+            }
 
-        # Delete the tunnel
-        db.delete(tunnel)
-        log_admin_action(
-            db,
-            actor=current_admin,
-            scope_used=GALAXY_MANAGE,
-            action="warp_tunnel_delete",
-            target_type="warp_tunnel",
-            target_id=str(tunnel_id),
-            payload={},
-        )
+            # Delete the tunnel
+            db.delete(tunnel)
+            attempt.succeed()
 
-        db.commit()
+            return {
+                "success": True,
+                "message": f"Warp tunnel '{tunnel_info['name']}' deleted successfully",
+                "was_bidirectional": tunnel_info["is_bidirectional"]
+            }
 
-        return {
-            "success": True,
-            "message": f"Warp tunnel '{tunnel_info['name']}' deleted successfully",
-            "was_bidirectional": tunnel_info["is_bidirectional"]
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error deleting warp tunnel {tunnel_id}: {e}")
-        import traceback
-        logger.error(f"Full traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Failed to delete warp tunnel: {str(e)}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error deleting warp tunnel {tunnel_id}: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=f"Failed to delete warp tunnel: {str(e)}")
 
 @router.get("/warp-tunnels", response_model=Dict[str, Any])
 async def get_warp_tunnels(
@@ -2897,62 +2920,65 @@ async def update_port(
     db: Session = Depends(get_db)
 ):
     """Update a port's properties"""
-    try:
-        # Find the port by ID
-        station = db.query(Station).filter(Station.id == station_id).first()
-        if not station:
-            raise HTTPException(status_code=404, detail="Station not found")
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="port_update",
+        target_type="station",
+        target_id=str(station_id),
+        payload={},
+    ) as attempt:
+        try:
+            # Find the port by ID
+            station = db.query(Station).filter(Station.id == station_id).first()
+            if not station:
+                raise HTTPException(status_code=404, detail="Station not found")
 
-        # Update fields that were provided
-        update_data = station_data.dict(exclude_unset=True)
+            # Update fields that were provided
+            update_data = station_data.dict(exclude_unset=True)
 
-        for field, value in update_data.items():
-            if field == "port_class" and value:
-                # Convert string enum name (e.g. "CLASS_1") to StationClass
-                from src.models.station import StationClass
-                try:
-                    station_class_enum = getattr(StationClass, value)
-                    setattr(station, "station_class", station_class_enum)
-                except AttributeError:
-                    raise HTTPException(status_code=400, detail=f"Invalid port class: {value}")
-            elif field == "owner_name":
-                # Handle owner assignment
-                if value:
-                    # Find player by username
-                    player = db.query(Player).join(User).filter(User.username == value).first()
-                    if player:
-                        station.owner_id = player.id
+            for field, value in update_data.items():
+                if field == "port_class" and value:
+                    # Convert string enum name (e.g. "CLASS_1") to StationClass
+                    from src.models.station import StationClass
+                    try:
+                        station_class_enum = getattr(StationClass, value)
+                        setattr(station, "station_class", station_class_enum)
+                    except AttributeError:
+                        raise HTTPException(status_code=400, detail=f"Invalid port class: {value}")
+                elif field == "owner_name":
+                    # Handle owner assignment
+                    if value:
+                        # Find player by username
+                        player = db.query(Player).join(User).filter(User.username == value).first()
+                        if player:
+                            station.owner_id = player.id
+                        else:
+                            raise HTTPException(status_code=404, detail=f"Player '{value}' not found")
                     else:
-                        raise HTTPException(status_code=404, detail=f"Player '{value}' not found")
+                        # Clear owner
+                        station.owner_id = None
                 else:
-                    # Clear owner
-                    station.owner_id = None
-            else:
-                # Direct field update
-                setattr(station, field, value)
+                    # Direct field update
+                    setattr(station, field, value)
 
-        log_admin_action(
-            db,
-            actor=current_admin,
-            scope_used=GALAXY_MANAGE,
-            action="port_update",
-            target_type="station",
-            target_id=str(station_id),
-            payload={"updated_fields": list(update_data.keys())},
-        )
+            attempt.succeed()
+        
+            return {
+                "message": "Station updated successfully",
+                "station_id": str(station.id),
+                "updated_fields": list(update_data.keys())
+            }
+        
+        except HTTPException:
 
-        db.commit()
-        
-        return {
-            "message": "Station updated successfully",
-            "station_id": str(station.id),
-            "updated_fields": list(update_data.keys())
-        }
-        
-    except Exception as e:
-        logger.error(f"Error updating port {station_id}: {e}")
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to update port: {str(e)}")
+            raise
+
+        except Exception as e:
+            logger.error(f"Error updating port {station_id}: {e}")
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Failed to update port: {str(e)}")
 
 @router.delete("/ports/{station_id}", response_model=Dict[str, Any])
 async def delete_port(
@@ -2961,37 +2987,40 @@ async def delete_port(
     db: Session = Depends(get_db)
 ):
     """Delete a port"""
-    try:
-        # Find the port by ID
-        station = db.query(Station).filter(Station.id == station_id).first()
-        if not station:
-            raise HTTPException(status_code=404, detail="Station not found")
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="port_delete",
+        target_type="station",
+        target_id=str(station_id),
+        payload={},
+    ) as attempt:
+        try:
+            # Find the port by ID
+            station = db.query(Station).filter(Station.id == station_id).first()
+            if not station:
+                raise HTTPException(status_code=404, detail="Station not found")
 
-        station_name = station.name
+            station_name = station.name
 
-        # Delete the port
-        db.delete(station)
-        log_admin_action(
-            db,
-            actor=current_admin,
-            scope_used=GALAXY_MANAGE,
-            action="port_delete",
-            target_type="station",
-            target_id=str(station_id),
-            payload={"name": getattr(station, "name", None)},
-        )
-
-        db.commit()
+            # Delete the port
+            db.delete(station)
+            attempt.succeed(payload={"name": station_name})
         
-        return {
-            "message": f"Station '{station_name}' deleted successfully",
-            "station_id": station_id
-        }
+            return {
+                "message": f"Station '{station_name}' deleted successfully",
+                "station_id": station_id
+            }
         
-    except Exception as e:
-        logger.error(f"Error deleting port {station_id}: {e}")
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to delete port: {str(e)}")
+        except HTTPException:
+
+            raise
+
+        except Exception as e:
+            logger.error(f"Error deleting port {station_id}: {e}")
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Failed to delete port: {str(e)}")
 
 @router.post("/ports", response_model=Dict[str, Any])
 async def create_port(
@@ -3000,109 +3029,111 @@ async def create_port(
     db: Session = Depends(get_db)
 ):
     """Create a new port"""
-    try:
-        # Import and validate enums
-        from src.models.station import Station, StationClass, StationType, StationStatus
-
-        # Validate required fields
-        if not port_data.get("name"):
-            raise HTTPException(status_code=400, detail="Station name is required")
-        if not port_data.get("sector_id"):
-            raise HTTPException(status_code=400, detail="Sector ID is required")
-        
-        # Find the sector
-        sector_id = port_data["sector_id"]
-        sector = None
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="port_create",
+        target_type="station",
+        target_id="pending",
+        payload={},
+    ) as attempt:
         try:
-            # Try as integer sector_id first
-            sector_int = int(sector_id)
-            sector = db.query(Sector).filter(Sector.sector_id == sector_int).first()
-        except ValueError:
-            # Try as UUID
+            # Import and validate enums
+            from src.models.station import Station, StationClass, StationType, StationStatus
+
+            # Validate required fields
+            if not port_data.get("name"):
+                raise HTTPException(status_code=400, detail="Station name is required")
+            if not port_data.get("sector_id"):
+                raise HTTPException(status_code=400, detail="Sector ID is required")
+        
+            # Find the sector
+            sector_id = port_data["sector_id"]
+            sector = None
             try:
-                sector_uuid = uuid.UUID(sector_id)
-                sector = db.query(Sector).filter(Sector.id == sector_uuid).first()
+                # Try as integer sector_id first
+                sector_int = int(sector_id)
+                sector = db.query(Sector).filter(Sector.sector_id == sector_int).first()
             except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid sector ID format")
+                # Try as UUID
+                try:
+                    sector_uuid = uuid.UUID(sector_id)
+                    sector = db.query(Sector).filter(Sector.id == sector_uuid).first()
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid sector ID format")
         
-        if not sector:
-            raise HTTPException(status_code=404, detail="Sector not found")
+            if not sector:
+                raise HTTPException(status_code=404, detail="Sector not found")
         
-        # Check if sector already has a port
-        existing_station = db.query(Station).filter(Station.sector_uuid == sector.id).first()
-        if existing_station:
-            raise HTTPException(status_code=400, detail="Sector already has a port")
+            # Check if sector already has a port
+            existing_station = db.query(Station).filter(Station.sector_uuid == sector.id).first()
+            if existing_station:
+                raise HTTPException(status_code=400, detail="Sector already has a port")
         
-        # Parse port class
-        try:
-            port_class_str = port_data.get("station_class", "CLASS_1")
-            port_class = getattr(StationClass, port_class_str)
-        except AttributeError:
-            raise HTTPException(status_code=400, detail=f"Invalid port class: {port_class_str}")
+            # Parse port class
+            try:
+                port_class_str = port_data.get("station_class", "CLASS_1")
+                port_class = getattr(StationClass, port_class_str)
+            except AttributeError:
+                raise HTTPException(status_code=400, detail=f"Invalid port class: {port_class_str}")
 
-        # Handle owner assignment
-        owner_id = None
-        if port_data.get("owner_name"):
-            player = db.query(Player).join(User).filter(User.username == port_data["owner_name"]).first()
-            if player:
-                owner_id = player.id
-            else:
-                raise HTTPException(status_code=404, detail=f"Player '{port_data['owner_name']}' not found")
+            # Handle owner assignment
+            owner_id = None
+            if port_data.get("owner_name"):
+                player = db.query(Player).join(User).filter(User.username == port_data["owner_name"]).first()
+                if player:
+                    owner_id = player.id
+                else:
+                    raise HTTPException(status_code=404, detail=f"Player '{port_data['owner_name']}' not found")
         
-        # Create the port with all required fields
-        new_port = Station(
-            name=port_data["name"],
-            sector_id=sector.sector_id,
-            sector_uuid=sector.id,
-            station_class=port_class,
-            type=StationType.TRADING,  # Default to trading
-            status=StationStatus.OPERATIONAL,
-            trade_volume=port_data.get("trade_volume", 1000),
-            size=port_data.get("size", 5),
-            owner_id=owner_id,
-            # Set default values for required fields
-            faction_affiliation=port_data.get("faction_affiliation", None),
-            market_volatility=port_data.get("market_volatility", 50)
-        )
+            # Create the port with all required fields
+            new_port = Station(
+                name=port_data["name"],
+                sector_id=sector.sector_id,
+                sector_uuid=sector.id,
+                station_class=port_class,
+                type=StationType.TRADING,  # Default to trading
+                status=StationStatus.OPERATIONAL,
+                trade_volume=port_data.get("trade_volume", 1000),
+                size=port_data.get("size", 5),
+                owner_id=owner_id,
+                # Set default values for required fields
+                faction_affiliation=port_data.get("faction_affiliation", None),
+                market_volatility=port_data.get("market_volatility", 50)
+            )
         
-        # Update commodity stock levels based on port class
-        new_port.update_commodity_trading_flags()
-        new_port.update_commodity_stock_levels()
+            # Update commodity stock levels based on port class
+            new_port.update_commodity_trading_flags()
+            new_port.update_commodity_stock_levels()
         
-        db.add(new_port)
-        log_admin_action(
-            db,
-            actor=current_admin,
-            scope_used=GALAXY_MANAGE,
-            action="port_create",
-            target_type="station",
-            target_id=str(new_port.id),
-            payload={"name": new_port.name, "sector_id": sector.sector_id},
-        )
-        db.commit()
+            db.add(new_port)
+            db.flush()
+            attempt.target_id = str(new_port.id)
+            attempt.succeed()
         
-        return {
-            "message": "Station created successfully",
-            "station_id": str(new_port.id),
-            "station_name": new_port.name,
-            "sector_id": sector.sector_id
-        }
+            return {
+                "message": "Station created successfully",
+                "station_id": str(new_port.id),
+                "station_name": new_port.name,
+                "sector_id": sector.sector_id
+            }
         
-    except HTTPException:
-        # Re-raise HTTP exceptions (like "sector already has a port")
-        db.rollback()
-        raise
-    except Exception as e:
-        logger.error(f"Error creating port: {e}")
-        logger.error(f"Station data: {port_data}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to create port: {str(e)}")
+        except HTTPException:
+            # Re-raise HTTP exceptions (like "sector already has a port")
+            db.rollback()
+            raise
+        except Exception as e:
+            logger.error(f"Error creating port: {e}")
+            logger.error(f"Station data: {port_data}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Failed to create port: {str(e)}")
 
-# =============================================================================
-# AI TRADING INTELLIGENCE ADMIN ENDPOINTS
-# =============================================================================
+    # =============================================================================
+    # AI TRADING INTELLIGENCE ADMIN ENDPOINTS
+    # =============================================================================
 
 @router.get("/ai/models", response_model=List[Dict[str, Any]])
 async def get_ai_models(
