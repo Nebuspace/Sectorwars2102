@@ -2,19 +2,47 @@
 Audit logging API endpoints for admin access
 """
 
-from typing import Optional, List
+from typing import Optional, List, Any
 from datetime import datetime
 from uuid import UUID
 from fastapi import APIRouter, Depends, Query, HTTPException
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
 from src.core.database import get_db
 from src.auth.admin_scopes import AUDIT_VIEW
 from src.auth.dependencies import require_scope
 from src.services.audit_service import AuditService
+from src.models.admin_action_log import AdminActionLog
 from src.models.user import User
 
 router = APIRouter(prefix="/admin/audit", tags=["audit"])
+
+
+class AdminActionLogItemOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    admin_user_id: Optional[UUID] = None
+    scope_used: Optional[str] = None
+    action: str
+    target_type: Optional[str] = None
+    target_id: Optional[str] = None
+    payload_snapshot: Optional[Any] = None
+    result: Optional[str] = None
+    failure_reason: Optional[str] = None
+    reviewed_by: Optional[UUID] = None
+    reviewed_at: Optional[datetime] = None
+    at: datetime
+
+
+class AdminActionLogPageOut(BaseModel):
+    items: List[AdminActionLogItemOut]
+    total: int
+    page: int
+    limit: int
+    pages: int
 
 
 @router.post("/log")
@@ -51,6 +79,60 @@ async def create_audit_log(
                 "message": "Failed to create audit log"
             }
             
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/actions", response_model=AdminActionLogPageOut)
+async def list_admin_actions(
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=500),
+    admin_user_id: Optional[UUID] = None,
+    action: Optional[str] = None,
+    target_type: Optional[str] = None,
+    target_id: Optional[str] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    admin: User = Depends(require_scope(AUDIT_VIEW)),
+    db: Session = Depends(get_db),
+):
+    """Paginated read-only list over AdminActionLog (RBAC audit trail)."""
+    try:
+        filters = []
+        if admin_user_id is not None:
+            filters.append(AdminActionLog.admin_user_id == admin_user_id)
+        if action is not None:
+            filters.append(AdminActionLog.action == action)
+        if target_type is not None:
+            filters.append(AdminActionLog.target_type == target_type)
+        if target_id is not None:
+            filters.append(AdminActionLog.target_id == target_id)
+        if start_date is not None:
+            filters.append(AdminActionLog.at >= start_date)
+        if end_date is not None:
+            filters.append(AdminActionLog.at <= end_date)
+
+        base = db.query(AdminActionLog)
+        if filters:
+            base = base.filter(and_(*filters))
+
+        total = base.count()
+        offset = (page - 1) * limit
+        rows = (
+            base.order_by(AdminActionLog.at.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        pages = (total + limit - 1) // limit if total else 0
+
+        return AdminActionLogPageOut(
+            items=[AdminActionLogItemOut.model_validate(row) for row in rows],
+            total=total,
+            page=page,
+            limit=limit,
+            pages=pages,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

@@ -121,3 +121,39 @@ META_SCOPES: frozenset[str] = frozenset(
         AUDIT_VIEW,
     }
 )
+
+# Human-readable catalog text for GET /admin/scopes/catalog (Phase D).
+SCOPE_DESCRIPTIONS: dict[str, str] = {
+    PLAYERS_VIEW: "View player profiles and read-only player admin data.",
+    PLAYERS_SUSPEND: "Suspend or unsuspend player accounts.",
+    PLAYERS_ADJUST_REP: "Adjust player faction reputation scores.",
+    PLAYERS_TRANSFER_ASSETS: "Transfer assets between players.",
+    SUBSCRIPTIONS_VIEW: "View PayPal subscription records and billing status.",
+    SUBSCRIPTIONS_MODIFY: "Modify subscription tier or subscription status.",
+    SUBSCRIPTIONS_REFUND: "Issue subscription refunds.",
+    WEBHOOKS_VIEW: "View webhook delivery logs and payload history.",
+    WEBHOOKS_REPLAY: "Replay failed or missing webhook delivery events.",
+    REGIONS_VIEW: "View game region configuration and metadata.",
+    REGIONS_CREATE: "Create new game regions.",
+    REGIONS_TERMINATE: "Terminate or decommission game regions.",
+    REGIONS_TRANSFER_OWNERSHIP: "Transfer region ownership between users.",
+    ARIA_AUDIT: "Audit ARIA AI dialogue sessions and model interactions.",
+    MULTI_ACCOUNT_REVIEW: "Review and adjudicate multi-account detection flags.",
+    BANG_REGENERATE: "Trigger galaxy generation (bang) regeneration runs.",
+    SCOPES_GRANT: "Grant admin scopes to other users.",
+    SCOPES_REVOKE: "Revoke admin scopes from other users.",
+    AUDIT_VIEW: "View the AdminActionLog audit trail (admin actions).",
+    GALAXY_MANAGE: (
+        "Structural edits to galaxy sectors, ports, planets, and warp links "
+        "(not bang regeneration; use admin.bang.regenerate for that)."
+    ),
+    PLAYERS_ADJUST_CREDITS: "Adjust player credit balances.",
+    SHIPS_MANAGE: "Create, edit, delete, or teleport ships.",
+    COMBAT_INTERVENE: "Intervene in active combat encounters.",
+    ECONOMY_INTERVENE: "Intervene in economy and market operations.",
+    SECURITY_ACT: "Take security enforcement actions (blocks, alerts).",
+    DISPUTES_RESOLVE: "Resolve contract disputes and escrow outcomes.",
+}
+
+assert set(SCOPE_DESCRIPTIONS.keys()) == ALL_SCOPES
+assert all(SCOPE_DESCRIPTIONS[s].strip() for s in ALL_SCOPES)

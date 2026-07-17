@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from src.auth.admin_scopes import (
     ALL_SCOPES,
     META_SCOPES,
+    SCOPE_DESCRIPTIONS,
     SCOPES_GRANT,
     SCOPES_REVOKE,
 )
@@ -53,6 +54,18 @@ class ActiveGrantOut(BaseModel):
 
 class UserScopesOut(BaseModel):
     user_id: UUID
+    is_admin: bool
+    scopes: List[ActiveGrantOut]
+
+
+class ScopeCatalogItem(BaseModel):
+    scope: str
+    description: str
+
+
+class ScopeHolderOut(BaseModel):
+    user_id: UUID
+    username: Optional[str] = None
     is_admin: bool
     scopes: List[ActiveGrantOut]
 
@@ -278,12 +291,62 @@ def revoke_scope_from_user(
 
 
 
-@router.get("/catalog", response_model=List[str])
+@router.get("/catalog", response_model=List[ScopeCatalogItem])
 async def list_scope_catalog(
     _: User = Depends(require_scope(SCOPES_GRANT)),
 ):
-    """Frozen 19-scope catalog (grant holders can see what is grantable)."""
-    return sorted(ALL_SCOPES)
+    """26-scope catalog (grant holders can see what is grantable)."""
+    return [
+        ScopeCatalogItem(scope=scope, description=SCOPE_DESCRIPTIONS[scope])
+        for scope in sorted(ALL_SCOPES)
+    ]
+
+
+@router.get("/holders", response_model=List[ScopeHolderOut])
+async def list_scope_holders(
+    _: User = Depends(require_scope(SCOPES_GRANT)),
+    db: Session = Depends(get_db),
+):
+    """List every user with at least one active AdminScopeGrant.
+
+    Gated on ``admin.scopes.grant`` (not ``admin.players.view``): this is
+    meta-admin capability — who holds which scopes is scope-management
+    intelligence, not routine player lookup.
+    """
+    rows = (
+        db.query(
+            User.id,
+            User.username,
+            User._is_admin,
+            AdminScopeGrant.scope,
+            AdminScopeGrant.granted_at,
+            AdminScopeGrant.granted_by,
+        )
+        .join(AdminScopeGrant, AdminScopeGrant.user_id == User.id)
+        .filter(
+            AdminScopeGrant.revoked_at.is_(None),
+            User.deleted == False,
+        )
+        .order_by(User.username, AdminScopeGrant.scope)
+        .all()
+    )
+    holders: dict[UUID, ScopeHolderOut] = {}
+    for user_id, username, is_admin, scope, granted_at, granted_by in rows:
+        if user_id not in holders:
+            holders[user_id] = ScopeHolderOut(
+                user_id=user_id,
+                username=username,
+                is_admin=bool(is_admin),
+                scopes=[],
+            )
+        holders[user_id].scopes.append(
+            ActiveGrantOut(
+                scope=scope,
+                granted_at=granted_at,
+                granted_by=granted_by,
+            )
+        )
+    return list(holders.values())
 
 
 @router.get("/users/{user_id}", response_model=UserScopesOut)
