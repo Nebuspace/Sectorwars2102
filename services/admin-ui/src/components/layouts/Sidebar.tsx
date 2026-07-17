@@ -71,6 +71,7 @@ const Sidebar: React.FC = () => {
       items: [
         { to: '/fleets', label: 'Fleets', icon: '🚀' },
         { to: '/combat', label: 'Combat', icon: '⚔️' },
+        { to: '/contract-disputes', label: 'Contract Disputes', icon: '⚖️' },
         { to: '/events', label: 'Events', icon: '🎯' },
         { to: '/factions', label: 'Factions', icon: '🏴' }
       ]

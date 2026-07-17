@@ -1,0 +1,273 @@
+.contract-dispute-arbitration {
+  padding: var(--space-3);
+  background: #0a0f1c;
+  color: #e2e8f0;
+  min-height: 100vh;
+}
+
+@media (min-width: 768px) {
+  .contract-dispute-arbitration {
+    padding: var(--space-4);
+  }
+}
+
+.contract-dispute-arbitration.loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.loading-spinner {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 300px;
+  font-size: 18px;
+  color: #94a3b8;
+}
+
+.cda-content {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  background: #1e293b;
+  border: 1px solid #475569;
+  border-radius: 12px;
+  padding: 20px;
+  min-height: 500px;
+}
+
+.cda-queue {
+  overflow-y: auto;
+  padding-right: 10px;
+}
+
+.cda-queue h4,
+.cda-evidence h4 {
+  color: #e2e8f0;
+  margin: 0 0 15px 0;
+  font-size: 16px;
+}
+
+.cda-empty {
+  color: #6b7280;
+  text-align: center;
+  padding: 20px;
+}
+
+.cda-item {
+  background: #374151;
+  border: 1px solid #4b5563;
+  border-radius: 8px;
+  padding: 15px;
+  margin-bottom: 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.cda-item:hover {
+  background: #4b5563;
+  border-color: #6b7280;
+}
+
+.cda-item.selected {
+  background: #4b5563;
+  border-color: #3b82f6;
+}
+
+.cda-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.cda-item-type {
+  background: #7c2d12;
+  color: #fb923c;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.cda-item-filed {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.cda-item-summary {
+  color: #e2e8f0;
+  font-size: 13px;
+  margin: 0;
+}
+
+.cda-evidence {
+  background: #374151;
+  border: 1px solid #4b5563;
+  border-radius: 8px;
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.cda-detail-section {
+  margin-bottom: 12px;
+}
+
+.cda-detail-section label {
+  display: block;
+  color: #94a3b8;
+  font-size: 12px;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+}
+
+.cda-detail-section span,
+.cda-detail-section p {
+  color: #e2e8f0;
+  font-size: 14px;
+  margin: 0;
+}
+
+.cda-honest-gap {
+  color: #fbbf24;
+  font-size: 12px;
+  font-style: italic;
+  margin: 15px 0;
+  padding: 10px;
+  background: #292524;
+  border-radius: 6px;
+  border-left: 3px solid #f59e0b;
+}
+
+.cda-ruling-form {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid #4b5563;
+}
+
+.cda-ruling-form h5 {
+  color: #e2e8f0;
+  margin: 0 0 15px 0;
+  font-size: 16px;
+}
+
+.cda-outcome-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cda-outcome-btn {
+  background: #1e293b;
+  border: 1px solid #4b5563;
+  border-radius: 6px;
+  color: #94a3b8;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.cda-outcome-btn:hover:not(:disabled) {
+  background: #4b5563;
+  color: #e2e8f0;
+}
+
+.cda-outcome-btn.active {
+  background: #3b82f6;
+  border-color: #3b82f6;
+  color: white;
+}
+
+.cda-outcome-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.form-group {
+  margin-bottom: 15px;
+}
+
+.form-group label {
+  display: block;
+  color: #94a3b8;
+  font-size: 12px;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+}
+
+.form-group textarea {
+  width: 100%;
+  background: #1e293b;
+  border: 1px solid #4b5563;
+  border-radius: 4px;
+  color: #e2e8f0;
+  padding: 8px 12px;
+  font-size: 14px;
+}
+
+.form-group textarea:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+
+.resolve-error {
+  background: #7f1d1d;
+  color: #fca5a5;
+  padding: 10px;
+  border-radius: 6px;
+  margin-bottom: 15px;
+  font-size: 13px;
+}
+
+.resolution-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.btn {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-success {
+  background: #10b981;
+  color: white;
+}
+
+.btn-success:hover:not(:disabled) {
+  background: #059669;
+}
+
+.btn-secondary {
+  background: #6b7280;
+  color: white;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: #4b5563;
+}
+
+@media (max-width: 768px) {
+  .contract-dispute-arbitration {
+    padding: 10px;
+  }
+
+  .cda-content {
+    grid-template-columns: 1fr;
+  }
+}

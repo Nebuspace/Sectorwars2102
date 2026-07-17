@@ -24,6 +24,9 @@ const PlayerAnalytics = lazy(() => import('./components/pages/PlayerAnalytics'))
 const CombatOverview = lazy(() => import('./components/pages/CombatOverview').then(module => ({
   default: module.CombatOverview
 })));
+const ContractDisputeArbitration = lazy(() => import('./components/pages/ContractDisputeArbitration').then(module => ({
+  default: module.ContractDisputeArbitration
+})));
 const FleetManagement = lazy(() => import('./components/pages/FleetManagement'));
 const TeamManagement = lazy(() => import('./components/pages/TeamManagement'));
 const EventManagement = lazy(() => import('./components/pages/EventManagement'));
@@ -94,6 +97,7 @@ function App() {
                 <Route path="economy" element={<ProtectedLazyRoute element={<EconomyDashboard />} />} />
                 <Route path="players" element={<ProtectedLazyRoute element={<PlayerAnalytics />} />} />
                 <Route path="combat" element={<ProtectedLazyRoute element={<CombatOverview />} />} />
+                <Route path="contract-disputes" element={<ProtectedLazyRoute element={<ContractDisputeArbitration />} />} />
                 <Route path="fleets" element={<ProtectedLazyRoute element={<FleetManagement />} />} />
                 <Route path="colonies" element={<ProtectedLazyRoute element={<ColonizationManagement />} />} />
                 <Route path="teams" element={<ProtectedLazyRoute element={<TeamManagement />} />} />
