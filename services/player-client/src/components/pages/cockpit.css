@@ -1305,6 +1305,55 @@
   container-name: system-content;
 }
 
+/* QUEUE-TYPESCALE-MBODY-COMPENSATE: `.mbody` (cockpit-shell.css, the frozen
+   ratified artifact -- not editable from this lane) carries
+   `font-size: .62em`, and EVERY nav-/system-/tactical-monitor page renders
+   its content as a DOM descendant of a `.mbody` wrapper (GameDashboard.tsx's
+   two `<div className="mbody" role="tabpanel">` panels, TacticalMonitor.tsx's
+   own copy -- same class, same frozen ancestor, all 3 monitor panels).
+   Without compensation, every em value below silently compounds under that
+   .62 (e.g. the un-compensated hud-label 0.65em would render at
+   .62*.65 = .403 of the .game-container root, not the flat .65 the
+   declaration says -- matches the audit's cited "~38% of declared size").
+   Same math/idiom as statusbar.css's `.sbar` .78em compensation
+   (WO-TRANCHE-0716 type-scale #19) -- `(intended coefficient) / .62`.
+
+   CRITICAL DIFFERENCE from the statusbar.css precedent: that file compensates
+   its BASE rules directly, safe because every class there is .sbar-exclusive.
+   hud-label/hud-value are NOT exclusive to .mbody -- they also render at
+   their LITERAL declared size inside the windshield's floating HUD chips
+   (.hud-overlay, no .mbody ancestor -- e.g. the OWNER/HABITABILITY/BAY
+   STATUS chips around cockpit.css:2648-2718). Compensating the base rule
+   would fix .mbody but DOUBLE those chips' text. So every override below is
+   `.mbody <selector>`, scoped, base rules untouched -- verified via a
+   rendered dual-context harness that both contexts land on the literal
+   declared size after this fix (see WO report). Applied uniformly to all
+   ~19 audited declarations, including the ones that may only ever render
+   inside .mbody today -- one mental model, not per-class special-casing. */
+.mbody .hud-label { font-size: 1.0484em; } /* 0.65 / .62 */
+.mbody .hud-value { font-size: 2.4194em; } /* 1.5 / .62 */
+.mbody .hud-badge { font-size: 1.0484em; } /* 0.65 / .62 */
+.mbody .hud-description-text { font-size: 1.2097em; } /* 0.75 / .62 */
+.mbody .empty-state { font-size: 1.3710em; } /* 0.85 / .62 */
+.mbody .planetary-asteroid-label { font-size: 1.0484em; } /* 0.65 / .62 */
+.mbody .planetary-harvest-btn { font-size: 1.1290em; } /* 0.7 / .62 */
+.mbody .system-hazard-fold-title { font-size: 0.9677em; } /* 0.6 / .62 */
+.mbody .nav-autopilot-abort { font-size: 0.9677em; } /* 0.6 / .62 */
+.mbody .nav-autopilot-engage { font-size: 0.9677em; } /* 0.6 / .62 */
+.mbody .nav-course-meta { font-size: 0.9355em; } /* 0.58 / .62 */
+.mbody .nav-course-section-title { font-size: 0.9677em; } /* 0.6 / .62 */
+.mbody .nav-exit-cost { font-size: 0.9677em; } /* 0.6 / .62 */
+.mbody .nav-exit-move-btn { font-size: 0.9355em; } /* 0.58 / .62 */
+.mbody .nav-exit-name { font-size: 1.0968em; } /* 0.68 / .62 */
+.mbody .nav-plot-btn { font-size: 0.9677em; } /* 0.6 / .62 */
+.mbody .nav-plot-input { font-size: 1.0484em; } /* 0.65 / .62 */
+.mbody .nav-scan-retry { font-size: 1.1290em; } /* 0.7 / .62 */
+.mbody .nav-scan-text { font-size: 1.1290em; } /* 0.7 / .62 */
+/* .nav-course-strip (part of the audit's "course-meta/section-title/strip"
+   grouping) verified to carry NO font-size declaration at all -- it's a
+   layout container (rem-based padding/margin, unaffected by ancestor
+   font-size). Nothing to compensate; omitted deliberately, not missed. */
+
 /* WO-UI0-SHELL-TRANSPLANT (Leaf L3) RETIRED `.system-monitor .monitor-
    bezel`/`.monitor-screen::after` (purple inset glow) and the combined
    `.system-header-with-modes, .tactical-header-with-modes` rule below
