@@ -79,9 +79,6 @@ class HealthReportResponse(BaseModel):
     critical_issues: List[Dict[str, Any]]
 
 
-class DeleteShipResponse(BaseModel):
-    """Response for ship deletion."""
-    success: bool
 
 
 # Admin Ship Management Endpoints
@@ -548,59 +545,6 @@ async def create_ship(
     }
 
 
-@router.delete("/{ship_id}", response_model=DeleteShipResponse)
-async def delete_ship(
-    ship_id: UUID,
-    admin: User = Depends(require_scope(SHIPS_MANAGE)),
-    db: Session = Depends(get_db)
-):
-    """Delete a ship administratively."""
-
-    with admin_action_attempt(
-        db,
-        actor=admin,
-        scope_used=SHIPS_MANAGE,
-        action="ship_delete",
-        target_type="ship",
-        target_id=str(ship_id),
-    ) as attempt:
-        ship = db.query(Ship).filter(Ship.id == ship_id).first()
-        if not ship:
-            raise HTTPException(status_code=404, detail="Ship not found")
-
-        ship_info = {
-            "name": ship.name,
-            "type": ship.type,
-            "owner": ship.owner.user.username if ship.owner else "Unassigned",
-            "sector": ship.sector.name if ship.sector else "Deep Space"
-        }
-
-        if ship.status == ShipStatus.IN_COMBAT.value:
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot delete ship that is currently in combat"
-            )
-
-        audit_service = AuditService(db)
-        audit_service.log_action(
-            user_id=admin.id,
-            action=AuditAction.DELETE,
-            resource_type="ship",
-            resource_id=str(ship_id),
-            details=ship_info
-        )
-
-        try:
-            from src.services.pioneer_service import reabsorb_on_ship_loss
-            with db.begin_nested():
-                reabsorb_on_ship_loss(db, ship.owner_id)
-        except Exception:
-            logger.exception("pioneer reabsorb on admin ship-delete failed")
-
-        db.delete(ship)
-        attempt.succeed(payload={"name": ship_info.get("name"), "owner": ship_info.get("owner")})
-
-    return DeleteShipResponse(success=True)
 
 
 # DEPRECATED: Ship specifications are now fetched from ShipSpecification database table

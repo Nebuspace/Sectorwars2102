@@ -163,7 +163,6 @@ def test_c1_high_impact_routes_log_before_commit():
         (comp.delete_port, "port_delete", "GALAXY_MANAGE"),
         (comp.delete_warp_tunnel, "warp_tunnel_delete", "GALAXY_MANAGE"),
         (ships.emergency_ship_action, "ship_emergency", "SHIPS_MANAGE"),
-        (ships.delete_ship, "ship_delete", "SHIPS_MANAGE"),
         (disputes.resolve_contract_dispute, "contract_dispute_resolve", "DISPUTES_RESOLVE"),
     ]
     for fn, action, scope in cases:
