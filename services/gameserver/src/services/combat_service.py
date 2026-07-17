@@ -604,6 +604,27 @@ class CombatService:
     RAIL_GUN_BASE_DAMAGE_PER_BATTERY = 0.5
     RAIL_GUN_MAX_BONUS_DAMAGE = 10
 
+    # --- Planetary Minefields (WO-P5-planets-minefield-wiring, defense.md
+    # §"Mine fields") --------------------------------------------------------
+    # "Mines target incoming hostiles only... deal 500-1,500 hull damage per
+    # mine impact, ignore shields." Unlike turrets/rail guns (recurring,
+    # every-round weapons), a minefield is a ONE-TIME proximity hazard that
+    # triggers on assault-round entry (round 1 only) -- modelled as an
+    # independent strike before the round's turret/attacker/defender turns,
+    # not folded into the recurring "planet's turn" ship-damage roll.
+    #
+    # Canon's literal 500-1,500-per-mine-impact magnitude would instakill on
+    # this resolver's randint(1,7)/round scale -- the SAME WO-CT1/rail_gun
+    # incompatibility. NO-CANON (flag for orchestrator bless): the two
+    # magnitudes below abstract at the MINEFIELD level (built-count), not the
+    # individual-mine level (canon's "20 mines/field" replenishment/depletion
+    # tracking is out of scope here, same as rail_gun abstracting at the
+    # battery level rather than per-shot). Unlike rail guns, canon gives no
+    # ship-class table for mines ("target incoming hostiles only", no size
+    # distinction), so this contribution does NOT vary by attacker ship type.
+    MINEFIELD_BASE_DAMAGE_PER_FIELD = 3
+    MINEFIELD_MAX_BONUS_DAMAGE = 9
+
     # Weapon type effectiveness against different defenses
     WEAPON_TYPES = {
         "laser": {"base_damage": 1.0, "shield_effectiveness": 0.8, "hull_effectiveness": 1.0, "description": "Standard energy weapon"},
@@ -4036,6 +4057,39 @@ class CombatService:
                 "message": f"Combat Round {round_number}"
             })
 
+            # Planetary minefield proximity strike (WO-P5-planets-minefield-
+            # wiring): a ONE-TIME hazard on assault-round entry (round 1
+            # only) -- distinct from turrets/rail guns, which fire every
+            # round. Deterministic magnitude (no RNG) gated on minefield
+            # count > 0, so a 0-minefield planet consumes zero random-module
+            # calls here -- same byte-identical-at-zero contract rail_gun
+            # established. `break`s the round loop immediately on a
+            # mine-inflicted destruction (mirrors the `if planet_captured:
+            # break` idiom below) so a destroyed ship doesn't also take a
+            # redundant same-round turret/attacker/defender turn.
+            if round_number == 1:
+                mine_bonus = self._calculate_minefield_bonus_damage(planet)
+                if mine_bonus > 0:
+                    mine_destruction_chance = mine_bonus / 50
+                    if random.random() < mine_destruction_chance:
+                        attacker_ship_destroyed = True
+                        combat_details.append({
+                            "round": round_number,
+                            "actor": "defender",
+                            "action": "minefield_strike",
+                            "message": f"Planetary minefield mines caught {attacker.username}'s ship on approach for {mine_bonus} damage, forcing ejection",
+                            "damage": mine_bonus,
+                        })
+                        break
+                    else:
+                        combat_details.append({
+                            "round": round_number,
+                            "actor": "defender",
+                            "action": "minefield_strike",
+                            "message": f"Planetary minefield mines struck {attacker.username}'s ship for {mine_bonus} damage on approach",
+                            "damage": mine_bonus,
+                        })
+
             # Automated turret-network point-defense (WO-CT1): turret networks fire
             # every round independent of the planet's main-weapon hit roll, shredding
             # the attacker's drone swarm. CANON (defense.md): each turret destroys
@@ -4595,6 +4649,32 @@ class CombatService:
 
         bonus = rail_gun_count * self.RAIL_GUN_BASE_DAMAGE_PER_BATTERY * class_mult
         return min(int(round(bonus)), self.RAIL_GUN_MAX_BONUS_DAMAGE)
+
+    def _calculate_minefield_bonus_damage(self, planet: Planet) -> int:
+        """One-time proximity-strike damage the planet's Minefields deal to an
+        incoming attacker on assault-round entry (WO-P5-planets-minefield-wiring;
+        defense.md §"Mine fields" — "mines target incoming hostiles only...
+        deal 500-1,500 hull damage per mine impact, ignore shields").
+
+        Reads the built minefield count off the same ``active_events
+        ["defense_buildings"]["planet_minefield"]`` JSONB WO-CT1/rail_gun
+        established (via ``_read_defense_buildings``). Unlike rail guns, canon
+        gives no ship-class table for mines, so this does not vary by
+        attacker ship type. See MINEFIELD_BASE_DAMAGE_PER_FIELD /
+        MINEFIELD_MAX_BONUS_DAMAGE above for the NO-CANON in-scale magnitude.
+
+        0 minefields -> 0, with ZERO random-module calls — the same
+        byte-for-byte regression contract rail_gun established: a planet with
+        no minefields must produce an identical combat log/RNG sequence to
+        before this WO.
+        """
+        buildings = self._read_defense_buildings(planet)
+        minefield_count = buildings.get("planet_minefield", 0)
+        if minefield_count <= 0:
+            return 0
+
+        bonus = minefield_count * self.MINEFIELD_BASE_DAMAGE_PER_FIELD
+        return min(int(round(bonus)), self.MINEFIELD_MAX_BONUS_DAMAGE)
 
     def _calculate_planetary_defense_reduction(self, planet: Planet) -> Dict[str, Any]:
         """Calculate how much planetary defenses reduce incoming attack damage.

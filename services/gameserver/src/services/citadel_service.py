@@ -150,13 +150,22 @@ DEFENSE_BUILDINGS = {
         "cost": 100000,
         "build_hours": 48,
         "effects": {
-            # Deferred per-mine combat data (no resolver wiring yet — mirrors
-            # rail_gun's deferred per-shot data living here).
             "weapon_kind": "proximity_mine",
             "mines_per_field": 20,
             # Equipment material requirement recorded as catalog metadata
             # (build_defense_building charges credits only, like rail_gun).
             "equipment_cost": 10000,
+            # WO-P5-planets-minefield-wiring: canon raw per-mine-impact damage
+            # (defense.md §"Mine fields": "deal 500-1,500 hull damage per mine
+            # impact, ignore shields"). Metadata only, mirroring rail_gun's
+            # base_damage_min/max shape — the resolver's actual injection uses
+            # combat_service.py's separate in-scale NO-CANON
+            # MINEFIELD_BASE_DAMAGE_PER_FIELD constant (this raw literal would
+            # instakill on the resolver's 1-7 scale, same WO-CT1/rail_gun
+            # incompatibility).
+            "base_damage_min": 500,
+            "base_damage_max": 1500,
+            "ignores_shields": True,
         },
     },
 }
