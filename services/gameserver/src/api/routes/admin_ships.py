@@ -152,10 +152,30 @@ async def get_ships(
         else:
             condition = "critical"
 
-        # Calculate cargo usage
-        cargo_used = sum(cargo.values()) if cargo else 0
-        # Get cargo capacity from spec if available, otherwise use default
-        cargo_capacity = spec.max_cargo if spec else 10  # Default to 10 if no spec
+        # Calculate cargo usage — ship.cargo is structured
+        # {"capacity","used","contents":{commodity:qty}}, not a flat qty map.
+        # sum(cargo.values()) TypeError'd on the nested contents dict (pre-existing
+        # since 2025-11-15; hub MED ticket @ WINDOW-CLOSED).
+        contents = cargo.get("contents") if isinstance(cargo.get("contents"), dict) else {}
+        used_field = cargo.get("used")
+        if isinstance(used_field, (int, float)):
+            cargo_used = int(used_field)
+        elif contents:
+            cargo_used = sum(
+                int(q) for q in contents.values() if isinstance(q, (int, float))
+            )
+        else:
+            # Legacy flat commodity→qty maps (if any remain).
+            cargo_used = sum(
+                int(q) for q in cargo.values() if isinstance(q, (int, float))
+            )
+        # Prefer durable capacity on the cargo blob, then ship spec, then default.
+        if isinstance(cargo.get("capacity"), (int, float)) and cargo["capacity"] > 0:
+            cargo_capacity = int(cargo["capacity"])
+        elif spec and getattr(spec, "max_cargo", None):
+            cargo_capacity = int(spec.max_cargo)
+        else:
+            cargo_capacity = 10
         cargo_percent = (cargo_used / cargo_capacity * 100) if cargo_capacity > 0 else 0
 
         ship_data = {
@@ -186,7 +206,7 @@ async def get_ships(
                 "used": cargo_used,
                 "capacity": cargo_capacity,
                 "capacity_percent": round(cargo_percent, 1),
-                "contents": cargo
+                "contents": contents,
             },
             "created_at": ship.created_at.isoformat() if ship.created_at else None,
             "last_updated": ship.last_updated.isoformat() if ship.last_updated else None
