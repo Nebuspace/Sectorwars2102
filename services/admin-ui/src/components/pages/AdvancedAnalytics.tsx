@@ -259,6 +259,10 @@ export const AdvancedAnalytics: React.FC = () => {
             <div className="export-header">
               <h2>Data Export Center</h2>
               <p>Export your game data in various formats for external analysis</p>
+              <p style={{ fontSize: '13px', opacity: 0.85, marginTop: '8px' }}>
+                Soft-deleted player accounts are excluded from player metrics and from
+                players / ships exports (same filter as the analytics aggregates).
+              </p>
             </div>
 
             {saveMessage && (

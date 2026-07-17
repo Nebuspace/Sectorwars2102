@@ -71,19 +71,20 @@ class ReportResult(BaseModel):
 _METRIC_CATALOG = [
     # Player metrics
     {"id": "player_total_count", "name": "Total Players", "category": "Players",
-     "dataType": "number", "aggregations": ["count"], "description": "Total registered players"},
+     "dataType": "number", "aggregations": ["count"],
+     "description": "Total registered players (excludes soft-deleted accounts)"},
     {"id": "player_active_count", "name": "Active Players (7d)", "category": "Players",
      "dataType": "number", "aggregations": ["count"],
-     "description": "Players who logged in within the last 7 days"},
+     "description": "Players who logged in within the last 7 days (excludes soft-deleted)"},
     {"id": "player_avg_credits", "name": "Avg Player Credits", "category": "Players",
      "dataType": "currency", "aggregations": ["avg"],
-     "description": "Average credits held across all players"},
+     "description": "Average credits held across non-deleted players"},
     {"id": "player_total_credits", "name": "Total Credits in Circulation", "category": "Players",
      "dataType": "currency", "aggregations": ["sum"],
-     "description": "Sum of credits held by all players"},
+     "description": "Sum of credits held by non-deleted players"},
     {"id": "player_avg_turns", "name": "Avg Turns Remaining", "category": "Players",
      "dataType": "number", "aggregations": ["avg"],
-     "description": "Average turns remaining across all players"},
+     "description": "Average turns remaining across non-deleted players"},
     # Economy metrics
     {"id": "market_total_transactions", "name": "Total Market Transactions", "category": "Economy",
      "dataType": "number", "aggregations": ["count"],
@@ -154,32 +155,50 @@ _BUILTIN_TEMPLATES = [
 # Helper — compute a single metric value against the live DB
 # ---------------------------------------------------------------------------
 
+def _players_excluding_soft_deleted(db: Session):
+    """Player rows whose owning User is not soft-deleted.
+
+    Must stay aligned with GET /admin/analytics/export?dataset=players
+    (which already filters ``User.deleted == False``).
+    """
+    return (
+        db.query(Player)
+        .join(User, User.id == Player.user_id)
+        .filter(User.deleted == False)  # noqa: E712 — SQLAlchemy column compare
+    )
+
+
 def _compute_metric(metric_id: str, db: Session) -> Any:
     """Return the real DB-aggregate value for a given metric ID, or 0 if
-    the metric ID is unknown.  Never fabricates data."""
+    the metric ID is unknown.  Never fabricates data.
+
+    Player-facing aggregates exclude soft-deleted accounts so metrics match
+    the players export filter (calibration reconcile).
+    """
     week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    live_players = _players_excluding_soft_deleted(db)
 
     if metric_id == "player_total_count":
-        return db.query(func.count(Player.id)).scalar() or 0
+        return live_players.with_entities(func.count(Player.id)).scalar() or 0
 
     if metric_id == "player_active_count":
         return (
-            db.query(func.count(User.id))
-            .join(Player, Player.user_id == User.id)
+            live_players
             .filter(User.last_login >= week_ago)
+            .with_entities(func.count(User.id))
             .scalar()
             or 0
         )
 
     if metric_id == "player_avg_credits":
-        result = db.query(func.avg(Player.credits)).scalar()
+        result = live_players.with_entities(func.avg(Player.credits)).scalar()
         return round(float(result), 2) if result else 0.0
 
     if metric_id == "player_total_credits":
-        return db.query(func.sum(Player.credits)).scalar() or 0
+        return live_players.with_entities(func.sum(Player.credits)).scalar() or 0
 
     if metric_id == "player_avg_turns":
-        result = db.query(func.avg(Player.turns)).scalar()
+        result = live_players.with_entities(func.avg(Player.turns)).scalar()
         return round(float(result), 2) if result else 0.0
 
     if metric_id == "market_total_transactions":
@@ -203,7 +222,19 @@ def _compute_metric(metric_id: str, db: Session) -> Any:
         return db.query(func.count(CombatLog.id)).scalar() or 0
 
     if metric_id == "ship_total_count":
-        return db.query(func.count(Ship.id)).scalar() or 0
+        # NPC ships + ships owned by non-deleted players (exclude soft-deleted owners).
+        return (
+            db.query(func.count(Ship.id))
+            .outerjoin(Player, Player.id == Ship.owner_id)
+            .outerjoin(User, User.id == Player.user_id)
+            .filter(
+                (Ship.is_npc == True)  # noqa: E712
+                | (Ship.owner_id.is_(None))
+                | (User.deleted == False)  # noqa: E712
+            )
+            .scalar()
+            or 0
+        )
 
     if metric_id == "team_total_count":
         return db.query(func.count(Team.id)).scalar() or 0
@@ -378,7 +409,19 @@ def export_data(
         ]
 
     elif dataset == "ships":
-        records = db.query(Ship).limit(10000).all()
+        # Match ship_total_count metric: NPCs + unowned + owned by non-deleted users.
+        records = (
+            db.query(Ship)
+            .outerjoin(Player, Player.id == Ship.owner_id)
+            .outerjoin(User, User.id == Player.user_id)
+            .filter(
+                (Ship.is_npc == True)  # noqa: E712
+                | (Ship.owner_id.is_(None))
+                | (User.deleted == False)  # noqa: E712
+            )
+            .limit(10000)
+            .all()
+        )
         rows = [
             {
                 "ship_id": str(s.id),

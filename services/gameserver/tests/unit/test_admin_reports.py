@@ -38,10 +38,12 @@ class _FakeQuery:
     # chain no-ops
     def filter(self, *a, **kw): return self
     def join(self, *a, **kw): return self
+    def outerjoin(self, *a, **kw): return self
     def label(self, *a, **kw): return self
     def order_by(self, *a, **kw): return self
     def limit(self, *a, **kw): return self
     def group_by(self, *a, **kw): return self
+    def with_entities(self, *a, **kw): return self
 
     def scalar(self): return self._scalar
     def all(self): return self._all
@@ -62,6 +64,46 @@ class _FakeDB:
 _FAKE_ADMIN = SimpleNamespace(id="admin-1", username="admin", is_admin=True)
 _DB = _FakeDB()
 
+
+def test_player_metrics_join_soft_delete_filter():
+    """Player aggregates must join User and filter deleted==False (export parity)."""
+    from src.models.user import User
+
+    recorded = {"joins": 0, "filters": []}
+
+    class _RecordingQuery(_FakeQuery):
+        def join(self, *a, **kw):
+            recorded["joins"] += 1
+            return self
+
+        def filter(self, *a, **kw):
+            recorded["filters"].extend(a)
+            return self
+
+        def with_entities(self, *a, **kw):
+            return self
+
+    class _RecordingDB:
+        def query(self, *args, **kwargs):
+            return _RecordingQuery(scalar_value=3)
+
+    for metric_id in (
+        "player_total_count",
+        "player_active_count",
+        "player_avg_credits",
+        "player_total_credits",
+        "player_avg_turns",
+    ):
+        recorded["joins"] = 0
+        recorded["filters"] = []
+        assert _compute_metric(metric_id, _RecordingDB()) == 3
+        assert recorded["joins"] >= 1, f"{metric_id} must join User"
+        # At least one filter clause references User.deleted
+        assert any(
+            getattr(f, "left", None) is User.deleted
+            or "deleted" in str(f).lower()
+            for f in recorded["filters"]
+        ), f"{metric_id} must filter soft-deleted users"
 
 # ---------------------------------------------------------------------------
 # Metric catalog shape
