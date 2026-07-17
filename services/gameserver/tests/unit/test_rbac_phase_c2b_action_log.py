@@ -17,11 +17,28 @@ from src.auth.admin_scopes import (
 
 
 def _assert_log_before(fn, *, marker: str, action: str):
+    """Source-order tripwire.
+
+    Convention: ``marker`` must be a specific call/assignment fragment
+    (e.g. ``"changed = settle("``), never a bare substring that can
+    false-match a comment (``"settle("`` once did).
+    """
     src = inspect.getsource(fn)
     assert "log_admin_action" in src, fn.__name__
     assert f'action="{action}"' in src, fn.__name__
     assert src.index("log_admin_action") < src.index(marker), (
         f"{fn.__name__}: log must precede {marker!r}"
+    )
+
+
+def _assert_commit_between_log_and(fn, *, after_marker: str):
+    """Require ``.commit()`` between log_admin_action and ``after_marker``."""
+    src = inspect.getsource(fn)
+    log_i = src.index("log_admin_action")
+    commit_i = src.index(".commit()", log_i)
+    after_i = src.index(after_marker)
+    assert log_i < commit_i < after_i, (
+        f"{fn.__name__}: commit must sit between log_admin_action and {after_marker!r}"
     )
 
 
@@ -79,6 +96,22 @@ def test_c2b_translation_logs_before_service():
         marker="await translation_service.initialize_default_data",
         action="translation_initialize",
     )
+    # Durability: commit attempt-log before service (service may roll back).
+    _assert_commit_between_log_and(
+        tr.set_translation, after_marker="await translation_service.set_translation"
+    )
+    _assert_commit_between_log_and(
+        tr.bulk_import_translations,
+        after_marker="await translation_service.bulk_import_translations",
+    )
+    _assert_commit_between_log_and(
+        tr.initialize_translation_data,
+        after_marker="await translation_service.initialize_default_data",
+    )
+    for fn in (tr.set_translation, tr.bulk_import_translations, tr.initialize_translation_data):
+        src = inspect.getsource(fn)
+        assert '"attempt": True' in src, fn.__name__
+        assert 'result="attempted"' in src, fn.__name__
 
 
 def test_c2b_analytics_logs_before_service():
@@ -117,6 +150,10 @@ def test_c2b_drones_ships_colonization_bulk_nexus():
     )
     _assert_log_before(
         nexus.generate_central_nexus, marker="background_tasks.add_task", action="nexus_generate_start"
+    )
+    # Property #3: commit must sit BETWEEN log and add_task.
+    _assert_commit_between_log_and(
+        nexus.generate_central_nexus, after_marker="background_tasks.add_task"
     )
 
 
@@ -189,5 +226,88 @@ def test_c2b_e2e_rollback_on_create_bulk_pattern():
     db.rollback()
     assert db.execute(text("SELECT COUNT(*) FROM c2b_bulk_players")).scalar() == 0
     assert db.execute(text("SELECT COUNT(*) FROM admin_action_logs")).scalar() == 0
+    db.close()
+    engine.dispose()
+
+
+import asyncio
+import uuid
+from types import SimpleNamespace
+
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+
+def test_c2b_translation_bulk_all_garbage_still_persists_attempt_log():
+    """MEDIUM fix proof: all-invalid bulk returns 200-shaped result AND leaves an AdminActionLog.
+
+    Source-order asserts cannot see session-close rollback discarding an uncommitted log.
+    """
+    from src.api.routes.translation import BulkTranslationRequest, bulk_import_translations
+    from src.services.translation_service import TranslationService
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @event.listens_for(engine, "connect")
+    def _fk(dbapi_conn, _):
+        dbapi_conn.execute("PRAGMA foreign_keys=ON")
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE admin_action_logs ("
+                "id CHAR(32) PRIMARY KEY,"
+                "admin_user_id CHAR(32),"
+                "scope_used VARCHAR(120),"
+                "action VARCHAR(200) NOT NULL,"
+                "target_type VARCHAR(100),"
+                "target_id VARCHAR(255),"
+                "payload_snapshot TEXT,"
+                "result VARCHAR(50),"
+                "failure_reason TEXT,"
+                "reviewed_by CHAR(32),"
+                "reviewed_at TIMESTAMP,"
+                "at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+        )
+
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = Session()
+    actor = SimpleNamespace(id=uuid.uuid4())
+    svc = TranslationService(db)
+
+    # Every key fails validate_translation_key (SQL / path injection patterns).
+    garbage = {
+        "../etc/passwd": "x",
+        "drop_table": "y",
+        "select_union": "z",
+    }
+    body = BulkTranslationRequest(translations=garbage, overwrite=False)
+
+    result = asyncio.run(
+        bulk_import_translations(
+            language_code="en",
+            namespace="common",
+            request=body,
+            admin_user=actor,
+            translation_service=svc,
+        )
+    )
+
+    assert result["errors"] == 3
+    assert result["imported"] == 0
+    # Early commit in the route must already have durabilized the log.
+    n = db.execute(text("SELECT COUNT(*) FROM admin_action_logs")).scalar()
+    assert n == 1
+    row = db.execute(
+        text("SELECT action, result, scope_used FROM admin_action_logs")
+    ).one()
+    assert row == ("translation_bulk_import", "attempted", GALAXY_MANAGE)
+
     db.close()
     engine.dispose()

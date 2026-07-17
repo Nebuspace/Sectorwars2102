@@ -208,7 +208,11 @@ async def set_translation(
 ):
     """Set or update a translation (admin only)"""
     try:
-
+        # Attempt-scoped audit: TranslationService may commit OR roll back
+        # independently (partial-tolerant / _handle_error). Commit the log
+        # first so durability does not ride the service's control flow
+        # (mirrors nexus generate_central_nexus). Intentional: we log the
+        # ATTEMPT, not a result count the early commit cannot guarantee.
         log_admin_action(
             translation_service.db,
             actor=admin_user,
@@ -216,8 +220,15 @@ async def set_translation(
             action="translation_set",
             target_type="translation",
             target_id=request.key,
-            payload={"key": request.key, "namespace": namespace, "language": language_code},
+            payload={
+                "attempt": True,
+                "key": request.key,
+                "namespace": namespace,
+                "language": language_code,
+            },
+            result="attempted",
         )
+        translation_service.db.commit()
         success = await translation_service.set_translation(
             key=request.key,
             language_code=language_code,
@@ -247,7 +258,9 @@ async def bulk_import_translations(
 ):
     """Bulk import translations (admin only)"""
     try:
-
+        # Attempt-scoped audit — see set_translation. Bulk returns 200 with
+        # error counts even when every item is invalid; without an early
+        # commit the staged AdminActionLog is discarded on session close.
         log_admin_action(
             translation_service.db,
             actor=admin_user,
@@ -255,8 +268,16 @@ async def bulk_import_translations(
             action="translation_bulk_import",
             target_type="translation",
             target_id=f"{language_code}/{namespace}",
-            payload={"namespace": namespace, "language": language_code, "overwrite": request.overwrite},
+            payload={
+                "attempt": True,
+                "namespace": namespace,
+                "language": language_code,
+                "overwrite": request.overwrite,
+                "keys_submitted": len(request.translations),
+            },
+            result="attempted",
         )
+        translation_service.db.commit()
         result = await translation_service.bulk_import_translations(
             translations=request.translations,
             language_code=language_code,
@@ -276,7 +297,7 @@ async def initialize_translation_data(
 ):
     """Initialize default translation data (admin only)"""
     try:
-
+        # Attempt-scoped audit — see set_translation.
         log_admin_action(
             translation_service.db,
             actor=admin_user,
@@ -284,8 +305,10 @@ async def initialize_translation_data(
             action="translation_initialize",
             target_type="translation",
             target_id="defaults",
-            payload={},
+            payload={"attempt": True},
+            result="attempted",
         )
+        translation_service.db.commit()
         success = await translation_service.initialize_default_data()
         if success:
             return {"success": True, "message": "Translation data initialized"}
