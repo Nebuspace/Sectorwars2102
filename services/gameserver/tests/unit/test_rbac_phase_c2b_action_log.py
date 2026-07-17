@@ -109,7 +109,9 @@ def test_c2b_drones_ships_colonization_bulk_nexus():
         action="drone_force_recall",
     )
 
-    _assert_log_before(col.tick_planet_production, marker="settle(", action="planet_tick")
+    _assert_log_before(
+        col.tick_planet_production, marker="changed = settle(", action="planet_tick"
+    )
     _assert_log_before(
         comp.create_players_from_all_users, marker="db.commit()", action="player_create_bulk"
     )
