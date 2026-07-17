@@ -582,7 +582,27 @@ def sweep_expired_contracts(db: Session, now: Optional[datetime] = None) -> Dict
     WHERE clause is its own safety net against a second scheduler
     instance). FLUSH-ONLY -- the scheduler wrapper commits inside the CEXP
     advisory lock, so the whole per-row-refund + bulk-expire pass is one
-    atomic transaction."""
+    atomic transaction.
+
+    WO-CONTRACT-LOCK-ORDER (axis-1, task #54): the issuer is now locked
+    BEFORE the guarded status-flip UPDATE below, not after -- this sweep
+    previously locked Contract-then-Player while every API action
+    (accept/abandon/cancel/insure/file_dispute/resolve_dispute, all via
+    `_load_player`/`_load_two_players_for_update`) locks Player-then-
+    Contract, an AB-BA cross-table deadlock risk between this sweep and
+    any of them touching the same contract's issuer. Reordering to
+    Player-then-Contract here closes it, matching the codebase-wide
+    convention. A candidate whose guarded UPDATE then rowcounts 0 (raced
+    away by a concurrent cancel/abandon) still leaves the issuer lock (if
+    one was taken) held until this sweep tick's own commit -- accepted
+    tradeoff, not released early, no sentinel-exception machinery added.
+    A SEPARATE axis (sweeps' own cross-tick player-lock ORDER vs the
+    ascending-by-id order `_load_two_players_for_update` already enforces
+    for every two-player API call) is a real but much narrower deadlock
+    risk, deliberately DEFERRED as a tracked follow-up -- see task #54's
+    axis-2 analysis; both the deadlock-victim sweep and any API-side
+    victim are already money-safe (per-candidate savepoint recovery) and,
+    after this WO's route-level fix, availability-safe (clean 409 retry)."""
     now = now or _now()
 
     expired_with_refund = 0
@@ -600,6 +620,47 @@ def sweep_expired_contracts(db: Session, now: Optional[datetime] = None) -> Dict
         if candidate is None:
             break
 
+        needs_refund = candidate.escrow_amount and candidate.escrow_amount > 0
+        issuer = None
+        if needs_refund:
+            # WO-CONTRACT-LOCK-ORDER: the lock itself is savepoint-isolated
+            # (a SEPARATE savepoint from the credit-mutation one below, and
+            # the guarded status-flip in between stays un-savepointed, both
+            # per Mack MEDIUM #2's original split) -- a genuine failure here
+            # (a real deadlock/lock-timeout OperationalError, or the
+            # defensive vanished-row case) would otherwise abort the WHOLE
+            # outer transaction (Postgres aborts the transaction on any
+            # failed statement, not just the Python frame), reintroducing
+            # exactly the whole-sweep-crash bug Mack MEDIUM #2 fixed --
+            # just relocated to this now-earlier lock instead of the old
+            # later one. ROLLBACK TO SAVEPOINT here costs nothing: the lock
+            # was never granted if the statement itself failed, and no
+            # other mutation has happened yet for this candidate.
+            #
+            # A failure here does NOT `continue` (this is a `while True`
+            # loop re-querying the SAME server-side filter every iteration
+            # -- unlike `continue` after a genuinely raced-away row, `issuer`
+            # failing to lock changes nothing in the DB, so a `continue`
+            # here would re-select this SAME candidate forever, an infinite
+            # loop). Instead `issuer` stays None and the guarded status-flip
+            # below still runs -- the row still leaves this candidate set
+            # (guaranteeing forward progress), just with no refund attempted
+            # this tick; escrow stays HELD, picked up later by `sweep_
+            # expired_dispute_window`'s own undisputed-refund pass (matching
+            # the pre-existing "not reachable today, cheap to harden
+            # against" resting state Mack MEDIUM #2 already accepted for a
+            # post-guard credit-side failure).
+            try:
+                with db.begin_nested():
+                    issuer = _load_player(db, candidate.issuer_id, for_update=True)
+            except Exception:
+                logger.exception(
+                    "sweep_expired_contracts: issuer lock failed for contract "
+                    "%s -- status will still be flipped below (no refund "
+                    "this tick)", candidate.id,
+                )
+                issuer = None
+
         row_stmt = (
             update(Contract)
             .where(Contract.id == candidate.id, Contract.status == ContractStatus.POSTED)
@@ -611,11 +672,13 @@ def sweep_expired_contracts(db: Session, now: Optional[datetime] = None) -> Dict
             # cancel/abandon on a different session/connection) -- no
             # mutation occurred, so the next iteration's fresh SELECT
             # simply won't return this row again (its real DB status has
-            # already moved past 'posted').
+            # already moved past 'posted'). `issuer` (if locked above) is
+            # simply held, unused, until this sweep tick's own commit --
+            # see this function's own WO-CONTRACT-LOCK-ORDER note above.
             continue
         candidate.status = ContractStatus.EXPIRED
 
-        if candidate.escrow_amount and candidate.escrow_amount > 0:
+        if issuer is not None:
             # WO-ECON-CONTRACT-MONEY-HARDEN Mack MEDIUM #2: the row's own
             # status flip above is already applied to the shared
             # transaction -- only the credit-side refund below (a single-
@@ -630,7 +693,6 @@ def sweep_expired_contracts(db: Session, now: Optional[datetime] = None) -> Dict
             # candidate.
             try:
                 with db.begin_nested():
-                    issuer = _load_player(db, candidate.issuer_id, for_update=True)
                     refund = _to_credits_int(_round_credits(_as_decimal(candidate.escrow_amount)))
                     issuer.credits = (issuer.credits or 0) + refund
                     candidate.escrow_state = ContractEscrowState.REFUNDING
@@ -793,6 +855,22 @@ def sweep_expired_accepted_contracts(
     cycle), just briefly held longer than strictly needed; noted here so
     a future reader doesn't mistake it for a leak.
 
+    WO-CONTRACT-LOCK-ORDER (axis-1, task #54): the acceptor is now locked
+    BEFORE the guarded status-flip UPDATE below, not after -- the docstring
+    note further down ("no separate issuer lock is needed... the guarded
+    status-flip UPDATE just above already row-locks the Contract") still
+    holds for THAT purpose (serializing against `insure()`'s own acceptor
+    lock), but this sweep separately participated in the Contract-vs-
+    Player AB-BA cross-table deadlock every OTHER contract-mutating API
+    action already avoids (all Player-then-Contract via `_load_player`/
+    `_load_two_players_for_update`). Reordering here closes it. A
+    candidate whose guarded UPDATE then rowcounts 0 (raced away) still
+    leaves the acceptor lock held until this sweep tick's own commit --
+    accepted tradeoff, matching `sweep_expired_contracts`'s identical note.
+    The sweeps' own cross-tick player-lock ORDER (axis-2) remains a
+    separate, deferred, tracked follow-up -- see task #54's axis-2
+    analysis.
+
     `.all()` gathers the FULL candidate set into memory upfront -- fine
     at this sweep's actual scale (the per-tick overdue-accepted-contract
     backlog is small; the sweep runs every CONTRACT_EXPIRE_SWEEP_SECONDS
@@ -824,6 +902,35 @@ def sweep_expired_accepted_contracts(
             # still overdue then.
             continue
 
+        # WO-CONTRACT-LOCK-ORDER (axis-1, task #54): locked BEFORE the
+        # guarded status-flip UPDATE below -- see this function's own
+        # docstring note above. Savepoint-isolated (SEPARATE from the
+        # credit-mutation savepoint further below, guarded status-flip
+        # left un-savepointed in between, matching sweep_expired_
+        # contracts' identical restructuring and Mack MEDIUM #2's
+        # original split) -- an uncaught failure here (real deadlock/
+        # lock-timeout, or the defensive vanished-row case) would
+        # otherwise abort the whole outer transaction and crash the rest
+        # of this sweep's candidates, the exact bug Mack MEDIUM #2 fixed.
+        #
+        # A failure here does NOT `continue` past the status-flip (unlike
+        # a genuinely raced-away row, below) -- `acceptor` stays None and
+        # the guarded status-flip still runs; the row is still counted in
+        # `expired` and still leaves ACCEPTED, just with no penalty/pool-
+        # draw applied this tick, matching Mack MEDIUM #2's own accepted
+        # resting state for a post-guard credit-side failure.
+        acceptor = None
+        try:
+            with db.begin_nested():
+                acceptor = _load_player(db, candidate.acceptor_player_id, for_update=True)
+        except Exception:
+            logger.exception(
+                "sweep_expired_accepted_contracts: acceptor lock failed for "
+                "contract %s -- status will still be flipped below (no "
+                "penalty/pool-draw this tick)", candidate.id,
+            )
+            acceptor = None
+
         row_stmt = (
             update(Contract)
             .where(Contract.id == candidate.id, Contract.status == ContractStatus.ACCEPTED)
@@ -835,7 +942,9 @@ def sweep_expired_accepted_contracts(
             # live complete()/abandon() on a different session) -- no
             # mutation occurred; simply skipped, see this function's own
             # docstring for why the upfront `.all()` doesn't weaken this
-            # protection.
+            # protection. `acceptor` is held, unused, until this sweep
+            # tick's own commit -- see this function's own WO-CONTRACT-
+            # LOCK-ORDER note above.
             continue
         candidate.status = ContractStatus.EXPIRED
 
@@ -864,10 +973,17 @@ def sweep_expired_accepted_contracts(
         # already row-locks the Contract for the remainder of this
         # transaction, so no separate issuer lock is needed to protect the
         # `escrow_amount` mutation below either.
+        #
+        # `acceptor is None` means the lock attempt above itself failed
+        # (see this function's own WO-CONTRACT-LOCK-ORDER note) -- no
+        # penalty/pool-draw is attempted at all in that case (there is no
+        # locked acceptor object to mutate), matching Mack MEDIUM #2's
+        # accepted resting state.
+        if acceptor is None:
+            expired += 1
+            continue
         try:
             with db.begin_nested():
-                acceptor = _load_player(db, candidate.acceptor_player_id, for_update=True)
-
                 # WO-CONTRACT-1b-CLAIM-SAFETY: `candidate` was gathered by
                 # the upfront, UNLOCKED `.all()` above -- a concurrent
                 # insure() can commit its coverage tier in the window
@@ -1037,7 +1153,27 @@ def sweep_expired_dispute_window(db: Session, now: Optional[datetime] = None) ->
     bearing claim still owed at the deploy window is a live-Postgres,
     forced-AB-BA test asserting BOTH halves: the deadlocked candidate
     reverts to EXPIRED+HELD, AND a sibling candidate in the same tick
-    still successfully commits its refund."""
+    still successfully commits its refund.
+
+    WO-CONTRACT-LOCK-ORDER (axis-1, task #54): the issuer lock (when
+    `needs_refund`) is now the FIRST statement inside the savepoint below,
+    acquired BEFORE the guarded `escrow_state -> REFUNDING` UPDATE, not
+    after -- this sweep previously locked Contract-then-Player like its
+    siblings, an AB-BA risk against `file_dispute`'s own Player-then-
+    Contract order on the identical row (both gate on the SAME two-column
+    WHERE, see above). Reordering closes it; the atomicity guarantee above
+    (mode (a) and (b) both revert the WHOLE candidate via ROLLBACK TO
+    SAVEPOINT) is unchanged by WHERE inside the savepoint the lock sits --
+    it is still the very first thing that can fail, so a failure there
+    reverts nothing else (there is nothing else yet to revert). A
+    candidate whose guard then rowcounts 0 (raced away) still leaves the
+    issuer lock (if taken) held, unused, until this sweep tick's own
+    commit -- same accepted tradeoff as this module's other two sweeps.
+    The sweeps' own cross-tick player-lock ORDER (axis-2, distinct from
+    this Contract-vs-Player axis) remains a separate, deferred, tracked
+    follow-up -- see task #54's axis-2 analysis; already money-safe (this
+    same savepoint-revert mechanism) and, after this WO's route-level
+    fix, availability-safe (clean 409 retry) either way."""
     now = now or _now()
     window_cutoff = now - timedelta(hours=DISPUTE_FILING_WINDOW_HOURS)
 
@@ -1056,6 +1192,18 @@ def sweep_expired_dispute_window(db: Session, now: Optional[datetime] = None) ->
         disposed = False
         try:
             with db.begin_nested():
+                # WO-CONTRACT-LOCK-ORDER (axis-1, task #54): locked FIRST,
+                # before the guarded UPDATE below -- see this function's
+                # own docstring note above. `needs_refund` reads fields
+                # that nothing mutates between the upfront `.all()` and
+                # here, so evaluating it before the guard (rather than
+                # after, as before) reads the identical value.
+                needs_refund = (
+                    candidate.issuer_type == ContractIssuerType.PLAYER
+                    and candidate.escrow_amount and candidate.escrow_amount > 0
+                )
+                issuer = _load_player(db, candidate.issuer_id, for_update=True) if needs_refund else None
+
                 row_stmt = (
                     update(Contract)
                     .where(
@@ -1070,16 +1218,14 @@ def sweep_expired_dispute_window(db: Session, now: Optional[datetime] = None) ->
                     # Raced away -- see this function's own docstring for
                     # why this can never double-dispose the escrow. Not a
                     # failure: fall through, the savepoint commits empty.
+                    # `issuer` (if locked above) is simply held, unused,
+                    # until this sweep tick's own commit -- see this
+                    # function's own WO-CONTRACT-LOCK-ORDER note above.
                     pass
                 else:
                     candidate.escrow_state = ContractEscrowState.REFUNDING
 
-                    needs_refund = (
-                        candidate.issuer_type == ContractIssuerType.PLAYER
-                        and candidate.escrow_amount and candidate.escrow_amount > 0
-                    )
-                    if needs_refund:
-                        issuer = _load_player(db, candidate.issuer_id, for_update=True)
+                    if issuer is not None:
                         refund = _to_credits_int(_round_credits(_as_decimal(candidate.escrow_amount)))
                         issuer.credits = (issuer.credits or 0) + refund
                         candidate.escrow_amount = Decimal("0")

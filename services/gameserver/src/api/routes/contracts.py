@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import or_
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from src.auth.dependencies import get_current_player
@@ -233,6 +234,20 @@ async def accept_contract(
     except ContractError as exc:
         db.rollback()
         _raise_for(exc)
+    except OperationalError:
+        # WO-CONTRACT-LOCK-ORDER (task #54): a deadlock (40P01) or lock-
+        # timeout (55P03) surfaces here as sqlalchemy.exc.OperationalError
+        # -- previously uncaught, a raw 500 (money-safe regardless: get_db's
+        # own `finally: db.close()` discards the uncommitted transaction,
+        # nothing partially lands). Every contract-mutating route shares
+        # this identical shape and gets the identical clean-retryable
+        # response -- the client's retry is exactly correct here, unlike a
+        # real 500.
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This contract is busy with another operation -- try again in a moment.",
+        ) from None
     else:
         db.commit()
         return result
@@ -251,6 +266,20 @@ async def complete_contract(
     except ContractError as exc:
         db.rollback()
         _raise_for(exc)
+    except OperationalError:
+        # WO-CONTRACT-LOCK-ORDER (task #54): a deadlock (40P01) or lock-
+        # timeout (55P03) surfaces here as sqlalchemy.exc.OperationalError
+        # -- previously uncaught, a raw 500 (money-safe regardless: get_db's
+        # own `finally: db.close()` discards the uncommitted transaction,
+        # nothing partially lands). Every contract-mutating route shares
+        # this identical shape and gets the identical clean-retryable
+        # response -- the client's retry is exactly correct here, unlike a
+        # real 500.
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This contract is busy with another operation -- try again in a moment.",
+        ) from None
     else:
         db.commit()
         return result
@@ -272,6 +301,20 @@ async def abandon_contract(
     except ContractError as exc:
         db.rollback()
         _raise_for(exc)
+    except OperationalError:
+        # WO-CONTRACT-LOCK-ORDER (task #54): a deadlock (40P01) or lock-
+        # timeout (55P03) surfaces here as sqlalchemy.exc.OperationalError
+        # -- previously uncaught, a raw 500 (money-safe regardless: get_db's
+        # own `finally: db.close()` discards the uncommitted transaction,
+        # nothing partially lands). Every contract-mutating route shares
+        # this identical shape and gets the identical clean-retryable
+        # response -- the client's retry is exactly correct here, unlike a
+        # real 500.
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This contract is busy with another operation -- try again in a moment.",
+        ) from None
     else:
         db.commit()
         return result
@@ -301,6 +344,20 @@ async def insure_contract(
     except ContractError as exc:
         db.rollback()
         _raise_for(exc)
+    except OperationalError:
+        # WO-CONTRACT-LOCK-ORDER (task #54): a deadlock (40P01) or lock-
+        # timeout (55P03) surfaces here as sqlalchemy.exc.OperationalError
+        # -- previously uncaught, a raw 500 (money-safe regardless: get_db's
+        # own `finally: db.close()` discards the uncommitted transaction,
+        # nothing partially lands). Every contract-mutating route shares
+        # this identical shape and gets the identical clean-retryable
+        # response -- the client's retry is exactly correct here, unlike a
+        # real 500.
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This contract is busy with another operation -- try again in a moment.",
+        ) from None
     else:
         db.commit()
         return result
@@ -328,6 +385,20 @@ async def dispute_contract(
     except ContractError as exc:
         db.rollback()
         _raise_for(exc)
+    except OperationalError:
+        # WO-CONTRACT-LOCK-ORDER (task #54): a deadlock (40P01) or lock-
+        # timeout (55P03) surfaces here as sqlalchemy.exc.OperationalError
+        # -- previously uncaught, a raw 500 (money-safe regardless: get_db's
+        # own `finally: db.close()` discards the uncommitted transaction,
+        # nothing partially lands). Every contract-mutating route shares
+        # this identical shape and gets the identical clean-retryable
+        # response -- the client's retry is exactly correct here, unlike a
+        # real 500.
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This contract is busy with another operation -- try again in a moment.",
+        ) from None
     else:
         db.commit()
         return result
@@ -358,6 +429,20 @@ async def post_contract(
     except ContractError as exc:
         db.rollback()
         _raise_for(exc)
+    except OperationalError:
+        # WO-CONTRACT-LOCK-ORDER (task #54): a deadlock (40P01) or lock-
+        # timeout (55P03) surfaces here as sqlalchemy.exc.OperationalError
+        # -- previously uncaught, a raw 500 (money-safe regardless: get_db's
+        # own `finally: db.close()` discards the uncommitted transaction,
+        # nothing partially lands). Every contract-mutating route shares
+        # this identical shape and gets the identical clean-retryable
+        # response -- the client's retry is exactly correct here, unlike a
+        # real 500.
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This contract is busy with another operation -- try again in a moment.",
+        ) from None
     else:
         db.commit()
         return result
@@ -379,6 +464,20 @@ async def cancel_contract(
     except ContractError as exc:
         db.rollback()
         _raise_for(exc)
+    except OperationalError:
+        # WO-CONTRACT-LOCK-ORDER (task #54): a deadlock (40P01) or lock-
+        # timeout (55P03) surfaces here as sqlalchemy.exc.OperationalError
+        # -- previously uncaught, a raw 500 (money-safe regardless: get_db's
+        # own `finally: db.close()` discards the uncommitted transaction,
+        # nothing partially lands). Every contract-mutating route shares
+        # this identical shape and gets the identical clean-retryable
+        # response -- the client's retry is exactly correct here, unlike a
+        # real 500.
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This contract is busy with another operation -- try again in a moment.",
+        ) from None
     else:
         db.commit()
         return result
