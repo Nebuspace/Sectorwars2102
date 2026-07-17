@@ -143,19 +143,36 @@ class _FakeSession:
         # _FakeQuery this session hands out -- WO-TEAM-DELETE-FLEET-GUARD's
         # lock-order pin reads this directly.
         self.lock_log: List[Any] = []
+        # Per-model raw query() call counts (WO-TEAM-DELETE-LOCKORDER+
+        # DOUBLECLICK-REVISE's anti-griefing pin) -- deliberately a SEPARATE
+        # counter from lock_log: lock_log only records rows a
+        # with_for_update() call actually matched, so an early-rejected
+        # call that never even reaches the Fleet-lock loop would trivially
+        # show zero Fleet LOCK entries regardless of whether the UNLOCKED
+        # .all() gather query still fired first. This counts every
+        # self.db.query(Fleet) call, locked or not, so "the early check
+        # skipped Fleet work entirely" is the thing actually being proven,
+        # not just "it skipped acquiring a lock."
+        self.query_counts: dict[str, int] = {}
 
     def query(self, model: Any) -> Any:
         if model is Team:
+            self.query_counts["Team"] = self.query_counts.get("Team", 0) + 1
             return _FakeQuery(self.teams, model_name="Team", lock_log=self.lock_log)
         if model is Player:
+            self.query_counts["Player"] = self.query_counts.get("Player", 0) + 1
             return _FakeQuery(self.players, model_name="Player", lock_log=self.lock_log)
         if model is Sector:
+            self.query_counts["Sector"] = self.query_counts.get("Sector", 0) + 1
             return _FakeQuery(self.sectors, model_name="Sector", lock_log=self.lock_log)
         if model is Message:
+            self.query_counts["Message"] = self.query_counts.get("Message", 0) + 1
             return _FakeQuery(self.messages, model_name="Message", lock_log=self.lock_log)
         if model is Fleet:
+            self.query_counts["Fleet"] = self.query_counts.get("Fleet", 0) + 1
             return _FakeQuery(self.fleets, model_name="Fleet", lock_log=self.lock_log)
         if model is TeamMember:
+            self.query_counts["TeamMember"] = self.query_counts.get("TeamMember", 0) + 1
             return _FakeQuery(self.team_members, model_name="TeamMember", lock_log=self.lock_log)
         raise AssertionError(f"unexpected query for {model!r}")
 
@@ -308,6 +325,58 @@ class TestPreservedAuthorizationAndNotFound:
 
 
 # --------------------------------------------------------------------------- #
+# WO-TEAM-DELETE-LOCKORDER+DOUBLECLICK-REVISE -- the anti-griefing pin. Both
+# cipher (MEDIUM) and mack (HIGH) independently flagged the same regression:
+# moving the leader check down to the locked Team re-read (instead of
+# duplicating it) meant `DELETE /teams/{team_id}` -- which calls straight
+# into delete_team with no membership/leader pre-check of its own
+# (api/routes/teams.py:269-277, only get_current_player) -- let ANY
+# authenticated player, including a total non-member, force a
+# `SELECT ... FOR UPDATE` on every one of the target team's Fleet rows
+# before ever getting rejected. Against a rival team mid-battle that's a
+# free, spammable (the rate limiter is dead code) contention lever on their
+# fleet ops. This test pins the fix: a cheap, UNLOCKED early reject, kept
+# alongside -- not instead of -- the authoritative locked re-check.
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.unit
+class TestDeleteTeamEarlyLeaderReject:
+    def test_non_leader_rejected_before_any_fleet_query_on_fleet_owning_team(self) -> None:
+        """The load-bearing pin. A NON-leader (not even a member) targets a
+        team that owns a fleet. They must be rejected with the exact
+        pre-existing leader-only message, and the Fleet-lock loop must
+        never run at all -- not "run and lock zero rows" but never QUERY
+        Fleet in the first place. FALSIFIABILITY: comment out the new early
+        `if team.leader_id != player_id` check at the top of delete_team
+        (leaving only the later, locked re-check) and this test fails --
+        the unlocked .all() gather plus the per-id `with_for_update()` loop
+        both run before the now-sole leader check ever fires, so
+        `db.query_counts["Fleet"]` comes back > 0 and the lock-log assertion
+        fails too."""
+        leader_id = uuid.uuid4()
+        attacker_id = uuid.uuid4()  # not the leader, not even a member
+        team = _team(leader_id=leader_id)
+        fleet = _fleet(team_id=team.id, status=FleetStatus.FORMING.value)
+        db = _FakeSession(teams=[team], fleets=[fleet])
+        svc = TeamService(db)
+
+        with pytest.raises(ValueError, match="Only team leader can delete the team"):
+            svc.delete_team(team.id, attacker_id)
+
+        # Zero Fleet queries of ANY kind -- not the unlocked gather, not the
+        # per-id lock loop, not the team-scoped IN_BATTLE recheck.
+        assert db.query_counts.get("Fleet", 0) == 0
+        # Consequently there's nothing in lock_log for Fleet either -- the
+        # with_for_update() loop that produces those entries never ran.
+        assert not any(entry[0] == "Fleet" for entry in db.lock_log)
+        # And nothing downstream of the reject touched state.
+        assert db.committed is False
+        assert db.deleted == []
+        assert team in db.teams
+        assert fleet.status == FleetStatus.FORMING.value  # untouched
+
+
+# --------------------------------------------------------------------------- #
 # Belt-and-suspenders: any UNANTICIPATED FK dependency still can't leak a raw
 # 500 -- IntegrityError on commit becomes a clean ValueError (route already
 # maps ValueError -> a 4xx).
@@ -424,6 +493,164 @@ class TestDeleteTeamFleetGuard:
             i for i, entry in enumerate(db.lock_log) if entry[:2] == ("Player", "UPDATE")
         )
         assert fleet_lock_idx < player_update_idx
+
+
+# --------------------------------------------------------------------------- #
+# WO-TEAM-DELETE-LOCKORDER + WO-TEAM-DELETE-DOUBLECLICK -- one combined pass.
+# delete_team's actual lock order used to be Fleet -> Player (the bulk
+# Player.team_id UPDATE two lines below row-locks every member) -> Team (only
+# ever locked implicitly, at flush, by db.delete(team)), reversing the
+# "resource-before-player" convention deposit_to_treasury/
+# withdraw_from_treasury already hold (Team FOR UPDATE before Player FOR
+# UPDATE) elsewhere in this same file -- a latent AB-BA against any
+# concurrent Team-then-Player locker. delete_team also never locked the Team
+# row itself at all, so two concurrent delete_team calls (a literal
+# double-click) both sailed past the unlocked leader-check + fleet-gather;
+# the loser's own db.delete(team) on an already-0-row PK tripped
+# SQLAlchemy's confirm_deleted_rows into an uncaught StaleDataError, not the
+# existing `except IntegrityError` backstop -- a raw 500. One new Team
+# FOR-UPDATE lock, inserted right after the Fleet lock/recheck and before
+# the Player bulk-update, closes both at once: Fleet -> Team -> Player
+# restores the convention, and this is where two concurrent calls serialize
+# for a ZERO-FLEET team. For a FLEET-OWNING team they instead serialize
+# EARLIER, at the per-fleet `with_for_update()` in the loop above (see
+# ``TestDeleteTeamEarlyLeaderReject``'s sibling docstring below for why
+# that loop exists at all) -- end-state is identical either way: the
+# loser's first locked re-read that comes back empty (Fleet's or Team's,
+# whichever it hits first) raises a clean "Team not found" instead of a
+# StaleDataError.
+# --------------------------------------------------------------------------- #
+
+class _ConcurrentDeleteSession(_FakeSession):
+    """Reproduces the double-click precisely: this call's FIRST query for
+    a given model (Team's unlocked ``get_team()`` read at the top of
+    ``delete_team``; Fleet's unlocked ``.all()`` gather) sees state as it
+    stood before a concurrent winner's delete_team call committed. Every
+    query for that model AFTER the first -- the locked re-reads under
+    test, whether Team's ``.populate_existing().with_for_update()``
+    re-select or Fleet's per-id equivalent -- sees that row already gone,
+    exactly what a real blocked-then-unblocked FOR UPDATE observes once the
+    winner's transaction commits (and, for Fleet, cascade-deletes it along
+    with the Team row). Team and Fleet are gated independently and
+    identically so this same fake covers both the zero-fleet team (no
+    Fleet query ever crosses its own threshold, since there's nothing to
+    gather) and the fleet-owning team (the per-id lock query is the SECOND
+    Fleet query and comes back empty) without any extra plumbing. Same
+    query-count-gated technique as ``_RaceInjectingSession`` above (the
+    Fleet TOCTOU fake)."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._team_query_count = 0
+        self._fleet_query_count = 0
+
+    def query(self, model: Any) -> Any:
+        if model is Team:
+            self._team_query_count += 1
+            if self._team_query_count >= 2:
+                # The locked re-read -- a concurrent winner already
+                # deleted this row out from under us.
+                return _FakeQuery([], model_name="Team", lock_log=self.lock_log)
+        if model is Fleet:
+            self._fleet_query_count += 1
+            if self._fleet_query_count >= 2:
+                # The per-id lock query (or the team-scoped IN_BATTLE
+                # recheck) -- a concurrent winner already committed and
+                # cascade-deleted this team's fleet(s) out from under us.
+                return _FakeQuery([], model_name="Fleet", lock_log=self.lock_log)
+        return super().query(model)
+
+
+@pytest.mark.unit
+class TestDeleteTeamLockOrderAndDoubleClick:
+    def test_team_lock_acquired_after_fleet_before_player_update(self) -> None:
+        """LOCKORDER pin: the new Team FOR-UPDATE lock must land strictly
+        AFTER the Fleet lock and strictly BEFORE the Player bulk-update --
+        Fleet -> Team -> Player, matching the convention deposit_to_
+        treasury/withdraw_from_treasury already use (falsifiable: reverting
+        the fix leaves no "Team", "LOCK" entry in ``db.lock_log`` at all,
+        so the middle ``next()`` below raises ``StopIteration`` instead of
+        satisfying the ordering assertion)."""
+        leader_id = uuid.uuid4()
+        team = _team(leader_id=leader_id)
+        member = _player(team_id=team.id)
+        fleet = _fleet(team_id=team.id, status=FleetStatus.FORMING.value)
+        db = _FakeSession(teams=[team], players=[member], fleets=[fleet])
+        svc = TeamService(db)
+
+        result = svc.delete_team(team.id, leader_id)
+
+        assert result is True
+        fleet_lock_idx = next(
+            i for i, entry in enumerate(db.lock_log) if entry[:2] == ("Fleet", "LOCK")
+        )
+        team_lock_idx = next(
+            i for i, entry in enumerate(db.lock_log) if entry[:2] == ("Team", "LOCK")
+        )
+        player_update_idx = next(
+            i for i, entry in enumerate(db.lock_log) if entry[:2] == ("Player", "UPDATE")
+        )
+        assert fleet_lock_idx < team_lock_idx < player_update_idx
+
+    def test_concurrent_delete_loser_gets_team_not_found_not_stale_data_error(self) -> None:
+        """DOUBLECLICK pin: the loser of a concurrent delete_team race
+        raises a clean "Team not found" the moment its locked re-read comes
+        back empty -- it never reaches the Player/Sector/Message mutations,
+        never calls db.delete() a second time on an already-gone row, and
+        never commits. Falsifiable: reverting the fix means delete_team
+        never issues a second Team query at all, ``_team_query_count``
+        never reaches 2, the fake never returns the empty view, and this
+        call instead succeeds (``result is True``, no exception) --
+        confirmed by hand against the pre-fix code path."""
+        leader_id = uuid.uuid4()
+        team = _team(leader_id=leader_id)
+        db = _ConcurrentDeleteSession(teams=[team])
+        svc = TeamService(db)
+
+        with pytest.raises(ValueError, match="Team not found"):
+            svc.delete_team(team.id, leader_id)
+
+        # The loser never reached the mutation/delete/commit path.
+        assert db.committed is False
+        assert db.deleted == []
+
+    def test_concurrent_delete_loser_on_fleet_owning_team_gets_team_not_found(self) -> None:
+        """DOUBLECLICK pin, fleet-owning variant (mack LOW). Same race, but
+        the team owns an idle fleet, so the two concurrent calls actually
+        serialize EARLIER than the previous test -- at the per-id Fleet
+        `with_for_update()` in the lock loop, not at the Team lock -- since
+        that's the first lock delete_team acquires. This proves the
+        end-state is identical regardless of which row the loser blocks on:
+        by the time the loser's per-id Fleet re-select runs, the winner has
+        already committed and cascade-deleted the fleet (Fleet.team_id is
+        ON DELETE CASCADE), so it comes back empty, the loop/recheck find
+        nothing to flag as IN_BATTLE, and the loser falls through to the
+        Team lock only to find that row gone too -- same clean "Team not
+        found" as the zero-fleet case, never a false "active battle" and
+        never a StaleDataError. Falsifiable the same way as the sibling
+        test: reverting the Team FOR-UPDATE-lock fix leaves delete_team's
+        old Fleet -> Player order, `_team_query_count` behavior is
+        unaffected either way, but the loser's stale in-memory `team` from
+        the top-of-function read sails through to its own `db.delete(team)`
+        on an already-gone row -- a StaleDataError, not this ValueError."""
+        leader_id = uuid.uuid4()
+        team = _team(leader_id=leader_id)
+        fleet = _fleet(team_id=team.id, status=FleetStatus.FORMING.value)
+        db = _ConcurrentDeleteSession(teams=[team], fleets=[fleet])
+        svc = TeamService(db)
+
+        with pytest.raises(ValueError, match="Team not found"):
+            svc.delete_team(team.id, leader_id)
+
+        # The loser never reached the mutation/delete/commit path, and
+        # never mis-fired the fleet-in-battle guard either.
+        assert db.committed is False
+        assert db.deleted == []
+        # Serialization happened at the Fleet lock, not the Team lock:
+        # the per-id lock query came back empty (the row was already gone
+        # by the time this call reached it), so no Fleet LOCK entry was
+        # ever recorded.
+        assert not any(entry[:2] == ("Fleet", "LOCK") for entry in db.lock_log)
 
 
 # --------------------------------------------------------------------------- #

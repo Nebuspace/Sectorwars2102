@@ -203,8 +203,28 @@ class TeamService:
         team = self.get_team(team_id)
         if not team:
             raise ValueError("Team not found")
-        
-        # Check if player is leader
+
+        # Cheap, UNLOCKED early reject (WO-TEAM-DELETE-LOCKORDER+DOUBLECLICK-
+        # REVISE -- both cipher MEDIUM and mack HIGH converged on this same
+        # fix). The route this feeds, DELETE /teams/{team_id}
+        # (api/routes/teams.py), takes an arbitrary team_id from ANY
+        # authenticated player with no membership/leader pre-check of its
+        # own -- delete_team is the only gate. Without an early reject here,
+        # a non-leader (or non-member entirely) forces a SELECT ... FOR
+        # UPDATE on every one of the target team's Fleet rows, PLUS the Team
+        # row itself, before ever reaching the leader check -- a spammable
+        # (the rate limiter is dead code) griefing/contention lever against
+        # a rival team's mid-battle fleet ops, and a straight regression
+        # from the pre-fix code, which rejected non-leaders before any
+        # locking at all. This reads off the unlocked top-of-function
+        # get_team() -- an optimistic filter, not the authoritative
+        # decision -- so a leader_id that's stale by the time this runs
+        # (a concurrent transfer_leadership mid-flight) simply falls through
+        # to the Fleet lock path same as a real leader would; the LOCKED
+        # re-check below (off the populate_existing() Team re-read) remains
+        # the sole source of truth and still closes that TOCTOU. Two checks,
+        # not one moved: this one is cheap-and-optimistic, that one is
+        # authoritative-and-locked.
         if team.leader_id != player_id:
             raise ValueError("Only team leader can delete the team")
 
@@ -280,6 +300,82 @@ class TeamService:
         )
         if still_in_battle is not None:
             raise ValueError("Cannot delete team while a fleet is in an active battle")
+
+        # Lock the Team row itself, FOR UPDATE, right here -- AFTER the
+        # Fleet lock/recheck above, BEFORE the Player bulk-update below
+        # (WO-TEAM-DELETE-LOCKORDER + WO-TEAM-DELETE-DOUBLECLICK). Without
+        # this, the method's actual lock order was Fleet -> Player (the
+        # bulk UPDATE two lines down row-locks every member) -> Team (only
+        # locked implicitly, at flush, by db.delete(team) far below) --
+        # reversing the "resource-before-player" convention this same
+        # method (and deposit_to_treasury/withdraw_from_treasury, both
+        # `Team` FOR UPDATE before `Player` FOR UPDATE) otherwise holds
+        # everywhere else in this file. That reversal is a latent AB-BA
+        # against any concurrent Team-then-Player locker (e.g.
+        # deposit_to_treasury targeting one of this team's members).
+        # Inserting the lock here restores Fleet -> Team -> Player.
+        #
+        # This lock ALSO closes the double-click race, though which line
+        # the two concurrent calls actually serialize AT depends on whether
+        # the team owns a fleet: two concurrent delete_team calls both pass
+        # the UNLOCKED not-found check above (team.id still exists, neither
+        # has committed yet), and both pass the UNLOCKED early leader-check
+        # above that (same reasoning -- neither has committed). For a
+        # ZERO-FLEET team, both then sail straight through the Fleet-lock
+        # loop/recheck (nothing to lock) and serialize HERE, at the Team
+        # lock. For a FLEET-OWNING team, they instead serialize EARLIER, at
+        # the per-fleet `SELECT ... FOR UPDATE` in the loop above (or its
+        # team-scoped IN_BATTLE recheck) -- the loser blocks on that Fleet
+        # row lock until the winner's commit, at which point the winner's
+        # own `db.delete(team)` has already cascade-deleted the fleet
+        # (Fleet.team_id is ON DELETE CASCADE), so the loser's re-select by
+        # id comes back None, the loop/recheck simply find nothing to flag,
+        # and the loser falls through to THIS Team lock only to find the
+        # Team row gone too. Either way the end-state is identical: the
+        # loser's locked re-read (Fleet's or Team's, whichever it blocks on
+        # first) finds no row, `.first()` returns None, and this raises a
+        # clean "Team not found" below -- not the old behavior, where the
+        # loser sailed on to its own `db.delete(team)` on an already-0-row
+        # PK, tripping SQLAlchemy's `confirm_deleted_rows` into a
+        # `StaleDataError` at commit -- uncaught by the existing `except
+        # IntegrityError` backstop below, surfacing as a raw 500.
+        #
+        # populate_existing() is load-bearing, not decorative: `team` is
+        # ALREADY in this Session's identity map from the unlocked
+        # get_team() read at the top of this method. Without
+        # populate_existing(), this query still issues the SELECT ... FOR
+        # UPDATE and still takes the DB-level row lock, but SQLAlchemy
+        # would hand back that SAME cached Python object with whatever
+        # leader_id it had at the top-of-function read, NOT a refresh from
+        # the row it just locked -- so the leader-check right below would
+        # silently run against stale data despite correctly holding the
+        # lock. Trace: nothing between that top read and this line touches
+        # the Team row (the fleet-gather/recheck above only read/lock
+        # Fleet rows), so no prior flush is needed here -- the
+        # identity-map staleness is the only reason populate_existing() is
+        # required.
+        team = (
+            self.db.query(Team)
+            .filter(Team.id == team_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if team is None:
+            raise ValueError("Team not found")
+
+        # Check if player is leader -- the SECOND, AUTHORITATIVE check
+        # (the first, cheap-and-optimistic one already ran at the very top,
+        # before any locking, purely to reject the common non-leader case
+        # without paying for the Fleet locks -- see the comment there). This
+        # one re-validates against the now-locked, freshly-refreshed row so
+        # a non-leader still gets a clean 403 either way, but a concurrent
+        # transfer_leadership (team_service.py's other `team.leader_id =
+        # ...` writer) that committed in the gap between the top-of-function
+        # read and this lock can't leave a stale leader_id sneaking a
+        # now-ex-leader's delete through.
+        if team.leader_id != player_id:
+            raise ValueError("Only team leader can delete the team")
 
         # Remove all members' team_id
         self.db.query(Player).filter(Player.team_id == team_id).update({"team_id": None})
