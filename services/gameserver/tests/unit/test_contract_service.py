@@ -37,7 +37,7 @@ from src.models.contract import (
 )
 from src.models.ship import Ship, ShipType
 from src.models.station import StationStatus
-from src.services import contract_bulk, contract_dispute, contract_escrow_core, contract_service
+from src.services import contract_bulk, contract_dispute, contract_escrow_core, contract_service, storage_service
 from src.services.contract_service import (
     ContractConflictError,
     ContractError,
@@ -746,6 +746,136 @@ class TestAbandon:
         result = contract_service.abandon(db, c.id, acceptor.id, now=deadline)
 
         assert result["insurance_refund"] == 0
+
+
+@pytest.mark.unit
+class TestComputeBulkWalkawayPenalty:
+    """WO-CONTRACT-4-BULK: `_compute_bulk_walkaway_penalty`'s formula (a)
+    in isolation -- pure math, no DB/session needed. `payment x
+    (quantity - stored_units) / quantity`, whole-credit ROUND_HALF_UP,
+    clamped >= 0."""
+
+    def test_partial_fill_charges_the_remaining_fraction(self) -> None:
+        # 7/10 remaining.
+        assert contract_service._compute_bulk_walkaway_penalty(
+            Decimal("1000"), 10, 3,
+        ) == Decimal("700.00")
+
+    def test_full_delivery_charges_zero(self) -> None:
+        assert contract_service._compute_bulk_walkaway_penalty(
+            Decimal("1000"), 10, 10,
+        ) == Decimal("0")
+
+    def test_zero_delivery_charges_the_full_payment(self) -> None:
+        """Degenerate resting value -- matches post_player_contract's own
+        static `penalty = payment` default exactly."""
+        assert contract_service._compute_bulk_walkaway_penalty(
+            Decimal("1000"), 10, 0,
+        ) == Decimal("1000.00")
+
+    def test_over_delivered_stored_units_clamps_to_zero_not_negative(self) -> None:
+        """Defensive -- stored_units should never exceed quantity in
+        practice (deposit_cargo completes the contract at exactly full
+        quota), but a penalty must never go negative if it somehow did."""
+        assert contract_service._compute_bulk_walkaway_penalty(
+            Decimal("1000"), 10, 15,
+        ) == Decimal("0")
+
+    def test_fractional_result_rounds_half_up(self) -> None:
+        # 4/7 * 1000 = 571.42857... -> rounds up to 571.43.
+        assert contract_service._compute_bulk_walkaway_penalty(
+            Decimal("1000"), 7, 3,
+        ) == Decimal("571.43")
+
+    def test_zero_quantity_defensive_guard(self) -> None:
+        """quantity <= 0 should never reach here (post_player_contract
+        already rejects it at creation) -- defensive zero, not a
+        division-by-zero crash."""
+        assert contract_service._compute_bulk_walkaway_penalty(
+            Decimal("1000"), 0, 0,
+        ) == Decimal("0")
+
+
+@pytest.mark.unit
+class TestAbandonBulkProcurement:
+    """WO-CONTRACT-4-BULK: abandon()'s bulk-aware dispatch fix -- a
+    bulk_procurement contract's walk-away penalty is DYNAMIC (formula-a,
+    from the Locker's actual fill) instead of the static `contract.
+    penalty` column, and its terminal status is EXPIRED (not CANCELLED)
+    so the existing sweep_expired_lockers picks up and converts its
+    Locker to CLAIMABLE on the next tick -- the stranded-locker bug this
+    WO fixes. `storage_service.get_bulk_locker_state` is mocked (a local/
+    deferred import at the call site) rather than modeling a real
+    StorageLocker row -- this fake session's WHERE-interpreter doesn't
+    support the aggregate func.sum() query _stored_units uses; the
+    contract-service-side dispatch/formula logic is what's under test
+    here, not storage_service's own internals (covered by its own test
+    file)."""
+
+    def test_bulk_with_active_locker_charges_dynamic_penalty_and_expires(self, monkeypatch) -> None:
+        issuer = _player(credits=5000)
+        acceptor = _player(credits=2000)
+        c = _contract(
+            status=ContractStatus.ACCEPTED, contract_type=ContractType.BULK_PROCUREMENT,
+            issuer_type=ContractIssuerType.PLAYER, issuer_id=issuer.id,
+            acceptor_player_id=acceptor.id,
+            quantity=10, payment=Decimal("1000.00"), penalty=Decimal("1000.00"),
+            escrow_amount=Decimal("1000.00"), escrow_state=ContractEscrowState.HELD,
+        )
+        db = _FakeSession(contracts=[c], players=[issuer, acceptor])
+        locker_id = uuid.uuid4()
+        monkeypatch.setattr(storage_service, "get_bulk_locker_state", lambda db, contract: (locker_id, 3))
+
+        result = contract_service.abandon(db, c.id, acceptor.id, now=_NOW)
+
+        # 7/10 remaining -> 700cr dynamic penalty, NOT the static 1000.
+        assert result["penalty_charged"] == 700
+        assert acceptor.credits == 2000 - 700
+        assert c.status == ContractStatus.EXPIRED  # NOT CANCELLED -- lets sweep_expired_lockers pick up the locker
+        # Issuer still refunded IMMEDIATELY and IN FULL -- unchanged from cargo_delivery's own convention.
+        assert issuer.credits == 5000 + 1000
+        assert c.escrow_state == ContractEscrowState.REFUNDING  # gates dispute-window's HELD filter -- no double-refund
+
+    def test_bulk_with_no_locker_falls_back_to_static_penalty(self, monkeypatch) -> None:
+        """Degenerate case -- no active Locker at all (never deposited
+        anything): undelivered == full quantity, penalty == payment,
+        identical to the static default."""
+        acceptor = _player(credits=2000)
+        c = _contract(
+            status=ContractStatus.ACCEPTED, contract_type=ContractType.BULK_PROCUREMENT,
+            issuer_type=ContractIssuerType.NPC,
+            acceptor_player_id=acceptor.id,
+            quantity=10, payment=Decimal("1000.00"), penalty=Decimal("1000.00"),
+        )
+        db = _FakeSession(contracts=[c], players=[acceptor])
+        monkeypatch.setattr(storage_service, "get_bulk_locker_state", lambda db, contract: None)
+
+        result = contract_service.abandon(db, c.id, acceptor.id, now=_NOW)
+
+        assert result["penalty_charged"] == 1000  # == static default, unchanged
+        assert acceptor.credits == 2000 - 1000
+        assert c.status == ContractStatus.EXPIRED
+
+    def test_non_bulk_abandon_stays_byte_identical(self) -> None:
+        """cargo_delivery (or any other non-bulk type) must be COMPLETELY
+        unaffected by this WO -- static penalty, CANCELLED terminal
+        status, no storage_service call at all (no monkeypatch needed --
+        a real, un-mocked storage_service.get_bulk_locker_state would
+        crash on this fake session's unsupported aggregate query if this
+        path were ever mistakenly reached, so this test also proves the
+        bulk branch is correctly gated, not just that its output matches)."""
+        acceptor = _player(credits=2000)
+        c = _contract(
+            status=ContractStatus.ACCEPTED, contract_type=ContractType.CARGO_DELIVERY,
+            acceptor_player_id=acceptor.id, penalty=Decimal("1000.00"),
+        )
+        db = _FakeSession(contracts=[c], players=[acceptor])
+
+        result = contract_service.abandon(db, c.id, acceptor.id, now=_NOW)
+
+        assert result["penalty_charged"] == 1000
+        assert acceptor.credits == 2000 - 1000
+        assert c.status == ContractStatus.CANCELLED  # unchanged, NOT EXPIRED
 
 
 @pytest.mark.unit

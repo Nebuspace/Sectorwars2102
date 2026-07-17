@@ -24,8 +24,8 @@ import pytest
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.sql.operators import in_op
 
-from src.models.contract import Contract, ContractEscrowState, ContractIssuerType, ContractStatus
-from src.services import contract_service
+from src.models.contract import Contract, ContractEscrowState, ContractIssuerType, ContractStatus, ContractType
+from src.services import contract_service, storage_service
 from src.services.contract_service import ContractConflictError
 
 # --- WHERE-clause interpreter (real SQLAlchemy clauses, not scripted) --- #
@@ -267,6 +267,11 @@ def _npc_contract(**overrides: Any) -> SimpleNamespace:
     base = dict(
         id=uuid.uuid4(), issuer_type=ContractIssuerType.NPC, issuer_id=uuid.uuid4(),
         acceptor_player_id=None, origin_station_id=uuid.uuid4(), destination_station_id=uuid.uuid4(),
+        # WO-CONTRACT-4-BULK: _process_one_sweep_expired_accepted_contracts_
+        # candidate now reads `candidate.contract_type` unconditionally --
+        # every fixture-built candidate needs this attribute, not just the
+        # tests that care about it.
+        contract_type=ContractType.CARGO_DELIVERY,
         commodity_type="ore", quantity=50, status=ContractStatus.ACCEPTED,
         payment=Decimal("1000.00"), penalty=Decimal("1000.00"), acceptance_fee_pct=Decimal("2.0"),
         escrow_amount=Decimal("0"), escrow_state=ContractEscrowState.HELD,
@@ -285,6 +290,8 @@ def _player_contract(**overrides: Any) -> SimpleNamespace:
     base = dict(
         id=uuid.uuid4(), issuer_type=ContractIssuerType.PLAYER, issuer_id=uuid.uuid4(),
         acceptor_player_id=None, origin_station_id=uuid.uuid4(), destination_station_id=uuid.uuid4(),
+        # WO-CONTRACT-4-BULK: see _npc_contract's own identical note above.
+        contract_type=ContractType.CARGO_DELIVERY,
         commodity_type="ore", quantity=50, status=ContractStatus.ACCEPTED,
         payment=Decimal("1000.00"), penalty=Decimal("1000.00"), acceptance_fee_pct=Decimal("2.0"),
         escrow_amount=Decimal("1000.00"), escrow_state=ContractEscrowState.HELD,
@@ -1014,6 +1021,76 @@ class TestPerRowSavepointIsolation:
         assert posted_result == {"expired": 1}
         assert accepted_result == {"expired": 1}
         assert dispute_result == {"refunded": 0}
+
+
+@pytest.mark.unit
+class TestAcceptedSweepBulkProcurementPenalty:
+    """WO-CONTRACT-4-BULK: the ACCEPTED-sweep's per-candidate body
+    (`_process_one_sweep_expired_accepted_contracts_candidate`) computes a
+    bulk_procurement contract's walk-away penalty DYNAMICALLY from its
+    Locker's actual fill, instead of reading the static `Contract.
+    penalty` column -- see `_compute_bulk_walkaway_penalty`'s own
+    docstring for the formula. `storage_service.get_bulk_locker_state` is
+    mocked (local/deferred import at the call site) -- this fake session
+    has no aggregate func.sum() support for a real _stored_units query;
+    only the contract-service-side dispatch is under test here. Also
+    proves item 1 of this WO's converged design empirically, not just by
+    trace: the sweep still locks ONLY the acceptor for a bulk candidate
+    (no new issuer lock, #57's sort-key untouched)."""
+
+    def test_bulk_candidate_charges_dynamic_penalty_from_locker_fill(self, monkeypatch) -> None:
+        acceptor = _player(credits=5000)
+        c = _npc_contract(
+            contract_type=ContractType.BULK_PROCUREMENT,
+            deadline=_NOW - timedelta(hours=1), acceptor_player_id=acceptor.id,
+            quantity=10, payment=Decimal("1000.00"), penalty=Decimal("1000.00"),
+        )
+        db = _RacySession(contracts=[c], players=[acceptor])
+        monkeypatch.setattr(storage_service, "get_bulk_locker_state", lambda db, contract: (uuid.uuid4(), 3))
+
+        result = contract_service.sweep_expired_accepted_contracts(db, now=_NOW)
+
+        # 7/10 remaining -> 700cr dynamic penalty, NOT the static 1000.
+        assert c.status == ContractStatus.EXPIRED
+        assert acceptor.credits == 5000 - 700
+        assert result == {"expired": 1}
+        # Only the acceptor was ever locked -- no new issuer lock, #57's
+        # sort-key (candidate.acceptor_player_id) stays exactly correct.
+        assert db.player_lock_log == [acceptor.id]
+
+    def test_bulk_candidate_with_no_locker_falls_back_to_static_penalty(self, monkeypatch) -> None:
+        acceptor = _player(credits=5000)
+        c = _npc_contract(
+            contract_type=ContractType.BULK_PROCUREMENT,
+            deadline=_NOW - timedelta(hours=1), acceptor_player_id=acceptor.id,
+            quantity=10, payment=Decimal("1000.00"), penalty=Decimal("1000.00"),
+        )
+        db = _RacySession(contracts=[c], players=[acceptor])
+        monkeypatch.setattr(storage_service, "get_bulk_locker_state", lambda db, contract: None)
+
+        result = contract_service.sweep_expired_accepted_contracts(db, now=_NOW)
+
+        assert c.status == ContractStatus.EXPIRED
+        assert acceptor.credits == 5000 - 1000  # == static default, unchanged
+        assert result == {"expired": 1}
+
+    def test_non_bulk_candidate_stays_byte_identical(self) -> None:
+        """cargo_delivery (or any other non-bulk type) must never touch
+        storage_service at all -- no monkeypatch provided, so a real,
+        un-mocked get_bulk_locker_state call would crash on this fake
+        session's unsupported aggregate query if this path were ever
+        mistakenly reached, proving the branch is correctly gated."""
+        acceptor = _player(credits=5000)
+        c = _npc_contract(
+            deadline=_NOW - timedelta(hours=1), acceptor_player_id=acceptor.id, penalty=Decimal("200"),
+        )
+        db = _RacySession(contracts=[c], players=[acceptor])
+
+        result = contract_service.sweep_expired_accepted_contracts(db, now=_NOW)
+
+        assert c.status == ContractStatus.EXPIRED
+        assert acceptor.credits == 5000 - 200
+        assert result == {"expired": 1}
 
 
 @pytest.mark.unit

@@ -5,12 +5,16 @@ proves the lifecycle end-to-end", :426). WO-CONTRACT-3-NPCGEN-TYPES adds two
 more of the six previously-ungenerated `contract_type` values: `express_
 delivery` (tight-deadline reclassification of an otherwise-ordinary pair --
 see `compute_contract_generation_batch`'s own comment) and `hazardous_
-transport` (issued at BLACK_MARKET-type destination stations only). The
-remaining four (`bulk_procurement`, `refugee_transport`, `acquisition_
-bounty`, `escort`) still have no generator -- `bulk_procurement` needs
-partial-delivery/banking machinery this WO only proposed (not built);
-`refugee_transport` needs a `passenger_rating` ship field that doesn't
-exist; `acquisition_bounty`/`escort` are untouched, later build steps.
+transport` (issued at BLACK_MARKET-type destination stations only).
+WO-CONTRACT-4-BULK (Lane B) adds a third: `bulk_procurement` (an origin
+station genuinely SHORT on live stock -- see BULK_PROCUREMENT_DEFICIT_
+THRESHOLD's own comment below; fulfilled downstream via station lockers,
+contract_service.py/storage_service.py -- untouched by this generator,
+which only classifies + prices + posts the row). The
+remaining three (`refugee_transport`, `acquisition_bounty`, `escort`)
+still have no generator -- `refugee_transport` needs a `passenger_rating`
+ship field that doesn't exist; `acquisition_bounty`/`escort` are
+untouched, later build steps.
 
 SYNC Session -- `generate_npc_contracts(db, ...)` is the pure, testable
 core; the npc_scheduler_service.py wrapper owns its own SessionLocal +
@@ -133,6 +137,64 @@ HAZARDOUS_TRANSPORT_TYPE_MULTIPLIER = Decimal("3.0")
 # DECISIONS.md.
 HAZARDOUS_TRANSPORT_FEDERATION_REP_PENALTY = -30
 
+# --- WO-CONTRACT-4-BULK (Lane B): bulk_procurement ---
+#
+# BULK_PROCUREMENT_TYPE_MULTIPLIER -- contracts.md's own Bulk procurement
+# section (:126-132) and its worked walk-away example (:184 -- 500cr for
+# 5,000 units) describe quantity/partial-fulfillment mechanics but cite NO
+# payment premium the way express_delivery ("roughly 1.5-2.0x", :319) and
+# hazardous_transport ("2-4x", :420) each get an explicit multiplier
+# range. Reuses the plain 1.0x cargo_delivery slot rather than inventing a
+# number canon never gives -- per this WO's own "do not invent a new
+# pricing scheme, mirror the siblings" instruction.
+BULK_PROCUREMENT_TYPE_MULTIPLIER = Decimal("1.0")
+# BULK_PROCUREMENT_PENALTY_MULTIPLIER -- WO-4's Max ruling (design brief
+# audit/design-briefs/wo4-bulk-design-2026-07-17.md): the walk-away
+# penalty helper's degenerate case (a bulk contract with no locker
+# deposits) reads the STATIC `contract.penalty` column directly and
+# requires it equal `payment` exactly. `post_player_contract`'s own
+# bulk-parity write (contract_service.py:1766) already pins penalty ==
+# payment for this type; 1.0x reproduces that exactly here too (same
+# multiplier cargo_delivery uses by default).
+BULK_PROCUREMENT_PENALTY_MULTIPLIER = Decimal("1.0")
+#
+# BULK_PROCUREMENT_DEFICIT_THRESHOLD classification -- Max-ruled correction
+# (2026-07-17): a bulk_procurement job means a station is SHORT on a
+# commodity and wants players to gather + deliver a restock (contracts.md
+# :130 -- "Gather N units... from anywhere"), NOT a station that already
+# has a surplus to move out (a plain cargo_delivery/express run covers
+# that fine). This generator's only per-pair scarcity signal is the
+# ORIGIN's own live sell-stock (`available`) -- the loop's own earlier
+# gate (`if available < MIN_CONTRACT_QUANTITY: continue`) already floors
+# every candidate reaching classification at >= MIN_CONTRACT_QUANTITY, so
+# pinning the deficit threshold AT MIN_CONTRACT_QUANTITY would be
+# unreachable dead code (my original draft's `> MAX_CONTRACT_QUANTITY`
+# surplus check was reachable but pointed the wrong direction -- Max
+# caught the inversion). Pinned instead at 2x the floor (`MIN_CONTRACT_
+# QUANTITY * 2` = 40, reachable, and a narrow low-end band -- [20, 40) out
+# of the full range above 20 -- so a genuinely-thin origin is a MINORITY
+# case, not the default, mirroring EXPRESS_DEADLINE_THRESHOLD_HOURS' own
+# ~15%-of-range low-end-band proportion). [NO-CANON] the 2x multiplier
+# itself -- no separate number invented beyond re-deriving from the
+# existing floor constant -- proposed to DECISIONS.md.
+BULK_PROCUREMENT_DEFICIT_THRESHOLD = MIN_CONTRACT_QUANTITY * 2
+#
+# Quantity implication (the real catch team-lead flagged): a deficit-
+# triggered bulk contract's DEMAND is the restock amount the station
+# needs, NOT bounded by the very-thin `available` that triggered it in
+# the first place (canon: the player "sources however they like" --
+# "no fixed origin" -- the quantity is a demand figure, not a supply
+# figure). Reusing this file's own `quantity = min(MAX_CONTRACT_QUANTITY,
+# available)` cap for bulk would silently produce a TINY quantity (<=
+# BULK_PROCUREMENT_DEFICIT_THRESHOLD, since `available` is already known
+# to be below it) -- semantically broken for a type whose whole premise
+# is "more than a single haul." Bulk pins `quantity` at this generator's
+# own MAX_CONTRACT_QUANTITY ceiling instead (the SAME per-haul cap every
+# other type is capped AT, just not further reduced by this one thin
+# origin's reserves) -- reuses an existing constant rather than inventing
+# a new, larger bulk-specific quantity band this WO wasn't asked to
+# design (per "do not invent a new pricing scheme, mirror the siblings").
+
 
 def _now() -> datetime:
     return datetime.now(UTC)
@@ -199,6 +261,20 @@ def compute_hazardous_transport_payment(
     return _compute_typed_contract_payment(
         unit_price, quantity, hops, deadline_hours,
         HAZARDOUS_TRANSPORT_TYPE_MULTIPLIER, PENALTY_MULTIPLIER,
+    )
+
+
+def compute_bulk_procurement_payment(
+    unit_price: Decimal, quantity: int, hops: int, deadline_hours: Decimal,
+) -> Tuple[Decimal, Decimal]:
+    """`bulk_procurement`'s type_multiplier/penalty_multiplier pins -- see
+    the BULK_PROCUREMENT_* constants' own comments. Both multipliers are
+    1.0, so payment == cargo_delivery's own result and penalty == payment
+    exactly -- the latter is a hard requirement (WO-4's degenerate-case
+    walk-away penalty reads this static column directly)."""
+    return _compute_typed_contract_payment(
+        unit_price, quantity, hops, deadline_hours,
+        BULK_PROCUREMENT_TYPE_MULTIPLIER, BULK_PROCUREMENT_PENALTY_MULTIPLIER,
     )
 
 
@@ -433,11 +509,14 @@ class GenerationBatch:
     stations_scanned: int
     blocked_by: Dict[str, int]
     # WO-CONTRACT-3-NPCGEN-TYPES: same WO-SWEEP-SILENT-SWEEPS motivation as
-    # `blocked_by` -- now that a tick can post three different types, a
-    # flat `generated` count alone can't distinguish "posted 5 ordinary
-    # cargo runs" from "posted 5 hazardous_transport contracts" in the log.
+    # `blocked_by` -- now that a tick can post four different types (WO-
+    # CONTRACT-4-BULK adds bulk_procurement), a flat `generated` count
+    # alone can't distinguish "posted 5 ordinary cargo runs" from "posted
+    # 5 hazardous_transport contracts" in the log.
     generated_by_type: Dict[str, int] = field(
-        default_factory=lambda: {"cargo_delivery": 0, "express_delivery": 0, "hazardous_transport": 0},
+        default_factory=lambda: {
+            "cargo_delivery": 0, "express_delivery": 0, "hazardous_transport": 0, "bulk_procurement": 0,
+        },
     )
 
 
@@ -508,30 +587,49 @@ def gather_contract_generation_inputs(
 
 def _classify_and_price_contract(
     destination: _StationSnapshot, origin_price: float, quantity: int, hops: int, deadline_hours: Decimal,
-) -> Tuple[ContractType, Decimal, Decimal, Optional[int]]:
+    available: int,
+) -> Tuple[ContractType, Decimal, Decimal, Optional[int], int]:
     """WO-CONTRACT-3-NPCGEN-TYPES: extracted out of the compute phase's main
     scan loop so that function's own McCabe complexity stays manageable as
     this WO adds a new type-classification branch (see gameserver-ruff-
     c901-not-enforced in monk's own memory notes -- a cheap extraction is
     worth doing even though this codebase tolerates far worse elsewhere).
-    Pure. Returns (contract_type, payment, penalty, reputation_penalty) --
-    see this WO's constants (EXPRESS_DEADLINE_THRESHOLD_HOURS / HAZARDOUS_
-    TRANSPORT_FEDERATION_REP_PENALTY) for the classification rules'
-    canon citations and NO-CANON pins."""
+    Pure. Returns (contract_type, payment, penalty, reputation_penalty,
+    quantity) -- see this WO's constants (EXPRESS_DEADLINE_THRESHOLD_HOURS
+    / HAZARDOUS_TRANSPORT_FEDERATION_REP_PENALTY) for the classification
+    rules' canon citations and NO-CANON pins. WO-CONTRACT-4-BULK adds a
+    third branch (bulk_procurement, keyed off `available` -- the origin's
+    live stock BEFORE the per-contract quantity cap -- see BULK_
+    PROCUREMENT_DEFICIT_THRESHOLD's own comment), checked after the
+    black-market identity check (station identity always wins, matching
+    this function's pre-existing precedence -- see test_black_market_
+    destination_generates_hazardous_transport) but before the deadline-
+    tightness check (bulk and express are mutually exclusive; a
+    deficit-stock match is bulk regardless of how tight its drawn
+    deadline happens to be). The RETURNED quantity is `quantity`
+    unchanged for every branch except bulk_procurement, whose demand
+    figure is NOT bounded by the thin `available` that triggered it --
+    see BULK_PROCUREMENT_DEFICIT_THRESHOLD's own comment for why."""
     if destination.type == StationType.BLACK_MARKET:
         payment, penalty = compute_hazardous_transport_payment(
             Decimal(str(origin_price)), quantity, hops, deadline_hours,
         )
-        return ContractType.HAZARDOUS_TRANSPORT, payment, penalty, HAZARDOUS_TRANSPORT_FEDERATION_REP_PENALTY
+        return ContractType.HAZARDOUS_TRANSPORT, payment, penalty, HAZARDOUS_TRANSPORT_FEDERATION_REP_PENALTY, quantity
+    if available < BULK_PROCUREMENT_DEFICIT_THRESHOLD:
+        bulk_quantity = MAX_CONTRACT_QUANTITY
+        payment, penalty = compute_bulk_procurement_payment(
+            Decimal(str(origin_price)), bulk_quantity, hops, deadline_hours,
+        )
+        return ContractType.BULK_PROCUREMENT, payment, penalty, None, bulk_quantity
     if deadline_hours <= EXPRESS_DEADLINE_THRESHOLD_HOURS:
         payment, penalty = compute_express_delivery_payment(
             Decimal(str(origin_price)), quantity, hops, deadline_hours,
         )
-        return ContractType.EXPRESS_DELIVERY, payment, penalty, None
+        return ContractType.EXPRESS_DELIVERY, payment, penalty, None, quantity
     payment, penalty = compute_cargo_delivery_payment(
         Decimal(str(origin_price)), quantity, hops, deadline_hours,
     )
-    return ContractType.CARGO_DELIVERY, payment, penalty, None
+    return ContractType.CARGO_DELIVERY, payment, penalty, None, quantity
 
 
 def compute_contract_generation_batch(inputs: GenerationInputs) -> GenerationBatch:
@@ -560,7 +658,9 @@ def compute_contract_generation_batch(inputs: GenerationInputs) -> GenerationBat
     hop_cache: Dict[uuid.UUID, Dict[uuid.UUID, int]] = {}
     contracts: List[_ContractSpec] = []
     blocked_by: Dict[str, int] = {"no_buyer": 0, "unreachable": 0, "price": 0, "pool": 0}
-    generated_by_type: Dict[str, int] = {"cargo_delivery": 0, "express_delivery": 0, "hazardous_transport": 0}
+    generated_by_type: Dict[str, int] = {
+        "cargo_delivery": 0, "express_delivery": 0, "hazardous_transport": 0, "bulk_procurement": 0,
+    }
 
     for origin in stations:
         for commodity_name, spec in origin.commodities.items():
@@ -626,14 +726,21 @@ def compute_contract_generation_batch(inputs: GenerationInputs) -> GenerationBat
             # WO-CONTRACT-3-NPCGEN-TYPES: a BLACK_MARKET-type destination
             # always yields hazardous_transport (contracts.md:140 -- "issued
             # by criminal NPCs at black-market terminals" is a property of
-            # WHO is issuing, not a random roll); otherwise a pair whose
-            # drawn deadline lands tight enough is RECLASSIFIED express_
-            # delivery (no second, independent roll -- see EXPRESS_DEADLINE_
-            # THRESHOLD_HOURS' own comment); otherwise plain cargo_delivery,
-            # byte-identical to this generator's pre-WO behavior. See
-            # _classify_and_price_contract's own docstring.
-            contract_type, payment, penalty, reputation_penalty = _classify_and_price_contract(
-                destination, origin_price, quantity, hops, deadline_hours,
+            # WHO is issuing, not a random roll); otherwise, WO-CONTRACT-4-
+            # BULK (Max-corrected direction): an origin whose live stock
+            # (`available`, BEFORE the quantity cap below) is genuinely thin
+            # is RECLASSIFIED bulk_procurement -- a station-short-on-stock
+            # restock job, not a surplus-to-move-out one (see BULK_
+            # PROCUREMENT_DEFICIT_THRESHOLD's own comment, including why the
+            # returned `quantity` below is OVERRIDDEN for this branch);
+            # otherwise a pair whose drawn deadline lands tight enough is
+            # RECLASSIFIED express_delivery (no second, independent roll --
+            # see EXPRESS_DEADLINE_THRESHOLD_HOURS' own comment); otherwise
+            # plain cargo_delivery, byte-identical to this generator's
+            # pre-WO behavior. See _classify_and_price_contract's own
+            # docstring.
+            contract_type, payment, penalty, reputation_penalty, quantity = _classify_and_price_contract(
+                destination, origin_price, quantity, hops, deadline_hours, available,
             )
 
             faction_id = inputs.faction_cache.get(destination.faction_affiliation) \

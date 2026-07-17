@@ -32,14 +32,14 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import or_
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from src.auth.dependencies import get_current_player
 from src.core.database import get_db
-from src.models.contract import Contract, ContractInsuranceCoverageTier, ContractStatus
+from src.models.contract import Contract, ContractInsuranceCoverageTier, ContractStatus, ContractType
 from src.models.player import Player
 from src.services import contract_service
 from src.services.contract_service import ContractConflictError, ContractError, ContractNotFoundError
@@ -94,13 +94,33 @@ def _parse_uuid(raw: str, field_name: str) -> uuid.UUID:
 
 
 class PostContractRequest(BaseModel):
-    """cargo_delivery ONLY this stage (WO-ECON-CONTRACT-2-PLAYER-ESCROW) --
-    contracts.md:219-232's request shape, trimmed to what this kernel
-    exercises (no contract_type field: it is implicitly cargo_delivery)."""
+    """cargo_delivery OR bulk_procurement (WO-CONTRACT-4-BULK extends the
+    original cargo_delivery-only shape, WO-ECON-CONTRACT-2-PLAYER-ESCROW)
+    -- contracts.md:219-232's request shape, trimmed to what this kernel
+    exercises."""
 
     destination_station_id: str
     commodity_type: str
     quantity: int = Field(..., gt=0)
+    # WO-CONTRACT-4-BULK: restricted to just these two -- the other 5
+    # ContractType members (express_delivery/hazardous_transport/
+    # refugee_transport/acquisition_bounty/escort) carry NPC-generator-
+    # only pricing (type multipliers, reputation-penalty deltas -- see
+    # contract_generator.py's own _classify_and_price_contract) that
+    # post_player_contract never computes; a player posting one of those
+    # would silently skip fields that type's own downstream logic
+    # expects. Defaults to cargo_delivery -- byte-identical request shape
+    # for every existing caller that omits this field.
+    contract_type: ContractType = Field(default=ContractType.CARGO_DELIVERY)
+
+    @field_validator("contract_type")
+    @classmethod
+    def _validate_contract_type(cls, value: ContractType) -> ContractType:
+        if value not in (ContractType.CARGO_DELIVERY, ContractType.BULK_PROCUREMENT):
+            raise ValueError(
+                f"contract_type must be 'cargo_delivery' or 'bulk_procurement', got '{value.value}'"
+            )
+        return value
     # WO-ECON-CONTRACT-MONEY-HARDEN (Mack LOW #3): Player.credits is a
     # whole-credit integer column and penalty defaults to 1.0x payment
     # (post_player_contract) -- a fractional payment can never be honored
@@ -425,6 +445,7 @@ async def post_contract(
             db, current_player.id, destination_uuid, body.commodity_type, body.quantity,
             body.payment, body.deadline, origin_station_id=origin_uuid,
             insurance_pool_reserve=body.insurance_pool_reserve,
+            contract_type=body.contract_type,
         )
     except ContractError as exc:
         db.rollback()

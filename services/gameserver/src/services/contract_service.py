@@ -496,9 +496,59 @@ def abandon(
     # insurance_snapshot's own docstring for the exploit this closes.
     _refresh_contract_insurance_snapshot(db, contract)
 
-    _guarded_transition(db, contract, ContractStatus.ACCEPTED, ContractStatus.CANCELLED)
+    # WO-CONTRACT-4-BULK: a bulk_procurement contract's terminal status on
+    # abandon is EXPIRED, not CANCELLED -- `sweep_expired_lockers`
+    # (storage_service.py) gates ONLY on `Contract.status == EXPIRED` (no
+    # deadline check at all), so this is what lets the NEXT scheduled
+    # sweep tick pick up and convert this contract's Locker to CLAIMABLE
+    # automatically; CANCELLED is never matched by that sweep, which
+    # previously left a walked-away bulk contract's Locker stranded
+    # ACTIVE forever (rent ticking, cargo unreachable) -- the bug this WO
+    # fixes. ACCEPTED -> EXPIRED is already a legal LEGAL_TRANSITIONS edge
+    # (contract_escrow_core.py, added by WO-DRIFT-econ-accepted-deadline-
+    # expiry for the sweep's own use) -- zero table change needed.
+    # [NO-CANON, superseding]: contracts.md:75's "acceptor walks -> back
+    # to POSTED" language is this kernel's bulk_procurement canon text,
+    # but it describes the RETIRED contract_bulk.py deliver()-path model
+    # (Max chose the Locker path instead, see this WO's own design
+    # brief) -- a re-postable POSTED contract can't simultaneously have
+    # its Locker converted away to CLAIMABLE (acceptor keeps the
+    # deposited goods, per Max's own two-mechanics-decoupling ruling), so
+    # the Locker-path abandon() below behaves like an early-EXPIRE
+    # instead, not a literal "returns to posted" -- flagged here for the
+    # canon amendment draft, not silently decided.
+    is_bulk = contract.contract_type == ContractType.BULK_PROCUREMENT
+    _guarded_transition(
+        db, contract, ContractStatus.ACCEPTED,
+        ContractStatus.EXPIRED if is_bulk else ContractStatus.CANCELLED,
+    )
 
-    penalty = _to_credits_int(_round_credits(_as_decimal(contract.penalty)))
+    # WO-CONTRACT-4-BULK: same dynamic-vs-static branch as the ACCEPTED-
+    # sweep's own penalty site (_process_one_sweep_expired_accepted_
+    # contracts_candidate) -- see _compute_bulk_walkaway_penalty's own
+    # docstring for the formula. Deferred/local import for the same
+    # import-boundary reason as that call site. Safe UNLOCKED here too --
+    # this whole function has already locked `player` (the acceptor,
+    # always) above, and nothing else in this codebase concurrently
+    # mutates a Locker's ContractCargoDeposit rows except deposit_cargo
+    # itself, which locks the SAME Locker row first (this read only needs
+    # to be consistent with a COMMITTED state, not race a live deposit --
+    # unlike the sweep, abandon() has no upstream expiry_gate already
+    # holding the Locker lock for it, but a plain committed-read race here
+    # only means "abandon lands mid-deposit, penalty computed from
+    # whatever was durably deposited a moment before" -- an acceptable,
+    # bounded imprecision for a VOLUNTARY action the acceptor themselves
+    # triggered, not a money-conservation hazard (the acceptor cannot
+    # gain by racing their own deposit against their own abandon).
+    penalty_decimal = _round_credits(_as_decimal(contract.penalty))
+    if is_bulk:
+        from src.services import storage_service
+
+        locker_state = storage_service.get_bulk_locker_state(db, contract)
+        if locker_state is not None:
+            _locker_id, stored_units = locker_state
+            penalty_decimal = _compute_bulk_walkaway_penalty(contract.payment, contract.quantity, stored_units)
+    penalty = _to_credits_int(penalty_decimal)
     player.credits = max(0, (player.credits or 0) - penalty)
 
     # WO-ECON-CONTRACT-2-PLAYER-ESCROW addition: when the ACCEPTOR walks
@@ -563,6 +613,38 @@ def _is_lock_timeout(exc: OperationalError) -> bool:
     crash this check, just fail the match (fall through to the loud,
     non-deferred path)."""
     return getattr(getattr(exc, "orig", None), "pgcode", None) == "55P03"
+
+
+def _compute_bulk_walkaway_penalty(payment: Decimal, quantity: int, stored_units: int) -> Decimal:
+    """WO-CONTRACT-4-BULK (Max-ruled formula (a)): a bulk_procurement
+    contract's walk-away penalty (deadline-lapse OR explicit abandon) is
+    `payment x (remaining_units / total_units)`, computed at the moment
+    of walk-away from the LOCKER's actual fill (`_stored_units`, storage_
+    service.py) -- NOT the static `Contract.penalty` column (fixed at
+    creation, no relation to how much was actually delivered before the
+    walk-away; a 9/10 delivery and a 0/10 delivery would otherwise cost
+    the acceptor identically). Destroyed SINK -- NOT paid to the issuer
+    (matches this kernel's punitive-sink convention for every OTHER
+    walk-away penalty); the acceptor KEEPS whatever was deposited
+    (locker -> CLAIMABLE, handled by the caller / sweep_expired_lockers,
+    not here) -- see this WO's own design brief for the two-mechanics
+    decoupling (contract penalty vs. locker-rental forfeiture are
+    SEPARATE, this function is only the former).
+
+    Single-value ROUND_HALF_UP (`_round_credits`/`_to_credits_int`, this
+    module's standard whole-credit convention) is sufficient here -- this
+    is a punitive sink with no counter-party receiving the complementary
+    remainder, unlike the acceptor-debit/issuer-credit PAIRS elsewhere in
+    this module that need R3 dual-rounding conservation (whole minus
+    whole stays whole). Clamped >= 0 defensively (quantity <= 0 should
+    never reach here -- post_player_contract already rejects it at
+    creation -- but a payment/quantity mismatch must never produce a
+    negative burn)."""
+    if quantity <= 0:
+        return Decimal("0")
+    remaining = max(0, quantity - stored_units)
+    raw = _as_decimal(payment) * Decimal(remaining) / Decimal(quantity)
+    return max(Decimal("0"), _round_credits(raw))
 
 
 def sweep_expired_contracts(db: Session, now: Optional[datetime] = None) -> Dict[str, int]:
@@ -1221,7 +1303,41 @@ def _process_one_sweep_expired_accepted_contracts_candidate(db: Session, candida
             # `candidate`'s columns in place (including the pool).
             _refresh_contract_insurance_snapshot(db, candidate)
 
-            penalty = _round_credits(_as_decimal(candidate.penalty))
+            # WO-CONTRACT-4-BULK: a bulk_procurement contract's penalty is
+            # DYNAMIC, computed from its Locker's actual fill at the
+            # moment of expiry, not the static `Contract.penalty` column
+            # (see _compute_bulk_walkaway_penalty's own docstring for the
+            # full formula-a reasoning). Deferred/local import (contract_
+            # service.py must stay import-free of storage_service.py at
+            # module level -- storage_service.py already imports THIS
+            # module -- see that module's own docstring for the
+            # established Locker-then-Contract/Player lock order this
+            # call must never disturb). Safe to call UNLOCKED here: the
+            # `expiry_gate` (gate_contract_expiry_on_locker) already
+            # acquired this candidate's Locker row lock earlier in this
+            # SAME transaction before it was ever allowed to reach
+            # EXPIRED -- see sweep_expired_lockers' own docstring for why
+            # that makes every re-read here a harmless same-session
+            # re-acquire, never a fresh contended one. NPC-issued and
+            # every OTHER contract_type fall straight through to the
+            # ORIGINAL static read below, byte-identical to before this
+            # WO.
+            if candidate.contract_type == ContractType.BULK_PROCUREMENT:
+                from src.services import storage_service
+
+                locker_state = storage_service.get_bulk_locker_state(db, candidate)
+                if locker_state is not None:
+                    _locker_id, stored_units = locker_state
+                    penalty = _compute_bulk_walkaway_penalty(candidate.payment, candidate.quantity, stored_units)
+                else:
+                    # Degenerate -- no active Locker at all (the acceptor
+                    # never deposited anything, or it was already
+                    # converted/claimed by an earlier pass): undelivered
+                    # == full quantity, penalty == payment, identical to
+                    # the static default set at posting time.
+                    penalty = _round_credits(_as_decimal(candidate.penalty))
+            else:
+                penalty = _round_credits(_as_decimal(candidate.penalty))
             offset = apply_claim_offset(candidate, penalty)
             acceptor.credits = max(0, (acceptor.credits or 0) - _to_credits_int(offset["acceptor_debit"]))
 
@@ -1671,14 +1787,28 @@ def post_player_contract(
     insurance_pool_reserve: Decimal = Decimal("0"),
     posting_stations: Optional[List[uuid.UUID]] = None,
     now: Optional[datetime] = None,
+    contract_type: ContractType = ContractType.CARGO_DELIVERY,
 ) -> Dict[str, Any]:
-    """Post a player-issued `cargo_delivery` contract (the only type this
-    stage supports -- contracts.md:421-431 step 4). Debits `escrow_amount
-    = payment + insurance_pool_reserve` from the issuer at POST time
-    (contracts.md:159) -- that debit is the only place this kernel ever
-    removes credits from a player's wallet for a contract; `complete`
-    later releases it to the acceptor, `cancel_player_contract` refunds
-    it (partially) to the issuer. FLUSH-ONLY.
+    """Post a player-issued `cargo_delivery` OR `bulk_procurement` contract
+    (WO-CONTRACT-4-BULK -- the only two types this route supports; every
+    OTHER ContractType carries NPC-generator-only pricing/reputation
+    logic this function never computes, so the route layer (contracts.py
+    PostContractRequest) restricts `contract_type` to just these two
+    BEFORE it ever reaches here). Debits `escrow_amount = payment +
+    insurance_pool_reserve` from the issuer at POST time (contracts.md:159)
+    -- that debit is the only place this kernel ever removes credits from
+    a player's wallet for a contract; `complete` later releases it to the
+    acceptor, `cancel_player_contract` refunds it (partially) to the
+    issuer. This escrow math is ALREADY issuer-type- and contract-type-
+    agnostic -- WO-CONTRACT-4-BULK reuses it verbatim for bulk_procurement,
+    zero changes. `penalty` below is still seeded to the static
+    `payment` default for EVERY type at post time (unchanged) -- for a
+    bulk_procurement contract this is only the DEGENERATE resting value
+    (no Locker deposits at all); the real walk-away penalty for a bulk
+    contract with deposits in progress is computed DYNAMICALLY at
+    expiry/abandon time from the Locker's fill, not read from this
+    column -- see `_compute_bulk_walkaway_penalty`'s own docstring.
+    FLUSH-ONLY.
 
     [NO-CANON] `insurance_pool_reserve` defaults to 0. Verified first:
     neither ADR-0062 E-I2 (insurance PREMIUM cancellation-refund math, a
@@ -1756,7 +1886,7 @@ def post_player_contract(
         id=uuid.uuid4(),
         issuer_type=ContractIssuerType.PLAYER,
         issuer_id=issuer_player_id,
-        contract_type=ContractType.CARGO_DELIVERY,
+        contract_type=contract_type,
         status=ContractStatus.POSTED,
         origin_station_id=origin_station_id,
         destination_station_id=destination_station_id,

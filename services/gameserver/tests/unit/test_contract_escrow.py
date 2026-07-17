@@ -20,9 +20,11 @@ from types import SimpleNamespace
 from typing import Any, List, Optional
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy.sql.elements import Null, True_
 from sqlalchemy.sql.operators import in_op, is_
 
+from src.api.routes.contracts import PostContractRequest
 from src.models.contract import (
     Contract,
     ContractDisputeResolution,
@@ -30,6 +32,7 @@ from src.models.contract import (
     ContractInsuranceCoverageTier,
     ContractIssuerType,
     ContractStatus,
+    ContractType,
 )
 from src.models.player import Player
 from src.models.resource import Resource
@@ -414,6 +417,80 @@ class TestPostPlayerContract:
         result = contract_service.post_player_contract(db, issuer.id, **_post_kwargs(other_region_destination))
         assert result["status"] == "posted"
 
+    # --- WO-CONTRACT-4-BULK: contract_type ---
+
+    def test_defaults_to_cargo_delivery_when_omitted(self) -> None:
+        """Backward compat -- every existing caller that never passes
+        `contract_type` at all must keep getting cargo_delivery, byte-
+        identical to before this WO."""
+        issuer = _player(credits=5000)
+        destination = _station()
+        db = _FakeSession(players=[issuer], stations=[destination], resources=[_resource()])
+
+        contract_service.post_player_contract(db, issuer.id, **_post_kwargs(destination))
+
+        assert db.added[0].contract_type == ContractType.CARGO_DELIVERY
+
+    def test_bulk_procurement_type_is_honored(self) -> None:
+        issuer = _player(credits=5000)
+        destination = _station()
+        db = _FakeSession(players=[issuer], stations=[destination], resources=[_resource()])
+
+        result = contract_service.post_player_contract(
+            db, issuer.id, **_post_kwargs(destination, contract_type=ContractType.BULK_PROCUREMENT),
+        )
+
+        c = db.added[0]
+        assert c.contract_type == ContractType.BULK_PROCUREMENT
+        # Escrow math is ALREADY type-agnostic -- byte-identical to the
+        # cargo_delivery case for the same payment/reserve.
+        assert result["escrow_amount"] == 1000.0
+        assert issuer.credits == 4000
+        # The static `penalty` column still seeds to `payment` at post
+        # time for EVERY type (unchanged) -- it's only the DEGENERATE
+        # resting value for bulk; the real walk-away penalty is computed
+        # dynamically at expiry/abandon time from the Locker's fill.
+        assert c.penalty == Decimal("1000.00")
+
+
+@pytest.mark.unit
+class TestPostContractRequestContractTypeRestriction:
+    """WO-CONTRACT-4-BULK: `PostContractRequest.contract_type` (the route-
+    layer Pydantic model, contracts.py) is restricted to {cargo_delivery,
+    bulk_procurement} ONLY -- the other 5 ContractType members carry NPC-
+    generator-only pricing/reputation logic post_player_contract never
+    computes, so a player-post of one of those must be rejected at the
+    request-validation boundary, before it ever reaches the service
+    layer. Pure Pydantic validation -- no DB/session needed."""
+
+    def _kwargs(self, **overrides: Any) -> dict:
+        base = dict(
+            destination_station_id=str(uuid.uuid4()), commodity_type="ore",
+            quantity=50, payment=Decimal("1000"), deadline=_FAR_DEADLINE,
+        )
+        base.update(overrides)
+        return base
+
+    def test_omitted_defaults_to_cargo_delivery(self) -> None:
+        req = PostContractRequest(**self._kwargs())
+        assert req.contract_type == ContractType.CARGO_DELIVERY
+
+    def test_explicit_cargo_delivery_accepted(self) -> None:
+        req = PostContractRequest(**self._kwargs(contract_type="cargo_delivery"))
+        assert req.contract_type == ContractType.CARGO_DELIVERY
+
+    def test_bulk_procurement_accepted(self) -> None:
+        req = PostContractRequest(**self._kwargs(contract_type="bulk_procurement"))
+        assert req.contract_type == ContractType.BULK_PROCUREMENT
+
+    @pytest.mark.parametrize(
+        "rejected_type",
+        ["express_delivery", "hazardous_transport", "refugee_transport", "acquisition_bounty", "escort"],
+    )
+    def test_every_other_contract_type_is_rejected(self, rejected_type: str) -> None:
+        with pytest.raises(ValidationError):
+            PostContractRequest(**self._kwargs(contract_type=rejected_type))
+
 
 @pytest.mark.unit
 class TestEscrowConservationEndToEnd:
@@ -596,6 +673,9 @@ class TestEscrowConservationEndToEnd:
         contract = SimpleNamespace(
             id=uuid.uuid4(), issuer_type=ContractIssuerType.PLAYER, issuer_id=issuer.id,
             acceptor_player_id=acceptor.id, destination_station_id=destination.id,
+            # WO-CONTRACT-4-BULK: the sweep now reads `candidate.contract_
+            # type` unconditionally.
+            contract_type=ContractType.CARGO_DELIVERY,
             commodity_type="ore", quantity=50, status=ContractStatus.ACCEPTED,
             payment=Decimal("1000.00"), penalty=Decimal("1000.00"),
             acceptance_fee_pct=Decimal("2.0"), escrow_amount=Decimal("1000.00"),
@@ -1427,6 +1507,9 @@ class TestNpcPathByteUnchangedRegression:
         return SimpleNamespace(
             id=uuid.uuid4(), issuer_type=ContractIssuerType.NPC, issuer_id=destination.id,
             acceptor_player_id=None, destination_station_id=destination.id,
+            # WO-CONTRACT-4-BULK: abandon() now reads `contract.contract_
+            # type` unconditionally.
+            contract_type=ContractType.CARGO_DELIVERY,
             commodity_type="ore", quantity=50, status=ContractStatus.ACCEPTED,
             payment=Decimal("1000.00"), penalty=Decimal("1000.00"),
             acceptance_fee_pct=Decimal("2.0"), escrow_amount=Decimal("0"),

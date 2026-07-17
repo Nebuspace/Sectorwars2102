@@ -91,7 +91,7 @@ import logging
 import uuid
 from datetime import datetime
 from decimal import ROUND_FLOOR, Decimal
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -287,6 +287,39 @@ def gate_contract_expiry_on_locker(db: Session, contract: Contract) -> bool:
         .first()
     )
     return acquired is not None
+
+
+def get_bulk_locker_state(db: Session, contract: Contract) -> Optional[Tuple[uuid.UUID, int]]:
+    """WO-CONTRACT-4-BULK: the public read contract_service.py's own
+    bulk_procurement walk-away-penalty sites (the ACCEPTED-sweep's per-
+    candidate body and abandon()) call to learn a bulk contract's actual
+    Locker fill. Reuses `gate_contract_expiry_on_locker`'s EXACT ACTIVE-
+    locker existence-lookup shape (same filter, same UNLOCKED plain
+    SELECT) -- deliberately NOT a `with_for_update()` acquisition here:
+    by the time the sweep's per-candidate body calls this, the gate
+    (wired as `expiry_gate`) has ALREADY acquired this exact Locker's row
+    lock earlier in the SAME transaction (see that function's own
+    docstring for why every re-read after it is a harmless same-session
+    re-acquire) -- a plain re-SELECT here just observes that already-
+    locked, stable state. abandon()'s own call site has no such upstream
+    gate (a single, voluntary, synchronous action, not a batch sweep) --
+    see that function's own docstring for why an unlocked committed-read
+    is an acceptable bound there too. Returns `(locker_id, stored_units)`
+    if an ACTIVE locker exists for this contract, else `None` (the
+    degenerate case -- no deposits were ever made, or the locker was
+    already converted/claimed) -- the caller falls back to the static
+    `Contract.penalty` default in that case. `_stored_units` itself stays
+    private/internal, unchanged."""
+    locker = (
+        db.query(StorageLocker)
+        .filter(
+            StorageLocker.contract_id == contract.id, StorageLocker.status == StorageLockerStatus.ACTIVE,
+        )
+        .first()
+    )
+    if locker is None:
+        return None
+    return locker.id, _stored_units(db, locker.id)
 
 
 def sweep_expired_lockers(db: Session, now: Optional[datetime] = None) -> Dict[str, int]:

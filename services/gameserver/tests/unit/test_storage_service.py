@@ -31,7 +31,7 @@ from typing import Any, List, Optional
 import pytest
 from sqlalchemy.sql.operators import in_op
 
-from src.models.contract import Contract, ContractIssuerType, ContractStatus
+from src.models.contract import Contract, ContractEscrowState, ContractIssuerType, ContractStatus, ContractType
 from src.models.player import Player
 from src.models.ship import Ship, ShipType
 from src.models.storage_locker import ContractCargoDeposit, StorageLocker, StorageLockerStatus
@@ -293,6 +293,11 @@ def _contract(**overrides: Any) -> SimpleNamespace:
         issuer_type=ContractIssuerType.NPC,
         issuer_id=uuid.uuid4(),
         acceptor_player_id=None,
+        # WO-CONTRACT-4-BULK: _process_one_sweep_expired_accepted_contracts_
+        # candidate (contract_service.py) and abandon() now read `contract.
+        # contract_type` unconditionally -- every fixture-built contract
+        # needs this attribute, not just the tests that care about it.
+        contract_type=ContractType.CARGO_DELIVERY,
         origin_station_id=uuid.uuid4(),
         destination_station_id=uuid.uuid4(),
         commodity_type="ore",
@@ -1534,6 +1539,82 @@ class TestGateContractExpiryOnLocker:
         assert locker.contract_id == contract.id  # not nulled
 
 
+@pytest.mark.unit
+class TestGetBulkLockerState:
+    """WO-CONTRACT-4-BULK: `get_bulk_locker_state` -- the public read
+    contract_service.py's bulk_procurement walk-away-penalty sites call
+    to learn a contract's actual Locker fill. Reuses `gate_contract_
+    expiry_on_locker`'s exact ACTIVE-locker lookup shape (same filter,
+    same UNLOCKED plain SELECT -- see this function's own docstring for
+    why no `with_for_update()` is needed here)."""
+
+    def test_no_active_locker_returns_none(self) -> None:
+        contract = _contract()
+        db = _FakeSession(contracts=[contract])
+
+        assert storage_service.get_bulk_locker_state(db, contract) is None
+
+    def test_active_locker_with_deposits_returns_id_and_stored_units(self) -> None:
+        contract = _contract()
+        player = _player(id=uuid.uuid4())
+        contract.acceptor_player_id = player.id
+        locker = _locker(contract, player.id, status=StorageLockerStatus.ACTIVE)
+        db = _FakeSession(
+            contracts=[contract], players=[player], lockers=[locker],
+            deposits=[_deposit(locker, quantity=7, deposited_by=player.id)],
+        )
+
+        result = storage_service.get_bulk_locker_state(db, contract)
+
+        assert result == (locker.id, 7)
+
+    def test_active_locker_with_zero_deposits_returns_id_and_zero(self) -> None:
+        """A Locker was rented (get_or_create_locker) but no deposit
+        landed yet -- still ACTIVE, still returns a real state, just
+        stored_units == 0 (the caller's own formula degenerates to the
+        full static penalty for this, same as the no-locker-at-all case
+        numerically, but this function itself still reports the Locker
+        honestly rather than treating "empty" as "absent")."""
+        contract = _contract()
+        player = _player(id=uuid.uuid4())
+        contract.acceptor_player_id = player.id
+        locker = _locker(contract, player.id, status=StorageLockerStatus.ACTIVE)
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+
+        result = storage_service.get_bulk_locker_state(db, contract)
+
+        assert result == (locker.id, 0)
+
+    def test_claimable_locker_is_not_active_returns_none(self) -> None:
+        """Already converted/claimed -- not a LIVE locker for this
+        contract anymore, matches gate_contract_expiry_on_locker's own
+        ACTIVE-only filter exactly."""
+        contract = _contract()
+        player = _player(id=uuid.uuid4())
+        contract.acceptor_player_id = player.id
+        stale_locker = _locker(contract, player.id, status=StorageLockerStatus.CLAIMABLE)
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[stale_locker])
+
+        assert storage_service.get_bulk_locker_state(db, contract) is None
+
+    def test_never_acquires_a_lock(self) -> None:
+        """Deliberately a plain read -- the caller's own transaction
+        already holds this Locker's lock (from the expiry_gate probe
+        earlier in the same tick) or doesn't need to (abandon()'s own
+        bounded-imprecision reasoning, see that function's own
+        docstring) -- this function must never independently acquire
+        one."""
+        contract = _contract()
+        player = _player(id=uuid.uuid4())
+        contract.acceptor_player_id = player.id
+        locker = _locker(contract, player.id, status=StorageLockerStatus.ACTIVE)
+        db = _FakeSession(contracts=[contract], players=[player], lockers=[locker])
+
+        storage_service.get_bulk_locker_state(db, contract)
+
+        assert db.for_update_calls == []
+
+
 # --- WO-STORE-EXPIRY-CLAIMABLE + D19: deposit-wins-at-the-deadline -------- #
 
 @pytest.mark.unit
@@ -1593,3 +1674,297 @@ class TestDepositWinsAtTheDeadlineIntegration:
 
         assert result == {"expired": 0}
         assert contract.status == ContractStatus.ACCEPTED  # deferred, not stuck mid-loop
+
+    def test_deferral_holds_for_a_bulk_procurement_candidate_too(self) -> None:
+        """WO-CONTRACT-4-BULK (mack-bulk gate item 4): D19 deposit-wins is
+        proven above for a generic (cargo_delivery-shaped) candidate --
+        `gate_contract_expiry_on_locker` itself never reads `contract_
+        type` at all (grepped: its own query filters purely on `StorageLocker.
+        contract_id`/`.status`), so the mechanism is structurally type-
+        agnostic, but this closes the loop with an EXPLICIT bulk_procurement
+        candidate rather than leaving it as an inference. A locker
+        (simulated) contended by a live completing deposit_cargo call
+        defers the bulk contract's expiry entirely -- untouched, no
+        dynamic penalty computed at all this tick."""
+        now = datetime.now(UTC)
+        contract = _contract(
+            contract_type=ContractType.BULK_PROCUREMENT,
+            status=ContractStatus.ACCEPTED, deadline=now - timedelta(hours=1),
+            quantity=10, payment=Decimal("1000.00"), penalty=Decimal("1000.00"),
+        )
+        player = _player(id=uuid.uuid4(), credits=1000)
+        contract.acceptor_player_id = player.id
+        locker = _locker(contract, player.id, status=StorageLockerStatus.ACTIVE)
+        db = _FakeSession(
+            contracts=[contract], players=[player], lockers=[locker],
+            contended_locker_ids={locker.id},
+        )
+
+        result = contract_service.sweep_expired_accepted_contracts(
+            db, now=now, expiry_gate=storage_service.gate_contract_expiry_on_locker,
+        )
+
+        assert result == {"expired": 0}
+        assert contract.status == ContractStatus.ACCEPTED  # deferred -- the in-flight deposit wins
+        assert player.credits == 1000  # zero penalty charged this tick
+
+
+# --- WO-CONTRACT-4-BULK: full-lifecycle conservation (mack-bulk gate, item 1) #
+
+@pytest.mark.unit
+class TestBulkProcurementFullLifecycleConservation:
+    """The integration proof this WO's own design brief flagged as OWED
+    (needs Lane B's NPC-gen + Lane A's locker/penalty machinery both
+    present, which they now are). Drives the REAL post-time escrow state
+    through REAL deposit_cargo / sweep_expired_accepted_contracts /
+    sweep_expired_lockers / abandon / sweep_expired_dispute_window --
+    `get_bulk_locker_state` is NEVER mocked in this class (unlike
+    test_contract_service.py's/test_mack_attack_accepted_sweep.py's own
+    dispatch-only unit tests): this file's _FakeSession genuinely models
+    StorageLocker/ContractCargoDeposit, so its real aggregate-sum query
+    runs for real here -- the strongest proof available DB-free.
+
+    CONSERVATION INVARIANT (player-issued): payment can only ever move
+    FROM escrow TO the acceptor (complete) or back TO the issuer (any
+    walk-away -- full refund, no kill-fee, contract_service.py's own
+    unchanged convention) or be DESTROYED as the acceptor's own SEPARATE
+    walk-away-penalty debit (a sink -- nobody's gain, see _compute_bulk_
+    walkaway_penalty's own docstring). So (issuer.credits + acceptor.
+    credits), once escrow's disposition has fully resolved, always equals
+    (initial issuer.credits + initial escrow_amount + initial acceptor.
+    credits) MINUS whatever was destroyed as a penalty -- exactly, never
+    more (double-pay) and never less (a silent mint/loss elsewhere). For
+    an NPC-issued contract there is no issuer wallet to conserve against
+    (NPC credits are canonically infinite, contracts.md:155) -- only the
+    acceptor's own trajectory is asserted there."""
+
+    def test_player_issued_complete_at_full_quota_zero_penalty(self) -> None:
+        """Terminal path 1/3: full delivery, multi-trip (6 then 4) --
+        proves the SAME conservation holds whether the completing deposit
+        is the first or the Nth installment."""
+        issuer = _player(id=uuid.uuid4(), credits=4000)  # already debited 1000cr escrow at "post" time
+        acceptor = _player(
+            id=uuid.uuid4(), credits=200,
+            current_ship=_ship(cargo={"capacity": 500, "used": 10, "contents": {"ore": 10}}),
+        )
+        contract = _contract(
+            contract_type=ContractType.BULK_PROCUREMENT, issuer_type=ContractIssuerType.PLAYER,
+            issuer_id=issuer.id, acceptor_player_id=acceptor.id,
+            quantity=10, payment=Decimal("1000.00"), penalty=Decimal("1000.00"),
+            escrow_amount=Decimal("1000.00"), escrow_state=ContractEscrowState.HELD,
+        )
+        acceptor.current_port_id = contract.destination_station_id
+        locker = _locker(contract, acceptor.id)
+        db = _FakeSession(contracts=[contract], players=[issuer, acceptor], lockers=[locker])
+        initial_total = issuer.credits + int(contract.escrow_amount) + acceptor.credits  # 5200
+
+        r1 = storage_service.deposit_cargo(db, locker.id, acceptor.id, 6)
+        assert r1["completed"] is False
+        r2 = storage_service.deposit_cargo(db, locker.id, acceptor.id, 4)
+        assert r2["completed"] is True
+
+        assert contract.status == ContractStatus.COMPLETED
+        assert acceptor.credits == 200 + 1000  # full payment, zero penalty
+        assert issuer.credits == 4000  # untouched post-escrow-debit -- never re-charged
+        assert locker.status == StorageLockerStatus.RELEASED
+        # escrow_amount is left un-zeroed by complete() (a stale marker,
+        # not a live balance once escrow_state == RELEASED) -- excluded
+        # from the final total on purpose, matching this class's own
+        # docstring ("once escrow's disposition has fully resolved").
+        final_total = issuer.credits + acceptor.credits
+        assert final_total == initial_total  # zero-sum: no mint, no loss, no destroyed sink
+
+    def test_player_issued_deadline_lapse_dynamic_penalty_locker_claimable_issuer_refunded(self) -> None:
+        """Terminal path 2/3: deadline strictly lapses mid-deposit (3/10
+        stored). Dynamic penalty = 1000 x 7/10 = 700cr, destroyed (NOT
+        paid to the issuer -- punitive-sink convention). Locker ->
+        CLAIMABLE via the SAME tick's sweep_expired_lockers (acceptor
+        keeps the 3 already-deposited units -- a cargo asset, outside
+        this credit-conservation accounting, per Max's own two-mechanics-
+        decoupling ruling). Issuer refunded FULL escrow (1000cr) via the
+        SEPARATE, later sweep_expired_dispute_window pass, undisputed."""
+        now = datetime.now(UTC)
+        issuer = _player(id=uuid.uuid4(), credits=4000)
+        # WELL above the 700cr dynamic penalty -- `abandon()`/the sweep
+        # both clamp a debit to `max(0, credits - penalty)`, which would
+        # silently mask an under-penalization bug behind a floor-at-zero
+        # coincidence; a comfortably positive post-penalty balance is
+        # what actually exercises the exact subtraction.
+        acceptor = _player(
+            id=uuid.uuid4(), credits=2000,
+            current_ship=_ship(cargo={"capacity": 500, "used": 3, "contents": {"ore": 3}}),
+        )
+        contract = _contract(
+            contract_type=ContractType.BULK_PROCUREMENT, issuer_type=ContractIssuerType.PLAYER,
+            issuer_id=issuer.id, acceptor_player_id=acceptor.id,
+            quantity=10, payment=Decimal("1000.00"), penalty=Decimal("1000.00"),
+            escrow_amount=Decimal("1000.00"), escrow_state=ContractEscrowState.HELD,
+            deadline=now - timedelta(hours=1),
+        )
+        acceptor.current_port_id = contract.destination_station_id
+        locker = _locker(contract, acceptor.id, last_fee_settled_at=now)
+        db = _FakeSession(contracts=[contract], players=[issuer, acceptor], lockers=[locker])
+        initial_total = issuer.credits + int(contract.escrow_amount) + acceptor.credits  # 7000
+
+        deposit_result = storage_service.deposit_cargo(db, locker.id, acceptor.id, 3)
+        assert deposit_result["completed"] is False
+
+        sweep_result = contract_service.sweep_expired_accepted_contracts(
+            db, now=now, expiry_gate=storage_service.gate_contract_expiry_on_locker,
+        )
+        assert sweep_result == {"expired": 1}
+        assert contract.status == ContractStatus.EXPIRED
+        assert acceptor.credits == 2000 - 700  # 7/10 remaining x 1000, destroyed sink
+        assert contract.escrow_amount == Decimal("1000.00")  # untouched -- uninsured, zero pool draw
+        assert contract.escrow_state == ContractEscrowState.HELD  # dispute window hasn't run yet
+
+        locker_sweep_result = storage_service.sweep_expired_lockers(db, now=now)
+        assert locker_sweep_result == {"converted": 1}
+        assert locker.status == StorageLockerStatus.CLAIMABLE  # NOT stranded
+        assert locker.contract_id is None
+
+        dispute_result = contract_service.sweep_expired_dispute_window(db, now=now + timedelta(hours=49))
+        assert dispute_result == {"refunded": 1}
+        assert contract.escrow_state == ContractEscrowState.REFUNDING
+        assert issuer.credits == 4000 + 1000  # full refund, no kill-fee
+
+        final_total = issuer.credits + acceptor.credits
+        assert final_total == initial_total - 700  # exactly the destroyed penalty, no more, no less
+
+    def test_player_issued_abandon_mid_deposit_dynamic_penalty_immediate_refund_locker_claimable(self) -> None:
+        """Terminal path 3/3: explicit abandon() mid-deposit (3/10
+        stored, deadline still in the FUTURE -- proves this is genuinely
+        the voluntary-walkaway path, not a disguised deadline-lapse).
+        SAME 700cr dynamic penalty formula as the sweep path, but the
+        issuer refund is IMMEDIATE (inside abandon() itself), not
+        deferred to the dispute window -- and the Locker only needs a
+        LATER sweep_expired_lockers tick to flip CLAIMABLE (abandon()
+        itself never touches the Locker row at all -- it only flips the
+        Contract to EXPIRED, matching sweep_expired_lockers' own
+        `status == EXPIRED` gate with no deadline check). No monkeypatch
+        of get_bulk_locker_state anywhere here -- the REAL Locker/deposit
+        rows drive the real formula, the strongest proof available for
+        the stranded-locker bug this WO fixes."""
+        now = datetime.now(UTC)
+        issuer = _player(id=uuid.uuid4(), credits=4000)
+        # WELL above the 700cr dynamic penalty -- see the sibling
+        # deadline-lapse test's own comment for why (avoids the max(0,
+        # ...) debit-floor masking an under-penalization bug).
+        acceptor = _player(
+            id=uuid.uuid4(), credits=2000,
+            current_ship=_ship(cargo={"capacity": 500, "used": 3, "contents": {"ore": 3}}),
+        )
+        contract = _contract(
+            contract_type=ContractType.BULK_PROCUREMENT, issuer_type=ContractIssuerType.PLAYER,
+            issuer_id=issuer.id, acceptor_player_id=acceptor.id,
+            quantity=10, payment=Decimal("1000.00"), penalty=Decimal("1000.00"),
+            escrow_amount=Decimal("1000.00"), escrow_state=ContractEscrowState.HELD,
+            deadline=now + timedelta(hours=48),  # future -- a genuine voluntary walk-away
+        )
+        acceptor.current_port_id = contract.destination_station_id
+        locker = _locker(contract, acceptor.id, last_fee_settled_at=now)
+        db = _FakeSession(contracts=[contract], players=[issuer, acceptor], lockers=[locker])
+        initial_total = issuer.credits + int(contract.escrow_amount) + acceptor.credits  # 7000
+
+        deposit_result = storage_service.deposit_cargo(db, locker.id, acceptor.id, 3)
+        assert deposit_result["completed"] is False
+
+        abandon_result = contract_service.abandon(db, contract.id, acceptor.id, now=now)
+
+        assert abandon_result["penalty_charged"] == 700  # 7/10 remaining x 1000, real locker fill
+        assert contract.status == ContractStatus.EXPIRED  # NOT CANCELLED -- lets the sweep pick this up
+        assert acceptor.credits == 2000 - 700
+        assert issuer.credits == 4000 + 1000  # full refund, IMMEDIATE (not deferred)
+        assert contract.escrow_state == ContractEscrowState.REFUNDING
+        assert locker.status == StorageLockerStatus.ACTIVE  # abandon() itself never touches the Locker
+
+        locker_sweep_result = storage_service.sweep_expired_lockers(db, now=now)
+        assert locker_sweep_result == {"converted": 1}
+        assert locker.status == StorageLockerStatus.CLAIMABLE  # NOT stranded -- the WO-4 strand-fix
+        assert locker.contract_id is None
+
+        final_total = issuer.credits + acceptor.credits
+        assert final_total == initial_total - 700  # exactly the destroyed penalty, no more, no less
+
+    def test_npc_issued_complete_at_full_quota(self) -> None:
+        """NPC-issued mint model: no issuer wallet to conserve against
+        (escrow_amount is always 0 for an NPC row) -- only the acceptor's
+        own payout is asserted."""
+        acceptor = _player(
+            id=uuid.uuid4(), credits=200,
+            current_ship=_ship(cargo={"capacity": 500, "used": 10, "contents": {"ore": 10}}),
+        )
+        contract = _contract(
+            contract_type=ContractType.BULK_PROCUREMENT, issuer_type=ContractIssuerType.NPC,
+            acceptor_player_id=acceptor.id,
+            quantity=10, payment=Decimal("1000.00"), penalty=Decimal("1000.00"),
+            escrow_amount=Decimal("0"), escrow_state=ContractEscrowState.HELD,
+        )
+        acceptor.current_port_id = contract.destination_station_id
+        locker = _locker(contract, acceptor.id)
+        db = _FakeSession(contracts=[contract], players=[acceptor], lockers=[locker])
+
+        result = storage_service.deposit_cargo(db, locker.id, acceptor.id, 10)
+
+        assert result["completed"] is True
+        assert contract.status == ContractStatus.COMPLETED
+        assert acceptor.credits == 200 + 1000  # minted, full payment, zero penalty
+        assert locker.status == StorageLockerStatus.RELEASED
+
+    def test_npc_issued_deadline_lapse_dynamic_penalty_destroyed_no_issuer_side_effect(self) -> None:
+        """NPC-issued deadline-lapse: the SAME dynamic-penalty formula
+        applies (contract_type-gated, not issuer_type-gated), destroyed
+        as a sink -- there is no issuer wallet for it to ever land in.
+        Also closes the "no double-pay" requirement from a different
+        angle: `escrow_state`'s column default is `HELD` even for an
+        NPC row (models/contract.py -- NOT NULL, `default=ContractEscrowState.
+        HELD`; `sweep_expired_accepted_contracts` never touches it for
+        ANY issuer_type, see that candidate body's own docstring), so an
+        NPC row genuinely DOES land in `sweep_expired_dispute_window`'s
+        own candidate set (status==EXPIRED AND escrow_state==HELD AND
+        past the window -- that filter never checks issuer_type at all).
+        `needs_refund`'s own `issuer_type == PLAYER` guard is what
+        actually keeps this side-effect-free: the guarded escrow_state
+        flip still fires (a harmless HELD->REFUNDING mutation on a
+        zero-balance row), but `issuer` stays None, so `acceptor.credits`
+        is provably untouched by this sweep -- verified here empirically,
+        not assumed from reading `needs_refund` alone."""
+        now = datetime.now(UTC)
+        # WELL above the 700cr dynamic penalty -- see the player-issued
+        # deadline-lapse test's own comment for why.
+        acceptor = _player(
+            id=uuid.uuid4(), credits=2000,
+            current_ship=_ship(cargo={"capacity": 500, "used": 3, "contents": {"ore": 3}}),
+        )
+        contract = _contract(
+            contract_type=ContractType.BULK_PROCUREMENT, issuer_type=ContractIssuerType.NPC,
+            acceptor_player_id=acceptor.id,
+            quantity=10, payment=Decimal("1000.00"), penalty=Decimal("1000.00"),
+            escrow_amount=Decimal("0"), escrow_state=ContractEscrowState.HELD,
+            deadline=now - timedelta(hours=1),
+        )
+        acceptor.current_port_id = contract.destination_station_id
+        locker = _locker(contract, acceptor.id, last_fee_settled_at=now)
+        db = _FakeSession(contracts=[contract], players=[acceptor], lockers=[locker])
+
+        deposit_result = storage_service.deposit_cargo(db, locker.id, acceptor.id, 3)
+        assert deposit_result["completed"] is False
+
+        sweep_result = contract_service.sweep_expired_accepted_contracts(
+            db, now=now, expiry_gate=storage_service.gate_contract_expiry_on_locker,
+        )
+        assert sweep_result == {"expired": 1}
+        assert contract.status == ContractStatus.EXPIRED
+        assert acceptor.credits == 2000 - 700  # destroyed sink, no one's gain
+
+        locker_sweep_result = storage_service.sweep_expired_lockers(db, now=now)
+        assert locker_sweep_result == {"converted": 1}
+        assert locker.status == StorageLockerStatus.CLAIMABLE  # NOT stranded
+
+        # The dispute-window sweep DOES pick this row up (see docstring
+        # above) but must be a true no-op on credits -- `needs_refund`'s
+        # own issuer_type guard, proven live against this same db.
+        dispute_result = contract_service.sweep_expired_dispute_window(db, now=now + timedelta(hours=49))
+        assert dispute_result == {"refunded": 1}
+        assert contract.escrow_state == ContractEscrowState.REFUNDING  # flipped, but...
+        assert acceptor.credits == 2000 - 700  # ...untouched -- no issuer wallet, no side effect

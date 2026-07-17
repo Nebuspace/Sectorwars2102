@@ -6,6 +6,18 @@ this exact pattern for `contract_insurance.py`/`contract_dispute.py`).
 Pure move for the two new functions themselves; zero behavior change from
 how they were first written.
 
+RETIRED (WO-CONTRACT-4-BULK, Max-ruled 2026-07-17): this module's own
+pro-rata direct-delivery model is SUPERSEDED, not deleted. Max chose the
+STATION-LOCKER fulfillment path instead (deposit_cargo -> complete(),
+storage_service.py -- already built for cargo_delivery, extended to
+bulk_procurement by WO-4) for every bulk_procurement contract going
+forward. `deliver()` and `walk_away_bulk_procurement()` below stay fully
+dormant -- neither is wired to any route, and `post_player_contract`'s
+new bulk_procurement support (WO-4) never calls either -- kept in place
+for now (a later cleanup WO may remove them outright) rather than deleted
+mid-WO-4, to keep this build's blast radius to the locker path only. See
+each function's own docstring for its own one-line RETIRED pointer.
+
 `deliver()` / `walk_away_bulk_procurement()` are the two new lifecycle
 functions bulk_procurement needs beyond `accept()` (UNCHANGED -- see this
 module's own NO-CANON-correction note below) and `complete()` (never
@@ -221,7 +233,11 @@ def deliver(
     db: Session, contract_id: uuid.UUID, player_id: uuid.UUID, quantity_delivered: int,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
-    """Bulk-procurement partial delivery -- contracts.md:130: "Partial
+    """RETIRED (WO-CONTRACT-4-BULK) -- dormant, not wired to any route;
+    Max chose the station-locker fulfillment path instead (see this
+    module's own docstring). Kept function-only for now.
+
+    Bulk-procurement partial delivery -- contracts.md:130: "Partial
     deliveries by the acceptor credit pro-rata at the per-unit rate."
     Validates docked-at-destination + cargo held (same shape as
     `complete()`'s own cargo check), credits `(quantity_delivered /
@@ -360,7 +376,15 @@ def deliver(
 def walk_away_bulk_procurement(
     db: Session, contract_id: uuid.UUID, player_id: uuid.UUID, now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
-    """Bulk-procurement walk-away -- contracts.md:78/:130: "acceptor walks
+    """RETIRED (WO-CONTRACT-4-BULK) -- dormant, not wired to any route;
+    Max chose the station-locker fulfillment path instead, where a bulk
+    contract's abandon() goes through contract_service.abandon()'s own
+    now-bulk-aware dispatch (dynamic penalty + EXPIRED, not this
+    function's "returns to posted, no penalty" model) -- see this
+    module's own docstring and contract_service.abandon()'s own
+    [NO-CANON, superseding] note. Kept function-only for now.
+
+    Bulk-procurement walk-away -- contracts.md:78/:130: "acceptor walks
     (bulk_procurement) -> posted (partial banked, fee forfeit)". DISTINCT
     from `abandon()` (contract_service.py -- cargo_delivery/express_
     delivery/hazardous_transport's single-acceptor walk-away, which

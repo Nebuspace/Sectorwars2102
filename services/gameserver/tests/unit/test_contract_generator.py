@@ -27,6 +27,7 @@ from src.models.station import StationClass, StationType
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
 from src.services import contract_generator
 from src.services.contract_generator import (
+    compute_bulk_procurement_payment,
     compute_cargo_delivery_payment,
     compute_express_delivery_payment,
     compute_hazardous_transport_payment,
@@ -205,7 +206,9 @@ class TestGenerateNpcContracts:
         assert result == {
             "generated": 0, "stations_scanned": 1,
             "blocked_by": {"no_buyer": 0, "unreachable": 0, "price": 0, "pool": 0},
-            "generated_by_type": {"cargo_delivery": 0, "express_delivery": 0, "hazardous_transport": 0},
+            "generated_by_type": {
+                "cargo_delivery": 0, "express_delivery": 0, "hazardous_transport": 0, "bulk_procurement": 0,
+            },
         }
 
     def test_skips_zero_price_commodity(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -524,6 +527,32 @@ class TestComputeHazardousTransportPayment:
 
 
 @pytest.mark.unit
+class TestComputeBulkProcurementPayment:
+    """WO-CONTRACT-4-BULK. Same shared formula as cargo_delivery -- both
+    multipliers pinned at 1.0 (no canon payment premium exists for bulk,
+    see BULK_PROCUREMENT_TYPE_MULTIPLIER's own comment) -- penalty ==
+    payment exactly, which the WO-4 degenerate-case walk-away penalty (a
+    bulk contract with no locker deposits, contract_service.py) reads
+    directly off the static `penalty` column and requires."""
+
+    def test_matches_cargo_delivery_payment_exactly(self) -> None:
+        cargo_payment, cargo_penalty = compute_cargo_delivery_payment(
+            Decimal("20"), 10, hops=1, deadline_hours=Decimal("4.0"),
+        )
+        bulk_payment, bulk_penalty = compute_bulk_procurement_payment(
+            Decimal("20"), 10, hops=1, deadline_hours=Decimal("4.0"),
+        )
+        assert bulk_payment == cargo_payment
+        assert bulk_penalty == cargo_penalty
+
+    def test_penalty_equals_payment(self) -> None:
+        payment, penalty = compute_bulk_procurement_payment(
+            Decimal("50"), 10, hops=2, deadline_hours=Decimal("4.0"),
+        )
+        assert penalty == payment  # hard requirement -- see this class's own docstring
+
+
+@pytest.mark.unit
 class TestTypeClassification:
     """WO-CONTRACT-3-NPCGEN-TYPES: which of the three generated types a
     matched (origin, commodity, destination) pair becomes."""
@@ -544,7 +573,9 @@ class TestTypeClassification:
         result = contract_generator.generate_npc_contracts(db, now=_NOW, stations=[origin, destination])
 
         assert result["generated"] == 1
-        assert result["generated_by_type"] == {"cargo_delivery": 0, "express_delivery": 0, "hazardous_transport": 1}
+        assert result["generated_by_type"] == {
+            "cargo_delivery": 0, "express_delivery": 0, "hazardous_transport": 1, "bulk_procurement": 0,
+        }
         c = db.added[0]
         assert c.contract_type == ContractType.HAZARDOUS_TRANSPORT
         assert c.reputation_penalty == contract_generator.HAZARDOUS_TRANSPORT_FEDERATION_REP_PENALTY
@@ -561,7 +592,9 @@ class TestTypeClassification:
         monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 1.5)  # <= 2.0h threshold
         db, origin, destination = _one_hop_pair()
         result = contract_generator.generate_npc_contracts(db, now=_NOW, stations=[origin, destination])
-        assert result["generated_by_type"] == {"cargo_delivery": 0, "express_delivery": 1, "hazardous_transport": 0}
+        assert result["generated_by_type"] == {
+            "cargo_delivery": 0, "express_delivery": 1, "hazardous_transport": 0, "bulk_procurement": 0,
+        }
         c = db.added[0]
         assert c.contract_type == ContractType.EXPRESS_DELIVERY
         assert c.reputation_penalty is None  # express carries no reputation column write
@@ -577,7 +610,9 @@ class TestTypeClassification:
         monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 3.0)
         db, origin, destination = _one_hop_pair()
         result = contract_generator.generate_npc_contracts(db, now=_NOW, stations=[origin, destination])
-        assert result["generated_by_type"] == {"cargo_delivery": 1, "express_delivery": 0, "hazardous_transport": 0}
+        assert result["generated_by_type"] == {
+            "cargo_delivery": 1, "express_delivery": 0, "hazardous_transport": 0, "bulk_procurement": 0,
+        }
         assert db.added[0].contract_type == ContractType.CARGO_DELIVERY
 
     def test_exactly_at_express_threshold_is_express_not_cargo(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -590,6 +625,57 @@ class TestTypeClassification:
         db, origin, destination = _one_hop_pair()
         contract_generator.generate_npc_contracts(db, now=_NOW, stations=[origin, destination])
         assert db.added[0].contract_type == ContractType.EXPRESS_DELIVERY
+
+    def test_stock_deficit_reclassifies_as_bulk_procurement(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """WO-CONTRACT-4-BULK (Max-corrected direction, 2026-07-17): an
+        origin genuinely SHORT on live stock -- not one with a surplus --
+        reclassifies. See BULK_PROCUREMENT_DEFICIT_THRESHOLD's own comment.
+        MIN_CONTRACT_QUANTITY itself is the lowest reachable `available`
+        (the scan loop's own earlier gate discards anything below it), so
+        it's also the clearest in-band deficit value to exercise here.
+
+        The WO-4 hard requirement: penalty == payment exactly (the
+        degenerate-case walk-away penalty reads the static column
+        directly). The quantity catch: the generated `quantity` must be
+        the demand figure (MAX_CONTRACT_QUANTITY), NOT the thin
+        `available` that triggered the branch -- a deficit-capped bulk
+        quantity would be semantically broken (a "bulk" job for a
+        handful of units)."""
+        monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 3.0)
+        db, origin, destination = _one_hop_pair(origin_qty=contract_generator.MIN_CONTRACT_QUANTITY)
+
+        result = contract_generator.generate_npc_contracts(db, now=_NOW, stations=[origin, destination])
+
+        assert result["generated_by_type"] == {
+            "cargo_delivery": 0, "express_delivery": 0, "hazardous_transport": 0, "bulk_procurement": 1,
+        }
+        c = db.added[0]
+        assert c.contract_type == ContractType.BULK_PROCUREMENT
+        assert c.penalty == c.payment  # hard requirement -- WO-4 degenerate-case walk-away penalty
+        # demand figure, NOT the thin origin_qty that triggered the branch
+        assert c.quantity == contract_generator.MAX_CONTRACT_QUANTITY
+        assert c.reputation_penalty is None
+
+    def test_stock_exactly_at_deficit_threshold_is_not_bulk(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Boundary pin: `<`, not `<=` -- stock landing EXACTLY at
+        BULK_PROCUREMENT_DEFICIT_THRESHOLD stays plain cargo_delivery."""
+        monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 3.0)
+        db, origin, destination = _one_hop_pair(origin_qty=contract_generator.BULK_PROCUREMENT_DEFICIT_THRESHOLD)
+        contract_generator.generate_npc_contracts(db, now=_NOW, stations=[origin, destination])
+        assert db.added[0].contract_type == ContractType.CARGO_DELIVERY
+
+    def test_black_market_precedence_over_bulk_stock_deficit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Station-identity classification (hazardous_transport) still
+        takes priority over a deficit-stock match -- mirrors this class's
+        own black-market-vs-deadline precedence test above."""
+        monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 3.0)
+        sec_a, sec_b = _sector(1), _sector(2)
+        origin = _station(sector=sec_a, commodities={"ore": _sells(contract_generator.MIN_CONTRACT_QUANTITY)})
+        destination = _station(sector=sec_b, commodities={"ore": _buys()}, type=StationType.BLACK_MARKET)
+        db = _FakeSession(sectors=[sec_a, sec_b], edges=[_edge(sec_a, sec_b)])
+
+        contract_generator.generate_npc_contracts(db, now=_NOW, stations=[origin, destination])
+        assert db.added[0].contract_type == ContractType.HAZARDOUS_TRANSPORT
 
 
 @pytest.mark.unit
