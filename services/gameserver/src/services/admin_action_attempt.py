@@ -3,15 +3,18 @@
 Context manager that logs success / blocked / failed outcomes for admin
 mutations without scattering ad-hoc ``log_admin_action`` calls.
 
-Commit policy (translation / C2b lesson):
-- **success** — caller commits the mutation + log row in one txn (same as C1/C2).
-- **blocked/failed with no surviving mutation** — helper rolls back the session,
-  writes the attempt log, and **commits the log alone** so a 409/400 rejection
-  still leaves a durable trail.
+Commit policy (hub-cipher E-5 re-gate):
+- **The helper OWNS the commit boundary** for wrapped routes.
+  ``succeed()`` adds the success log and commits mutation+log together.
+  Never finalize-to-success before that commit persists.
+- **blocked/failed** — helper rolls back the session, writes the attempt log,
+  and commits the log alone (best-effort). If the log-commit itself fails,
+  the ORIGINAL exception is still re-raised (log is best-effort).
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from types import TracebackType
 from typing import Any, Dict, Literal, Optional, Type
@@ -22,10 +25,14 @@ from sqlalchemy.orm import Session
 from src.models.user import User
 from src.services.admin_action_log_service import log_admin_action
 
+logger = logging.getLogger(__name__)
+
 AdminAttemptResult = Literal["success", "blocked", "failed"]
 
+# Redact key + everything after it (incl. "Bearer <jwt>" scheme-prefixed tokens).
 _SECRETISH = re.compile(
-    r"(?i)(password|secret|token|authorization|api[_-]?key)\s*[:=]\s*\S+"
+    r"(?i)\b(password|secret|token|api[_-]?key|authorization)\b"
+    r"(?:\s*[:=]\s*|\s+)(?:bearer\s+)?\S+"
 )
 
 
@@ -54,7 +61,8 @@ def _result_for_http(status_code: int) -> AdminAttemptResult:
 class admin_action_attempt:
     """``with admin_action_attempt(...) as attempt:`` — call ``succeed()`` on OK.
 
-    Uncaught ``HTTPException`` / other Exception → ``fail()`` with own commit.
+    ``succeed()`` commits (helper-owned boundary). Uncaught exceptions →
+    ``fail()`` with best-effort log commit; original exception always propagates.
     """
 
     def __init__(
@@ -86,7 +94,11 @@ class admin_action_attempt:
         payload: Optional[Dict[str, Any]] = None,
         action: Optional[str] = None,
     ) -> None:
-        """Append success log (caller must ``db.commit()`` with the mutation)."""
+        """Log success and commit mutation+log (helper owns the commit).
+
+        If commit fails: best-effort failure audit row, then re-raise so the
+        caller/__exit__ never sees a silent zero-row success finalize.
+        """
         if self._finalized:
             return
         log_admin_action(
@@ -99,6 +111,40 @@ class admin_action_attempt:
             payload=payload if payload is not None else self.payload,
             result="success",
         )
+        try:
+            self.db.commit()
+        except Exception as commit_exc:
+            # Success log never persisted — record a failure trail, then re-raise.
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
+            try:
+                log_admin_action(
+                    self.db,
+                    actor=self.actor,
+                    scope_used=self.scope_used,
+                    action=action or self.action,
+                    target_type=self.target_type,
+                    target_id=self.target_id,
+                    payload=payload if payload is not None else self.payload,
+                    result="failed",
+                    failure_reason=sanitize_failure_reason(commit_exc),
+                )
+                self.db.commit()
+            except Exception as log_exc:
+                logger.warning(
+                    "admin_action_attempt: success-commit failed and failure-log "
+                    "also failed: %s / %s",
+                    commit_exc,
+                    log_exc,
+                )
+                try:
+                    self.db.rollback()
+                except Exception:
+                    pass
+            self._finalized = True
+            raise commit_exc
         self._finalized = True
 
     def fail(
@@ -108,7 +154,11 @@ class admin_action_attempt:
         reason: Any,
         commit: bool = True,
     ) -> None:
-        """Append blocked/failed log; optionally commit the log alone."""
+        """Append blocked/failed log; best-effort commit the log alone.
+
+        Commit failures are swallowed so the ORIGINAL exception can propagate
+        from ``__exit__`` (log is best-effort, never replaces the business error).
+        """
         if self._finalized:
             return
         if result == "success":
@@ -125,7 +175,17 @@ class admin_action_attempt:
             failure_reason=sanitize_failure_reason(reason),
         )
         if commit:
-            self.db.commit()
+            try:
+                self.db.commit()
+            except Exception as log_exc:
+                logger.warning(
+                    "admin_action_attempt: fail() log-commit failed (best-effort): %s",
+                    log_exc,
+                )
+                try:
+                    self.db.rollback()
+                except Exception:
+                    pass
         self._finalized = True
 
     def __exit__(
@@ -160,7 +220,8 @@ class admin_action_attempt:
 
 
 # E-5 first-cut wrapped surfaces (HIGH_IMPACT). Deferred routes listed in
-# tests/unit/test_rbac_phase_e5_attempts.py — do not silently expand coverage.
+# tests/unit/test_rbac_phase_e5_attempts.py — do not silently expand coverage
+# until hub-cipher RE-GATE on this helper PASSes.
 E5_WRAPPED_ROUTES: frozenset[str] = frozenset(
     {
         "POST /admin/scopes/grant",

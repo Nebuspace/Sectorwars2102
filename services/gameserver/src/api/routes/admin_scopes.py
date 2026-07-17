@@ -369,7 +369,6 @@ async def grant_scope(
                 db, actor=actor, target=target, scope=body.scope
             )
             attempt.succeed(action=outcome.action, payload=outcome.payload)
-            db.commit()
             db.refresh(target)
         except HTTPException:
             raise
@@ -411,7 +410,6 @@ async def revoke_scope(
                 db, actor=actor, target=target, scope=body.scope
             )
             attempt.succeed(action=outcome.action, payload=outcome.payload)
-            db.commit()
             db.refresh(target)
         except HTTPException:
             raise

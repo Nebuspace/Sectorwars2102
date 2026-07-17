@@ -154,5 +154,4 @@ async def resolve_contract_dispute(
         except ContractError as exc:
             _raise_for(exc)
         attempt.succeed(payload={"outcome": outcome.value})
-        db.commit()
         return result

@@ -1,6 +1,8 @@
 """RBAC Phase E-5 — admin_action_attempt helper + first-cut wrap set.
 
-DB-free source asserts + in-memory smoke for blocked-attempt own-commit.
+DB-free source asserts + in-memory smoke for blocked-attempt own-commit
+and hub-cipher REVISE fixes (guarded fail-commit · helper-owned success
+commit · Bearer sanitize).
 """
 
 from __future__ import annotations
@@ -9,9 +11,11 @@ import uuid
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
 from fastapi import HTTPException
 
 from src.auth.admin_scopes import HIGH_IMPACT_SCOPES, SCOPES_REVOKE
+from src.models.admin_action_log import AdminActionLog
 from src.services.admin_action_attempt import (
     E5_WRAPPED_ROUTES,
     admin_action_attempt,
@@ -36,6 +40,13 @@ class TestSanitizeFailureReason:
         assert "[redacted]" in out
         assert len(out) <= 80
 
+    def test_redacts_bearer_scheme_prefixed_token(self):
+        raw = "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.aaa.bbb"
+        out = sanitize_failure_reason(raw)
+        assert "eyJhbGci" not in out
+        assert "Bearer" not in out or "[redacted]" in out
+        assert "[redacted]" in out
+
     def test_collapses_whitespace(self):
         assert sanitize_failure_reason("a\n\nb") == "a b"
 
@@ -53,40 +64,40 @@ class TestE5WrappedRouteSet:
         )
         assert SCOPES_REVOKE in HIGH_IMPACT_SCOPES
 
-    def test_grant_revoke_use_attempt_helper(self):
-        assert "admin_action_attempt" in _SCOPES_SRC
+    def test_grant_revoke_helper_owns_commit_no_route_commit_after_succeed(self):
         grant = _SCOPES_SRC.split('@router.post("/grant"', 1)[1].split(
             '@router.post("/revoke"', 1
         )[0]
         revoke = _SCOPES_SRC.split('@router.post("/revoke"', 1)[1]
-        assert "admin_action_attempt" in grant
         assert "attempt.succeed" in grant
-        assert "admin_action_attempt" in revoke
         assert "attempt.succeed" in revoke
-        # Success logging moved out of helpers — no double-log.
-        helper_grant = _SCOPES_SRC.split("def grant_scope_to_user", 1)[1].split(
-            "def revoke_scope_from_user", 1
+        # Helper owns commit — routes must not commit again after succeed.
+        assert "attempt.succeed" in grant
+        after_succeed_grant = grant.split("attempt.succeed", 1)[1].split(
+            "return ScopeMutationResponse", 1
         )[0]
-        helper_revoke = _SCOPES_SRC.split("def revoke_scope_from_user", 1)[1].split(
-            "@router.get", 1
+        assert "db.commit()" not in after_succeed_grant
+        after_succeed_revoke = revoke.split("attempt.succeed", 1)[1].split(
+            "still =", 1
         )[0]
-        assert "log_admin_action" not in helper_grant
-        assert "log_admin_action" not in helper_revoke
-        assert "_log_action" not in helper_grant
-        assert "_log_action" not in helper_revoke
+        assert "db.commit()" not in after_succeed_revoke
 
-    def test_disputes_resolve_uses_attempt_helper(self):
+    def test_disputes_resolve_helper_owns_commit(self):
         block = _DISPUTES_SRC.split(
             '@router.post("/{contract_id}/resolve-dispute"', 1
         )[1]
         assert "admin_action_attempt" in block
         assert "attempt.succeed" in block
+        after = block.split("attempt.succeed", 1)[1]
+        assert "db.commit()" not in after
         assert "log_admin_action" not in block
 
-    def test_helper_documents_dual_commit_policy(self):
-        assert "commits the log alone" in _ATTEMPT_SRC.lower() or "commit the log alone" in _ATTEMPT_SRC.lower()
+    def test_helper_documents_owned_commit_and_best_effort_fail(self):
+        assert "OWNS the commit" in _ATTEMPT_SRC or "owns the commit" in _ATTEMPT_SRC.lower()
+        assert "best-effort" in _ATTEMPT_SRC.lower()
         assert '"blocked"' in _ATTEMPT_SRC
         assert '"failed"' in _ATTEMPT_SRC
+        assert "bearer" in _ATTEMPT_SRC.lower()
 
 
 class TestBlockedAttemptOwnCommit:
@@ -94,16 +105,6 @@ class TestBlockedAttemptOwnCommit:
         db = MagicMock()
         actor = MagicMock()
         actor.id = uuid.uuid4()
-
-        logged = {}
-
-        def _capture_add(row):
-            logged["row"] = row
-
-        db.add.side_effect = _capture_add
-
-        # Patch log_admin_action path by importing and using real helper with mocked db
-        from src.models.admin_action_log import AdminActionLog
 
         try:
             with admin_action_attempt(
@@ -132,7 +133,29 @@ class TestBlockedAttemptOwnCommit:
         assert "last system-wide holder" in (row.failure_reason or "")
         assert row.action == "scope_revoke"
 
-    def test_succeed_does_not_commit(self):
+    def test_fail_commit_error_preserves_original_http_exception(self):
+        """MEDIUM 1: log-commit failure must not replace the business error."""
+        db = MagicMock()
+        actor = MagicMock()
+        actor.id = uuid.uuid4()
+        db.commit.side_effect = RuntimeError("deadlock detected")
+
+        with pytest.raises(HTTPException) as ei:
+            with admin_action_attempt(
+                db,
+                actor=actor,
+                scope_used=SCOPES_REVOKE,
+                action="scope_revoke",
+                target_type="user",
+                target_id=str(uuid.uuid4()),
+            ):
+                raise HTTPException(status_code=409, detail="last holder")
+
+        assert ei.value.status_code == 409
+        assert ei.value.detail == "last holder"
+
+    def test_succeed_commits_and_finalizes(self):
+        """MEDIUM 2: helper owns commit; finalize only after persist."""
         db = MagicMock()
         actor = MagicMock()
         actor.id = uuid.uuid4()
@@ -145,5 +168,31 @@ class TestBlockedAttemptOwnCommit:
             target_id=str(uuid.uuid4()),
         ) as attempt:
             attempt.succeed(payload={"scope": "admin.scopes.grant"})
-        db.commit.assert_not_called()
+        db.commit.assert_called()
         db.add.assert_called()
+        row = db.add.call_args[0][0]
+        assert isinstance(row, AdminActionLog)
+        assert row.result == "success"
+
+    def test_succeed_commit_failure_writes_failed_row_then_reraises(self):
+        db = MagicMock()
+        actor = MagicMock()
+        actor.id = uuid.uuid4()
+        # First commit (success path) fails; second commit (failure log) ok.
+        db.commit.side_effect = [RuntimeError("commit boom"), None]
+
+        with pytest.raises(RuntimeError, match="commit boom"):
+            with admin_action_attempt(
+                db,
+                actor=actor,
+                scope_used=SCOPES_REVOKE,
+                action="scope_revoke",
+                target_type="user",
+                target_id=str(uuid.uuid4()),
+            ) as attempt:
+                attempt.succeed(payload={"scope": "x"})
+
+        assert db.add.call_count >= 2
+        results = [c[0][0].result for c in db.add.call_args_list]
+        assert "success" in results
+        assert "failed" in results
