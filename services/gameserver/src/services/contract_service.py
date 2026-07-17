@@ -3,9 +3,18 @@ Trade Contract lifecycle -- WO-ECON-CONTRACT-1-KERNEL lane 2. Only the
 `posted -> accepted -> completed` / `abandon` / `expire` transitions on
 `cargo_delivery` are exercised here (the single-acceptor, no-load-step
 happy path this WO proves end-to-end per contracts.md:421-431 step 2).
-Player-issued posting/escrow, bulk-procurement partial fulfillment,
-insurance, and disputes are later build steps and this module never
-touches those columns.
+Player-issued posting/escrow (WO-ECON-CONTRACT-2-PLAYER-ESCROW) and the
+three-tier insurance engine -- `insure()`, plus the E-I2 mid-term-
+cancellation refund wired into `abandon()` / `cancel_player_contract()`
+(WO-1a-CORE) -- are now live. Insurance CLAIM handling (paying out on a
+ship destroyed in transit) was built and then excised in the same round
+-- cipher's gate found the claim's self-reported "my ship is gone" check
+a farmable money-mint with no real destruction-event verification behind
+it; that half is deferred to a dedicated, design-gated WO-1b-CLAIM-SAFETY.
+The `insurance_claim_filed` column stays on the schema (harmless, always
+false today) for whenever that WO lands. Bulk-procurement partial
+fulfillment and disputes remain later build steps this module never
+touches.
 
 SYNC Session throughout -- matches slipdrive_service.py / escape_pod_
 service.py / fuel_delivery_service.py (this WO's own direct precedent) and
@@ -40,7 +49,14 @@ from sqlalchemy import update
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
-from src.models.contract import Contract, ContractEscrowState, ContractIssuerType, ContractStatus, ContractType
+from src.models.contract import (
+    Contract,
+    ContractEscrowState,
+    ContractInsuranceCoverageTier,
+    ContractIssuerType,
+    ContractStatus,
+    ContractType,
+)
 from src.models.player import Player
 from src.models.resource import Resource
 from src.models.station import Station, StationStatus
@@ -107,6 +123,36 @@ PLAYER_POST_CANCEL_FEE_PCT_POST_ACCEPT = Decimal("10.0")
 
 # contracts.md:245 -- concrete canon cap.
 MAX_ACTIVE_PLAYER_POSTINGS_PER_REGION = 10
+
+# --- WO-CONTRACT-1-INSURANCE: insurance-tier constants ---------------------
+
+# contracts.md:61 (schema) + the Risk & insurance table (:359-365) --
+# verbatim: "premiums 2% / 5% / 10% of contract commodity value
+# respectively". [NO-CANON] "contract commodity value" is never a stored
+# column on this model (only `payment`, which for NPC rows is commodity_
+# value scaled by distance_factor/urgency_factor multipliers >= 1.0 --
+# contract_generator.compute_cargo_delivery_payment -- and for player rows
+# is whatever the issuer typed in, with no formula tying it to a commodity
+# quantity at all). `payment` is the only value FROZEN on the row this
+# service can read without a fresh, non-deterministic live TradingService
+# price lookup (which would make the SAME contract's premium different
+# depending on when /insure happens to be called) -- pinned as the base,
+# proposed to DECISIONS.md. For NPC rows this is a conservative (insurer-
+# favorable) over-estimate of true commodity_value; for player rows
+# `payment` IS the only value-of-the-deal signal that exists.
+INSURANCE_PREMIUM_PCT: Dict[ContractInsuranceCoverageTier, Decimal] = {
+    ContractInsuranceCoverageTier.BASIC: Decimal("2.0"),
+    ContractInsuranceCoverageTier.STANDARD: Decimal("5.0"),
+    ContractInsuranceCoverageTier.HAZARD: Decimal("10.0"),
+}
+
+# ADR-0062 E-I2's own consequences section names this exact constant:
+# "The 10% retention is a one-line config (INSURANCE_CANCELLATION_FEE =
+# 0.10), live-tunable." Applied as a MULTIPLIER on the pro-rata refund
+# base (refund = base * (1 - fee)), matching E-I2's own pseudocode
+# (`return refund_base * 0.90`) -- see _compute_insurance_cancellation_
+# refund below, which quotes that pseudocode verbatim.
+INSURANCE_CANCELLATION_FEE = Decimal("0.10")
 
 # [NO-CANON] contracts.md:41 gives the acceptance-fee PERCENTAGE (2.0, now
 # Contract.acceptance_fee_pct's default) but never states a rounding rule
@@ -236,6 +282,93 @@ def _load_two_players_for_update(
         player_b = _load_player(db, id_b, for_update=True)
         player_a = _load_player(db, id_a, for_update=True)
     return player_a, player_b
+
+
+# --- WO-CONTRACT-1-INSURANCE: helpers --------------------------------------
+
+def _compute_insurance_cancellation_refund(contract: Any, cancelled_at: datetime) -> Decimal:
+    """ADR-0062 E-I2, quoted verbatim:
+
+        def cancellation_refund(contract, cancelled_at):
+            elapsed = cancelled_at - contract.started_at
+            remaining_fraction = max(0.0, 1 - elapsed / contract.duration)
+            refund_base = contract.insurance_premium * remaining_fraction
+            return refund_base * 0.90    # 10% cancellation fee
+
+    [NO-CANON] `contract.started_at` / `contract.duration` are not literal
+    columns on this codebase's Contract model. `accepted_at` is the closest
+    analog to `started_at` -- coverage can only be purchased once a
+    contract is ACCEPTED (contracts.md:357 "purchased at acceptance time";
+    `insure()` below gates on status==accepted), so the policy's clock
+    starts there. `duration` is derived as `deadline - accepted_at` (the
+    contract's own committed delivery window) rather than a separately
+    stored value. Returns 0 (no refund) if no premium was ever paid, or if
+    the timestamps needed to compute a window are missing/degenerate --
+    callers only invoke this when `insurance_coverage_tier is not None`,
+    but a belt-and-suspenders zero-window guard costs nothing here.
+
+    WO-1a-CORE (mack LOW): `remaining_fraction` is clamped to [0, 1] on
+    BOTH ends, not just the floor the ADR pseudocode itself specifies
+    (`max(0.0, ...)`, no ceiling). A `cancelled_at` before `accepted_at`
+    (a caller passing a `now` that's earlier than the accept timestamp --
+    e.g. a backward clock adjustment, or a test/caller bug) makes `elapsed`
+    negative, which without an upper clamp inflates `remaining_fraction`
+    past 1.0 and refunds MORE than the premium actually paid. The ADR's
+    own pseudocode has this exact gap; closed here rather than propagated."""
+    premium = _as_decimal(contract.insurance_premium_paid or 0)
+    if premium <= 0 or contract.accepted_at is None or contract.deadline is None:
+        return Decimal("0")
+    duration_seconds = (contract.deadline - contract.accepted_at).total_seconds()
+    if duration_seconds <= 0:
+        return Decimal("0")
+    elapsed_seconds = (cancelled_at - contract.accepted_at).total_seconds()
+    remaining_fraction = min(
+        Decimal("1"),
+        max(Decimal("0"), Decimal("1") - Decimal(str(elapsed_seconds)) / Decimal(str(duration_seconds))),
+    )
+    refund_base = premium * remaining_fraction
+    return _round_credits(refund_base * (Decimal("1") - INSURANCE_CANCELLATION_FEE))
+
+
+def _refresh_contract_insurance_snapshot(db: Session, contract: Contract) -> None:
+    """WO-1a-CORE (mack CRITICAL #1 + #2, cancel_player_contract and
+    abandon respectively -- same root cause, one shared fix). `contract`
+    is read via `_load_contract` BEFORE any player lock is acquired in
+    both callers. A concurrent `insure()` call's own atomic UPDATE
+    (`_guarded_insure`) can commit in the window between that unlocked
+    read and the caller's player lock(s) being acquired -- without a
+    refresh, the in-memory `insurance_coverage_tier` / `insurance_
+    premium_paid` stay at their PRE-insure() values (None / 0) even
+    though a real, committed policy now exists on the row, silently
+    forfeiting the acceptor's premium on a mid-term cancel/abandon with
+    ZERO contention required:
+      - cancel_player_contract: the stale read fed `needs_acceptor_lock`,
+        so the acceptor was never locked at all and the refund branch
+        (`if acceptor is not None`) never ran.
+      - abandon: the acceptor IS always locked (unconditionally), but the
+        later `if contract.insurance_coverage_tier is not None` check
+        still read the same stale, never-refreshed Python object.
+
+    MUST be called AFTER the relevant player lock(s) are acquired, never
+    before -- calling it earlier just moves the same race to a different
+    window (a concurrent insure() could still land in the gap between an
+    early refresh and the lock).
+
+    `.populate_existing()` on a query keyed to `contract.id` -- already
+    identity-mapped in this Session from the earlier `_load_contract`
+    call -- overwrites THIS EXACT Python object's attributes with the
+    live row, mirroring this module's own `_load_player(for_update=True)`
+    populate_existing convention (see that function's own docstring for
+    the identical "protects the read-check-mutate sequence" rationale).
+    No `with_for_update()` here: no Contract-row lock is ever taken this
+    way anywhere in this module -- the atomic guarded-UPDATE-WHERE is the
+    lock for every Contract mutation (see module docstring); this is a
+    pure identity-map refresh, not a row lock, and refreshes ALL of
+    `contract`'s columns (not just the insurance ones) -- if `status` also
+    moved concurrently (e.g. a sweep raced in too), the caller's own
+    subsequent status-branch dispatch and `_guarded_transition`'s atomic
+    UPDATE-WHERE remain the authoritative safety net regardless."""
+    db.query(Contract).filter(Contract.id == contract.id).populate_existing().first()
 
 
 # --- WO-ECON-CONTRACT-2-PLAYER-ESCROW: posting-validation helpers ---------
@@ -415,6 +548,11 @@ def complete(
     # explicit for any future reader/query of escrow_state.
     if contract.issuer_type == ContractIssuerType.PLAYER:
         contract.escrow_state = ContractEscrowState.RELEASED
+    # WO-CONTRACT-1-INSURANCE: deliberately NOT touched here. contracts.md:62
+    # -- "On completion: released to insurer (not refunded)" -- is satisfied
+    # by simply never reading/crediting back `insurance_premium_paid`
+    # anywhere in this function; it was already debited from the acceptor
+    # at insure() time and stays gone.
     db.flush()
 
     logger.info(
@@ -463,6 +601,11 @@ def abandon(
         player = _load_player(db, player_id, for_update=True)
         issuer = None
 
+    # WO-1a-CORE (mack CRITICAL #2): refresh AFTER the lock, BEFORE the
+    # insurance_coverage_tier check below -- see _refresh_contract_
+    # insurance_snapshot's own docstring for the exploit this closes.
+    _refresh_contract_insurance_snapshot(db, contract)
+
     _guarded_transition(db, contract, ContractStatus.ACCEPTED, ContractStatus.CANCELLED)
 
     penalty = _to_credits_int(_round_credits(_as_decimal(contract.penalty)))
@@ -485,16 +628,137 @@ def abandon(
         refund = _to_credits_int(_round_credits(_as_decimal(contract.escrow_amount)))
         issuer.credits = (issuer.credits or 0) + refund
         contract.escrow_state = ContractEscrowState.REFUNDING
+
+    # WO-CONTRACT-1-INSURANCE (ADR-0062 E-I2): a walk-away is a "mid-term
+    # cancellation" of the ACCEPTED contract -- if the acceptor (== `player`
+    # here, already locked above regardless of issuer_type) holds a
+    # coverage tier, their premium refunds pro-rata, minus the 10%
+    # cancellation fee, in this SAME transaction. Orthogonal to the
+    # issuer-escrow branch above (NPC-issued rows can carry insurance too --
+    # this is never gated on `issuer is not None`).
+    insurance_refund = 0
+    if contract.insurance_coverage_tier is not None:
+        insurance_refund = _to_credits_int(_compute_insurance_cancellation_refund(contract, now))
+        if insurance_refund > 0:
+            player.credits = (player.credits or 0) + insurance_refund
     db.flush()
 
     logger.info(
-        "Player %s abandoned contract %s (penalty %d)", player_id, contract.id, penalty,
+        "Player %s abandoned contract %s (penalty %d, insurance refund %d)",
+        player_id, contract.id, penalty, insurance_refund,
     )
     return {
         "id": str(contract.id),
         "status": contract.status.value,
         "penalty_charged": penalty,
+        "insurance_refund": insurance_refund,
         "credits": player.credits,
+    }
+
+
+def _guarded_insure(
+    db: Session, contract: Contract, tier: ContractInsuranceCoverageTier, premium: Decimal,
+) -> Contract:
+    """The insure()-time twin of `_guarded_transition` -- an atomic
+    `UPDATE ... WHERE id=:id AND status='accepted' AND insurance_coverage_
+    tier IS NULL` closes the double-insure race the SAME way every other
+    transition in this module closes its own race: the WHERE clause IS the
+    lock, no `SELECT ... FOR UPDATE` on the Contract row needed. Not folded
+    into `_guarded_transition` itself -- that helper is status-machine-
+    specific (LEGAL_TRANSITIONS membership, from_status/to_status), and
+    `insure()` doesn't change `status` at all; this is a narrower sibling
+    for the one column-pair it actually claims."""
+    stmt = (
+        update(Contract)
+        .where(
+            Contract.id == contract.id,
+            Contract.status == ContractStatus.ACCEPTED,
+            Contract.insurance_coverage_tier.is_(None),
+        )
+        .values(insurance_coverage_tier=tier, insurance_premium_paid=premium)
+    )
+    result = db.execute(stmt)
+    if result.rowcount == 0:
+        raise ContractConflictError(
+            f"stale_status: contract {contract.id} is not eligible for insurance "
+            "-- it is not 'accepted', or it already carries a coverage tier"
+        )
+    contract.insurance_coverage_tier = tier
+    contract.insurance_premium_paid = premium
+    return contract
+
+
+def insure(
+    db: Session, contract_id: uuid.UUID, acceptor_player_id: uuid.UUID,
+    tier: ContractInsuranceCoverageTier, now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """`POST /contracts/{id}/insure` (contracts.md:219/:224). Buy one of the
+    three coverage tiers on an ACCEPTED contract.
+
+    VERIFY-FIRST FINDING (WO-CONTRACT-1-INSURANCE): the WO's own paraphrase
+    ("tier selection at accept") reads as folding insurance into accept()
+    itself. Canon disagrees with that paraphrase on TWO independent axes,
+    and per this module's own established docs-win convention (see
+    cancel_player_contract's docstring: "the detailed table is authoritative
+    ... NOT the terser ... prose") both point the same way:
+      1. The escrow table (:166-176) lists "Accept" and "Insure" as
+         SEPARATE phases with separate triggers (`POST .../accept` charges
+         only the acceptance fee; `POST .../insure` is its own row,
+         `-premium`).
+      2. The API surface table (:208-224) lists `POST /contracts/{id}/
+         insure` as its OWN endpoint, distinct from `/accept`.
+    Built here as the separate endpoint the two detailed tables agree on --
+    "purchased at acceptance time" (:357's prose) reads as "once the
+    contract is in the accepted phase of its life", not "in the same call".
+
+    Only the ACCEPTOR may insure (they carry the delivery risk -- schema
+    line 63's "acceptor claims insurance for ship loss"), and only once:
+    re-insuring / upgrading an already-insured contract is [NO-CANON]
+    out of scope this build (canon says nothing about upgrades for
+    CONTRACT insurance, unlike ship-insurance.md's explicit BASIC->
+    STANDARD->PREMIUM upgrade path) -- `_guarded_insure`'s WHERE clause
+    rejects it uniformly with the same race-safe idiom that also closes
+    the concurrent-double-insure race. A race loser is NEVER charged the
+    premium (the guarded UPDATE runs BEFORE any credit mutation, same
+    "fee-less race loser" principle as accept()). FLUSH-ONLY."""
+    now = now or _now()
+    contract = _load_contract(db, contract_id)
+    if contract.acceptor_player_id != acceptor_player_id:
+        raise ContractError("This contract is not accepted by you")
+    if contract.status != ContractStatus.ACCEPTED:
+        raise ContractConflictError(
+            f"stale_status: contract {contract.id} is '{contract.status.value}', not 'accepted'"
+        )
+    if contract.insurance_coverage_tier is not None:
+        raise ContractError("already_insured: this contract already carries a coverage tier")
+    if not isinstance(tier, ContractInsuranceCoverageTier):
+        raise ContractError(f"unknown_tier: '{tier}' is not a valid insurance tier")
+
+    # [NO-CANON] premium base -- see INSURANCE_PREMIUM_PCT's own module-level
+    # comment for why `contract.payment` (not a live market lookup) is the
+    # pinned "contract commodity value" proxy.
+    premium = _round_credits(_as_decimal(contract.payment) * INSURANCE_PREMIUM_PCT[tier] / Decimal(100))
+
+    acceptor = _load_player(db, acceptor_player_id, for_update=True)
+    if Decimal(acceptor.credits or 0) < premium:
+        raise ContractError(
+            f"insufficient_credits: {tier.value} premium is {premium}, you have {acceptor.credits or 0}"
+        )
+
+    _guarded_insure(db, contract, tier, premium)
+
+    acceptor.credits = _to_credits_int(Decimal(acceptor.credits or 0) - premium)
+    db.flush()
+
+    logger.info(
+        "Player %s insured contract %s at %s tier (premium %s)",
+        acceptor_player_id, contract.id, tier.value, premium,
+    )
+    return {
+        "id": str(contract.id),
+        "insurance_coverage_tier": tier.value,
+        "insurance_premium_paid": float(premium),
+        "credits": acceptor.credits,
     }
 
 
@@ -961,13 +1225,51 @@ def cancel_player_contract(
     the wrong moment. Once the deadline has passed, an accepted contract
     routes exclusively through the sweep (acceptor penalized, escrow
     settled per that sweep's own NO-CANON-flagged disposition) -- the
-    unilateral-cancel path is withdrawn. FLUSH-ONLY."""
+    unilateral-cancel path is withdrawn.
+
+    WO-1a-CORE (ADR-0062 E-I2): the `accepted` branch is ALSO a
+    "mid-term cancellation" for insurance purposes -- if the acceptor
+    holds a coverage tier, their premium refunds pro-rata (minus the 10%
+    cancellation fee) in this SAME transaction, credited to the ACCEPTOR
+    (the policyholder), never the issuer. This is why the acceptor is
+    dual-locked alongside the issuer below -- the dual-lock decision is
+    made up front from the just-loaded (still UNLOCKED) `contract` row,
+    before any lock is acquired -- the same up-front-decision shape
+    `abandon()` uses for its own conditional dual-lock, and for the
+    identical deadlock-safety reason (a consistent ascending-id
+    acquisition order across every concurrent caller that might touch
+    the same two players).
+
+    mack CRITICAL #1 (fixed): the dual-lock decision used to ALSO gate on
+    `contract.insurance_coverage_tier is not None` -- a column a
+    concurrent `insure()` call can change. A racing insure() that
+    committed between this function's unlocked `_load_contract` read and
+    this decision left the acceptor never locked at all, so the refund
+    branch further down silently never ran even though a real premium
+    had just been paid -- zero contention required, not a rare edge.
+    Fixed: the lock decision now gates ONLY on `status == accepted and
+    acceptor_player_id is not None` (both stable, safe to read pre-lock
+    -- `acceptor_player_id` is set once at accept() time and never
+    changes again). The Contract row's insurance columns are then
+    refreshed via `_refresh_contract_insurance_snapshot` AFTER the lock is
+    acquired -- see that helper's own docstring. FLUSH-ONLY."""
     now = now or _now()
     contract = _load_contract(db, contract_id)
     if contract.issuer_type != ContractIssuerType.PLAYER or contract.issuer_id != issuer_player_id:
         raise ContractError("This contract was not posted by you")
 
-    issuer = _load_player(db, issuer_player_id, for_update=True)
+    needs_acceptor_lock = (
+        contract.status == ContractStatus.ACCEPTED
+        and contract.acceptor_player_id is not None
+    )
+    if needs_acceptor_lock:
+        issuer, acceptor = _load_two_players_for_update(db, issuer_player_id, contract.acceptor_player_id)
+        # WO-1a-CORE (mack CRITICAL #1): refresh AFTER the lock -- see
+        # _refresh_contract_insurance_snapshot's own docstring.
+        _refresh_contract_insurance_snapshot(db, contract)
+    else:
+        issuer = _load_player(db, issuer_player_id, for_update=True)
+        acceptor = None
 
     if contract.status == ContractStatus.POSTED:
         _guarded_transition(db, contract, ContractStatus.POSTED, ContractStatus.CANCELLED)
@@ -994,14 +1296,29 @@ def cancel_player_contract(
 
     issuer.credits = (issuer.credits or 0) + _to_credits_int(refund)
     contract.escrow_state = ContractEscrowState.REFUNDING
+
+    insurance_refund = 0
+    if acceptor is not None:
+        # acceptor is locked (and contract's insurance columns freshly
+        # refreshed) whenever there's an ACCEPTED contract with an
+        # acceptor -- regardless of whether a tier turns out to be held.
+        # _compute_insurance_cancellation_refund itself already returns 0
+        # when no premium was ever paid, so this is safe to call
+        # unconditionally rather than re-checking insurance_coverage_tier
+        # here too.
+        insurance_refund = _to_credits_int(_compute_insurance_cancellation_refund(contract, now))
+        if insurance_refund > 0:
+            acceptor.credits = (acceptor.credits or 0) + insurance_refund
     db.flush()
 
     logger.info(
-        "Player %s cancelled contract %s (refund %s)", issuer_player_id, contract.id, refund,
+        "Player %s cancelled contract %s (refund %s, insurance refund %d)",
+        issuer_player_id, contract.id, refund, insurance_refund,
     )
     return {
         "id": str(contract.id),
         "status": contract.status.value,
         "refund": float(refund),
+        "insurance_refund": insurance_refund,
         "credits": issuer.credits,
     }

@@ -36,7 +36,19 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { mockGetBoard, mockGetMine, mockAccept, mockComplete, mockAbandon, mockPost, mockCancel, mockRentLocker, mockDeposit, mockGetCurrentShip } = vi.hoisted(() => ({
+const {
+  mockGetBoard,
+  mockGetMine,
+  mockAccept,
+  mockComplete,
+  mockAbandon,
+  mockPost,
+  mockCancel,
+  mockRentLocker,
+  mockDeposit,
+  mockGetCurrentShip,
+  mockInsure,
+} = vi.hoisted(() => ({
   mockGetBoard: vi.fn(),
   mockGetMine: vi.fn(),
   mockAccept: vi.fn(),
@@ -47,6 +59,7 @@ const { mockGetBoard, mockGetMine, mockAccept, mockComplete, mockAbandon, mockPo
   mockRentLocker: vi.fn(),
   mockDeposit: vi.fn(),
   mockGetCurrentShip: vi.fn(),
+  mockInsure: vi.fn(),
 }));
 
 vi.mock('../../../services/api', () => ({
@@ -59,6 +72,7 @@ vi.mock('../../../services/api', () => ({
     abandon: mockAbandon,
     post: mockPost,
     cancel: mockCancel,
+    insure: mockInsure,
   },
   storageAPI: {
     rentLocker: mockRentLocker,
@@ -110,6 +124,9 @@ const CONTRACT_POSTED = {
   posted_at: '2026-07-01T00:00:00Z',
   accepted_at: null,
   completed_at: null,
+  insurance_coverage_tier: null,
+  insurance_premium_paid: null,
+  insurance_claim_filed: false,
 };
 
 const CONTRACT_ACCEPTED = {
@@ -147,6 +164,7 @@ describe('ContractBoardVenue', () => {
     mockRentLocker.mockReset();
     mockDeposit.mockReset();
     mockGetCurrentShip.mockReset();
+    mockInsure.mockReset();
     VENUE_PROPS.onCreditsSet = vi.fn();
   });
 
@@ -270,6 +288,77 @@ describe('ContractBoardVenue', () => {
     expect(mockGetCurrentShip).toHaveBeenCalled();
     expect(mockDeposit).toHaveBeenCalledWith('locker-1', 20);
     expect(container.textContent).toContain('Locker 20/50');
+  });
+
+  describe('insurance tier picker (WO-CONTRACT-1-INSURANCE)', () => {
+    it('picking a tier and clicking Insure drives a REAL POST /insure with the selected tier, feeds the new balance to onCreditsSet, and the row flips to the Insured badge on refetch', async () => {
+      mockGetBoard.mockResolvedValueOnce([]);
+      mockGetMine.mockResolvedValueOnce({ posted: [], accepted: [CONTRACT_ACCEPTED] });
+      mockInsure.mockResolvedValueOnce({
+        id: CONTRACT_ACCEPTED.id,
+        insurance_coverage_tier: 'hazard',
+        insurance_premium_paid: 200,
+        credits: 9800,
+      });
+      // Server-authoritative refetch after insure — the row now carries the tier.
+      mockGetMine.mockResolvedValueOnce({
+        posted: [],
+        accepted: [{ ...CONTRACT_ACCEPTED, insurance_coverage_tier: 'hazard', insurance_premium_paid: 200 }],
+      });
+
+      await act(async () => {
+        root.render(<ContractBoardVenue {...VENUE_PROPS} />);
+      });
+      await flush();
+
+      await clickButton('My Contracts');
+      await flush();
+
+      // Default premium preview at the default 'basic' tier: 2% of 2000 = ₡40.
+      expect(container.textContent).toContain('₡40');
+
+      const select = container.querySelector('.cb-insure-tier') as HTMLSelectElement;
+      expect(select, 'expected the insurance tier <select>').toBeTruthy();
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value')!.set!;
+        setter.call(select, 'hazard');
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      await flush();
+
+      // Premium preview follows the selection: 10% of 2000 = ₡200.
+      expect(container.textContent).toContain('₡200');
+
+      await clickButton('Insure');
+      await flush();
+
+      expect(mockInsure).toHaveBeenCalledWith(CONTRACT_ACCEPTED.id, 'hazard');
+      expect(VENUE_PROPS.onCreditsSet).toHaveBeenCalledWith(9800);
+      expect(container.textContent).toContain('Insured');
+      expect(container.textContent).toContain('Hazard (10%)');
+      // The tier picker is gone now that the row is server-confirmed insured.
+      expect(container.querySelector('.cb-insure-tier')).toBeFalsy();
+    });
+
+    it('an already-insured row renders the badge (no picker) from the initial fetch, with no insure call made', async () => {
+      mockGetBoard.mockResolvedValueOnce([]);
+      mockGetMine.mockResolvedValueOnce({
+        posted: [],
+        accepted: [{ ...CONTRACT_ACCEPTED, insurance_coverage_tier: 'standard', insurance_premium_paid: 100 }],
+      });
+
+      await act(async () => {
+        root.render(<ContractBoardVenue {...VENUE_PROPS} />);
+      });
+      await flush();
+      await clickButton('My Contracts');
+      await flush();
+
+      expect(container.textContent).toContain('Insured');
+      expect(container.textContent).toContain('Standard (5%)');
+      expect(container.querySelector('.cb-insure-tier')).toBeFalsy();
+      expect(mockInsure).not.toHaveBeenCalled();
+    });
   });
 
   it('the Post Contract form computes a live escrow preview as payment + insurance reserve', async () => {

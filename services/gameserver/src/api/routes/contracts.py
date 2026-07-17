@@ -3,9 +3,15 @@ Trade Contract API routes. WO-ECON-CONTRACT-1-KERNEL lane 4 shipped
 board/mine/{id} reads and accept/complete/abandon writes. WO-ECON-
 CONTRACT-2-PLAYER-ESCROW adds player-issued posting (`POST /contracts`,
 cargo_delivery only) and issuer-only `POST /contracts/{id}/cancel`.
-Insurance, bulk-partial `deliver`, and dispute/resolve-dispute remain
-later build steps (contracts.md:421-431 steps 6/7) and are intentionally
-NOT mounted here.
+WO-1a-CORE adds `POST /contracts/{id}/insure` (contracts.md:219/:224).
+A claim-filing route (the state-transition diagram's "cargo destroyed in
+transit -> cancelled (insurance pays if held)" edge, :84) was built and
+then excised in the same round -- cipher's gate found the self-reported
+"my ship is gone" check a farmable money-mint with no real destruction-
+event verification behind it; that half is deferred to a dedicated,
+design-gated WO-1b-CLAIM-SAFETY, not mounted here. Bulk-partial `deliver`
+and dispute/resolve-dispute remain later build steps (contracts.md:421-431
+step 7) and are intentionally NOT mounted here either.
 """
 import uuid
 from datetime import datetime
@@ -19,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from src.auth.dependencies import get_current_player
 from src.core.database import get_db
-from src.models.contract import Contract, ContractStatus
+from src.models.contract import Contract, ContractInsuranceCoverageTier, ContractStatus
 from src.models.player import Player
 from src.services import contract_service
 from src.services.contract_service import ContractConflictError, ContractError, ContractNotFoundError
@@ -49,6 +55,10 @@ def _serialize_contract(c: Contract) -> Dict[str, Any]:
         "posted_at": c.posted_at.isoformat() if c.posted_at else None,
         "accepted_at": c.accepted_at.isoformat() if c.accepted_at else None,
         "completed_at": c.completed_at.isoformat() if c.completed_at else None,
+        # WO-CONTRACT-1-INSURANCE
+        "insurance_coverage_tier": c.insurance_coverage_tier.value if c.insurance_coverage_tier else None,
+        "insurance_premium_paid": float(c.insurance_premium_paid) if c.insurance_premium_paid is not None else None,
+        "insurance_claim_filed": bool(c.insurance_claim_filed),
     }
 
 
@@ -78,6 +88,13 @@ class PostContractRequest(BaseModel):
     deadline: datetime
     origin_station_id: Optional[str] = None
     insurance_pool_reserve: Decimal = Field(default=Decimal("0"), ge=0)
+
+
+class InsureContractRequest(BaseModel):
+    """contracts.md's Risk & insurance table (:359-365) -- one of the
+    three coverage tiers."""
+
+    tier: str
 
 
 def _raise_for(exc: ContractError) -> None:
@@ -206,6 +223,35 @@ async def abandon_contract(
     contract_uuid = _parse_uuid(contract_id, "contract_id")
     try:
         result = contract_service.abandon(db, contract_uuid, current_player.id)
+    except ContractError as exc:
+        db.rollback()
+        _raise_for(exc)
+    else:
+        db.commit()
+        return result
+
+
+@router.post("/{contract_id}/insure")
+async def insure_contract(
+    contract_id: str,
+    body: InsureContractRequest,
+    db: Session = Depends(get_db),
+    current_player: Player = Depends(get_current_player),
+) -> Dict[str, Any]:
+    """contracts.md:219/:224 -- buy coverage on an accepted contract. See
+    contract_service.insure's own docstring for the verify-first finding on
+    why this is a separate endpoint (not folded into `/accept`)."""
+    contract_uuid = _parse_uuid(contract_id, "contract_id")
+    try:
+        tier = ContractInsuranceCoverageTier(body.tier)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown insurance tier '{body.tier}' -- expected one of "
+            f"{[t.value for t in ContractInsuranceCoverageTier]}",
+        ) from None
+    try:
+        result = contract_service.insure(db, contract_uuid, current_player.id, tier)
     except ContractError as exc:
         db.rollback()
         _raise_for(exc)

@@ -23,9 +23,16 @@ from types import SimpleNamespace
 from typing import Any, List, Optional
 
 import pytest
-from sqlalchemy.sql.operators import in_op
+from sqlalchemy.sql.elements import Null
+from sqlalchemy.sql.operators import in_op, is_
 
-from src.models.contract import Contract, ContractIssuerType, ContractStatus
+from src.models.contract import (
+    Contract,
+    ContractInsuranceCoverageTier,
+    ContractIssuerType,
+    ContractStatus,
+    ContractType,
+)
 from src.models.ship import Ship, ShipType
 from src.services import contract_service
 from src.services.contract_service import (
@@ -45,6 +52,18 @@ def _match(row: Any, cond: Any) -> bool:
         return row_val in cond.right.value
     if cond.operator is operator.lt:
         return row_val < cond.right.value
+    if cond.operator is is_:
+        # WO-CONTRACT-1-INSURANCE: `.is_(None)` (insure()'s
+        # `Contract.insurance_coverage_tier.is_(None)` double-insure
+        # guard). `cond.right` for an IS clause is a SQL singleton
+        # (Null()/True_()/False_()), NOT a BindParameter -- it has no
+        # `.value` attribute (verified: AttributeErrors on
+        # `.value` for both `Null` and `True_`) -- so `isinstance`
+        # against the singleton type is the only correct read, not a
+        # `.value` access.
+        if isinstance(cond.right, Null):
+            return row_val is None
+        raise NotImplementedError(f"unsupported IS operand {cond.right!r}")
     raise NotImplementedError(f"unsupported operator {cond.operator!r}")
 
 
@@ -148,6 +167,85 @@ class _FakeSession:
         raise AssertionError("service functions are flush-only -- the route commits")
 
 
+class _DeferredInsureContractQuery:
+    """See `_StaleSnapshotFakeSession`'s own docstring for what this
+    models. Wraps a normal `_FakeQuery` for Contract, delegating every
+    method -- only `.first()` is special-cased, and only when `.populate_
+    existing()` was chained first."""
+
+    def __init__(self, inner: _FakeQuery, session: "_StaleSnapshotFakeSession") -> None:
+        self._inner = inner
+        self._session = session
+        self._populate_existing = False
+
+    def filter(self, *conditions: Any) -> "_DeferredInsureContractQuery":
+        self._inner = self._inner.filter(*conditions)
+        return self
+
+    def with_for_update(self) -> "_DeferredInsureContractQuery":
+        self._inner = self._inner.with_for_update()
+        return self
+
+    def populate_existing(self) -> "_DeferredInsureContractQuery":
+        self._populate_existing = True
+        self._inner = self._inner.populate_existing()
+        return self
+
+    def first(self) -> Any:
+        row = self._inner.first()
+        if self._populate_existing and row is not None and self._session._pending_insure is not None:
+            tier, premium = self._session._pending_insure
+            row.insurance_coverage_tier = tier
+            row.insurance_premium_paid = premium
+            self._session._pending_insure = None  # applies exactly once
+        return row
+
+    def all(self) -> List[Any]:
+        return self._inner.all()
+
+    def count(self) -> int:
+        return self._inner.count()
+
+
+class _StaleSnapshotFakeSession(_FakeSession):
+    """WO-1a-CORE (mack CRITICAL #1 + #2 regression coverage). The shared
+    `_FakeQuery.populate_existing()` above is a documented no-op
+    passthrough -- correct for every OTHER test in this file (this fake
+    has no identity map to refresh), but insufficient to prove THIS fix,
+    which is specifically about what happens when the post-lock
+    `.populate_existing()` refresh DOES pick up a change a concurrent
+    insure() call made.
+
+    `queue_concurrent_insure(tier, premium)` primes a pending mutation
+    that applies to the Contract row EXACTLY ONCE, on the first query
+    that chains `.populate_existing()` -- i.e. `_load_contract`'s own
+    plain (non-populate_existing) call still returns the ORIGINAL,
+    uninsured snapshot, modeling "the unlocked read happened before the
+    concurrent insure() committed"; the LATER `_refresh_contract_
+    insurance_snapshot` call (which does chain `.populate_existing()`)
+    picks up the change, modeling "the concurrent insure() committed
+    sometime before our post-lock refresh".
+
+    This proves the fix's STRUCTURAL post-condition (refresh happens,
+    and downstream code acts on its result) -- not genuine cross-
+    connection SQLAlchemy identity-map caching, which needs live
+    Postgres to reproduce faithfully (see identity-map-poisons-locked-
+    reread project memory for the general class of bug this belongs to)."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._pending_insure: Optional[tuple] = None
+
+    def queue_concurrent_insure(self, tier: Any, premium: Decimal) -> None:
+        self._pending_insure = (tier, premium)
+
+    def query(self, model: Any) -> Any:
+        q = super().query(model)
+        if model is Contract:
+            return _DeferredInsureContractQuery(q, self)
+        return q
+
+
 # --- fixtures ------------------------------------------------------------ #
 
 def _real_ship(**overrides: Any) -> Ship:
@@ -167,6 +265,7 @@ def _contract(**overrides: Any) -> SimpleNamespace:
         issuer_type=ContractIssuerType.NPC,
         issuer_id=uuid.uuid4(),
         acceptor_player_id=None,
+        contract_type=ContractType.CARGO_DELIVERY,
         origin_station_id=uuid.uuid4(),
         destination_station_id=uuid.uuid4(),
         commodity_type="ore",
@@ -179,6 +278,12 @@ def _contract(**overrides: Any) -> SimpleNamespace:
         posted_at=datetime(2026, 1, 1, tzinfo=UTC),
         accepted_at=None,
         completed_at=None,
+        # WO-CONTRACT-1-INSURANCE
+        insurance_coverage_tier=None,
+        insurance_premium_paid=Decimal("0"),
+        insurance_claim_filed=False,
+        escrow_amount=Decimal("0"),
+        escrow_state=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -384,6 +489,271 @@ class TestAbandon:
         db = _FakeSession(contracts=[c], players=[player])
         with pytest.raises(ContractConflictError):
             contract_service.abandon(db, c.id, player.id, now=_NOW)
+
+    def test_insurance_pro_rata_refund_worked_example(self) -> None:
+        """ADR-0062 E-I2 worked example, quoted math: accepted_at=T,
+        deadline=T+10h (duration 36000s), premium=100, walked away at
+        T+4h (elapsed 14400s) -> elapsed/duration=0.4, remaining_fraction
+        =0.6, refund = 100 * 0.6 * 0.90 = 54.00 EXACTLY. Orthogonal to the
+        walk-away penalty (this contract is NPC-issued -- no issuer-escrow
+        branch fires at all; the insurance refund is independent of
+        issuer_type)."""
+        accepted_at = _NOW
+        deadline = _NOW + timedelta(hours=10)
+        c = _contract(
+            status=ContractStatus.ACCEPTED, penalty=Decimal("500.00"),
+            accepted_at=accepted_at, deadline=deadline,
+            insurance_coverage_tier=ContractInsuranceCoverageTier.STANDARD,
+            insurance_premium_paid=Decimal("100.00"),
+        )
+        acceptor = _player(credits=2000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+        cancelled_at = accepted_at + timedelta(hours=4)
+
+        result = contract_service.abandon(db, c.id, acceptor.id, now=cancelled_at)
+
+        assert result["penalty_charged"] == 500
+        assert result["insurance_refund"] == 54
+        assert acceptor.credits == 2000 - 500 + 54  # net -446
+
+    def test_no_insurance_refund_field_when_uninsured(self) -> None:
+        c = _contract(status=ContractStatus.ACCEPTED, penalty=Decimal("500.00"))
+        acceptor = _player(credits=2000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+
+        result = contract_service.abandon(db, c.id, acceptor.id, now=_NOW)
+
+        assert result["insurance_refund"] == 0
+        assert acceptor.credits == 2000 - 500  # untouched by any insurance math
+
+    def test_insurance_refund_is_zero_once_deadline_reached(self) -> None:
+        """remaining_fraction = max(0, 1 - elapsed/duration) floors at 0 --
+        cancelling AT (or after) the deadline pays out no refund, not a
+        negative one."""
+        accepted_at = _NOW
+        deadline = _NOW + timedelta(hours=2)
+        c = _contract(
+            status=ContractStatus.ACCEPTED, penalty=Decimal("100.00"),
+            accepted_at=accepted_at, deadline=deadline,
+            insurance_coverage_tier=ContractInsuranceCoverageTier.BASIC,
+            insurance_premium_paid=Decimal("40.00"),
+        )
+        acceptor = _player(credits=1000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+
+        result = contract_service.abandon(db, c.id, acceptor.id, now=deadline)
+
+        assert result["insurance_refund"] == 0
+
+
+@pytest.mark.unit
+class TestInsure:
+    @pytest.mark.parametrize(
+        "tier,expected_premium",
+        [
+            (ContractInsuranceCoverageTier.BASIC, 20.0),
+            (ContractInsuranceCoverageTier.STANDARD, 50.0),
+            (ContractInsuranceCoverageTier.HAZARD, 100.0),
+        ],
+    )
+    def test_premium_charged_per_tier(
+        self, tier: ContractInsuranceCoverageTier, expected_premium: float,
+    ) -> None:
+        c = _contract(status=ContractStatus.ACCEPTED, payment=Decimal("1000.00"))
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+
+        result = contract_service.insure(db, c.id, acceptor.id, tier, now=_NOW)
+
+        assert result["insurance_premium_paid"] == expected_premium
+        assert result["insurance_coverage_tier"] == tier.value
+        assert c.insurance_coverage_tier == tier
+        assert c.insurance_premium_paid == Decimal(str(expected_premium))
+        assert acceptor.credits == 5000 - expected_premium
+        assert db.flush_calls == 1
+
+    def test_not_accepted_rejected(self) -> None:
+        c = _contract(status=ContractStatus.POSTED)
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+        with pytest.raises(ContractConflictError, match="stale_status"):
+            contract_service.insure(db, c.id, acceptor.id, ContractInsuranceCoverageTier.BASIC, now=_NOW)
+
+    def test_not_your_contract_rejected(self) -> None:
+        c = _contract(status=ContractStatus.ACCEPTED)
+        c.acceptor_player_id = uuid.uuid4()
+        stranger = _player(credits=5000)
+        db = _FakeSession(contracts=[c], players=[stranger])
+        with pytest.raises(ContractError, match="not accepted by you"):
+            contract_service.insure(db, c.id, stranger.id, ContractInsuranceCoverageTier.BASIC, now=_NOW)
+
+    def test_already_insured_rejected_and_feeless(self) -> None:
+        c = _contract(
+            status=ContractStatus.ACCEPTED,
+            insurance_coverage_tier=ContractInsuranceCoverageTier.BASIC,
+            insurance_premium_paid=Decimal("20.00"),
+        )
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+        with pytest.raises(ContractError, match="already_insured"):
+            contract_service.insure(db, c.id, acceptor.id, ContractInsuranceCoverageTier.STANDARD, now=_NOW)
+        assert acceptor.credits == 5000  # never charged
+        assert c.insurance_coverage_tier == ContractInsuranceCoverageTier.BASIC  # unchanged
+
+    def test_insufficient_credits_rejected_no_mutation(self) -> None:
+        c = _contract(status=ContractStatus.ACCEPTED, payment=Decimal("1000.00"))
+        acceptor = _player(credits=5)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+        with pytest.raises(ContractError, match="insufficient_credits"):
+            contract_service.insure(db, c.id, acceptor.id, ContractInsuranceCoverageTier.HAZARD, now=_NOW)
+        assert c.insurance_coverage_tier is None
+        assert acceptor.credits == 5
+
+    def test_concurrent_double_insure_second_caller_rejected_feeless(self) -> None:
+        """TWO insure() calls against the SAME fake row, same shape as
+        TestAccept.test_concurrent_accept_second_caller_409s_feeless: the
+        first call's trailing setattr (inside `_guarded_insure`) mutates
+        the SAME in-memory `contract` object both calls share, so the
+        second call's own Python-level `already_insured` pre-check --
+        exactly like accept()'s `status != POSTED` pre-check -- fires
+        first in this SEQUENTIAL single-threaded fake, before `_guarded_
+        insure`'s atomic UPDATE-WHERE is even reached. That UPDATE-WHERE
+        is what closes the GENUINE two-CONNECTION race (two callers each
+        holding their own stale pre-commit read) -- unprovable without
+        live Postgres (see this module's own docstring / test_fleet_
+        battle_locks.py's documented precedent for why). What IS provable
+        here, and is exactly what accept()'s own sequential-race test
+        proves too: the sequential second attempt is rejected AND
+        feeless -- the premium is debited exactly once, never twice."""
+        c = _contract(status=ContractStatus.ACCEPTED, payment=Decimal("1000.00"))
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+
+        contract_service.insure(db, c.id, acceptor.id, ContractInsuranceCoverageTier.BASIC, now=_NOW)
+        balance_after_first = acceptor.credits
+        assert balance_after_first == 4980  # 5000 - 20 (2% of 1000)
+
+        with pytest.raises(ContractError, match="already_insured"):
+            contract_service.insure(db, c.id, acceptor.id, ContractInsuranceCoverageTier.HAZARD, now=_NOW)
+
+        # Conservation: the race loser's attempt charged NOTHING -- the
+        # premium was debited exactly once.
+        assert acceptor.credits == balance_after_first
+        assert c.insurance_coverage_tier == ContractInsuranceCoverageTier.BASIC  # unchanged by the loser
+
+
+@pytest.mark.unit
+class TestInsurePremiumCompletionInteraction:
+    """WO-1a-CORE: the claim-specific tests that lived alongside this one
+    were excised (claim handling deferred to WO-1b-CLAIM-SAFETY). This
+    single test is unrelated to the claim -- it only exercises insure()
+    + complete() -- so it survives, just relocated out of the now-deleted
+    TestFileInsuranceClaim class."""
+
+    def test_completion_never_refunds_the_premium(self) -> None:
+        """contracts.md:62 -- 'On completion: released to insurer (not
+        refunded)'. complete() is a DIFFERENT transition entirely
+        (ACCEPTED -> COMPLETED, not CANCELLED) -- proves the premium the
+        acceptor already paid at insure() time is simply never touched by
+        complete()'s own payout math."""
+        destination_id = uuid.uuid4()
+        c = _contract(
+            status=ContractStatus.ACCEPTED, destination_station_id=destination_id,
+            commodity_type="ore", quantity=50, payment=Decimal("3000.00"),
+            insurance_coverage_tier=ContractInsuranceCoverageTier.HAZARD,
+            insurance_premium_paid=Decimal("300.00"),
+        )
+        ship = _real_ship(cargo={"capacity": 500, "used": 80, "contents": {"ore": 80}})
+        player = _player(credits=1000, is_docked=True, current_port_id=destination_id, current_ship=ship)
+        c.acceptor_player_id = player.id
+        db = _FakeSession(contracts=[c], players=[player])
+
+        contract_service.complete(db, c.id, player.id, now=_NOW)
+
+        assert c.status == ContractStatus.COMPLETED
+        assert player.credits == 1000 + 3000  # payment only -- no premium refund folded in
+        assert c.insurance_premium_paid == Decimal("300.00")  # untouched
+
+
+@pytest.mark.unit
+class TestInsureVsAbandonCancelStalenessRace:
+    """WO-1a-CORE (mack CRITICAL #1 + #2): a real insure() commit landing
+    in the window between abandon()'s / cancel_player_contract()'s
+    initial UNLOCKED `_load_contract` read and their post-lock refresh
+    used to leave the acceptor's just-paid premium silently forfeited --
+    ZERO contention required, not a rare edge (see each function's own
+    docstring for the exact exploit). `_StaleSnapshotFakeSession` (see
+    its own docstring) simulates exactly that window. A genuine cross-
+    connection SQLAlchemy identity-map proof needs live Postgres; this
+    proves the fix's structural post-condition: once refreshed, the
+    premium IS refunded, not forfeited."""
+
+    def test_cancel_player_contract_picks_up_a_concurrently_insured_tier(self) -> None:
+        issuer = _player(credits=5000)
+        acceptor = _player(credits=5000)
+        accepted_at = _NOW - timedelta(hours=4)
+        c = _contract(
+            status=ContractStatus.ACCEPTED, issuer_type=ContractIssuerType.PLAYER,
+            issuer_id=issuer.id, escrow_amount=Decimal("1000.00"), payment=Decimal("1000.00"),
+            deadline=accepted_at + timedelta(hours=10), accepted_at=accepted_at,
+            insurance_coverage_tier=None, insurance_premium_paid=Decimal("0"),
+        )
+        c.acceptor_player_id = acceptor.id
+        db = _StaleSnapshotFakeSession(contracts=[c], players=[issuer, acceptor])
+        # Simulate: insure() (STANDARD, 50cr premium) committed AFTER
+        # cancel_player_contract's initial _load_contract read but BEFORE
+        # its post-lock refresh.
+        db.queue_concurrent_insure(ContractInsuranceCoverageTier.STANDARD, Decimal("50.00"))
+
+        result = contract_service.cancel_player_contract(db, c.id, issuer.id, now=_NOW)
+
+        # Pre-fix: needs_acceptor_lock read the STALE tier=None -> acceptor
+        # never locked -> insurance_refund would be 0, premium forfeited
+        # with the issuer paying nothing for it either -- a pure sink.
+        # Post-fix: refresh picks up the STANDARD tier -> pro-rata refund
+        # (elapsed=4h of a 10h window -> remaining_fraction=0.6 -> 50 *
+        # 0.6 * 0.90 = 27.00) lands on the acceptor.
+        assert result["refund"] == 880.0  # unchanged issuer kill-fee math: 1000-20-100
+        assert result["insurance_refund"] == 27
+        assert acceptor.credits == 5000 + 27
+        # NOTE: this fixture builds the Contract directly (not via
+        # post_player_contract), so the issuer's 1000cr escrow was never
+        # actually debited from their starting balance in this test --
+        # only the kill-fee refund itself lands.
+        assert issuer.credits == 5000 + 880
+
+    def test_abandon_picks_up_a_concurrently_insured_tier(self) -> None:
+        acceptor = _player(credits=5000)
+        accepted_at = _NOW - timedelta(hours=4)
+        c = _contract(
+            status=ContractStatus.ACCEPTED, penalty=Decimal("500.00"),
+            deadline=accepted_at + timedelta(hours=10), accepted_at=accepted_at,
+            insurance_coverage_tier=None, insurance_premium_paid=Decimal("0"),
+        )
+        c.acceptor_player_id = acceptor.id
+        db = _StaleSnapshotFakeSession(contracts=[c], players=[acceptor])
+        # Simulate: insure() (STANDARD, 100cr premium) committed AFTER
+        # abandon()'s initial _load_contract read but BEFORE its post-
+        # lock refresh. NPC-issued (default issuer_type) -- proves the
+        # fix applies on the single-player-lock branch too, not just the
+        # dual-lock (PLAYER-issued) one.
+        db.queue_concurrent_insure(ContractInsuranceCoverageTier.STANDARD, Decimal("100.00"))
+
+        result = contract_service.abandon(db, c.id, acceptor.id, now=_NOW)
+
+        # elapsed=4h of a 10h window -> remaining_fraction=0.6 -> 100 *
+        # 0.6 * 0.90 = 54.00 (pre-fix: 0, premium forfeited).
+        assert result["penalty_charged"] == 500
+        assert result["insurance_refund"] == 54
+        assert acceptor.credits == 5000 - 500 + 54
 
 
 @pytest.mark.unit

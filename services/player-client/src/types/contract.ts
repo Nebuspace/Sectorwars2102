@@ -29,6 +29,11 @@ export type ContractStatus =
 
 export type ContractEscrowState = 'held' | 'released' | 'disputed' | 'refunding';
 
+/** WO-CONTRACT-1-INSURANCE. Schema line 61 (contracts.md) -- premiums 2% /
+ * 5% / 10% of contract commodity value respectively; see the Risk &
+ * insurance table for coverage semantics per tier. */
+export type ContractInsuranceCoverageTier = 'basic' | 'standard' | 'hazard';
+
 /** Raw wire shape returned by GET /board, GET /mine, GET /{id}. */
 export interface ContractDTO {
   id: string;
@@ -51,6 +56,9 @@ export interface ContractDTO {
   posted_at: string | null;
   accepted_at: string | null;
   completed_at: string | null;
+  insurance_coverage_tier: ContractInsuranceCoverageTier | null;
+  insurance_premium_paid: number | null;
+  insurance_claim_filed: boolean;
 }
 
 export interface ContractMineResponse {
@@ -80,6 +88,7 @@ export interface ContractAbandonResponse {
   id: string;
   status: ContractStatus;
   penalty_charged: number;
+  insurance_refund?: number;
   credits: number;
 }
 
@@ -97,6 +106,17 @@ export interface ContractCancelResponse {
   id: string;
   status: ContractStatus;
   refund: number;
+  insurance_refund?: number;
+  credits: number;
+}
+
+/** POST /contracts/{id}/insure response (contract_service.insure). Claim-
+ * filing (WO-1b-CLAIM-SAFETY) is deferred, design-gated -- no response
+ * type for it yet. */
+export interface ContractInsureResponse {
+  id: string;
+  insurance_coverage_tier: ContractInsuranceCoverageTier;
+  insurance_premium_paid: number;
   credits: number;
 }
 

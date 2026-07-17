@@ -1139,6 +1139,14 @@ export const contractsAPI = {
 
   cancel: (contractId: string) =>
     apiRequest(`/api/v1/contracts/${contractId}/cancel`, { method: 'POST' }),
+
+  // WO-1a-CORE. tier is one of 'basic' | 'standard' | 'hazard'. Claim-
+  // filing (WO-1b-CLAIM-SAFETY) is deferred, design-gated -- not built.
+  insure: (contractId: string, tier: string) =>
+    apiRequest(`/api/v1/contracts/${contractId}/insure`, {
+      method: 'POST',
+      body: JSON.stringify({ tier }),
+    }),
 };
 
 // Storage lockers — multi-trip contract fulfillment (FEATURES/economy/storage-lockers.md).

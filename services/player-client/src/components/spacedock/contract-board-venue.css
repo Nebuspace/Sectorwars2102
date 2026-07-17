@@ -239,6 +239,41 @@
   white-space: nowrap;
 }
 
+/* WO-CONTRACT-1-INSURANCE — tier picker + premium preview, mirrors
+   .cb-deposit-group's compact inline-group shape. */
+.cb-insure-group {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.cb-insure-tier {
+  padding: 0.35rem 0.4rem;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(0, 217, 255, 0.35);
+  border-radius: 4px;
+  color: #e0e0e0;
+  font-family: inherit;
+  font-size: 0.8em;
+}
+
+.cb-insure-tier:focus {
+  outline: none;
+  border-color: #00d9ff;
+}
+
+.cb-insure-premium-preview {
+  font-size: 0.75em;
+  color: rgba(255, 210, 100, 0.9);
+  white-space: nowrap;
+}
+
+.cb-insured-badge {
+  font-size: 0.8em;
+  color: rgba(0, 217, 255, 0.9);
+  white-space: nowrap;
+}
+
 /* Danger variant (Abandon / Cancel) — scoped to this venue only, the
    shared .action-button has no built-in danger tone. */
 .venue-container.contracts .action-button.danger {

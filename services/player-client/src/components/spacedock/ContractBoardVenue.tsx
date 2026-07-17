@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { contractsAPI, shipAPI, storageAPI } from '../../services/api';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { formatCredits } from '../../utils/formatters';
-import type { ContractDTO, ContractMineResponse } from '../../types/contract';
+import type { ContractDTO, ContractInsuranceCoverageTier, ContractMineResponse } from '../../types/contract';
 import DeckPageTabs, { type DeckPage } from '../cockpit/DeckPageTabs';
 import './contract-board-venue.css';
 
@@ -96,6 +96,22 @@ const shortId = (id: string) => `#${id.slice(0, 8)}`;
 // mirrored client-side so the form fails fast instead of round-tripping.
 const MIN_DEADLINE_HOURS = 1;
 
+// WO-CONTRACT-1-INSURANCE. INSURANCE_PREMIUM_PCT (contract_service.py) —
+// mirrored client-side ONLY for the live premium preview before the user
+// commits; the server is authoritative and recomputes this exact math at
+// /insure time regardless of what the client shows.
+const INSURANCE_PREMIUM_PCT: Record<ContractInsuranceCoverageTier, number> = {
+  basic: 2,
+  standard: 5,
+  hazard: 10,
+};
+
+const INSURANCE_TIER_LABELS: Record<ContractInsuranceCoverageTier, string> = {
+  basic: 'Basic (2%)',
+  standard: 'Standard (5%)',
+  hazard: 'Hazard (10%)',
+};
+
 interface ContractBoardVenueProps {
   stationId: string;
   stationName: string;
@@ -143,6 +159,10 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
   const [mineActionSuccess, setMineActionSuccess] = useState<string | null>(null);
   // Optional deposit qty override per contract (empty → deposit all held of that commodity).
   const [depositQtyByContract, setDepositQtyByContract] = useState<Record<string, string>>({});
+  // WO-CONTRACT-1-INSURANCE: selected tier per contract, defaults to 'basic'.
+  const [insuranceTierByContract, setInsuranceTierByContract] = useState<
+    Record<string, ContractInsuranceCoverageTier>
+  >({});
   // Last known locker progress from a successful deposit (no GET progress endpoint yet).
   const [lockerProgress, setLockerProgress] = useState<
     Record<string, { accumulated: number; quantityRequired: number }>
@@ -385,6 +405,26 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
     [runAction, onCreditsSet, fetchMine]
   );
 
+  const handleInsure = useCallback(
+    async (contract: ContractDTO) => {
+      setMineActionSuccess(null);
+      const tier = insuranceTierByContract[contract.id] ?? 'basic';
+      const result = await runAction(
+        `insure-${contract.id}`,
+        () => contractsAPI.insure(contract.id, tier),
+        setMineActionError,
+        'The underwriter rejected your policy.'
+      );
+      if (result !== null) {
+        const newCredits = creditsFromResponse(result);
+        if (newCredits !== null) onCreditsSet(newCredits);
+        setMineActionSuccess(`Insured at ${INSURANCE_TIER_LABELS[tier]} — premium debited.`);
+        await fetchMine();
+      }
+    },
+    [runAction, insuranceTierByContract, onCreditsSet, fetchMine]
+  );
+
   const handleCancel = useCallback(
     async (contract: ContractDTO) => {
       setMineActionSuccess(null);
@@ -601,6 +641,50 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
             >
               {busyAction === `complete-${contract.id}` ? 'Delivering...' : '📦 Full delivery'}
             </button>
+            {contract.insurance_coverage_tier ? (
+              <span
+                className="cb-insured-badge"
+                title={`Premium paid: ${formatCredits(contract.insurance_premium_paid ?? 0)}`}
+              >
+                🛡️ Insured: {INSURANCE_TIER_LABELS[contract.insurance_coverage_tier]}
+              </span>
+            ) : (
+              <div className="cb-insure-group">
+                <select
+                  className="cb-insure-tier"
+                  aria-label={`Insurance tier for ${getLabel(contract.commodity_type)} contract`}
+                  value={insuranceTierByContract[contract.id] ?? 'basic'}
+                  onChange={(e) =>
+                    setInsuranceTierByContract((prev) => ({
+                      ...prev,
+                      [contract.id]: e.target.value as ContractInsuranceCoverageTier,
+                    }))
+                  }
+                  disabled={Boolean(busyAction)}
+                >
+                  {(Object.keys(INSURANCE_TIER_LABELS) as ContractInsuranceCoverageTier[]).map((tier) => (
+                    <option key={tier} value={tier}>
+                      {INSURANCE_TIER_LABELS[tier]}
+                    </option>
+                  ))}
+                </select>
+                <span className="cb-insure-premium-preview">
+                  {formatCredits(
+                    ((contract.payment ?? 0) *
+                      INSURANCE_PREMIUM_PCT[insuranceTierByContract[contract.id] ?? 'basic']) /
+                      100
+                  )}
+                </span>
+                <button
+                  className="action-button"
+                  onClick={() => handleInsure(contract)}
+                  disabled={Boolean(busyAction)}
+                  title="Buy coverage on this contract — ship loss in transit pays out the contract penalty, less a deductible."
+                >
+                  {busyAction === `insure-${contract.id}` ? 'Insuring...' : '🛡️ Insure'}
+                </button>
+              </div>
+            )}
             <button
               className="action-button danger"
               onClick={() => handleAbandon(contract)}

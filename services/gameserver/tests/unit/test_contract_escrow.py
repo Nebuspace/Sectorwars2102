@@ -20,9 +20,16 @@ from types import SimpleNamespace
 from typing import Any, List, Optional
 
 import pytest
+from sqlalchemy.sql.elements import Null, True_
 from sqlalchemy.sql.operators import in_op, is_
 
-from src.models.contract import Contract, ContractEscrowState, ContractIssuerType, ContractStatus
+from src.models.contract import (
+    Contract,
+    ContractEscrowState,
+    ContractInsuranceCoverageTier,
+    ContractIssuerType,
+    ContractStatus,
+)
 from src.models.player import Player
 from src.models.resource import Resource
 from src.models.ship import Ship, ShipType
@@ -40,7 +47,18 @@ def _match(row: Any, cond: Any) -> bool:
     if cond.operator is operator.lt:
         return row_val < cond.right.value
     if cond.operator is is_:
-        return bool(row_val) is True
+        # WO-CONTRACT-1-INSURANCE: generalized beyond the original hardcoded
+        # `bool(row_val) is True` (which silently mis-evaluated the NEW
+        # `Contract.insurance_coverage_tier.is_(None)` clause -- `cond.right`
+        # for an IS clause is a SQL singleton (Null()/True_()/False_()), not
+        # a BindParameter with `.value`, so an isinstance check against the
+        # actual right-hand singleton is the only correct read). `is_(True)`
+        # (Resource.is_active) keeps working identically to before.
+        if isinstance(cond.right, Null):
+            return row_val is None
+        if isinstance(cond.right, True_):
+            return row_val is True
+        raise NotImplementedError(f"unsupported IS operand {cond.right!r}")
     raise NotImplementedError(f"unsupported operator {cond.operator!r}")
 
 
@@ -574,6 +592,43 @@ class TestEscrowConservationEndToEnd:
         assert acceptor.credits == acceptor_after_accept - 1000  # penalty enforced
         assert issuer.credits == issuer_after_post + 1000  # full escrow refund
 
+    def test_accepted_cancel_with_insurance_refunds_acceptor_pro_rata(self) -> None:
+        """WO-CONTRACT-1-INSURANCE (ADR-0062 E-I2): issuer-cancels an
+        ACCEPTED, INSURED contract -- the EXISTING kill-fee math (unchanged)
+        AND the acceptor's pro-rata insurance refund both settle in the
+        SAME call. Worked example: STANDARD premium (5% of 1000 = 50),
+        accepted_at=T, deadline=T+10h, issuer cancels at T+4h ->
+        remaining_fraction=0.6, refund = 50 * 0.6 * 0.90 = 27.00 exactly."""
+        issuer = _player(credits=5000)
+        acceptor = _player(credits=5000)
+        destination = _station()
+        db = _FakeSession(players=[issuer, acceptor], stations=[destination], resources=[_resource()])
+        accepted_at = _NOW
+        deadline = accepted_at + timedelta(hours=10)
+
+        contract_service.post_player_contract(
+            db, issuer.id, **_post_kwargs(destination, payment=Decimal("1000"), deadline=deadline),
+        )
+        contract = db.added[0]
+        contract_service.accept(db, contract.id, acceptor.id, now=accepted_at)
+        acceptor_after_accept = acceptor.credits  # 5000 - 20
+
+        contract_service.insure(
+            db, contract.id, acceptor.id, ContractInsuranceCoverageTier.STANDARD, now=accepted_at,
+        )
+        acceptor_after_insure = acceptor.credits  # -50 (5% of 1000)
+        assert acceptor_after_insure == acceptor_after_accept - 50
+
+        cancelled_at = accepted_at + timedelta(hours=4)
+        result = contract_service.cancel_player_contract(db, contract.id, issuer.id, now=cancelled_at)
+
+        # Existing kill-fee math, unchanged: escrow(1000) - accept_fee(20) - cancel_fee(100) = 880.
+        assert result["refund"] == 880.0
+        assert result["insurance_refund"] == 27
+        assert issuer.credits == 5000 - 1000 + 880
+        assert acceptor.credits == acceptor_after_insure + 27  # pro-rata insurance refund only
+        assert contract.status == ContractStatus.CANCELLED
+
 
 @pytest.mark.unit
 class TestDoubleReleaseImpossibility:
@@ -664,6 +719,9 @@ class TestNpcPathByteUnchangedRegression:
             acceptance_fee_pct=Decimal("2.0"), escrow_amount=Decimal("0"),
             escrow_state=ContractEscrowState.HELD, deadline=_FAR_DEADLINE,
             posted_at=_NOW, accepted_at=_NOW, completed_at=None,
+            # WO-CONTRACT-1-INSURANCE
+            insurance_coverage_tier=None, insurance_premium_paid=Decimal("0"),
+            insurance_claim_filed=False,
         )
 
     def test_npc_complete_mints_unchanged_escrow_state_untouched(self) -> None:
