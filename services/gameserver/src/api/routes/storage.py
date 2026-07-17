@@ -10,13 +10,19 @@ CLAIMABLE (STORAGE-HEIST S1).
 - ``POST /storage/lockers/{locker_id}/retrieve`` -- retrieve cargo from a
   CLAIMABLE locker (a contract that missed its deadline) back onto your
   ship; omit `quantity` to take as much as fits in one trip.
+- ``GET /storage/lockers/claimable`` (WO-CONTRACT-5, the P2 value-trap
+  fix) -- list your own CLAIMABLE lockers (commodity + stored units
+  included) so the retrieve route above actually has a reachable
+  locker_id to call; this file previously had ZERO GET routes, so a
+  claimable locker's cargo had no client-discoverable path at all.
 
 Route owns db.commit() / db.rollback() -- storage_service is flush-only
 throughout, matching contracts.py's own exact convention (accept_
-contract / complete_contract are this route's direct template).
+contract / complete_contract are this route's direct template). The new
+GET route is the one exception -- a PURE READ, no commit at all.
 """
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -59,8 +65,19 @@ def _raise_for(exc: StorageError) -> None:
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
-def _serialize_locker(locker: Any) -> Dict[str, Any]:
-    return {
+def _serialize_locker(
+    locker: Any, *, stored_units: Optional[int] = None, commodity: Optional[str] = None,
+) -> Dict[str, Any]:
+    # WO-CONTRACT-5 (P2): `stored_units`/`commodity` are optional kwargs
+    # so the 3 EXISTING callers (rent/deposit/retrieve, which never had
+    # this data and don't need it -- their own response bodies already
+    # carry cargo state directly) are byte-unchanged. Only the new
+    # GET /storage/lockers/claimable route passes them, sourced from
+    # storage_service.list_claimable_lockers' own ContractCargoDeposit-
+    # grouped query (see that function's own docstring for the LANDMINE
+    # this sidesteps -- a claimable locker's `contract_id` is NULLED, so
+    # this data can never come from the locker/Contract row itself).
+    out = {
         "id": str(locker.id),
         "ownerPlayerId": str(locker.owner_player_id),
         "stationId": str(locker.station_id),
@@ -72,6 +89,11 @@ def _serialize_locker(locker: Any) -> Dict[str, Any]:
         "accruedFee": float(locker.accrued_fee),
         "createdAt": locker.created_at.isoformat() if locker.created_at else None,
     }
+    if stored_units is not None:
+        out["storedUnits"] = stored_units
+    if commodity is not None:
+        out["commodity"] = commodity
+    return out
 
 
 @router.post("/lockers", status_code=status.HTTP_201_CREATED)
@@ -140,3 +162,34 @@ async def retrieve_cargo(
     else:
         db.commit()
         return result
+
+
+@router.get("/lockers/claimable")
+async def list_claimable_lockers(
+    db: Session = Depends(get_db),
+    current_player: Player = Depends(get_current_player),
+) -> List[Dict[str, Any]]:
+    """List every CLAIMABLE locker YOU own (WO-CONTRACT-5, the P2 value-
+    trap fix) -- a locker converted to CLAIMABLE by storage_service.
+    sweep_expired_lockers (a contract that missed its deadline before
+    reaching full quantity) previously had no reachable client path to
+    even learn its own locker_id, let alone call the already-built
+    `POST /lockers/{locker_id}/retrieve` above. Server-side owner-scoped
+    (storage_service.list_claimable_lockers filters on `owner_player_id
+    == current_player.id`, never a client-supplied value) -- a player can
+    never list, or thereby even learn the existence of, another player's
+    lockers.
+
+    PURE READ -- no `db.commit()` (unlike every other route in this
+    file), matching this route's own no-mutation contract exactly.
+    `accruedFee` in each entry is a LOWER BOUND, not an exact owed total
+    -- rent ticks continuously (wall-clock) but this module only ever
+    SETTLES it on an access that already touches the row (deposit/
+    retrieve/expiry-sweep); a pure GET must never trigger a side-effecting
+    settlement just by being called, so display it as "as of last
+    settlement," not "exact as of now"."""
+    entries = storage_service.list_claimable_lockers(db, current_player.id)
+    return [
+        _serialize_locker(entry["locker"], stored_units=entry["storedUnits"], commodity=entry["commodity"])
+        for entry in entries
+    ]

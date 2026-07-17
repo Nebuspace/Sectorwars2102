@@ -91,7 +91,7 @@ import logging
 import uuid
 from datetime import datetime
 from decimal import ROUND_FLOOR, Decimal
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -320,6 +320,70 @@ def get_bulk_locker_state(db: Session, contract: Contract) -> Optional[Tuple[uui
     if locker is None:
         return None
     return locker.id, _stored_units(db, locker.id)
+
+
+def list_claimable_lockers(db: Session, player_id: uuid.UUID) -> List[Dict[str, Any]]:
+    """WO-CONTRACT-5 (P2, the value-trap fix): every CLAIMABLE locker this
+    player owns, enriched with the commodity/quantity actually deposited
+    -- storage.py had zero GET routes before this WO, so a CLAIMABLE
+    locker's cargo (converted by `sweep_expired_lockers` -- see that
+    function's own docstring) had no reachable client path to even LEARN
+    its own locker_id, let alone call the already-built `POST /retrieve`.
+
+    LANDMINE (a WO-CONTRACT-4-BULK consequence): `sweep_expired_lockers`
+    NULLS `contract_id` on the ACTIVE -> CLAIMABLE conversion (this
+    module's own `locker.contract_id = None`) -- so a claimable locker's
+    commodity/quantity can NEVER be read via its (gone) Contract; they
+    live ONLY in this locker's own `ContractCargoDeposit` audit rows. A
+    naive join against Contract here would silently return an empty/null
+    commodity for every claimable locker -- do NOT join Contract at all.
+
+    Grouped, SINGLE query (`locker_id, commodity, SUM(quantity)`) over
+    `ContractCargoDeposit` for every candidate locker at once -- avoids
+    N+1 (one query total, not one per locker). S1's own established
+    invariant (one commodity per locker, see `ContractCargoDeposit`'s
+    own docstring/`_stored_units`'s own note) means at most one grouped
+    row per locker_id, so a plain dict keyed on locker_id is safe -- no
+    multi-commodity last-write-wins ambiguity.
+
+    Server-side owner-scoped (`owner_player_id == player_id`) -- NEVER
+    trusts a client-supplied id, so a player can never list (or thereby
+    even learn the existence of) another player's lockers. Pure read --
+    no lock acquired, no mutation, no commit (the caller's route never
+    commits either)."""
+    lockers = (
+        db.query(StorageLocker)
+        .filter(
+            StorageLocker.owner_player_id == player_id, StorageLocker.status == StorageLockerStatus.CLAIMABLE,
+        )
+        .all()
+    )
+    if not lockers:
+        return []
+
+    locker_ids = [locker.id for locker in lockers]
+    deposit_totals = (
+        db.query(
+            ContractCargoDeposit.locker_id,
+            ContractCargoDeposit.commodity,
+            func.sum(ContractCargoDeposit.quantity),
+        )
+        .filter(ContractCargoDeposit.locker_id.in_(locker_ids))
+        .group_by(ContractCargoDeposit.locker_id, ContractCargoDeposit.commodity)
+        .all()
+    )
+    stored_by_locker: Dict[uuid.UUID, Tuple[Optional[str], int]] = {
+        row_locker_id: (commodity, int(total)) for row_locker_id, commodity, total in deposit_totals
+    }
+
+    return [
+        {
+            "locker": locker,
+            "commodity": stored_by_locker.get(locker.id, (None, 0))[0],
+            "storedUnits": stored_by_locker.get(locker.id, (None, 0))[1],
+        }
+        for locker in lockers
+    ]
 
 
 def sweep_expired_lockers(db: Session, now: Optional[datetime] = None) -> Dict[str, int]:

@@ -2,7 +2,13 @@ import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { contractsAPI, shipAPI, storageAPI } from '../../services/api';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { formatCredits } from '../../utils/formatters';
-import type { ContractDTO, ContractInsuranceCoverageTier, ContractMineResponse } from '../../types/contract';
+import type {
+  ContractDTO,
+  ContractInsuranceCoverageTier,
+  ContractMineResponse,
+  ContractType,
+} from '../../types/contract';
+import type { ClaimableLockerDTO } from '../../types/storage';
 import DeckPageTabs, { type DeckPage } from '../cockpit/DeckPageTabs';
 import './contract-board-venue.css';
 
@@ -16,14 +22,17 @@ import './contract-board-venue.css';
 // explicit loading / empty / error states. No mock data, ever.
 //
 // SCROLL LAW: the primary action per tab (Accept / Deposit / Full delivery /
-// Abandon / Cancel / Post) must never require a page-level scroll at 1440x900. Only
-// `.cb-list` (the board rows / my-contracts rows) scrolls internally —
-// `.venue-content-area` itself is pinned to `overflow: hidden` for this
-// venue (contract-board-venue.css), so the tab bar and each row's own
-// inline action button are always reachable without scrolling the outer
-// content area. The Post tab's compact 5-field form fits without scrolling
-// at the reference resolution; `.cb-post-form` carries a defensive
-// `overflow-y: auto` fallback for a smaller viewport only.
+// Abandon / Cancel / Post / Retrieve) must never require a page-level scroll
+// at 1440x900. Only `.cb-list` (the board rows / my-contracts rows /
+// claimable-locker rows) scrolls internally — `.venue-content-area` itself
+// is pinned to `overflow: hidden` for this venue (contract-board-venue.css),
+// so the tab bar and each row's own inline action button are always
+// reachable without scrolling the outer content area. The Post tab's 6
+// fields (WO-CONTRACT-5-CLIENT-SURFACE added Contract Type) are laid out as
+// 3 `.cb-field-row` pairs rather than a single-column stack specifically to
+// stay under the same vertical budget the old 5-field column fit inside —
+// `.cb-post-form` carries a defensive `overflow-y: auto` fallback for a
+// smaller viewport only.
 // =====================================================================
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
@@ -112,6 +121,17 @@ const INSURANCE_TIER_LABELS: Record<ContractInsuranceCoverageTier, string> = {
   hazard: 'Hazard (10%)',
 };
 
+// WO-CONTRACT-5-CLIENT-SURFACE P1. post_player_contract restricts a
+// player posting to these two types (contracts.py's PostContractRequest
+// validator) — the other 5 ContractType members carry NPC-generator-only
+// pricing this route never computes.
+type PostableContractType = Extract<ContractType, 'cargo_delivery' | 'bulk_procurement'>;
+
+const POST_CONTRACT_TYPE_LABELS: Record<PostableContractType, string> = {
+  cargo_delivery: 'Cargo Delivery — one shipment',
+  bulk_procurement: 'Bulk Procurement — large order, multi-trip OK',
+};
+
 interface ContractBoardVenueProps {
   stationId: string;
   stationName: string;
@@ -121,7 +141,7 @@ interface ContractBoardVenueProps {
 }
 
 type ContractBoardTab = 'board' | 'mine' | 'post';
-type MineSubTab = 'accepted' | 'posted';
+type MineSubTab = 'accepted' | 'posted' | 'claimable';
 
 // Outer tablist pages — labels are static, unlike the nested My Contracts
 // subtabs (which carry a live count badge), so this is a module constant
@@ -168,10 +188,21 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
     Record<string, { accumulated: number; quantityRequired: number }>
   >({});
 
+  // Claimable-cargo state (WO-CONTRACT-5-CLIENT-SURFACE P2) — every
+  // CLAIMABLE locker the player owns (any station), surfaced as a 3rd
+  // My Contracts subtab so cargo stranded by a missed multi-trip deadline
+  // is reachable and retrievable, not a dead end.
+  const [claimable, setClaimable] = useState<ClaimableLockerDTO[] | null>(null);
+  const [claimableLoading, setClaimableLoading] = useState(false);
+  const [claimableError, setClaimableError] = useState<string | null>(null);
+  const [claimableActionError, setClaimableActionError] = useState<string | null>(null);
+  const [claimableActionSuccess, setClaimableActionSuccess] = useState<string | null>(null);
+
   // Shared action-in-flight guard (one action at a time, mirrors PortOfficeVenue)
   const [busyAction, setBusyAction] = useState<string | null>(null);
 
   // Post form state
+  const [postContractType, setPostContractType] = useState<PostableContractType>('cargo_delivery');
   const [postCommodity, setPostCommodity] = useState('');
   const [postQuantity, setPostQuantity] = useState('');
   const [postPayment, setPostPayment] = useState('');
@@ -215,9 +246,23 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
     }
   }, []);
 
+  const fetchClaimable = useCallback(async () => {
+    setClaimableLoading(true);
+    try {
+      const data = await storageAPI.getClaimable();
+      setClaimable(Array.isArray(data) ? (data as ClaimableLockerDTO[]) : []);
+      setClaimableError(null);
+    } catch (error) {
+      setClaimableError(errorMessage(error, 'Could not reach the claimable-cargo ledger. Please try again.'));
+    } finally {
+      setClaimableLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchBoard();
     fetchMine();
+    fetchClaimable();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stationId]);
 
@@ -226,9 +271,10 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
     const interval = setInterval(() => {
       fetchBoard();
       fetchMine();
+      fetchClaimable();
     }, 30000);
     return () => clearInterval(interval);
-  }, [fetchBoard, fetchMine]);
+  }, [fetchBoard, fetchMine, fetchClaimable]);
 
   // 1s tick only while something is counting down
   const hasCountdowns = useMemo(() => {
@@ -444,6 +490,40 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
     [runAction, onCreditsSet, fetchMine]
   );
 
+  // Retrieve cargo from a CLAIMABLE locker (WO-CONTRACT-5-CLIENT-SURFACE
+  // P2) — mirrors handleDeposit's station-match early-reject (the server
+  // enforces the same "must be docked at the locker's station" guard,
+  // storage_service._load_and_lock_retrieve_targets); the Retrieve button
+  // is also disabled client-side for an off-station locker so this
+  // branch is a defensive backstop, not the primary UX signal.
+  const handleRetrieve = useCallback(
+    async (locker: ClaimableLockerDTO) => {
+      setClaimableActionSuccess(null);
+      if (locker.stationId !== stationId) {
+        setClaimableActionError('Dock at this locker’s station to retrieve its cargo.');
+        return;
+      }
+      const result = await runAction(
+        `retrieve-${locker.id}`,
+        () => storageAPI.retrieve(locker.id),
+        setClaimableActionError,
+        'The locker would not release your cargo.'
+      );
+      if (result !== null) {
+        const body = asRecord(result);
+        const retrieved = typeof body?.retrieved === 'number' ? body.retrieved : null;
+        const remaining = typeof body?.remaining === 'number' ? body.remaining : null;
+        setClaimableActionSuccess(
+          remaining !== null && remaining > 0
+            ? `Retrieved ${retrieved ?? '—'} — ${remaining} still stored (too much for one trip; come back for the rest).`
+            : `Retrieved ${retrieved ?? '—'} — locker emptied.`
+        );
+        await fetchClaimable();
+      }
+    },
+    [stationId, runAction, fetchClaimable]
+  );
+
   // --- Post-contract form ---
 
   const quantityNum = parseInt(postQuantity, 10);
@@ -508,6 +588,7 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
           payment: paymentNum,
           deadline: deadlineDate.toISOString(),
           insurance_pool_reserve: insuranceNum || undefined,
+          contract_type: postContractType,
         }),
       setPostError,
       'The board rejected your posting.'
@@ -517,6 +598,7 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
       const newCredits = creditsFromResponse(result);
       if (newCredits !== null) onCreditsSet(newCredits);
       setPostSuccess(`Contract posted — ${formatCredits(escrowPreview)} placed in escrow.`);
+      setPostContractType('cargo_delivery');
       setPostCommodity('');
       setPostQuantity('');
       setPostPayment('');
@@ -525,6 +607,7 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
       await Promise.allSettled([fetchBoard(), fetchMine()]);
     }
   }, [
+    postContractType,
     postCommodity,
     quantityNum,
     paymentNum,
@@ -573,6 +656,18 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
       <div className="cb-row-terms">
         <span className="cb-payment">{formatCredits(contract.payment ?? 0)}</span>
         {contract.penalty !== null && <span className="cb-penalty">Penalty {formatCredits(contract.penalty)}</span>}
+        {contract.acceptance_fee_pct !== null && (
+          <span
+            className="cb-fee"
+            title="Debited immediately on Accept — non-refundable even if you later abandon."
+            aria-label={`Accept fee ${contract.acceptance_fee_pct}% (${formatCredits(
+              ((contract.payment ?? 0) * contract.acceptance_fee_pct) / 100
+            )}) — charged immediately on accept, non-refundable`}
+          >
+            Accept fee {contract.acceptance_fee_pct}% (
+            {formatCredits(((contract.payment ?? 0) * contract.acceptance_fee_pct) / 100)})
+          </span>
+        )}
         {renderCountdown(contract.deadline)}
       </div>
       <div className="cb-row-actions">
@@ -582,6 +677,37 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
       </div>
     </div>
   );
+
+  // Fallback for statuses that carry no acceptor/issuer action in this
+  // build (P4, WO-CONTRACT-5-CLIENT-SURFACE) — in_progress/partial_
+  // fulfilled/disputed are schema-only today (contract_service.py's own
+  // module docstring: bulk-procurement's `deliver`/`walk_away_bulk_
+  // procurement` exist as functions but no route mounts them yet, see
+  // contracts.py's header comment), so no action button is honest here;
+  // this is a read-only status note, not a dead end. `expired` differs by
+  // `kind`: an ACCEPTED contract you were delivering against may have
+  // stranded cargo in a locker (see Claimable Cargo); a POSTED contract
+  // you issued has already had its escrow swept one way or the other.
+  const renderStatusNote = (contract: ContractDTO, kind: MineSubTab): React.ReactNode => {
+    switch (contract.status) {
+      case 'in_progress':
+        return <span className="cb-status-note">🔄 Delivery in progress.</span>;
+      case 'partial_fulfilled':
+        return <span className="cb-status-note">◐ Partially fulfilled.</span>;
+      case 'disputed':
+        return <span className="cb-status-note">⚖️ Disputed — pending resolution.</span>;
+      case 'expired':
+        return kind === 'accepted' ? (
+          <span className="cb-status-note">
+            ⏳ Expired — any cargo you deposited is under <strong>Claimable Cargo</strong>.
+          </span>
+        ) : (
+          <span className="cb-status-note">⏳ Expired — escrow already settled.</span>
+        );
+      default:
+        return null;
+    }
+  };
 
   const renderMineRow = (contract: ContractDTO, kind: MineSubTab) => (
     <div className="cb-row" key={contract.id}>
@@ -609,8 +735,8 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
                   type="number"
                   min={1}
                   inputMode="numeric"
-                  placeholder="qty"
-                  aria-label={`Deposit quantity for ${getLabel(contract.commodity_type)}`}
+                  placeholder="qty (blank = all)"
+                  aria-label={`Deposit quantity for ${getLabel(contract.commodity_type)} — leave blank to deposit all held cargo`}
                   value={depositQtyByContract[contract.id] ?? ''}
                   onChange={(e) =>
                     setDepositQtyByContract((prev) => ({ ...prev, [contract.id]: e.target.value }))
@@ -628,7 +754,13 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
               </div>
             )}
             {lockerProgress[contract.id] && (
-              <span className="cb-locker-progress" title="Locker progress from your last deposit">
+              <span
+                className="cb-locker-progress"
+                title="Locker progress from your last deposit"
+                aria-label={`Locker progress ${lockerProgress[contract.id].accumulated} of ${
+                  lockerProgress[contract.id].quantityRequired
+                } from your last deposit`}
+              >
                 Locker {lockerProgress[contract.id].accumulated}/
                 {lockerProgress[contract.id].quantityRequired}
               </span>
@@ -645,6 +777,9 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
               <span
                 className="cb-insured-badge"
                 title={`Premium paid: ${formatCredits(contract.insurance_premium_paid ?? 0)}`}
+                aria-label={`Insured at ${INSURANCE_TIER_LABELS[contract.insurance_coverage_tier]} — premium paid: ${formatCredits(
+                  contract.insurance_premium_paid ?? 0
+                )}`}
               >
                 🛡️ Insured: {INSURANCE_TIER_LABELS[contract.insurance_coverage_tier]}
               </span>
@@ -699,9 +834,60 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
             {busyAction === `cancel-${contract.id}` ? 'Cancelling...' : '✖ Cancel'}
           </button>
         )}
+        {!(
+          (kind === 'accepted' && contract.status === 'accepted') ||
+          (kind === 'posted' && (contract.status === 'posted' || contract.status === 'accepted'))
+        ) && renderStatusNote(contract, kind)}
       </div>
     </div>
   );
+
+  const renderClaimableRow = (locker: ClaimableLockerDTO) => {
+    const atLockerStation = locker.stationId === stationId;
+    const station = atLockerStation ? stationName : shortId(locker.stationId);
+    return (
+      <div className="cb-row" key={locker.id}>
+        <div className="cb-row-main">
+          <span className="cb-commodity">
+            <span aria-hidden="true">{getIcon(locker.commodity)}</span> {getLabel(locker.commodity)} ×{' '}
+            {locker.storedUnits}
+          </span>
+          <span className="cb-route">{station}</span>
+        </div>
+        <div className="cb-row-terms">
+          <span
+            className="cb-fee"
+            title="Settled as of the last rent tick — not the exact bill; rent keeps accruing."
+            aria-label={`Accrued rent as of last settlement: ${formatCredits(
+              locker.accruedFee
+            )} — rent keeps accruing, this is not the final bill`}
+          >
+            Accrued rent (last settlement): {formatCredits(locker.accruedFee)}
+          </span>
+          <span className="cb-countdown">{formatCredits(locker.rentRate)}/unit/day</span>
+        </div>
+        <div className="cb-row-actions">
+          <button
+            className="action-button primary"
+            onClick={() => handleRetrieve(locker)}
+            disabled={Boolean(busyAction) || !atLockerStation}
+            title={
+              atLockerStation
+                ? 'Retrieve as much as fits in your hold now — a locker larger than your hold stays claimable for a later trip.'
+                : `Dock at ${station} to retrieve this cargo.`
+            }
+            aria-label={
+              atLockerStation
+                ? 'Retrieve as much as fits in your hold now'
+                : `Dock at ${station} to retrieve this cargo`
+            }
+          >
+            {busyAction === `retrieve-${locker.id}` ? 'Retrieving...' : '📤 Retrieve'}
+          </button>
+        </div>
+      </div>
+    );
+  };
 
   const renderBoardTab = () => (
     <div className="cb-tab-content">
@@ -714,13 +900,13 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
         </button>
       </div>
       {boardActionError && (
-        <div className="genesis-error-message">
+        <div className="genesis-error-message" aria-live="polite" aria-atomic="true">
           <span className="error-icon">❌</span>
           {boardActionError}
         </div>
       )}
       {boardActionSuccess && (
-        <div className="genesis-success-message">
+        <div className="genesis-success-message" aria-live="polite" aria-atomic="true">
           <span className="success-icon">✅</span>
           {boardActionSuccess}
         </div>
@@ -750,6 +936,7 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
         pages={[
           { id: 'accepted', label: `📦 Accepted${mine ? ` (${mine.accepted.length})` : ''}` },
           { id: 'posted', label: `📜 Posted${mine ? ` (${mine.posted.length})` : ''}` },
+          { id: 'claimable', label: `🗄️ Claimable Cargo${claimable ? ` (${claimable.length})` : ''}` },
         ]}
         activeId={mineSubTab}
         onSelect={(id) => setMineSubTab(id as MineSubTab)}
@@ -758,16 +945,28 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
         idBase="cb-mine"
         className="cb-mine-subtabs"
       />
-      {mineActionError && (
-        <div className="genesis-error-message">
+      {mineSubTab !== 'claimable' && mineActionError && (
+        <div className="genesis-error-message" aria-live="polite" aria-atomic="true">
           <span className="error-icon">❌</span>
           {mineActionError}
         </div>
       )}
-      {mineActionSuccess && (
-        <div className="genesis-success-message">
+      {mineSubTab !== 'claimable' && mineActionSuccess && (
+        <div className="genesis-success-message" aria-live="polite" aria-atomic="true">
           <span className="success-icon">✅</span>
           {mineActionSuccess}
+        </div>
+      )}
+      {mineSubTab === 'claimable' && claimableActionError && (
+        <div className="genesis-error-message" aria-live="polite" aria-atomic="true">
+          <span className="error-icon">❌</span>
+          {claimableActionError}
+        </div>
+      )}
+      {mineSubTab === 'claimable' && claimableActionSuccess && (
+        <div className="genesis-success-message" aria-live="polite" aria-atomic="true">
+          <span className="success-icon">✅</span>
+          {claimableActionSuccess}
         </div>
       )}
       <div
@@ -776,8 +975,10 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
         id={`cb-mine-panel-${mineSubTab}`}
         aria-labelledby={`cb-mine-tab-${mineSubTab}`}
       >
-        {mineLoading && !mine && <div className="catalog-loading">Opening your contract ledger...</div>}
-        {mineError && !mine && (
+        {mineSubTab !== 'claimable' && mineLoading && !mine && (
+          <div className="catalog-loading">Opening your contract ledger...</div>
+        )}
+        {mineSubTab !== 'claimable' && mineError && !mine && (
           <div className="genesis-error-message">
             <span className="error-icon">❌</span>
             {mineError}
@@ -794,6 +995,22 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
           <p className="section-description">You haven&apos;t posted any contracts yet.</p>
         )}
         {mine && mineSubTab === 'posted' && mine.posted.map((c) => renderMineRow(c, 'posted'))}
+        {mineSubTab === 'claimable' && claimableLoading && !claimable && (
+          <div className="catalog-loading">Opening the claimable-cargo ledger...</div>
+        )}
+        {mineSubTab === 'claimable' && claimableError && !claimable && (
+          <div className="genesis-error-message">
+            <span className="error-icon">❌</span>
+            {claimableError}
+            <button className="action-button" onClick={fetchClaimable}>
+              Retry
+            </button>
+          </div>
+        )}
+        {mineSubTab === 'claimable' && claimable && claimable.length === 0 && (
+          <p className="section-description">No cargo waiting to be claimed — nothing missed a delivery deadline.</p>
+        )}
+        {mineSubTab === 'claimable' && claimable && claimable.map(renderClaimableRow)}
       </div>
     </div>
   );
@@ -806,60 +1023,83 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
           and held until the contract completes, is abandoned, or is cancelled.
         </p>
 
-        <label className="cb-field">
-          <span>Commodity</span>
-          <select aria-label="Commodity" value={postCommodity} onChange={(e) => setPostCommodity(e.target.value)}>
-            <option value="">Select a commodity...</option>
-            {catalog.map((entry) => (
-              <option key={entry.name} value={entry.name}>
-                {getLabel(entry.name)}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="cb-field-row">
+          <label className="cb-field">
+            <span>Contract Type</span>
+            <select
+              aria-label="Contract Type"
+              value={postContractType}
+              onChange={(e) => setPostContractType(e.target.value as PostableContractType)}
+            >
+              {(Object.keys(POST_CONTRACT_TYPE_LABELS) as PostableContractType[]).map(
+                (type) => (
+                  <option key={type} value={type}>
+                    {POST_CONTRACT_TYPE_LABELS[type]}
+                  </option>
+                )
+              )}
+            </select>
+          </label>
 
-        <label className="cb-field">
-          <span>Quantity</span>
-          <input
-            type="number"
-            aria-label="Quantity"
-            min={1}
-            value={postQuantity}
-            onChange={(e) => setPostQuantity(e.target.value)}
-          />
-        </label>
+          <label className="cb-field">
+            <span>Commodity</span>
+            <select aria-label="Commodity" value={postCommodity} onChange={(e) => setPostCommodity(e.target.value)}>
+              <option value="">Select a commodity...</option>
+              {catalog.map((entry) => (
+                <option key={entry.name} value={entry.name}>
+                  {getLabel(entry.name)}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
 
-        <label className="cb-field">
-          <span>Payment (credits)</span>
-          <input
-            type="number"
-            aria-label="Payment"
-            min={1}
-            value={postPayment}
-            onChange={(e) => setPostPayment(e.target.value)}
-          />
-        </label>
+        <div className="cb-field-row">
+          <label className="cb-field">
+            <span>Quantity</span>
+            <input
+              type="number"
+              aria-label="Quantity"
+              min={1}
+              value={postQuantity}
+              onChange={(e) => setPostQuantity(e.target.value)}
+            />
+          </label>
 
-        <label className="cb-field">
-          <span>Deadline</span>
-          <input
-            type="datetime-local"
-            aria-label="Deadline"
-            value={postDeadline}
-            onChange={(e) => setPostDeadline(e.target.value)}
-          />
-        </label>
+          <label className="cb-field">
+            <span>Payment (credits)</span>
+            <input
+              type="number"
+              aria-label="Payment"
+              min={1}
+              value={postPayment}
+              onChange={(e) => setPostPayment(e.target.value)}
+            />
+          </label>
+        </div>
 
-        <label className="cb-field">
-          <span>Insurance reserve (optional)</span>
-          <input
-            type="number"
-            aria-label="Insurance reserve"
-            min={0}
-            value={postInsurance}
-            onChange={(e) => setPostInsurance(e.target.value)}
-          />
-        </label>
+        <div className="cb-field-row">
+          <label className="cb-field">
+            <span>Deadline</span>
+            <input
+              type="datetime-local"
+              aria-label="Deadline"
+              value={postDeadline}
+              onChange={(e) => setPostDeadline(e.target.value)}
+            />
+          </label>
+
+          <label className="cb-field">
+            <span>Insurance reserve (optional)</span>
+            <input
+              type="number"
+              aria-label="Insurance reserve"
+              min={0}
+              value={postInsurance}
+              onChange={(e) => setPostInsurance(e.target.value)}
+            />
+          </label>
+        </div>
 
         <div className="cb-escrow-preview">
           <span>Escrow to be debited</span>
@@ -867,13 +1107,13 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
         </div>
 
         {postError && (
-          <div className="genesis-error-message">
+          <div className="genesis-error-message" aria-live="polite" aria-atomic="true">
             <span className="error-icon">❌</span>
             {postError}
           </div>
         )}
         {postSuccess && (
-          <div className="genesis-success-message">
+          <div className="genesis-success-message" aria-live="polite" aria-atomic="true">
             <span className="success-icon">✅</span>
             {postSuccess}
           </div>

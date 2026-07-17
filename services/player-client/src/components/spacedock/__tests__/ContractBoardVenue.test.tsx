@@ -26,11 +26,20 @@
  *  - the Post Contract form's escrow preview is the live sum of payment +
  *    insurance reserve, computed client-side as the user types
  *  - WO-UI2-CANON-A-CONTRACTBOARD: both hand-rolled tablists (outer
- *    Board/My Contracts/Post Contract, nested Accepted/Posted) now render
- *    via the shared DeckPageTabs (components/cockpit/DeckPageTabs.tsx)
- *    with DISTINCT idBases ("cb" / "cb-mine") — no tab/panel id collides,
- *    both rails switch independently, and each is wired to its own
- *    role="tabpanel" region
+ *    Board/My Contracts/Post Contract, nested Accepted/Posted/Claimable
+ *    Cargo) now render via the shared DeckPageTabs (components/cockpit/
+ *    DeckPageTabs.tsx) with DISTINCT idBases ("cb" / "cb-mine") — no
+ *    tab/panel id collides, both rails switch independently, and each is
+ *    wired to its own role="tabpanel" region
+ *  - WO-CONTRACT-5-CLIENT-SURFACE: the new Claimable Cargo subtab lists
+ *    GET /storage/lockers/claimable rows and Retrieve wires to POST
+ *    /storage/lockers/{id}/retrieve with the correct lockerId;
+ *    in_progress/partial_fulfilled/disputed/expired My-Contracts rows
+ *    render a read-only status note instead of being action-less dead
+ *    ends. The Post form's contract_type wiring (bulk_procurement) is
+ *    proven separately in ContractBoardVenue.bulkPost.test.tsx — it needs
+ *    a REAL resolved catalog (a real commodity <option> to select), which
+ *    needs its own module registry; see that file's own header comment.
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -48,6 +57,8 @@ const {
   mockDeposit,
   mockGetCurrentShip,
   mockInsure,
+  mockGetClaimable,
+  mockRetrieve,
 } = vi.hoisted(() => ({
   mockGetBoard: vi.fn(),
   mockGetMine: vi.fn(),
@@ -60,6 +71,8 @@ const {
   mockDeposit: vi.fn(),
   mockGetCurrentShip: vi.fn(),
   mockInsure: vi.fn(),
+  mockGetClaimable: vi.fn(),
+  mockRetrieve: vi.fn(),
 }));
 
 vi.mock('../../../services/api', () => ({
@@ -77,13 +90,21 @@ vi.mock('../../../services/api', () => ({
   storageAPI: {
     rentLocker: mockRentLocker,
     deposit: mockDeposit,
-    retrieve: vi.fn(),
+    retrieve: mockRetrieve,
+    getClaimable: mockGetClaimable,
   },
   shipAPI: {
     getCurrentShip: mockGetCurrentShip,
   },
   // Never resolves — useResourceCatalog stays in its permanent-fallback
-  // state (mirrors ConstructionVenue.catalog.test.tsx).
+  // state (mirrors ConstructionVenue.catalog.test.tsx). The bulk_procurement
+  // post test (which needs a real, clickable commodity <option>) lives in
+  // its own file, ContractBoardVenue.bulkPost.test.tsx, specifically so it
+  // gets a fresh module registry — getResourceCatalog's cache is a
+  // module-level singleton with no reset hook, so sharing a file with
+  // tests that never resolve the catalog would permanently wedge
+  // `inFlight` on the FIRST (never-resolving) call and starve every later
+  // test's own mockResolvedValueOnce.
   resourceAPI: { list: vi.fn(() => new Promise(() => {})) },
 }));
 
@@ -165,6 +186,8 @@ describe('ContractBoardVenue', () => {
     mockDeposit.mockReset();
     mockGetCurrentShip.mockReset();
     mockInsure.mockReset();
+    mockGetClaimable.mockReset();
+    mockRetrieve.mockReset();
     VENUE_PROPS.onCreditsSet = vi.fn();
   });
 
@@ -412,7 +435,7 @@ describe('ContractBoardVenue', () => {
       expect(nestedRail).not.toBe(outerRail);
 
       const allTabIds = Array.from(container.querySelectorAll('[role="tab"]')).map((t) => t.id);
-      expect(allTabIds.length).toBe(5); // 3 outer + 2 nested
+      expect(allTabIds.length).toBe(6); // 3 outer + 3 nested (Accepted/Posted/Claimable Cargo)
       expect(new Set(allTabIds).size).toBe(allTabIds.length); // no collisions
       expect(allTabIds).toEqual(
         expect.arrayContaining([
@@ -421,6 +444,7 @@ describe('ContractBoardVenue', () => {
           'cb-tab-post',
           'cb-mine-tab-accepted',
           'cb-mine-tab-posted',
+          'cb-mine-tab-claimable',
         ])
       );
     });
@@ -471,6 +495,158 @@ describe('ContractBoardVenue', () => {
       expect(container.querySelector('.cb-content-area')?.getAttribute('aria-labelledby')).toBe('cb-tab-board');
       // The nested rail only exists inside the My Contracts panel.
       expect(container.querySelector('.cb-mine-subtabs')).toBeNull();
+    });
+  });
+
+  describe('status-row notes for non-actionable statuses (WO-CONTRACT-5-CLIENT-SURFACE P4)', () => {
+    it('an in_progress accepted row and a disputed accepted row each render a read-only status note instead of no action at all', async () => {
+      mockGetBoard.mockResolvedValueOnce([]);
+      mockGetMine.mockResolvedValueOnce({
+        posted: [],
+        accepted: [
+          { ...CONTRACT_ACCEPTED, id: 'contract-inprog', status: 'in_progress' },
+          { ...CONTRACT_ACCEPTED, id: 'contract-disputed', status: 'disputed' },
+        ],
+      });
+
+      await act(async () => {
+        root.render(<ContractBoardVenue {...VENUE_PROPS} />);
+      });
+      await flush();
+      await clickButton('My Contracts');
+      await flush();
+
+      const notes = Array.from(container.querySelectorAll('.cb-status-note')).map((n) => n.textContent);
+      expect(notes.some((t) => t?.includes('Delivery in progress'))).toBe(true);
+      expect(notes.some((t) => t?.includes('Disputed'))).toBe(true);
+      // Neither row grew a Deposit/Full delivery/Abandon action — those
+      // are 'accepted'-status-only (renderMineRow's primary action branch).
+      expect(findButton('Deposit')).toBeFalsy();
+      expect(findButton('Full delivery')).toBeFalsy();
+      expect(findButton('Abandon')).toBeFalsy();
+    });
+
+    it('an expired ACCEPTED row points to Claimable Cargo; an expired POSTED row does not (no cargo the issuer would retrieve)', async () => {
+      mockGetBoard.mockResolvedValueOnce([]);
+      mockGetMine.mockResolvedValueOnce({
+        posted: [{ ...CONTRACT_POSTED, id: 'contract-issued-expired', status: 'expired' }],
+        accepted: [{ ...CONTRACT_ACCEPTED, id: 'contract-accepted-expired', status: 'expired' }],
+      });
+
+      await act(async () => {
+        root.render(<ContractBoardVenue {...VENUE_PROPS} />);
+      });
+      await flush();
+      await clickButton('My Contracts');
+      await flush();
+
+      // Defaults to the Accepted subtab.
+      expect(container.querySelector('.cb-list')?.textContent).toContain('Claimable Cargo');
+
+      await clickButton('Posted');
+      await flush();
+
+      const postedText = container.querySelector('.cb-list')?.textContent ?? '';
+      expect(postedText).toContain('escrow already settled');
+      expect(postedText).not.toContain('Claimable Cargo');
+    });
+  });
+
+  describe('claimable cargo + retrieve (WO-CONTRACT-5-CLIENT-SURFACE P2)', () => {
+    const CLAIMABLE_LOCKER = {
+      id: 'locker-9',
+      status: 'claimable',
+      stationId: STATION_ID,
+      commodity: 'ore',
+      storedUnits: 30,
+      accruedFee: 45,
+      rentRate: 1,
+      createdAt: '2026-07-01T00:00:00Z',
+    };
+
+    it('lists a GET /storage/lockers/claimable row with its commodity + storedUnits, and the subtab count badge reflects it', async () => {
+      mockGetBoard.mockResolvedValueOnce([]);
+      mockGetMine.mockResolvedValueOnce(EMPTY_MINE);
+      mockGetClaimable.mockResolvedValueOnce([CLAIMABLE_LOCKER]);
+
+      await act(async () => {
+        root.render(<ContractBoardVenue {...VENUE_PROPS} />);
+      });
+      await flush();
+      await clickButton('My Contracts');
+      await flush();
+
+      expect(mockGetClaimable).toHaveBeenCalled();
+      expect(findButton('Claimable Cargo (1)')).toBeTruthy();
+
+      await clickButton('Claimable Cargo');
+      await flush();
+
+      const panelText = container.querySelector('.cb-list')?.textContent ?? '';
+      expect(panelText).toContain('30'); // storedUnits
+      expect(findButton('Retrieve')).toBeTruthy();
+    });
+
+    it('Retrieve calls POST /storage/lockers/{id}/retrieve with the correct lockerId, surfaces the result, and refetches the list', async () => {
+      mockGetBoard.mockResolvedValueOnce([]);
+      mockGetMine.mockResolvedValueOnce(EMPTY_MINE);
+      mockGetClaimable.mockResolvedValueOnce([CLAIMABLE_LOCKER]);
+      mockRetrieve.mockResolvedValueOnce({
+        locker_id: 'locker-9',
+        retrieved: 20,
+        commodity: 'ore',
+        remaining: 10,
+        released: false,
+        fee_charged: 5,
+      });
+      mockGetClaimable.mockResolvedValueOnce([{ ...CLAIMABLE_LOCKER, storedUnits: 10 }]);
+
+      await act(async () => {
+        root.render(<ContractBoardVenue {...VENUE_PROPS} />);
+      });
+      await flush();
+      await clickButton('My Contracts');
+      await flush();
+      await clickButton('Claimable Cargo');
+      await flush();
+
+      await clickButton('Retrieve');
+      await flush();
+
+      expect(mockRetrieve).toHaveBeenCalledWith('locker-9');
+      // The success message renders as a SIBLING of .cb-list (same slot as
+      // mineActionSuccess), not inside it — scope to .cb-tab-content.
+      const panelText = container.querySelector('.cb-tab-content')?.textContent ?? '';
+      expect(panelText).toContain('Retrieved 20');
+      expect(panelText).toContain('10 still stored');
+      expect(mockGetClaimable).toHaveBeenCalledTimes(2); // initial mount + post-retrieve refetch
+
+      // WO-CONTRACT-5-CLIENT-SURFACE a11y REVISE (pixel-wo5 INACCESSIBLE
+      // #1): the result message must be a live region, or a screen-reader
+      // user never hears the async Retrieve outcome.
+      const successRegion = container.querySelector('.genesis-success-message');
+      expect(successRegion?.getAttribute('aria-live')).toBe('polite');
+      expect(successRegion?.getAttribute('aria-atomic')).toBe('true');
+    });
+
+    it('a locker at a different station renders a disabled Retrieve button (server enforces the same docked-at-station guard)', async () => {
+      mockGetBoard.mockResolvedValueOnce([]);
+      mockGetMine.mockResolvedValueOnce(EMPTY_MINE);
+      mockGetClaimable.mockResolvedValueOnce([{ ...CLAIMABLE_LOCKER, stationId: 'station-beta' }]);
+
+      await act(async () => {
+        root.render(<ContractBoardVenue {...VENUE_PROPS} />);
+      });
+      await flush();
+      await clickButton('My Contracts');
+      await flush();
+      await clickButton('Claimable Cargo');
+      await flush();
+
+      const retrieveBtn = findButton('Retrieve') as HTMLButtonElement;
+      expect(retrieveBtn).toBeTruthy();
+      expect(retrieveBtn.disabled).toBe(true);
+      expect(mockRetrieve).not.toHaveBeenCalled();
     });
   });
 });

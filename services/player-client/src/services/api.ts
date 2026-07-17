@@ -1121,8 +1121,9 @@ export const contractsAPI = {
   abandon: (contractId: string) =>
     apiRequest(`/api/v1/contracts/${contractId}/abandon`, { method: 'POST' }),
 
-  // body matches PostContractRequest (src/types/contract.ts) — cargo_delivery
-  // only this stage, no contract_type field (implicit).
+  // body matches PostContractRequest (src/types/contract.ts) — contract_type
+  // is restricted server-side to cargo_delivery | bulk_procurement; omit
+  // it and the server defaults to cargo_delivery.
   post: (body: {
     destination_station_id: string;
     commodity_type: string;
@@ -1131,6 +1132,7 @@ export const contractsAPI = {
     deadline: string;
     origin_station_id?: string;
     insurance_pool_reserve?: number;
+    contract_type?: 'cargo_delivery' | 'bulk_procurement';
   }) =>
     apiRequest('/api/v1/contracts', {
       method: 'POST',
@@ -1170,6 +1172,12 @@ export const storageAPI = {
       method: 'POST',
       body: JSON.stringify(quantity != null ? { quantity } : {}),
     }),
+
+  // GET /storage/lockers/claimable (WO-STORE-EXPIRY-CLAIMABLE) — every
+  // CLAIMABLE locker the caller owns, across every station, with cargo
+  // still retrievable. Bare array, unfiltered by station (a locker's
+  // stationId travels on each row) — see types/storage.ts.
+  getClaimable: () => apiRequest('/api/v1/storage/lockers/claimable'),
 };
 
 export const gameAPI = {

@@ -26,7 +26,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pytest
 from sqlalchemy.sql.operators import in_op
@@ -165,6 +165,43 @@ class _FakeSumQuery:
         return sum(int(row.quantity) for row in matches)
 
 
+class _FakeGroupedDepositTotalsQuery:
+    """Stands in for `db.query(ContractCargoDeposit.locker_id,
+    ContractCargoDeposit.commodity, func.sum(ContractCargoDeposit.
+    quantity)).filter(...).group_by(locker_id, commodity)` -- WO-
+    CONTRACT-5's `list_claimable_lockers` own grouped-deposit-total
+    query. Deliberately narrow (matching this file's `_FakeSumQuery`'s
+    own "not a general aggregate engine" precedent) -- this file has
+    exactly ONE grouped-aggregate query shape, always SUM(quantity)
+    grouped by every plain (non-aggregate) column requested. `.group_by()`
+    is a no-op that just returns self (the real grouping already happens
+    naturally by grouping on every plain column in `.all()` below -- the
+    only shape this caller ever uses)."""
+
+    def __init__(self, rows: List[Any], columns: List[Any], criteria: Optional[List[Any]] = None) -> None:
+        self._rows = rows
+        self._columns = columns
+        self._criteria = criteria or []
+
+    def filter(self, *conditions: Any) -> "_FakeGroupedDepositTotalsQuery":
+        return _FakeGroupedDepositTotalsQuery(self._rows, self._columns, self._criteria + list(conditions))
+
+    def group_by(self, *cols: Any) -> "_FakeGroupedDepositTotalsQuery":
+        return self
+
+    def all(self) -> List[Any]:
+        matches = [row for row in self._rows if all(_match(row, c) for c in self._criteria)]
+        # `.class_` (not `.key`) is the reliable plain-column signal --
+        # func.sum(...) has `.key is None` but STILL has a `.key`
+        # attribute, so `hasattr(col, "key")` wrongly includes it.
+        plain_cols = [col for col in self._columns if hasattr(col, "class_")]
+        totals: Dict[tuple, int] = {}
+        for row in matches:
+            key = tuple(getattr(row, col.key) for col in plain_cols)
+            totals[key] = totals.get(key, 0) + int(row.quantity)
+        return [key + (total,) for key, total in totals.items()]
+
+
 class _FakeScalarQuery:
     """Stands in for db.query(Model.col1, Model.col2, ...) -- COLUMN-ONLY
     queries (Q2 mitigation-a's own scalar pre-check shape, deliberately
@@ -234,15 +271,24 @@ class _FakeSession:
         if head is ContractCargoDeposit:
             return _FakeQuery(self.deposits, session=self, entity="ContractCargoDeposit")
         if hasattr(head, "class_"):
+            rows_by_class = {
+                Contract: self.contracts, Player: self.players, Ship: self.ships,
+                StorageLocker: self.lockers, ContractCargoDeposit: self.deposits,
+            }
+            # WO-CONTRACT-5: `list_claimable_lockers`' own grouped-total
+            # query mixes plain columns (locker_id, commodity) with a
+            # func.sum(...) entity -- func.sum(...) has no `.class_`
+            # (it's a SQL function expression, not a mapped column), so
+            # "not every entity has .class_" disambiguates this shape
+            # from a genuine column-only scalar query (Q2 mitigation-a's,
+            # where EVERY entity is a plain column).
+            if not all(hasattr(e, "class_") for e in entities):
+                return _FakeGroupedDepositTotalsQuery(rows_by_class[head.class_], list(entities))
             # Column-only query (Q2 mitigation-a's scalar pre-check
             # shape, e.g. db.query(StorageLocker.station_id, ...)) --
             # route by the column's OWN mapped class, never touching the
             # identity map (no _FakeQuery/session tracking at all, since
             # a real scalar query never populates an ORM object either).
-            rows_by_class = {
-                Contract: self.contracts, Player: self.players, Ship: self.ships,
-                StorageLocker: self.lockers, ContractCargoDeposit: self.deposits,
-            }
             return _FakeScalarQuery(rows_by_class[head.class_], list(entities))
         # Only remaining query shape this module issues: the aggregate
         # func.coalesce(func.sum(ContractCargoDeposit.quantity), 0).
@@ -1613,6 +1659,89 @@ class TestGetBulkLockerState:
         storage_service.get_bulk_locker_state(db, contract)
 
         assert db.for_update_calls == []
+
+
+@pytest.mark.unit
+class TestListClaimableLockers:
+    """WO-CONTRACT-5 (P2, the value-trap fix): `list_claimable_lockers`
+    -- storage.py's first GET route. Server-side owner-scoped, and the
+    commodity/storedUnits must come from ContractCargoDeposit rows, NEVER
+    a Contract join (contract_id is NULLED on the CLAIMABLE conversion,
+    see this function's own docstring for the WO-CONTRACT-4-BULK
+    landmine)."""
+
+    def test_returns_claimable_lockers_with_commodity_and_stored_units_from_deposits(self) -> None:
+        contract = _contract()
+        player = _player(id=uuid.uuid4())
+        contract.acceptor_player_id = player.id
+        # The converted-to-CLAIMABLE resting state: contract_id NULLED
+        # (WO-CONTRACT-4-BULK's sweep_expired_lockers), so this proves
+        # the data comes from the deposit rows, NOT any Contract join.
+        locker = _locker(contract, player.id, status=StorageLockerStatus.CLAIMABLE, contract_id=None)
+        deposits = [
+            _deposit(locker, commodity="ore", quantity=4, deposited_by=player.id),
+            _deposit(locker, commodity="ore", quantity=3, deposited_by=player.id),
+        ]
+        db = _FakeSession(players=[player], lockers=[locker], deposits=deposits)
+
+        result = storage_service.list_claimable_lockers(db, player.id)
+
+        assert len(result) == 1
+        assert result[0]["locker"].id == locker.id
+        assert result[0]["commodity"] == "ore"
+        assert result[0]["storedUnits"] == 7  # 4 + 3, summed across installments
+
+    def test_claimable_locker_with_zero_deposits_reports_zero_not_a_crash(self) -> None:
+        contract = _contract()
+        player = _player(id=uuid.uuid4())
+        contract.acceptor_player_id = player.id
+        locker = _locker(contract, player.id, status=StorageLockerStatus.CLAIMABLE, contract_id=None)
+        db = _FakeSession(players=[player], lockers=[locker], deposits=[])
+
+        result = storage_service.list_claimable_lockers(db, player.id)
+
+        assert len(result) == 1
+        assert result[0]["commodity"] is None
+        assert result[0]["storedUnits"] == 0
+
+    def test_a_second_player_sees_none_of_the_first_players_lockers(self) -> None:
+        owner = _player(id=uuid.uuid4())
+        other_player = _player(id=uuid.uuid4())
+        contract = _contract()
+        contract.acceptor_player_id = owner.id
+        locker = _locker(contract, owner.id, status=StorageLockerStatus.CLAIMABLE, contract_id=None)
+        db = _FakeSession(
+            players=[owner, other_player], lockers=[locker],
+            deposits=[_deposit(locker, commodity="ore", quantity=5, deposited_by=owner.id)],
+        )
+
+        owner_result = storage_service.list_claimable_lockers(db, owner.id)
+        other_result = storage_service.list_claimable_lockers(db, other_player.id)
+
+        assert len(owner_result) == 1
+        assert other_result == []  # no cross-player leak
+
+    def test_active_non_claimable_locker_is_not_listed(self) -> None:
+        contract = _contract()
+        player = _player(id=uuid.uuid4())
+        contract.acceptor_player_id = player.id
+        active_locker = _locker(contract, player.id, status=StorageLockerStatus.ACTIVE)
+        db = _FakeSession(
+            players=[player], lockers=[active_locker],
+            deposits=[_deposit(active_locker, commodity="ore", quantity=5, deposited_by=player.id)],
+        )
+
+        assert storage_service.list_claimable_lockers(db, player.id) == []
+
+    def test_no_claimable_lockers_returns_empty_list_zero_extra_queries(self) -> None:
+        """The deposit-totals query must never even fire when there are
+        no claimable lockers to enrich -- not required for correctness
+        (an empty locker_ids IN-list would just match nothing), but
+        avoids a wasted query for the common empty case."""
+        player = _player(id=uuid.uuid4())
+        db = _FakeSession(players=[player], lockers=[], deposits=[])
+
+        assert storage_service.list_claimable_lockers(db, player.id) == []
 
 
 # --- WO-STORE-EXPIRY-CLAIMABLE + D19: deposit-wins-at-the-deadline -------- #

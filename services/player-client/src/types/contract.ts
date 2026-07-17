@@ -120,9 +120,12 @@ export interface ContractInsureResponse {
   credits: number;
 }
 
-/** POST /contracts request body — PostContractRequest (contracts.py:62-73).
- * cargo_delivery only this stage — there is no contract_type field, it is
- * implicit. `deadline` is an ISO-8601 datetime string. */
+/** POST /contracts request body — PostContractRequest (contracts.py:96-143).
+ * WO-CONTRACT-4-BULK: `contract_type` is now a real field, restricted
+ * server-side to `cargo_delivery` | `bulk_procurement` (the other 5
+ * ContractType members carry NPC-generator-only pricing this route never
+ * computes) — omit it and the server defaults to cargo_delivery.
+ * `deadline` is an ISO-8601 datetime string. */
 export interface PostContractRequest {
   destination_station_id: string;
   commodity_type: string;
@@ -131,4 +134,5 @@ export interface PostContractRequest {
   deadline: string;
   origin_station_id?: string;
   insurance_pool_reserve?: number;
+  contract_type?: Extract<ContractType, 'cargo_delivery' | 'bulk_procurement'>;
 }

@@ -172,6 +172,21 @@
   color: #dc5050;
 }
 
+.cb-status-disputed {
+  background: rgba(220, 180, 80, 0.15);
+  color: #e8b04a;
+}
+
+/* Read-only fallback for in_progress/partial_fulfilled/disputed/expired
+   rows (WO-CONTRACT-5-CLIENT-SURFACE P4) — same slot the action buttons
+   occupy, so a status with no action still lands in the row's action
+   column rather than leaving it visually empty. */
+.cb-status-note {
+  font-size: 0.8em;
+  color: rgba(255, 255, 255, 0.6);
+  text-align: right;
+}
+
 .cb-row-terms {
   display: flex;
   align-items: center;
@@ -186,6 +201,14 @@
 
 .cb-penalty {
   color: rgba(220, 140, 80, 0.85);
+}
+
+/* Board row's acceptance-fee preview (P6) + claimable-locker rent figures
+   (P2) — same muted-amber treatment as the insurance premium preview. */
+.cb-fee {
+  color: rgba(255, 210, 100, 0.9);
+  font-size: 0.85em;
+  white-space: nowrap;
 }
 
 .cb-countdown {
@@ -300,6 +323,21 @@
   max-width: 480px;
   overflow-y: auto;
   min-height: 0;
+}
+
+/* Two fields per row (WO-CONTRACT-5-CLIENT-SURFACE added a 6th field,
+   Contract Type -- pairing fields keeps the form to 3 rows instead of 6,
+   under the SAME vertical budget the old single-column 5-field form used,
+   so the Post button stays above the fold at 1440x900 without the
+   `.cb-post-form` overflow fallback ever engaging). */
+.cb-field-row {
+  display: flex;
+  gap: 12px;
+}
+
+.cb-field-row .cb-field {
+  flex: 1;
+  min-width: 0;
 }
 
 .cb-field {
