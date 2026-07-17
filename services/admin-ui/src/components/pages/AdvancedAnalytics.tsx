@@ -90,6 +90,44 @@ export const AdvancedAnalytics: React.FC = () => {
     }
   };
 
+  const handleExportData = useCallback(async (datasetId: string) => {
+    try {
+      const response = await fetch(
+        `/api/v1/admin/analytics/export?dataset=${datasetId}&format=${exportFormat}`,
+        {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('accessToken')}` }
+        }
+      );
+
+      if (!response.ok) {
+        setSaveMessage(
+          response.status === 400
+            ? `Export failed — ${(await response.json().catch(() => ({ detail: `HTTP ${response.status}` }))).detail}`
+            : `Export failed — HTTP ${response.status}`
+        );
+        setTimeout(() => setSaveMessage(null), 6000);
+        return;
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      const ext = exportFormat === 'json' ? 'json' : 'csv';
+      link.download = `${datasetId}-export.${ext}`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      setSaveMessage(`${datasetId} data exported as ${ext.toUpperCase()}`);
+      setTimeout(() => setSaveMessage(null), 3000);
+    } catch (error) {
+      console.error('Export error:', error);
+      setSaveMessage('Export failed — gameserver unreachable (network error)');
+      setTimeout(() => setSaveMessage(null), 6000);
+    }
+  }, [exportFormat]);
+
   const handleDownloadReport = useCallback((report: ReportResult) => {
     const blob = new Blob([JSON.stringify(report.data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -223,12 +261,19 @@ export const AdvancedAnalytics: React.FC = () => {
               <p>Export your game data in various formats for external analysis</p>
             </div>
 
-            <div className="alert alert-warning">
-              <span className="alert-icon">⚠️</span>
-              <span className="alert-message">
-                Data export endpoint offline — /api/v1/admin/analytics/export not implemented. Export is disabled.
-              </span>
-            </div>
+            {saveMessage && (
+              <div style={{
+                padding: '10px 16px',
+                marginBottom: '12px',
+                borderRadius: '6px',
+                background: saveMessage.includes('failed') || saveMessage.includes('Failed') ? '#7f1d1d' : '#14532d',
+                color: saveMessage.includes('failed') || saveMessage.includes('Failed') ? '#fca5a5' : '#86efac',
+                border: `1px solid ${saveMessage.includes('failed') || saveMessage.includes('Failed') ? '#991b1b' : '#166534'}`,
+                fontSize: '14px'
+              }}>
+                {saveMessage}
+              </div>
+            )}
 
             <div className="export-format">
               <h3>Select Export Format</h3>
@@ -301,8 +346,7 @@ export const AdvancedAnalytics: React.FC = () => {
                     </div>
                     <button
                       className="btn btn-primary"
-                      disabled
-                      title="Export endpoint offline — /api/v1/admin/analytics/export not implemented"
+                      onClick={() => handleExportData(option.id)}
                     >
                       <i className="fas fa-download"></i>
                       Export

@@ -71,6 +71,7 @@ from src.api.routes.contracts import router as contracts_router  # WO-ECON-CONTR
 from src.api.routes.beacons import router as beacons_router  # WO-P4-play-beacon-kernel
 from src.api.routes.storage import router as storage_router  # WO-STORE-DEPOSIT-FLOW
 from src.api.routes.intrasystem import router as intrasystem_router  # WO-ISP
+from src.api.routes.admin_reports import router as admin_reports_router  # WO-PADMIN-analytics
 from src.core.config import settings
 
 # Main API router - note that the version is now in the main API_V1_STR prefix
@@ -207,6 +208,7 @@ api_router.include_router(storage_router, tags=["storage"])
 # Intra-system helm (WO-ISP): authoritative burn/halt/pose (router carries
 # /helm/intrasystem prefix).
 api_router.include_router(intrasystem_router, tags=["intrasystem"])
+api_router.include_router(admin_reports_router, tags=["admin-reports"])  # WO-PADMIN-analytics
 
 # Only include test routes in development/test environments
 if settings.TESTING or settings.DEVELOPMENT_MODE:
