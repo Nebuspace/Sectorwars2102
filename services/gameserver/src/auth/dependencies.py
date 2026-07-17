@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Callable, Optional
 
 from fastapi import Depends, Header, HTTPException, Query, status
 from fastapi.security import OAuth2PasswordBearer
@@ -10,9 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from src.auth.jwt import decode_token
+from src.auth.admin_scopes import ALL_SCOPES
 from src.core.database import get_async_session, get_db
 from src.models.user import User
 from src.models.player import Player
+from src.models.admin_scope_grant import AdminScopeGrant
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +87,72 @@ async def get_current_admin_user(
 get_current_admin = get_current_admin_user
 require_admin = get_current_admin_user
 require_auth = get_current_user  # Alias for authentication requirement
+
+
+def user_has_active_scope(db: Session, user_id, scope: str) -> bool:
+    """Return True iff ``user_id`` holds an active grant for ``scope``.
+
+    Raises on DB failure — callers that gate auth MUST catch and fail closed
+    (403), never swallow into allow.  Do NOT copy ``_touch_liveness_signal``.
+    """
+    row = (
+        db.query(AdminScopeGrant.id)
+        .filter(
+            AdminScopeGrant.user_id == user_id,
+            AdminScopeGrant.scope == scope,
+            AdminScopeGrant.revoked_at.is_(None),
+        )
+        .first()
+    )
+    return row is not None
+
+
+def require_scope(scope: str) -> Callable:
+    """FastAPI dependency factory: require an active AdminScopeGrant.
+
+    Additive alongside ``require_admin`` (Phase A2) — routes are not swept
+    until Phase B.  Fail-CLOSED: any exception during the grant lookup
+    becomes 403 naming the missing scope (never 200 / never 500 leak).
+
+    403 body names the scope (ADR-0058).  Unknown catalog scopes raise at
+    dependency-factory construction time so a typo cannot silently deny
+    every request without a deploy-time signal.
+    """
+    if scope not in ALL_SCOPES:
+        raise ValueError(
+            f"require_scope({scope!r}): not in the canonical 19-scope catalog"
+        )
+
+    missing = f"Missing required scope: {scope}"
+
+    async def _require_scope(
+        current_user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ) -> User:
+        try:
+            allowed = user_has_active_scope(db, current_user.id, scope)
+        except Exception:
+            # Cipher #5: DB failure → 403 NEVER 200.  Log for ops; do not
+            # surface internals to the client.
+            logger.exception(
+                "require_scope(%s) grant lookup failed for user=%s — fail-closed 403",
+                scope,
+                current_user.id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=missing,
+            )
+        if not allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=missing,
+            )
+        return current_user
+
+    _require_scope.__name__ = f"require_scope[{scope}]"
+    _require_scope.__require_scope__ = scope  # coverage-test hook (Phase B)
+    return _require_scope
 
 
 async def get_current_admin_from_header_or_query(
