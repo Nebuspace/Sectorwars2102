@@ -10,13 +10,23 @@ service.py` (lifecycle) and `contract_dispute.py` respectively, both of
 which import from here; this module imports only from `contract_escrow_
 core.py` (never the reverse -- no circular import).
 
-Insurance CLAIM handling (paying out on a ship destroyed in transit) was
-built and then excised in the same round that first shipped this module --
-cipher's gate found the claim's self-reported "my ship is gone" check a
-farmable money-mint with no real destruction-event verification behind
-it; that half is deferred to a dedicated, design-gated WO-1b-CLAIM-SAFETY.
-The `insurance_claim_filed` column stays on the schema (harmless, always
-false today) for whenever that WO lands.
+Insurance CLAIM handling was originally built as a self-reported "my ship
+is gone" payout and excised in the same round that first shipped this
+module -- cipher's gate found it a farmable money-mint with no real
+destruction-event verification behind it. WO-CONTRACT-1b-CLAIM-SAFETY
+rebuilds it on a structurally different, non-farmable model: a CLAIM is
+never a positive payout, only a PENALTY-OFFSET (`_compute_claim_offset` /
+`apply_claim_offset` below) -- it reduces what the acceptor owes on a
+real, guarded contract-failure event (`sweep_expired_accepted_contracts`,
+contract_service.py), drawn from `Contract.insurance_pool_reserve` (a
+real, persisted per-contract balance -- see that column's own docstring,
+models/contract.py) rather than self-reported. Since nothing is ever
+CREDITED, only a debit reduced, there is no positive sum to fabricate.
+`insurance_claim_filed` stays unused/always-false on the schema -- this
+rebuild has no dedicated "file a claim" action for the acceptor to call;
+the offset applies automatically inside the existing expiry sweep,
+matching the escrow table's own "insured acceptor: insurer pays penalty"
+row (contracts.md), not a separate player-initiated claim endpoint.
 
 SYNC Session / FLUSH-ONLY / guarded-UPDATE-is-the-lock conventions --
 see `contract_escrow_core.py`'s own module docstring, unchanged here."""
@@ -72,6 +82,24 @@ INSURANCE_PREMIUM_PCT: Dict[ContractInsuranceCoverageTier, Decimal] = {
 # (`return refund_base * 0.90`) -- see _compute_insurance_cancellation_
 # refund below, which quotes that pseudocode verbatim.
 INSURANCE_CANCELLATION_FEE = Decimal("0.10")
+
+# --- WO-CONTRACT-1b-CLAIM-SAFETY: claim-offset deductible ladder -----------
+
+# Max's ruled model, verbatim: "Deductible ladder = Basic 5% / Standard
+# 10% / Hazard 15% (ADR-0061 parallel, blessed)." Verified: ADR-0061 is
+# "Group C -- combat correctness and rank wiring", not an insurance ADR by
+# name -- the actual parallel is `ship-insurance.md`'s own Tiers table
+# ("Deductible" column: BASIC 5% / STANDARD 10% / PREMIUM 15%), which that
+# doc itself attributes to ADR-0061 ("deductible applied per ADR-0061" --
+# ship_service.py's own `_calculate_insurance_payout` docstring, same
+# citation). Same three percentages, same tier ORDER (contract insurance's
+# third tier is named HAZARD rather than ship insurance's PREMIUM, but
+# maps to the identical 15% deductible slot) -- confirmed, not invented.
+CLAIM_DEDUCTIBLE_PCT: Dict[ContractInsuranceCoverageTier, Decimal] = {
+    ContractInsuranceCoverageTier.BASIC: Decimal("5.0"),
+    ContractInsuranceCoverageTier.STANDARD: Decimal("10.0"),
+    ContractInsuranceCoverageTier.HAZARD: Decimal("15.0"),
+}
 
 
 # --- WO-CONTRACT-1-INSURANCE: helpers --------------------------------------
@@ -159,6 +187,94 @@ def _refresh_contract_insurance_snapshot(db: Session, contract: Contract) -> Non
     subsequent status-branch dispatch and `_guarded_transition`'s atomic
     UPDATE-WHERE remain the authoritative safety net regardless."""
     db.query(Contract).filter(Contract.id == contract.id).populate_existing().first()
+
+
+# --- WO-CONTRACT-1b-CLAIM-SAFETY: claim-offset engine -----------------------
+
+def _compute_claim_offset(contract: Any, penalty: Decimal) -> Dict[str, Decimal]:
+    """PURE (no mutation, no DB access) -- the core of the rebuilt claim
+    mechanism. Max's ruled model, verbatim: "CLAIM = PENALTY-OFFSET, never
+    a positive payout... the acceptor eats penalty x deductible; the
+    covered penalty x (1 - deductible) is settled by the insurer... The
+    acceptor never RECEIVES credits -- they simply OWE LESS."
+
+    No coverage tier: `acceptor_debit == penalty`, `pool_draw == 0`
+    -- byte-identical to this codebase's pre-existing uninsured behavior
+    (the caller's own unconditional `acceptor.credits -= penalty` idiom).
+
+    With a tier: the deductible floor (`CLAIM_DEDUCTIBLE_PCT`) is what the
+    acceptor owes NO MATTER WHAT -- never waived, never drawn from the
+    pool. The remaining nominal share (`penalty - acceptor_floor`) is what
+    the pool WOULD cover if it could; `pool_draw` is that nominal share
+    bounded to what `contract.insurance_pool_reserve` (the real, persisted
+    claims-fund balance -- see that column's own docstring, models/
+    contract.py) actually holds RIGHT NOW, exactly the same "never more
+    than the payer's actual balance" shape `_bounded_transfer` already
+    established for issuer-funded dispute settlements (contract_escrow_
+    core.py) -- this is that same principle applied to a POOL instead of
+    a player wallet. `acceptor_debit = penalty - pool_draw` is therefore
+    ALWAYS >= `acceptor_floor` and ALWAYS <= `penalty`: a fully-funded pool
+    lands the acceptor exactly on the deductible floor; an empty or
+    partially-drained pool degrades smoothly toward (at worst) the full,
+    uninsured penalty -- never negative, never a positive credit, never
+    more than what was actually owed to begin with. This closes the mint
+    the ORIGINAL (excised) claim design left open: nothing is ever ADDED
+    to the acceptor's balance, only a debit is reduced, so there is no
+    positive sum for a fabricated "my ship is gone" self-report to farm.
+
+    `pool_draw` is clamped to [0, min(insurer_nominal, pool_balance)] --
+    a corrupt or negative `insurance_pool_reserve` (should never occur;
+    the column is not-null-default-0 and only ever decremented by this
+    exact function) cannot make `pool_draw` negative and inflate
+    `acceptor_debit` above `penalty`.
+
+    Returns `{"acceptor_debit": Decimal, "pool_draw": Decimal}` --
+    `acceptor_debit` is what the caller charges the acceptor (replacing
+    the old unconditional `penalty`); `pool_draw` is how much the caller
+    must both (a) subtract from `contract.insurance_pool_reserve` and (b)
+    subtract from any SAME-transaction issuer escrow refund for this
+    contract -- see `sweep_expired_accepted_contracts`'s own docstring for
+    why (b) is load-bearing: refunding the issuer their full escrow while
+    the pool absorbed part of the acceptor's penalty is itself a mint,
+    just moved to the other side of the ledger."""
+    penalty = _round_credits(_as_decimal(penalty))
+    if contract.insurance_coverage_tier is None:
+        return {"acceptor_debit": penalty, "pool_draw": Decimal("0")}
+
+    deductible_pct = CLAIM_DEDUCTIBLE_PCT[contract.insurance_coverage_tier]
+    acceptor_floor = _round_credits(penalty * deductible_pct / Decimal(100))
+    insurer_nominal = penalty - acceptor_floor
+
+    pool_balance = _as_decimal(contract.insurance_pool_reserve or 0)
+    pool_draw = min(insurer_nominal, pool_balance)
+    if pool_draw < 0:
+        pool_draw = Decimal("0")
+
+    return {"acceptor_debit": penalty - pool_draw, "pool_draw": pool_draw}
+
+
+def apply_claim_offset(contract: Any, penalty: Decimal) -> Dict[str, Decimal]:
+    """Mutating twin of `_compute_claim_offset` -- draws `contract.
+    insurance_pool_reserve` down in place by exactly `pool_draw` (never
+    below 0, guaranteed by the pure function's own clamping) and returns
+    the SAME `{"acceptor_debit", "pool_draw"}` dict for the caller to act
+    on. Consumed per-actual-failure-event tied to THIS ONE contract --
+    each contract carries its OWN `insurance_pool_reserve`, drawn at most
+    ONCE (a contract can only ever reach the ACCEPTED -> EXPIRED guarded
+    transition a single time; see `sweep_expired_accepted_contracts`'s own
+    guarded-UPDATE-WHERE, which is what makes re-entry structurally
+    impossible, not this function) -- this is what closes the "one loss
+    claims every contract" exploit the original design left open: there
+    is no shared, cross-contract pool or ship-loss event object for a
+    single incident to draw against N times. No DB write of its own --
+    the caller's existing `db.flush()` (already at the end of the sweep
+    pass) persists this mutation, matching every other in-place attribute
+    assignment already in that function (e.g. `candidate.escrow_state =
+    ...`)."""
+    offset = _compute_claim_offset(contract, penalty)
+    if offset["pool_draw"] > 0:
+        contract.insurance_pool_reserve = _as_decimal(contract.insurance_pool_reserve or 0) - offset["pool_draw"]
+    return offset
 
 
 def _guarded_insure(

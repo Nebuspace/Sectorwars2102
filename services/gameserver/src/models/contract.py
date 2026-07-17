@@ -216,6 +216,22 @@ class Contract(Base):
     insurance_premium_paid = Column(Numeric(19, 2), nullable=False, default=0, server_default=text("0"))
     insurance_claim_filed = Column(Boolean, nullable=False, default=False, server_default=text("false"))
 
+    # WO-CONTRACT-1b-CLAIM-SAFETY: the real, drawable claims fund a covered
+    # failure-event offset is settled from. Previously only a `post_
+    # player_contract()` PARAMETER folded into `escrow_amount` at posting
+    # time and never stored on its own (contract_service.py:738/:804) --
+    # the split was lost the instant escrow_amount was computed, leaving
+    # nothing for a claim to actually draw against. This column is the
+    # REMAINING pool balance: funded at post time (player-issued only;
+    # NPC-issued rows stay 0, no generator sets it), drawn down by
+    # `sweep_expired_accepted_contracts`'s claim-offset math as each
+    # contract's own failure event consumes it, floored at 0. Existing
+    # rows backfill to 0 -- the pool amount any of them originally carried
+    # (if any) is unrecoverable from `escrow_amount` alone, and 0 is the
+    # conservative floor (no free coverage manufactured for a pre-existing
+    # row). See contract_insurance.py's claim-offset engine.
+    insurance_pool_reserve = Column(Numeric(19, 2), nullable=False, default=0, server_default=text("0"))
+
     # Player-issued contracts (contracts.md:61); NPC-issued rows default to
     # [destination_station_id] at generation time (still visible on their own
     # destination's board without a separate multi-station posting flow).

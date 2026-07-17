@@ -187,6 +187,16 @@ def _player(**overrides: Any) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
+# WO-CONTRACT-1b-CLAIM-SAFETY: sweep_expired_accepted_contracts now
+# unconditionally reads insurance_coverage_tier/insurance_pool_reserve on
+# every candidate (the claim-offset engine) -- required on both fixtures
+# below, not just insurance-specific tests.
+_INSURANCE_DEFAULTS = dict(
+    insurance_coverage_tier=None, insurance_premium_paid=Decimal("0"),
+    insurance_claim_filed=False, insurance_pool_reserve=Decimal("0"),
+)
+
+
 def _npc_contract(**overrides: Any) -> SimpleNamespace:
     base = dict(
         id=uuid.uuid4(), issuer_type=ContractIssuerType.NPC, issuer_id=uuid.uuid4(),
@@ -196,6 +206,7 @@ def _npc_contract(**overrides: Any) -> SimpleNamespace:
         escrow_amount=Decimal("0"), escrow_state=ContractEscrowState.HELD,
         deadline=datetime(2026, 1, 2, tzinfo=UTC), posted_at=datetime(2026, 1, 1, tzinfo=UTC),
         accepted_at=datetime(2026, 1, 1, 1, tzinfo=UTC), completed_at=None,
+        **_INSURANCE_DEFAULTS,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -213,6 +224,7 @@ def _player_contract(**overrides: Any) -> SimpleNamespace:
         escrow_amount=Decimal("1000.00"), escrow_state=ContractEscrowState.HELD,
         deadline=datetime(2026, 1, 2, tzinfo=UTC), posted_at=datetime(2026, 1, 1, tzinfo=UTC),
         posting_stations=[uuid.uuid4()], accepted_at=datetime(2026, 1, 1, 1, tzinfo=UTC), completed_at=None,
+        **_INSURANCE_DEFAULTS,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -644,3 +656,33 @@ class TestRoundHalfUpCreditConversion:
 
         with pytest.raises(ValidationError):
             PostContractRequest(payment=Decimal("1000.50"), **base_kwargs)
+
+    def test_post_contract_schema_rejects_fractional_insurance_pool_reserve(self) -> None:
+        """WO-CONTRACT-1b-CLAIM-SAFETY (cipher MEDIUM): a fractional
+        `insurance_pool_reserve` lets the claim-offset sweep's `refund =
+        escrow_amount - pool_draw` and `acceptor_debit = penalty -
+        pool_draw` round INDEPENDENTLY to whole credits -- since `refund -
+        acceptor_debit == reserve` exactly in real arithmetic, a fractional
+        reserve can make one round down and the other round up, minting
+        ~1cr per cycle. Rejected at the schema layer, same `multiple_of=1`
+        idiom as `payment` above -- the rounding lever never reaches
+        post_player_contract at all."""
+        from pydantic import ValidationError
+
+        from src.api.routes.contracts import PostContractRequest
+
+        base_kwargs = dict(
+            destination_station_id=str(uuid.uuid4()),
+            commodity_type="ore",
+            quantity=10,
+            payment=Decimal("1000"),
+            deadline=_NOW + timedelta(hours=2),
+        )
+        # Whole-credit reserves pass, including a ".00"-formatted Decimal
+        # and the default (0, never even passed).
+        PostContractRequest(**base_kwargs)
+        PostContractRequest(insurance_pool_reserve=Decimal("500"), **base_kwargs)
+        PostContractRequest(insurance_pool_reserve=Decimal("500.00"), **base_kwargs)
+
+        with pytest.raises(ValidationError):
+            PostContractRequest(insurance_pool_reserve=Decimal("500.01"), **base_kwargs)

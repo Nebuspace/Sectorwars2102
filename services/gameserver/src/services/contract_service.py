@@ -134,6 +134,7 @@ from src.services.contract_escrow_core import (
 )
 from src.services.contract_escrow_core import ContractNotFoundError as ContractNotFoundError
 from src.services.contract_insurance import _compute_insurance_cancellation_refund, _refresh_contract_insurance_snapshot
+from src.services.contract_insurance import apply_claim_offset as apply_claim_offset
 from src.services.contract_insurance import insure as insure
 
 logger = logging.getLogger(__name__)
@@ -564,9 +565,20 @@ def sweep_expired_accepted_contracts(
 
     ACCEPTOR PENALTY -- canon-backed (contracts.md's Penalties section:
     "penalty credits are debited from the acceptor's account"). Charges
-    `contract.penalty`, clamped to 0, the EXACT idiom `abandon()` already
+    `contract.penalty` (clamped to 0), the EXACT idiom `abandon()` already
     uses for the player-initiated failure case (this sweep is the
-    deadline-initiated twin of that same failure).
+    deadline-initiated twin of that same failure) -- UNLESS an insurance
+    tier is held, in which case WO-CONTRACT-1b-CLAIM-SAFETY's `apply_
+    claim_offset` (contract_insurance.py) reduces the charge per the
+    deductible ladder, bounded by `insurance_pool_reserve`. This is
+    deliberately the ONLY failure-event call site wired to the offset --
+    `abandon()`'s penalty is explicitly, canonically UNCOVERED
+    (contracts.md's Risk & Insurance section: "Insurance does not cover
+    wilful abandonment") and stays unchanged; a deadline lapse reached via
+    THIS sweep is this codebase's only actual proxy for "cargo/ship lost
+    in transit" (no separate ship-destruction-to-contract hook exists),
+    matching the escrow table's "insured acceptor: insurer pays penalty"
+    row for a deadline-lapse expiry.
 
     [NO-CANON] issuer escrow disposition on an ACCEPTOR-caused failure is
     NOT canon-pinned. contracts.md's escrow table's `Expired / failed` row
@@ -586,6 +598,16 @@ def sweep_expired_accepted_contracts(
     (an earlier tick, or a race with the issuer's own cancel) is excluded,
     same idempotency guard `sweep_expired_contracts` uses. NPC-issued rows
     (escrow_amount always 0) never match the PLAYER-only gate.
+
+    WO-CONTRACT-1b-CLAIM-SAFETY: this "full escrow_amount refund" reading
+    (a) is now netted against `apply_claim_offset`'s `pool_draw` for this
+    SAME contract, in this SAME nested transaction -- `escrow_amount`
+    already includes whatever pool the issuer funded at post time
+    (`payment + insurance_pool_reserve`), so refunding it in full while
+    the pool just absorbed part of the acceptor's penalty would mint
+    credits (see `apply_claim_offset`'s own docstring). Uninsured or
+    zero-pool contracts see `pool_draw == 0` -- refund math is byte-
+    identical to before this WO.
 
     Every candidate -- NPC or PLAYER-issued -- needs an individualized
     acceptor-penalty Python touch, so unlike `sweep_expired_contracts` this
@@ -703,11 +725,37 @@ def sweep_expired_accepted_contracts(
                     acceptor = _load_player(db, candidate.acceptor_player_id, for_update=True)
                     issuer = None
 
-                penalty = _to_credits_int(_round_credits(_as_decimal(candidate.penalty)))
-                acceptor.credits = max(0, (acceptor.credits or 0) - penalty)
+                # WO-CONTRACT-1b-CLAIM-SAFETY: `candidate` was gathered by
+                # the upfront, UNLOCKED `.all()` above -- a concurrent
+                # insure() can commit its coverage tier in the window
+                # between that read and the player lock(s) just acquired,
+                # the identical race `_refresh_contract_insurance_
+                # snapshot`'s own docstring documents for abandon()/
+                # cancel_player_contract(). MUST run AFTER the lock(s),
+                # BEFORE `apply_claim_offset` reads insurance_coverage_
+                # tier/insurance_pool_reserve below -- refreshes ALL of
+                # `candidate`'s columns in place (including the pool).
+                _refresh_contract_insurance_snapshot(db, candidate)
+
+                penalty = _round_credits(_as_decimal(candidate.penalty))
+                offset = apply_claim_offset(candidate, penalty)
+                acceptor.credits = max(0, (acceptor.credits or 0) - _to_credits_int(offset["acceptor_debit"]))
 
                 if issuer is not None:
-                    refund = _to_credits_int(_round_credits(_as_decimal(candidate.escrow_amount)))
+                    # WO-CONTRACT-1b-CLAIM-SAFETY: the pool draw above is
+                    # money this codebase already took from the issuer's
+                    # wallet at post_player_contract() time and folded into
+                    # escrow_amount -- refunding the FULL escrow_amount
+                    # here while ALSO having just reduced the acceptor's
+                    # penalty by that same pool_draw would mint credits
+                    # (acceptor pays less, issuer loses nothing, net new
+                    # money). Netting it out of the refund is what makes
+                    # the offset a TRANSFER (issuer's reserve -> acceptor's
+                    # reduced debit) rather than a mint -- see _compute_
+                    # claim_offset's own docstring for the full reasoning.
+                    refund = _to_credits_int(
+                        _round_credits(_as_decimal(candidate.escrow_amount)) - offset["pool_draw"]
+                    )
                     issuer.credits = (issuer.credits or 0) + refund
                     candidate.escrow_state = ContractEscrowState.REFUNDING
         except Exception:
@@ -752,10 +800,19 @@ def post_player_contract(
     DIFFERENT concept -- the acceptor's optional coverage purchased via a
     would-be `/insure` endpoint) nor E-I3 (dispute escalation criteria)
     fixes a value or formula for the ISSUER's posting-time pool reserve.
-    This stage builds no `/insure` endpoint or tier-selection UI, so the
-    insurance-pool-reserve mechanic stays dormant (reservable via this
-    parameter for a future caller, defaulting to 0 -- escrow_amount ==
-    payment) until that follow-up WO lands.
+
+    WO-CONTRACT-1b-CLAIM-SAFETY: this parameter is now persisted onto its
+    own `Contract.insurance_pool_reserve` column (previously folded into
+    `escrow_amount` only, with the split lost immediately -- see that
+    column's own docstring) -- it is the real, drawable balance `sweep_
+    expired_accepted_contracts`'s claim-offset math consumes when an
+    insured acceptor's contract fails. `contract_generator.py` (the only
+    live generator -- NPC cargo_delivery) never sets this, so every
+    NPC-issued contract's pool stays 0 and any insurance tier on it
+    degrades to zero coverage (the acceptor still pays the full penalty)
+    -- real coverage exists only for player-posted contracts whose issuer
+    chose to fund a reserve. Not addressed here -- seeding a default NPC
+    pool is out of this WO's scope.
 
     Validation order matches contracts.md:245 (quantity/payment sanity is
     NOT canon-specified -- no bound exists beyond ">0"; not invented
@@ -825,6 +882,12 @@ def post_player_contract(
         acceptance_fee_pct=Decimal("2.0"),
         escrow_amount=escrow_amount,
         escrow_state=ContractEscrowState.HELD,
+        # WO-CONTRACT-1b-CLAIM-SAFETY: persisted separately from escrow_
+        # amount now -- see Contract.insurance_pool_reserve's own column
+        # docstring. Still folded into escrow_amount above (the issuer is
+        # debited payment + pool at post time, unchanged); this is the
+        # remaining balance a covered claim draws down from.
+        insurance_pool_reserve=_round_credits(_as_decimal(insurance_pool_reserve)),
         deadline=deadline,
         posted_at=now,
         posting_stations=posting_stations or [destination_station_id],

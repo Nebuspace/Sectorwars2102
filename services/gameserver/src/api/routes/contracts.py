@@ -110,7 +110,16 @@ class PostContractRequest(BaseModel):
     payment: Decimal = Field(..., gt=0, multiple_of=1)
     deadline: datetime
     origin_station_id: Optional[str] = None
-    insurance_pool_reserve: Decimal = Field(default=Decimal("0"), ge=0)
+    # WO-CONTRACT-1b-CLAIM-SAFETY (cipher MEDIUM): a FRACTIONAL reserve lets
+    # the sweep's `refund = escrow_amount - pool_draw` and `acceptor_debit =
+    # penalty - pool_draw` round INDEPENDENTLY -- since escrow_amount =
+    # payment + reserve and refund - acceptor_debit == reserve exactly in
+    # real arithmetic, a fractional reserve can make one round down and the
+    # other round up, minting ~1cr per cycle. Whole-credit reserve (matching
+    # `payment`'s own multiple_of=1 above) makes frac(refund) ==
+    # frac(acceptor_debit) always, so round(refund) - round(acceptor_debit)
+    # == reserve holds exactly -- the rounding lever is gone by construction.
+    insurance_pool_reserve: Decimal = Field(default=Decimal("0"), ge=0, multiple_of=1)
 
 
 class InsureContractRequest(BaseModel):
