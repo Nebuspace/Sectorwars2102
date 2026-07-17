@@ -189,7 +189,11 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
   const planetHere = isLanded || atDestination;
   const stationHere = isDocked || atDestination;
 
-  // Row action: here ? LAND/DOCK : (flying ? HALT : APPROACH).
+  // Row action: here ? LAND/CLAIM : (flying ? HALT : APPROACH). CLAIM is
+  // gated behind `planetHere` exactly like LAND -- the server now enforces
+  // the same DOCK_LAND_PROXIMITY_RANGE_EM range on claim (WO-CLAIM-
+  // PROXIMITY, Max 2026-07-17: "a claim that lands is a landing"), so a
+  // CLAIM button reachable before arrival would dangle a click that 400s.
   const planetAction: { label: string; onClick: (e: React.MouseEvent) => void; armed: boolean; ariaLabel: string } | null =
     !planet ? null : flying
       ? { label: '🛑 HALT ▸', onClick: handleHalt, armed: true, ariaLabel: 'Halt — abort approach and bleed momentum' }
@@ -197,9 +201,7 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
         ? isPlanetUnclaimed && onClaimPlanet && !isLanded
           ? { label: '🚩 CLAIM ▸', onClick: (e) => { e.stopPropagation(); handlePlanetLandOrClaim(); }, armed: false, ariaLabel: `Claim ${planet.name}` }
           : { label: '🛬 LAND ▸', onClick: (e) => { e.stopPropagation(); handlePlanetLandOrClaim(); }, armed: false, ariaLabel: `Land on ${planet.name}` }
-        : isPlanetUnclaimed && onClaimPlanet
-          ? { label: '🚩 CLAIM ▸', onClick: (e) => { e.stopPropagation(); handlePlanetLandOrClaim(); }, armed: false, ariaLabel: `Claim ${planet.name}` }
-          : { label: '🧭 APPROACH ▸', onClick: (e) => { e.stopPropagation(); handlePlanetApproach(); }, armed: false, ariaLabel: `Approach ${planet.name}` };
+        : { label: '🧭 APPROACH ▸', onClick: (e) => { e.stopPropagation(); handlePlanetApproach(); }, armed: false, ariaLabel: `Approach ${planet.name}` };
 
   const stationOperational = station?.status?.toLowerCase() === 'operational';
   const stationAction: { label: string; onClick: (e: React.MouseEvent) => void; armed: boolean; ariaLabel: string } | null =
@@ -268,7 +270,7 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
         <div
           className={`planet-section ${flying ? 'inactive' : !planetHere ? 'clickable' : 'landed'} ${isPlanetUnclaimed ? 'unclaimed' : ''}`}
           aria-disabled={flying}
-          onClick={flying ? undefined : (planetHere || (isPlanetUnclaimed && onClaimPlanet) ? handlePlanetLandOrClaim : handlePlanetApproach)}
+          onClick={flying ? undefined : (planetHere ? handlePlanetLandOrClaim : handlePlanetApproach)}
         >
           <div className="planet-info">
             <span className="planet-icon">{planetIcon}</span>

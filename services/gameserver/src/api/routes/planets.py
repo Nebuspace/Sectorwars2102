@@ -348,6 +348,20 @@ async def claim_planet(
             detail="Planet is not accessible from your current location"
         )
 
+    # Server-gated proximity (Max, 2026-07-17: "a claim that lands is a
+    # landing" -- claim auto-lands the player on success, so it gets the
+    # SAME gate /planets/land and /trading/dock already enforce, not a
+    # separate copy. See intrasystem_movement_service.assert_dock_land_
+    # proximity's own doc-comment for the threshold rationale (a tunable
+    # dial, not fixed).
+    from src.services.intrasystem_movement_service import assert_dock_land_proximity
+
+    assert_dock_land_proximity(
+        db, player,
+        sector_id=planet.sector_id, target_kind="planet", target_id=str(planet.id),
+        target_label=planet.name, action_word="claim",
+    )
+
     # Check if planet is already owned
     if planet.owner_id is not None:
         raise HTTPException(

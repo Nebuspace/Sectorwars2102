@@ -153,7 +153,7 @@ describe('PlanetPortPair row state machine', () => {
     expect(document.body.textContent).toContain('Land on Kepler-7?');
   });
 
-  it('unclaimed planet, not flying: row shows CLAIM ▸ (not APPROACH), and CLAIM never fires onApproach', async () => {
+  it('unclaimed planet, not here, not flying: row shows APPROACH ▸ (not CLAIM) — the server now proximity-gates claim (WO-CLAIM-PROXIMITY) exactly like land, so the button must not dangle a click that 400s', async () => {
     const onClaim = vi.fn();
     const onApproach = vi.fn();
     await render(
@@ -163,6 +163,30 @@ describe('PlanetPortPair row state machine', () => {
         onLandOnPlanet={vi.fn()}
         onClaimPlanet={onClaim}
         isLanded={false}
+        flying={false}
+        onApproach={onApproach}
+      />
+    );
+    const btn = actButton(container, '.planet-section');
+    expect(btn?.textContent).toBe('🧭 APPROACH ▸');
+    await click(btn!);
+    expect(onClaim).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain('Claim Kepler-7?');
+    expect(onApproach).toHaveBeenCalledTimes(1);
+    expect(onApproach).toHaveBeenCalledWith('planet-2');
+  });
+
+  it('unclaimed planet, atDestination (arrived after approach): row shows CLAIM ▸; click opens claim confirm', async () => {
+    const onClaim = vi.fn();
+    const onApproach = vi.fn();
+    await render(
+      <PlanetPortPair
+        planet={UNCLAIMED_PLANET}
+        station={null}
+        onLandOnPlanet={vi.fn()}
+        onClaimPlanet={onClaim}
+        isLanded={false}
+        atDestination
         flying={false}
         onApproach={onApproach}
       />
