@@ -109,3 +109,70 @@
   gap: 8px;
   margin-top: 12px;
 }
+
+.aal-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border-color, #475569);
+}
+
+.aal-tab {
+  padding: 8px 14px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-tertiary, #94a3b8);
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.aal-tab:hover {
+  color: inherit;
+}
+
+.aal-tab-active {
+  color: inherit;
+  border-bottom-color: #38bdf8;
+  font-weight: 600;
+}
+
+.aal-tab:focus-visible {
+  outline: 2px solid #38bdf8;
+  outline-offset: 2px;
+}
+
+.aal-review-note {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  font-size: 0.85rem;
+  color: var(--text-secondary, #cbd5e1);
+  background: var(--surface-elevated, #1e293b);
+  border: 1px solid var(--border-color, #475569);
+  border-radius: 8px;
+}
+
+.aal-stale-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: #7f1d1d;
+  color: #fecaca;
+  border: 1px solid #ef4444;
+}
+
+.aal-fresh-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  color: #bae6fd;
+  background: #0c4a6e;
+  border: 1px solid #0284c7;
+}
+
+.aal-row-stale td {
+  background: rgba(127, 29, 29, 0.18);
+}

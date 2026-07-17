@@ -4,15 +4,15 @@ Audit logging API endpoints for admin access
 
 import logging
 from typing import Optional, List, Any
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import and_
+from sqlalchemy import and_, case
 from sqlalchemy.orm import Session
 
 from src.core.database import get_db
-from src.auth.admin_scopes import AUDIT_VIEW
+from src.auth.admin_scopes import AUDIT_VIEW, HIGH_IMPACT_SCOPES
 from src.auth.dependencies import require_scope
 from src.services.audit_service import AuditService
 from src.models.admin_action_log import AdminActionLog
@@ -21,6 +21,9 @@ from src.models.user import User
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/audit", tags=["audit"])
+
+# Phase E: unreviewed HIGH_IMPACT rows older than this are flagged stale.
+REVIEW_STALE_AFTER = timedelta(days=30)
 
 
 class AdminActionLogItemOut(BaseModel):
@@ -42,6 +45,20 @@ class AdminActionLogItemOut(BaseModel):
 
 class AdminActionLogPageOut(BaseModel):
     items: List[AdminActionLogItemOut]
+    total: int
+    page: int
+    limit: int
+    pages: int
+
+
+class ReviewQueueItemOut(AdminActionLogItemOut):
+    """HIGH_IMPACT unreviewed row + 30-day staleness flag (Phase E)."""
+
+    stale: bool
+
+
+class ReviewQueuePageOut(BaseModel):
+    items: List[ReviewQueueItemOut]
     total: int
     page: int
     limit: int
@@ -139,6 +156,56 @@ async def list_admin_actions(
     except Exception as e:
         logger.error("list_admin_actions failed: %s", e)
         raise HTTPException(status_code=500, detail="Failed to list admin actions")
+
+
+@router.get("/review-queue", response_model=ReviewQueuePageOut)
+async def list_review_queue(
+    page: int = Query(1, ge=1, le=10000),
+    limit: int = Query(50, ge=1, le=500),
+    admin: User = Depends(require_scope(AUDIT_VIEW)),
+    db: Session = Depends(get_db),
+):
+    """Read-only Phase E queue: unreviewed HIGH_IMPACT AdminActionLog rows.
+
+    Newest-first within staleness: rows older than 30 days (``stale``) sort
+    ahead of fresh unreviewed rows. NO mutation verbs on this surface.
+    """
+    try:
+        now = datetime.now(timezone.utc)
+        stale_before = now - REVIEW_STALE_AFTER
+        base = db.query(AdminActionLog).filter(
+            AdminActionLog.reviewed_at.is_(None),
+            AdminActionLog.scope_used.in_(list(HIGH_IMPACT_SCOPES)),
+        )
+        total = base.count()
+        offset = (page - 1) * limit
+        # Stale first (1), then newest-first within each bucket.
+        stale_rank = case((AdminActionLog.at < stale_before, 1), else_=0)
+        rows = (
+            base.order_by(stale_rank.desc(), AdminActionLog.at.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        pages = (total + limit - 1) // limit if total else 0
+        items: List[ReviewQueueItemOut] = []
+        for row in rows:
+            at = row.at
+            if at is not None and at.tzinfo is None:
+                at = at.replace(tzinfo=timezone.utc)
+            stale = bool(at is not None and at < stale_before)
+            base_item = AdminActionLogItemOut.model_validate(row)
+            items.append(ReviewQueueItemOut(**base_item.model_dump(), stale=stale))
+        return ReviewQueuePageOut(
+            items=items,
+            total=total,
+            page=page,
+            limit=limit,
+            pages=pages,
+        )
+    except Exception as e:
+        logger.error("list_review_queue failed: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to list review queue")
 
 
 @router.get("/logs")

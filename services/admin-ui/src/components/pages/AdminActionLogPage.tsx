@@ -3,6 +3,8 @@ import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
 import './admin-action-log.css';
 
+type AuditTab = 'ledger' | 'review';
+
 interface AdminActionItem {
   id: string;
   admin_user_id?: string | null;
@@ -16,6 +18,7 @@ interface AdminActionItem {
   reviewed_by?: string | null;
   reviewed_at?: string | null;
   at: string;
+  stale?: boolean;
 }
 
 interface AdminActionPage {
@@ -37,6 +40,7 @@ function scopeMissingMessage(err: any, fallback: string): string {
 }
 
 export const AdminActionLogPage: React.FC = () => {
+  const [tab, setTab] = useState<AuditTab>('ledger');
   const [data, setData] = useState<AdminActionPage | null>(null);
   const [page, setPage] = useState(1);
   const [actor, setActor] = useState('');
@@ -63,6 +67,14 @@ export const AdminActionLogPage: React.FC = () => {
     setError(null);
     setForbidden(false);
     try {
+      if (tab === 'review') {
+        const res = await api.get('/api/v1/admin/audit/review-queue', {
+          params: { page, limit: 50 },
+        });
+        setData(res.data as AdminActionPage);
+        return;
+      }
+
       const params: Record<string, string | number> = {
         page,
         limit: 50,
@@ -85,11 +97,19 @@ export const AdminActionLogPage: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [page, applied]);
+  }, [page, applied, tab]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  const switchTab = (next: AuditTab) => {
+    if (next === tab) return;
+    setTab(next);
+    setPage(1);
+    setExpandedId(null);
+    setData(null);
+  };
 
   const applyFilters = (e: React.FormEvent) => {
     e.preventDefault();
@@ -115,12 +135,44 @@ export const AdminActionLogPage: React.FC = () => {
     });
   };
 
+  const isReview = tab === 'review';
+  const colCount = isReview ? 8 : 7;
+
   return (
     <div className="aal-page">
       <PageHeader
         title="Admin Action Log"
-        subtitle="Append-only AdminActionLog — read-only accountability ledger (not the legacy HTTP audit trail)."
+        subtitle={
+          isReview
+            ? 'HIGH_IMPACT unreviewed actions — read-only review queue (mark-reviewed held pending scope ruling).'
+            : 'Append-only AdminActionLog — read-only accountability ledger (not the legacy HTTP audit trail).'
+        }
       />
+
+      <div className="aal-tabs" role="tablist" aria-label="Audit views">
+        <button
+          type="button"
+          role="tab"
+          id="aal-tab-ledger"
+          aria-selected={tab === 'ledger'}
+          aria-controls="aal-panel-ledger"
+          className={`aal-tab${tab === 'ledger' ? ' aal-tab-active' : ''}`}
+          onClick={() => switchTab('ledger')}
+        >
+          Full ledger
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="aal-tab-review"
+          aria-selected={tab === 'review'}
+          aria-controls="aal-panel-review"
+          className={`aal-tab${tab === 'review' ? ' aal-tab-active' : ''}`}
+          onClick={() => switchTab('review')}
+        >
+          Review queue
+        </button>
+      </div>
 
       {forbidden && (
         <div className="aal-alert aal-alert-forbidden" role="alert">
@@ -134,7 +186,7 @@ export const AdminActionLogPage: React.FC = () => {
         </div>
       )}
 
-      {!forbidden && (
+      {!forbidden && !isReview && (
         <form className="aal-filters" onSubmit={applyFilters} aria-label="Action log filters">
           <label htmlFor="aal-filter-actor">
             Actor (user id)
@@ -209,10 +261,22 @@ export const AdminActionLogPage: React.FC = () => {
         </form>
       )}
 
+      {isReview && !forbidden && (
+        <p className="aal-review-note" role="note">
+          Showing unreviewed actions under the 11 HIGH_IMPACT scopes. Rows older than 30 days
+          are flagged <strong>Stale</strong> and listed first. Mark-reviewed is not available
+          until the review scope is decided.
+        </p>
+      )}
+
       {isLoading && <p className="aal-muted">Loading actions…</p>}
 
       {!isLoading && !forbidden && data && (
-        <>
+        <div
+          id={isReview ? 'aal-panel-review' : 'aal-panel-ledger'}
+          role="tabpanel"
+          aria-labelledby={isReview ? 'aal-tab-review' : 'aal-tab-ledger'}
+        >
           <p className="aal-muted" aria-live="polite">
             {data.total} row{data.total === 1 ? '' : 's'} · page {data.page} of{' '}
             {Math.max(data.pages, 1)}
@@ -222,6 +286,7 @@ export const AdminActionLogPage: React.FC = () => {
             <table className="aal-table">
               <thead>
                 <tr>
+                  {isReview && <th scope="col">Status</th>}
                   <th scope="col">When</th>
                   <th scope="col">Actor</th>
                   <th scope="col">Action</th>
@@ -234,14 +299,27 @@ export const AdminActionLogPage: React.FC = () => {
               <tbody>
                 {data.items.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="aal-muted">
-                      No admin actions match these filters.
+                    <td colSpan={colCount} className="aal-muted">
+                      {isReview
+                        ? 'Review queue is empty — no unreviewed HIGH_IMPACT actions.'
+                        : 'No admin actions match these filters.'}
                     </td>
                   </tr>
                 ) : (
                   data.items.map((row) => (
                     <React.Fragment key={row.id}>
-                      <tr>
+                      <tr className={row.stale ? 'aal-row-stale' : undefined}>
+                        {isReview && (
+                          <td>
+                            {row.stale ? (
+                              <span className="aal-stale-badge" title="Unreviewed for more than 30 days">
+                                Stale
+                              </span>
+                            ) : (
+                              <span className="aal-fresh-badge">Pending</span>
+                            )}
+                          </td>
+                        )}
                         <td>{new Date(row.at).toLocaleString()}</td>
                         <td>
                           <code title={row.admin_user_id || undefined}>
@@ -284,7 +362,7 @@ export const AdminActionLogPage: React.FC = () => {
                       </tr>
                       {expandedId === row.id && (
                         <tr className="aal-payload-row" id={`payload-row-${row.id}`}>
-                          <td colSpan={7}>
+                          <td colSpan={colCount}>
                             <pre
                               className="aal-payload-pre"
                               tabIndex={0}
@@ -320,7 +398,7 @@ export const AdminActionLogPage: React.FC = () => {
               Next
             </button>
           </div>
-        </>
+        </div>
       )}
     </div>
   );

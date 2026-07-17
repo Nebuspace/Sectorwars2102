@@ -8,6 +8,11 @@ columns other than ``reviewed_by`` / ``reviewed_at`` (Phase E ack path).
 Additionally REVOKE DELETE + full UPDATE from ``sectorwars_app``, with a
 column-scoped GRANT UPDATE (reviewed_by, reviewed_at) when that role exists.
 
+RETENTION (Phase E): rows are retained for a minimum of **5 years**. There is
+no application purge job for this table; DELETE is forbidden at the database
+layer. Do not add a retention sweeper that deletes AdminActionLog rows younger
+than five years (and prefer never deleting them at all).
+
 FK from admin_user_id → users uses SET NULL (not CASCADE) so deleting a user
 account does not wipe their audit trail.
 
