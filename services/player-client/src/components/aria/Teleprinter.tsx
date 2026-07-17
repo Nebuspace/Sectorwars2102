@@ -7,8 +7,8 @@
  * deliberately left for later (see the file's own prior header):
  *   1. ADR-0072 GRAMMAR WIRING — the CMD channel (and the ticker's own
  *      compact input, see below) now PARSE + EXECUTE the command grammar
- *      client-side (dock/undock/land/lift off/set course to N/engage/
- *      abort/status/help — cockpit-redesign-v10 §05 L506) instead of
+ *      client-side (dock/undock/land/claim/lift off/set course to N/
+ *      engage/abort/status/help — cockpit-redesign-v10 §05 L506) instead of
  *      just echoing. Unrecognized input falls through to the existing
  *      ARIA free-chat (sendARIAMessage) unchanged — this is deterministic
  *      client-side dispatch, NOT a new AI-safety surface; the WS
@@ -233,6 +233,7 @@ const sanitizeInput = (input: string): string => {
 const RE_DOCK = /^dock$/i;
 const RE_UNDOCK = /^undock$/i;
 const RE_LAND = /^land$/i;
+const RE_CLAIM = /^claim$/i;
 const RE_LIFTOFF = /^(lift[\s-]?off)$/i;
 const RE_STATUS = /^status$/i;
 const RE_HELP = /^help$/i;
@@ -241,6 +242,15 @@ const RE_ABORT = /^(abort|all stop)$/i;
 const RE_PLOT_COURSE =
   /^(plot|lay in|set)\s+(a\s+)?(course|route)\s*(to|for)?\s*#?(\d+)$/i;
 const RE_GOTO = /^(goto|navigate to)\s+#?(\d+)$/i;
+
+// Mirrors PlanetPortPair.tsx's isPlanetUnclaimed -- a capital population hub
+// is never claimable even with no owner_id, so it isn't "unclaimed" here.
+const isUnclaimedPlanet = (planet: {
+  owner_id?: string | null;
+  is_population_hub?: boolean;
+  population?: number;
+}): boolean =>
+  !planet.owner_id && !(planet.is_population_hub || (planet.population ?? 0) >= 1_000_000);
 
 const Teleprinter: React.FC<TeleprinterProps> = ({
   bodyPanel,
@@ -258,6 +268,7 @@ const Teleprinter: React.FC<TeleprinterProps> = ({
     dockAtStation,
     undockFromStation,
     landOnPlanet,
+    claimPlanet,
     leavePlanet,
   } = useGame();
   const { plotCourse, engage, abort: autopilotAbort } = useAutopilot();
@@ -363,10 +374,48 @@ const Teleprinter: React.FC<TeleprinterProps> = ({
         ariaFeed.appendNav('No planet in this sector to land on.');
         return true;
       }
+      // An unclaimed, non-hub world has no owner to land under -- the /land
+      // route refuses it outright (PlanetPortPair's isPlanetUnclaimed gates
+      // the same case for the row button). Redirect to the "claim" verb
+      // in-fiction instead of firing a request the server can only reject.
+      if (isUnclaimedPlanet(planet)) {
+        ariaFeed.appendNav(`${planet.name} hasn't been claimed yet, Commander — try "claim" to found a colony there.`);
+        return true;
+      }
       autopilotAbort('manual helm action');
       landOnPlanet(planet.id)
         .then(() => ariaFeed.appendNav(`Landed on ${planet.name}, Commander.`))
         .catch(() => ariaFeed.appendNav('Landing sequence failed.'));
+      return true;
+    }
+
+    if (RE_CLAIM.test(trimmed)) {
+      ariaFeed.appendUserEcho(trimmed);
+      if (playerState?.is_docked) {
+        ariaFeed.appendNav('You must undock from the station before claiming a planet, Commander.');
+        return true;
+      }
+      if (playerState?.is_landed) {
+        ariaFeed.appendNav('Already landed on a planet, Commander. Lift off first before claiming another.');
+        return true;
+      }
+      const planet = planetsInSector[0];
+      if (!planet) {
+        ariaFeed.appendNav('No planet in this sector to claim.');
+        return true;
+      }
+      if (!isUnclaimedPlanet(planet)) {
+        ariaFeed.appendNav(
+          planet.owner_id
+            ? `${planet.name} is already claimed, Commander.`
+            : `${planet.name} is a public population hub — it can't be claimed.`
+        );
+        return true;
+      }
+      autopilotAbort('manual helm action');
+      claimPlanet(planet.id)
+        .then(() => ariaFeed.appendNav(`${planet.name} claimed and settled, Commander.`))
+        .catch(() => ariaFeed.appendNav('Claim sequence failed.'));
       return true;
     }
 
@@ -408,7 +457,7 @@ const Teleprinter: React.FC<TeleprinterProps> = ({
     if (RE_HELP.test(trimmed)) {
       ariaFeed.appendUserEcho(trimmed);
       ariaFeed.appendNav(
-        'Commands: dock · undock · land · lift off · set course to N · engage · abort · status · help.'
+        'Commands: dock · undock · land · claim · lift off · set course to N · engage · abort · status · help.'
       );
       return true;
     }
@@ -441,6 +490,7 @@ const Teleprinter: React.FC<TeleprinterProps> = ({
     dockAtStation,
     undockFromStation,
     landOnPlanet,
+    claimPlanet,
     leavePlanet,
     autopilotAbort,
     engage,

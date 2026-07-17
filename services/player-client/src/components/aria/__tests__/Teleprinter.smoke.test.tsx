@@ -26,10 +26,11 @@
  *     its own persistent, never-unmounted button, correct aria-pressed, and
  *     an action-naming label that swaps with state; LOG can open over
  *     EITHER body form (orthogonality)
- *   - the ADR-0072 command grammar (dock/undock/land/lift off/set course to
- *     N/engage/abort/status/help) parses + executes from BOTH the CMD tab
- *     and the ticker's own compact input (visual-form steer); unrecognized
- *     input falls through to the existing ARIA free-chat unchanged
+ *   - the ADR-0072 command grammar (dock/undock/land/claim/lift off/set
+ *     course to N/engage/abort/status/help) parses + executes from BOTH the
+ *     CMD tab and the ticker's own compact input (visual-form steer);
+ *     unrecognized input falls through to the existing ARIA free-chat
+ *     unchanged
  *   - zero console errors throughout every scenario
  */
 import React, { act } from 'react';
@@ -120,10 +121,17 @@ function makePlayerState(overrides: Record<string, unknown> = {}) {
 
 let mockPlayerState: Record<string, unknown> = makePlayerState();
 let mockStationsInSector: Array<{ id: string; name: string }> = [];
-let mockPlanetsInSector: Array<{ id: string; name: string }> = [];
+let mockPlanetsInSector: Array<{
+  id: string;
+  name: string;
+  owner_id?: string | null;
+  is_population_hub?: boolean;
+  population?: number;
+}> = [];
 const mockDockAtStation = vi.fn();
 const mockUndockFromStation = vi.fn();
 const mockLandOnPlanet = vi.fn();
+const mockClaimPlanet = vi.fn();
 const mockLeavePlanet = vi.fn();
 
 vi.mock('../../../contexts/GameContext', () => ({
@@ -135,6 +143,7 @@ vi.mock('../../../contexts/GameContext', () => ({
     dockAtStation: (...args: unknown[]) => mockDockAtStation(...args),
     undockFromStation: (...args: unknown[]) => mockUndockFromStation(...args),
     landOnPlanet: (...args: unknown[]) => mockLandOnPlanet(...args),
+    claimPlanet: (...args: unknown[]) => mockClaimPlanet(...args),
     leavePlanet: (...args: unknown[]) => mockLeavePlanet(...args),
   }),
 }));
@@ -199,6 +208,7 @@ describe('Teleprinter — live-mount smoke', () => {
     mockDockAtStation.mockReset().mockResolvedValue({ success: true });
     mockUndockFromStation.mockReset().mockResolvedValue({ success: true });
     mockLandOnPlanet.mockReset().mockResolvedValue({ success: true });
+    mockClaimPlanet.mockReset().mockResolvedValue({ success: true });
     mockLeavePlanet.mockReset().mockResolvedValue({ success: true });
     mockPlotCourse.mockReset().mockResolvedValue(undefined);
     mockEngage.mockReset();
@@ -901,7 +911,9 @@ describe('Teleprinter — live-mount smoke', () => {
     });
 
     it('"land" lands on the sector planet, "lift off" departs it', async () => {
-      mockPlanetsInSector = [{ id: 'planet-4', name: 'New Eden' }];
+      // Owned by the player -- landable. An unclaimed planet is covered by
+      // the dedicated "unclaimed" test below (WO-CLAIM-DEADEND).
+      mockPlanetsInSector = [{ id: 'planet-4', name: 'New Eden', owner_id: 'player-1' }];
       await act(async () => {
         root.render(<ControlledTeleprinter />);
       });
@@ -914,6 +926,56 @@ describe('Teleprinter — live-mount smoke', () => {
       mockPlayerState = makePlayerState({ is_landed: true });
       await submitViaBody('lift off');
       expect(mockLeavePlanet).toHaveBeenCalledTimes(1);
+
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    // WO-CLAIM-DEADEND: "land" on an unclaimed, non-hub planet must never
+    // fire the /planets/land request (the server can only 400 it) -- it
+    // redirects to "claim" in-fiction instead. "claim" claims an unclaimed
+    // planet and refuses (without calling the API) when already owned, a
+    // population hub, or the player is docked/landed elsewhere.
+    it('"land" on an unclaimed planet redirects to "claim" instead of dead-ending; "claim" claims it', async () => {
+      mockPlanetsInSector = [{ id: 'planet-5', name: 'Terra Nova', owner_id: null }];
+      await act(async () => {
+        root.render(<ControlledTeleprinter />);
+      });
+      await flush();
+      await clickTab('command-echo');
+
+      await submitViaBody('land');
+      expect(mockLandOnPlanet).not.toHaveBeenCalled();
+      await clickTab('narration');
+      expect(container.querySelector('#tp-log')?.textContent).toContain('try "claim"');
+
+      await clickTab('command-echo');
+      await submitViaBody('claim');
+      expect(mockClaimPlanet).toHaveBeenCalledWith('planet-5');
+      await clickTab('narration');
+      expect(container.querySelector('#tp-log')?.textContent).toContain('claimed and settled');
+
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    it('"claim" refuses an already-owned planet and a population hub without calling claimPlanet', async () => {
+      mockPlanetsInSector = [{ id: 'planet-6', name: 'Owned World', owner_id: 'someone-else' }];
+      await act(async () => {
+        root.render(<ControlledTeleprinter />);
+      });
+      await flush();
+      await clickTab('command-echo');
+
+      await submitViaBody('claim');
+      expect(mockClaimPlanet).not.toHaveBeenCalled();
+      await clickTab('narration');
+      expect(container.querySelector('#tp-log')?.textContent).toContain('already claimed');
+
+      mockPlanetsInSector = [{ id: 'planet-7', name: 'Capital Hub', owner_id: null, is_population_hub: true }];
+      await clickTab('command-echo');
+      await submitViaBody('claim');
+      expect(mockClaimPlanet).not.toHaveBeenCalled();
+      await clickTab('narration');
+      expect(container.querySelector('#tp-log')?.textContent).toContain("can't be claimed");
 
       expect(errorSpy).not.toHaveBeenCalled();
     });

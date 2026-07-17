@@ -1381,7 +1381,7 @@ async def land_on_planet(
     if planet.formation_status == "forming":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This planet is still forming and cannot be landed on yet. Check formation status at GET /genesis/status/{planet_id}"
+            detail="This planet is still forming and cannot be landed on yet."
         )
 
     # Check if planet is unclaimed - require claiming first.
@@ -1396,7 +1396,7 @@ async def land_on_planet(
     if planet.owner_id is None and not is_population_hub:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This planet is unclaimed. You must claim it first before landing. Use POST /planets/{id}/claim"
+            detail="This planet is unclaimed — claim it before you can land."
         )
 
     # Landing-rights ACL (WO-G16). Owner + hubs always pass; otherwise the
