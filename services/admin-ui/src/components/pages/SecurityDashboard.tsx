@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import PageHeader from '../ui/PageHeader';
 import { AuditLogViewer } from '../security/AuditLogViewer';
 import { MFASetup } from '../auth/MFASetup';
@@ -115,7 +116,7 @@ export const SecurityDashboard: React.FC = () => {
           onClick={() => setActiveTab('audit')}
         >
           <i className="fas fa-history"></i>
-          Audit Logs
+          HTTP Audit (legacy)
         </button>
         <button
           className={`tab ${activeTab === 'threats' ? 'active' : ''}`}
@@ -296,6 +297,27 @@ export const SecurityDashboard: React.FC = () => {
 
       {activeTab === 'audit' && (
         <div className="security-audit">
+          <div
+            role="note"
+            style={{
+              margin: '0 0 16px 0',
+              padding: '10px 12px',
+              background: 'rgba(59, 130, 246, 0.12)',
+              border: '1px solid rgba(59, 130, 246, 0.35)',
+              borderRadius: '6px',
+              color: '#93c5fd',
+              fontSize: '0.85rem',
+              lineHeight: 1.45,
+            }}
+          >
+            This tab is the <strong>legacy HTTP request audit trail</strong>
+            {' '}(<code>/admin/audit/logs</code>). For RBAC accountability
+            (scoped admin mutations, review queue), use{' '}
+            <Link to="/audit" style={{ color: '#bfdbfe', fontWeight: 600 }}>
+              Action Log
+            </Link>
+            {' '}in the sidebar — that is the append-only AdminActionLog.
+          </div>
           <AuditLogViewer />
         </div>
       )}
