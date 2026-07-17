@@ -53,6 +53,9 @@ const FirstLoginConversations = lazy(() => import('./components/pages/FirstLogin
 const BangGalaxyPage = lazy(() => import('./components/pages/BangGalaxyPage'));
 const FactionManagement = lazy(() => import('./components/pages/FactionManagement'));
 const MessageModeration = lazy(() => import('./components/pages/MessageModeration'));
+const MultiAccountReview = lazy(() => import('./components/pages/MultiAccountReview').then(module => ({
+  default: module.MultiAccountReview
+})));
 const TranslationManagement = lazy(() => import('./components/pages/TranslationManagement'));
 const NotFound = lazy(() => import('./components/pages/NotFound'));
 
@@ -125,6 +128,7 @@ function App() {
                 {/* Surfaced admin subsystems (run 5) */}
                 <Route path="factions" element={<ProtectedLazyRoute element={<FactionManagement />} />} />
                 <Route path="messages" element={<ProtectedLazyRoute element={<MessageModeration />} />} />
+                <Route path="multi-account" element={<ProtectedLazyRoute element={<MultiAccountReview />} />} />
                 <Route path="translations" element={<ProtectedLazyRoute element={<TranslationManagement />} />} />
 
                 {/* Redirect root to dashboard */}
