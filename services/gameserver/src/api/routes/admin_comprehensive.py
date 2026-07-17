@@ -17,11 +17,13 @@ from src.auth.admin_scopes import (
     ECONOMY_INTERVENE,
     GALAXY_MANAGE,
     PLAYERS_ADJUST_CREDITS,
+    PLAYERS_ADJUST_REP,
+    PLAYERS_SUSPEND,
     PLAYERS_VIEW,
     SECURITY_ACT,
     SHIPS_MANAGE,
 )
-from src.auth.dependencies import require_scope
+from src.auth.dependencies import require_all_scopes, require_scope
 from src.models.user import User
 from src.models.player import Player
 from src.models.ship import Ship
@@ -397,7 +399,11 @@ async def get_players_comprehensive(
 async def update_player(
     player_id: str,
     update_data: PlayerUpdateRequest,
-    current_admin: User = Depends(require_scope(PLAYERS_ADJUST_CREDITS)),
+    current_admin: User = Depends(
+        require_all_scopes(
+            PLAYERS_ADJUST_CREDITS, PLAYERS_SUSPEND, PLAYERS_ADJUST_REP
+        )
+    ),
     db: Session = Depends(get_db)
 ):
     """Update player data"""

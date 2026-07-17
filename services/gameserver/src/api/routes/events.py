@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from pydantic import BaseModel
 
 from src.core.database import get_db
-from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.admin_scopes import GALAXY_MANAGE, PLAYERS_VIEW
 from src.auth.dependencies import require_scope
 from src.models.game_event import GameEvent, EventTemplate, EventEffect, EventParticipation, EventType, EventStatus
 from src.models.user import User
@@ -223,7 +223,7 @@ async def get_event_templates(
 async def create_event(
     event_data: CreateEventRequest,
     db: Session = Depends(get_db),
-    current_admin = Depends(require_scope(PLAYERS_VIEW))
+    current_admin = Depends(require_scope(GALAXY_MANAGE))
 ):
     """Create a new game event"""
     
@@ -292,7 +292,7 @@ async def update_event(
     event_id: str,
     event_data: CreateEventRequest,
     db: Session = Depends(get_db),
-    current_admin = Depends(require_scope(PLAYERS_VIEW))
+    current_admin = Depends(require_scope(GALAXY_MANAGE))
 ):
     """Update an existing event"""
     
@@ -365,7 +365,7 @@ async def update_event(
 async def activate_event(
     event_id: str,
     db: Session = Depends(get_db),
-    current_admin = Depends(require_scope(PLAYERS_VIEW))
+    current_admin = Depends(require_scope(GALAXY_MANAGE))
 ):
     """Activate a scheduled event"""
     
@@ -394,7 +394,7 @@ async def activate_event(
 async def deactivate_event(
     event_id: str,
     db: Session = Depends(get_db),
-    current_admin = Depends(require_scope(PLAYERS_VIEW))
+    current_admin = Depends(require_scope(GALAXY_MANAGE))
 ):
     """Deactivate an active event"""
     
@@ -422,7 +422,7 @@ async def deactivate_event(
 async def delete_event(
     event_id: str,
     db: Session = Depends(get_db),
-    current_admin = Depends(require_scope(PLAYERS_VIEW))
+    current_admin = Depends(require_scope(GALAXY_MANAGE))
 ):
     """Delete an event (only if not active)"""
     

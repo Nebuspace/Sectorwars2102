@@ -155,6 +155,52 @@ def require_scope(scope: str) -> Callable:
     return _require_scope
 
 
+def require_all_scopes(*scopes: str) -> Callable:
+    """Require EVERY listed scope (AND). Fail-closed like ``require_scope``.
+
+    Used when one route mutates multiple capabilities (e.g. credits + status)
+    and a single-scope gate would leak privilege.
+    """
+    if not scopes:
+        raise ValueError("require_all_scopes() needs at least one scope")
+    for scope in scopes:
+        if scope not in ALL_SCOPES:
+            raise ValueError(
+                f"require_all_scopes({scope!r}): not in the canonical admin scope catalog"
+            )
+    scope_list = tuple(scopes)
+
+    async def _require_all(
+        current_user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ) -> User:
+        for scope in scope_list:
+            missing = f"Missing required scope: {scope}"
+            try:
+                allowed = user_has_active_scope(db, current_user.id, scope)
+            except Exception:
+                logger.exception(
+                    "require_all_scopes(%s) grant lookup failed for user=%s — fail-closed 403",
+                    scope,
+                    current_user.id,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=missing,
+                )
+            if not allowed:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=missing,
+                )
+        return current_user
+
+    _require_all.__name__ = f"require_all_scopes[{','.join(scope_list)}]"
+    # Coverage tripwire: any stamped require_scope* counts as gated.
+    _require_all.__require_scope__ = scope_list[0]
+    return _require_all
+
+
 async def get_current_admin_from_header_or_query(
     token: Optional[str] = Query(default=None),
     authorization: Optional[str] = Header(default=None),

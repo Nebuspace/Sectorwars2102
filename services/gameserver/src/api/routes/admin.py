@@ -9,8 +9,13 @@ import math
 import logging
 
 from src.core.database import get_db
-from src.auth.admin_scopes import GALAXY_MANAGE, PLAYERS_ADJUST_CREDITS, PLAYERS_VIEW
-from src.auth.dependencies import require_scope
+from src.auth.admin_scopes import (
+    GALAXY_MANAGE,
+    PLAYERS_ADJUST_CREDITS,
+    PLAYERS_SUSPEND,
+    PLAYERS_VIEW,
+)
+from src.auth.dependencies import require_all_scopes, require_scope
 from src.models.user import User
 from src.models.player import Player
 from src.models.ship import Ship
@@ -402,7 +407,9 @@ async def get_zone_details(
 async def update_player(
     player_id: str,
     update_data: dict,
-    current_admin: User = Depends(require_scope(PLAYERS_ADJUST_CREDITS)),
+    current_admin: User = Depends(
+        require_all_scopes(PLAYERS_ADJUST_CREDITS, PLAYERS_SUSPEND)
+    ),
     db: Session = Depends(get_db)
 ):
     """Update player information (admin only)"""

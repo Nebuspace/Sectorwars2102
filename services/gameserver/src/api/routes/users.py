@@ -5,7 +5,7 @@ from uuid import UUID
 from datetime import datetime, UTC
 
 from src.core.database import get_db
-from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.admin_scopes import PLAYERS_VIEW, SCOPES_GRANT
 from src.auth.dependencies import require_scope
 from src.models.user import User
 from src.models.admin_credentials import AdminCredentials
@@ -125,7 +125,7 @@ async def update_user(
     user_id: UUID,
     user_data: UserUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_scope(PLAYERS_VIEW))
+    current_user: User = Depends(require_scope(SCOPES_GRANT))
 ):
     """
     Update a user.
@@ -178,7 +178,7 @@ async def update_user(
 async def delete_user(
     user_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_scope(PLAYERS_VIEW))
+    current_user: User = Depends(require_scope(SCOPES_GRANT))
 ):
     """
     Delete a user (soft delete).
@@ -211,7 +211,7 @@ async def reset_admin_password(
     user_id: UUID,
     password: str = Body(..., min_length=8),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_scope(PLAYERS_VIEW))
+    current_user: User = Depends(require_scope(SCOPES_GRANT))
 ):
     """
     Reset password for an admin user.

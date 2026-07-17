@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 import logging
 
 from src.core.database import get_db
-from src.auth.admin_scopes import REGIONS_VIEW
+from src.auth.admin_scopes import GALAXY_MANAGE, REGIONS_VIEW
 from src.auth.dependencies import require_scope
 from src.models.user import User
 from src.models.player import Player
@@ -753,13 +753,13 @@ async def get_admin_colonization_planets(
 # Canon: SYSTEMS/planetary-production-tick.md "Inputs" lists
 # `POST /api/v1/admin/planets/{id}/tick` as the manual admin trigger for the
 # production tick. This router mounts at /admin, so the path below resolves to
-# exactly that under the /api/v1 prefix. Gated by the SAME require_scope(REGIONS_VIEW)
-# dependency every other route in this file uses (no new RBAC/gating invented).
+# exactly that under the /api/v1 prefix. Mutates production/siege/terraform —
+# GALAXY_MANAGE (REGIONS_VIEW is read-only).
 
 @router.post("/planets/{planet_id}/tick", response_model=PlanetTickResult)
 async def tick_planet_production(
     planet_id: str,
-    current_admin: User = Depends(require_scope(REGIONS_VIEW)),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Force-advance one planet's commodity production and return the DB delta.
