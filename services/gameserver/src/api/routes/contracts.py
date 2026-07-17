@@ -9,9 +9,22 @@ transit -> cancelled (insurance pays if held)" edge, :84) was built and
 then excised in the same round -- cipher's gate found the self-reported
 "my ship is gone" check a farmable money-mint with no real destruction-
 event verification behind it; that half is deferred to a dedicated,
-design-gated WO-1b-CLAIM-SAFETY, not mounted here. Bulk-partial `deliver`
-and dispute/resolve-dispute remain later build steps (contracts.md:421-431
-step 7) and are intentionally NOT mounted here either.
+design-gated WO-1b-CLAIM-SAFETY, not mounted here.
+WO-CONTRACT-2-DISPUTE-T1 adds `POST /contracts/{id}/dispute` (contracts.md
+:223, :291-305) -- acceptor-only filing + synchronous Tier-1 automated
+arbitration. [NO-CANON] the response shape here is NOT contracts.md:296-
+305's literal async-202 stub (status/dispute_filed_at/escrow_frozen/
+estimated_resolution/arbitration_tier) -- Tier-1 in this build resolves
+SYNCHRONOUSLY inside the same call (see contract_service.file_dispute's
+own docstring), so by the time this route returns, resolution has often
+ALREADY happened; returning canon's "pending" shape would misrepresent
+that. Returns 200 with `contract_service.file_dispute`'s actual result
+(tier1_resolution / escalated_to_admin / payout) instead. The Tier-2
+admin ruling route (`POST /contracts/{id}/resolve-dispute`) is impl-
+admin-ui's lane -- `contract_service.resolve_dispute` is exposed as a
+function only, NOT mounted here. Bulk-partial `deliver` remains a later
+build step (contracts.md:421-431 step 7) and is intentionally NOT
+mounted here either.
 """
 import uuid
 from datetime import datetime
@@ -33,7 +46,8 @@ from src.services.contract_service import ContractConflictError, ContractError, 
 router = APIRouter(prefix="/contracts", tags=["contracts"])
 
 
-def _serialize_contract(c: Contract) -> Dict[str, Any]:
+def _serialize_contract(c: Contract, caller_player_id: Optional[uuid.UUID] = None) -> Dict[str, Any]:
+    is_party = caller_player_id is not None and caller_player_id in (c.issuer_id, c.acceptor_player_id)
     return {
         "id": str(c.id),
         "issuer_type": c.issuer_type.value,
@@ -59,6 +73,15 @@ def _serialize_contract(c: Contract) -> Dict[str, Any]:
         "insurance_coverage_tier": c.insurance_coverage_tier.value if c.insurance_coverage_tier else None,
         "insurance_premium_paid": float(c.insurance_premium_paid) if c.insurance_premium_paid is not None else None,
         "insurance_claim_filed": bool(c.insurance_claim_filed),
+        # WO-CONTRACT-2-DISPUTE-T1
+        "dispute_filed_at": c.dispute_filed_at.isoformat() if c.dispute_filed_at else None,
+        "dispute_resolution": c.dispute_resolution.value if c.dispute_resolution else None,
+        "dispute_resolved_at": c.dispute_resolved_at.isoformat() if c.dispute_resolved_at else None,
+        # Party-only: dispute_notes is free-text reason/evidence a non-party
+        # must not read (a contract UUID is discoverable via the public
+        # /board endpoint, so omission must not depend on obscurity).
+        "dispute_notes": c.dispute_notes if is_party else None,
+        "escalated_to_admin": bool(c.escalated_to_admin),
     }
 
 
@@ -97,6 +120,20 @@ class InsureContractRequest(BaseModel):
     tier: str
 
 
+class DisputeContractRequest(BaseModel):
+    """contracts.md:295 request shape -- `evidence_snapshot` is optional
+    free-form (a URL/reference, matching canon's own worked example).
+    WO-CONTRACT-2-DISPUTE-T1-REVISE (mack LOW): both fields fold
+    unbounded into `dispute_notes` (Text, no DB-side limit) --
+    max_length caps this attacker-initiated free text at the request
+    boundary (2000/500 chars, matching this codebase's existing free-
+    text caps -- e.g. MarketTransaction.admin_notes/PriceAlert.message
+    both cap at 500)."""
+
+    reason: str = Field(..., min_length=1, max_length=2000)
+    evidence_snapshot: Optional[str] = Field(default=None, max_length=500)
+
+
 def _raise_for(exc: ContractError) -> None:
     if isinstance(exc, ContractNotFoundError):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
@@ -131,7 +168,7 @@ async def get_contract_board(
         .order_by(Contract.posted_at.desc())
         .all()
     )
-    return [_serialize_contract(c) for c in contracts]
+    return [_serialize_contract(c, current_player.id) for c in contracts]
 
 
 @router.get("/mine")
@@ -155,8 +192,8 @@ async def get_my_contracts(
         .all()
     )
     return {
-        "posted": [_serialize_contract(c) for c in posted],
-        "accepted": [_serialize_contract(c) for c in accepted],
+        "posted": [_serialize_contract(c, current_player.id) for c in posted],
+        "accepted": [_serialize_contract(c, current_player.id) for c in accepted],
     }
 
 
@@ -171,7 +208,7 @@ async def get_contract(
     contract = db.query(Contract).filter(Contract.id == contract_uuid).first()
     if contract is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Contract not found")
-    return _serialize_contract(contract)
+    return _serialize_contract(contract, current_player.id)
 
 
 @router.post("/{contract_id}/accept")
@@ -252,6 +289,33 @@ async def insure_contract(
         ) from None
     try:
         result = contract_service.insure(db, contract_uuid, current_player.id, tier)
+    except ContractError as exc:
+        db.rollback()
+        _raise_for(exc)
+    else:
+        db.commit()
+        return result
+
+
+@router.post("/{contract_id}/dispute")
+async def dispute_contract(
+    contract_id: str,
+    body: DisputeContractRequest,
+    db: Session = Depends(get_db),
+    current_player: Player = Depends(get_current_player),
+) -> Dict[str, Any]:
+    """contracts.md:223/:291-305 -- acceptor-only filing on a failed
+    (expired) contract, within 48 hours of the failure timestamp. See
+    contract_service.file_dispute's own docstring for the synchronous
+    Tier-1 arbitration this triggers, and this module's own docstring
+    for why the response shape here isn't canon's literal async-202
+    stub."""
+    contract_uuid = _parse_uuid(contract_id, "contract_id")
+    try:
+        result = contract_service.file_dispute(
+            db, contract_uuid, current_player.id, body.reason,
+            evidence_snapshot=body.evidence_snapshot,
+        )
     except ContractError as exc:
         db.rollback()
         _raise_for(exc)

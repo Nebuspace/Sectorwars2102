@@ -629,6 +629,71 @@ class TestEscrowConservationEndToEnd:
         assert acceptor.credits == acceptor_after_insure + 27  # pro-rata insurance refund only
         assert contract.status == ContractStatus.CANCELLED
 
+    def test_post_to_expire_to_dispute_destination_unreachable_conserves_the_sum(self) -> None:
+        """WO-CONTRACT-2-DISPUTE-T1: post -> accept -> deadline-lapse
+        (sweep_expired_accepted_contracts, unchanged/pre-existing) ->
+        file_dispute (Tier-1 destination_unreachable), through the
+        REALISTIC post_player_contract/accept/sweep/dispute path (not
+        hand-built SimpleNamespaces) -- proves conservation end-to-end at
+        the level a real caller would hit it. The sweep's own credit-
+        penalty (charged to the acceptor at expiry) is NOT reversed by
+        the dispute resolution (see file_dispute's own [NO-CANON] note) --
+        asserted explicitly here as a real, deliberate outcome, not an
+        oversight."""
+        issuer = _player(credits=5000)
+        acceptor = _player(credits=5000)
+        destination = _station(status=StationStatus.OPERATIONAL)  # OPERATIONAL at post time
+        db = _FakeSession(players=[issuer, acceptor], stations=[destination], resources=[_resource()])
+        deadline = _NOW + timedelta(hours=2)
+
+        contract_service.post_player_contract(
+            db, issuer.id, **_post_kwargs(destination, deadline=deadline, payment=Decimal("1000")),
+        )
+        contract = db.added[0]
+        # "the destination station went offline mid-delivery" (contracts.md
+        # :390's own worked example) -- goes offline AFTER posting, which
+        # post_player_contract itself would otherwise reject up front.
+        destination.status = StationStatus.ABANDONED
+        issuer_after_post = issuer.credits  # 5000 - 1000 escrow
+        assert issuer_after_post == 4000
+
+        contract_service.accept(db, contract.id, acceptor.id, now=_NOW)
+        acceptor_after_accept = acceptor.credits  # 5000 - 20 (2% fee)
+        assert acceptor_after_accept == 4980
+
+        past_deadline = deadline + timedelta(seconds=1)
+        swept = contract_service.sweep_expired_accepted_contracts(db, now=past_deadline)
+        assert swept == {"expired": 1}
+        assert contract.status == ContractStatus.EXPIRED
+        acceptor_after_expiry = acceptor.credits  # -1000 (flat penalty)
+        assert acceptor_after_expiry == acceptor_after_accept - 1000
+        issuer_after_expiry = issuer.credits  # +1000 (full escrow refund, pre-existing sweep behavior)
+        assert issuer_after_expiry == issuer_after_post + 1000
+
+        result = contract_service.file_dispute(
+            db, contract.id, acceptor.id, "the destination station was offline", now=past_deadline,
+        )
+
+        assert result["tier1_resolution"] == "destination_unreachable"
+        assert result["payout"] == 20  # 2% acceptance fee refunded in full
+        assert contract.status == ContractStatus.CANCELLED
+        # A RESOLVED Tier-1 case never touches escalated_to_admin at all --
+        # falsy either way (None here: this fixture constructs a raw
+        # Contract() directly, never through a real flush/insert that
+        # would apply the column's DB-side `default=False`; production
+        # rows are False from insert).
+        assert not contract.escalated_to_admin
+        assert result["escalated_to_admin"] is False  # file_dispute's own return always coerces via bool()
+
+        # Conservation: the dispute ONLY refunds the 20cr acceptance fee.
+        # The issuer's earlier full escrow refund (sweep) and the
+        # acceptor's earlier flat penalty (sweep) are BOTH untouched --
+        # a real, [NO-CANON]-flagged gap (canon's own settlement bullet
+        # for this case never mentions reversing the sweep's penalty),
+        # not a bug in this test.
+        assert issuer.credits == issuer_after_expiry
+        assert acceptor.credits == acceptor_after_expiry + 20
+
 
 @pytest.mark.unit
 class TestDoubleReleaseImpossibility:

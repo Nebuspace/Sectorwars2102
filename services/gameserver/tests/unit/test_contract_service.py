@@ -28,12 +28,15 @@ from sqlalchemy.sql.operators import in_op, is_
 
 from src.models.contract import (
     Contract,
+    ContractDisputeResolution,
+    ContractEscrowState,
     ContractInsuranceCoverageTier,
     ContractIssuerType,
     ContractStatus,
     ContractType,
 )
 from src.models.ship import Ship, ShipType
+from src.models.station import StationStatus
 from src.services import contract_service
 from src.services.contract_service import (
     ContractConflictError,
@@ -134,9 +137,13 @@ class _FakeNestedTransaction:
 
 
 class _FakeSession:
-    def __init__(self, *, contracts: Optional[List[Any]] = None, players: Optional[List[Any]] = None) -> None:
+    def __init__(
+        self, *, contracts: Optional[List[Any]] = None, players: Optional[List[Any]] = None,
+        stations: Optional[List[Any]] = None,
+    ) -> None:
         self.contracts = contracts or []
         self.players = players or []
+        self.stations = stations or []
         self.flush_calls = 0
 
     def query(self, model: Any) -> _FakeQuery:
@@ -145,6 +152,9 @@ class _FakeSession:
         from src.models.player import Player
         if model is Player:
             return _FakeQuery(self.players)
+        from src.models.station import Station
+        if model is Station:
+            return _FakeQuery(self.stations)
         raise AssertionError(f"unexpected query for {model!r}")
 
     def execute(self, stmt: Any) -> _FakeResult:
@@ -274,6 +284,7 @@ def _contract(**overrides: Any) -> SimpleNamespace:
         payment=Decimal("1000.00"),
         penalty=Decimal("1000.00"),
         acceptance_fee_pct=Decimal("2.0"),
+        faction_id=None,
         deadline=datetime(2026, 1, 2, tzinfo=UTC),
         posted_at=datetime(2026, 1, 1, tzinfo=UTC),
         accepted_at=None,
@@ -284,6 +295,12 @@ def _contract(**overrides: Any) -> SimpleNamespace:
         insurance_claim_filed=False,
         escrow_amount=Decimal("0"),
         escrow_state=None,
+        # WO-CONTRACT-2-DISPUTE-T1
+        dispute_filed_at=None,
+        dispute_resolution=None,
+        dispute_resolved_at=None,
+        dispute_notes=None,
+        escalated_to_admin=False,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -293,6 +310,12 @@ def _player(**overrides: Any) -> SimpleNamespace:
     base = dict(
         id=uuid.uuid4(), credits=10000, is_docked=False, current_port_id=None, current_ship=None,
     )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _station(**overrides: Any) -> SimpleNamespace:
+    base = dict(id=uuid.uuid4(), status=StationStatus.OPERATIONAL)
     base.update(overrides)
     return SimpleNamespace(**base)
 
@@ -975,3 +998,711 @@ class TestSweepExpiredAcceptedContracts:
 
         assert result == {"expired": 0}
         assert c.status == ContractStatus.ACCEPTED  # deferred forever this tick, not corrupted
+
+
+# --- WO-CONTRACT-2-DISPUTE-T1 ------------------------------------------- #
+
+@pytest.mark.unit
+class TestFileDispute:
+    def _expired_contract(self, **overrides: Any) -> SimpleNamespace:
+        deadline = overrides.pop("deadline", _NOW - timedelta(hours=4))
+        base = dict(
+            status=ContractStatus.EXPIRED, deadline=deadline,
+            payment=Decimal("1000.00"), acceptance_fee_pct=Decimal("2.0"),
+        )
+        base.update(overrides)
+        return _contract(**base)
+
+    def test_non_acceptor_rejected(self) -> None:
+        c = self._expired_contract()
+        acceptor = _player()
+        c.acceptor_player_id = acceptor.id
+        stranger = _player()
+        db = _FakeSession(contracts=[c], players=[acceptor, stranger])
+        with pytest.raises(ContractError, match="not accepted by you"):
+            contract_service.file_dispute(db, c.id, stranger.id, "I delivered it", now=_NOW)
+
+    def test_only_expired_contracts_disputable(self) -> None:
+        c = _contract(status=ContractStatus.ACCEPTED)
+        acceptor = _player()
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+        with pytest.raises(ContractConflictError, match="stale_status"):
+            contract_service.file_dispute(db, c.id, acceptor.id, "reason", now=_NOW)
+
+    def test_within_window_at_47h59m59s_is_accepted(self) -> None:
+        deadline = _NOW - timedelta(hours=48) + timedelta(seconds=1)
+        c = self._expired_contract(deadline=deadline)
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor], stations=[_station()])
+
+        result = contract_service.file_dispute(db, c.id, acceptor.id, "reason", now=_NOW)
+
+        assert result["dispute_filed_at"] == _NOW
+        assert c.dispute_filed_at == _NOW
+
+    def test_48h_plus_1s_rejected(self) -> None:
+        deadline = _NOW - timedelta(hours=48) - timedelta(seconds=1)
+        c = self._expired_contract(deadline=deadline)
+        acceptor = _player()
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+        with pytest.raises(ContractError, match="dispute_window_closed"):
+            contract_service.file_dispute(db, c.id, acceptor.id, "reason", now=_NOW)
+
+    def test_double_file_rejected_via_guarded_transition(self) -> None:
+        c = self._expired_contract()
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+
+        contract_service.file_dispute(db, c.id, acceptor.id, "first filing", now=_NOW)
+        assert c.status == ContractStatus.DISPUTED
+        balance_after_first = acceptor.credits
+
+        with pytest.raises(ContractConflictError, match="stale_status"):
+            contract_service.file_dispute(db, c.id, acceptor.id, "second filing", now=_NOW)
+
+        # Conservation: the second, raced attempt is a complete no-op.
+        assert acceptor.credits == balance_after_first
+
+    def test_evidence_snapshot_folded_into_dispute_notes(self) -> None:
+        c = self._expired_contract()
+        acceptor = _player()
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+
+        contract_service.file_dispute(
+            db, c.id, acceptor.id, "cargo was delivered", evidence_snapshot="manifest-url-123", now=_NOW,
+        )
+
+        assert "cargo was delivered" in c.dispute_notes
+        assert "manifest-url-123" in c.dispute_notes
+
+    # --- Tier-1 case resolution -------------------------------------- #
+
+    def test_tier1_destination_unreachable_resolves_and_refunds_fee(self) -> None:
+        station = _station(status=StationStatus.ABANDONED)
+        c = self._expired_contract(destination_station_id=station.id)
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor], stations=[station])
+
+        result = contract_service.file_dispute(db, c.id, acceptor.id, "station was offline", now=_NOW)
+
+        assert result["tier1_resolution"] == "destination_unreachable"
+        assert result["payout"] == 20  # 2% of 1000 acceptance fee, refunded in full
+        assert c.status == ContractStatus.CANCELLED
+        assert acceptor.credits == 5020
+        assert c.escalated_to_admin is False
+
+    def test_tier1_station_present_but_not_abandoned_does_not_resolve(self) -> None:
+        station = _station(status=StationStatus.OPERATIONAL)
+        c = self._expired_contract(destination_station_id=station.id)
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor], stations=[station])
+
+        result = contract_service.file_dispute(db, c.id, acceptor.id, "reason", now=_NOW)
+
+        assert result["tier1_resolution"] is None
+        assert c.status == ContractStatus.DISPUTED  # unresolved, escrow stays frozen
+        assert c.escrow_state == ContractEscrowState.DISPUTED
+        assert acceptor.credits == 5000  # untouched
+
+    def test_tier1_cargo_manifest_match_seam_is_actually_consulted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Proves `_tier1_cargo_manifest_match` is a real, wired branch --
+        not decorative -- via the SAME monkeypatch-to-True idiom this
+        module already uses for `_is_player_blocklisted`."""
+        c = self._expired_contract()
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+        monkeypatch.setattr(contract_service, "_tier1_cargo_manifest_match", lambda contract: True)
+
+        result = contract_service.file_dispute(db, c.id, acceptor.id, "delivered on time", now=_NOW)
+
+        assert result["tier1_resolution"] == "cargo_manifest_match"
+        assert result["payout"] == 1000
+        assert c.status == ContractStatus.COMPLETED
+        assert c.completed_at == _NOW
+        assert acceptor.credits == 6000
+
+    def test_tier1_issuer_cancellation_seam_is_actually_consulted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        issuer = _player(credits=5000)
+        c = self._expired_contract(issuer_type=ContractIssuerType.PLAYER, issuer_id=issuer.id)
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[issuer, acceptor])
+        monkeypatch.setattr(contract_service, "_tier1_issuer_unilateral_cancellation", lambda contract: True)
+
+        result = contract_service.file_dispute(db, c.id, acceptor.id, "issuer cancelled after accept", now=_NOW)
+
+        # kill_fee = accept_fee_equivalent(20) + cancel_fee(100) = 120.
+        assert result["tier1_resolution"] == "issuer_cancellation"
+        assert result["payout"] == 120
+        assert c.status == ContractStatus.CANCELLED
+        assert acceptor.credits == 5120
+        assert issuer.credits == 4880
+
+    def test_tier1_issuer_cancellation_npc_issued_no_issuer_debit_no_crash(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        c = self._expired_contract()  # default NPC-issued
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+        monkeypatch.setattr(contract_service, "_tier1_issuer_unilateral_cancellation", lambda contract: True)
+
+        result = contract_service.file_dispute(db, c.id, acceptor.id, "reason", now=_NOW)
+
+        assert result["payout"] == 120
+        assert acceptor.credits == 5120  # mints for NPC, same precedent as complete()/abandon()
+
+    def test_tier1_cargo_manifest_match_broke_issuer_bounded_never_mints(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """WO-CONTRACT-2-DISPUTE-T1-REVISE (cipher MEDIUM): the SAME
+        bounded-transfer fix applied to the (documented no-op-today)
+        cargo_manifest_match seam, proven the same way the CRITICAL was
+        proven in TestResolveDispute -- a broke issuer caps the payout,
+        never mints the shortfall."""
+        issuer = _player(credits=15)
+        c = self._expired_contract(issuer_type=ContractIssuerType.PLAYER, issuer_id=issuer.id)
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[issuer, acceptor])
+        monkeypatch.setattr(contract_service, "_tier1_cargo_manifest_match", lambda contract: True)
+        total_before = issuer.credits + acceptor.credits
+
+        result = contract_service.file_dispute(db, c.id, acceptor.id, "delivered on time", now=_NOW)
+
+        assert result["payout"] == 15  # NOT the nominal 1000
+        assert issuer.credits == 0
+        assert acceptor.credits == 5015
+        assert issuer.credits + acceptor.credits == total_before
+
+    def test_tier1_issuer_cancellation_broke_issuer_bounded_never_mints(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        issuer = _player(credits=7)
+        c = self._expired_contract(issuer_type=ContractIssuerType.PLAYER, issuer_id=issuer.id)
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[issuer, acceptor])
+        monkeypatch.setattr(contract_service, "_tier1_issuer_unilateral_cancellation", lambda contract: True)
+        total_before = issuer.credits + acceptor.credits
+
+        result = contract_service.file_dispute(db, c.id, acceptor.id, "reason", now=_NOW)
+
+        assert result["payout"] == 7  # NOT the nominal 120 kill-fee
+        assert issuer.credits == 0
+        assert acceptor.credits == 5007
+        assert issuer.credits + acceptor.credits == total_before
+
+    def test_dispute_driven_cancellation_computes_insurance_refund(self) -> None:
+        """WO-CONTRACT-2-DISPUTE-T1-REVISE (mack LOW (c)): a CANCELLED
+        dispute outcome now runs the SAME `_compute_insurance_
+        cancellation_refund` idiom abandon()/cancel_player_contract()
+        use. By construction this always evaluates to 0 for a dispute
+        (see `_apply_dispute_insurance_refund`'s own docstring: elapsed
+        >= duration already holds once a contract is EXPIRED) -- proven
+        here explicitly rather than just trusted, so a future change to
+        that assumption gets caught."""
+        station = _station(status=StationStatus.ABANDONED)
+        c = self._expired_contract(
+            destination_station_id=station.id,
+            insurance_coverage_tier=ContractInsuranceCoverageTier.STANDARD,
+            insurance_premium_paid=Decimal("50.00"),
+        )
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor], stations=[station])
+
+        result = contract_service.file_dispute(db, c.id, acceptor.id, "station offline", now=_NOW)
+
+        assert result["tier1_resolution"] == "destination_unreachable"
+        assert result["insurance_refund"] == 0  # always 0 -- proven, not assumed
+        assert acceptor.credits == 5020  # only the acceptance-fee payout, no insurance top-up
+
+    # --- unresolvable -> Tier-2 escalation ----------------------------- #
+
+    def test_unresolvable_escalates_via_high_value(self) -> None:
+        station = _station(status=StationStatus.OPERATIONAL)
+        c = self._expired_contract(destination_station_id=station.id, payment=Decimal("150000.00"))
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor], stations=[station])
+
+        result = contract_service.file_dispute(db, c.id, acceptor.id, "high value dispute", now=_NOW)
+
+        assert result["tier1_resolution"] is None
+        assert result["escalated_to_admin"] is True
+        assert c.status == ContractStatus.DISPUTED
+        assert c.escrow_state == ContractEscrowState.DISPUTED  # stays frozen
+        assert acceptor.credits == 5000  # untouched, no payout while unresolved
+
+    def test_unresolvable_low_value_with_station_present_not_escalated(self) -> None:
+        """Under $100k, station resolves (exists, not abandoned) -> none
+        of the three E-I3 criteria match -- escalated_to_admin stays
+        False, but the contract still sits DISPUTED in the general
+        (status, dispute_filed_at)-indexed queue regardless."""
+        station = _station(status=StationStatus.OPERATIONAL)
+        c = self._expired_contract(destination_station_id=station.id, payment=Decimal("1000.00"))
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor], stations=[station])
+
+        result = contract_service.file_dispute(db, c.id, acceptor.id, "reason", now=_NOW)
+
+        assert result["escalated_to_admin"] is False
+        assert c.status == ContractStatus.DISPUTED
+
+
+@pytest.mark.unit
+class TestTier1AndEI3HelpersDirect:
+    def test_cargo_manifest_match_always_false(self) -> None:
+        assert contract_service._tier1_cargo_manifest_match(_contract()) is False
+
+    def test_issuer_unilateral_cancellation_always_false(self) -> None:
+        assert contract_service._tier1_issuer_unilateral_cancellation(_contract()) is False
+
+    def test_destination_unreachable_true_only_for_abandoned_station(self) -> None:
+        station_id = uuid.uuid4()
+        c = _contract(destination_station_id=station_id)
+        abandoned = _station(id=station_id, status=StationStatus.ABANDONED)
+        db = _FakeSession(stations=[abandoned])
+        assert contract_service._tier1_destination_unreachable(db, c) is True
+
+        operational = _station(id=station_id, status=StationStatus.OPERATIONAL)
+        db2 = _FakeSession(stations=[operational])
+        assert contract_service._tier1_destination_unreachable(db2, c) is False
+
+        db3 = _FakeSession(stations=[])
+        assert contract_service._tier1_destination_unreachable(db3, c) is False
+
+    def test_ei3_both_parties_dispute_always_false(self) -> None:
+        assert contract_service._ei3_both_parties_dispute(_contract()) is False
+
+    def test_ei3_evidence_trail_incomplete_true_when_station_missing(self) -> None:
+        c = _contract(destination_station_id=uuid.uuid4())
+        db = _FakeSession(stations=[])
+        assert contract_service._ei3_evidence_trail_incomplete(db, c) is True
+
+    def test_ei3_evidence_trail_incomplete_false_when_station_exists(self) -> None:
+        station = _station()
+        c = _contract(destination_station_id=station.id)
+        db = _FakeSession(stations=[station])
+        assert contract_service._ei3_evidence_trail_incomplete(db, c) is False
+
+    def test_ei3_high_value_threshold_boundary(self) -> None:
+        assert contract_service._ei3_high_value(_contract(payment=Decimal("100000.00"))) is False
+        assert contract_service._ei3_high_value(_contract(payment=Decimal("100000.01"))) is True
+
+
+@pytest.mark.unit
+class TestReputationPenaltyPauseGate:
+    def test_gate_tracks_disputed_status_only(self) -> None:
+        c = _contract(status=ContractStatus.ACCEPTED)
+        assert contract_service._is_reputation_penalty_paused(c) is False
+        c.status = ContractStatus.EXPIRED
+        assert contract_service._is_reputation_penalty_paused(c) is False
+        c.status = ContractStatus.DISPUTED
+        assert contract_service._is_reputation_penalty_paused(c) is True
+        c.status = ContractStatus.CANCELLED
+        assert contract_service._is_reputation_penalty_paused(c) is False
+
+    def test_penalty_applies_on_plain_expiry_gate_false_paused_true_after_filing(self) -> None:
+        """WO's own Accept criterion, verbatim: 'penalty applies on expiry
+        WITHOUT a filing, is PAUSED with one.' The credit-penalty
+        sweep_expired_accepted_contracts already applies is unaffected by
+        this WO (unchanged, pre-existing behavior) -- proven here
+        alongside the NEW pause gate to show both halves of the claim in
+        one flow."""
+        acceptor = _player(credits=5000)
+        c = _contract(
+            status=ContractStatus.ACCEPTED, deadline=_NOW - timedelta(hours=1),
+            penalty=Decimal("300.00"), payment=Decimal("1000.00"),
+        )
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+
+        contract_service.sweep_expired_accepted_contracts(db, now=_NOW)
+        assert c.status == ContractStatus.EXPIRED
+        assert acceptor.credits == 4700  # credit penalty already applied on expiry
+        assert contract_service._is_reputation_penalty_paused(c) is False  # no filing -- NOT paused
+
+        contract_service.file_dispute(db, c.id, acceptor.id, "reason", now=_NOW)
+        assert contract_service._is_reputation_penalty_paused(c) is True  # filed -- PAUSED
+
+
+@pytest.mark.unit
+class TestResolveDispute:
+    def _disputed_contract(self, **overrides: Any) -> SimpleNamespace:
+        base = dict(
+            status=ContractStatus.DISPUTED, payment=Decimal("1000.00"),
+            acceptance_fee_pct=Decimal("2.0"), dispute_filed_at=_NOW - timedelta(hours=2),
+        )
+        base.update(overrides)
+        return _contract(**base)
+
+    def test_full_payout_debits_issuer_credits_acceptor(self) -> None:
+        issuer = _player(credits=5000)
+        c = self._disputed_contract(issuer_type=ContractIssuerType.PLAYER, issuer_id=issuer.id)
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[issuer, acceptor])
+
+        result = contract_service.resolve_dispute(
+            db, c.id, uuid.uuid4(), ContractDisputeResolution.FULL_PAYOUT, notes="proven delivered", now=_NOW,
+        )
+
+        assert result["amount_to_acceptor"] == 1000
+        assert c.status == ContractStatus.COMPLETED
+        assert c.completed_at == _NOW
+        assert acceptor.credits == 6000
+        assert issuer.credits == 4000
+        assert c.dispute_resolution == ContractDisputeResolution.FULL_PAYOUT
+        assert c.dispute_resolved_at == _NOW
+        assert c.dispute_notes == "proven delivered"
+
+    def test_full_payout_npc_issued_mints_no_debit(self) -> None:
+        c = self._disputed_contract()  # default NPC-issued
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+
+        result = contract_service.resolve_dispute(
+            db, c.id, uuid.uuid4(), ContractDisputeResolution.FULL_PAYOUT, now=_NOW,
+        )
+
+        assert result["amount_to_acceptor"] == 1000
+        assert acceptor.credits == 6000
+
+    def test_partial_payout_pinned_at_zero_delivered(self) -> None:
+        c = self._disputed_contract()
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+
+        result = contract_service.resolve_dispute(
+            db, c.id, uuid.uuid4(), ContractDisputeResolution.PARTIAL_PAYOUT, now=_NOW,
+        )
+
+        assert result["amount_to_acceptor"] == 0
+        assert c.status == ContractStatus.CANCELLED
+        assert acceptor.credits == 5000
+
+    def test_partial_payout_is_harsher_than_refund_not_equivalent(self) -> None:
+        """WO-CONTRACT-2-DISPUTE-T1-REVISE (mack LOW (a)): the OLD
+        docstring claimed PARTIAL_PAYOUT nets the same as REFUND for
+        cargo_delivery -- FALSE. REFUND explicitly credits the acceptor
+        their acceptance fee back (canon names it for REFUND); PARTIAL_
+        PAYOUT's own canon bullet never mentions a fee refund at all, so
+        at delivered=0 the acceptor collects LESS under PARTIAL_PAYOUT
+        (nothing) than under REFUND (the fee) -- proven side-by-side on
+        two otherwise-identical contracts."""
+        acceptor_partial = _player(credits=5000)
+        c_partial = self._disputed_contract()
+        c_partial.acceptor_player_id = acceptor_partial.id
+        db_partial = _FakeSession(contracts=[c_partial], players=[acceptor_partial])
+
+        acceptor_refund = _player(credits=5000)
+        c_refund = self._disputed_contract()
+        c_refund.acceptor_player_id = acceptor_refund.id
+        db_refund = _FakeSession(contracts=[c_refund], players=[acceptor_refund])
+
+        partial_result = contract_service.resolve_dispute(
+            db_partial, c_partial.id, uuid.uuid4(), ContractDisputeResolution.PARTIAL_PAYOUT, now=_NOW,
+        )
+        refund_result = contract_service.resolve_dispute(
+            db_refund, c_refund.id, uuid.uuid4(), ContractDisputeResolution.REFUND, now=_NOW,
+        )
+
+        assert partial_result["amount_to_acceptor"] == 0
+        assert refund_result["amount_to_acceptor"] == 20
+        assert partial_result["amount_to_acceptor"] != refund_result["amount_to_acceptor"]
+
+    def test_refund_credits_acceptance_fee_only(self) -> None:
+        c = self._disputed_contract()
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+
+        result = contract_service.resolve_dispute(db, c.id, uuid.uuid4(), ContractDisputeResolution.REFUND, now=_NOW)
+
+        assert result["amount_to_acceptor"] == 20  # 2% of 1000
+        assert c.status == ContractStatus.CANCELLED
+        assert acceptor.credits == 5020
+
+    def test_penalty_moves_no_credits(self) -> None:
+        c = self._disputed_contract()
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+
+        result = contract_service.resolve_dispute(db, c.id, uuid.uuid4(), ContractDisputeResolution.PENALTY, now=_NOW)
+
+        assert result["amount_to_acceptor"] == 0
+        assert c.status == ContractStatus.CANCELLED
+        assert acceptor.credits == 5000
+
+    def test_split_half_payment_plus_fee_debits_issuer(self) -> None:
+        issuer = _player(credits=5000)
+        c = self._disputed_contract(issuer_type=ContractIssuerType.PLAYER, issuer_id=issuer.id)
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[issuer, acceptor])
+
+        result = contract_service.resolve_dispute(db, c.id, uuid.uuid4(), ContractDisputeResolution.SPLIT, now=_NOW)
+
+        # half_payment=500, fee_refund=20 -> 520 to acceptor; issuer -500.
+        assert result["amount_to_acceptor"] == 520
+        assert c.status == ContractStatus.CANCELLED
+        assert acceptor.credits == 5520
+        assert issuer.credits == 4500
+
+    def test_split_broke_issuer_bounded_half_payment_fee_refund_unbounded(self) -> None:
+        """The half-payment component is issuer-funded (bounded); the
+        acceptance-fee-refund component is an unconditional acceptor
+        self-refund (same as REFUND's own fee) -- proves the two halves
+        of SPLIT's settlement are independently bounded/unbounded, not
+        accidentally coupled."""
+        issuer = _player(credits=8)  # far less than the 500 half-payment
+        c = self._disputed_contract(issuer_type=ContractIssuerType.PLAYER, issuer_id=issuer.id)
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[issuer, acceptor])
+        total_before = issuer.credits + acceptor.credits
+
+        result = contract_service.resolve_dispute(db, c.id, uuid.uuid4(), ContractDisputeResolution.SPLIT, now=_NOW)
+
+        # bounded half-payment (8, not 500) + unbounded fee refund (20) = 28.
+        assert result["amount_to_acceptor"] == 28
+        assert issuer.credits == 0
+        assert acceptor.credits == 5028
+        # +20 is the acceptor's own accept-time fee coming back to them --
+        # not issuer-funded, so total system credits legitimately grow by
+        # exactly that self-refund (same as REFUND's own fee-only case).
+        assert issuer.credits + acceptor.credits == total_before + 20
+
+    def test_guard_runs_before_any_credit_mutation(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """WO-CONTRACT-2-DISPUTE-T1-REVISE (mack HIGH): directly proves
+        the reordering, not just its consequence -- monkeypatches
+        `_guarded_transition` to raise (simulating a lost race) and
+        asserts ZERO credits moved, on BOTH players, before the
+        exception propagates. Complements `test_double_resolve_rejected_
+        conservation` below (which proves the same thing via a REAL
+        second call, not a monkeypatch)."""
+        issuer = _player(credits=5000)
+        c = self._disputed_contract(issuer_type=ContractIssuerType.PLAYER, issuer_id=issuer.id)
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[issuer, acceptor])
+
+        def _raise_conflict(*args: Any, **kwargs: Any) -> None:
+            raise ContractConflictError("stale_status: simulated lost race")
+
+        monkeypatch.setattr(contract_service, "_guarded_transition", _raise_conflict)
+
+        with pytest.raises(ContractConflictError, match="stale_status"):
+            contract_service.resolve_dispute(db, c.id, uuid.uuid4(), ContractDisputeResolution.FULL_PAYOUT, now=_NOW)
+
+        assert issuer.credits == 5000  # untouched
+        assert acceptor.credits == 5000  # untouched
+
+    def test_full_payout_cancelled_never_applies_insurance_refund_completed_status(self) -> None:
+        """FULL_PAYOUT resolves to COMPLETED, not CANCELLED -- insurance
+        refund logic must NOT fire (contracts.md:62's completion rule),
+        even if the contract happens to carry a tier."""
+        c = self._disputed_contract(
+            insurance_coverage_tier=ContractInsuranceCoverageTier.BASIC, insurance_premium_paid=Decimal("20.00"),
+        )
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+
+        result = contract_service.resolve_dispute(
+            db, c.id, uuid.uuid4(), ContractDisputeResolution.FULL_PAYOUT, now=_NOW,
+        )
+
+        assert result["insurance_refund"] == 0
+        assert c.status == ContractStatus.COMPLETED
+        assert c.insurance_premium_paid == Decimal("20.00")  # untouched, not refunded
+
+    def test_broke_issuer_bounded_transfer_never_mints(self) -> None:
+        """WO-CONTRACT-2-DISPUTE-T1-REVISE (mack CRITICAL regression):
+        the PRE-fix version of this test asserted issuer->0 AND
+        acceptor+=full payment simultaneously -- a straight mint (10 in,
+        1000 out). Fixed behavior: the acceptor collects ONLY what the
+        issuer's balance can actually cover (`min(issuer.credits,
+        amount)`), never more -- total system credits are UNCHANGED by
+        the settlement, just redistributed."""
+        issuer = _player(credits=10)  # far less than the 1000 full_payout would need
+        c = self._disputed_contract(issuer_type=ContractIssuerType.PLAYER, issuer_id=issuer.id)
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[issuer, acceptor])
+        total_before = issuer.credits + acceptor.credits
+
+        result = contract_service.resolve_dispute(
+            db, c.id, uuid.uuid4(), ContractDisputeResolution.FULL_PAYOUT, now=_NOW,
+        )
+
+        assert issuer.credits == 0  # gave up everything it had, never negative
+        assert acceptor.credits == 5010  # collected ONLY the issuer's actual 10cr -- NOT the full 1000
+        assert result["amount_to_acceptor"] == 10  # the ACTUAL transferred amount, not the nominal 1000
+        # Conservation: total system credits are exactly unchanged --
+        # nothing minted, nothing destroyed.
+        assert issuer.credits + acceptor.credits == total_before
+
+    def test_solvent_issuer_still_pays_full_nominal_amount(self) -> None:
+        """Sibling to the broke-issuer case above -- when the issuer CAN
+        cover it, the bounded transfer is indistinguishable from a full
+        payout (the bound simply never binds)."""
+        issuer = _player(credits=5000)
+        c = self._disputed_contract(issuer_type=ContractIssuerType.PLAYER, issuer_id=issuer.id)
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[issuer, acceptor])
+
+        result = contract_service.resolve_dispute(
+            db, c.id, uuid.uuid4(), ContractDisputeResolution.FULL_PAYOUT, now=_NOW,
+        )
+
+        assert issuer.credits == 4000
+        assert acceptor.credits == 6000
+        assert result["amount_to_acceptor"] == 1000
+
+    def test_only_disputed_contracts_resolvable(self) -> None:
+        c = _contract(status=ContractStatus.ACCEPTED)
+        acceptor = _player()
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+        with pytest.raises(ContractConflictError, match="stale_status"):
+            contract_service.resolve_dispute(db, c.id, uuid.uuid4(), ContractDisputeResolution.REFUND, now=_NOW)
+
+    def test_double_resolve_rejected_conservation(self) -> None:
+        c = self._disputed_contract()
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+
+        contract_service.resolve_dispute(db, c.id, uuid.uuid4(), ContractDisputeResolution.REFUND, now=_NOW)
+        assert c.status == ContractStatus.CANCELLED
+        balance_after_first = acceptor.credits
+
+        with pytest.raises(ContractConflictError, match="stale_status"):
+            contract_service.resolve_dispute(db, c.id, uuid.uuid4(), ContractDisputeResolution.REFUND, now=_NOW)
+
+        assert acceptor.credits == balance_after_first  # race loser is a complete no-op
+
+    def test_unknown_outcome_rejected(self) -> None:
+        c = self._disputed_contract()
+        acceptor = _player()
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+        with pytest.raises(ContractError, match="unknown_outcome"):
+            contract_service.resolve_dispute(db, c.id, uuid.uuid4(), "not_a_real_outcome", now=_NOW)
+
+
+@pytest.mark.unit
+class TestDisputeContractRequestLengthCaps:
+    """WO-CONTRACT-2-DISPUTE-T1-REVISE (mack LOW (b)): `reason` (2000) /
+    `evidence_snapshot` (500) are capped at the request boundary --
+    Pydantic-level, no FastAPI TestClient/DB needed."""
+
+    def test_reason_within_cap_accepted(self) -> None:
+        from src.api.routes.contracts import DisputeContractRequest
+        req = DisputeContractRequest(reason="x" * 2000)
+        assert len(req.reason) == 2000
+
+    def test_reason_over_cap_rejected(self) -> None:
+        from pydantic import ValidationError
+
+        from src.api.routes.contracts import DisputeContractRequest
+        with pytest.raises(ValidationError):
+            DisputeContractRequest(reason="x" * 2001)
+
+    def test_evidence_snapshot_within_cap_accepted(self) -> None:
+        from src.api.routes.contracts import DisputeContractRequest
+        req = DisputeContractRequest(reason="ok", evidence_snapshot="y" * 500)
+        assert len(req.evidence_snapshot) == 500
+
+    def test_evidence_snapshot_over_cap_rejected(self) -> None:
+        from pydantic import ValidationError
+
+        from src.api.routes.contracts import DisputeContractRequest
+        with pytest.raises(ValidationError):
+            DisputeContractRequest(reason="ok", evidence_snapshot="y" * 501)
+
+    def test_empty_reason_still_rejected(self) -> None:
+        """Pre-existing min_length=1 guard, unaffected by this REVISE --
+        confirms the new max_length Field() didn't accidentally drop it."""
+        from pydantic import ValidationError
+
+        from src.api.routes.contracts import DisputeContractRequest
+        with pytest.raises(ValidationError):
+            DisputeContractRequest(reason="")
+
+
+@pytest.mark.unit
+class TestSerializeContractDisputeNotesPartyGate:
+    """WO-CONTRACT-2-DISPUTE-T1-REVISE addendum: dispute_notes is free-text
+    reason/evidence, potentially sensitive -- a non-party player must not
+    read another player's dispute_notes even though a contract UUID is
+    discoverable via the public /board endpoint (GET /{contract_id} has no
+    ownership scoping; that broader gap is ticket #37, out of scope here).
+    _serialize_contract now includes dispute_notes ONLY when the caller is
+    a party (issuer_id / acceptor_player_id)."""
+
+    def _disputed_contract(self) -> SimpleNamespace:
+        issuer_id = uuid.uuid4()
+        acceptor_id = uuid.uuid4()
+        return _contract(
+            issuer_id=issuer_id,
+            acceptor_player_id=acceptor_id,
+            status=ContractStatus.DISPUTED,
+            dispute_notes="the cargo never arrived, station logs attached",
+        )
+
+    def test_non_party_caller_omits_dispute_notes(self) -> None:
+        from src.api.routes.contracts import _serialize_contract
+        c = self._disputed_contract()
+        stranger_id = uuid.uuid4()
+        payload = _serialize_contract(c, stranger_id)
+        assert payload["dispute_notes"] is None
+
+    def test_no_caller_id_omits_dispute_notes(self) -> None:
+        """Defensive default: an unset caller_player_id must never leak the
+        field (fail-closed, not fail-open)."""
+        from src.api.routes.contracts import _serialize_contract
+        c = self._disputed_contract()
+        payload = _serialize_contract(c)
+        assert payload["dispute_notes"] is None
+
+    def test_issuer_sees_dispute_notes(self) -> None:
+        from src.api.routes.contracts import _serialize_contract
+        c = self._disputed_contract()
+        payload = _serialize_contract(c, c.issuer_id)
+        assert payload["dispute_notes"] == c.dispute_notes
+
+    def test_acceptor_sees_dispute_notes(self) -> None:
+        from src.api.routes.contracts import _serialize_contract
+        c = self._disputed_contract()
+        payload = _serialize_contract(c, c.acceptor_player_id)
+        assert payload["dispute_notes"] == c.dispute_notes
+
+    def test_non_sensitive_dispute_fields_stay_visible_to_non_party(self) -> None:
+        """The addendum's KEEP list: dispute_resolution / dispute_filed_at /
+        dispute_resolved_at / escalated_to_admin are fine to expose to
+        anyone -- only dispute_notes is gated."""
+        from src.api.routes.contracts import _serialize_contract
+        c = self._disputed_contract()
+        c.dispute_filed_at = _NOW
+        c.escalated_to_admin = True
+        stranger_id = uuid.uuid4()
+        payload = _serialize_contract(c, stranger_id)
+        assert payload["dispute_filed_at"] is not None
+        assert payload["escalated_to_admin"] is True
