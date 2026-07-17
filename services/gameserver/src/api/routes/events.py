@@ -10,6 +10,7 @@ from src.auth.admin_scopes import GALAXY_MANAGE, PLAYERS_VIEW
 from src.auth.dependencies import require_scope
 from src.models.game_event import GameEvent, EventTemplate, EventEffect, EventParticipation, EventType, EventStatus
 from src.models.user import User
+from src.services.admin_action_log_service import log_admin_action
 
 router = APIRouter(prefix="/admin/events", tags=["events"])
 
@@ -255,6 +256,16 @@ async def create_event(
         )
         db.add(effect)
     
+    log_admin_action(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="event_create",
+        target_type="game_event",
+        target_id=str(new_event.id),
+        payload={},
+    )
+
     db.commit()
     
     # Return the created event
@@ -322,6 +333,16 @@ async def update_event(
         )
         db.add(effect)
     
+    log_admin_action(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="event_update",
+        target_type="game_event",
+        target_id=str(event_id),
+        payload={},
+    )
+
     db.commit()
     
     # Return updated event (similar to create response)
@@ -385,6 +406,16 @@ async def activate_event(
         effect.is_active = True
         effect.applied_at = datetime.utcnow()
     
+    log_admin_action(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="event_activate",
+        target_type="game_event",
+        target_id=str(event_id),
+        payload={},
+    )
+
     db.commit()
     
     return {"message": "Event activated successfully", "event_id": event_id}
@@ -413,6 +444,16 @@ async def deactivate_event(
     for effect in effects:
         effect.is_active = False
     
+    log_admin_action(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="event_deactivate",
+        target_type="game_event",
+        target_id=str(event_id),
+        payload={},
+    )
+
     db.commit()
     
     return {"message": "Event deactivated successfully", "event_id": event_id}
@@ -439,6 +480,16 @@ async def delete_event(
     
     # Delete the event
     db.delete(event)
+    log_admin_action(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="event_delete",
+        target_type="game_event",
+        target_id=str(event_id),
+        payload={},
+    )
+
     db.commit()
     
     return {"message": "Event deleted successfully", "event_id": event_id}

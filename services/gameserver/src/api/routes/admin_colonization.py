@@ -21,6 +21,7 @@ from src.models.genesis_device import GenesisDevice, PlanetFormation
 from src.models.ship import Ship
 from src.models.sector import Sector
 from src.models.team import Team
+from src.services.admin_action_log_service import log_admin_action
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -807,6 +808,16 @@ async def tick_planet_production(
         # CRT WO-K1a cutover: the admin /tick drives the full planetary tick via settle()
         # (production + siege + terraform + research faucet, each idempotent on its own anchor).
         from src.services.structures import settle
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=GALAXY_MANAGE,
+            action="planet_tick",
+            target_type="planet",
+            target_id=str(planet_id),
+            payload={},
+        )
+
         changed = settle(planet, db=db).changed
         # Commit even on the no-unit-but-anchor-advanced path so the durable anchor advance
         # persists (settle() reports changed there too); rollback only when truly nothing changed

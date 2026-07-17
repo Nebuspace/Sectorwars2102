@@ -15,6 +15,7 @@ from src.auth.dependencies import require_scope
 from src.models.user import User
 from src.models.faction import Faction, FactionType
 from src.services.faction_service import FactionService
+from src.services.admin_action_log_service import log_admin_action
 
 router = APIRouter(prefix="/admin/factions", tags=["admin-factions"])
 
@@ -135,6 +136,16 @@ async def create_faction(
     )
     
     db.add(faction)
+    log_admin_action(
+        db,
+        actor=admin_user,
+        scope_used=GALAXY_MANAGE,
+        action="faction_create",
+        target_type="faction",
+        target_id=str(faction.id),
+        payload={"name": request.name},
+    )
+
     db.commit()
     db.refresh(faction)
     
@@ -177,6 +188,16 @@ async def update_faction(
         setattr(faction, field, value)
     
     faction.updated_at = datetime.utcnow()
+    log_admin_action(
+        db,
+        actor=admin_user,
+        scope_used=GALAXY_MANAGE,
+        action="faction_update",
+        target_type="faction",
+        target_id=str(faction_id),
+        payload=update_data,
+    )
+
     db.commit()
     db.refresh(faction)
     
@@ -229,6 +250,16 @@ async def delete_faction(
         )
     
     db.delete(faction)
+    log_admin_action(
+        db,
+        actor=admin_user,
+        scope_used=GALAXY_MANAGE,
+        action="faction_delete",
+        target_type="faction",
+        target_id=str(faction_id),
+        payload={"name": faction.name},
+    )
+
     db.commit()
     
     return {"success": True, "message": f"Faction '{faction.name}' deleted"}
@@ -247,6 +278,16 @@ async def update_faction_territory(
     # Convert string UUIDs to UUID objects
     sector_ids = [UUID(sid) for sid in request.sector_ids]
     
+    log_admin_action(
+        db,
+        actor=admin_user,
+        scope_used=GALAXY_MANAGE,
+        action="faction_territory_update",
+        target_type="faction",
+        target_id=str(faction_id),
+        payload={"sector_count": len(request.sector_ids)},
+    )
+
     faction = await service.update_faction_territory(faction_id, sector_ids)
     
     if request.home_sector_id:
@@ -278,6 +319,16 @@ async def update_player_reputation(
         raise HTTPException(status_code=404, detail="Faction not found")
     
     # Update reputation
+    log_admin_action(
+        db,
+        actor=admin_user,
+        scope_used=PLAYERS_ADJUST_REP,
+        action="faction_reputation_update",
+        target_type="player",
+        target_id=str(request.player_id),
+        payload={"faction_id": str(faction_id), "change": request.change},
+    )
+
     reputation = await service.update_reputation(
         player_id=UUID(request.player_id),
         faction_id=faction_id,

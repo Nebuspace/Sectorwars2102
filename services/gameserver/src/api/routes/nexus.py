@@ -8,7 +8,9 @@ from pydantic import BaseModel
 
 from src.auth.admin_scopes import GALAXY_MANAGE
 from src.auth.dependencies import get_current_user, get_current_player, require_scope
-from src.core.database import get_async_session
+from src.core.database import get_async_session, get_db
+from sqlalchemy.orm import Session
+from src.services.admin_action_log_service import log_admin_action
 from src.models.user import User
 from src.models.player import Player
 from src.models.sector import Sector
@@ -66,7 +68,8 @@ async def generate_central_nexus(
     request: NexusGenerationRequest,
     background_tasks: BackgroundTasks,
     current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
-    session: AsyncSession = Depends(get_async_session)
+    session: AsyncSession = Depends(get_async_session),
+    db: Session = Depends(get_db),
 ):
     """Generate the Central Nexus galaxy (Admin only). Requires admin authentication."""
     try:
@@ -84,6 +87,19 @@ async def generate_central_nexus(
             )
         
         # Start generation in background
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=GALAXY_MANAGE,
+            action="nexus_generate_start",
+            target_type="region",
+            target_id="central-nexus",
+            payload={
+                "force_regenerate": request.force_regenerate,
+                "preserve_player_data": request.preserve_player_data,
+            },
+        )
+        db.commit()
         background_tasks.add_task(
             generate_nexus_task,
             request.force_regenerate,

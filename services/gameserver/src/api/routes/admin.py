@@ -1981,6 +1981,16 @@ async def create_game_event(
                 db.add(effect)
                 effects_created += 1
 
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=GALAXY_MANAGE,
+            action="game_event_create",
+            target_type="game_event",
+            target_id=str(getattr(new_event, "id", "new")),
+            payload={},
+        )
+
         db.commit()
         db.refresh(new_event)
 
@@ -2224,6 +2234,15 @@ async def update_game_event(
                     detail=f"Cannot transition from '{old_status.value}' to '{new_status.value}'"
                 )
 
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=GALAXY_MANAGE,
+            action="game_event_update",
+            target_type="game_event",
+            target_id=str(event_id),
+            payload=update_data.model_dump(exclude_unset=True),
+        )
         db.commit()
         db.refresh(event)
 
@@ -2275,6 +2294,16 @@ async def activate_game_event(
             eff.is_active = True
             eff.applied_at = now
 
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=GALAXY_MANAGE,
+            action="game_event_activate",
+            target_type="game_event",
+            target_id=str(event_id),
+            payload={},
+        )
+
         db.commit()
 
         return {
@@ -2323,6 +2352,16 @@ async def deactivate_game_event(
         for eff in effects:
             eff.is_active = False
 
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=GALAXY_MANAGE,
+            action="game_event_deactivate",
+            target_type="game_event",
+            target_id=str(event_id),
+            payload={},
+        )
+
         db.commit()
 
         return {
@@ -2365,6 +2404,16 @@ async def delete_game_event(
         db.query(EventEffect).filter(EventEffect.event_id == event.id).delete()
         db.query(EventParticipation).filter(EventParticipation.event_id == event.id).delete()
         db.delete(event)
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=GALAXY_MANAGE,
+            action="game_event_delete",
+            target_type="game_event",
+            target_id=str(event_id),
+            payload={},
+        )
+
         db.commit()
 
         return {

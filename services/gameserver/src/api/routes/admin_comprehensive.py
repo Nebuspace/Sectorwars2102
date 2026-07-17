@@ -932,6 +932,16 @@ async def create_players_from_all_users(
             db.add(new_player)
             created_count += 1
         
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=PLAYERS_ADJUST_CREDITS,
+            action="player_create_bulk",
+            target_type="player",
+            target_id="bulk",
+            payload={"created_count": created_count},
+        )
+
         db.commit()
         
         logger.info(f"Admin {current_admin.username} created {created_count} players from existing users")
@@ -1576,6 +1586,16 @@ async def create_analytics_snapshot(
     Create an analytics snapshot for historical tracking
     """
     try:
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=GALAXY_MANAGE,
+            action="analytics_snapshot",
+            target_type="analytics",
+            target_id=snapshot_type,
+            payload={"snapshot_type": snapshot_type},
+        )
+
         analytics_service = AnalyticsService(db)
         snapshot = analytics_service.create_analytics_snapshot(snapshot_type)
         

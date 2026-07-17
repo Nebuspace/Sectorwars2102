@@ -13,6 +13,7 @@ from src.services.translation_service import TranslationService, get_translation
 from src.auth.admin_scopes import GALAXY_MANAGE, PLAYERS_VIEW
 from src.auth.dependencies import get_current_user, require_scope
 from src.models.user import User
+from src.services.admin_action_log_service import log_admin_action
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +208,16 @@ async def set_translation(
 ):
     """Set or update a translation (admin only)"""
     try:
+
+        log_admin_action(
+            translation_service.db,
+            actor=admin_user,
+            scope_used=GALAXY_MANAGE,
+            action="translation_set",
+            target_type="translation",
+            target_id=request.key,
+            payload={"key": request.key, "namespace": namespace, "language": language_code},
+        )
         success = await translation_service.set_translation(
             key=request.key,
             language_code=language_code,
@@ -236,6 +247,16 @@ async def bulk_import_translations(
 ):
     """Bulk import translations (admin only)"""
     try:
+
+        log_admin_action(
+            translation_service.db,
+            actor=admin_user,
+            scope_used=GALAXY_MANAGE,
+            action="translation_bulk_import",
+            target_type="translation",
+            target_id=f"{language_code}/{namespace}",
+            payload={"namespace": namespace, "language": language_code, "overwrite": request.overwrite},
+        )
         result = await translation_service.bulk_import_translations(
             translations=request.translations,
             language_code=language_code,
@@ -255,6 +276,16 @@ async def initialize_translation_data(
 ):
     """Initialize default translation data (admin only)"""
     try:
+
+        log_admin_action(
+            translation_service.db,
+            actor=admin_user,
+            scope_used=GALAXY_MANAGE,
+            action="translation_initialize",
+            target_type="translation",
+            target_id="defaults",
+            payload={},
+        )
         success = await translation_service.initialize_default_data()
         if success:
             return {"success": True, "message": "Translation data initialized"}

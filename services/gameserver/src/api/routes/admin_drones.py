@@ -19,6 +19,7 @@ from src.auth.dependencies import require_scope
 from src.models.drone import Drone, DroneDeployment, DroneCombat
 from src.models.user import User
 from src.services.drone_service import DroneService
+from src.services.admin_action_log_service import log_admin_action
 
 
 router = APIRouter(prefix="/admin/drones", tags=["admin-drones"])
@@ -310,6 +311,16 @@ async def update_drone(
     for field, value in update_data.items():
         setattr(drone, field, value)
     
+    log_admin_action(
+        db,
+        actor=admin,
+        scope_used=SHIPS_MANAGE,
+        action="drone_update",
+        target_type="drone",
+        target_id=str(drone_id),
+        payload={},
+    )
+
     await db.commit()
     await db.refresh(drone)
     
@@ -332,6 +343,16 @@ async def delete_drone(
         )
     
     await db.delete(drone)
+    log_admin_action(
+        db,
+        actor=admin,
+        scope_used=SHIPS_MANAGE,
+        action="drone_delete",
+        target_type="drone",
+        target_id=str(drone_id),
+        payload={},
+    )
+
     await db.commit()
     
     return {"message": "Drone deleted successfully"}
@@ -347,6 +368,16 @@ async def force_recall_drone(
     service = DroneService(db)
     
     try:
+        # Log before DroneService.recall_drone (internal commit).
+        log_admin_action(
+            db,
+            actor=admin,
+            scope_used=SHIPS_MANAGE,
+            action="drone_force_recall",
+            target_type="drone",
+            target_id=str(drone_id),
+            payload={},
+        )
         deployment = await service.recall_drone(drone_id)
         if not deployment:
             raise HTTPException(
@@ -387,6 +418,16 @@ async def restore_destroyed_drone(
     drone.health = drone.max_health
     drone.destroyed_at = None
     
+    log_admin_action(
+        db,
+        actor=admin,
+        scope_used=SHIPS_MANAGE,
+        action="drone_force_recall",
+        target_type="drone",
+        target_id=str(drone_id),
+        payload={},
+    )
+
     await db.commit()
     
     return {"message": "Drone restored successfully"}

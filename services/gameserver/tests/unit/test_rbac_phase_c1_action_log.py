@@ -238,7 +238,10 @@ class TestInterveningServiceCommitAtomicity:
         assert logs == 1
 
     def test_log_after_intervening_commit_loses_audit_on_rollback(self, e2e_db):
-        """Documents the PRE-FIX failure mode (regression tripwire)."""
+        """Illustrative model of the PRE-FIX failure mode (NOT a route regression
+        guard — does not drive admin_comprehensive.update_player). The genuine
+        regression guard is test_comprehensive_update_player_logs_before_reputation_service.
+        """
         player_id = str(uuid.uuid4())
         actor = SimpleNamespace(id=uuid.uuid4())
         e2e_db.add(CreditLedgerRow(id=player_id, credits=100))
