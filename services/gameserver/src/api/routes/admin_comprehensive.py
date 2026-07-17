@@ -13,7 +13,14 @@ import logging
 import uuid
 
 from src.core.database import get_db
-from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.admin_scopes import (
+    ECONOMY_INTERVENE,
+    GALAXY_MANAGE,
+    PLAYERS_ADJUST_CREDITS,
+    PLAYERS_VIEW,
+    SECURITY_ACT,
+    SHIPS_MANAGE,
+)
 from src.auth.dependencies import require_scope
 from src.models.user import User
 from src.models.player import Player
@@ -390,7 +397,7 @@ async def get_players_comprehensive(
 async def update_player(
     player_id: str,
     update_data: PlayerUpdateRequest,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(PLAYERS_ADJUST_CREDITS)),
     db: Session = Depends(get_db)
 ):
     """Update player data"""
@@ -602,7 +609,7 @@ class ShipUpdateRequest(BaseModel):
 @router.post("/ships", response_model=Dict[str, str])
 async def create_ship(
     ship_data: ShipCreateRequest,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(SHIPS_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Create a new ship for a player"""
@@ -652,7 +659,7 @@ async def create_ship(
 async def update_ship(
     ship_id: str,
     ship_data: ShipUpdateRequest,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(SHIPS_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Update ship properties"""
@@ -693,7 +700,7 @@ async def update_ship(
 @router.delete("/ships/{ship_id}", response_model=Dict[str, str])
 async def delete_ship(
     ship_id: str,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(SHIPS_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Delete a ship"""
@@ -742,7 +749,7 @@ async def delete_ship(
 async def teleport_ship(
     ship_id: str,
     target_sector_id: int,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(SHIPS_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Teleport a ship to a different sector"""
@@ -784,7 +791,7 @@ async def teleport_ship(
 @router.post("/players/create-from-user", response_model=Dict[str, str])
 async def create_player_from_user(
     user_id: str,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(PLAYERS_ADJUST_CREDITS)),
     db: Session = Depends(get_db)
 ):
     """Create a player account from an existing user account"""
@@ -822,7 +829,7 @@ async def create_player_from_user(
 
 @router.post("/players/create-bulk", response_model=Dict[str, Any])
 async def create_players_from_all_users(
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(PLAYERS_ADJUST_CREDITS)),
     db: Session = Depends(get_db)
 ):
     """Create player accounts for all users who don't have them"""
@@ -1480,7 +1487,7 @@ async def get_real_time_analytics(
 @router.post("/analytics/snapshot", response_model=Dict[str, Any])
 async def create_analytics_snapshot(
     snapshot_type: str = "manual",
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
     """
@@ -1506,7 +1513,7 @@ async def create_analytics_snapshot(
 
 @router.post("/ports/update-stock-levels", response_model=Dict[str, Any])
 async def update_all_port_stock_levels(
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(ECONOMY_INTERVENE)),
     db: Session = Depends(get_db)
 ):
     """
@@ -1669,7 +1676,7 @@ async def get_player_security_status(
 @router.post("/security/cleanup", summary="Clean up old security data")
 async def cleanup_security_data(
     days_to_keep: int = Query(default=7, ge=1, le=30, description="Number of days of data to keep"),
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW))
+    current_admin: User = Depends(require_scope(SECURITY_ACT))
 ):
     """
     Clean up old security tracking data to prevent memory growth.
@@ -1701,7 +1708,7 @@ class PlayerSecurityAction(BaseModel):
 async def take_security_action(
     player_id: str,
     action: PlayerSecurityAction,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(SECURITY_ACT)),
     db: Session = Depends(get_db),
 ):
     """
@@ -1849,7 +1856,7 @@ async def get_sectors(
 async def update_sector(
     sector_id: str,
     sector_data: SectorUpdateRequest,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Update a sector's properties"""
@@ -1918,7 +1925,7 @@ async def update_sector(
 async def create_planet_in_sector(
     sector_id: str,
     planet_data: PlanetCreateRequest,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Create a planet in the specified sector"""
@@ -2010,7 +2017,7 @@ class PlanetUpdateRequest(BaseModel):
 async def update_planet(
     planet_id: str,
     planet_data: PlanetUpdateRequest,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Update a planet's properties"""
@@ -2052,7 +2059,7 @@ async def update_planet(
 @router.delete("/planets/{planet_id}", response_model=Dict[str, Any])
 async def delete_planet(
     planet_id: str,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Delete a planet. Fails closed (409 Conflict) if the planet is colonized
@@ -2115,7 +2122,7 @@ async def delete_planet(
 async def create_port_in_sector(
     sector_id: str,
     station_data: StationCreateRequest,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Create a port in the specified sector"""
@@ -2443,7 +2450,7 @@ class WarpTunnelUpdateRequest(BaseModel):
 async def create_warp_tunnel(
     sector_id: str,
     tunnel_data: WarpTunnelCreateRequest,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Create a new warp tunnel from this sector to another"""
@@ -2548,7 +2555,7 @@ async def create_warp_tunnel(
 async def update_warp_tunnel(
     tunnel_id: str,
     tunnel_data: WarpTunnelUpdateRequest,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Update an existing warp tunnel"""
@@ -2623,7 +2630,7 @@ async def update_warp_tunnel(
 @router.delete("/warp-tunnels/{tunnel_id}")
 async def delete_warp_tunnel(
     tunnel_id: str,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Delete a warp tunnel"""
@@ -2701,7 +2708,7 @@ class StationUpdateRequest(BaseModel):
 async def update_port(
     station_id: str,
     station_data: StationUpdateRequest,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Update a port's properties"""
@@ -2755,7 +2762,7 @@ async def update_port(
 @router.delete("/ports/{station_id}", response_model=Dict[str, Any])
 async def delete_port(
     station_id: str,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Delete a port"""
@@ -2784,7 +2791,7 @@ async def delete_port(
 @router.post("/ports", response_model=Dict[str, Any])
 async def create_port(
     port_data: Dict[str, Any],
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Create a new port"""
@@ -2994,7 +3001,7 @@ async def get_ai_system_metrics(
 async def ai_model_action(
     model_id: str,
     action: str,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Take action on AI model (start, stop, train)"""

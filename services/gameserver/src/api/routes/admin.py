@@ -9,7 +9,7 @@ import math
 import logging
 
 from src.core.database import get_db
-from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.admin_scopes import GALAXY_MANAGE, PLAYERS_ADJUST_CREDITS, PLAYERS_VIEW
 from src.auth.dependencies import require_scope
 from src.models.user import User
 from src.models.player import Player
@@ -402,7 +402,7 @@ async def get_zone_details(
 async def update_player(
     player_id: str,
     update_data: dict,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(PLAYERS_ADJUST_CREDITS)),
     db: Session = Depends(get_db)
 ):
     """Update player information (admin only)"""
@@ -1033,7 +1033,7 @@ async def get_galaxy_info(
 @router.post("/galaxy/generate", response_model=dict)
 async def generate_galaxy(
     request: GalaxyGenerateRequest,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
 ):
     """Deprecated: legacy Python galaxy generator removed in Phase 4 of the
     sw2102-bang cutover. The synchronous, monolithic generator has been replaced
@@ -1315,7 +1315,7 @@ def _sector_resource_richness(resources):
 @router.post("/warp-tunnels/create", response_model=dict)
 async def create_warp_tunnel(
     request: WarpTunnelCreateRequest,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Create a warp tunnel between two sectors"""
@@ -1364,7 +1364,7 @@ async def create_warp_tunnel(
 
 @router.delete("/galaxy/clear", response_model=dict)
 async def clear_all_galaxy_data(
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Clear all galaxy data for testing purposes (complete wipe including player game state)"""
@@ -1396,7 +1396,7 @@ async def clear_all_galaxy_data(
 
 @router.post("/galaxy/fix-statistics", response_model=dict)
 async def fix_galaxy_statistics(
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Migrate galaxy statistics from old field names (port_count) to new field names (station_count)"""
@@ -1640,7 +1640,7 @@ async def get_all_alliances(
 async def update_port(
     station_id: str,
     port_updates: dict,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Update port details including commodity quantities"""
@@ -1866,7 +1866,7 @@ async def list_game_events(
 @router.post("/game-events", response_model=dict)
 async def create_game_event(
     event_data: QuickEventCreateRequest,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Create a new game event with a simplified payload.
@@ -2099,7 +2099,7 @@ async def get_game_event_detail(
 async def update_game_event(
     event_id: str,
     update_data: EventUpdateRequest,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Update a game event's basic fields (title, description, status, end_time)."""
@@ -2194,7 +2194,7 @@ async def update_game_event(
 @router.post("/game-events/{event_id}/activate", response_model=dict)
 async def activate_game_event(
     event_id: str,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Activate a scheduled or paused game event."""
@@ -2239,7 +2239,7 @@ async def activate_game_event(
 @router.post("/game-events/{event_id}/deactivate", response_model=dict)
 async def deactivate_game_event(
     event_id: str,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Deactivate (complete or cancel) an active or scheduled game event."""
@@ -2287,7 +2287,7 @@ async def deactivate_game_event(
 @router.delete("/game-events/{event_id}", response_model=dict)
 async def delete_game_event(
     event_id: str,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Delete a game event. Active events must be deactivated first."""

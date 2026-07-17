@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
 
 from src.core.database import get_db
-from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.admin_scopes import ECONOMY_INTERVENE, PLAYERS_VIEW
 from src.auth.dependencies import require_scope
 from src.models.user import User
 from src.models.market_transaction import MarketPrice, MarketTransaction, EconomicMetrics, PriceAlert
@@ -285,7 +285,7 @@ async def get_price_alerts(
 @router.post("/intervention", response_model=InterventionResponse)
 async def perform_market_intervention(
     request: MarketInterventionRequest,
-    admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    admin: User = Depends(require_scope(ECONOMY_INTERVENE)),
     db: Session = Depends(get_db)
 ):
     """
@@ -408,7 +408,7 @@ async def get_dashboard_summary(
 @router.post("/create-alert")
 async def create_price_alert(
     request: PriceAlertCreateRequest,
-    admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    admin: User = Depends(require_scope(ECONOMY_INTERVENE)),
     db: Session = Depends(get_db)
 ):
     """
@@ -457,7 +457,7 @@ async def create_price_alert(
 @router.delete("/alerts/{alert_id}")
 async def delete_price_alert(
     alert_id: UUID,
-    admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    admin: User = Depends(require_scope(ECONOMY_INTERVENE)),
     db: Session = Depends(get_db)
 ):
     """

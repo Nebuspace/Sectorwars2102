@@ -1,9 +1,7 @@
 """Admin scope catalog — RBAC Phase A1 (ADR-0058 A-F2) + Max-ruled expansion.
 
-ADR-0058's 19 platform scopes are VERBATIM.  Operational scopes (e.g.
-``admin.disputes.resolve``) are Max-ruled additions (19→26); remaining 6
-land with the re-map + seed migration.  GRANTS live as AdminScopeGrant
-rows; the catalog is the fixed vocabulary they reference.
+ADR-0058's 19 platform scopes are VERBATIM.  Operational scopes (Max-ruled
+19→26 expansion) are listed below.  GRANTS live as AdminScopeGrant rows;
 
 HIGH_IMPACT subset: actions that carry material financial, access, or
 structural risk — surfaced to the daily review queue (Phase E) and subject to
@@ -50,9 +48,13 @@ SCOPES_REVOKE = "admin.scopes.revoke"
 AUDIT_VIEW = "admin.audit.view"
 
 # Operational (Max-ruled catalog expansion 19→26 — see
-# audit/design-briefs/rbac-scope-expansion-2026-07-17.md). Staged here for #4
-# cutover; the other 6 land with the re-map + seed migration.
-# Grantable today via SCOPES_GRANT API; seed migration follows (serialized vs BULK).
+# audit/design-briefs/rbac-scope-expansion-2026-07-17.md).
+GALAXY_MANAGE = "admin.galaxy.manage"
+PLAYERS_ADJUST_CREDITS = "admin.players.adjust_credits"
+SHIPS_MANAGE = "admin.ships.manage"
+COMBAT_INTERVENE = "admin.combat.intervene"
+ECONOMY_INTERVENE = "admin.economy.intervene"
+SECURITY_ACT = "admin.security.act"
 DISPUTES_RESOLVE = "admin.disputes.resolve"
 
 # ---------------------------------------------------------------------------
@@ -80,6 +82,12 @@ ALL_SCOPES: frozenset[str] = frozenset(
         SCOPES_GRANT,
         SCOPES_REVOKE,
         AUDIT_VIEW,
+        GALAXY_MANAGE,
+        PLAYERS_ADJUST_CREDITS,
+        SHIPS_MANAGE,
+        COMBAT_INTERVENE,
+        ECONOMY_INTERVENE,
+        SECURITY_ACT,
         DISPUTES_RESOLVE,
     }
 )
@@ -97,6 +105,9 @@ HIGH_IMPACT_SCOPES: frozenset[str] = frozenset(
         REGIONS_TERMINATE,
         SCOPES_GRANT,
         SCOPES_REVOKE,
+        GALAXY_MANAGE,
+        PLAYERS_ADJUST_CREDITS,
+        SHIPS_MANAGE,
         DISPUTES_RESOLVE,
     }
 )

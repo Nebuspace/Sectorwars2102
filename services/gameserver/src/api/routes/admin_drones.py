@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from datetime import datetime
 
 from src.core.database import get_async_session
-from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.admin_scopes import PLAYERS_VIEW, SHIPS_MANAGE
 from src.auth.dependencies import require_scope
 from src.models.drone import Drone, DroneDeployment, DroneCombat
 from src.models.user import User
@@ -293,7 +293,7 @@ async def get_drone_details(
 async def update_drone(
     drone_id: UUID,
     update: AdminDroneUpdate,
-    admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    admin: User = Depends(require_scope(SHIPS_MANAGE)),
     db: AsyncSession = Depends(get_async_session)
 ):
     """Update a drone's attributes."""
@@ -319,7 +319,7 @@ async def update_drone(
 @router.delete("/{drone_id}")
 async def delete_drone(
     drone_id: UUID,
-    admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    admin: User = Depends(require_scope(SHIPS_MANAGE)),
     db: AsyncSession = Depends(get_async_session)
 ):
     """Permanently delete a drone."""
@@ -340,7 +340,7 @@ async def delete_drone(
 @router.post("/{drone_id}/force-recall")
 async def force_recall_drone(
     drone_id: UUID,
-    admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    admin: User = Depends(require_scope(SHIPS_MANAGE)),
     db: AsyncSession = Depends(get_async_session)
 ):
     """Force recall a deployed drone."""
@@ -364,7 +364,7 @@ async def force_recall_drone(
 @router.post("/{drone_id}/restore")
 async def restore_destroyed_drone(
     drone_id: UUID,
-    admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    admin: User = Depends(require_scope(SHIPS_MANAGE)),
     db: AsyncSession = Depends(get_async_session)
 ):
     """Restore a destroyed drone to active status."""

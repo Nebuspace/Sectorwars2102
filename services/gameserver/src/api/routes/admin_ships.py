@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from enum import Enum
 
 from src.core.database import get_db
-from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.admin_scopes import PLAYERS_VIEW, SHIPS_MANAGE
 from src.auth.dependencies import get_current_user, require_scope
 from src.models.user import User
 from src.models.ship import Ship, ShipType, ShipStatus, ShipSpecification
@@ -207,7 +207,7 @@ async def get_ships(
 async def emergency_ship_action(
     ship_id: UUID,
     request: EmergencyActionRequest,
-    admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    admin: User = Depends(require_scope(SHIPS_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Perform emergency action on a ship."""
@@ -394,7 +394,7 @@ async def get_fleet_health_report(
 @router.post("/create", response_model=Dict[str, Any])
 async def create_ship(
     request: CreateShipRequest,
-    admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    admin: User = Depends(require_scope(SHIPS_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Create a new ship administratively."""
@@ -545,7 +545,7 @@ async def create_ship(
 @router.delete("/{ship_id}", response_model=DeleteShipResponse)
 async def delete_ship(
     ship_id: UUID,
-    admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    admin: User = Depends(require_scope(SHIPS_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Delete a ship administratively."""

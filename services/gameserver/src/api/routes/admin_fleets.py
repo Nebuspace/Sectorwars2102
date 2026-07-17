@@ -18,7 +18,7 @@ from sqlalchemy import and_, or_, func
 from pydantic import BaseModel, Field
 
 from src.core.database import get_db
-from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.admin_scopes import COMBAT_INTERVENE, PLAYERS_VIEW
 from src.auth.dependencies import get_current_user, require_scope
 from src.models.user import User
 from src.models.fleet import Fleet, FleetBattle, FleetMember, FleetBattleCasualty, FleetStatus
@@ -401,7 +401,7 @@ async def get_battle_details(
 async def intervene_in_battle(
     battle_id: UUID,
     request: InterveneBattleRequest,
-    admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    admin: User = Depends(require_scope(COMBAT_INTERVENE)),
     db: Session = Depends(get_db)
 ):
     """Intervene in an ongoing battle."""
@@ -534,7 +534,7 @@ async def adjust_fleet_morale(
     fleet_id: UUID,
     morale: int = Query(..., ge=0, le=100),
     reason: str = Query(..., min_length=10),
-    admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    admin: User = Depends(require_scope(COMBAT_INTERVENE)),
     db: Session = Depends(get_db)
 ):
     """Adjust fleet morale administratively."""
@@ -569,7 +569,7 @@ async def adjust_fleet_morale(
 async def force_dissolve_fleet(
     fleet_id: UUID,
     request: ForceDissolveRequest,
-    admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    admin: User = Depends(require_scope(COMBAT_INTERVENE)),
     db: Session = Depends(get_db)
 ):
     """Force dissolve a fleet administratively."""

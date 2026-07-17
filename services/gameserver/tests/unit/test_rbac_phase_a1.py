@@ -45,8 +45,8 @@ class TestScopeCatalog:
     """The catalog is the authoritative scope vocabulary (ADR-0058 + staged ops)."""
 
     def test_catalog_size(self):
-        # ADR-0058: 19 platform scopes + Max-ruled DISPUTES_RESOLVE (hub #4 / expansion).
-        assert len(ALL_SCOPES) == 20
+        # ADR-0058: 19 platform scopes + 7 Max-ruled operational scopes (19→26).
+        assert len(ALL_SCOPES) == 26
 
     def test_all_scopes_start_with_admin_prefix(self):
         for scope in ALL_SCOPES:
@@ -67,11 +67,14 @@ class TestScopeCatalog:
         assert SCOPES_GRANT in HIGH_IMPACT_SCOPES
         assert SCOPES_REVOKE in HIGH_IMPACT_SCOPES
         assert admin_scopes.DISPUTES_RESOLVE in HIGH_IMPACT_SCOPES
+        assert admin_scopes.GALAXY_MANAGE in HIGH_IMPACT_SCOPES
+        assert admin_scopes.PLAYERS_ADJUST_CREDITS in HIGH_IMPACT_SCOPES
+        assert admin_scopes.SHIPS_MANAGE in HIGH_IMPACT_SCOPES
 
     def test_high_impact_count(self):
         # subscriptions.* (3) + webhooks.replay + regions.terminate + scopes.* (2)
-        # + disputes.resolve (1)
-        assert len(HIGH_IMPACT_SCOPES) == 8
+        # + disputes.resolve + galaxy.manage + players.adjust_credits + ships.manage
+        assert len(HIGH_IMPACT_SCOPES) == 11
 
     def test_meta_scopes_contains_three_members(self):
         assert len(META_SCOPES) == 3
@@ -105,6 +108,12 @@ class TestScopeCatalog:
             admin_scopes.SCOPES_GRANT,
             admin_scopes.SCOPES_REVOKE,
             admin_scopes.AUDIT_VIEW,
+            admin_scopes.GALAXY_MANAGE,
+            admin_scopes.PLAYERS_ADJUST_CREDITS,
+            admin_scopes.SHIPS_MANAGE,
+            admin_scopes.COMBAT_INTERVENE,
+            admin_scopes.ECONOMY_INTERVENE,
+            admin_scopes.SECURITY_ACT,
             admin_scopes.DISPUTES_RESOLVE,
         ]
         assert len(expected) == len(set(expected)), "Duplicate scope value in catalog constants"
@@ -244,12 +253,12 @@ def _seed_helper(admin_user_ids: List[str], existing_active_grants: Dict[str, Li
 class TestSeedLogic:
     """Test the seed idempotency logic in isolation."""
 
-    def test_fresh_admin_gets_all_19_scopes(self):
+    def test_fresh_admin_gets_all_26_scopes(self):
         uid = str(uuid.uuid4())
         result = _seed_helper([uid], {})
         assert set(result[uid]) == admin_scopes.ALL_SCOPES
 
-    def test_two_fresh_admins_each_get_all_19(self):
+    def test_two_fresh_admins_each_get_all_26(self):
         uid1, uid2 = str(uuid.uuid4()), str(uuid.uuid4())
         result = _seed_helper([uid1, uid2], {})
         assert set(result[uid1]) == admin_scopes.ALL_SCOPES
@@ -272,15 +281,15 @@ class TestSeedLogic:
         # all remaining scopes are inserted (catalog size − already held)
         assert len(inserted) == len(admin_scopes.ALL_SCOPES) - len(have)
 
-    def test_bootstrap_gets_meta_scopes_via_all_19(self):
-        """Bootstrap (is_admin=true) gets all 19 which includes the 3 meta-scopes."""
+    def test_bootstrap_gets_meta_scopes_via_all_26(self):
+        """Bootstrap (is_admin=true) gets all 26 which includes the 3 meta-scopes."""
         uid = str(uuid.uuid4())
         result = _seed_helper([uid], {})
         inserted = set(result.get(uid, []))
         assert admin_scopes.META_SCOPES <= inserted
 
     def test_no_admin_under_seeded(self):
-        """Cipher: every admin in the input must end up with all 19 scopes after seed."""
+        """Cipher: every admin in the input must end up with all 26 scopes after seed."""
         uids = [str(uuid.uuid4()) for _ in range(5)]
         # Simulate a partial pre-existing state (some already have some scopes)
         existing = {uids[2]: [admin_scopes.PLAYERS_VIEW]}
@@ -289,7 +298,7 @@ class TestSeedLogic:
             pre = set(existing.get(uid, []))
             post = pre | set(result.get(uid, []))
             assert post == admin_scopes.ALL_SCOPES, (
-                f"User {uid} ends up with {len(post)} scopes, expected 19"
+                f"User {uid} ends up with {len(post)} scopes, expected 26"
             )
 
     def test_empty_admin_list_produces_no_inserts(self):

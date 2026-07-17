@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, joinedload
 from pydantic import BaseModel
 
 from src.core.database import get_db
-from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.admin_scopes import PLAYERS_VIEW, SECURITY_ACT
 from src.auth.dependencies import require_scope
 from src.models.user import User
 from src.services.message_service import MessageService
@@ -78,7 +78,7 @@ async def get_flagged_messages(
 async def moderate_message(
     message_id: UUID,
     request: ModerateMessageRequest,
-    admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    admin: User = Depends(require_scope(SECURITY_ACT)),
     db: Session = Depends(get_db)
 ):
     """Moderate a message (delete, flag, or unflag)"""

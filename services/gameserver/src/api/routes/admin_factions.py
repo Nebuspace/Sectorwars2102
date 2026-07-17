@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 
 from src.core.database import get_db
-from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.admin_scopes import GALAXY_MANAGE, PLAYERS_ADJUST_REP, PLAYERS_VIEW
 from src.auth.dependencies import require_scope
 from src.models.user import User
 from src.models.faction import Faction, FactionType
@@ -113,7 +113,7 @@ async def list_all_factions(
 async def create_faction(
     request: FactionCreateRequest,
     db: Session = Depends(get_db),
-    admin_user: User = Depends(require_scope(PLAYERS_VIEW))
+    admin_user: User = Depends(require_scope(GALAXY_MANAGE))
 ):
     """Create a new faction (admin only)."""
     # Check if faction with same name exists
@@ -162,7 +162,7 @@ async def update_faction(
     faction_id: UUID,
     request: FactionUpdateRequest,
     db: Session = Depends(get_db),
-    admin_user: User = Depends(require_scope(PLAYERS_VIEW))
+    admin_user: User = Depends(require_scope(GALAXY_MANAGE))
 ):
     """Update a faction (admin only)."""
     service = FactionService(db)
@@ -203,7 +203,7 @@ async def update_faction(
 async def delete_faction(
     faction_id: UUID,
     db: Session = Depends(get_db),
-    admin_user: User = Depends(require_scope(PLAYERS_VIEW))
+    admin_user: User = Depends(require_scope(GALAXY_MANAGE))
 ):
     """Delete a faction (admin only)."""
     service = FactionService(db)
@@ -239,7 +239,7 @@ async def update_faction_territory(
     faction_id: UUID,
     request: TerritoryUpdateRequest,
     db: Session = Depends(get_db),
-    admin_user: User = Depends(require_scope(PLAYERS_VIEW))
+    admin_user: User = Depends(require_scope(GALAXY_MANAGE))
 ):
     """Update faction territory control (admin only)."""
     service = FactionService(db)
@@ -267,7 +267,7 @@ async def update_player_reputation(
     faction_id: UUID,
     request: ReputationUpdateRequest,
     db: Session = Depends(get_db),
-    admin_user: User = Depends(require_scope(PLAYERS_VIEW))
+    admin_user: User = Depends(require_scope(PLAYERS_ADJUST_REP))
 ):
     """Update a player's reputation with a faction (admin only)."""
     service = FactionService(db)

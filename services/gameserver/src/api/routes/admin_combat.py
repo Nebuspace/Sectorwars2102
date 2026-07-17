@@ -11,7 +11,7 @@ from sqlalchemy import func, desc, and_
 from pydantic import BaseModel, Field
 
 from src.core.database import get_db
-from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.admin_scopes import COMBAT_INTERVENE, PLAYERS_VIEW
 from src.auth.dependencies import require_scope
 from src.models.user import User
 from src.models.combat_log import CombatLog
@@ -176,7 +176,7 @@ async def get_live_combat_feed(
 async def intervene_in_combat(
     combat_id: UUID,
     request: CombatInterventionRequest,
-    admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    admin: User = Depends(require_scope(COMBAT_INTERVENE)),
     db: Session = Depends(get_db)
 ):
     """
@@ -478,7 +478,7 @@ async def get_combat_logs(
 async def resolve_combat_dispute(
     combat_id: UUID,
     resolution: CombatResolutionRequest,
-    admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    admin: User = Depends(require_scope(COMBAT_INTERVENE)),
     db: Session = Depends(get_db)
 ):
     """
