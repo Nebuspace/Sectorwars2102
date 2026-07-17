@@ -136,52 +136,58 @@ export const AdminActionLogPage: React.FC = () => {
 
       {!forbidden && (
         <form className="aal-filters" onSubmit={applyFilters} aria-label="Action log filters">
-          <label>
+          <label htmlFor="aal-filter-actor">
             Actor (user id)
             <input
+              id="aal-filter-actor"
               value={actor}
               onChange={(e) => setActor(e.target.value)}
               placeholder="UUID"
               autoComplete="off"
             />
           </label>
-          <label>
+          <label htmlFor="aal-filter-action">
             Action
             <input
+              id="aal-filter-action"
               value={action}
               onChange={(e) => setAction(e.target.value)}
               placeholder="e.g. scope_grant"
               autoComplete="off"
             />
           </label>
-          <label>
+          <label htmlFor="aal-filter-target-type">
             Target type
             <input
+              id="aal-filter-target-type"
               value={targetType}
               onChange={(e) => setTargetType(e.target.value)}
               placeholder="user"
               autoComplete="off"
             />
           </label>
-          <label>
+          <label htmlFor="aal-filter-target-id">
             Target id
             <input
+              id="aal-filter-target-id"
               value={targetId}
               onChange={(e) => setTargetId(e.target.value)}
               autoComplete="off"
             />
           </label>
-          <label>
+          <label htmlFor="aal-filter-from">
             From
             <input
+              id="aal-filter-from"
               type="datetime-local"
               value={startDate}
               onChange={(e) => setStartDate(e.target.value)}
             />
           </label>
-          <label>
+          <label htmlFor="aal-filter-to">
             To
             <input
+              id="aal-filter-to"
               type="datetime-local"
               value={endDate}
               onChange={(e) => setEndDate(e.target.value)}
@@ -191,7 +197,12 @@ export const AdminActionLogPage: React.FC = () => {
             <button type="submit" className="btn btn-primary">
               Apply
             </button>
-            <button type="button" className="btn btn-secondary" onClick={clearFilters}>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              aria-label="Clear all filters"
+              onClick={clearFilters}
+            >
               Clear
             </button>
           </div>
@@ -233,7 +244,9 @@ export const AdminActionLogPage: React.FC = () => {
                       <tr>
                         <td>{new Date(row.at).toLocaleString()}</td>
                         <td>
-                          <code>{row.admin_user_id?.slice(0, 8) || '—'}</code>
+                          <code title={row.admin_user_id || undefined}>
+                            {row.admin_user_id?.slice(0, 8) || '—'}
+                          </code>
                         </td>
                         <td>{row.action}</td>
                         <td>
@@ -241,7 +254,9 @@ export const AdminActionLogPage: React.FC = () => {
                           {row.target_id ? (
                             <>
                               {' '}
-                              <code>{row.target_id.slice(0, 12)}</code>
+                              <code title={row.target_id}>
+                                {row.target_id.slice(0, 12)}
+                              </code>
                             </>
                           ) : null}
                         </td>
@@ -255,6 +270,7 @@ export const AdminActionLogPage: React.FC = () => {
                               type="button"
                               className="btn btn-secondary aal-payload-btn"
                               aria-expanded={expandedId === row.id}
+                              aria-controls={`payload-row-${row.id}`}
                               onClick={() =>
                                 setExpandedId(expandedId === row.id ? null : row.id)
                               }
@@ -267,9 +283,13 @@ export const AdminActionLogPage: React.FC = () => {
                         </td>
                       </tr>
                       {expandedId === row.id && (
-                        <tr className="aal-payload-row">
+                        <tr className="aal-payload-row" id={`payload-row-${row.id}`}>
                           <td colSpan={7}>
-                            <pre className="aal-payload-pre" tabIndex={0}>
+                            <pre
+                              className="aal-payload-pre"
+                              tabIndex={0}
+                              aria-label="Payload snapshot (JSON)"
+                            >
                               {JSON.stringify(row.payload_snapshot, null, 2)}
                             </pre>
                           </td>
