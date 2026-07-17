@@ -186,3 +186,82 @@ def test_scopes_still_single_writer():
         if "AdminActionLog(" in path.read_text():
             offenders.append(str(path.relative_to(root)))
     assert offenders == []
+
+
+def test_comprehensive_update_player_logs_before_reputation_service():
+    """Cipher MEDIUM: textual order vs final commit is blind to intervening
+    FactionService commits — require log BEFORE await update_reputation."""
+    from src.api.routes import admin_comprehensive as comp
+
+    src = inspect.getsource(comp.update_player)
+    assert "log_admin_action" in src
+    assert src.index("log_admin_action") < src.index(
+        "await faction_service.update_reputation"
+    )
+    assert src.index("log_admin_action") < src.index("db.commit()")
+
+
+class TestInterveningServiceCommitAtomicity:
+    """Real-route property for credits+reputation combined edit (hub HIGH).
+
+    Simulates FactionService's internal commit then a post-commit failure
+    (WS throw). Log must already be in-session so the intervening commit
+    persists credit+audit together; a later rollback is a no-op.
+    """
+
+    def test_log_before_intervening_commit_survives_later_rollback(self, e2e_db):
+        player_id = str(uuid.uuid4())
+        actor = SimpleNamespace(id=uuid.uuid4())
+        e2e_db.add(CreditLedgerRow(id=player_id, credits=100))
+        e2e_db.commit()
+
+        row = e2e_db.query(CreditLedgerRow).filter(CreditLedgerRow.id == player_id).one()
+        row.credits = 999
+        log_admin_action(
+            e2e_db,
+            actor=actor,
+            scope_used=PLAYERS_ADJUST_CREDITS,
+            action="player_update",
+            target_type="player",
+            target_id=player_id,
+            payload={"credits_set": True, "reputation_keys": ["Terran Federation"]},
+        )
+        e2e_db.commit()  # intervening FactionService commit
+        e2e_db.rollback()  # WS throw → route except
+
+        credits = e2e_db.execute(
+            text("SELECT credits FROM c1_credit_ledger WHERE id=:id"),
+            {"id": player_id},
+        ).scalar()
+        logs = e2e_db.execute(text("SELECT COUNT(*) FROM admin_action_logs")).scalar()
+        assert credits == 999
+        assert logs == 1
+
+    def test_log_after_intervening_commit_loses_audit_on_rollback(self, e2e_db):
+        """Documents the PRE-FIX failure mode (regression tripwire)."""
+        player_id = str(uuid.uuid4())
+        actor = SimpleNamespace(id=uuid.uuid4())
+        e2e_db.add(CreditLedgerRow(id=player_id, credits=100))
+        e2e_db.commit()
+
+        row = e2e_db.query(CreditLedgerRow).filter(CreditLedgerRow.id == player_id).one()
+        row.credits = 999
+        e2e_db.commit()  # intervening commit BEFORE log (the bug)
+        log_admin_action(
+            e2e_db,
+            actor=actor,
+            scope_used=PLAYERS_ADJUST_CREDITS,
+            action="player_update",
+            target_type="player",
+            target_id=player_id,
+            payload={"credits_set": True},
+        )
+        e2e_db.rollback()
+
+        credits = e2e_db.execute(
+            text("SELECT credits FROM c1_credit_ledger WHERE id=:id"),
+            {"id": player_id},
+        ).scalar()
+        logs = e2e_db.execute(text("SELECT COUNT(*) FROM admin_action_logs")).scalar()
+        assert credits == 999
+        assert logs == 0

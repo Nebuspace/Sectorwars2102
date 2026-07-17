@@ -420,6 +420,28 @@ async def update_player(
             player.turns = update_data.turns
         if update_data.is_active is not None:
             player.user.is_active = update_data.is_active
+
+        # RBAC C1/C2 HIGH (hub-cipher): FactionService.update_reputation does its
+        # OWN session commit then may WS-throw.  Log MUST be session-added BEFORE
+        # that loop so the intervening commit persists credit+audit together —
+        # otherwise a WS failure after the internal commit leaves credits
+        # durable with ZERO AdminActionLog row.
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=PLAYERS_ADJUST_CREDITS,
+            action="player_update",
+            target_type="player",
+            target_id=str(player_id),
+            payload={
+                "credits_set": update_data.credits is not None,
+                "turns_set": update_data.turns is not None,
+                "is_active_set": update_data.is_active is not None,
+                "reputation_keys": sorted(
+                    (update_data.reputation_adjustments or {}).keys()
+                ),
+            },
+        )
         
         # Handle reputation adjustments -- routed through the canonical
         # Reputation table via FactionService.update_reputation, the same
@@ -454,22 +476,6 @@ async def update_player(
                     reason=f"Admin adjustment by {current_admin.username}",
                 )
 
-        log_admin_action(
-            db,
-            actor=current_admin,
-            scope_used=PLAYERS_ADJUST_CREDITS,
-            action="player_update",
-            target_type="player",
-            target_id=str(player_id),
-            payload={
-                "credits_set": update_data.credits is not None,
-                "turns_set": update_data.turns is not None,
-                "is_active_set": update_data.is_active is not None,
-                "reputation_keys": sorted(
-                    (update_data.reputation_adjustments or {}).keys()
-                ),
-            },
-        )
         db.commit()
         
         # Log admin action
