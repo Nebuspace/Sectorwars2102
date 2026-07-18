@@ -482,6 +482,33 @@
   white-space: nowrap;
 }
 
+/* WO-TOPBAR-SPACING: the credits->reputation run's own rhythm, distinct
+   from `.sbar`'s tighter row-wide gap (cockpit-shell.css, shared with the
+   name/location chips on the left and the settings/logout icons on the
+   right -- that .55em gap alone left every metric packed at the same
+   ~7.75px whether it's a genuinely different group or just two halves of
+   one reading, so nothing read as its own unit). `.vit + .vit` catches
+   every vital that immediately follows another vital in DOM order --
+   `display:contents` on `.sb-vitals` (above) makes them true flex siblings
+   of `.sbar`, so the sibling combinator still applies even though there's
+   no `.sb-vitals` box. `.sb-credits` is exempt as the run's first item (no
+   `.vit` precedes it, `.grow` doesn't carry the class), so no divider
+   floats immediately after the spacer. em is safe here: every non-credits
+   `.vit` element inherits `.sbar`'s own base font-size directly -- their
+   bumped display sizes live on nested `.sb-*` children (`.sb-turns-count`,
+   `.sb-drone`, etc.), never on the `.vit` element itself except for
+   `.sb-credits` (which is always first and so never matched here) -- so
+   1em resolves identically for turns/drones/mines/link/bounty/rep
+   regardless of each item's own displayed value size. The divider is a
+   hairline in the same muted gray `.sb-k`/`--color-text-muted` already
+   uses elsewhere in this file, not the cyan chip-accent -- it should read
+   as a quiet rhythm mark, not compete with the row's cyan chips. */
+.vit + .vit {
+  margin-left: 0.5em;
+  padding-left: 0.5em;
+  border-left: 1px solid rgba(126, 140, 160, 0.25);
+}
+
 .sb-k {
   font-size: 0.6410em;
   font-weight: 600;
