@@ -99,7 +99,7 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
   const [tunnelFormData, setTunnelFormData] = useState({
     name: '',
     destination_sector_id: 1,
-    type: 'STANDARD',
+    type: 'NATURAL',
     is_bidirectional: true,
     turn_cost: 5,
     stability: 1.0,
@@ -364,7 +364,7 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
           setTunnelFormData({
             name: '',
             destination_sector_id: 1,
-            type: 'STANDARD',
+            type: 'NATURAL',
             is_bidirectional: true,
             turn_cost: 5,
             stability: 1.0,
@@ -973,11 +973,6 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
                   >
                     <option value="NATURAL">Natural</option>
                     <option value="ARTIFICIAL">Artificial</option>
-                    <option value="STANDARD">Standard</option>
-                    <option value="QUANTUM">Quantum</option>
-                    <option value="ANCIENT">Ancient</option>
-                    <option value="UNSTABLE">Unstable</option>
-                    <option value="ONE_WAY">One-Way</option>
                   </select>
                 </div>
                 <div className="form-group">

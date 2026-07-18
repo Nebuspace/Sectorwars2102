@@ -250,8 +250,15 @@ export const CombatOverview: React.FC = () => {
   const handleIntervention = async (action: string) => {
     if (selectedCombatId) {
       try {
+        const intervention_type =
+          action === 'end' ? 'stop_combat' : action === 'restore' ? 'restore_shields' : null;
+        if (!intervention_type) {
+          setError('Unsupported intervention action');
+          setShowInterventionModal(false);
+          return;
+        }
         await api.post(`/api/v1/admin/combat/${selectedCombatId}/intervene`, {
-          intervention_type: action === 'end' ? 'stop_combat' : action === 'restore' ? 'restore_shields' : action,
+          intervention_type,
           parameters: {
             reason: `Admin intervention: ${action}`
           }
@@ -307,55 +314,6 @@ export const CombatOverview: React.FC = () => {
         </div>
       )}
       
-      {/* Combat Statistics Dashboard */}
-      {/* Page-unique .combat-stat-* class names: generic .stat-card/.stat-value
-          names get clobbered by team-management-override.css's unscoped
-          !important globals, which nullified the alarm styling. */}
-      <div className="combat-stats-grid">
-        {/* Alarm styling only when there are live battles needing intervention;
-            a quiet battlefield is neutral, not red. */}
-        <div className={`combat-stat-card${activeBattlesAlarm ? ' alarm' : ''}`}>
-          <h3>Active Battles</h3>
-          <div className="combat-stat-value">{activeBattles.toLocaleString()}</div>
-          <div className="combat-stat-change">{needingIntervention.toLocaleString()} need intervention</div>
-        </div>
-
-        <div className="combat-stat-card">
-          <h3>24h Battles</h3>
-          <div className="combat-stat-value">{combatStats?.balance_summary?.total_combats_24h?.toLocaleString() || 0}</div>
-          <div className="combat-stat-label">battles today</div>
-        </div>
-
-        <div className="combat-stat-card">
-          <h3>Balance Score</h3>
-          <div className="combat-stat-value">{combatStats?.balance_summary?.score?.toFixed(0) || 0}%</div>
-          <div className="combat-stat-label">system balance</div>
-        </div>
-
-        <div className="combat-stat-card">
-          <h3>Total Disputes</h3>
-          <div className="combat-stat-value">{combatStats?.dispute_summary?.total_disputes?.toLocaleString() || 0}</div>
-          <div className="combat-stat-label">pending review</div>
-        </div>
-
-        <div className="combat-stat-card highlight">
-          <h3>Critical Disputes</h3>
-          <div className="combat-stat-value">{combatStats?.dispute_summary?.by_severity?.critical || 0}</div>
-          <div className="combat-stat-label">need attention</div>
-        </div>
-
-        <div className="combat-stat-card highlight">
-          <h3>Balance Outliers</h3>
-          <div className="combat-stat-value">{combatStats?.balance_summary?.outliers_count || 0}</div>
-          <div className="combat-stat-label">imbalanced</div>
-        </div>
-      </div>
-
-      {/* Combat Activity Chart */}
-      <div className="combat-chart-section">
-        <CombatActivityChart events={combatEvents} width={1200} height={300} />
-      </div>
-
       {/* View Selector */}
       <div className="view-selector">
         <button 
@@ -438,6 +396,55 @@ export const CombatOverview: React.FC = () => {
         )}
       </div>
 
+      {/* Combat Statistics Dashboard */}
+      {/* Page-unique .combat-stat-* class names: generic .stat-card/.stat-value
+          names get clobbered by team-management-override.css's unscoped
+          !important globals, which nullified the alarm styling. */}
+      <div className="combat-stats-grid">
+        {/* Alarm styling only when there are live battles needing intervention;
+            a quiet battlefield is neutral, not red. */}
+        <div className={`combat-stat-card${activeBattlesAlarm ? ' alarm' : ''}`}>
+          <h3>Active Battles</h3>
+          <div className="combat-stat-value">{activeBattles.toLocaleString()}</div>
+          <div className="combat-stat-change">{needingIntervention.toLocaleString()} need intervention</div>
+        </div>
+
+        <div className="combat-stat-card">
+          <h3>24h Battles</h3>
+          <div className="combat-stat-value">{combatStats?.balance_summary?.total_combats_24h?.toLocaleString() || 0}</div>
+          <div className="combat-stat-label">battles today</div>
+        </div>
+
+        <div className="combat-stat-card">
+          <h3>Balance Score</h3>
+          <div className="combat-stat-value">{combatStats?.balance_summary?.score?.toFixed(0) || 0}%</div>
+          <div className="combat-stat-label">system balance</div>
+        </div>
+
+        <div className="combat-stat-card">
+          <h3>Total Disputes</h3>
+          <div className="combat-stat-value">{combatStats?.dispute_summary?.total_disputes?.toLocaleString() || 0}</div>
+          <div className="combat-stat-label">pending review</div>
+        </div>
+
+        <div className="combat-stat-card highlight">
+          <h3>Critical Disputes</h3>
+          <div className="combat-stat-value">{combatStats?.dispute_summary?.by_severity?.critical || 0}</div>
+          <div className="combat-stat-label">need attention</div>
+        </div>
+
+        <div className="combat-stat-card highlight">
+          <h3>Balance Outliers</h3>
+          <div className="combat-stat-value">{combatStats?.balance_summary?.outliers_count || 0}</div>
+          <div className="combat-stat-label">imbalanced</div>
+        </div>
+      </div>
+
+      {/* Combat Activity Chart */}
+      <div className="combat-chart-section">
+        <CombatActivityChart events={combatEvents} width={1200} height={300} />
+      </div>
+
       {/* Intervention Modal */}
       {showInterventionModal && (
         <div className="modal-overlay" onClick={() => setShowInterventionModal(false)}>
@@ -447,24 +454,10 @@ export const CombatOverview: React.FC = () => {
             
             <div className="intervention-options">
               <button 
-                className="btn btn-warning"
-                onClick={() => handleIntervention('pause')}
-              >
-                Pause Combat
-              </button>
-              
-              <button 
                 className="btn btn-danger"
                 onClick={() => handleIntervention('end')}
               >
                 Force End Combat
-              </button>
-              
-              <button 
-                className="btn btn-info"
-                onClick={() => handleIntervention('reset')}
-              >
-                Reset Combat State
               </button>
               
               <button 
@@ -474,6 +467,23 @@ export const CombatOverview: React.FC = () => {
                 Restore Ships
               </button>
             </div>
+            <p
+              role="note"
+              style={{
+                margin: '12px 0 0 0',
+                padding: '8px 10px',
+                background: 'rgba(234, 179, 8, 0.12)',
+                border: '1px solid rgba(234, 179, 8, 0.35)',
+                borderRadius: '6px',
+                color: '#fbbf24',
+                fontSize: '0.82rem',
+                lineHeight: 1.4,
+              }}
+            >
+              This modal offers Force End (stop_combat) and Restore Ships (restore_shields)
+              only. Pause, Reset, adjust_damage, and declare_winner controls are not shown —
+              do not invent them here.
+            </p>
             
             <button 
               className="btn btn-secondary"

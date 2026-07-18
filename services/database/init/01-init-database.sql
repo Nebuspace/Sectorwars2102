@@ -166,11 +166,19 @@ SELECT
     NOW() as timestamp;
 
 -- Display user summary
-SELECT 
-    usename as username,
-    usesuper as is_superuser,
-    usecreatedb as can_create_db,
-    usecreaterole as can_create_role
-FROM pg_user 
-WHERE usename IN ('postgres', 'sectorwars_app', 'sectorwars_readonly')
-ORDER BY usename;
+-- FIXED, WO-QTI-MIGRATION-CHAIN-FRESH: pg_user has no usecreaterole column
+-- on PG15 (that flag is rolcreaterole on pg_roles, not exposed via the
+-- pg_user view) -- the old query raised "column usecreaterole does not
+-- exist" and aborted this script mid-file under ON_ERROR_STOP=1, so
+-- 02-create-users.sql and 03-seed-data.sql never ran. pg_roles carries the
+-- same informational fields (username/superuser/can-create-db) plus the
+-- create-role flag this summary intends to show, so the query now reads
+-- from pg_roles rather than dropping the column.
+SELECT
+    rolname as username,
+    rolsuper as is_superuser,
+    rolcreatedb as can_create_db,
+    rolcreaterole as can_create_role
+FROM pg_roles
+WHERE rolname IN ('postgres', 'sectorwars_app', 'sectorwars_readonly')
+ORDER BY rolname;

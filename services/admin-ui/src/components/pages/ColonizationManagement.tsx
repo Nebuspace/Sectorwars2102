@@ -13,7 +13,7 @@ export const ColonizationManagement: React.FC = () => {
       <div className="page-header">
         <h1>Colonization Management</h1>
         <p className="page-description">
-          Monitor and manage all colonization activities across the galaxy
+          Colony overview, production, genesis devices, and planetary panels
         </p>
       </div>
 

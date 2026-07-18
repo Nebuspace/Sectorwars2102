@@ -34,7 +34,6 @@ npm-debug.log
 
 # Package lock files - ignore all except root
 package-lock.json
-services/*/package-lock.json
 # Keep root package-lock.json
 !/package-lock.json
 
@@ -68,6 +67,8 @@ test-results/
 **/playwright-report/
 */test-results/
 **/test-results/
+e2e_tests/test-results.json
+e2e_tests/screenshots/
 
 # Prevent accidental screenshots in root directory
 /*.png

@@ -289,54 +289,6 @@ const FleetManagement: React.FC = () => {
           </div>
         )}
         
-        {/* Fleet Statistics */}
-        {stats && (
-          <section className="section">
-            <div className="section-header">
-              <h3 className="section-title">🚀 Fleet Statistics</h3>
-              <p className="section-subtitle">Overview of all ships in the galaxy</p>
-            </div>
-            
-            <div className="grid grid-auto-fit gap-6">
-              <div className="dashboard-stat-card">
-                <div className="dashboard-stat-header">
-                  <span className="dashboard-stat-icon">🚀</span>
-                  <h4 className="dashboard-stat-title">Total Ships</h4>
-                </div>
-                <div className="dashboard-stat-value">{totalCount.toLocaleString()}</div>
-                <div className="dashboard-stat-description">All ships in galaxy</div>
-              </div>
-              
-              <div className="dashboard-stat-card">
-                <div className="dashboard-stat-header">
-                  <span className="dashboard-stat-icon">🔧</span>
-                  <h4 className="dashboard-stat-title">Avg Maintenance</h4>
-                </div>
-                <div className="dashboard-stat-value">{stats.average_maintenance.toFixed(1)}%</div>
-                <div className="dashboard-stat-description">Of {stats.total_ships} ships on this page</div>
-              </div>
-              
-              <div className="dashboard-stat-card stat-warning">
-                <div className="dashboard-stat-header">
-                  <span className="dashboard-stat-icon">⚠️</span>
-                  <h4 className="dashboard-stat-title">Inactive Ships</h4>
-                </div>
-                <div className="dashboard-stat-value">{stats.inactive_ships}</div>
-                <div className="dashboard-stat-description">Of {stats.total_ships} ships on this page</div>
-              </div>
-              
-              <div className="dashboard-stat-card">
-                <div className="dashboard-stat-header">
-                  <span className="dashboard-stat-icon">📦</span>
-                  <h4 className="dashboard-stat-title">Total Cargo</h4>
-                </div>
-                <div className="dashboard-stat-value">{stats.total_cargo_capacity.toLocaleString()}</div>
-                <div className="dashboard-stat-description">Of {stats.total_ships} ships on this page</div>
-              </div>
-            </div>
-          </section>
-        )}
-
         {/* Fleet Controls */}
         <section className="section">
           <div className="section-header">
@@ -455,6 +407,7 @@ const FleetManagement: React.FC = () => {
                               onClick={() => openEditForm(ship)}
                               className="btn btn-xs btn-outline"
                               title="Edit Ship"
+                              aria-label="Edit Ship"
                             >
                               ✏️
                             </button>
@@ -462,6 +415,7 @@ const FleetManagement: React.FC = () => {
                               onClick={() => openTeleportForm(ship)}
                               className="btn btn-xs btn-outline"
                               title="Teleport Ship"
+                              aria-label="Teleport Ship"
                             >
                               🌀
                             </button>
@@ -469,6 +423,7 @@ const FleetManagement: React.FC = () => {
                               onClick={() => handleDeleteShip(ship.id)}
                               className="btn btn-xs btn-error"
                               title="Delete Ship"
+                              aria-label="Delete Ship"
                             >
                               🗑️
                             </button>
@@ -505,6 +460,54 @@ const FleetManagement: React.FC = () => {
             </div>
           </div>
         </section>
+
+        {/* Fleet Statistics */}
+        {stats && (
+          <section className="section">
+            <div className="section-header">
+              <h3 className="section-title">🚀 Fleet Statistics</h3>
+              <p className="section-subtitle">Secondary overview — primary ship actions are above (Scroll-Law)</p>
+            </div>
+            
+            <div className="grid grid-auto-fit gap-6">
+              <div className="dashboard-stat-card">
+                <div className="dashboard-stat-header">
+                  <span className="dashboard-stat-icon">🚀</span>
+                  <h4 className="dashboard-stat-title">Total Ships</h4>
+                </div>
+                <div className="dashboard-stat-value">{totalCount.toLocaleString()}</div>
+                <div className="dashboard-stat-description">All ships in galaxy</div>
+              </div>
+              
+              <div className="dashboard-stat-card">
+                <div className="dashboard-stat-header">
+                  <span className="dashboard-stat-icon">🔧</span>
+                  <h4 className="dashboard-stat-title">Avg Maintenance</h4>
+                </div>
+                <div className="dashboard-stat-value">{stats.average_maintenance.toFixed(1)}%</div>
+                <div className="dashboard-stat-description">Of {stats.total_ships} ships on this page</div>
+              </div>
+              
+              <div className="dashboard-stat-card stat-warning">
+                <div className="dashboard-stat-header">
+                  <span className="dashboard-stat-icon">⚠️</span>
+                  <h4 className="dashboard-stat-title">Inactive Ships</h4>
+                </div>
+                <div className="dashboard-stat-value">{stats.inactive_ships}</div>
+                <div className="dashboard-stat-description">Of {stats.total_ships} ships on this page</div>
+              </div>
+              
+              <div className="dashboard-stat-card">
+                <div className="dashboard-stat-header">
+                  <span className="dashboard-stat-icon">📦</span>
+                  <h4 className="dashboard-stat-title">Total Cargo</h4>
+                </div>
+                <div className="dashboard-stat-value">{stats.total_cargo_capacity.toLocaleString()}</div>
+                <div className="dashboard-stat-description">Of {stats.total_ships} ships on this page</div>
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* Fleet Health Report (rescued: GET /admin/ships/health-report) */}
         <section className="section">

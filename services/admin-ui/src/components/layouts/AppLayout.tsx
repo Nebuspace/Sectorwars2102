@@ -62,9 +62,11 @@ const AppLayout: React.FC = () => {
     );
   }
   
-  // Redirect to login if not authenticated and not already loading
+  // Redirect to login if not authenticated and not already loading,
+  // preserving the intended destination (see ProtectedRoute for the
+  // matching treatment on the nested-route guard).
   if (!isLoading && !isAuthenticated && !isLoginPage) {
-    return <Navigate to="/login" replace />;
+    return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
   // Show loading state for other pages
@@ -75,8 +77,8 @@ const AppLayout: React.FC = () => {
           <main className="main-content">
             <div className="alert alert-error">
               <h2>Authentication Timeout</h2>
-              <p>We couldn't authenticate you automatically. Please log in again.</p>
-              <Navigate to="/login" replace />
+              <p>We couldn&apos;t authenticate you automatically. Please log in again.</p>
+              <Navigate to="/login" state={{ from: location }} replace />
             </div>
           </main>
         </div>

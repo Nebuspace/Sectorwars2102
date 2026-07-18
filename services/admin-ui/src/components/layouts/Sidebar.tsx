@@ -71,6 +71,7 @@ const Sidebar: React.FC = () => {
       items: [
         { to: '/fleets', label: 'Fleets', icon: '🚀' },
         { to: '/combat', label: 'Combat', icon: '⚔️' },
+        { to: '/contract-disputes', label: 'Contract Disputes', icon: '⚖️' },
         { to: '/events', label: 'Events', icon: '🎯' },
         { to: '/factions', label: 'Factions', icon: '🏴' }
       ]
@@ -91,9 +92,11 @@ const Sidebar: React.FC = () => {
       icon: '🔐',
       items: [
         { to: '/security', label: 'Security', icon: '🔒' },
-        { to: '/permissions', label: 'Permissions', icon: '🔑' },
         { to: '/first-login-conversations', label: 'First Login', icon: '💬' },
         { to: '/messages', label: 'Message Moderation', icon: '📨' },
+        { to: '/multi-account', label: 'Multi-Account Review', icon: '🔍' },
+        { to: '/scopes', label: 'Scopes', icon: '🪪' },
+        { to: '/audit', label: 'Action Log', icon: '📋' },
         { to: '/translations', label: 'Translations', icon: '🌍' }
       ]
     }

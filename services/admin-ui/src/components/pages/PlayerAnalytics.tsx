@@ -262,7 +262,7 @@ const PlayerAnalytics: React.FC = () => {
     <div className="page-container player-analytics" style={{ maxWidth: '1200px' }}>
       <PageHeader 
         title="Players" 
-        subtitle="Comprehensive player management and monitoring"
+        subtitle="Player list, search, and monitoring — bulk/assets/emergency ops are offline"
       />
       
       <div className="page-content">
@@ -290,74 +290,6 @@ const PlayerAnalytics: React.FC = () => {
           </div>
         ) : (
           <div className="space-y-4">
-            {/* Enhanced Player Metrics */}
-            {state.metrics && (
-              <section className="section">
-                <div className="section-header">
-                  <div>
-                    <h3 className="section-title">📊 Player Metrics</h3>
-                    <p className="section-subtitle">Real-time player analytics and performance indicators</p>
-                  </div>
-                </div>
-                
-                <div className="grid grid-auto-fit-sm gap-4">
-                  <div className={`dashboard-stat-card${analyticsAvailable ? '' : ' stat-not-tracked'}`} data-variant="primary">
-                    <div className="dashboard-stat-header">
-                      <span className="dashboard-stat-icon">👥</span>
-                      <h4 className="dashboard-stat-title">Active Players</h4>
-                    </div>
-                    <div className="dashboard-stat-value">{analyticsAvailable ? state.metrics.total_active_players.toLocaleString() : <>&mdash;</>}</div>
-                    <div className="dashboard-stat-description">{analyticsAvailable ? `Online: ${state.metrics.players_online_now}` : 'Analytics endpoint unavailable'}</div>
-                  </div>
-
-                  <div className={`dashboard-stat-card${analyticsAvailable ? '' : ' stat-not-tracked'}`}>
-                    <div className="dashboard-stat-header">
-                      <span className="dashboard-stat-icon">💰</span>
-                      <h4 className="dashboard-stat-title">Total Credits</h4>
-                    </div>
-                    <div className="dashboard-stat-value">{analyticsAvailable ? state.metrics.total_credits_circulation.toLocaleString() : <>&mdash;</>}</div>
-                    <div className="dashboard-stat-description">{analyticsAvailable ? 'In Circulation' : 'Analytics endpoint unavailable'}</div>
-                  </div>
-
-                  <div className="dashboard-stat-card stat-not-tracked">
-                    <div className="dashboard-stat-header">
-                      <span className="dashboard-stat-icon">⏱️</span>
-                      <h4 className="dashboard-stat-title">Session Time</h4>
-                    </div>
-                    <div className="dashboard-stat-value">&mdash;</div>
-                    <div className="dashboard-stat-description">No session tracking yet</div>
-                  </div>
-
-                  <div className={`dashboard-stat-card${analyticsAvailable ? '' : ' stat-not-tracked'}`}>
-                    <div className="dashboard-stat-header">
-                      <span className="dashboard-stat-icon">🆕</span>
-                      <h4 className="dashboard-stat-title">New Players</h4>
-                    </div>
-                    <div className="dashboard-stat-value">{analyticsAvailable ? state.metrics.new_players_today : <>&mdash;</>}</div>
-                    <div className="dashboard-stat-description">{analyticsAvailable ? 'Today' : 'Analytics endpoint unavailable'}</div>
-                  </div>
-
-                  <div className="dashboard-stat-card stat-not-tracked">
-                    <div className="dashboard-stat-header">
-                      <span className="dashboard-stat-icon">📈</span>
-                      <h4 className="dashboard-stat-title">Retention Rate</h4>
-                    </div>
-                    <div className="dashboard-stat-value">&mdash;</div>
-                    <div className="dashboard-stat-description">No retention telemetry surfaced yet</div>
-                  </div>
-
-                  <div className={`dashboard-stat-card${analyticsAvailable ? '' : ' stat-not-tracked'}`} data-variant="warning">
-                    <div className="dashboard-stat-header">
-                      <span className="dashboard-stat-icon">🚨</span>
-                      <h4 className="dashboard-stat-title">Security Alerts</h4>
-                    </div>
-                    <div className="dashboard-stat-value">{analyticsAvailable ? state.metrics.suspicious_activity_alerts : <>&mdash;</>}</div>
-                    <div className="dashboard-stat-description">{analyticsAvailable ? 'Suspicious Activity' : 'Analytics endpoint unavailable'}</div>
-                  </div>
-                </div>
-              </section>
-            )}
-
             {/* Enhanced Player Controls */}
             <section className="section">
               <div className="card">
@@ -389,9 +321,10 @@ const PlayerAnalytics: React.FC = () => {
                         </span>
                         <button 
                           onClick={() => setState(prev => ({ ...prev, showBulkOperations: true }))}
-                          className="btn btn-sm btn-primary"
+                          className="btn btn-sm btn-outline"
+                          title="Bulk operations UI is present; backend endpoints are not live"
                         >
-                          📋 Bulk Operations
+                          📋 Bulk Ops (offline)
                         </button>
                       </div>
                     )}
@@ -572,6 +505,7 @@ const PlayerAnalytics: React.FC = () => {
                                     className="btn btn-xs btn-outline"
                                     onClick={() => openPlayerDetail(player)}
                                     title="View Details"
+                                    aria-label="View Details"
                                   >
                                     👁️
                                   </button>
@@ -581,6 +515,7 @@ const PlayerAnalytics: React.FC = () => {
                                       setState(prev => ({ ...prev, selectedPlayer: player, editMode: true }));
                                     }}
                                     title="Edit Player"
+                                    aria-label="Edit Player"
                                   >
                                     ✏️
                                   </button>
@@ -590,6 +525,7 @@ const PlayerAnalytics: React.FC = () => {
                                       setState(prev => ({ ...prev, selectedPlayer: player, showEmergencyOps: true }));
                                     }}
                                     title="Emergency Operations"
+                                    aria-label="Emergency Operations"
                                   >
                                     🚨
                                   </button>
@@ -695,6 +631,75 @@ const PlayerAnalytics: React.FC = () => {
                 </div>
               </div>
             </section>
+
+            {/* Enhanced Player Metrics */}
+            {state.metrics && (
+              <section className="section">
+                <div className="section-header">
+                  <div>
+                    <h3 className="section-title">📊 Player Metrics</h3>
+                    <p className="section-subtitle">Real-time player analytics and performance indicators</p>
+                  </div>
+                </div>
+                
+                <div className="grid grid-auto-fit-sm gap-4">
+                  <div className={`dashboard-stat-card${analyticsAvailable ? '' : ' stat-not-tracked'}`} data-variant="primary">
+                    <div className="dashboard-stat-header">
+                      <span className="dashboard-stat-icon">👥</span>
+                      <h4 className="dashboard-stat-title">Active Players</h4>
+                    </div>
+                    <div className="dashboard-stat-value">{analyticsAvailable ? state.metrics.total_active_players.toLocaleString() : <>&mdash;</>}</div>
+                    <div className="dashboard-stat-description">{analyticsAvailable ? `Online: ${state.metrics.players_online_now}` : 'Analytics endpoint unavailable'}</div>
+                  </div>
+
+                  <div className={`dashboard-stat-card${analyticsAvailable ? '' : ' stat-not-tracked'}`}>
+                    <div className="dashboard-stat-header">
+                      <span className="dashboard-stat-icon">💰</span>
+                      <h4 className="dashboard-stat-title">Total Credits</h4>
+                    </div>
+                    <div className="dashboard-stat-value">{analyticsAvailable ? state.metrics.total_credits_circulation.toLocaleString() : <>&mdash;</>}</div>
+                    <div className="dashboard-stat-description">{analyticsAvailable ? 'In Circulation' : 'Analytics endpoint unavailable'}</div>
+                  </div>
+
+                  <div className="dashboard-stat-card stat-not-tracked">
+                    <div className="dashboard-stat-header">
+                      <span className="dashboard-stat-icon">⏱️</span>
+                      <h4 className="dashboard-stat-title">Session Time</h4>
+                    </div>
+                    <div className="dashboard-stat-value">&mdash;</div>
+                    <div className="dashboard-stat-description">No session tracking yet</div>
+                  </div>
+
+                  <div className={`dashboard-stat-card${analyticsAvailable ? '' : ' stat-not-tracked'}`}>
+                    <div className="dashboard-stat-header">
+                      <span className="dashboard-stat-icon">🆕</span>
+                      <h4 className="dashboard-stat-title">New Players</h4>
+                    </div>
+                    <div className="dashboard-stat-value">{analyticsAvailable ? state.metrics.new_players_today : <>&mdash;</>}</div>
+                    <div className="dashboard-stat-description">{analyticsAvailable ? 'Today' : 'Analytics endpoint unavailable'}</div>
+                  </div>
+
+                  <div className="dashboard-stat-card stat-not-tracked">
+                    <div className="dashboard-stat-header">
+                      <span className="dashboard-stat-icon">📈</span>
+                      <h4 className="dashboard-stat-title">Retention Rate</h4>
+                    </div>
+                    <div className="dashboard-stat-value">&mdash;</div>
+                    <div className="dashboard-stat-description">No retention telemetry surfaced yet</div>
+                  </div>
+
+                  <div className={`dashboard-stat-card${analyticsAvailable ? '' : ' stat-not-tracked'}`} data-variant="warning">
+                    <div className="dashboard-stat-header">
+                      <span className="dashboard-stat-icon">🚨</span>
+                      <h4 className="dashboard-stat-title">Security Alerts</h4>
+                    </div>
+                    <div className="dashboard-stat-value">{analyticsAvailable ? state.metrics.suspicious_activity_alerts : <>&mdash;</>}</div>
+                    <div className="dashboard-stat-description">{analyticsAvailable ? 'Suspicious Activity' : 'Analytics endpoint unavailable'}</div>
+                  </div>
+                </div>
+              </section>
+            )}
+
           </div>
         )}
 
@@ -814,14 +819,16 @@ const PlayerAnalytics: React.FC = () => {
                   <button 
                     className="btn btn-outline"
                     onClick={() => setState(prev => ({ ...prev, showAssetManager: true }))}
+                    title="Asset manager UI is present; backend endpoints are not live"
                   >
-                    🏭 Manage Assets
+                    🏭 Assets (offline)
                   </button>
                   <button 
-                    className="btn btn-error"
+                    className="btn btn-outline"
                     onClick={() => setState(prev => ({ ...prev, showEmergencyOps: true }))}
+                    title="Emergency ops UI is present; backend endpoints are not live"
                   >
-                    🚨 Emergency Ops
+                    🚨 Emergency (offline)
                   </button>
                   <button 
                     className="btn btn-primary"

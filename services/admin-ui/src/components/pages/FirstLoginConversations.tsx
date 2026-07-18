@@ -21,7 +21,8 @@ const FirstLoginConversations: React.FC = () => {
     skip: 0
   });
   const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
+  /** True when this page came back full — API returns a bare array, no total count. */
+  const [hasMore, setHasMore] = useState(false);
 
   const fetchConversations = useCallback(async () => {
     setLoading(true);
@@ -43,10 +44,8 @@ const FirstLoginConversations: React.FC = () => {
 
       setConversations(response.data);
 
-      // Calculate pagination (rough estimate since backend returns array, not pagination metadata)
-      // TODO: Update backend to return total count for accurate pagination
-      const hasMore = response.data.length === (filters.limit || 50);
-      setTotalPages(hasMore ? page + 1 : page);
+      // Backend returns a bare array — no total. Don't invent "Page X of Y".
+      setHasMore(response.data.length === (filters.limit || 50));
     } catch (err) {
       console.error('Error fetching conversations:', err);
       setError(err instanceof Error ? err.message : 'An error occurred');
@@ -85,10 +84,9 @@ const FirstLoginConversations: React.FC = () => {
   };
 
   const handleNextPage = () => {
-    if (page < totalPages) {
-      setPage(p => p + 1);
-      setFilters(f => ({ ...f, skip: (page * (f.limit || 50)) }));
-    }
+    if (!hasMore) return;
+    setPage(p => p + 1);
+    setFilters(f => ({ ...f, skip: (page * (f.limit || 50)) }));
   };
 
   const handleExportConversation = (conversation: ConversationDetail) => {
@@ -180,13 +178,14 @@ const FirstLoginConversations: React.FC = () => {
               <i className="fas fa-chevron-left"></i>
               Previous
             </button>
-            <span className="page-info">
-              Page {page} {totalPages > 1 ? `of ${totalPages}` : ''}
+            <span className="page-info" title="API returns no total count — page numbers are sequential only">
+              Page {page}{hasMore ? '+' : ''}
+              <span className="page-info-hint"> · no total from API</span>
             </span>
             <button
               className="btn btn-secondary"
               onClick={handleNextPage}
-              disabled={page === totalPages || conversations.length < (filters.limit || 50)}
+              disabled={!hasMore}
             >
               Next
               <i className="fas fa-chevron-right"></i>

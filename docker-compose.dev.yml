@@ -1,0 +1,53 @@
+# ==========================================================================
+# DEV-TIER ENV PIN (WO-QTI-DEVTIER-VITE)
+#
+# Merge this OVER docker-compose.yml when bringing up the development
+# profile — never used standalone, never used for stage/multi-regional/
+# production:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+#     --profile development up -d
+#
+# Forces player-client's and admin-ui's VITE_API_URL / VITE_WS_URL to empty
+# (same-origin) no matter what the host's .env sets API_BASE_URL /
+# WS_BASE_URL to. Without this file, a host .env override (e.g. one
+# copy-pasted from a stage config, or a stale value left over from testing
+# a different origin) renders straight into those two client-build vars for
+# every profile including development, and the dev-host client silently
+# can't hydrate against the wrong API host.
+#
+# WARNING: if the dev launcher / sync script invokes `docker compose`
+# WITHOUT `-f docker-compose.dev.yml`, this pin does not apply and a
+# poisoned host .env leaks through exactly as before this file existed.
+# Two tripwires exist for that failure mode:
+#   1. player-client's container log prints a "[dev-tier]" line at startup
+#      showing what VITE_API_URL / VITE_WS_URL actually resolved to —
+#      check `docker compose logs player-client` after any dev-stack
+#      (re)start.
+#   2. scripts/check-dev-tier-env.sh statically asserts the render.
+#
+# Stage/multi-regional/production are untouched: they invoke
+# docker-compose.yml alone, so this file's existence has zero effect on
+# their rendering.
+# ==========================================================================
+
+services:
+  player-client:
+    environment:
+      - VITE_API_URL=
+      - VITE_WS_URL=
+    # Wraps the Dockerfile `dev` target's CMD (services/player-client/Dockerfile,
+    # `npm run dev -- --host 0.0.0.0`) with a startup echo of the resolved
+    # values, so the pin is visible in container logs and not just inferable
+    # from `docker compose config`. `$$` escapes Compose's own interpolation
+    # (which runs against the HOST's env when this file is parsed) so the
+    # variables are expanded by the container's own shell at start time
+    # instead — a bare `$VITE_API_URL` here would be swallowed by Compose
+    # itself before the container ever sees it.
+    command: >
+      sh -c 'echo "[dev-tier] VITE_API_URL=\"$$VITE_API_URL\" VITE_WS_URL=\"$$VITE_WS_URL\" (empty = same-origin, pinned by docker-compose.dev.yml)"; exec npm run dev -- --host 0.0.0.0'
+
+  admin-ui:
+    environment:
+      - VITE_API_URL=
+      - VITE_WS_URL=

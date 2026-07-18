@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAIUpdates } from '../../contexts/WebSocketContext';
 import { api } from '../../utils/auth';
 import './route-optimization-display.css';
@@ -29,7 +29,6 @@ export const RouteOptimizationDisplay: React.FC = () => {
   const [filterPurpose, setFilterPurpose] = useState<string>('all');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const mapRef = useRef<HTMLDivElement>(null);
 
   const handleRouteUpdate = useCallback((data: any) => {
     console.log('Route optimization update received:', data);
@@ -135,12 +134,12 @@ export const RouteOptimizationDisplay: React.FC = () => {
                 <span className="stat-label">Active Optimizations</span>
               </div>
               <div className="stat-item">
-                <span className="stat-value">+{routeStats.avg_efficiency_improvement.toFixed(1)}%</span>
-                <span className="stat-label">Avg Efficiency Gain</span>
+                <span className="stat-value">{routeStats.avg_efficiency_improvement.toFixed(1)}%</span>
+                <span className="stat-label">Avg Cargo Efficiency</span>
               </div>
               <div className="stat-item">
-                <span className="stat-value">+{routeStats.avg_profit_increase.toFixed(1)}%</span>
-                <span className="stat-label">Avg Profit Increase</span>
+                <span className="stat-value">{routeStats.avg_profit_increase.toLocaleString()} ₵</span>
+                <span className="stat-label">Avg Route Profit</span>
               </div>
             </>
           )}

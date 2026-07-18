@@ -130,6 +130,9 @@ const WarpTunnelsManager: React.FC = () => {
       // enum), max_ship_size (not in WarpTunnelUpdateRequest). The same stripped
       // object is used for both the payload and the optimistic state merge so
       // max_ship_size is never transiently shown as saved.
+      // _dropSize is destructured solely to exclude max_ship_size from `rest`
+      // (no varsIgnorePattern is configured for this codebase's TS override).
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { is_active, max_ship_size: _dropSize, ...rest } = updatedData;
       const payload: Record<string, unknown> = { ...rest };
       if (is_active !== undefined) {
@@ -331,10 +334,12 @@ const WarpTunnelsManager: React.FC = () => {
                 <td>{(tunnel.total_traversals || 0).toLocaleString()}</td>
                 <td>
                   <div className="action-buttons">
-                    <button className="view-btn" title="View Details" onClick={() => handleViewTunnel(tunnel)}>👁️</button>
-                    <button className="edit-btn" title="Edit Tunnel" onClick={() => handleEditTunnel(tunnel)}>✏️</button>
-                    <button className="maintenance-btn" title={tunnel.is_active ? 'Set Maintenance' : 'Reactivate'} onClick={() => handleMaintenanceToggle(tunnel)}>🔧</button>
-                    <button className="delete-btn" title="Delete Tunnel" onClick={() => handleDeleteTunnel(tunnel)}>🗑️</button>
+                    <button className="view-btn" type="button" onClick={() => handleViewTunnel(tunnel)}>View</button>
+                    <button className="edit-btn" type="button" onClick={() => handleEditTunnel(tunnel)}>Edit</button>
+                    <button className="maintenance-btn" type="button" onClick={() => handleMaintenanceToggle(tunnel)}>
+                      {tunnel.is_active ? 'Maintain' : 'Activate'}
+                    </button>
+                    <button className="delete-btn" type="button" onClick={() => handleDeleteTunnel(tunnel)}>Delete</button>
                   </div>
                 </td>
               </tr>
@@ -395,11 +400,10 @@ interface WarpTunnelModalProps {
   getStabilityColor: (s: number) => string;
 }
 
-const WarpTunnelModal: React.FC<WarpTunnelModalProps> = ({ tunnel, mode, onClose, onSave, saving, formatStability, getStabilityColor }) => {
+const WarpTunnelModal: React.FC<WarpTunnelModalProps> = ({ tunnel, mode, onClose, onSave, saving, formatStability, getStabilityColor: _getStabilityColor }) => {
   const [formData, setFormData] = useState({
     stability: tunnel.stability || 0,
     energy_cost: tunnel.energy_cost || 0,
-    max_ship_size: tunnel.max_ship_size || 'Unknown',
     is_active: tunnel.is_active ?? true,
     is_bidirectional: tunnel.is_bidirectional ?? false,
   });
@@ -471,13 +475,12 @@ const WarpTunnelModal: React.FC<WarpTunnelModalProps> = ({ tunnel, mode, onClose
 
             <div className="form-group">
               <label>Max Ship Size</label>
-              {/* Always read-only: backend WarpTunnelUpdateRequest has no max_ship_size field */}
+              {/* Display-only: WarpTunnelUpdateRequest has no max_ship_size */}
               <input
                 type="text"
-                value={formData.max_ship_size}
+                value={tunnel.max_ship_size || 'Unknown'}
                 readOnly
-                disabled
-                title="Read-only — backend does not accept this field yet"
+                title="Not editable — backend update contract omits this field"
               />
             </div>
 

@@ -1,18 +1,11 @@
 #!/bin/bash
 # Script to run all E2E tests for Sector Wars 2102
+# Targets the dev host over Tailscale per playwright.config.ts's baseURL defaults.
 
 echo "Running Sector Wars 2102 E2E Tests"
 echo "=================================="
 
-# Determine environment type
-if [ -n "$CODESPACE_NAME" ]; then
-  echo "Detected GitHub Codespaces environment"
-  REPORT_URL="https://$CODESPACE_NAME-9323.app.github.dev"
-else
-  echo "Detected local environment"
-  REPORT_URL="http://localhost:9323"
-fi
-
+REPORT_URL="http://localhost:9323"
 echo "Test reports will be available at: $REPORT_URL"
 echo ""
 
@@ -22,9 +15,11 @@ cd "$SCRIPT_DIR" || exit 1
 
 echo "Current working directory: $(pwd)"
 
+# Playwright browsers are a one-time setup step, not a per-run install.
+# If this fails with a "browser not found" error, run: npx playwright install chromium --with-deps
+
 # Run Playwright tests
 echo "Running Playwright tests for Admin UI and Player Client..."
-npx playwright install chromium --with-deps
 npx playwright test -c playwright.config.ts
 
 # Display test results

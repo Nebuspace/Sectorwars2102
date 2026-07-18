@@ -13,11 +13,6 @@
     "uuid": "^14.0.1"
   },
   "scripts": {
-    "claude:analyze": "echo \"Running CLAUDE.md analysis...\" && find . -name \"*.js\" -o -name \"*.ts\" | xargs wc -l",
-    "claude:metrics": "bash .claude/metrics/track.sh test",
-    "claude:learn": "bash .claude/patterns/learn.sh",
-    "claude:report": "echo \"Generating CLAUDE.md report...\" && node .claude/report.js",
-    "claude:quality": "python CLAUDE_SYSTEM/claude-system.py --quick",
-    "claude:heal": "python CLAUDE_SYSTEM/claude-system.py --heal"
+    "claude:analyze": "echo \"Running CLAUDE.md analysis...\" && find . -name \"*.js\" -o -name \"*.ts\" | xargs wc -l"
   }
 }
