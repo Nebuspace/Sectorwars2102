@@ -407,6 +407,7 @@ const FleetManagement: React.FC = () => {
                               onClick={() => openEditForm(ship)}
                               className="btn btn-xs btn-outline"
                               title="Edit Ship"
+                              aria-label="Edit Ship"
                             >
                               ✏️
                             </button>
@@ -414,6 +415,7 @@ const FleetManagement: React.FC = () => {
                               onClick={() => openTeleportForm(ship)}
                               className="btn btn-xs btn-outline"
                               title="Teleport Ship"
+                              aria-label="Teleport Ship"
                             >
                               🌀
                             </button>
@@ -421,6 +423,7 @@ const FleetManagement: React.FC = () => {
                               onClick={() => handleDeleteShip(ship.id)}
                               className="btn btn-xs btn-error"
                               title="Delete Ship"
+                              aria-label="Delete Ship"
                             >
                               🗑️
                             </button>

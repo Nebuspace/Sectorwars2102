@@ -505,6 +505,7 @@ const PlayerAnalytics: React.FC = () => {
                                     className="btn btn-xs btn-outline"
                                     onClick={() => openPlayerDetail(player)}
                                     title="View Details"
+                                    aria-label="View Details"
                                   >
                                     👁️
                                   </button>
@@ -514,6 +515,7 @@ const PlayerAnalytics: React.FC = () => {
                                       setState(prev => ({ ...prev, selectedPlayer: player, editMode: true }));
                                     }}
                                     title="Edit Player"
+                                    aria-label="Edit Player"
                                   >
                                     ✏️
                                   </button>
@@ -523,6 +525,7 @@ const PlayerAnalytics: React.FC = () => {
                                       setState(prev => ({ ...prev, selectedPlayer: player, showEmergencyOps: true }));
                                     }}
                                     title="Emergency Operations"
+                                    aria-label="Emergency Operations"
                                   >
                                     🚨
                                   </button>
