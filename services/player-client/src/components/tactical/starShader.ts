@@ -209,7 +209,18 @@ float cmePlume(vec2 p, float r, float t) {
   float angularFalloff = exp(-(da * da) / (2.0 * 0.32 * 0.32));
 
   float plumeReach = 1.0 + envelope * 1.15;
-  float radialFalloff = smoothstep(plumeReach, 1.0, r) * smoothstep(0.92, 1.05, r);
+  // GLSL's smoothstep(edge0, edge1, x) is spec-UNDEFINED when edge0>=edge1
+  // -- plumeReach is always >=1.0 by construction, so the naive
+  // smoothstep(plumeReach, 1.0, r) had its edges backwards on every single
+  // call (verified: this NaN-poisoned the whole fragment's output whenever
+  // this branch executed, blanking the ENTIRE star canvas -- see the monk
+  // agent notebook's star-disc-cme-smoothstep-backwards-edges entry).
+  // max(plumeReach, 1.001) guards the degenerate envelope=0 instant
+  // (edge0==edge1, still spec-undefined) with a negligible epsilon.
+  // 1.0 - smoothstep(...) restores the intended shape: 1 (bright) at r=1
+  // (the plume's origin, the disc edge), fading to 0 at r=plumeReach (its
+  // outer extent).
+  float radialFalloff = (1.0 - smoothstep(1.0, max(plumeReach, 1.001), r)) * smoothstep(0.92, 1.05, r);
 
   return angularFalloff * radialFalloff * envelope;
 }
