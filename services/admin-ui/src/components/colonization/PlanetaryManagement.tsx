@@ -228,28 +228,6 @@ export const PlanetaryManagement: React.FC = () => {
     <div className="planetary-management">
       <div className="management-header">
         <h2>Planetary Management</h2>
-        <div className="header-stats">
-          <div className="stat-card">
-            <span className="stat-label">Total Planets</span>
-            <span className="stat-value">{stats?.totalPlanets || 0}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Discovered</span>
-            <span className="stat-value">{stats?.discoveredPlanets || 0}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Colonized</span>
-            <span className="stat-value success">{stats?.colonizedPlanets || 0}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Contested</span>
-            <span className="stat-value error">{stats?.contestedPlanets || 0}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Avg Habitability</span>
-            <span className="stat-value">{Math.round(stats?.averageHabitability || 0)}%</span>
-          </div>
-        </div>
       </div>
 
       <div className="management-controls">
@@ -419,6 +397,29 @@ export const PlanetaryManagement: React.FC = () => {
           </div>
         </div>
       </div>
+
+      <div className="header-stats">
+          <div className="stat-card">
+            <span className="stat-label">Total Planets</span>
+            <span className="stat-value">{stats?.totalPlanets || 0}</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Discovered</span>
+            <span className="stat-value">{stats?.discoveredPlanets || 0}</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Colonized</span>
+            <span className="stat-value success">{stats?.colonizedPlanets || 0}</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Contested</span>
+            <span className="stat-value error">{stats?.contestedPlanets || 0}</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Avg Habitability</span>
+            <span className="stat-value">{Math.round(stats?.averageHabitability || 0)}%</span>
+          </div>
+        </div>
 
       {selectedPlanet && (
         <div className="planet-detail-modal" onClick={() => setSelectedPlanet(null)}>
