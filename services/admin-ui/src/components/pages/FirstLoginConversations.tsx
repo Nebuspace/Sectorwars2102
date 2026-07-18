@@ -125,7 +125,7 @@ const FirstLoginConversations: React.FC = () => {
     <div className="first-login-conversations-page">
       <PageHeader
         title="First Login Conversations"
-        subtitle="View and analyze player registration dialogues with AI guards"
+        subtitle="View player registration dialogues"
       />
 
       <div className="page-content">
