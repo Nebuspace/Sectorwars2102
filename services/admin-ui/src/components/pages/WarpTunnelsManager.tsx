@@ -334,10 +334,12 @@ const WarpTunnelsManager: React.FC = () => {
                 <td>{(tunnel.total_traversals || 0).toLocaleString()}</td>
                 <td>
                   <div className="action-buttons">
-                    <button className="view-btn" title="View Details" onClick={() => handleViewTunnel(tunnel)}>👁️</button>
-                    <button className="edit-btn" title="Edit Tunnel" onClick={() => handleEditTunnel(tunnel)}>✏️</button>
-                    <button className="maintenance-btn" title={tunnel.is_active ? 'Set Maintenance' : 'Reactivate'} onClick={() => handleMaintenanceToggle(tunnel)}>🔧</button>
-                    <button className="delete-btn" title="Delete Tunnel" onClick={() => handleDeleteTunnel(tunnel)}>🗑️</button>
+                    <button className="view-btn" type="button" onClick={() => handleViewTunnel(tunnel)}>View</button>
+                    <button className="edit-btn" type="button" onClick={() => handleEditTunnel(tunnel)}>Edit</button>
+                    <button className="maintenance-btn" type="button" onClick={() => handleMaintenanceToggle(tunnel)}>
+                      {tunnel.is_active ? 'Maintain' : 'Activate'}
+                    </button>
+                    <button className="delete-btn" type="button" onClick={() => handleDeleteTunnel(tunnel)}>Delete</button>
                   </div>
                 </td>
               </tr>

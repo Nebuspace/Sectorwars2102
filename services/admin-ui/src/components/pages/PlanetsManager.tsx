@@ -237,24 +237,24 @@ const PlanetsManager: React.FC = () => {
                   <div className="action-buttons">
                     <button 
                       className="view-btn" 
-                      title="View Details"
+                      type="button"
                       onClick={() => handleViewPlanet(planet)}
                     >
-                      👁️
+                      View
                     </button>
                     <button 
                       className="edit-btn" 
-                      title="Edit Planet"
+                      type="button"
                       onClick={() => handleEditPlanet(planet)}
                     >
-                      ✏️
+                      Edit
                     </button>
                     <button
                       className="delete-btn"
-                      title="Delete Planet"
+                      type="button"
                       onClick={() => handleDeletePlanet(planet)}
                     >
-                      🗑️
+                      Delete
                     </button>
                   </div>
                 </td>

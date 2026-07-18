@@ -251,24 +251,24 @@ const StationsManager: React.FC = () => {
                   <div className="action-buttons">
                     <button 
                       className="view-btn" 
-                      title="View Details"
+                      type="button"
                       onClick={() => handleViewPort(port)}
                     >
-                      👁️
+                      View
                     </button>
                     <button 
                       className="edit-btn" 
-                      title="Edit Port"
+                      type="button"
                       onClick={() => handleEditPort(port)}
                     >
-                      ✏️
+                      Edit
                     </button>
                     <button 
                       className="delete-btn" 
-                      title="Delete Port"
+                      type="button"
                       onClick={() => handleDeletePort(port)}
                     >
-                      🗑️
+                      Delete
                     </button>
                   </div>
                 </td>
