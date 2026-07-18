@@ -1,5 +1,20 @@
 # Sectorwars2102 — Project Context
 
+> **⛔ REMOTE SEAT? READ THIS FIRST — do not skip to the rest of this file.**
+> If you are an AI implementer agent that cloned this repository on a machine
+> OTHER than the primary developer's Mac, **STOP.** Everything below — heimdall,
+> Docker, "arm your monitors," the Two-Instance Coordination section, the
+> Execution Environment — assumes the primary-Mac environment and provisioning
+> you do NOT have. Following it will only confuse you.
+>
+> Your ONLY instructions as a remote seat:
+> 1. Confirm you cloned the repo and are on the working branch the hub named you.
+> 2. Report to the human who launched you: "Remote implementer seat, ready for onboarding."
+> 3. Request the private onboarding pack from the hub (orchestrator) and WAIT.
+> Do not reach any server, reference any other repository (there is no Nebuspace
+> on your machine), or arm any coordination until you have the pack AND your
+> machine has been provisioned. The pack — not this file — is your real runbook.
+
 **Samantha's persona lives in the output-style** (`.claude/output-styles/samantha.md`), auto-loaded via `.claude/settings.json` (`outputStyle: Samantha`). This file = project context.
 
 > **Note:** this file was formerly the *Self-Improving Development System v3.0.1*. That system is **retired**. Under Samantha Prime: the persona moved to the output-style, the color-mode protocols became **skills** (`.claude/skills/`), and the self-rewriting "CLAUDE.md Evolution Mandate" is **removed** — it caused drift (the file rewriting itself every loop). This is now stable project context: edit it deliberately, not on every iteration.
@@ -176,4 +191,4 @@ When the human asks a status question about an unfinished next step — especial
 
 ## Remote seats
 
-Remote implementer seats coordinate over a private ssh bus. Connection details are never in this repo — request the private onboarding pack from the hub (orchestrator).
+**If you are a remote implementer seat, the ⛔ banner at the top of this file is your instruction — read it.** In brief: you cannot self-configure from this public repository — your identity, the coordination endpoint, connection credentials, and your working branch are deliberately never stored here. Request the private onboarding pack from the hub (orchestrator) and wait until you have it AND your machine has been provisioned. You work on the shared active feature branch the hub names for you, never the default branch. The pack is your real runbook.
