@@ -148,28 +148,6 @@ export const GenesisDeviceTracking: React.FC = () => {
     <div className="genesis-tracking">
       <div className="tracking-header">
         <h2>Genesis Device Tracking</h2>
-        <div className="header-stats">
-          <div className="stat-card">
-            <span className="stat-label">Total Devices</span>
-            <span className="stat-value">{stats?.totalDevices || 0}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Active</span>
-            <span className="stat-value success">{stats?.activeDevices || 0}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Deployed This Week</span>
-            <span className="stat-value">{stats?.deployedThisWeek || 0}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Success Rate</span>
-            <span className="stat-value">{Math.round(stats?.successRate || 0)}%</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Avg Power</span>
-            <span className="stat-value">{Math.round(stats?.averagePowerLevel || 0)}%</span>
-          </div>
-        </div>
       </div>
 
       <div className="tracking-controls">
@@ -299,6 +277,29 @@ export const GenesisDeviceTracking: React.FC = () => {
           </div>
         ))}
       </div>
+
+      <div className="header-stats">
+          <div className="stat-card">
+            <span className="stat-label">Total Devices</span>
+            <span className="stat-value">{stats?.totalDevices || 0}</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Active</span>
+            <span className="stat-value success">{stats?.activeDevices || 0}</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Deployed This Week</span>
+            <span className="stat-value">{stats?.deployedThisWeek || 0}</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Success Rate</span>
+            <span className="stat-value">{Math.round(stats?.successRate || 0)}%</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Avg Power</span>
+            <span className="stat-value">{Math.round(stats?.averagePowerLevel || 0)}%</span>
+          </div>
+        </div>
 
       {selectedDevice && (
         <div className="device-detail-modal" onClick={() => setSelectedDevice(null)}>
