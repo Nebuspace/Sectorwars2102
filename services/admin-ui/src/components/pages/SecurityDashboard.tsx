@@ -130,7 +130,7 @@ export const SecurityDashboard: React.FC = () => {
           onClick={() => setActiveTab('settings')}
         >
           <i className="fas fa-cog"></i>
-          Settings
+          Settings — partial
         </button>
       </div>
 
