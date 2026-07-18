@@ -61,7 +61,7 @@ export const PermissionsDashboard: React.FC = () => {
     <div className="permissions-dashboard">
       <PageHeader
         title="Permissions & Access Control"
-        subtitle="Manage roles, permissions, and user access"
+        subtitle="View user access; role catalog APIs are not implemented"
       />
 
       <div className="permissions-tabs">
@@ -70,7 +70,7 @@ export const PermissionsDashboard: React.FC = () => {
           onClick={() => setActiveTab('roles')}
         >
           <i className="fas fa-user-tag"></i>
-          Role Management
+          Roles — unavailable
         </button>
         <button
           className={`tab ${activeTab === 'matrix' ? 'active' : ''}`}
