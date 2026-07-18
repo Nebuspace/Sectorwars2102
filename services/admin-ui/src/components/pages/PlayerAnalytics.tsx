@@ -262,7 +262,7 @@ const PlayerAnalytics: React.FC = () => {
     <div className="page-container player-analytics" style={{ maxWidth: '1200px' }}>
       <PageHeader 
         title="Players" 
-        subtitle="Comprehensive player management and monitoring"
+        subtitle="Player list, search, and monitoring — bulk/assets/emergency ops are offline"
       />
       
       <div className="page-content">
