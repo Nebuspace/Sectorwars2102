@@ -426,7 +426,7 @@ const AITradingDashboard: React.FC = () => {
           <div className="metric-card">
             <h3>Average Accuracy</h3>
             <div className="metric-value">{metrics.avgAccuracy != null ? `${metrics.avgAccuracy.toFixed(1)}%` : '—'}</div>
-            <div className="metric-trend">Model Performance</div>
+            <div className="metric-trend">When accuracy telemetry exists</div>
           </div>
           <div className="metric-card">
             <h3>Active Profiles (count only)</h3>
@@ -436,7 +436,7 @@ const AITradingDashboard: React.FC = () => {
           <div className="metric-card">
             <h3>Acceptance Rate</h3>
             <div className="metric-value">{metrics.recommendationAcceptance != null ? `${metrics.recommendationAcceptance.toFixed(1)}%` : '—'}</div>
-            <div className="metric-label">Recommendations Followed</div>
+            <div className="metric-label">Reported when telemetry exists</div>
           </div>
           <div className={`metric-card ${getStatusColor(metrics.modelHealth)}`}>
             <h3>System Health</h3>
