@@ -171,3 +171,9 @@ When the human asks a status question about an unfinished next step — especial
 **Default for UI / player-client work after a local fix:** sync the changed files to Heimdall (`scp`/`rsync` into `/opt/sectorwars-dev/...` so Vite HMR picks them up, or the bundle→ff-merge path when committing). Frontend-only = `🛰️ HEADS-UP`, no deploy window. Gameserver restart / migration still needs a hub-mediated window.
 
 **Still ask first** only when the action is truly gated: commit (unless he already said commit), push to a shared remote he didn't ask for, prod, force-push, destructive migration, auth/payments/MFA/admin-gating/AI-safety fixes.
+
+---
+
+## Remote seats
+
+Remote implementer seats coordinate over a private ssh bus. Connection details are never in this repo — request the private onboarding pack from the hub (orchestrator).
