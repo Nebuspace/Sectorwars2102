@@ -570,15 +570,27 @@ const RegionalGovernorDashboard: React.FC = () => {
       )}
 
       <div className="governor-tabs">
-        {['overview', 'governance', 'economy', 'policies', 'elections', 'members', 'diplomacy', 'culture'].map(tab => (
+        {(['overview', 'governance', 'economy', 'policies', 'elections', 'members', 'diplomacy', 'culture'] as const).map(tab => {
+          const tabLabel: Record<typeof tab, string> = {
+            overview: 'Overview',
+            governance: 'Governance',
+            economy: 'Economy',
+            policies: 'Policies',
+            elections: 'Elections',
+            members: 'Members',
+            diplomacy: 'Diplomacy — limited',
+            culture: 'Culture — read-only',
+          };
+          return (
           <button
             key={tab}
             className={`tab-button ${activeTab === tab ? 'active' : ''}`}
-            onClick={() => setActiveTab(tab as any)}
+            onClick={() => setActiveTab(tab)}
           >
-            {tab.charAt(0).toUpperCase() + tab.slice(1)}
+            {tabLabel[tab]}
           </button>
-        ))}
+          );
+        })}
       </div>
 
       <div className="governor-content">
@@ -1078,7 +1090,7 @@ const RegionalGovernorDashboard: React.FC = () => {
 
         {activeTab === 'diplomacy' && (
           <div className="diplomacy-tab">
-            <h3>Diplomatic Relations</h3>
+            <h3>Diplomatic Relations — limited</h3>
             
             <div className="treaties-list">
               <h4>Active Treaties</h4>
@@ -1139,7 +1151,7 @@ const RegionalGovernorDashboard: React.FC = () => {
 
         {activeTab === 'culture' && (
           <div className="culture-tab">
-            <h3>Cultural Identity</h3>
+            <h3>Cultural Identity — read-only</h3>
 
             <div
               role="note"
