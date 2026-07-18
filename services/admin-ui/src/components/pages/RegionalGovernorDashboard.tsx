@@ -1097,7 +1097,6 @@ const RegionalGovernorDashboard: React.FC = () => {
                       <th>Signed</th>
                       <th>Expires</th>
                       <th>Status</th>
-                      <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1113,9 +1112,6 @@ const RegionalGovernorDashboard: React.FC = () => {
                           <span className={`status-badge ${getStatusColor(treaty.status)}`}>
                             {treaty.status}
                           </span>
-                        </td>
-                        <td>
-                          <button className="action-button small" disabled title="Treaty detail view is not yet available">View Details</button>
                         </td>
                       </tr>
                     ))}
