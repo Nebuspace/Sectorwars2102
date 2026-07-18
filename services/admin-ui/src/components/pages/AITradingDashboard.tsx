@@ -247,8 +247,16 @@ const AITradingDashboard: React.FC = () => {
 
               <div className="info-card">
                 <h3>🚀 Recent Activity</h3>
-                <p>Processing {metrics?.processingRate || 0} predictions per minute</p>
-                <p>{metrics?.queuedJobs || 0} jobs in queue</p>
+                <p>
+                  {metrics?.processingRate != null
+                    ? `Processing ${metrics.processingRate} predictions per minute`
+                    : 'No prediction-rate telemetry'}
+                </p>
+                <p>
+                  {metrics?.queuedJobs != null
+                    ? `${metrics.queuedJobs} jobs in queue`
+                    : 'No job-queue telemetry'}
+                </p>
               </div>
             </div>
           </div>
