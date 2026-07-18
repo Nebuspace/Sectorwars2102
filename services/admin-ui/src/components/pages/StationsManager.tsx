@@ -467,15 +467,14 @@ const PortModal: React.FC<PortModalProps> = ({ port, mode, onClose, onSave }) =>
               )}
             </div>
 
-            {/* Read-only display fields — backend stores these elsewhere or derives them */}
+            {/* Display-only — not in station update contract */}
             <div className="form-group">
               <label>Port Class</label>
               <input
                 type="text"
                 value={displayData.station_type}
                 readOnly
-                disabled
-                title="Read-only — not a writable field (backend stores this as `type`; use a migration or seed script to change)"
+                title="Not editable — stored as type; change via migration/seed"
               />
             </div>
 
@@ -485,8 +484,7 @@ const PortModal: React.FC<PortModalProps> = ({ port, mode, onClose, onSave }) =>
                 type="text"
                 value={displayData.max_capacity !== '' ? String(displayData.max_capacity) : '—'}
                 readOnly
-                disabled
-                title="Read-only — not a writable field (no max_capacity column on Station)"
+                title="Not editable — no max_capacity column on Station"
               />
             </div>
 
@@ -496,8 +494,7 @@ const PortModal: React.FC<PortModalProps> = ({ port, mode, onClose, onSave }) =>
                 type="text"
                 value={displayData.security_level !== '' ? String(displayData.security_level) : '—'}
                 readOnly
-                disabled
-                title="Read-only — not a writable field (backend stores this in defenses JSONB)"
+                title="Not editable — stored in defenses JSONB"
               />
             </div>
 
@@ -507,8 +504,7 @@ const PortModal: React.FC<PortModalProps> = ({ port, mode, onClose, onSave }) =>
                 type="text"
                 value={displayData.docking_fee.toLocaleString()}
                 readOnly
-                disabled
-                title="Read-only — not a writable field (computed by the backend; not a stored column)"
+                title="Not editable — computed by backend"
               />
             </div>
           </div>
