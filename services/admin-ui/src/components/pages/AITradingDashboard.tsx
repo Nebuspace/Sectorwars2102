@@ -197,7 +197,7 @@ const AITradingDashboard: React.FC = () => {
           className={`tab-button ${selectedTab === 'profiles' ? 'active' : ''}`}
           onClick={() => setSelectedTab('profiles')}
         >
-          Player Profiles
+          Player Profiles — partial
         </button>
         <button 
           className={`tab-button ${selectedTab === 'market-predictions' ? 'active' : ''}`}
