@@ -43,7 +43,7 @@ authTest.describe('Admin UI - PlayerDetailEditor emergency buttons (WO-ADM-EMERG
     for (let i = 0; i < 4; i++) {
       const button = emergencyButtons.nth(i);
       await expect(button).toBeDisabled();
-      await expect(button).toHaveAttribute('title', new RegExp(EMERGENCY_PATH.replace(/[{}]/g, '\\$&')));
+      await expect(button).toHaveAttribute('title', new RegExp(EMERGENCY_PATH.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
       // A native `disabled` button does not dispatch click handlers even
       // when force-clicked — this is the live-fire check, not a no-op.
       await button.click({ force: true });
