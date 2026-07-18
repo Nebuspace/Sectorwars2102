@@ -17,7 +17,7 @@ export const RoleManagement: React.FC<RoleManagementProps> = () => {
   return (
     <div className="role-management">
       <div className="role-header">
-        <h2>Role Management</h2>
+        <h2>Role Management — unavailable</h2>
       </div>
 
       <div
