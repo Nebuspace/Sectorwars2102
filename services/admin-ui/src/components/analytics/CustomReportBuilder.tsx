@@ -27,10 +27,6 @@ interface ReportTemplate {
   sortBy: { field: string; direction: 'asc' | 'desc' }[];
   visualization: 'table' | 'chart' | 'both';
   chartType?: 'line' | 'bar' | 'pie' | 'area' | 'scatter';
-  schedule?: {
-    frequency: 'daily' | 'weekly' | 'monthly';
-    recipients: string[];
-  };
 }
 
 interface CustomReportBuilderProps {
@@ -51,7 +47,7 @@ export const CustomReportBuilder: React.FC<CustomReportBuilderProps> = ({ onGene
     sortBy: [],
     visualization: 'table'
   });
-  const [activeTab, setActiveTab] = useState<'metrics' | 'filters' | 'visualization' | 'schedule'>('metrics');
+  const [activeTab, setActiveTab] = useState<'metrics' | 'filters' | 'visualization'>('metrics');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -163,7 +159,6 @@ export const CustomReportBuilder: React.FC<CustomReportBuilderProps> = ({ onGene
       sortBy: currentReport.sortBy || [],
       visualization: currentReport.visualization || 'table',
       chartType: currentReport.chartType,
-      schedule: currentReport.schedule
     };
 
     onGenerate(template);
@@ -185,7 +180,6 @@ export const CustomReportBuilder: React.FC<CustomReportBuilderProps> = ({ onGene
       sortBy: currentReport.sortBy || [],
       visualization: currentReport.visualization || 'table',
       chartType: currentReport.chartType,
-      schedule: currentReport.schedule
     };
 
     onSave?.(template);
@@ -203,7 +197,6 @@ export const CustomReportBuilder: React.FC<CustomReportBuilderProps> = ({ onGene
       sortBy: template.sortBy,
       visualization: template.visualization,
       chartType: template.chartType,
-      schedule: template.schedule
     });
   };
 
@@ -310,14 +303,24 @@ export const CustomReportBuilder: React.FC<CustomReportBuilderProps> = ({ onGene
               <i className="fas fa-chart-bar"></i>
               Visualization
             </button>
-            <button
-              className={`tab ${activeTab === 'schedule' ? 'active' : ''}`}
-              onClick={() => setActiveTab('schedule')}
-            >
-              <i className="fas fa-clock"></i>
-              Schedule
-            </button>
           </div>
+
+          <p
+            role="note"
+            style={{
+              margin: '0 0 12px 0',
+              padding: '8px 10px',
+              background: 'rgba(234, 179, 8, 0.12)',
+              border: '1px solid rgba(234, 179, 8, 0.35)',
+              borderRadius: '6px',
+              color: '#fbbf24',
+              fontSize: '0.82rem',
+              lineHeight: 1.4,
+            }}
+          >
+            Scheduled delivery is unavailable: admin reports expose metrics, templates, and
+            generate only — no schedule/email delivery API. The former Schedule tab was invent chrome.
+          </p>
 
           <div className="config-content">
             {activeTab === 'metrics' && (
@@ -449,64 +452,6 @@ export const CustomReportBuilder: React.FC<CustomReportBuilderProps> = ({ onGene
                       <option value="sector">Sector</option>
                     </select>
                   </div>
-                </div>
-              </div>
-            )}
-
-            {activeTab === 'schedule' && (
-              <div className="schedule-configuration">
-                <h4>Report Scheduling</h4>
-                <div className="schedule-options">
-                  <label className="schedule-enable">
-                    <input
-                      type="checkbox"
-                      checked={!!currentReport.schedule}
-                      onChange={(e) => setCurrentReport({
-                        ...currentReport,
-                        schedule: e.target.checked ? {
-                          frequency: 'daily',
-                          recipients: []
-                        } : undefined
-                      })}
-                    />
-                    Enable scheduled delivery
-                  </label>
-                  {currentReport.schedule && (
-                    <>
-                      <div className="schedule-frequency">
-                        <label>Frequency:</label>
-                        <select
-                          value={currentReport.schedule.frequency}
-                          onChange={(e) => setCurrentReport({
-                            ...currentReport,
-                            schedule: {
-                              ...currentReport.schedule!,
-                              frequency: e.target.value as any
-                            }
-                          })}
-                        >
-                          <option value="daily">Daily</option>
-                          <option value="weekly">Weekly</option>
-                          <option value="monthly">Monthly</option>
-                        </select>
-                      </div>
-                      <div className="schedule-recipients">
-                        <label>Email Recipients:</label>
-                        <textarea
-                          placeholder="Enter email addresses, one per line"
-                          value={currentReport.schedule.recipients.join('\n')}
-                          onChange={(e) => setCurrentReport({
-                            ...currentReport,
-                            schedule: {
-                              ...currentReport.schedule!,
-                              recipients: e.target.value.split('\n').filter(email => email.trim())
-                            }
-                          })}
-                          rows={3}
-                        />
-                      </div>
-                    </>
-                  )}
                 </div>
               </div>
             )}
