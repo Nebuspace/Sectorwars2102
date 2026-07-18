@@ -457,12 +457,14 @@ const RegionalGovernorDashboard: React.FC = () => {
     }
   };
 
-  const formatNumber = (num: number) => {
-    return num?.toLocaleString() || '0';
+  const formatNumber = (num: number | null | undefined) => {
+    if (num == null || Number.isNaN(num)) return '—';
+    return num.toLocaleString();
   };
 
-  const formatCurrency = (amount: number) => {
-    return `${amount?.toLocaleString() || '0'} credits`;
+  const formatCurrency = (amount: number | null | undefined) => {
+    if (amount == null || Number.isNaN(amount)) return '—';
+    return `${amount.toLocaleString()} credits`;
   };
 
   const formatPercentage = (value: number) => {
