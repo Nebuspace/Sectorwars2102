@@ -263,11 +263,26 @@
     radial-gradient(1px 1px at 6% 80%, #9fc0e8 60%, transparent);
 }
 
-.ssv-tableau .sun { position: absolute; border-radius: 50%; z-index: 1; }
+.ssv-tableau .sun { position: absolute; border-radius: 50%; z-index: 1; background: none; }
 .ssv-tableau .orbit { position: absolute; border: 1px dashed #1B324755; border-radius: 50%; z-index: 0; }
 .ssv-tableau .belt { position: absolute; border: 3px dotted #4A3B2A66; border-radius: 50%; z-index: 0; }
 
-.ssv-tableau .pl { position: absolute; border-radius: 50%; z-index: 2; cursor: pointer; box-shadow: inset -4px -5px 10px #00000099; border: none; padding: 0; }
+/* WO-AAA-SOLAR-TABLEAU: the shared-harness canvas layers -- explicit z-index:0
+   pins them into the SAME stacking level as `.orbit`/`.belt` above (CSS
+   Appendix E step 6: z-index:0 and z-index:auto positioned descendants of one
+   stacking context paint together, in tree order), which is unconditionally
+   BELOW `.sun` (z:1) and `.pl` (z:2) regardless of DOM order -- so these can
+   sit anywhere in `.scene.space`'s markup without a stacking fight. Sizing/
+   position/pointer-events are already inline (StarDisc.tsx/drawPlanetTableau.
+   tsx's own `<canvas style={{...}}>`) -- this is purely the stacking pin. */
+.ssv-tableau .star-disc-fx,
+.ssv-tableau .planet-tableau-fx { z-index: 0; }
+
+/* WO-AAA-SOLAR-TABLEAU: fill is now the PlanetTableauLayer canvas beneath
+   this button (same %-anchor/size) -- the former flat HSL fill + this inset
+   shadow "faking a terminator" are both gone; `.pl` stays a transparent hit-
+   area/label/moons/focus target. */
+.ssv-tableau .pl { position: absolute; border-radius: 50%; z-index: 2; cursor: pointer; border: none; padding: 0; }
 .ssv-tableau .pl:hover,
 .ssv-tableau button.obj:hover .glyphbox { outline: 1px solid #3FD2EC66; outline-offset: 3px; }
 .ssv-tableau .pl:focus-visible,
