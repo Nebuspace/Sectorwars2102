@@ -184,39 +184,6 @@ const MessageModeration: React.FC = () => {
         </p>
       </header>
 
-      {/* Statistics summary */}
-      <section className="msgmod-section">
-        {statsError && <div className="msgmod-inline-error">{statsError}</div>}
-        {stats && (
-          <div className="msgmod-stats-grid">
-            <div className="msgmod-stat-card">
-              <span className="msgmod-stat-label">Total Messages</span>
-              <span className="msgmod-stat-value">
-                {stats.total_messages.toLocaleString()}
-              </span>
-            </div>
-            <div className="msgmod-stat-card">
-              <span className="msgmod-stat-label">Today</span>
-              <span className="msgmod-stat-value">
-                {stats.messages_today.toLocaleString()}
-              </span>
-            </div>
-            <div className="msgmod-stat-card">
-              <span className="msgmod-stat-label">This Week</span>
-              <span className="msgmod-stat-value">
-                {stats.messages_this_week.toLocaleString()}
-              </span>
-            </div>
-            <div className="msgmod-stat-card msgmod-stat-flagged">
-              <span className="msgmod-stat-label">Flagged</span>
-              <span className="msgmod-stat-value">
-                {stats.flagged_messages.toLocaleString()}
-              </span>
-            </div>
-          </div>
-        )}
-      </section>
-
       {/* Review queue */}
       <section className="msgmod-section">
         <div className="msgmod-section-head">
@@ -349,6 +316,39 @@ const MessageModeration: React.FC = () => {
             >
               Next
             </button>
+          </div>
+        )}
+      </section>
+
+      {/* Statistics summary */}
+      <section className="msgmod-section">
+        {statsError && <div className="msgmod-inline-error">{statsError}</div>}
+        {stats && (
+          <div className="msgmod-stats-grid">
+            <div className="msgmod-stat-card">
+              <span className="msgmod-stat-label">Total Messages</span>
+              <span className="msgmod-stat-value">
+                {stats.total_messages.toLocaleString()}
+              </span>
+            </div>
+            <div className="msgmod-stat-card">
+              <span className="msgmod-stat-label">Today</span>
+              <span className="msgmod-stat-value">
+                {stats.messages_today.toLocaleString()}
+              </span>
+            </div>
+            <div className="msgmod-stat-card">
+              <span className="msgmod-stat-label">This Week</span>
+              <span className="msgmod-stat-value">
+                {stats.messages_this_week.toLocaleString()}
+              </span>
+            </div>
+            <div className="msgmod-stat-card msgmod-stat-flagged">
+              <span className="msgmod-stat-label">Flagged</span>
+              <span className="msgmod-stat-value">
+                {stats.flagged_messages.toLocaleString()}
+              </span>
+            </div>
           </div>
         )}
       </section>
