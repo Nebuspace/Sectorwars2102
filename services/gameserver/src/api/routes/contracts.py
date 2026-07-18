@@ -140,6 +140,20 @@ class PostContractRequest(BaseModel):
     # `payment`'s own multiple_of=1 above) makes frac(refund) ==
     # frac(acceptor_debit) always, so round(refund) - round(acceptor_debit)
     # == reserve holds exactly -- the rounding lever is gone by construction.
+    #
+    # WO-C3-a (mack LOW, gate pass): this invariant now ALSO backs a SECOND,
+    # more common dependent -- `complete()`'s own clean-completion identity
+    # `payout + issuer_pool_refund == escrow_amount` (contract_service.py),
+    # which returns the issuer's unused `insurance_pool_reserve` alongside
+    # the acceptor's `payment` in the SAME transaction, every time a
+    # player-issued contract completes normally (not just the deadline-
+    # lapse claim-offset sweep above). `payout` is `payment` read verbatim
+    # (already whole-credit-constrained) and `issuer_pool_refund` is this
+    # same `insurance_pool_reserve` read verbatim -- both whole by
+    # construction, so their sum is exactly `escrow_amount` (== `payment` +
+    # `insurance_pool_reserve` at post time, never independently rounded
+    # again). Relaxing `multiple_of=1` here would silently reopen a
+    # ~1cr-per-contract mint on THIS path too, not just the sweep's.
     insurance_pool_reserve: Decimal = Field(default=Decimal("0"), ge=0, multiple_of=1)
 
 

@@ -520,11 +520,14 @@ class TestEscrowConservationEndToEnd:
             is_destroyed=False, cargo={"capacity": 500, "used": 50, "contents": {"ore": 50}},
         )
 
-        contract_service.complete(db, contract.id, acceptor.id, now=_NOW)
+        result = contract_service.complete(db, contract.id, acceptor.id, now=_NOW)
 
-        # Issuer never gets anything back on a clean completion -- the escrow
-        # was the payment. Acceptor receives the full payment, minus the
-        # (already sunk, unrefunded) acceptance fee.
+        # WO-C3-a: this contract never funded an insurance_pool_reserve
+        # (default 0, see _post_kwargs) -- the issuer's pool refund is a
+        # no-op, byte-identical to pre-WO-C3-a behavior. issuer.credits
+        # stays exactly where it was; the acceptor receives the full
+        # payment, minus the (already sunk, unrefunded) acceptance fee.
+        assert result["issuer_pool_refund"] == 0
         assert issuer.credits == 4000
         assert acceptor.credits == 5000 - fee + 1000
         # Total in the system: issuer+acceptor lost exactly `fee` (sunk to
@@ -532,6 +535,70 @@ class TestEscrowConservationEndToEnd:
         # arrived at acceptor), only the acceptance fee is a genuine sink.
         assert (issuer.credits + acceptor.credits) == starting_total - fee
         assert contract.escrow_state == ContractEscrowState.RELEASED
+
+    def test_complete_returns_unused_insurance_pool_reserve_to_issuer(self) -> None:
+        """WO-C3-a: the sibling of test_post_to_complete_conserves_the_sum
+        above, with a funded insurance_pool_reserve -- proves the gap this
+        WO closes. Before this WO, a clean completion never returned the
+        issuer's pool at all (the escrow table's own Complete row only
+        released the acceptor's payment); expiry/abandon already refunded
+        it in full (abandon():568, sweep_expired_dispute_window()), so
+        only THIS path stranded it."""
+        issuer = _player(credits=5000)
+        acceptor = _player(credits=5000)
+        destination = _station()
+        db = _FakeSession(players=[issuer, acceptor], stations=[destination], resources=[_resource()])
+
+        contract_service.post_player_contract(
+            db, issuer.id, **_post_kwargs(destination, insurance_pool_reserve=Decimal("200")),
+        )
+        contract = db.added[0]
+        # escrow_amount = payment(1000) + pool(200) = 1200, debited in full
+        # at post time -- see test_debits_combined_escrow_with_insurance_
+        # pool_reserve above for the isolated post-time proof.
+        assert issuer.credits == 3800
+        assert contract.escrow_amount == Decimal("1200.00")
+        assert contract.insurance_pool_reserve == Decimal("200.00")
+
+        contract_service.accept(db, contract.id, acceptor.id, now=_NOW)
+        fee = 20  # 2% of payment (1000), NOT of the combined escrow
+        assert acceptor.credits == 5000 - fee
+
+        acceptor.is_docked = True
+        acceptor.current_port_id = destination.id
+        acceptor.current_ship = Ship(
+            id=uuid.uuid4(), name="Freighter", type=ShipType.LIGHT_FREIGHTER, sector_id=1,
+            is_destroyed=False, cargo={"capacity": 500, "used": 50, "contents": {"ore": 50}},
+        )
+
+        result = contract_service.complete(db, contract.id, acceptor.id, now=_NOW)
+
+        # (a) issuer credited EXACTLY the remaining insurance_pool_reserve
+        # (never drawn by a claim here -- see complete()'s own WO-C3-a
+        # comment for why a claim draw and a clean completion are
+        # structurally mutually exclusive in this codebase).
+        assert result["issuer_pool_refund"] == 200
+        assert issuer.credits == 3800 + 200
+        # (b) acceptor credited payment (no early-arrival bonus --
+        # cargo_delivery never gets one).
+        assert result["payout"] == 1000
+        assert acceptor.credits == 5000 - fee + 1000
+        # (c) escrow -> RELEASED.
+        assert contract.escrow_state == ContractEscrowState.RELEASED
+        # (d) insurance_pool_reserve zeroed after crediting -- mirrors
+        # sweep_expired_dispute_window's own escrow_amount zero-out idiom.
+        assert contract.insurance_pool_reserve == Decimal("0")
+        # (e) escrow_amount LEFT NON-ZERO (Max ruling, abandon()-parity --
+        # abandon()/the dispute-window sweep don't zero it after their own
+        # full-escrow refunds either; a uniform-zero-terminal-escrow
+        # invariant is a separate, un-invented follow-up).
+        assert contract.escrow_amount == Decimal("1200.00")
+        # (f) EXACT conservation: acceptor's payout + issuer's pool refund
+        # == the original combined escrow -- nothing minted, nothing
+        # stranded. (The acceptance fee is a SEPARATE, pre-existing sink,
+        # already proven independently by test_post_to_complete_conserves_
+        # the_sum above -- not part of this identity.)
+        assert result["payout"] + result["issuer_pool_refund"] == 1200
 
     def test_posted_cancel_refunds_99_percent_1_percent_sinks(self) -> None:
         issuer = _player(credits=5000)
@@ -1538,6 +1605,11 @@ class TestNpcPathByteUnchangedRegression:
         assert result["payout"] == 1000
         assert acceptor.credits == 2000  # minted, exactly as WO-1
         assert contract.escrow_state == ContractEscrowState.HELD  # untouched -- NOT flipped to released
+        # WO-C3-a: the issuer-pool-refund branch is gated on issuer_type ==
+        # PLAYER -- an NPC-issued row (no real issuer Player row exists at
+        # all here, see this test's own db.players) never enters it. No
+        # crash, and the new field reports the byte-unchanged no-op.
+        assert result["issuer_pool_refund"] == 0
 
     def test_npc_abandon_no_escrow_branch_no_crash(self) -> None:
         destination = _station()

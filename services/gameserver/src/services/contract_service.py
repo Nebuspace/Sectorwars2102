@@ -358,7 +358,23 @@ def complete(
             f"stale_status: contract {contract.id} is '{contract.status.value}', not 'accepted'"
         )
 
-    player = _load_player(db, player_id, for_update=True)
+    # WO-C3-a: lock BOTH players (when this is a player-issued contract) up
+    # front, via the SAME consistent-ordering helper abandon() already uses
+    # for its own acceptor+issuer refund pairing -- see
+    # _load_two_players_for_update's own docstring. Determined here, before
+    # the dock/cargo checks below, since the dual-lock decision only needs
+    # contract.issuer_type/issuer_id, both already available on the
+    # just-loaded `contract`. Locking acceptor-only (the original single-
+    # lock shape) would deadlock against another dual-lock call touching
+    # the SAME pair of players in the opposite role order -- the #57
+    # invariant this WO closes for `complete()` (it was previously this
+    # module's only credit-mutating dual-party op that didn't route through
+    # this helper).
+    if contract.issuer_type == ContractIssuerType.PLAYER:
+        player, issuer = _load_two_players_for_update(db, player_id, contract.issuer_id)
+    else:
+        player = _load_player(db, player_id, for_update=True)
+        issuer = None
     if not player.is_docked or player.current_port_id != contract.destination_station_id:
         raise ContractConflictError(
             "wrong_station: you must be docked at the contract's destination "
@@ -408,8 +424,42 @@ def complete(
     # released -- a second completion attempt is already impossible via
     # the guarded transition above; this just makes the terminal state
     # explicit for any future reader/query of escrow_state.
+    issuer_pool_refund = 0
     if contract.issuer_type == ContractIssuerType.PLAYER:
         contract.escrow_state = ContractEscrowState.RELEASED
+        # WO-C3-a: the issuer's `insurance_pool_reserve` (funded at post
+        # time alongside `payment` into `escrow_amount`, see post_player_
+        # contract) was never returned on a CLEAN completion -- expiry/
+        # abandon already refund it (abandon():568, sweep_expired_dispute_
+        # window()), only this path stranded it. `insurance_pool_reserve`
+        # is drawn down in exactly one place codebase-wide (apply_claim_
+        # offset, contract_insurance.py), which only ever runs on the
+        # ACCEPTED -> EXPIRED deadline-lapse sweep -- structurally mutually
+        # exclusive with reaching COMPLETED (both gate on status ==
+        # ACCEPTED; only one can win the race), so this always reads the
+        # pool's full post-time value in practice. Reading the LIVE column
+        # rather than re-deriving it stays correct even if that invariant
+        # is ever broken by a future pool-draw call site. `max(0, ...)`
+        # mirrors _compute_claim_offset's own corrupt/negative clamp
+        # (contract_insurance.py) -- this column is not-null-default-0 and
+        # should never go negative, but the clamp costs nothing. Gated
+        # `> 0` (matches abandon()'s own insurance_refund gate) so an
+        # uninsured player-issued contract writes nothing. `escrow_amount`
+        # is deliberately LEFT UNTOUCHED (Max ruling, abandon()-parity --
+        # abandon()/the dispute-window sweep don't zero it either after
+        # their own full-escrow refunds; a uniform-zero-terminal-escrow
+        # invariant is a separate, un-invented follow-up). Only
+        # `insurance_pool_reserve` itself is zeroed after crediting, the
+        # same idiom sweep_expired_dispute_window uses for `escrow_amount`
+        # after ITS refund (:1621-1623) -- belt-and-suspenders against a
+        # future re-read assuming an unrefunded pool on an already-terminal
+        # COMPLETED/RELEASED row.
+        issuer_pool_refund = max(
+            0, _to_credits_int(_round_credits(_as_decimal(contract.insurance_pool_reserve or 0)))
+        )
+        if issuer_pool_refund > 0:
+            issuer.credits = (issuer.credits or 0) + issuer_pool_refund
+            contract.insurance_pool_reserve = Decimal("0")
     # WO-CONTRACT-1-INSURANCE: deliberately NOT touched here. contracts.md:62
     # -- "On completion: released to insurer (not refunded)" -- is satisfied
     # by simply never reading/crediting back `insurance_premium_paid`
@@ -444,8 +494,9 @@ def complete(
     db.flush()
 
     logger.info(
-        "Player %s completed contract %s, paid %d credits (+%d early-arrival bonus)",
-        player_id, contract.id, payout, early_arrival_bonus,
+        "Player %s completed contract %s, paid %d credits (+%d early-arrival bonus, "
+        "issuer pool refund %d)",
+        player_id, contract.id, payout, early_arrival_bonus, issuer_pool_refund,
     )
     return {
         "id": str(contract.id),
@@ -453,6 +504,7 @@ def complete(
         "completed_at": now,
         "payout": payout,
         "early_arrival_bonus": early_arrival_bonus,
+        "issuer_pool_refund": issuer_pool_refund,
         "credits": player.credits,
     }
 
