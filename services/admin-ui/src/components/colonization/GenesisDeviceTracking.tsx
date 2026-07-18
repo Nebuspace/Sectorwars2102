@@ -61,6 +61,7 @@ export const GenesisDeviceTracking: React.FC = () => {
   const [stats, setStats] = useState<GenesisStats | null>(null);
   const [alerts, setAlerts] = useState<GenesisAlert[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [selectedDevice, setSelectedDevice] = useState<GenesisDevice | null>(null);
@@ -82,16 +83,25 @@ export const GenesisDeviceTracking: React.FC = () => {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to load Genesis device data');
+        setError(
+          response.status === 404
+            ? 'Genesis devices endpoint not implemented — /api/v1/admin/colonization/genesis-devices returned 404'
+            : `Failed to load Genesis device data (HTTP ${response.status})`
+        );
+        setDevices([]);
+        setStats(null);
+        setAlerts([]);
+        return;
       }
 
       const data = await response.json();
-      setDevices(data.devices);
-      setStats(data.stats);
-      setAlerts(data.alerts);
+      setDevices(data.devices ?? []);
+      setStats(data.stats ?? null);
+      setAlerts(data.alerts ?? []);
+      setError(null);
     } catch (err) {
       console.error('Error loading Genesis data:', err);
-      // Don't use mock data - show real error state
+      setError('Gameserver unreachable — network error fetching Genesis device data');
       setDevices([]);
       setStats(null);
       setAlerts([]);
@@ -142,6 +152,34 @@ export const GenesisDeviceTracking: React.FC = () => {
 
   if (loading) {
     return <div className="genesis-tracking loading">Loading Genesis device data...</div>;
+  }
+
+  if (error) {
+    return (
+      <div className="genesis-tracking">
+        <div className="tracking-header">
+          <h2>Genesis Device Tracking</h2>
+        </div>
+        <div
+          role="alert"
+          style={{
+            margin: '0 0 16px 0',
+            padding: '10px 12px',
+            background: 'rgba(239, 68, 68, 0.12)',
+            border: '1px solid rgba(239, 68, 68, 0.35)',
+            borderRadius: '6px',
+            color: '#fca5a5',
+            fontSize: '0.85rem',
+            lineHeight: 1.4,
+          }}
+        >
+          {error}
+        </div>
+        <button type="button" className="refresh-button" onClick={() => { setLoading(true); loadGenesisData(); }}>
+          Retry
+        </button>
+      </div>
+    );
   }
 
   return (

@@ -79,6 +79,7 @@ export const PlanetaryManagement: React.FC = () => {
   const [stats, setStats] = useState<PlanetStats | null>(null);
   const [terraformingProjects, setTerraformingProjects] = useState<TerraformingProject[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [selectedPlanet, setSelectedPlanet] = useState<Planet | null>(null);
   const [filterType, setFilterType] = useState<string>('all');
   const [filterOwnership, setFilterOwnership] = useState<string>('all');
@@ -101,16 +102,25 @@ export const PlanetaryManagement: React.FC = () => {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to load planetary data');
+        setError(
+          response.status === 404
+            ? 'Planetary management endpoint not implemented — /api/v1/admin/colonization/planets returned 404'
+            : `Failed to load planetary data (HTTP ${response.status})`
+        );
+        setPlanets([]);
+        setStats(null);
+        setTerraformingProjects([]);
+        return;
       }
 
       const data = await response.json();
-      setPlanets(data.planets);
-      setStats(data.stats);
-      setTerraformingProjects(data.terraformingProjects);
+      setPlanets(data.planets ?? []);
+      setStats(data.stats ?? null);
+      setTerraformingProjects(data.terraformingProjects ?? []);
+      setError(null);
     } catch (err) {
       console.error('Error loading planetary data:', err);
-      // Don't use mock data - show real error state
+      setError('Gameserver unreachable — network error fetching planetary data');
       setPlanets([]);
       setStats(null);
       setTerraformingProjects([]);
@@ -222,6 +232,34 @@ export const PlanetaryManagement: React.FC = () => {
 
   if (loading) {
     return <div className="planetary-management loading">Loading planetary data...</div>;
+  }
+
+  if (error) {
+    return (
+      <div className="planetary-management">
+        <div className="management-header">
+          <h2>Planetary Management</h2>
+        </div>
+        <div
+          role="alert"
+          style={{
+            margin: '0 0 16px 0',
+            padding: '10px 12px',
+            background: 'rgba(239, 68, 68, 0.12)',
+            border: '1px solid rgba(239, 68, 68, 0.35)',
+            borderRadius: '6px',
+            color: '#fca5a5',
+            fontSize: '0.85rem',
+            lineHeight: 1.4,
+          }}
+        >
+          {error}
+        </div>
+        <button type="button" className="refresh-button" onClick={() => { setLoading(true); loadPlanetaryData(); }}>
+          Retry
+        </button>
+      </div>
+    );
   }
 
   return (
