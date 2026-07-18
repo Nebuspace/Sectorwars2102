@@ -505,14 +505,22 @@ export const ColonyOverview: React.FC = () => {
                 </div>
               </div>
 
-              <div className="detail-section">
-                <h3>Actions</h3>
-                <div className="action-buttons">
-                  <p style={{ color: 'var(--text-tertiary)', fontSize: '0.85rem', margin: 0 }}>
-                    Colony actions (view planet, contact owner, view history, send
-                    resources) are not yet available — no backend exists for them.
-                  </p>
-                </div>
+              <div
+                role="note"
+                style={{
+                  margin: '12px 0 0 0',
+                  padding: '10px 12px',
+                  background: 'rgba(234, 179, 8, 0.12)',
+                  border: '1px solid rgba(234, 179, 8, 0.35)',
+                  borderRadius: '6px',
+                  color: '#fbbf24',
+                  fontSize: '0.82rem',
+                  lineHeight: 1.4,
+                }}
+              >
+                Colony detail actions (view planet, contact owner, view history, send resources)
+                are unavailable — no admin backend exists for them. This drawer does not invent
+                an Actions button bar.
               </div>
             </div>
           </div>

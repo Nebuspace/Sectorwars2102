@@ -498,15 +498,22 @@ export const PlanetaryManagement: React.FC = () => {
                 />
               </div>
 
-              <div className="detail-section">
-                <h3>Actions</h3>
-                <div className="action-buttons">
-                  <p style={{ color: 'var(--text-tertiary)', fontSize: '0.85rem', margin: 0 }}>
-                    Planet actions (view colonies, monitor resources, mark for
-                    colonization, resolve conflict, start terraforming) are not yet
-                    available — no backend exists for them.
-                  </p>
-                </div>
+              <div
+                role="note"
+                style={{
+                  margin: '12px 0 0 0',
+                  padding: '10px 12px',
+                  background: 'rgba(234, 179, 8, 0.12)',
+                  border: '1px solid rgba(234, 179, 8, 0.35)',
+                  borderRadius: '6px',
+                  color: '#fbbf24',
+                  fontSize: '0.82rem',
+                  lineHeight: 1.4,
+                }}
+              >
+                Planet detail actions (view colonies, monitor resources, mark for colonization,
+                resolve conflict, start terraforming) are unavailable — no admin backend exists
+                for them. This drawer does not invent an Actions button bar.
               </div>
             </div>
           </div>
