@@ -230,6 +230,54 @@ export function randomVistaInput(seed: string, type: PlanetType): VistaInput {
     rotationPeriodHours = Math.round(rng.int(200, 480) * 10) / 10;  // large rocky
   }
 
+  // ── Seeded celestial features (drawn after all §3.2 fields) ────────────────
+  // Order within this block is fixed; adding new features must go at the end to
+  // avoid shifting the PRNG stream for seeds already in use.
+
+  // Ring system on the planet itself (arc visible overhead in the sky)
+  const rings = rng.next01() < 0.20 ? true : undefined;
+
+  // Secondary star — binary system (~15% of seeds)
+  let secondary: { kind: StarKind; color: string } | undefined;
+  if (rng.next01() < 0.15) {
+    const secKind = VALID_STAR_KINDS[rng.int(0, VALID_STAR_KINDS.length - 1)];
+    secondary = { kind: secKind, color: STAR_COLORS[secKind] };
+  }
+
+  // Moons: 0–3 (spread is: 0=40%, 1=30%, 2=20%, 3=10%)
+  const moonCount = rng.int(0, 3);
+  const moons: NonNullable<VistaInput['celestial']['moons']> = [];
+  for (let i = 0; i < moonCount; i++) {
+    moons.push({
+      sizeClass: rng.int(1, 3),
+      phaseDeg:  rng.int(0, 359),
+      hasRings:  rng.next01() < 0.10 ? true : undefined,
+    });
+  }
+
+  // Sibling bodies visible in the sky (~40% of seeds have 1–2 siblings)
+  const SIBLING_KINDS = ['GAS_GIANT', 'BARREN', 'TERRAN', 'ICE', 'VOLCANIC', 'OCEANIC'] as const;
+  const siblingCount = rng.next01() < 0.40 ? rng.int(1, 2) : 0;
+  const siblings: NonNullable<VistaInput['celestial']['siblings']> = [];
+  for (let i = 0; i < siblingCount; i++) {
+    siblings.push({
+      kind:      SIBLING_KINDS[rng.int(0, SIBLING_KINDS.length - 1)],
+      sizeClass: rng.int(1, 3),
+      phaseDeg:  rng.int(0, 359),
+      hue:       rng.int(0, 359),
+      sat:       Math.round((rng.next01() * 0.6 + 0.2) * 100) / 100,
+    });
+  }
+
+  // Sector nebula wash (~30% of seeds)
+  let nebula: NonNullable<VistaInput['celestial']['nebula']> | undefined;
+  if (rng.next01() < 0.30) {
+    nebula = {
+      hue:     rng.int(0, 359),
+      density: Math.round((rng.next01() * 0.7 + 0.1) * 100) / 100,
+    };
+  }
+
   return {
     contractVersion: VISTA_CONTRACT_VERSION,
     seed,
@@ -248,11 +296,15 @@ export function randomVistaInput(seed: string, type: PlanetType): VistaInput {
     },
 
     celestial: {
-      star: { kind: starKind, color: starColor },
+      star: { kind: starKind, color: starColor, secondary },
       orbitAu: Math.round((rng.next01() * 1.8 + 0.3) * 100) / 100,
       phaseDeg: rng.int(0, 359),
       rotationPeriodHours,
       axialTiltDeg: rng.int(0, 45),
+      moons:    moons.length > 0 ? moons : undefined,
+      rings,
+      siblings: siblings.length > 0 ? siblings : undefined,
+      nebula,
     },
   };
 }

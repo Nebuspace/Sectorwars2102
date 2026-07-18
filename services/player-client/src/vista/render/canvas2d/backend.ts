@@ -24,6 +24,12 @@
 
 import { VistaModel, VistaTarget, VistaHandle, VistaInput, RGB } from '../../contract';
 import { SeededRng, deriveChildSeed } from '../../core/rng';
+import { generateVista } from '../../core/pipeline';
+import { shadeFlank, rimLight, aoPool, drawEmissiveGlow } from './lighting';
+import { postProcess, buildGrainPattern } from './post';
+import { getProfile } from '../../core/profiles';
+import { perfCollector } from '../../perf/collector';
+import { drawHeroLandform, type HeroGeom } from './hero';
 
 // ---------------------------------------------------------------------------
 // Day-cycle constants — verbatim from SolarSystemViewscreen.tsx L1952–1954
@@ -63,6 +69,16 @@ type StarSeed = {
   baseAlpha: number;
 };
 
+/** Bright foreground "hero" star with a 4-point glint cross. */
+type HeroStarSeed = {
+  x: number;
+  y: number;
+  r: number;          // disc radius in px
+  glintLen: number;   // glint arm length in px
+  glintPhase: number; // per-star twinkle phase offset
+  tint: [number, number, number];  // sRGB color (cool blue → warm white spectrum)
+};
+
 type MoonParam = {
   r: number;
   arcRate: number;
@@ -71,6 +87,7 @@ type MoonParam = {
   illum: number;    // pre-computed lit fraction from model (used as base)
   tint: string;     // 'r, g, b' CSS string
   mareTint: string;
+  hasRings: boolean; // from model.layers.celestial.moons[i].hasRings
 };
 
 type SkyPlanetParam = {
@@ -113,6 +130,11 @@ type CloudParam = {
   hFrac: number;
   yFrac: number;
   alpha: number;
+  // WO-V2-CLOUDS-RAYS: kind-distinct, multi-layer parallax rendering
+  kind: 'cumulus' | 'cirrus' | 'ash' | 'overcast';
+  layer: 0 | 1 | 2;       // parallax depth: 0=far/small/slow, 1=mid, 2=near/large/fast
+  lobeCount: number;       // cumulus only: number of billowy lobes; 0 for other kinds
+  lobeOffsets: number[];   // cumulus only: seeded x-offset per lobe (0..1 of cloud width)
 };
 
 type ParticleSeed = {
@@ -123,6 +145,34 @@ type ParticleSeed = {
   speed: number;
   drift: number;
   warm: number;
+};
+
+// Depth band for depth-parallax: 0=far (small/slow/faint), 1=mid, 2=near (large/fast/prominent)
+type ParticleDepth = 0 | 1 | 2;
+
+// Extended particle seed used in multi-kind groups.
+// Adds depth-parallax band and per-particle lifecycle phase for fade-in/out ramps.
+type ParticleSeedEx = {
+  x: number;
+  y: number;
+  size: number;
+  phase: number;
+  speed: number;
+  drift: number;
+  warm: number;
+  depth: ParticleDepth;   // 0=far, 1=mid, 2=near
+  lifePhase: number;      // 0..1 per-particle phase offset for sinusoidal fade ramp
+};
+
+// One group of a single atmospheric particle kind, with its pre-baked sprite.
+// Sprites are allocated ONCE at cache-build time (never per frame).
+type ParticleGroupCache = {
+  kind: string;      // 'SNOW' | 'EMBER' | 'ASH' | 'DUST' | 'RAIN' | 'SPORE' | 'SPARK' | 'FAINT'
+  colorR: number;
+  colorG: number;
+  colorB: number;
+  particles: ParticleSeedEx[];
+  sprite: HTMLCanvasElement;   // drawn with drawImage — no per-frame gradient alloc
 };
 
 /**
@@ -141,6 +191,9 @@ type LandmarkGeom = {
   accentColor: string; // apex / rim accent color — used for volcanic glow + glacier sheen
   useAccent: boolean;  // whether to draw the accent pass
 };
+
+// HeroGeom (WO-VISTA-TK1 hero-landform geometry) is owned by hero.ts —
+// imported below (BACKEND-SPLIT: this is the new per-layer module's type).
 
 type VistaCache = {
   key: string;
@@ -178,16 +231,28 @@ type VistaCache = {
   // Distant sky planets
   skyPlanets: SkyPlanetParam[];
 
-  // Terrain ridge data from model (direct view into model strata)
-  ridgePts: { pts: number[]; period: number; speed: number; base: number; amp: number; color: string }[];
+  // Terrain ridge data from model strata — V2-DEPTH: real polyline + aerial-tint fields
+  ridgePts: {
+    pts: number[];            // 48-pt micro-roughness noise tile (seeded per stratum)
+    poly: [number, number][]; // real strata polyline from model (17 pts, evenly-spaced X)
+    period: number;
+    speed: number;
+    microAmp: number;         // bilateral micro-jitter amplitude in normalized Y (far≈0.004, near≈0.022)
+    color: string;            // opaque base fill CSS (retained for logging; tint applied at draw)
+    fillRGB: RGB;             // raw fill RGB tuple for per-frame aerial-perspective blend
+    depthFrac: number;        // 0=far, 1=near
+  }[];
 
   // Water
   hasWater: boolean;
-  waterTopY: number;
+  waterTopY: number;        // pixel Y of the waterline (waterlineY*h); h when no water
   waves: WaveLine[];
   waterBand: CanvasGradient | null;
   foamMul: number;
   reflTint: string;
+  waterType: string;        // 'ocean' | 'coastal' | 'tidal-flat' | 'frozen' | 'lava' | ''
+  waterColor: string;       // 'r, g, b' CSS channel string from model.layers.water.color
+  foamColor: string;        // 'r, g, b' CSS channel string from model.layers.water.foam
 
   // Atmosphere
   hazeColor: string;
@@ -197,13 +262,25 @@ type VistaCache = {
   // Clouds
   clouds: CloudParam[];
   cloudTint: string;
+  cloudKind: string;   // model.layers.atmosphere.clouds.kind
 
-  // Particles
-  particles: ParticleSeed[];
-  particleKind: string;
+  // WO-V2-CLOUDS-RAYS: pre-baked night-sky + god-ray seeds
+  godRaySeeds: { angle: number; spread: number; lenFrac: number; alphaMul: number }[];
+  shootingStarSeeds: { x0: number; y0: number; x1: number; y1: number; phase: number; speed: number }[];
+  galacticBand: { angle: number; width: number; cx: number; cy: number } | null;
+
+  // Multi-kind atmospheric particle groups (replaces flat particles/particleKind).
+  // Built once in buildVistaCache; drawn by drawLandedParticles every frame.
+  particleGroups: ParticleGroupCache[];
+  // Cone/caldera apex positions for EMBER emitter anchoring (empty if no cones)
+  coneEmitters: { cx: number; topY: number }[];
 
   // Terrain landmarks — pre-baked geometry from model.layers.terrain.landmarks
   landmarks: LandmarkGeom[];
+
+  // Hero landform (WO-VISTA-TK1) — pre-baked geometry from model.layers.hero.
+  // null when the model has no hero (all non-hero-shape types).
+  hero: HeroGeom | null;
 
   // Cached gradient objects (bound to this ctx; rebuilt on remount)
   glowGrad: CanvasGradient;
@@ -233,6 +310,23 @@ type VistaCache = {
     kind: string;
     instances: { sx: number; sy: number; sizePx: number; tint: RGB; glow: number }[];
   }[];
+
+  // Flora sprite cache — one entry per scatter group (baked once in buildVistaCache).
+  // Used by drawScatterInstances for MID-LOD sprite blits; avoids per-frame path draws.
+  floraGroupCaches: {
+    groupKind: string;           // matches scatterScreens[i].kind
+    midSprite: HTMLCanvasElement; // silhouette drawn at FLORA_SPRITE_D size, swayX=0
+  }[];
+
+  // Renderer quality level — propagated from view.quality each frame (does not bust cache).
+  // Governs LOD thresholds in drawScatterInstances: 'high' | 'med' | 'low'.
+  quality: string;
+
+  // Hero stars — bright foreground stars with 4-point glint (WO-V3-CELESTIAL)
+  heroStars: HeroStarSeed[];
+
+  // Primary sun special type: 'accretion' | 'pulsar' | undefined (WO-V3-CELESTIAL)
+  sunSpecial: 'accretion' | 'pulsar' | undefined;
 };
 
 // ---------------------------------------------------------------------------
@@ -374,7 +468,11 @@ function buildVistaCache(
   const sunR = primarySun
     ? Math.max(6, Math.min(Math.min(w, h) * 0.13, primarySun.radiusPx * (w / 1440)))
     : Math.max(6, Math.min(w, h) * 0.05);
-  const coronaR = Math.min(Math.hypot(w, h) * 0.55, sunR * (5 + prox * 4));
+  // sunGlareCap (WO-VISTA-MOUNTAINOUS-IDENTITY): scales the glare-halo RADIUS
+  // only, never sunR (the disc itself) — present only on MOUNTAINOUS; every
+  // other type's `?? 1.0` default reproduces the exact prior formula.
+  const sunGlareCap = getProfile(model.planetType).sunGlareCap ?? 1.0;
+  const coronaR = Math.min(Math.hypot(w, h) * 0.55, sunR * (5 + prox * 4)) * sunGlareCap;
   const coreWhite = Math.round(160 + prox * 95);
   const sunAzDir = rngSun() > 0.5 ? 1 : -1;
 
@@ -421,7 +519,7 @@ function buildVistaCache(
     const tintB = Math.min(238, Math.round(170 + sc.b * 0.28 - warmth * 15));
     const tint = `${tintR}, ${tintG}, ${tintB}`;
     const mareTint = [tintR, tintG, tintB].map((v) => Math.max(0, v - 40)).join(', ');
-    moons.push({ r, arcRate, arcOffset, arcDir, illum: m.litFraction, tint, mareTint });
+    moons.push({ r, arcRate, arcOffset, arcDir, illum: m.litFraction, tint, mareTint, hasRings: m.hasRings });
   }
 
   // ---- Sky planet arc params (seeded; positions arc per frame) ----
@@ -458,57 +556,109 @@ function buildVistaCache(
       rimColor = `hsla(${hue}, 10%, 70%, 0.4)`;
     }
     const alpha = 0.4 + Math.min(r, 30) / 30 * 0.3;
-    skyPlanets.push({ r, arcRate, arcOffset, arcDir, hue, sat, baseColor, bandColor, rimColor, rings: !!d.radiusPx, alpha });
+    // rings: false — siblings have no hasRings data; always-on (!!d.radiusPx was always
+    // true) was a bug. Gate correctly: no sibling shows rings unless model provides the flag.
+    skyPlanets.push({ r, arcRate, arcOffset, arcDir, hue, sat, baseColor, bandColor, rimColor, rings: false, alpha });
   }
 
-  // ---- Terrain ridges from model strata ----
-  // model.layers.terrain.strata gives us pre-computed polylines; we convert them
-  // to the noise-ridge format (random noise pts + scroll speed from parallax).
+  // ---- Terrain ridges from model strata (V2-DEPTH) ----
+  // Consumes the REAL strata[].polyline for the macro ridge silhouette; the
+  // 48-pt pts array is kept only for per-pixel micro-roughness jitter layered on
+  // top.  depthFrac (0=far, 1=near) drives amplitude grading + aerial-tint blend.
   const ridgePts: VistaCache['ridgePts'] = model.layers.terrain.strata.map((s, i) => {
     const rng = splitmix32(deriveChildSeed(model.seed, `ridge${i}`));
     const pts: number[] = [];
     for (let p = 0; p < 48; p++) pts.push(rng());
-    const base = s.polyline.length > 0
-      ? (s.polyline.reduce((a, pt) => a + pt[1], 0) / s.polyline.length) / h
-      : (0.6 + i * 0.12);
+
+    const n = model.layers.terrain.strata.length;
+    const depthFrac = n > 1 ? i / (n - 1) : 0;  // 0=far, 1=near
+
+    // Micro-jitter amplitude: tiny bilateral noise on top of the real polyline shape.
+    // Far ridges are smoother (haze softens surface texture at distance); near rougher.
+    const microAmp = 0.004 + depthFrac * 0.018;
+
     return {
       pts,
+      poly: s.polyline,
       period: Math.max(w * 2, 1200),
-      speed: s.parallax * 3.0,     // parallax → scroll speed
-      base,
-      amp: 0.1 + (i / Math.max(1, model.layers.terrain.strata.length - 1)) * 0.06,
+      speed: s.parallax * 3.0,     // parallax → scroll speed; far=slow, near=fast
+      microAmp,
       color: rgba(s.fill, 1),
+      fillRGB: s.fill,
+      depthFrac,
     };
   });
 
   // ---- Water ----
+  // waterTopY = model's waterlineY in pixels: the WATER SURFACE, not the horizon.
+  // Terrain (ridges + land strip) renders above this; water band fills below it.
   const waterLayer = model.layers.water;
   const hasWater = !!waterLayer;
-  const waterTopY = hasWater ? horizonY : h;
+  const waterTopY = hasWater && waterLayer ? Math.round(waterLayer.waterlineY * h) : h;
+  const waterType  = waterLayer ? waterLayer.type : '';
+  // Water and foam color strings from model palette (palette.water / palette.foam).
+  const wc = waterLayer
+    ? { r: waterLayer.color[0], g: waterLayer.color[1], b: waterLayer.color[2] }
+    : { r: 28, g: 88, b: 128 };
+  const fc = waterLayer
+    ? { r: waterLayer.foam[0], g: waterLayer.foam[1], b: waterLayer.foam[2] }
+    : { r: 175, g: 218, b: 210 };
+  const waterColor = `${wc.r}, ${wc.g}, ${wc.b}`;
+  const foamColor  = `${fc.r}, ${fc.g}, ${fc.b}`;
   const waves: WaveLine[] = [];
   let waterBand: CanvasGradient | null = null;
   const foamMul = waterLayer ? Math.max(1, waterLayer.foamMul) : 1;
   let reflTint = `${sc.r}, ${sc.g}, ${sc.b}`;
 
   if (hasWater && waterLayer) {
-    const surf = {
-      r: Math.round(40 + sc.r * 0.18),
-      g: Math.round(120 + sc.g * 0.18),
-      b: Math.round(150 + sc.b * 0.15),
-    };
+    // Type-branched gradient — each water type uses palette.water/foam, NOT hardcoded blue.
     waterBand = ctx.createLinearGradient(0, waterTopY, 0, h);
-    waterBand.addColorStop(0, `rgba(${surf.r}, ${surf.g}, ${surf.b}, 0.92)`);
-    waterBand.addColorStop(0.4, 'rgba(18, 78, 116, 0.95)');
-    waterBand.addColorStop(0.8, 'rgba(10, 46, 78, 0.97)');
-    waterBand.addColorStop(1, 'rgba(5, 24, 46, 0.98)');
+    perfCollector.recordAlloc();
+    if (waterType === 'lava') {
+      // Lava sea: fiery orange-red glow; no rolling-sea animation below.
+      waterBand.addColorStop(0,    `rgba(${wc.r}, ${wc.g}, ${wc.b}, 0.92)`);
+      waterBand.addColorStop(0.35, `rgba(${Math.round(wc.r * 0.72)}, ${Math.round(wc.g * 0.38)}, ${Math.round(Math.max(2, wc.b * 0.18))}, 0.96)`);
+      waterBand.addColorStop(0.75, `rgba(${Math.round(wc.r * 0.42)}, ${Math.round(wc.g * 0.18)}, ${Math.round(Math.max(2, wc.b * 0.08))}, 0.98)`);
+      waterBand.addColorStop(1,    `rgba(${Math.max(6, Math.round(wc.r * 0.18))}, 4, 2, 0.99)`);
+    } else if (waterType === 'frozen') {
+      // Frozen sea: pale ice sheet from palette.water; no rolling-sea animation.
+      waterBand.addColorStop(0,    `rgba(${wc.r}, ${wc.g}, ${wc.b}, 0.84)`);
+      waterBand.addColorStop(0.5,  `rgba(${Math.round(wc.r * 0.88)}, ${Math.round(wc.g * 0.90)}, ${Math.round(wc.b * 0.93)}, 0.92)`);
+      waterBand.addColorStop(1,    `rgba(${Math.round(wc.r * 0.72)}, ${Math.round(wc.g * 0.76)}, ${Math.round(wc.b * 0.82)}, 0.96)`);
+    } else {
+      // ocean / coastal / tidal-flat: depth-graduated from palette.water surface to deep.
+      waterBand.addColorStop(0,    `rgba(${wc.r}, ${wc.g}, ${wc.b}, 0.90)`);
+      waterBand.addColorStop(0.45, `rgba(${Math.round(wc.r * 0.48)}, ${Math.round(wc.g * 0.52)}, ${Math.round(wc.b * 0.60)}, 0.96)`);
+      waterBand.addColorStop(0.85, `rgba(${Math.round(wc.r * 0.22)}, ${Math.round(wc.g * 0.24)}, ${Math.round(wc.b * 0.30)}, 0.98)`);
+      waterBand.addColorStop(1,    `rgba(${Math.round(wc.r * 0.10)}, ${Math.round(wc.g * 0.11)}, ${Math.round(wc.b * 0.14)}, 0.99)`);
+    }
 
+    // Wave generation: ocean / coastal / tidal-flat only.
+    // frozen = static ice sheet; lava = static emissive surface — no rolling-sea animation.
+    if (waterType !== 'frozen' && waterType !== 'lava') {
     const wh = h - waterTopY;
     const baseSwells = 11;
     const choppiness = Math.max(0, waterLayer.chop);
     const waveCountMul = 0.8 + choppiness * 0.6;
     const waveAmpMul = Math.max(0.5, waterLayer.waveAmp);
     const whitecapDensity = Math.min(1, 0.3 + choppiness * 0.7);
-    const swellCount = Math.max(6, Math.round(baseSwells * waveCountMul));
+    // waveDensityScale (WO-VISTA-MOUNTAINOUS-IDENTITY): applied AFTER the
+    // generic formula above, bypassing waveAmpMul's dead floor entirely —
+    // present only on MOUNTAINOUS; every other profile's `?? 1.0` default
+    // reproduces the exact prior swellCount/fineCount/amp values.
+    //
+    // swellFloor drops to 0 (not just a smaller positive count) when the
+    // override is present: confirmed via live-mount screenshot that each
+    // swell draws a FILLED "slab" polygon up to 36px tall
+    // (`const slab = 6 + f * 30` below) completely independent of
+    // waveAmpMul/densityScale — in a water band this thin (coverageBase
+    // above), even 1-2 slabs occupy most of its visible height and read as
+    // a solid wavy mass, not a calm lake. Zero swells + a handful of thin
+    // `fine` ripple *lines* (no filled body) is what actually reads calm.
+    const waveFootprint = getProfile(model.planetType).waterFootprint;
+    const densityScale = waveFootprint?.waveDensityScale ?? 1.0;
+    const swellFloor = waveFootprint ? 0 : 6;
+    const swellCount = Math.max(swellFloor, Math.round(baseSwells * waveCountMul * densityScale));
     for (let i = 0; i < swellCount; i++) {
       const lin = i / (swellCount - 1);
       const f = lin * lin;
@@ -518,7 +668,7 @@ function buildVistaCache(
         : (rngWave() * 0.001);
       waves.push({
         yFrac: f,
-        amp: (2 + f * 16) * sizeJitter * waveAmpMul,
+        amp: (2 + f * 16) * sizeJitter * waveAmpMul * densityScale,
         wavelength: (90 + f * 320) * (0.6 + rngWave() * 0.9),
         speed: (0.5 + f * 1.4) * (0.7 + rngWave() * 0.7),
         phase: rngWave() * Math.PI * 2,
@@ -536,12 +686,12 @@ function buildVistaCache(
       });
     }
     // Fine ripple lines between swells
-    const fineCount = Math.round(10 + 8 * waveAmpMul);
+    const fineCount = Math.max(0, Math.round((10 + 8 * waveAmpMul) * densityScale));
     for (let i = 0; i < fineCount; i++) {
       const f = rngWave();
       waves.push({
         yFrac: 0.1 + f * 0.88,
-        amp: (1 + f * 3) * (0.6 + waveAmpMul * 0.4),
+        amp: (1 + f * 3) * (0.6 + waveAmpMul * 0.4) * densityScale,
         wavelength: (24 + f * 70) * (0.7 + rngWave() * 0.6),
         speed: (1.2 + f * 2.2) * (0.8 + rngWave() * 0.6),
         phase: rngWave() * Math.PI * 2,
@@ -558,6 +708,7 @@ function buildVistaCache(
         tilt: 0,
       });
     }
+    } // end if (waterType !== 'frozen' && waterType !== 'lava')
 
     // Reflection tint tracks the moon if present, else the sun
     if (moons.length > 0) {
@@ -587,60 +738,145 @@ function buildVistaCache(
     }
   }
 
-  // ---- Cloud strips ----
+  // ---- Cloud strips — multi-layer, kind-distinct (WO-V2-CLOUDS-RAYS) ----
   const clouds: CloudParam[] = [];
   const cloudLayer = model.layers.atmosphere.clouds;
+  const cloudKind = cloudLayer.kind;
   const cloudTint = cloudLayer.color
     ? `${cloudLayer.color[0]}, ${cloudLayer.color[1]}, ${cloudLayer.color[2]}`
     : '200, 210, 230';
-  if (hasAtmosphere && cloudLayer.kind !== 'none' && cloudLayer.coverage > 0.05) {
-    const cloudCount = Math.round(4 + cloudLayer.coverage * 8);
-    for (let i = 0; i < cloudCount; i++) {
-      clouds.push({
-        x: rngCloud() * w * 1.6,
-        speed: (0.6 + rngCloud() * 0.8) * (0.5 + cloudLayer.drift * 0.5),
-        w: w * (0.18 + rngCloud() * 0.28),
-        hFrac: 0.06 + rngCloud() * 0.10,
-        yFrac: 0.15 + rngCloud() * 0.55,
-        alpha: (0.04 + rngCloud() * 0.10) * cloudLayer.coverage,
+
+  if (hasAtmosphere && cloudKind !== 'none' && cloudLayer.coverage > 0.05) {
+    const coverage  = cloudLayer.coverage;
+    const driftMul  = 0.5 + cloudLayer.drift * 0.5;
+
+    if (cloudKind === 'cumulus') {
+      // Three parallax layers — far (0), mid (1), near (2) — visually distinct by
+      // size, speed, height, and opacity.  Far clouds are small/slow/high;
+      // near clouds are large/fast/low.
+      const layerCounts:  number[]            = [2, 3, 3];
+      const yRanges:      [number, number][]  = [[0.06, 0.20], [0.12, 0.36], [0.20, 0.52]];
+      const scales:       number[]            = [0.50, 0.78, 1.00];
+      const speedBase:    number[]            = [0.30, 0.55, 0.80];
+      const speedRange:   number[]            = [0.40, 0.65, 0.80];
+      const alphaFactor:  number[]            = [0.52, 0.70, 0.88];
+
+      for (let li = 0; li < 3; li++) {
+        for (let i = 0; i < layerCounts[li]; i++) {
+          const lobeCount = 3 + Math.floor(rngCloud() * 3);   // 3–5 lobes
+          const lobeOffsets: number[] = [];
+          for (let lb = 0; lb < lobeCount; lb++) lobeOffsets.push(rngCloud());
+          const [yMin, yMax] = yRanges[li];
+          clouds.push({
+            x:     rngCloud() * w * 1.6,
+            speed: (speedBase[li] + rngCloud() * speedRange[li]) * driftMul,
+            w:     w * (0.12 + rngCloud() * 0.20) * scales[li] * (0.55 + coverage * 0.45),
+            hFrac: (0.07 + rngCloud() * 0.07) * scales[li],
+            yFrac: yMin + rngCloud() * (yMax - yMin),
+            alpha: alphaFactor[li] * coverage * (0.50 + rngCloud() * 0.50),
+            kind:  'cumulus',
+            layer: li as 0 | 1 | 2,
+            lobeCount,
+            lobeOffsets,
+          });
+        }
+      }
+      // Overcast deck — wide low-alpha band added when coverage is high
+      if (coverage >= 0.75) {
+        clouds.push({
+          x:     0,
+          speed: 0.12 * driftMul,
+          w:     w * 1.1,
+          hFrac: 0.14,
+          yFrac: 0.06,
+          alpha: (coverage - 0.60) * 0.65,
+          kind: 'overcast', layer: 0, lobeCount: 0, lobeOffsets: [],
+        });
+      }
+    } else if (cloudKind === 'cirrus') {
+      // Single high-altitude layer — thin horizontal feathered streaks.
+      const count = 5 + Math.round(rngCloud() * 4);
+      for (let i = 0; i < count; i++) {
+        clouds.push({
+          x:     rngCloud() * w * 1.6,
+          speed: (0.35 + rngCloud() * 0.45) * driftMul,
+          w:     w * (0.22 + rngCloud() * 0.32),
+          hFrac: 0.015 + rngCloud() * 0.012,   // very thin
+          yFrac: 0.04  + rngCloud() * 0.28,    // high in sky
+          alpha: (0.22 + rngCloud() * 0.38) * coverage,
+          kind: 'cirrus', layer: 0, lobeCount: 0, lobeOffsets: [],
+        });
+      }
+    } else if (cloudKind === 'ash' || cloudKind === 'dust') {
+      // Two layers of turbulent irregular masses.
+      // Color tinting (grey-brown vs tan-dust) comes from cloudTint set by the pipeline.
+      const layerCounts2 = [3, 2];
+      for (let li = 0; li < 2; li++) {
+        for (let i = 0; i < layerCounts2[li]; i++) {
+          clouds.push({
+            x:     rngCloud() * w * 1.6,
+            speed: (0.40 + rngCloud() * 0.60) * driftMul,
+            w:     w * (0.16 + rngCloud() * 0.26),
+            hFrac: 0.08 + rngCloud() * 0.14,
+            yFrac: (li === 0 ? 0.08 : 0.22) + rngCloud() * 0.22,
+            alpha: (0.28 + rngCloud() * 0.44) * coverage,
+            kind: 'ash', layer: li as 0 | 1, lobeCount: 0, lobeOffsets: [],
+          });
+        }
+      }
+    }
+    // 'banded' → GAS_GIANT uses drawGasGiantBands (full-frame); no sky clouds needed here.
+    // 'none'   → guarded above by cloudKind !== 'none'.
+  }
+
+  // ---- God-ray seeds — seeded wedge fan from the sun (WO-V2-CLOUDS-RAYS) ----
+  const rngRay   = splitmix32(deriveChildSeed(model.seed, 'godrays'));
+  const rngShoot = splitmix32(deriveChildSeed(model.seed, 'shootstars'));
+  const rngGal   = splitmix32(deriveChildSeed(model.seed, 'galband'));
+
+  const godRaySeeds: VistaCache['godRaySeeds'] = [];
+  if (hasAtmosphere) {
+    const rayCount = 6 + Math.floor(rngRay() * 5);   // 6–10 rays
+    for (let i = 0; i < rayCount; i++) {
+      // Fan from ~60° left of straight-down to ~60° right (centred on π/2 = straight down)
+      godRaySeeds.push({
+        angle:    Math.PI / 2 - Math.PI / 3 + rngRay() * (Math.PI * 2 / 3),
+        spread:   0.022 + rngRay() * 0.038,    // angular half-width of each wedge (radians)
+        lenFrac:  0.80  + rngRay() * 0.55,     // fraction of (horizonY − sunY) to extend
+        alphaMul: 0.25  + rngRay() * 0.75,
       });
     }
   }
 
-  // ---- Particles ----
-  const particles: ParticleSeed[] = [];
-  const atmoParticles = model.layers.atmosphere.particles;
-  let particleKind = 'FAINT';
-  if (atmoParticles.length > 0) {
-    const p0 = atmoParticles[0];
-    particleKind = p0.kind.toUpperCase();
-    const count = Math.round(20 + p0.rate * 40);
-    for (let i = 0; i < count; i++) {
-      particles.push({
-        x: rngPart() * w,
-        y: rngPart() * h,
-        size: 0.6 + rngPart() * 1.4,
-        phase: rngPart() * Math.PI * 2,
-        speed: 0.4 + rngPart() * 1.2,
-        drift: (rngPart() - 0.5) * 2,
-        warm: rngPart(),
-      });
-    }
-  } else if (hasAtmosphere) {
-    // sparse ambient motes on atmospheric worlds
-    particleKind = 'FAINT';
-    for (let i = 0; i < 12; i++) {
-      particles.push({
-        x: rngPart() * w,
-        y: rngPart() * h,
-        size: 0.5 + rngPart() * 1.0,
-        phase: rngPart() * Math.PI * 2,
-        speed: 0.2 + rngPart() * 0.6,
-        drift: (rngPart() - 0.5),
-        warm: rngPart(),
+  // ---- Shooting star seeds — brief streaks for the night sky ----
+  const shootingStarSeeds: VistaCache['shootingStarSeeds'] = [];
+  if (hasAtmosphere) {
+    const ssCount = 2 + Math.floor(rngShoot() * 2);
+    for (let i = 0; i < ssCount; i++) {
+      const x0    = rngShoot() * w;
+      const y0    = rngShoot() * horizonY * 0.55;
+      const angle = Math.PI * 0.25 + rngShoot() * Math.PI * 0.50;  // 45°–135° (downward)
+      const len   = 55 + rngShoot() * 110;
+      shootingStarSeeds.push({
+        x0, y0,
+        x1:    x0 + Math.cos(angle) * len,
+        y1:    y0 + Math.sin(angle) * len,
+        phase: rngShoot() * Math.PI * 2,
+        speed: 0.35 + rngShoot() * 0.70,
       });
     }
   }
+
+  // ---- Galactic / milky-way band seed — diagonal strip of faint star density ----
+  const galacticBand: VistaCache['galacticBand'] = hasAtmosphere ? {
+    angle: (0.22 + rngGal() * 0.28) * Math.PI,
+    width: w * (0.11 + rngGal() * 0.10),
+    cx:    w * (0.22 + rngGal() * 0.56),
+    cy:    horizonY * (0.18 + rngGal() * 0.44),
+  } : null;
+
+  // ---- Particles — multi-kind groups built after landmarks so EMBER can anchor to cones ----
+  // (populated below, after the landmarks section)
 
   // ---- Terrain landmarks — geometry baked from model.layers.terrain.landmarks ----
   // Positions (pos[0], pos[1]) are 0..1 normalized screen coords. We anchor all
@@ -683,9 +919,131 @@ function buildVistaCache(
     return { kind: lm.kind, cx, baseY, height, width, fillColor, accentColor, useAccent };
   });
 
+  // ---- Hero landform (WO-VISTA-TK1) — pre-baked geometry from model.layers.hero ----
+  // Anchored to horizonY exactly like a terrain.landmarks entry, but sized to
+  // dominate the midground — this IS the scene's single focal feature, not
+  // background silhouette dressing. null when the model has no hero (all
+  // non-hero-shape types — see PlanetProfile.heroLandform in profiles.ts).
+  const heroModel = model.layers.hero;
+  const hero: HeroGeom | null = heroModel ? (() => {
+    const hcx = heroModel.pos[0] * w;
+    const hBaseY = horizonY;
+    // Larger envelope than background landmarks (0.30×h / 0.16×w caps above) —
+    // BUT the landmark formula's h*0.48 cap is only safe because landmark
+    // scale values (0.04–0.18) are tiny; the hero's much larger baseScale
+    // (1.5–2.0, profiles.ts) needs an explicit HEADROOM clamp too, or a
+    // high-horizon world (small horizonY → little sky above the ground line)
+    // pushes the apex above y=0 (confirmed via live screenshot: MOUNTAINOUS's
+    // massif apex was clipped off-canvas before this clamp existed).
+    const headroomPx = hBaseY; // pixel distance from the horizon line to y=0
+    const hHeight = Math.max(50, Math.min(h * 0.55, headroomPx * 0.88, heroModel.scale * h * 0.30));
+    const hWidth  = Math.max(45, Math.min(w * 0.40, heroModel.scale * w * 0.16));
+
+    const hdr = Math.round(geoBase[0] * 0.55);
+    const hdg = Math.round(geoBase[1] * 0.55);
+    const hdb = Math.round(geoBase[2] * 0.55);
+    let hFillColor   = `rgba(${hdr}, ${hdg}, ${hdb}, 0.97)`;
+    let hAccentColor = `rgba(${accentRgb[0]}, ${accentRgb[1]}, ${accentRgb[2]}, 0.75)`;
+
+    if (heroModel.shape === 'glacier') {
+      // Pale blue-white ice — same blend formula as the background glacier landmark.
+      hFillColor = `rgba(${Math.min(255, Math.round(hdr * 0.4 + 200))}, ${Math.min(255, Math.round(hdg * 0.4 + 218))}, ${Math.min(255, Math.round(hdb * 0.4 + 235))}, 0.92)`;
+      hAccentColor = 'rgba(230, 248, 255, 0.6)';
+    } else if (heroModel.shape === 'mesa' || heroModel.shape === 'delta-bluff') {
+      // Warm sedimentary/soil tint — leans on the surface palette, not geology.
+      const [sr, sg, sb] = model.palette.surface;
+      hFillColor = `rgba(${Math.round(sr * 0.62)}, ${Math.round(sg * 0.62)}, ${Math.round(sb * 0.62)}, 0.96)`;
+    } else if (heroModel.shape === 'sea-stack') {
+      hAccentColor = 'rgba(220, 235, 245, 0.5)'; // sea-spray sheen
+    }
+    // 'cone' and 'massif' keep the darkened-geology default (volcanic rock / alpine stone).
+
+    return {
+      shape: heroModel.shape, cx: hcx, baseY: hBaseY,
+      height: hHeight, width: hWidth,
+      fillColor: hFillColor, accentColor: hAccentColor,
+    };
+  })() : null;
+
+  // ---- Cone/caldera emitter positions for EMBER anchoring ----
+  // Built here, after landmarks + hero, so we have baked pixel coords.
+  const coneEmitters: VistaCache['coneEmitters'] = [];
+  for (const lm of landmarks) {
+    if (lm.kind === 'cone' || lm.kind === 'caldera') {
+      coneEmitters.push({ cx: lm.cx, topY: lm.baseY - lm.height });
+    }
+  }
+  // Hero cone (WO-VISTA-TK1 / TK-3 fold-in): the hero landform is the dominant
+  // vent when present — EMBER particles anchor to ITS apex too, not just the
+  // smaller background-landmark cones.
+  if (hero && hero.shape === 'cone') {
+    coneEmitters.push({ cx: hero.cx, topY: hero.baseY - hero.height });
+  }
+
+  // ---- Multi-kind atmospheric particle groups ----
+  // One group per kind in model.layers.atmosphere.particles[].  Rare to have >2
+  // (e.g. VOLCANIC emits ember+ash; ICE/ARCTIC may emit snow+dust for spindrift).
+  // Sprite canvases are allocated once here; drawLandedParticles uses drawImage.
+  const particleGroups: ParticleGroupCache[] = [];
+  const atmoParticles = model.layers.atmosphere.particles;
+
+  if (atmoParticles.length > 0) {
+    for (let ki = 0; ki < atmoParticles.length; ki++) {
+      const ap = atmoParticles[ki];
+      const kindUp = ap.kind.toUpperCase();
+      const [cr, cg, cb] = ap.color;
+      const sprite = buildParticleSprite(kindUp, cr, cg, cb);
+      // Count raised above legacy single-kind (20+40*rate) because the sprite-cache
+      // eliminates per-frame createRadialGradient, so higher counts don't regress FPS.
+      const count = Math.round(25 + ap.rate * 55);
+      const pts: ParticleSeedEx[] = [];
+      for (let i = 0; i < count; i++) {
+        const depth = (i % 3) as ParticleDepth;  // interleave far/mid/near across indices
+        let px = rngPart() * w;
+        if (kindUp === 'EMBER' && coneEmitters.length > 0) {
+          // Anchor EMBER particles to volcanic cone apexes with a small x-jitter
+          // so embers rise FROM the vent rather than from random screen positions.
+          const em = coneEmitters[i % coneEmitters.length];
+          px = em.cx + (rngPart() - 0.5) * w * 0.06;
+        }
+        pts.push({
+          x:         px,
+          y:         rngPart() * h,
+          size:      0.6 + rngPart() * 1.4,
+          phase:     rngPart() * Math.PI * 2,
+          speed:     0.4 + rngPart() * 1.2,
+          drift:     (rngPart() - 0.5) * 2,
+          warm:      rngPart(),
+          depth,
+          lifePhase: rngPart(),
+        });
+      }
+      particleGroups.push({ kind: kindUp, colorR: cr, colorG: cg, colorB: cb, particles: pts, sprite });
+    }
+  } else if (hasAtmosphere) {
+    // Sparse ambient motes on atmospheric worlds — faint background texture
+    const sprite = buildParticleSprite('FAINT', 180, 195, 210);
+    const pts: ParticleSeedEx[] = [];
+    for (let i = 0; i < 12; i++) {
+      pts.push({
+        x:         rngPart() * w,
+        y:         rngPart() * h,
+        size:      0.5 + rngPart() * 1.0,
+        phase:     rngPart() * Math.PI * 2,
+        speed:     0.2 + rngPart() * 0.6,
+        drift:     (rngPart() - 0.5),
+        warm:      rngPart(),
+        depth:     (i % 3) as ParticleDepth,
+        lifePhase: rngPart(),
+      });
+    }
+    particleGroups.push({ kind: 'FAINT', colorR: 180, colorG: 195, colorB: 210, particles: pts, sprite });
+  }
+
   // ---- Cached horizon glow gradient ----
   const gx = w * (0.25 + rngBase() * 0.5);
   const glowGrad = ctx.createLinearGradient(0, horizonY, 0, h);
+  perfCollector.recordAlloc();
   const glowRgb = model.palette.scatterBand;
   glowGrad.addColorStop(0, rgba(glowRgb, 0.18));
   glowGrad.addColorStop(1, rgba(glowRgb, 0));
@@ -757,18 +1115,74 @@ function buildVistaCache(
   });
 
   // ---- Feature scatters — bake screen coords for flora / rock / glitter instances ----
-  // groundH is already computed above.  sizePx uses a small fraction of min(w,h) so
-  // scattered vegetation stays proportional at any canvas size.
-  const scatterScreens: VistaCache['scatterScreens'] = model.layers.features.scatters.map((group) => ({
-    kind: group.kind,
-    instances: group.instances.map((inst) => ({
-      sx:     inst.pos[0] * w,
-      sy:     horizonY + inst.pos[1] * groundH * 0.80,
-      sizePx: Math.max(2, inst.scale * Math.min(w, h) * 0.012),
-      tint:   inst.tint,
-      glow:   inst.glow ?? 0,
-    })),
-  }));
+  // groundH is already computed above.
+  // When water is present, cap scatter sy to the land strip (above waterlineY) so
+  // flora/rocks don't appear in the water zone.
+  //
+  // sizePx uses a KIND-SPECIFIC scale factor so flora reads as visible silhouettes:
+  //   flora  — large factor (0.85) → primary trees ~14–44px, dense grass ~8–27px.
+  //   rocks  — compact factor (0.065) → pebble-scale, 2–11px.
+  //   glitter — same as rocks; glow multiplier at draw time gives visual presence.
+  // isRock() is a hoisted module-level function; safe to call here.
+  const scatterMaxY = hasWater ? waterTopY - 4 : h;
+  const scatterScreens: VistaCache['scatterScreens'] = model.layers.features.scatters.map((group) => {
+    const scaleFactor = (group.kind === 'glitter-spark' || isRock(group.kind)) ? 0.065 : 0.85;
+    return {
+      kind: group.kind,
+      instances: group.instances.map((inst) => ({
+        sx:     inst.pos[0] * w,
+        // inst.pos[1] is a model-Y screen fraction (placed across [horizonY..waterlineY]);
+        // use it directly so flora fills the whole land band instead of compressing to
+        // the lower band (the old horizonY + pos[1]*groundH*0.80 double-transformed it).
+        sy:     Math.min(inst.pos[1] * h, scatterMaxY),
+        sizePx: Math.max(2, inst.scale * Math.min(w, h) * scaleFactor),
+        tint:   inst.tint,
+        glow:   inst.glow ?? 0,
+      })),
+    };
+  });
+
+  // ---- Flora sprite cache — MID-LOD baked silhouettes per scatter group ----
+  // One sprite canvas per flora group; rocks + glitter skip (no sprite needed).
+  // isRock/getFloraClass/buildFloraSprite are all function declarations — hoisted, safe.
+  const floraGroupCaches: VistaCache['floraGroupCaches'] = [];
+  for (const group of scatterScreens) {
+    if (group.kind === 'glitter-spark') continue;
+    if (group.kind === 'citadel') continue;  // drawn by drawCitadelStructure; no sprite needed
+    if (group.instances.length === 0) continue;
+    if (isRock(group.kind)) continue;
+    // Median instance tint is the representative color for the cached sprite
+    const repInst = group.instances[Math.floor(group.instances.length * 0.5)];
+    const [rt, gt, bt] = repInst.tint;
+    const fc = getFloraClass(group.kind);
+    const midSprite = buildFloraSprite(fc, rt, gt, bt);
+    floraGroupCaches.push({ groupKind: group.kind, midSprite });
+  }
+
+  // ---- Hero stars — bright foreground stars with 4-point glint cross (WO-V3-CELESTIAL) ----
+  // 4–8 stars seeded from model.seed; positions stable per-seed; colors span the
+  // perceptual star spectrum (cool blue-white O/B → warm orange-white K).
+  // These draw AFTER the regular starfield in 'lighter' composite for additive bloom.
+  const rngHero  = splitmix32(deriveChildSeed(model.seed, 'herostars'));
+  const heroCount = 4 + Math.floor(rngHero() * 4);
+  const heroTints: [number, number, number][] = [
+    [175, 205, 255],   // O/B — blue-white
+    [210, 225, 255],   // A  — white
+    [240, 248, 255],   // F  — slightly warm white
+    [255, 252, 240],   // G  — warm white
+    [255, 232, 195],   // K  — orange-white
+  ];
+  const heroStars: HeroStarSeed[] = [];
+  for (let i = 0; i < heroCount; i++) {
+    heroStars.push({
+      x:          rngHero() * w,
+      y:          rngHero() * horizonY * 0.82,
+      r:          1.3 + rngHero() * 0.9,
+      glintLen:   5 + rngHero() * 14,
+      glintPhase: rngHero() * Math.PI * 2,
+      tint:       heroTints[Math.floor(rngHero() * heroTints.length)],
+    });
+  }
 
   return {
     key: '', // filled by caller
@@ -791,14 +1205,22 @@ function buildVistaCache(
     waterBand,
     foamMul,
     reflTint,
+    waterType,
+    waterColor,
+    foamColor,
     hazeColor,
     hazeStrength,
     skyDarken,
     clouds,
     cloudTint,
-    particles,
-    particleKind,
+    cloudKind,
+    godRaySeeds,
+    shootingStarSeeds,
+    galacticBand,
+    particleGroups,
+    coneEmitters,
     landmarks,
+    hero,
     glowGrad,
     terrainMode,
     cloudBands,
@@ -807,6 +1229,10 @@ function buildVistaCache(
     energyScreen,
     hazardScreens,
     scatterScreens,
+    floraGroupCaches,
+    quality: 'high',  // default; overwritten live each frame by getOrBuildCache
+    heroStars,
+    sunSpecial: (primarySun?.special as 'accretion' | 'pulsar' | undefined) ?? undefined,
   };
 }
 
@@ -825,15 +1251,301 @@ function drawWeatherSky(
   const [r, g, b] = hazeColor.split(',').map((s) => parseInt(s.trim(), 10));
   ctx.save();
   const dark = ctx.createLinearGradient(0, 0, 0, horizonY * 1.1);
+  perfCollector.recordAlloc();
   dark.addColorStop(0, `rgba(18, 22, 30, ${(sd * 0.8).toFixed(3)})`);
   dark.addColorStop(1, `rgba(28, 34, 44, ${(sd * 0.4).toFixed(3)})`);
   ctx.fillStyle = dark;
   ctx.fillRect(0, 0, w, horizonY * 1.1);
   const tint = ctx.createLinearGradient(0, 0, 0, horizonY * 1.1);
+  perfCollector.recordAlloc();
   tint.addColorStop(0, `rgba(${r}, ${g}, ${b}, ${(sd * 0.22).toFixed(3)})`);
   tint.addColorStop(1, `rgba(${r}, ${g}, ${b}, ${(sd * 0.10).toFixed(3)})`);
   ctx.fillStyle = tint;
   ctx.fillRect(0, 0, w, horizonY * 1.1);
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// drawAccretionDisc — BLACK_HOLE / accretion sun special (WO-V3-CELESTIAL)
+//
+// Replaces the normal sun disc when suns[0].special === 'accretion'.
+// Renders: outer orange corona glow → tilted disc rings (outer dark→inner white-hot)
+// → Doppler brightening half-arc → dark event-horizon void → photon lensing ring.
+// Self-emissive: dimK keeps the disc visible even at "night" in the host system.
+// Animation: disc rotates slowly from `t`; all paths seeded — no Math.random.
+// save/restore balanced; all 'lighter' composites reset on outer restore.
+// ---------------------------------------------------------------------------
+function drawAccretionDisc(
+  ctx: CanvasRenderingContext2D,
+  sunX: number,
+  sunY: number,
+  cache: VistaCache,
+  dc: DayCycle,
+  t: number,
+): void {
+  const { sunR, w, h } = cache;
+  // Heroic scale: disc dominates the sky regardless of sunR; floor at 18% of min(w,h)
+  const discR = Math.max(Math.min(w, h) * 0.18, sunR * 4.0);
+  const rot   = t === 0 ? 0 : (t * 0.10) % (Math.PI * 2);
+  // Self-emissive: black holes always blaze; night barely dims the accretion disc
+  const emK   = 0.80 + dc.bright * 0.20;
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+
+  // 1) Wide outer corona glow — broad warm-orange haze, very luminous
+  const outerR = discR * 5.5;
+  const og = ctx.createRadialGradient(sunX, sunY, discR * 0.22, sunX, sunY, outerR);
+  perfCollector.recordAlloc();
+  og.addColorStop(0,    `rgba(255, 140, 30, ${(0.55 * emK).toFixed(3)})`);
+  og.addColorStop(0.22, `rgba(255, 95, 18, ${(0.32 * emK).toFixed(3)})`);
+  og.addColorStop(0.50, `rgba(210, 55, 8,  ${(0.15 * emK).toFixed(3)})`);
+  og.addColorStop(1,    'rgba(120, 20, 3, 0)');
+  ctx.globalAlpha = 1;
+  ctx.fillStyle   = og;
+  ctx.fillRect(sunX - outerR, sunY - outerR, outerR * 2, outerR * 2);
+
+  // 2) Gravitational lensing ring — soft bright aureole just outside the disc edge
+  const lensR = discR * 1.30;
+  const lg = ctx.createRadialGradient(sunX, sunY, discR * 0.88, sunX, sunY, lensR);
+  perfCollector.recordAlloc();
+  lg.addColorStop(0,   `rgba(255, 210, 110, ${(0.48 * emK).toFixed(3)})`);
+  lg.addColorStop(0.5, `rgba(255, 160,  55, ${(0.22 * emK).toFixed(3)})`);
+  lg.addColorStop(1,   'rgba(200, 80, 10, 0)');
+  ctx.fillStyle = lg;
+  ctx.fillRect(sunX - lensR, sunY - lensR, lensR * 2, lensR * 2);
+
+  // 3) Tilted disc ellipses — outer→inner color gradient, slowly rotating
+  ctx.save();
+  ctx.translate(sunX, sunY);
+  ctx.rotate(rot);
+  // [rXMul, rYMul, r, g, b, alpha, lineW]
+  const discBands: [number, number, number, number, number, number, number][] = [
+    [1.00, 0.38, 185,  75,  18, 0.80, 7.0],
+    [0.84, 0.32, 222, 112,  28, 0.88, 7.5],
+    [0.66, 0.26, 252, 162,  48, 0.93, 6.5],
+    [0.48, 0.20, 255, 205,  85, 0.97, 5.5],
+    [0.30, 0.13, 255, 242, 158, 0.99, 4.5],
+    [0.16, 0.07, 255, 255, 218, 0.99, 3.0],
+  ];
+  for (const [rX, rY, r, g, b, alpha, lw] of discBands) {
+    ctx.globalAlpha = alpha * emK;
+    ctx.strokeStyle = `rgb(${r}, ${g}, ${b})`;
+    ctx.lineWidth   = lw;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, discR * rX, discR * rY, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  // Doppler brightening: approaching side blazes white-hot; receding side red-dimmed
+  const doppGrad = ctx.createLinearGradient(-discR, 0, discR, 0);
+  perfCollector.recordAlloc();
+  doppGrad.addColorStop(0,    `rgba(255, 248, 200, ${(0.82 * emK).toFixed(3)})`);
+  doppGrad.addColorStop(0.40, 'rgba(255, 200, 80, 0)');
+  doppGrad.addColorStop(1,    `rgba(60,  25,   5, ${(0.35 * emK).toFixed(3)})`);
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = doppGrad;
+  ctx.lineWidth   = discR * 0.28;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, discR * 0.72, discR * 0.29, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();   // undo translate+rotate; composite stays 'lighter' from outer save
+
+  // 4) Event horizon — absolute dark void punched through the 'lighter' layers
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 0.99;
+  ctx.fillStyle   = 'rgb(0, 0, 2)';
+  ctx.beginPath();
+  ctx.ellipse(sunX, sunY, discR * 0.22, discR * 0.17, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 5) Photon ring — bright razor-thin ring at the shadow edge (gravitational lensing)
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = 0.95 * emK;
+  ctx.strokeStyle = 'rgba(215, 190, 140, 0.98)';
+  ctx.lineWidth   = 2.8;
+  ctx.beginPath();
+  ctx.ellipse(sunX, sunY, discR * 0.245, discR * 0.192, 0, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.restore();   // resets composite + globalAlpha to source-over
+}
+
+// ---------------------------------------------------------------------------
+// drawPulsar — NEUTRON / pulsar sun special (WO-V3-CELESTIAL)
+//
+// Replaces the normal sun disc when suns[0].special === 'pulsar'.
+// Renders: faint blue-white magnetic nebula halo → two sweeping lighthouse beams
+// (opposed; rotate at 1.4 rad/s from t) → tiny intense neutron-star disc.
+// save/restore balanced; 'lighter' composite resets on restore.
+// ---------------------------------------------------------------------------
+function drawPulsar(
+  ctx: CanvasRenderingContext2D,
+  sunX: number,
+  sunY: number,
+  cache: VistaCache,
+  dc: DayCycle,
+  t: number,
+): void {
+  const { sunR, horizonY, w, h } = cache;
+  const spin   = t === 0 ? 0.4 : (t * 1.4) % (Math.PI * 2);
+  const pulse  = t === 0 ? 1   : 0.60 + 0.40 * Math.sin(t * 7.5);
+  const beamL  = Math.max(horizonY, sunR * 18) * 0.95;
+  const beamHW = 0.09;   // half-angle of beam spread — wider lighthouse sweep
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+
+  // 1) Outer magnetic nebula — wide blue-white haze, always visible (self-luminous)
+  const haloR = Math.max(Math.min(w, h) * 0.32, sunR * 10);
+  const halo  = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, haloR);
+  perfCollector.recordAlloc();
+  // Self-emissive: barely modulated by dc.bright so it reads at night too
+  const haloK = 0.55 + dc.bright * 0.45;
+  halo.addColorStop(0,    `rgba(140, 195, 255, ${(0.45 * haloK).toFixed(3)})`);
+  halo.addColorStop(0.35, `rgba(90,  155, 255, ${(0.22 * haloK).toFixed(3)})`);
+  halo.addColorStop(0.65, `rgba(60,  120, 230, ${(0.10 * haloK).toFixed(3)})`);
+  halo.addColorStop(1,    'rgba(40, 90, 200, 0)');
+  ctx.globalAlpha = 1;
+  ctx.fillStyle   = halo;
+  ctx.fillRect(sunX - haloR, sunY - haloR, haloR * 2, haloR * 2);
+
+  // 2) Inner magnetic corona — tighter, brighter ring around the neutron star
+  const coronaR = Math.max(Math.min(w, h) * 0.08, sunR * 3.5);
+  const corona  = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, coronaR);
+  perfCollector.recordAlloc();
+  corona.addColorStop(0,   `rgba(200, 230, 255, ${(0.65 * haloK).toFixed(3)})`);
+  corona.addColorStop(0.5, `rgba(120, 185, 255, ${(0.30 * haloK).toFixed(3)})`);
+  corona.addColorStop(1,   'rgba(70, 140, 255, 0)');
+  ctx.fillStyle = corona;
+  ctx.fillRect(sunX - coronaR, sunY - coronaR, coronaR * 2, coronaR * 2);
+
+  // 3) Two sweeping beams (opposed; 180° apart) — obvious lighthouse sweep
+  for (let beam = 0; beam < 2; beam++) {
+    const angle = spin + beam * Math.PI;
+    const ax = Math.cos(angle), ay = Math.sin(angle);
+    const a1 = angle - beamHW, a2 = angle + beamHW;
+    const x1 = sunX + Math.cos(a1) * beamL;
+    const y1 = sunY + Math.sin(a1) * beamL;
+    const x2 = sunX + Math.cos(a2) * beamL;
+    const y2 = sunY + Math.sin(a2) * beamL;
+    const mx = sunX + ax * beamL * 0.60;
+    const my = sunY + ay * beamL * 0.60;
+    const bg = ctx.createLinearGradient(sunX, sunY, mx, my);
+    perfCollector.recordAlloc();
+    // Beams are always bright — self-luminous, pulse modulates intensity
+    const ba = (0.70 + 0.30 * dc.bright) * pulse;
+    bg.addColorStop(0,   `rgba(225, 242, 255, ${Math.min(1, ba * 1.10).toFixed(3)})`);
+    bg.addColorStop(0.3, `rgba(165, 215, 255, ${(ba * 0.65).toFixed(3)})`);
+    bg.addColorStop(0.6, `rgba(100, 175, 255, ${(ba * 0.30).toFixed(3)})`);
+    bg.addColorStop(1,   'rgba(60, 140, 255, 0)');
+    ctx.globalAlpha = Math.min(1, 0.92 * pulse);
+    ctx.fillStyle   = bg;
+    ctx.beginPath();
+    ctx.moveTo(sunX, sunY);
+    ctx.lineTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // 4) Central neutron star — intense blue-white pinpoint with strong close glow
+  const nsr = Math.max(5, sunR * 0.65);
+  ctx.globalAlpha = Math.min(1, pulse * 1.1);
+  const nd = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, nsr * 3.5);
+  perfCollector.recordAlloc();
+  nd.addColorStop(0,    'rgba(245, 255, 255, 0.98)');
+  nd.addColorStop(0.25, 'rgba(195, 230, 255, 0.85)');
+  nd.addColorStop(0.60, 'rgba(130, 185, 255, 0.40)');
+  nd.addColorStop(1,    'rgba(80,  150, 255, 0)');
+  ctx.fillStyle = nd;
+  ctx.fillRect(sunX - nsr * 3.5, sunY - nsr * 3.5, nsr * 7, nsr * 7);
+  ctx.fillStyle = 'rgba(250, 255, 255, 0.99)';
+  ctx.beginPath();
+  ctx.arc(sunX, sunY, nsr, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();   // resets composite to source-over
+}
+
+// ---------------------------------------------------------------------------
+// drawRingArc — planet's own ring system as an overhead arc (WO-V3-CELESTIAL)
+//
+// Reads model.layers.celestial.ringArc (tiltDeg, innerR, outerR, color).
+// The ring arc is visible from the surface as a wide shallow band stretching
+// horizon-to-horizon.  Rendered as concentric ellipses whose centre is pushed
+// below the canvas so only the top arc spans the sky region.
+// Drawn in 'lighter' composite; save/restore balanced.
+// ---------------------------------------------------------------------------
+function drawRingArc(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  horizonY: number,
+  model: VistaModel,
+  dc: DayCycle,
+): void {
+  const ra = model.layers.celestial.ringArc;
+  if (!ra) return;
+
+  const { tiltDeg, innerR, outerR, color } = ra;
+  const [rr, rg, rb] = color;
+
+  // tiltDeg (10–40) controls how much of the ring "height" is visible.
+  // Near edge-on (low tilt) → thin arc; more inclined → broader band.
+  const tiltRad = Math.max(8, tiltDeg) * Math.PI / 180;
+  const yScale  = Math.sin(tiltRad);   // ~0.14–0.64 for tiltDeg 8–40
+
+  // The ring arc is a huge ellipse centred well below the horizon so only
+  // the TOP arc spans the sky.  Key invariant: arc top MUST be above horizonY.
+  //
+  // arcTopFrac: fractional Y of the arc's topmost strand in [0=canvas-top,
+  // 1=horizon].  More inclined ring → arc appears higher → larger fraction.
+  const arcTopFrac = 0.10 + yScale * 0.55;   // 0.18–0.46 for typical tilts
+  const arcTopY   = horizonY * arcTopFrac;   // canvas Y for arc top edge
+  const cx        = w * 0.50;
+  const cy        = horizonY * 1.80;         // centre pushed well below horizon
+  const baseRX    = w * 0.92;
+  // Derive baseRY so the ellipse top lands at arcTopY (above the horizon).
+  // Invariant: cy - baseRY = arcTopY  →  top arc is always in-sky.
+  const baseRY    = cy - arcTopY;
+
+  // Ring band width: proportional to ring gap; floor at 12% of horizonY.
+  const bandW    = Math.max(horizonY * 0.12, baseRX * (outerR - innerR) / innerR * 0.45);
+  const numBands = 7;
+  // Self-luminous: always visible; brightens at midday.
+  const baseAlpha = 0.52 + dc.bright * 0.22;
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+
+  // Background glow — wide soft haze that makes the band unmistakable
+  const glowW = bandW * 2.5;
+  for (let gi = 0; gi < 3; gi++) {
+    const gf  = gi / 2;
+    const grx = Math.max(1, (baseRX - glowW * 0.5) + glowW * gf);
+    const gry = Math.max(1, (baseRY - glowW * 0.5 * yScale) + (glowW * yScale) * gf);
+    ctx.globalAlpha = baseAlpha * 0.16;
+    ctx.strokeStyle = `rgba(${rr}, ${rg}, ${rb}, 0.8)`;
+    ctx.lineWidth   = Math.max(6, glowW * 0.50);
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, grx, gry, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // Detail band structure — 7 strands with mid-band brightness peak
+  for (let bi = 0; bi < numBands; bi++) {
+    const f  = bi / (numBands - 1);          // 0 = inner edge, 1 = outer
+    const rx = Math.max(1, (baseRX - bandW * 0.5) + bandW * f);
+    const ry = Math.max(1, (baseRY - bandW * 0.5 * yScale) + (bandW * yScale) * f);
+    // Mid-band is brightest; edges taper off
+    const br = Math.sin((f + 0.5 / numBands) * Math.PI);
+    ctx.globalAlpha = Math.max(0.02, baseAlpha * (0.45 + br * 0.55));
+    ctx.strokeStyle = `rgb(${rr}, ${rg}, ${rb})`;
+    ctx.lineWidth   = Math.max(2, bandW / numBands * 2.6);
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
   ctx.restore();
 }
 
@@ -847,8 +1559,19 @@ function drawLandedSkyPlanets(
   horizonY: number,
   t: number,
   cache: VistaCache,
-  dc: DayCycle
+  dc: DayCycle,
+  sunWorldX: number,
+  sunWorldY: number,
+  sunAlt: number,
+  sunAzFrac: number,
 ): void {
+  // Sun sky-direction vector — used to compute lit/shadow phase for each sibling.
+  const sunVec   = skyDir(sunAlt, sunAzFrac);
+  // Sun-to-horizon offset for the lightDir angle (matches drawLandedMoons convention)
+  const lightDir = Math.atan2(sunWorldY - horizonY, sunWorldX - cache.w / 2);
+  const lCos     = Math.cos(lightDir);
+  const lSin     = Math.sin(lightDir);
+
   for (let i = 0; i < cache.skyPlanets.length; i++) {
     const p = cache.skyPlanets[i];
     const pos = skyProjection(t, p.arcRate, p.arcOffset, p.arcDir, w, horizonY);
@@ -856,8 +1579,17 @@ function drawLandedSkyPlanets(
     const px = pos.x, py = pos.y;
     const a = p.alpha * pos.fade * (0.45 + dc.bodyBright * 0.85);
     if (a <= 0.01) continue;
+
+    // Phase: angular separation between sibling and sun → illuminated fraction
+    const sibVec = skyDir(pos.alt, pos.azFrac);
+    const cosSep = Math.max(-1, Math.min(1,
+      sunVec.x * sibVec.x + sunVec.y * sibVec.y + sunVec.z * sibVec.z));
+    const illum  = (1 - cosSep) / 2;   // 0 = new (unlit), 1 = full
+
     ctx.save();
     ctx.globalAlpha = a;
+
+    // Clip to disc, fill body colour + band + specular highlight
     ctx.save();
     ctx.beginPath();
     ctx.arc(px, py, p.r, 0, Math.PI * 2);
@@ -867,28 +1599,54 @@ function drawLandedSkyPlanets(
     ctx.fillStyle = p.bandColor;
     ctx.fillRect(px - p.r, py - p.r * 0.1, p.r * 2, p.r * 0.5);
     const lg = ctx.createRadialGradient(px - p.r * 0.3, py - p.r * 0.3, p.r * 0.1, px, py, p.r * 1.2);
-    lg.addColorStop(0, 'rgba(255,255,255,0.16)');
+    perfCollector.recordAlloc();
+    lg.addColorStop(0,   'rgba(255,255,255,0.16)');
     lg.addColorStop(0.7, 'rgba(255,255,255,0)');
-    lg.addColorStop(1, 'rgba(0,0,0,0.1)');
+    lg.addColorStop(1,   'rgba(0,0,0,0.1)');
     ctx.fillStyle = lg;
     ctx.fillRect(px - p.r, py - p.r, p.r * 2, p.r * 2);
-    ctx.restore();
+    ctx.restore();   // un-clip
+
+    // Rim shimmer
     const shimmer = t === 0 ? 0.5 : 0.4 + 0.2 * Math.sin(t * 0.4 + i);
     ctx.strokeStyle = p.rimColor;
     ctx.globalAlpha = a * shimmer;
-    ctx.lineWidth = 1;
+    ctx.lineWidth   = 1;
     ctx.beginPath();
     ctx.arc(px, py, p.r + 0.5, 0, Math.PI * 2);
     ctx.stroke();
+
+    // Rings — gated on p.rings (false by default; was always-on bug via !!radiusPx)
     if (p.rings) {
       ctx.globalAlpha = a * 0.7;
       ctx.strokeStyle = p.rimColor;
-      ctx.lineWidth = 1.2;
+      ctx.lineWidth   = 1.2;
       ctx.beginPath();
       ctx.ellipse(px, py, p.r * 1.8, p.r * 0.5, -0.3, 0, Math.PI * 2);
       ctx.stroke();
     }
-    ctx.restore();
+
+    // Phase terminator — shadow half-disc keyed to the lit fraction.
+    // Mirrors the moon terminator approach: a shifted dark circle clips to the disc.
+    if (illum < 0.985) {
+      const k   = (illum - 0.5) * 2;   // -1=new, 0=quarter, +1=full
+      const tdx = -lCos * p.r * k;
+      const tdy = -lSin * p.r * k;
+      const tsr = p.r * (1.0 + (1 - Math.abs(k)) * 0.04);
+      ctx.save();
+      ctx.globalAlpha = pos.fade;
+      ctx.beginPath();
+      ctx.arc(px, py, p.r, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle   = 'rgba(6, 8, 16, 0.82)';
+      ctx.beginPath();
+      ctx.arc(px + tdx, py + tdy, tsr, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    ctx.restore();   // outer per-planet restore
   }
 }
 
@@ -940,12 +1698,14 @@ function drawLandedMoons(
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     const innerHalo = ctx.createRadialGradient(mx, my, m.r * 0.2, mx, my, m.r * 2.0);
+    perfCollector.recordAlloc();
     innerHalo.addColorStop(0, `rgba(${m.tint}, ${(0.10 * prom * ext * sunWash * dayFaint * nightGlow).toFixed(3)})`);
     innerHalo.addColorStop(1, `rgba(${m.tint}, 0)`);
     ctx.fillStyle = innerHalo;
     ctx.fillRect(mx - m.r * 2.0, my - m.r * 2.0, m.r * 4.0, m.r * 4.0);
     const outerR = m.r * (2.6 + (1 - dc.bright) * 1.4);
     const outerHalo = ctx.createRadialGradient(mx, my, m.r * 0.6, mx, my, outerR);
+    perfCollector.recordAlloc();
     outerHalo.addColorStop(0, `rgba(${m.tint}, ${(0.12 * prom * ext * sunWash * dayFaint * nightGlow).toFixed(3)})`);
     outerHalo.addColorStop(1, `rgba(${m.tint}, 0)`);
     ctx.fillStyle = outerHalo;
@@ -985,12 +1745,180 @@ function drawLandedMoons(
       ctx.fill();
       ctx.restore();
     }
+
+    // Moon ring arc — only when hasRings (not gated on day/night; rings catch sunlight)
+    if (m.hasRings) {
+      ctx.save();
+      // Fade with the moon's overall visibility; slightly more visible at night
+      ctx.globalAlpha = (0.25 + 0.42 * prom) * breathe * ext * sunWash * dayFaint;
+      ctx.strokeStyle = `rgba(${m.tint}, 0.88)`;
+      ctx.lineWidth   = 0.9;
+      // Inner ring: slightly tilted, close to the disc edge
+      ctx.beginPath();
+      ctx.ellipse(mx, my, m.r * 1.65, m.r * 0.42, -0.25, 0, Math.PI * 2);
+      ctx.stroke();
+      // Outer ring: slightly wider, thinner stroke
+      ctx.lineWidth = 0.65;
+      ctx.beginPath();
+      ctx.ellipse(mx, my, m.r * 2.00, m.r * 0.52, -0.25, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 }
 
 // ---------------------------------------------------------------------------
-// drawLandedParticles — adapted from SolarSystemViewscreen.tsx L5789
-// Atmospheric foreground particles driven by model.layers.atmosphere.particles.
+// buildParticleSprite — pre-bake a kind-specific sprite canvas ONCE per cache build.
+// Eliminates per-frame createRadialGradient in the EMBER hot-path; all kinds
+// draw with ctx.drawImage() per particle instead of constructing gradient objects.
+// The sprite is SPRITE_D×SPRITE_D px; callers scale it via drawImage destination rect.
+// ---------------------------------------------------------------------------
+const SPRITE_D = 24;
+
+// FLORA_SPRITE_D — canonical size for pre-baked flora MID-LOD sprites.
+// Flora is drawn at sizePx = FLORA_SPRITE_D/2 with base at (FLORA_SPRITE_D/2, FLORA_SPRITE_D).
+// Blit formula: drawImage(sprite, sx-sizePx+swayOffset, sy-sizePx*2, sizePx*2, sizePx*2).
+const FLORA_SPRITE_D = 64;
+
+function buildParticleSprite(
+  kind: string,
+  r: number, g: number, b: number
+): HTMLCanvasElement {
+  const d  = SPRITE_D;
+  const spr = document.createElement('canvas');
+  spr.width = d; spr.height = d;
+  const sc = spr.getContext('2d')!;
+  const cx = d * 0.5, cy = d * 0.5, rad = d * 0.5;
+  sc.clearRect(0, 0, d, d);
+
+  if (kind === 'EMBER') {
+    // Warm radial core fading to transparent orange — built once, re-used every frame
+    const hg = sc.createRadialGradient(cx - rad * 0.25, cy - rad * 0.25, rad * 0.08, cx, cy, rad);
+    perfCollector.recordAlloc();
+    hg.addColorStop(0,   `rgba(${Math.min(255, r + 60)}, ${Math.min(255, g + 80)}, ${Math.min(255, b + 100)}, 1)`);
+    hg.addColorStop(0.4, `rgba(${r}, ${g}, 20, 0.85)`);
+    hg.addColorStop(1,   'rgba(200, 30, 0, 0)');
+    sc.fillStyle = hg;
+    sc.fillRect(0, 0, d, d);
+  } else if (kind === 'SNOW') {
+    // Soft white disc with hard centre and feathered edge
+    const sg = sc.createRadialGradient(cx, cy, 0, cx, cy, rad * 0.65);
+    perfCollector.recordAlloc();
+    sg.addColorStop(0,   `rgba(${r}, ${g}, ${b}, 1)`);
+    sg.addColorStop(0.5, `rgba(${r}, ${g}, ${b}, 0.85)`);
+    sg.addColorStop(1,   `rgba(${r}, ${g}, ${b}, 0)`);
+    sc.fillStyle = sg;
+    sc.beginPath(); sc.arc(cx, cy, rad * 0.65, 0, Math.PI * 2); sc.fill();
+  } else if (kind === 'SPORE') {
+    // Bioluminescent soft glow
+    const pg = sc.createRadialGradient(cx, cy, 0, cx, cy, rad * 0.75);
+    perfCollector.recordAlloc();
+    pg.addColorStop(0,   `rgba(${r}, ${g}, ${b}, 1)`);
+    pg.addColorStop(0.4, `rgba(${r}, ${g}, ${b}, 0.55)`);
+    pg.addColorStop(1,   `rgba(${r}, ${g}, ${b}, 0)`);
+    sc.fillStyle = pg;
+    sc.fillRect(0, 0, d, d);
+  } else if (kind === 'DUST' || kind === 'ASH') {
+    // Elongated soft mote (horizontal)
+    sc.fillStyle = `rgba(${r}, ${g}, ${b}, 0.75)`;
+    sc.beginPath();
+    sc.ellipse(cx, cy, rad * 1.4, rad * 0.45, 0, 0, Math.PI * 2);
+    sc.fill();
+  } else if (kind === 'RAIN') {
+    // Angled streak: upper-left to lower-right within the square sprite
+    sc.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.8)`;
+    sc.lineWidth = 1.5;
+    sc.lineCap = 'round';
+    sc.beginPath();
+    sc.moveTo(cx - 1,          cy - rad * 0.65);
+    sc.lineTo(cx + rad * 0.18, cy + rad * 0.65);
+    sc.stroke();
+  } else if (kind === 'SPARK') {
+    // Tiny bright pixel cluster
+    sc.fillStyle = `rgba(${r}, ${g}, ${b}, 1)`;
+    sc.fillRect(cx - 2, cy - 2, 4, 4);
+  } else {
+    // FAINT — very soft diffuse circle
+    const fg = sc.createRadialGradient(cx, cy, 0, cx, cy, rad * 0.45);
+    perfCollector.recordAlloc();
+    fg.addColorStop(0, `rgba(${r}, ${g}, ${b}, 0.35)`);
+    fg.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
+    sc.fillStyle = fg;
+    sc.fillRect(0, 0, d, d);
+  }
+  return spr;
+}
+
+// ---------------------------------------------------------------------------
+// buildFloraSprite — pre-bake a flora kind's silhouette to an offscreen canvas ONCE
+// per scatter group in buildVistaCache.  Eliminates per-frame bezier/path builds
+// for the MID-LOD depth band; callers blit with drawImage (fast GPU texture copy).
+//
+// Sprite is FLORA_SPRITE_D × FLORA_SPRITE_D; flora drawn at:
+//   sx = FLORA_SPRITE_D/2 (horizontal centre), sy = FLORA_SPRITE_D (base at bottom),
+//   sizePx = FLORA_SPRITE_D/2, swayX = 0 (no gust — motion applied at blit time).
+//
+// Blit formula at draw time (for instance with actual sizePx):
+//   ctx.drawImage(sprite, sx - sizePx + swayOffset, sy - sizePx * 2, sizePx * 2, sizePx * 2)
+//
+// Note: called from buildVistaCache; draw-helper functions are hoisted (function
+// declarations) so forward-reference from this position is safe.
+// ---------------------------------------------------------------------------
+function buildFloraSprite(
+  fc: FloraClass,
+  tr: number, tg: number, tb: number,
+): HTMLCanvasElement {
+  const d   = FLORA_SPRITE_D;
+  const spr = document.createElement('canvas');
+  spr.width = d; spr.height = d;
+  const sc = spr.getContext('2d')!;
+  sc.clearRect(0, 0, d, d);
+
+  const cx = d * 0.5;   // horizontal centre
+  const by = d;         // base y — flora grows upward from here
+  const sz = d * 0.5;   // canonical sizePx
+
+  // globalAlpha stays at 1; caller's globalAlpha governs blit opacity
+  sc.globalAlpha = 1;
+
+  switch (fc) {
+    case 'canopy-tree': drawScatterTree(sc, cx, by, sz, tr, tg, tb, 0, true);   break;
+    case 'broad-tree':  drawScatterTree(sc, cx, by, sz, tr, tg, tb, 0, false);  break;
+    case 'conifer':     drawScatterConifer(sc, cx, by, sz, tr, tg, tb, 0);      break;
+    case 'palm':        drawScatterPalm(sc, cx, by, sz, tr, tg, tb, 0);         break;
+    case 'vine':        drawScatterVine(sc, cx, by, sz, tr, tg, tb, 0);         break;
+    case 'fern':        drawScatterFern(sc, cx, by, sz, tr, tg, tb, 0);         break;
+    case 'kelp':        drawScatterKelp(sc, cx, by, sz, tr, tg, tb, 0, false);  break;
+    case 'seagrass':    drawScatterKelp(sc, cx, by, sz, tr, tg, tb, 0, true);   break;
+    case 'coral':       drawScatterCoral(sc, cx, by, sz, tr, tg, tb, 0);        break;
+    case 'cactus':      drawScatterCactus(sc, cx, by, sz, tr, tg, tb);          break;
+    case 'shrub':       drawScatterShrub(sc, cx, by, sz, tr, tg, tb, 0);        break;
+    case 'moss':        drawScatterMoss(sc, cx, by, sz, tr, tg, tb);            break;
+    case 'flower':      drawScatterFlower(sc, cx, by, sz, tr, tg, tb, 0);        break;
+    case 'engineered':  drawScatterPlanter(sc, cx, by, sz, tr, tg, tb, 0);      break;
+    case 'grass':
+    case 'generic':
+    default:            drawScatterGrass(sc, cx, by, sz, tr, tg, tb, 0);        break;
+  }
+
+  return spr;
+}
+
+// ---------------------------------------------------------------------------
+// drawLandedParticles — multi-kind compositor with:
+//   • Multi-kind compositing: all groups in cache.particleGroups rendered in order
+//   • Depth-parallax bands (depth 0/1/2 = far/mid/near):
+//       far  — small, slow, faint alpha, high in frame
+//       mid  — baseline speed/size/alpha
+//       near — large, fast, prominent, low in frame
+//   • Sprite-cache: drawImage per particle (no per-frame createRadialGradient)
+//   • Emitter anchoring: EMBER particles seeded to cone apex x-positions rise
+//       FROM the volcanic vent rather than from random screen positions
+//   • Lifecycle fades: sinusoidal alpha ramp (born → peak → die) per particle;
+//       disabled for EMBER (uses riseFade+flick) and RAIN (continuous streaks)
+//
+// Deterministic: motion driven by t (seconds); no Math.random, no Date.now.
+// ctx.save()/restore() wraps the full call; no composite state leaks.
 // ---------------------------------------------------------------------------
 function drawLandedParticles(
   ctx: CanvasRenderingContext2D,
@@ -999,106 +1927,123 @@ function drawLandedParticles(
   t: number,
   cache: VistaCache
 ): void {
-  const kind = cache.particleKind;
   const horizonY = cache.horizonY;
-  ctx.save();
-  if (kind === 'EMBER') {
-    ctx.globalCompositeOperation = 'lighter';
-    const RISE = h * 0.22;
-    for (let i = 0; i < cache.particles.length; i++) {
-      const p = cache.particles[i];
-      const x = p.x + Math.sin(t * 1.1 + p.phase) * 7 + p.drift * 3;
-      const rise = ((p.y % RISE) + t * (10 + p.speed * 16)) % RISE;
-      const y = (horizonY + RISE) - rise;
-      const flick = 0.4 + 0.6 * Math.abs(Math.sin(t * 3 + p.phase));
-      const a = Math.min(1, 0.6 * flick * (1 - rise / RISE));
-      const r = (1.1 + p.size * 1.1) * (1 - rise / RISE * 0.4);
-      ctx.globalAlpha = a * 0.5;
-      const hg = ctx.createRadialGradient(x, y, 0, x, y, r * 2.4);
-      hg.addColorStop(0, p.warm > 0.5 ? 'rgba(255, 170, 70, 1)' : 'rgba(255, 100, 35, 1)');
-      hg.addColorStop(1, 'rgba(255, 60, 10, 0)');
-      ctx.fillStyle = hg;
-      ctx.fillRect(x - r * 2.4, y - r * 2.4, r * 4.8, r * 4.8);
-      ctx.globalAlpha = a;
-      ctx.fillStyle = p.warm > 0.5 ? 'rgba(255, 210, 140, 1)' : 'rgba(255, 130, 60, 1)';
-      ctx.beginPath(); ctx.arc(x, y, Math.max(0.8, r * 0.5), 0, Math.PI * 2); ctx.fill();
-    }
-  } else if (kind === 'SNOW') {
-    ctx.fillStyle = 'rgba(235, 246, 255, 1)';
-    for (let i = 0; i < cache.particles.length; i++) {
-      const p = cache.particles[i];
-      const fall = (p.y + t * (12 + p.speed * 16)) % h;
-      const wind = p.drift * t * 2;
-      const x = (((p.x + Math.sin(t * 0.6 + p.phase) * 12 + wind) % w) + w) % w;
-      ctx.globalAlpha = Math.min(1, 0.45 + p.warm * 0.4);
-      ctx.beginPath();
-      ctx.arc(x, fall, p.size * 0.7, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  } else if (kind === 'DUST' || kind === 'ASH') {
-    ctx.globalCompositeOperation = 'lighter';
-    for (let i = 0; i < cache.particles.length; i++) {
-      const p = cache.particles[i];
-      const x = (((p.x + t * (30 + p.speed * 40)) % (w * 1.2)) + w * 1.2) % (w * 1.2) - w * 0.1;
-      const y = horizonY + 6 + ((p.y + Math.sin(t * 0.7 + p.phase) * 4) % Math.max(1, h - horizonY - 6));
-      ctx.globalAlpha = Math.min(1, 0.12 + p.warm * 0.12);
-      ctx.fillStyle = kind === 'ASH' ? 'rgba(140, 130, 120, 1)' : 'rgba(230, 190, 120, 1)';
-      ctx.fillRect(x, y, p.size * 1.6, p.size * 0.7);
-    }
-  } else if (kind === 'RAIN') {
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = 'rgba(200, 220, 240, 1)';
-    ctx.lineWidth = 1;
-    for (let i = 0; i < cache.particles.length; i++) {
-      const p = cache.particles[i];
-      const fallSpeed = 260;
-      const sx = (((p.x + t * fallSpeed * p.speed * 0.15) % (w * 1.4)) + w * 1.4) % (w * 1.4) - w * 0.2;
-      const sy = (p.y * h + t * fallSpeed * p.speed) % h;
-      ctx.globalAlpha = p.drift * 0.5 * 0.6;
-      ctx.beginPath();
-      ctx.moveTo(sx, sy);
-      ctx.lineTo(sx + 0.15 * p.size * 8, sy + p.size * 14);
-      ctx.stroke();
-    }
-  } else if (kind === 'SPORE') {
-    ctx.globalCompositeOperation = 'lighter';
-    const top = horizonY;
-    const band = Math.max(8, h - top);
-    for (let i = 0; i < cache.particles.length; i++) {
-      const p = cache.particles[i];
-      const x = (((p.x + Math.sin(t * 0.3 + p.phase) * 12 + t * (2 + p.speed * 2)) % w) + w) % w;
-      const y = top + band * 0.55 + ((p.y + Math.sin(t * 0.4 + p.phase) * 8) % (band * 0.45));
-      const pulse = 0.3 + 0.7 * Math.abs(Math.sin(t * 0.8 + p.phase));
-      ctx.globalAlpha = 0.22 * pulse;
-      ctx.fillStyle = p.warm > 0.5 ? 'rgba(190, 255, 170, 1)' : 'rgba(180, 140, 255, 1)';
-      ctx.beginPath();
-      ctx.arc(x, y, p.size * 0.7, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  } else if (kind === 'SPARK') {
-    ctx.globalCompositeOperation = 'lighter';
-    for (let i = 0; i < cache.particles.length; i++) {
-      const p = cache.particles[i];
-      const x = (((p.x + t * (20 + p.speed * 30)) % (w * 1.2)) + w * 1.2) % (w * 1.2) - w * 0.1;
-      const y = horizonY + ((p.y + t * (8 + p.speed * 12)) % Math.max(1, h - horizonY));
-      const flick = 0.4 + 0.6 * Math.abs(Math.sin(t * 4 + p.phase));
-      ctx.globalAlpha = 0.5 * flick;
-      ctx.fillStyle = p.warm > 0.5 ? 'rgba(255, 200, 80, 1)' : 'rgba(200, 240, 255, 1)';
-      ctx.fillRect(x, y, p.size, p.size);
-    }
-  } else {
-    // FAINT — sparse motes drifting near the surface
-    const top = horizonY;
-    const band = Math.max(8, h - top);
-    for (let i = 0; i < cache.particles.length; i++) {
-      const p = cache.particles[i];
-      const x = (((p.x + t * (3 + p.speed * 4)) % w) + w) % w;
-      const y = top + ((p.y + Math.sin(t * 0.3 + p.phase) * 6) % band);
-      ctx.globalAlpha = 0.05 + p.warm * 0.06;
-      ctx.fillStyle = '#cfd8e6';
-      ctx.fillRect(x, y, p.size, p.size);
-    }
+  const groups   = cache.particleGroups;
+
+  if (perfCollector.enabled) {
+    let liveCount = 0;
+    for (let gi = 0; gi < groups.length; gi++) liveCount += groups[gi].particles.length;
+    perfCollector.recordParticles(liveCount);
   }
+
+  ctx.save();
+
+  for (let gi = 0; gi < groups.length; gi++) {
+    const grp  = groups[gi];
+    const kind = grp.kind;
+    const spr  = grp.sprite;
+    const pts  = grp.particles;
+
+    // EMBER and SPORE and SPARK add-to rather than overlay; RAIN in lighter for
+    // classic wet-glass look; all others use normal source-over.
+    const additive = kind === 'EMBER' || kind === 'SPORE' || kind === 'SPARK' || kind === 'RAIN';
+    ctx.globalCompositeOperation = additive ? 'lighter' : 'source-over';
+
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      const d = p.depth as number;                     // 0=far, 1=mid, 2=near
+
+      // Per-depth multipliers (parallax)
+      const dScale = d === 0 ? 0.50 : d === 2 ? 1.65 : 1.0;  // visual size
+      const dAlpha = d === 0 ? 0.35 : d === 2 ? 0.95 : 0.70;  // base opacity
+      const dSpeed = d === 0 ? 0.45 : d === 2 ? 1.55 : 1.0;   // motion rate
+
+      // Lifecycle alpha ramp: sin curve over each particle's cycle period.
+      // Period is tied to size so larger particles cycle slightly slower.
+      // Skipped for EMBER (riseFade+flick handle the fade) and RAIN (continuous streaks).
+      const lifeMul = (kind === 'EMBER' || kind === 'RAIN')
+        ? 1.0
+        : Math.max(0, Math.sin(
+            ((t * dSpeed * (0.07 + p.size * 0.03) + p.lifePhase) % 1) * Math.PI
+          ));
+
+      // Sprite half-size for this particle (determines drawImage destination rect)
+      // Kind-specific formulas keep visual magnitudes close to the legacy renderer.
+      let r: number;
+      if      (kind === 'EMBER') r = (1.2 + p.size * 1.2) * dScale;
+      else if (kind === 'SNOW')  r = (0.8 + p.size * 0.5) * dScale;
+      else if (kind === 'RAIN')  r = 5.0 * dScale;
+      else if (kind === 'SPORE') r = (1.0 + p.size * 0.8) * dScale;
+      else if (kind === 'SPARK') r = (1.0 + p.size * 0.5) * dScale;
+      else                       r = (0.9 + p.size * 0.8) * dScale;  // DUST/ASH/FAINT
+
+      let x: number, y: number, alpha: number;
+
+      if (kind === 'EMBER') {
+        // Rise arc from cone apex upward; near particles are freshly emitted (low rise),
+        // far particles have drifted high.  x-drift scales inversely with depth so
+        // older (far) embers have spread further from the vent in the wind.
+        const RISE = h * (0.18 + d * 0.04);
+        const rise = ((p.y % RISE) + t * dSpeed * (10 + p.speed * 16)) % RISE;
+        const xDrift = p.drift * (8 - d * 2);   // far=wide spread, near=tight cluster
+        x     = p.x + Math.sin(t * 1.1 * dSpeed + p.phase) * 7 + xDrift;
+        y     = (horizonY + RISE) - rise;
+        const riseFade = Math.max(0, 1 - rise / RISE);
+        const flick    = 0.4 + 0.6 * Math.abs(Math.sin(t * 3 + p.phase));
+        alpha = dAlpha * flick * riseFade * 0.9;
+      } else if (kind === 'SNOW') {
+        // Falling + horizontal wind drift; depth controls fall speed and initial y-band
+        const fall = (p.y + t * dSpeed * (12 + p.speed * 16)) % h;
+        const wind = p.drift * t * 2;
+        x     = (((p.x + Math.sin(t * 0.6 + p.phase) * 12 * dScale + wind) % w) + w) % w;
+        y     = fall;
+        alpha = dAlpha * lifeMul * (0.45 + p.warm * 0.4);
+      } else if (kind === 'DUST' || kind === 'ASH') {
+        // Horizontal sheets layered at different heights by depth band
+        const groundH = Math.max(1, h - horizonY);
+        const bandY   = d === 0 ? groundH * 0.08 : d === 2 ? groundH * 0.62 : groundH * 0.35;
+        x = (((p.x + t * dSpeed * (30 + p.speed * 40)) % (w * 1.2)) + w * 1.2) % (w * 1.2) - w * 0.1;
+        y = horizonY + bandY + ((p.y * 0.15 + Math.sin(t * 0.7 * dSpeed + p.phase) * 4) % Math.max(1, groundH * 0.25));
+        alpha = dAlpha * lifeMul * (0.14 + p.warm * 0.14);
+      } else if (kind === 'RAIN') {
+        // Streaks falling at shallow angle; depth controls streak speed and density
+        const fallSpeed = 260;
+        x = (((p.x + t * fallSpeed * p.speed * 0.15 * dSpeed) % (w * 1.4)) + w * 1.4) % (w * 1.4) - w * 0.2;
+        y = (p.y + t * fallSpeed * p.speed * dSpeed) % h;
+        alpha = dAlpha * Math.abs(p.drift) * 0.55;
+      } else if (kind === 'SPORE') {
+        // Floating wisps near the surface; near spores sit lower and pulse brighter
+        const band  = Math.max(8, h - horizonY);
+        const bandY = horizonY + band * (0.35 + d * 0.15);
+        x     = (((p.x + Math.sin(t * 0.3 * dSpeed + p.phase) * 12 + t * (2 + p.speed * 2) * dSpeed) % w) + w) % w;
+        y     = bandY + ((p.y * 0.1 + Math.sin(t * 0.4 * dSpeed + p.phase) * 8) % (band * 0.35));
+        const pulse = 0.3 + 0.7 * Math.abs(Math.sin(t * 0.8 + p.phase));
+        alpha = dAlpha * lifeMul * 0.28 * pulse;
+      } else if (kind === 'SPARK') {
+        x     = (((p.x + t * (20 + p.speed * 30) * dSpeed) % (w * 1.2)) + w * 1.2) % (w * 1.2) - w * 0.1;
+        y     = horizonY + ((p.y + t * (8 + p.speed * 12) * dSpeed) % Math.max(1, h - horizonY));
+        const flick = 0.4 + 0.6 * Math.abs(Math.sin(t * 4 + p.phase));
+        alpha = dAlpha * lifeMul * 0.55 * flick;
+      } else {
+        // FAINT — sparse motes drifting near the surface
+        const band = Math.max(8, h - horizonY);
+        x     = (((p.x + t * (3 + p.speed * 4) * dSpeed) % w) + w) % w;
+        y     = horizonY + ((p.y + Math.sin(t * 0.3 * dSpeed + p.phase) * 6) % band);
+        alpha = dAlpha * lifeMul * (0.05 + p.warm * 0.06);
+      }
+
+      if (alpha < 0.01) continue;  // cull invisible particles
+
+      // drawImage scales the SPRITE_D×SPRITE_D sprite to r×2 destination — fast blit
+      ctx.globalAlpha = Math.min(1, alpha);
+      ctx.drawImage(spr, x - r, y - r, r * 2, r * 2);
+    }
+
+    // Reset between groups so each kind's composite mode is isolated
+    ctx.globalAlpha              = 1;
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
   ctx.restore();
 }
 
@@ -1128,24 +2073,100 @@ function drawLandmarks(
   // Modulate silhouette darkness with the day cycle: slightly brighter at noon
   // (backlit edge), darkest at night (pure silhouette).
   const brightK = 0.7 + dc.bright * 0.3;
+  // Directional shading source — consumed per-face inside the loop below.
+  const lighting = cache.model.lighting;
   ctx.save();
 
   for (const lm of cache.landmarks) {
     const { kind, cx, baseY, height, width } = lm;
 
-    // Apply day-cycle modulation to fill opacity
+    // Per-landmark directional shading: right-facing surface (azimuth 0° = screen-right)
+    // vs left-facing (180°).  shadeFlank applies ambient+fill floor so shadow faces
+    // are never crushed black.
+    const rightShade = shadeFlank(lighting, 0);
+    const leftShade  = shadeFlank(lighting, 180);
+    const litIsRight = rightShade.mult > leftShade.mult;
+
+    // Fake AO contact shadow — drawn before the fill so it sits under the geometry.
+    // Width × 0.6 approximates the visible ground-contact footprint.
+    aoPool(ctx, cx, baseY, width * 0.6, lighting);
+
+    // Apply day-cycle modulation to fill opacity (directional mults applied per-face below)
     ctx.globalAlpha = brightK;
 
     if (kind === 'cone') {
-      // Triangle: base width, angled flanks, pointed apex.
-      // Reads unmistakably as a volcano when used with a VOLCANIC archetype.
+      // Triangle split into left/right halves so each flank gets its own directional
+      // brightness.  Reads unmistakably as a volcano with a hard lit/shadow terminator.
       ctx.fillStyle = lm.fillColor;
+
+      // Shadow-side flank (whichever faces away from the key light)
+      ctx.globalAlpha = brightK * (litIsRight ? leftShade.mult : rightShade.mult);
       ctx.beginPath();
-      ctx.moveTo(cx - width, baseY);
-      ctx.lineTo(cx, baseY - height);
-      ctx.lineTo(cx + width, baseY);
+      if (litIsRight) {
+        ctx.moveTo(cx - width, baseY);
+        ctx.lineTo(cx,         baseY);
+        ctx.lineTo(cx,         baseY - height);
+      } else {
+        ctx.moveTo(cx,         baseY - height);
+        ctx.lineTo(cx + width, baseY);
+        ctx.lineTo(cx,         baseY);
+      }
       ctx.closePath();
       ctx.fill();
+
+      // Lit flank (sun-facing side)
+      ctx.globalAlpha = brightK * (litIsRight ? rightShade.mult : leftShade.mult);
+      ctx.beginPath();
+      if (litIsRight) {
+        ctx.moveTo(cx,         baseY - height);
+        ctx.lineTo(cx + width, baseY);
+        ctx.lineTo(cx,         baseY);
+      } else {
+        ctx.moveTo(cx - width, baseY);
+        ctx.lineTo(cx,         baseY);
+        ctx.lineTo(cx,         baseY - height);
+      }
+      ctx.closePath();
+      ctx.fill();
+
+      // Key-colour tint on the lit face — shifts the warm flank toward the sun's hue.
+      const coneLitTint = litIsRight ? rightShade.tint : leftShade.tint;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = brightK * 0.10;
+      ctx.fillStyle = coneLitTint;
+      ctx.beginPath();
+      if (litIsRight) {
+        ctx.moveTo(cx, baseY - height); ctx.lineTo(cx + width, baseY); ctx.lineTo(cx, baseY);
+      } else {
+        ctx.moveTo(cx - width, baseY); ctx.lineTo(cx, baseY); ctx.lineTo(cx, baseY - height);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+
+      // Sun-relative rim light on the outer edge of the lit flank.
+      const coneRim = rimLight(lighting, litIsRight ? 0 : 180, 'sun');
+      if (coneRim.mult > 0.005) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = brightK * coneRim.mult * 1.2;
+        ctx.strokeStyle = coneRim.tint;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        if (litIsRight) {
+          ctx.moveTo(cx, baseY - height); ctx.lineTo(cx + width, baseY);
+        } else {
+          ctx.moveTo(cx - width, baseY); ctx.lineTo(cx, baseY - height);
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // Restore brightK before the accent pass (accent uses its own save/restore
+      // so its alpha is independent, but reset here for clarity)
+      ctx.globalAlpha = brightK;
+
       // Optional accent: warm glow rim just below the apex and a hot crater dot.
       if (lm.useAccent) {
         ctx.save();
@@ -1169,28 +2190,63 @@ function drawLandmarks(
       }
 
     } else if (kind === 'caldera') {
-      // Broad flat-topped trapezoid with a central V-notch at the summit,
-      // suggesting a blow-out crater.  Wider base, flatter than a cone.
-      const topW = width * 0.55;       // flat top is narrower than base
-      const notchW = width * 0.14;     // notch mouth width at the top
-      const notchD = height * 0.16;    // depth of the central depression
+      // Broad flat-topped trapezoid with a central V-notch — split at the centre
+      // so each outer flank gets its own directional brightness.
+      const topW   = width * 0.55;   // flat top narrower than base
+      const notchW = width * 0.14;   // notch mouth width
+      const notchD = height * 0.16;  // notch depth
+      const notchY = baseY - height + notchD;
+
       ctx.fillStyle = lm.fillColor;
+
+      // Shadow half
+      ctx.globalAlpha = brightK * (litIsRight ? leftShade.mult : rightShade.mult);
       ctx.beginPath();
-      ctx.moveTo(cx - width, baseY);              // bottom-left
-      ctx.lineTo(cx - topW, baseY - height);      // top-left
-      ctx.lineTo(cx - notchW, baseY - height);    // notch-left shoulder
-      ctx.lineTo(cx, baseY - height + notchD);    // notch bottom
-      ctx.lineTo(cx + notchW, baseY - height);    // notch-right shoulder
-      ctx.lineTo(cx + topW, baseY - height);      // top-right
-      ctx.lineTo(cx + width, baseY);              // bottom-right
+      if (litIsRight) {
+        ctx.moveTo(cx - width, baseY);
+        ctx.lineTo(cx - topW,   baseY - height);
+        ctx.lineTo(cx - notchW, baseY - height);
+        ctx.lineTo(cx,          notchY);
+        ctx.lineTo(cx,          baseY);
+      } else {
+        ctx.moveTo(cx,          baseY);
+        ctx.lineTo(cx,          notchY);
+        ctx.lineTo(cx + notchW, baseY - height);
+        ctx.lineTo(cx + topW,   baseY - height);
+        ctx.lineTo(cx + width,  baseY);
+      }
       ctx.closePath();
       ctx.fill();
+
+      // Lit half
+      ctx.globalAlpha = brightK * (litIsRight ? rightShade.mult : leftShade.mult);
+      ctx.beginPath();
+      if (litIsRight) {
+        ctx.moveTo(cx,          baseY);
+        ctx.lineTo(cx,          notchY);
+        ctx.lineTo(cx + notchW, baseY - height);
+        ctx.lineTo(cx + topW,   baseY - height);
+        ctx.lineTo(cx + width,  baseY);
+      } else {
+        ctx.moveTo(cx - width, baseY);
+        ctx.lineTo(cx - topW,   baseY - height);
+        ctx.lineTo(cx - notchW, baseY - height);
+        ctx.lineTo(cx,          notchY);
+        ctx.lineTo(cx,          baseY);
+      }
+      ctx.closePath();
+      ctx.fill();
+
+      // Restore for accent pass
+      ctx.globalAlpha = brightK;
+
       // Accent: warm glow in the caldera bowl
       if (lm.useAccent) {
         ctx.save();
         ctx.globalCompositeOperation = 'lighter';
         ctx.globalAlpha = 0.30;
         const cg = ctx.createRadialGradient(cx, baseY - height + notchD, 0, cx, baseY - height + notchD, notchW * 2.5);
+        perfCollector.recordAlloc();
         cg.addColorStop(0, lm.accentColor);
         cg.addColorStop(1, 'rgba(255, 60, 0, 0)');
         ctx.fillStyle = cg;
@@ -1199,22 +2255,52 @@ function drawLandmarks(
       }
 
     } else if (kind === 'mesa') {
-      // Wide flat-topped butte: nearly as wide at the top as the base, low
-      // aspect ratio so it reads as a plateau rather than a peak.
-      const topW = width * 0.80;   // wide flat top
-      const h2 = height * 0.65;   // lower than a mountain (mesa is flat, not peaked)
+      // Wide flat-topped butte — sloping side faces split left/right; top face
+      // shaded by the sky-facing (azimuth 270°) component.
+      const topW      = width * 0.80;
+      const h2        = height * 0.65;
+      const topShadeM = shadeFlank(lighting, 270);  // sky-facing top surface
+
       ctx.fillStyle = lm.fillColor;
+
+      // Shadow sloping face
+      ctx.globalAlpha = brightK * (litIsRight ? leftShade.mult : rightShade.mult);
       ctx.beginPath();
-      ctx.moveTo(cx - width, baseY);
-      ctx.lineTo(cx - topW, baseY - h2);
-      ctx.lineTo(cx + topW, baseY - h2);
-      ctx.lineTo(cx + width, baseY);
+      if (litIsRight) {
+        ctx.moveTo(cx - width, baseY);
+        ctx.lineTo(cx - topW,  baseY - h2);
+        ctx.lineTo(cx,         baseY - h2);
+        ctx.lineTo(cx,         baseY);
+      } else {
+        ctx.moveTo(cx,         baseY);
+        ctx.lineTo(cx,         baseY - h2);
+        ctx.lineTo(cx + topW,  baseY - h2);
+        ctx.lineTo(cx + width, baseY);
+      }
       ctx.closePath();
       ctx.fill();
-      // Pale top-face edge highlight
+
+      // Lit sloping face
+      ctx.globalAlpha = brightK * (litIsRight ? rightShade.mult : leftShade.mult);
+      ctx.beginPath();
+      if (litIsRight) {
+        ctx.moveTo(cx,         baseY);
+        ctx.lineTo(cx,         baseY - h2);
+        ctx.lineTo(cx + topW,  baseY - h2);
+        ctx.lineTo(cx + width, baseY);
+      } else {
+        ctx.moveTo(cx - width, baseY);
+        ctx.lineTo(cx - topW,  baseY - h2);
+        ctx.lineTo(cx,         baseY - h2);
+        ctx.lineTo(cx,         baseY);
+      }
+      ctx.closePath();
+      ctx.fill();
+
+      // Pale top-face edge highlight — brightness modulated by how much sky the top sees
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
-      ctx.globalAlpha = dc.bright * 0.12;
+      ctx.globalAlpha = dc.bright * topShadeM.mult * 0.15;
       ctx.strokeStyle = 'rgba(220, 210, 190, 0.7)';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
@@ -1224,16 +2310,115 @@ function drawLandmarks(
       ctx.restore();
 
     } else if (kind === 'spire') {
-      // Tall thin triangle — reads as an isolated rock needle or alien spire.
-      const sw = width * 0.22;  // very narrow base
-      const sh = height * 1.3;  // very tall (can exceed the "standard" height cap)
+      // Tall thin triangle split into left/right halves for directional shading.
+      // Reads as a rock needle or alien antenna mast with a crisp lit/shadow divide.
+      const sw = width * 0.22;
+      const sh = height * 1.3;
+      const spireH  = Math.min(sh, cache.horizonY * 1.1);
+      const spireTY = baseY - spireH;
       ctx.fillStyle = lm.fillColor;
+
+      // Shadow half
+      ctx.globalAlpha = brightK * (litIsRight ? leftShade.mult : rightShade.mult);
       ctx.beginPath();
-      ctx.moveTo(cx - sw, baseY);
-      ctx.lineTo(cx, baseY - Math.min(sh, cache.horizonY * 1.1));
-      ctx.lineTo(cx + sw, baseY);
+      if (litIsRight) {
+        ctx.moveTo(cx - sw, baseY); ctx.lineTo(cx, baseY); ctx.lineTo(cx, spireTY);
+      } else {
+        ctx.moveTo(cx, spireTY); ctx.lineTo(cx + sw, baseY); ctx.lineTo(cx, baseY);
+      }
       ctx.closePath();
       ctx.fill();
+
+      // Lit half
+      ctx.globalAlpha = brightK * (litIsRight ? rightShade.mult : leftShade.mult);
+      ctx.beginPath();
+      if (litIsRight) {
+        ctx.moveTo(cx, spireTY); ctx.lineTo(cx + sw, baseY); ctx.lineTo(cx, baseY);
+      } else {
+        ctx.moveTo(cx - sw, baseY); ctx.lineTo(cx, baseY); ctx.lineTo(cx, spireTY);
+      }
+      ctx.closePath();
+      ctx.fill();
+
+      // Sun-side rim on the lit-flank outer edge — spires have a pronounced rim
+      // because they're very thin and the silhouette edge is always visible.
+      const spireRim = rimLight(lighting, litIsRight ? 0 : 180, 'sun');
+      if (spireRim.mult > 0.005) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = brightK * spireRim.mult * 1.4;
+        ctx.strokeStyle = spireRim.tint;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        if (litIsRight) {
+          ctx.moveTo(cx, spireTY); ctx.lineTo(cx + sw, baseY);
+        } else {
+          ctx.moveTo(cx - sw, baseY); ctx.lineTo(cx, spireTY);
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // Restore brightK before the ARTIFICIAL emissive pass
+      ctx.globalAlpha = brightK;
+
+      // ARTIFICIAL emissive pass — warm window bands + cold conduit edge traces.
+      // Guard: accentWarm is only set on ARTIFICIAL so this is a zero-cost no-op
+      // for all 11 natural types.
+      const accentWarmSp = cache.model.palette.accentWarm;
+      if (accentWarmSp) {
+        const [wr, wg, wb] = accentWarmSp;
+        const [cr, cg, cb] = cache.model.palette.accent;   // cold cyan conduit
+
+        // Per-spire PRNG seed: position-keyed so each tower has its own lit pattern.
+        const rngSp = splitmix32(deriveChildSeed(cache.model.seed, `spire-em-${Math.round(cx)}`));
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+
+        // Warm window bands — horizontal dashes at deterministic heights along the spire.
+        // Always consume 2 rng values per band (lit-roll + alpha-roll) so the
+        // sequence is stable across branches.
+        const nBands = 4 + Math.floor(rngSp() * 4);   // 4–7 bands, 1 consume
+        for (let bi = 0; bi < nBands; bi++) {
+          const yFrac  = 0.12 + (bi / Math.max(1, nBands - 1)) * 0.72;
+          const bandY  = spireTY + spireH * yFrac;
+          // Spire width at bandY (linear interpolation; 0 at tip, sw*2 at base)
+          const wAtY   = sw * 2 * (1 - (baseY - bandY) / spireH);
+          const bandW  = Math.max(3, wAtY * 0.55);
+          const bandH2 = Math.max(1.5, bandW * 0.16);
+          const litRoll   = rngSp();           // consume 1
+          const alphaRoll = rngSp();           // consume 1 (always)
+          // splitmix32() returns [0,1) — compare against the fraction directly.
+          const lit = litRoll < 0.62;
+          if (lit) {
+            ctx.globalAlpha = (0.48 + alphaRoll * 0.42) * brightK;
+            ctx.fillStyle = `rgb(${wr}, ${wg}, ${wb})`;
+            ctx.fillRect(
+              Math.round(cx - bandW * 0.5),
+              Math.round(bandY - bandH2 * 0.5),
+              Math.round(bandW),
+              Math.max(1, Math.round(bandH2)),
+            );
+          }
+        }
+
+        // Cold conduit traces — thin lines along the left and right spire edges.
+        // Reads as illuminated structural conduit running up the antenna mast.
+        ctx.globalAlpha = (0.14 * dc.bright + 0.06) * brightK;
+        ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, 0.88)`;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(cx - sw, baseY);
+        ctx.lineTo(cx, spireTY);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(cx + sw, baseY);
+        ctx.lineTo(cx, spireTY);
+        ctx.stroke();
+
+        ctx.restore();
+      }
 
     } else if (kind === 'crater') {
       // Shallow ellipse rim sitting on the ground line.
@@ -1256,17 +2441,21 @@ function drawLandmarks(
       ctx.restore();
 
     } else if (kind === 'arch') {
-      // Two pillars with a quadratic arc connecting their tops.
-      // Reads as a natural rock arch or alien bridging structure.
-      const ow = width * 0.22;  // outer pillar half-width
-      const iw = width * 0.48;  // inner edge (gap between the pillars)
-      const ah = height * 0.85; // arch height at the keystone
+      // Two pillars shaded by their dominant outer face; arch span by the sky-facing top.
+      const ow        = width * 0.22;
+      const iw        = width * 0.48;
+      const ah        = height * 0.85;
+      const topShadeA = shadeFlank(lighting, 270);  // arch keystone faces upward
+
       ctx.fillStyle = lm.fillColor;
-      // Left pillar
+      // Left pillar: dominant outer face is LEFT (azimuth 180°)
+      ctx.globalAlpha = brightK * leftShade.mult;
       ctx.fillRect(cx - iw - ow, baseY - ah, ow, ah);
-      // Right pillar
+      // Right pillar: dominant outer face is RIGHT (azimuth 0°)
+      ctx.globalAlpha = brightK * rightShade.mult;
       ctx.fillRect(cx + iw, baseY - ah, ow, ah);
-      // Arch span (filled path from the two pillar tops, arcing upward)
+      // Arch span — sky-facing keystone
+      ctx.globalAlpha = brightK * topShadeA.mult;
       ctx.beginPath();
       ctx.moveTo(cx - iw - ow, baseY - ah);
       ctx.lineTo(cx - iw, baseY - ah);
@@ -1277,43 +2466,108 @@ function drawLandmarks(
       ctx.fill();
 
     } else if (kind === 'canyon') {
-      // Dark downward V-notch into the foreground terrain.
-      // Represents a deep crack or ravine; sits ON the ground line, opens downward.
-      const cd = height * 0.55;   // depth of the notch below the ground line
-      const cw2 = width * 0.75;   // mouth width at the surface
-      ctx.fillStyle = lm.fillColor;
+      // Carved gorge — reads as a dark recessed DEPRESSION, not a raised surface.
+      // Interior filled with cool near-black shadow; geology fill never touches it.
+      // Compact footprint; wall edges deformed per-landmark via seeded RNG so the
+      // incision reads as eroded rock rather than a regular clip-art zigzag.
+      const cd    = height * 0.40;   // gorge depth (compact — under original 0.55)
+      const rimW  = width  * 0.50;   // rim half-width (under original 0.75)
+      const floorW = width * 0.06;   // narrow floor slit
+      const floorY = baseY + cd;
+
+      // Per-canyon deterministic wall deformation (no Math.random / Date.now)
+      const rngC = splitmix32(deriveChildSeed(cache.model.seed, `canyon-${Math.round(cx)}`));
+      const nDef = 4;   // intermediate wall points
+      const offL: number[] = [];
+      const offR: number[] = [];
+      for (let pi = 0; pi < nDef; pi++) {
+        offL.push((rngC() - 0.5) * rimW * 0.16);  // ±8% horizontal jitter
+        offR.push((rngC() - 0.5) * rimW * 0.16);
+      }
+
+      // Build wall point sequences (top→floor for left; top→floor for right)
+      const lwX: number[] = [cx - rimW];
+      const lwY: number[] = [baseY];
+      const rwX: number[] = [cx + rimW];
+      const rwY: number[] = [baseY];
+      for (let pi = 0; pi < nDef; pi++) {
+        const frac = (pi + 1) / (nDef + 1);
+        const wX   = rimW * (1 - frac) + floorW * frac;
+        lwX.push(cx - wX + offL[pi]);  lwY.push(baseY + cd * frac);
+        rwX.push(cx + wX + offR[pi]);  rwY.push(baseY + cd * frac);
+      }
+      lwX.push(cx - floorW);  lwY.push(floorY);
+      rwX.push(cx + floorW);  rwY.push(floorY);
+
+      // ---- Interior shadow fill: cool near-black — canyon reads as a HOLE ----
+      ctx.save();
+      ctx.globalAlpha = 0.90 * brightK;
+      ctx.fillStyle   = 'rgba(10, 12, 18, 0.92)';  // dark cool shadow, no geology brown
       ctx.beginPath();
-      ctx.moveTo(cx - cw2, baseY);
-      ctx.lineTo(cx, baseY + cd);
-      ctx.lineTo(cx + cw2, baseY);
+      // Left wall, top→floor
+      ctx.moveTo(lwX[0], lwY[0]);
+      for (let pi = 1; pi < lwX.length; pi++) ctx.lineTo(lwX[pi], lwY[pi]);
+      // Right wall, floor→top (reverse)
+      for (let pi = rwX.length - 1; pi >= 0; pi--) ctx.lineTo(rwX[pi], rwY[pi]);
       ctx.closePath();
       ctx.fill();
-      // Pale rim highlight along the canyon edge
+      ctx.restore();
+
+      // ---- Strata bands: 2 subtle cool-grey lines (rock layer seams) ----
+      ctx.save();
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = 'rgba(52, 62, 82, 1)';  // cool blue-grey, just lighter than floor
+      ctx.lineCap     = 'round';
+      for (let si = 1; si <= 2; si++) {
+        const frac = si * 0.30;
+        const sY   = baseY + cd * frac;
+        const sW   = (rimW * (1 - frac) + floorW * frac) * 0.76;
+        ctx.lineWidth   = Math.max(0.6, 1.0 - si * 0.22);
+        ctx.globalAlpha = (0.26 - si * 0.06) * brightK;
+        ctx.beginPath();
+        ctx.moveTo(cx - sW, sY); ctx.lineTo(cx + sW, sY); ctx.stroke();
+      }
+      ctx.restore();
+
+      // ---- Rim catch-light: thin `lighter` stroke tracing the gorge mouth ----
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
-      ctx.globalAlpha = dc.bright * 0.10;
-      ctx.strokeStyle = 'rgba(180, 170, 160, 0.6)';
-      ctx.lineWidth = 1.2;
+      ctx.strokeStyle = 'rgba(195, 182, 158, 1)';
+      ctx.lineWidth   = 1.5;
+      ctx.lineCap     = 'round';
+      ctx.globalAlpha = dc.bright * 0.26 + 0.06;
+      // Left wall edge
       ctx.beginPath();
-      ctx.moveTo(cx - cw2, baseY);
-      ctx.lineTo(cx, baseY + cd);
-      ctx.lineTo(cx + cw2, baseY);
+      ctx.moveTo(lwX[0], lwY[0]);
+      for (let pi = 1; pi < lwX.length; pi++) ctx.lineTo(lwX[pi], lwY[pi]);
+      ctx.stroke();
+      // Right wall edge
+      ctx.beginPath();
+      ctx.moveTo(rwX[0], rwY[0]);
+      for (let pi = 1; pi < rwX.length; pi++) ctx.lineTo(rwX[pi], rwY[pi]);
       ctx.stroke();
       ctx.restore();
 
     } else if (kind === 'glacier') {
-      // Pale blue-white wedge: a wide angled mass reminiscent of a glacier
-      // flowing from one side.  Wider at the top-left, tapering to the right.
-      const gw = width * 1.1;
-      const gh = height * 0.55;
+      // Pale blue-white wedge — primarily sky-facing so the top surface (azimuth 270°)
+      // drives the shading.  A higher sun hits the glacier more directly.
+      const gw        = width * 1.1;
+      const gh        = height * 0.55;
+      const topShadeG = shadeFlank(lighting, 270);
+
+      ctx.globalAlpha = brightK * topShadeG.mult;
       ctx.fillStyle = lm.fillColor;
       ctx.beginPath();
-      ctx.moveTo(cx - gw, baseY);
-      ctx.lineTo(cx - gw * 0.4, baseY - gh);
+      ctx.moveTo(cx - gw,        baseY);
+      ctx.lineTo(cx - gw * 0.4,  baseY - gh);
       ctx.lineTo(cx + gw * 0.55, baseY - gh * 0.3);
-      ctx.lineTo(cx + gw, baseY);
+      ctx.lineTo(cx + gw,        baseY);
       ctx.closePath();
       ctx.fill();
+
+      // Restore before the accent/ice-sheen pass
+      ctx.globalAlpha = brightK;
+
       // Ice sheen: a soft lighter edge along the top
       if (lm.useAccent) {
         ctx.save();
@@ -1335,12 +2589,32 @@ function drawLandmarks(
 }
 
 // ---------------------------------------------------------------------------
-// drawCloudDeck — GAS_GIANT terrain mode.
-// Replaces terrain ridges + ground plane with a banded cloud-deck horizon.
-// Called only when model.layers.terrain.mode === 'cloud-deck'.
-// The platform silhouette in the foreground reads as "floating above cloud tops."
+// drawGasGiantBands — WO-V6-GAS_GIANT full-frame banded atmosphere.
+//
+// Gas giants have no solid surface: the entire canvas is atmosphere.  This
+// renderer fills the full frame (0..h) with horizontal cloud bands + a storm
+// oval (great-spot analogue) + limb darkening that gives the gas ball a
+// spherical feel.  Replaces drawCloudDeck in the §5 'cloud-deck' dispatch so
+// that the full canvas is atmosphere rather than just the below-horizon band.
+//
+// Design notes:
+//   • Full-canvas base gradient: deep-space dark (skyTop) at top/bottom →
+//     warm amber cloud-top (skyHorizon) mid — day-cycle modulated.
+//   • 8–12 horizontal bands distributed across the full height; widths seeded;
+//     equatorial bands slightly wider and faster; turbulent top/bottom edges
+//     from two summed sine waves for organic, non-repeating shape.
+//   • Band colors cycle through the ridge palette blended toward skyHorizon
+//     for tonal variety; alpha modulated by day-cycle brightness.
+//   • Storm oval: off-center seeded position; radial gradient from compressed
+//     dark core → accent lightning ring → fade out; slow westward drift via t.
+//   • Limb darkening: four directional linear-gradient overlays (top, bottom,
+//     left, right) give the frame the spherical gas-ball curvature feel.
+//   • Seeding: 'gas-giant-bands' stream for band layout; 'gas-giant-storm'
+//     stream for storm position/size — isolated so each is order-stable.
+//   • No Math.random / Date.now.  ctx.save / restore balanced throughout.
+//     Composite op + alpha reset to source-over / 1.0 on exit.
 // ---------------------------------------------------------------------------
-function drawCloudDeck(
+function drawGasGiantBands(
   ctx: CanvasRenderingContext2D,
   w: number,
   h: number,
@@ -1349,76 +2623,204 @@ function drawCloudDeck(
   cache: VistaCache,
   dc: DayCycle
 ): void {
-  const { horizonY } = cache;
-  const pal = model.palette;
-  const deckH = h - horizonY;
+  if (w <= 0 || h <= 0) return;
+  const pal      = model.palette;
+  const ridgeArr = pal.ridge;
+  const b        = dc.bright;
 
-  // Deep atmospheric base — gradient from the horizon tint down to a dark purple base
+  // Independent sub-streams — isolating band layout from storm so changes to
+  // band count don't perturb storm position and vice versa.
+  const rng      = splitmix32(deriveChildSeed(model.seed, 'gas-giant-bands'));
+  const stormRng = splitmix32(deriveChildSeed(model.seed, 'gas-giant-storm'));
+
+  // ---- 1. Full-canvas atmospheric base gradient ----
+  // Top/bottom: deep-space dark (skyTop); mid: warm amber cloud-top (skyHorizon);
+  // lower mid: compressed-gas dark (surface).  Brightness-modulated by day cycle.
   {
-    const [hr, hg, hb] = pal.skyHorizon;
     const [tr, tg, tb] = pal.skyTop;
-    const base = ctx.createLinearGradient(0, horizonY, 0, h);
-    base.addColorStop(0,   `rgb(${Math.round(hr * 0.82)}, ${Math.round(hg * 0.82)}, ${Math.round(hb * 0.82)})`);
-    base.addColorStop(0.4, `rgb(${Math.round(hr * 0.35 + tr * 0.12)}, ${Math.round(hg * 0.35 + tg * 0.12)}, ${Math.round(hb * 0.35 + tb * 0.15)})`);
-    base.addColorStop(1,   `rgb(${Math.round(tr * 0.18)}, ${Math.round(tg * 0.18)}, ${Math.round(tb * 0.25)})`);
+    const [hr, hg, hb] = pal.skyHorizon;
+    const [sr, sg, sb] = pal.surface;
+    const base = ctx.createLinearGradient(0, 0, 0, h);
+    perfCollector.recordAlloc();
+    base.addColorStop(0,    `rgb(${Math.round(tr * (0.15 + b * 0.25))}, ${Math.round(tg * (0.15 + b * 0.25))}, ${Math.round(tb * (0.18 + b * 0.28))})`);
+    base.addColorStop(0.25, `rgb(${Math.round(hr * (0.55 + b * 0.45))}, ${Math.round(hg * (0.55 + b * 0.45))}, ${Math.round(hb * (0.55 + b * 0.45))})`);
+    base.addColorStop(0.60, `rgb(${Math.round(hr * (0.48 + b * 0.52))}, ${Math.round(hg * (0.48 + b * 0.52))}, ${Math.round(hb * (0.48 + b * 0.52))})`);
+    base.addColorStop(1,    `rgb(${Math.round(sr * (0.40 + b * 0.30))}, ${Math.round(sg * (0.40 + b * 0.30))}, ${Math.round(sb * (0.40 + b * 0.30))})`);
     ctx.fillStyle = base;
-    ctx.fillRect(0, horizonY, w, deckH);
+    ctx.fillRect(0, 0, w, h);
   }
 
-  // Receding cloud bands — each baked in buildVistaCache with a parallax speed.
-  // Far bands (low yFrac) drift slowly; near bands drift fast — suggests depth.
-  for (const band of cache.cloudBands) {
-    const bandY   = horizonY + band.yFrac * deckH;
-    const thick   = band.thickFrac * deckH;
-    const drift   = t === 0 ? 0 : (t * band.speed * 10) % w;
-    const widthR  = 0.55 + band.yFrac * 0.55;  // wider near-camera, narrow at horizon
-    const [br, bg2, bb] = band.rgb;
-    const alpha   = band.alpha * (0.65 + dc.bright * 0.35);
+  // ---- 2. Horizontal cloud bands ----
+  // Distributed across the full canvas height (not clipped to horizonY).
+  // Equatorial bands (near y=0.5) are wider and drift faster — mirrors
+  // real-gas-giant differential rotation dynamics.
+  const BAND_COUNT = 8 + Math.round(rng() * 4);  // 8–12 bands seeded per world
+
+  ctx.save();
+  for (let bi = 0; bi < BAND_COUNT; bi++) {
+    // Band centre Y: evenly spaced baseline + seeded vertical jitter.
+    const baseYFrac    = (bi + 0.5) / BAND_COUNT;
+    const yJitter      = (rng() - 0.5) * 0.07;
+    const yFrac        = Math.max(0.02, Math.min(0.98, baseYFrac + yJitter));
+    const bandCY       = yFrac * h;
+
+    // Equatorial proximity (0 at pole, 1 at equator) — biases thickness + speed.
+    const equatorial   = 1 - Math.abs(yFrac - 0.5) * 2;
+    const thick        = h * (0.030 + rng() * 0.055 + equatorial * 0.020);
+
+    // Drift: equatorial bands drift faster; each band has a distinct seeded speed.
+    const driftSpeed   = (0.5 + rng() * 0.9) * (0.40 + equatorial * 0.60);
+    const drift        = t === 0 ? 0 : (t * driftSpeed * 9) % w;
+
+    // Color: ridge palette cycled by band index, blended toward skyHorizon for
+    // tonal variety across the frame.  Named bg2 (not bg) to avoid shadowing b.
+    const palRgb  = ridgeArr[bi % Math.max(1, ridgeArr.length)] ?? pal.skyHorizon;
+    const [hr2, hg2, hb2] = pal.skyHorizon;
+    const blend   = 0.28 + rng() * 0.48;
+    const br      = Math.round(palRgb[0] * blend + hr2 * (1 - blend));
+    const bg2     = Math.round(palRgb[1] * blend + hg2 * (1 - blend));
+    const bb      = Math.round(palRgb[2] * blend + hb2 * (1 - blend));
+    const alpha   = (0.40 + rng() * 0.35) * (0.62 + b * 0.38);
+
+    // Turbulence: two summed sine waves give organic, non-repeating band edges.
+    // Frequency A is the dominant wave; B is a higher harmonic.
+    const tFreqA  = 0.010 + rng() * 0.008;
+    const tFreqB  = tFreqA * (1.65 + rng() * 0.70);
+    const tAmp    = thick * (0.05 + rng() * 0.12);
+    const tPhaseA = rng() * Math.PI * 2;
+    const tPhaseB = rng() * Math.PI * 2;
 
     ctx.save();
     ctx.globalCompositeOperation = 'source-over';
-    const bgrad = ctx.createLinearGradient(0, bandY - thick, 0, bandY + thick);
+
+    // Trace turbulent top edge left→right, then turbulent bottom edge right→left;
+    // close the path to form a filled ribbon shape.
+    ctx.beginPath();
+    for (let x = 0; x <= w; x += 6) {
+      const dx  = x + drift;
+      const turb = Math.sin(dx * tFreqA + tPhaseA) * tAmp * 0.58
+                 + Math.sin(dx * tFreqB + tPhaseB) * tAmp * 0.42;
+      const ey  = bandCY - thick * 0.5 + turb;
+      if (x === 0) ctx.moveTo(x, ey); else ctx.lineTo(x, ey);
+    }
+    for (let x = w; x >= 0; x -= 6) {
+      const dx  = x + drift;
+      const turb = Math.sin(dx * tFreqA + tPhaseA + 0.9) * tAmp * 0.58
+                 + Math.sin(dx * tFreqB + tPhaseB + 1.4) * tAmp * 0.42;
+      const ey  = bandCY + thick * 0.5 + turb;
+      ctx.lineTo(x, ey);
+    }
+    ctx.closePath();
+
+    // Vertical gradient: feathered top/bottom edges, solid mid-band core.
+    const bgrad = ctx.createLinearGradient(0, bandCY - thick * 0.5, 0, bandCY + thick * 0.5);
+    perfCollector.recordAlloc();
     bgrad.addColorStop(0,    `rgba(${br}, ${bg2}, ${bb}, 0)`);
-    bgrad.addColorStop(0.30, `rgba(${br}, ${bg2}, ${bb}, ${(alpha * 0.85).toFixed(3)})`);
-    bgrad.addColorStop(0.70, `rgba(${br}, ${bg2}, ${bb}, ${alpha.toFixed(3)})`);
+    bgrad.addColorStop(0.22, `rgba(${br}, ${bg2}, ${bb}, ${(alpha * 0.80).toFixed(3)})`);
+    bgrad.addColorStop(0.50, `rgba(${br}, ${bg2}, ${bb}, ${alpha.toFixed(3)})`);
+    bgrad.addColorStop(0.78, `rgba(${br}, ${bg2}, ${bb}, ${(alpha * 0.80).toFixed(3)})`);
     bgrad.addColorStop(1,    `rgba(${br}, ${bg2}, ${bb}, 0)`);
     ctx.fillStyle = bgrad;
-    // Ellipse suggests a curved cloud-layer receding toward the horizon
-    ctx.beginPath();
-    ctx.ellipse(w * 0.5 + drift, bandY, w * widthR, thick, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
   }
+  ctx.restore();
 
-  // Foreground platform / observation-deck silhouette — reads as "standing on a
-  // floating structure above the cloud tops."
+  // ---- 3. Storm oval (great-spot analogue) ----
+  // Placed off-center (seeded); very slow westward linear drift via t.
+  // Radial gradient: compressed dark core → accent lightning ring → fade out.
   {
-    const platW  = w * 0.30;
-    const railH  = Math.max(4, h * 0.028);
-    const pilH   = Math.min(h * 0.16, deckH * 0.55);
-    const pilW   = Math.max(4, w * 0.014);
-    const railY  = h - pilH - railH;
-    const [sr, sg, sb] = pal.surface;
-    const platCol = `rgba(${Math.round(sr * 0.35)}, ${Math.round(sg * 0.38)}, ${Math.round(sb * 0.45)}, 0.94)`;
+    const stormX  = w * (0.52 + stormRng() * 0.18);      // 52–70 % across
+    const stormY  = h * (0.33 + stormRng() * 0.34);      // 33–67 % down
+    const stormRx = w  * (0.065 + stormRng() * 0.055);   // rx: 6.5–12 % of w
+    const stormRy = stormRx * (0.36 + stormRng() * 0.24);  // oval height ratio
+    // Very slow drift — full canvas width in ~90+ min at 0.15–0.22 px/s.
+    const driftSpd   = 0.15 + stormRng() * 0.07;
+    const stormDrift = t === 0 ? 0 : (t * driftSpd) % w;
+    const sx         = stormX + stormDrift;
 
     ctx.save();
-    ctx.fillStyle = platCol;
-    ctx.fillRect(w * 0.5 - platW * 0.5, railY, platW, railH);
-    for (const pf of [0.15, 0.38, 0.62, 0.85]) {
-      ctx.fillRect(w * 0.5 - platW * 0.5 + platW * pf - pilW * 0.5, railY + railH, pilW, pilH);
-    }
-    // Rail accent edge — subtle energy/tint glow from palette.accent
+
+    // Outer storm body: dark compressed-gas core blending outward to accent ring.
+    const [ar, ag, ab] = pal.accent;
+    const nearRidge    = ridgeArr[ridgeArr.length - 1] ?? pal.surface;
+    const [nr, ng, nb] = nearRidge;
+    const outerAlpha   = 0.58 * (0.65 + b * 0.35);
+    const stormGrad    = ctx.createRadialGradient(sx, stormY, stormRx * 0.20, sx, stormY, stormRx);
+    perfCollector.recordAlloc();
+    stormGrad.addColorStop(0,    `rgba(${Math.round(nr * 0.55)}, ${Math.round(ng * 0.45)}, ${Math.round(nb * 0.40)}, ${outerAlpha.toFixed(3)})`);
+    stormGrad.addColorStop(0.38, `rgba(${ar}, ${ag}, ${ab}, ${(outerAlpha * 0.72).toFixed(3)})`);
+    stormGrad.addColorStop(0.72, `rgba(${Math.round(nr * 0.75)}, ${Math.round(ng * 0.55)}, ${Math.round(nb * 0.45)}, ${(outerAlpha * 0.40).toFixed(3)})`);
+    stormGrad.addColorStop(1,    `rgba(${ar}, ${ag}, ${ab}, 0)`);
+
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.beginPath();
+    ctx.ellipse(sx, stormY, stormRx, stormRy, 0, 0, Math.PI * 2);
+    ctx.fillStyle = stormGrad;
+    ctx.fill();
+
+    // Lightning eye glow — additive accent highlight at the storm centre.
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    ctx.globalAlpha = 0.18 * dc.bright;
-    const [ar, ag, ab] = pal.accent;
-    ctx.strokeStyle = `rgba(${ar}, ${ag}, ${ab}, 0.9)`;
-    ctx.lineWidth = 2;
+    ctx.globalAlpha = 0.22 * b;
+    const eyeGrad = ctx.createRadialGradient(sx, stormY, 0, sx, stormY, stormRx * 0.30);
+    perfCollector.recordAlloc();
+    eyeGrad.addColorStop(0, `rgba(${ar}, ${ag}, ${ab}, 0.60)`);
+    eyeGrad.addColorStop(1, `rgba(${ar}, ${ag}, ${ab}, 0)`);
+    ctx.fillStyle = eyeGrad;
     ctx.beginPath();
-    ctx.moveTo(w * 0.5 - platW * 0.5, railY);
-    ctx.lineTo(w * 0.5 + platW * 0.5, railY);
-    ctx.stroke();
+    ctx.ellipse(sx, stormY, stormRx * 0.30, stormRy * 0.30, 0, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
+
+    ctx.restore();
+  }
+
+  // ---- 4. Limb darkening — spherical curvature effect ----
+  // Four directional linear-gradient overlays taper the edges to the skyTop dark,
+  // suggesting the curved silhouette of a gas body.  Corner overlap from two
+  // perpendicular gradients deepens the poles and flanks naturally.
+  {
+    const [tr, tg, tb] = pal.skyTop;
+    const limbR = Math.round(tr * 0.40);
+    const limbG = Math.round(tg * 0.40);
+    const limbB = Math.round(tb * 0.45);
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+
+    // Top edge
+    const topGrad = ctx.createLinearGradient(0, 0, 0, h * 0.28);
+    perfCollector.recordAlloc();
+    topGrad.addColorStop(0, `rgba(${limbR}, ${limbG}, ${limbB}, 0.72)`);
+    topGrad.addColorStop(1, `rgba(${limbR}, ${limbG}, ${limbB}, 0)`);
+    ctx.fillStyle = topGrad;
+    ctx.fillRect(0, 0, w, h * 0.28);
+
+    // Bottom edge
+    const btmGrad = ctx.createLinearGradient(0, h, 0, h * 0.72);
+    perfCollector.recordAlloc();
+    btmGrad.addColorStop(0, `rgba(${limbR}, ${limbG}, ${limbB}, 0.72)`);
+    btmGrad.addColorStop(1, `rgba(${limbR}, ${limbG}, ${limbB}, 0)`);
+    ctx.fillStyle = btmGrad;
+    ctx.fillRect(0, h * 0.72, w, h * 0.28);
+
+    // Left edge
+    const leftGrad = ctx.createLinearGradient(0, 0, w * 0.20, 0);
+    perfCollector.recordAlloc();
+    leftGrad.addColorStop(0, `rgba(${limbR}, ${limbG}, ${limbB}, 0.55)`);
+    leftGrad.addColorStop(1, `rgba(${limbR}, ${limbG}, ${limbB}, 0)`);
+    ctx.fillStyle = leftGrad;
+    ctx.fillRect(0, 0, w * 0.20, h);
+
+    // Right edge
+    const rightGrad = ctx.createLinearGradient(w, 0, w * 0.80, 0);
+    perfCollector.recordAlloc();
+    rightGrad.addColorStop(0, `rgba(${limbR}, ${limbG}, ${limbB}, 0.55)`);
+    rightGrad.addColorStop(1, `rgba(${limbR}, ${limbG}, ${limbB}, 0)`);
+    ctx.fillStyle = rightGrad;
+    ctx.fillRect(w * 0.80, 0, w * 0.20, h);
+
     ctx.restore();
   }
 }
@@ -1446,6 +2848,7 @@ function drawPlating(
 
   // Base plating fill — gradient lighter at horizon, darker at camera
   const fill = ctx.createLinearGradient(0, horizonY, 0, h);
+  perfCollector.recordAlloc();
   fill.addColorStop(0,   `rgb(${Math.round(sr * 0.72)}, ${Math.round(sg * 0.72)}, ${Math.round(sb * 0.78)})`);
   fill.addColorStop(0.5, `rgb(${Math.round(sr * 0.55)}, ${Math.round(sg * 0.55)}, ${Math.round(sb * 0.60)})`);
   fill.addColorStop(1,   `rgb(${Math.round(sr * 0.38)}, ${Math.round(sg * 0.38)}, ${Math.round(sb * 0.42)})`);
@@ -1488,6 +2891,563 @@ function drawPlating(
   }
 
   ctx.restore();
+
+  // ---- Emissive window/signage grid — ARTIFICIAL only ----
+  // A deterministic seed-driven grid of lit/dark cells that reads as windows
+  // and signage panels on a space station surface at night.
+  // The warm accent (accentWarm) is used for colour; cells are toggled on/off
+  // via splitmix32 seeded from model.seed so the pattern is per-seed stable.
+  const emissiveParams = model.layers.terrain.emissive;
+  const accentWarm = model.palette.accentWarm;
+  if (emissiveParams && accentWarm) {
+    const [wr, wg, wb] = accentWarm;
+    const { density } = emissiveParams;
+    const rngEm = splitmix32(deriveChildSeed(model.seed, 'emissive'));
+
+    // Window cell: a small rectangle centred in each plating panel.
+    // Size scales with panel size so smaller panels = smaller windows.
+    const winW = Math.max(3, Math.round(platingPx * 0.28));
+    const winH = Math.max(2, Math.round(platingPx * 0.18));
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+
+    for (let ci = 0; ci < cols; ci++) {
+      const xLeft = ci * platingPx;
+      const xCentre = xLeft + platingPx * 0.5;
+      for (let ri = 0; ri < rows; ri++) {
+        // Per-cell: always draw 2 rng values so the sequence is position-stable.
+        const litRoll  = rngEm();          // lit/dark decision
+        const alphaRaw = rngEm();          // per-cell brightness variation
+
+        const tFracPrev = Math.pow(ri       / rows, 1.8);
+        const tFracNext = Math.pow((ri + 1) / rows, 1.8);
+        const yTop  = horizonY + tFracPrev * groundH;
+        const yBot  = horizonY + tFracNext * groundH;
+        const panH  = yBot - yTop;
+        if (yTop >= h) break;
+
+        // Cells near the horizon are smaller in perspective; skip if too tiny
+        if (panH < winH * 0.8) continue;
+
+        // splitmix32() returns [0,1) — compare against density directly.
+        const lit = litRoll < density;
+        if (!lit) continue;
+
+        const alpha = 0.52 + alphaRaw * 0.40;
+        ctx.globalAlpha = alpha * (0.55 + dc.bright * 0.45);
+
+        const wx = Math.round(xCentre - winW * 0.5);
+        const wy = Math.round(yTop + (panH - winH) * 0.5);
+        ctx.fillStyle = `rgb(${wr}, ${wg}, ${wb})`;
+        ctx.fillRect(wx, wy, winW, Math.max(1, winH));
+      }
+    }
+
+    // Warm city-light bleed just above the ground-horizon seam: a narrow
+    // additive gradient that reads as ambient light from massed windows.
+    ctx.globalAlpha = 0.12 * dc.bright + 0.05;
+    const bleedH = Math.min(groundH * 0.22, h * 0.08);
+    const warmBleed = ctx.createLinearGradient(0, horizonY, 0, horizonY + bleedH);
+    perfCollector.recordAlloc();
+    warmBleed.addColorStop(0,   `rgba(${wr}, ${wg}, ${wb}, 0.70)`);
+    warmBleed.addColorStop(1,   `rgba(${wr}, ${wg}, ${wb}, 0)`);
+    ctx.fillStyle = warmBleed;
+    ctx.fillRect(0, horizonY, w, bleedH);
+
+    ctx.restore();
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// drawArtificialSkyline — WO-V6-ARTIFICIAL megastructure skyline signature.
+//
+// Two-layer silhouetted megastructure skyline on the horizon: varied forms
+// (spires, habitat domes, gantry/truss frames) receding far→near.
+//   • Far layer:  lighter / hazier (aerial-perspective blend), 11–15 structures.
+//   • Near layer: crisper / darker (minimal haze),            7–10 structures.
+// Lit windows (small warm cells) glow faintly by day and brightly at night —
+// intensity driven from dc.bright via a nightFrac scale.
+//
+// Called from drawScene §5 — ARTIFICIAL (plating) branch, BEFORE drawPlating,
+// so the skyline roots at horizonY and projects upward into the sky while the
+// plating deck fills the foreground ground plane below.
+//
+// Seeding: 'artificial-skyline' splitmix32 stream — isolated label; never
+// aliases 'emissive' or 'dune-sea' streams.
+// No Math.random / Date.now.
+// ctx.save / restore balanced; 'lighter' composite reset to 'source-over'
+// before any ctx.restore so no composite state leaks on exit.
+// ---------------------------------------------------------------------------
+function drawArtificialSkyline(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  t: number,
+  model: VistaModel,
+  cache: VistaCache,
+  dc: DayCycle,
+  sunX: number,
+): void {
+  void t;     // static silhouette — seed-stable, not time-animated
+  void sunX;  // sun azimuth unused; windows are seed-placed, not sun-biased
+
+  if (w <= 0) return;
+
+  const { horizonY, hasAtmosphere } = cache;
+  const pal = model.palette;
+  const b   = dc.bright;
+
+  // Atmosphere haze — blended into far-layer fills for aerial perspective.
+  const horBase = pal.skyHorizon;
+  const hazeR = hasAtmosphere ? Math.min(255, Math.round(horBase[0] * (0.40 + b * 0.60))) : 18;
+  const hazeG = hasAtmosphere ? Math.min(255, Math.round(horBase[1] * (0.40 + b * 0.60))) : 22;
+  const hazeB = hasAtmosphere ? Math.min(255, Math.round(horBase[2] * (0.40 + b * 0.60))) : 40;
+
+  // Window glow: very faint at noon (dc.bright≈1), blazing at full night (≈0).
+  const nightFrac = Math.max(0, 1 - b * 1.15);
+  const windowA   = 0.08 + nightFrac * 0.88;
+
+  // Warm window color (sodium/amber) from accentWarm — fallback to golden white.
+  const winColor = pal.accentWarm ?? ([255, 210, 120] as RGB);
+  const [wr, wg, wb] = winColor;
+
+  // Isolated PRNG stream — 'artificial-skyline' never aliases other sub-streams.
+  const rng = splitmix32(deriveChildSeed(model.seed, 'artificial-skyline'));
+
+  // Available sky band: structures root at horizonY, grow upward.
+  // Cap at 52% of horizonY so the tallest spire never reaches the star field.
+  const skyBand = Math.min(horizonY * 0.52, h * 0.26);
+  if (skyBand < 14) return;
+
+  // Runtime palette uses ridge[] array: index 0 = farthest, last = nearest.
+  // Fallback to surface so no crash on a zero-ridge edge case.
+  const ridgeArr = pal.ridge;
+  const [rfr, rfg, rfb] = ridgeArr[0] ?? pal.surface;
+  const midIdx   = Math.max(0, Math.floor(ridgeArr.length / 2));
+  const [rmr, rmg, rmb] = ridgeArr[midIdx] ?? pal.surface;
+
+  // Window rect accumulators — drawn in a single additive pass after silhouettes
+  // so windows always appear on top of the structure fills.
+  // Stored as [x, y, ww, wh] tuples; far windows are dimmer than near.
+  const farWins:  [number, number, number, number][] = [];
+  const nearWins: [number, number, number, number][] = [];
+
+  // Helper: fill a diagonal line segment as a thin 2-px rotated rect.
+  // Inherits current ctx.fillStyle; balanced save/restore.
+  const drawDiag = (x1: number, y1: number, x2: number, y2: number): void => {
+    const dx2 = x2 - x1, dy2 = y2 - y1;
+    const len = Math.sqrt(dx2 * dx2 + dy2 * dy2);
+    if (len < 2) return;
+    ctx.save();
+    ctx.translate(x1, y1);
+    ctx.rotate(Math.atan2(dy2, dx2));
+    ctx.fillRect(0, -1, len, 2);
+    ctx.restore();
+  };
+
+  // ============================================================
+  // LAYER 0 — far cityscape (lighter / hazier / shorter structures)
+  // ============================================================
+  {
+    const FAR_COUNT = 11 + Math.floor(rng() * 5);     // 11–15 structures
+    const hazeAmt   = 0.46;
+    const hazeAmtC  = 1 - hazeAmt;
+    const fr  = Math.round(rfr * hazeAmtC + hazeR * hazeAmt);
+    const fg  = Math.round(rfg * hazeAmtC + hazeG * hazeAmt);
+    const fbl = Math.round(rfb * hazeAmtC + hazeB * hazeAmt);
+
+    ctx.save();
+    ctx.fillStyle = `rgb(${fr}, ${fg}, ${fbl})`;
+
+    for (let si = 0; si < FAR_COUNT; si++) {
+      const cx   = rng() * w;
+      const typR = rng();
+      const kind = typR < 0.50 ? 'spire' : typR < 0.78 ? 'dome' : 'gantry';
+      const sh   = skyBand * (0.22 + rng() * 0.42);   // 22–64% of skyBand (far = shorter)
+
+      if (kind === 'spire') {
+        const sw   = 5 + Math.floor(rng() * 10);       // 5–14px wide
+        const sx   = Math.round(cx - sw * 0.5);
+        const topY = Math.round(horizonY - sh);
+        ctx.fillRect(sx, topY, sw, Math.round(sh));
+        // Observation band at ~70% height — wider than the shaft
+        if (sh > 22 && rng() < 0.65) {
+          ctx.fillRect(Math.round(cx - sw), Math.round(horizonY - sh * 0.70),
+            sw * 2, Math.max(2, Math.round(sh * 0.06)));
+        }
+        // A couple of far-layer window hints (only when night is prominent)
+        if (windowA > 0.14) {
+          const wCount = 1 + Math.floor(rng() * 2);
+          for (let wi = 0; wi < wCount; wi++) {
+            farWins.push([Math.round(cx - 1), Math.round(horizonY - sh * (0.22 + rng() * 0.45)), 2, 1]);
+          }
+        }
+      } else if (kind === 'dome') {
+        const dw  = 18 + Math.floor(rng() * 24);       // 18–41px wide
+        const dh  = sh * 0.52;                          // dome cap height
+        const bh  = sh - dh;                            // cylinder height
+        const dx  = Math.round(cx - dw * 0.5);
+        // Cylinder base
+        ctx.fillRect(dx, Math.round(horizonY - bh), dw, Math.round(bh));
+        // Dome cap — upper half-ellipse (clockwise π→2π traces the top arc)
+        ctx.beginPath();
+        ctx.ellipse(Math.round(cx), Math.round(horizonY - bh), dw * 0.5, dh,
+          0, Math.PI, Math.PI * 2, false);
+        ctx.closePath();
+        ctx.fill();
+      } else {
+        // Gantry: perimeter uprights + top beam + mid cross-bar
+        const gw  = 24 + Math.floor(rng() * 34);       // 24–57px wide
+        const gx  = Math.round(cx - gw * 0.5);
+        const lw  = Math.max(2, Math.round(gw * 0.055));
+        const topY = Math.round(horizonY - sh);
+        ctx.fillRect(gx, topY, lw, Math.round(sh));
+        ctx.fillRect(gx + gw - lw, topY, lw, Math.round(sh));
+        ctx.fillRect(gx, topY, gw, lw);
+        ctx.fillRect(gx, Math.round(horizonY - sh * 0.50), gw, lw);
+      }
+    }
+
+    ctx.restore();
+  }
+
+  // ============================================================
+  // LAYER 1 — near megastructures (darker / crisper / taller)
+  // ============================================================
+  {
+    const NEAR_COUNT = 7 + Math.floor(rng() * 4);      // 7–10 structures
+    const hazeAmt   = 0.07;
+    const hazeAmtC  = 1 - hazeAmt;
+    const nr  = Math.round(rmr * hazeAmtC + hazeR * hazeAmt);
+    const ng  = Math.round(rmg * hazeAmtC + hazeG * hazeAmt);
+    const nbl = Math.round(rmb * hazeAmtC + hazeB * hazeAmt);
+
+    ctx.save();
+    ctx.fillStyle = `rgb(${nr}, ${ng}, ${nbl})`;
+
+    for (let si = 0; si < NEAR_COUNT; si++) {
+      const cx   = rng() * w;
+      const typR = rng();
+      const kind = typR < 0.42 ? 'spire' : typR < 0.72 ? 'dome' : 'gantry';
+      const sh   = skyBand * (0.45 + rng() * 0.55);    // 45–100% of skyBand (near = taller)
+
+      if (kind === 'spire') {
+        const sw   = 10 + Math.floor(rng() * 18);      // 10–27px wide
+        const sx   = Math.round(cx - sw * 0.5);
+        const topY = Math.round(horizonY - sh);
+        ctx.fillRect(sx, topY, sw, Math.round(sh));
+        // Observation platform at ~72% height
+        if (sh > 35) {
+          const obsW = Math.round(sw * 2.2);
+          ctx.fillRect(Math.round(cx - obsW * 0.5), Math.round(horizonY - sh * 0.72),
+            obsW, Math.max(2, Math.round(sh * 0.055)));
+        }
+        // Thin antenna tip above the main shaft
+        if (sh > 50 && rng() < 0.65) {
+          const anh = 12 + Math.floor(rng() * 14);
+          ctx.fillRect(Math.round(cx - 1), topY - anh, 3, anh);
+        }
+        // Windows: scattered cells on the shaft face
+        const winW  = Math.max(2, Math.round(sw * 0.28));
+        const winH  = Math.max(2, Math.round(sw * 0.16));
+        const wCnt  = 3 + Math.floor(rng() * 5);
+        for (let wi = 0; wi < wCnt; wi++) {
+          const wy = Math.round(horizonY - sh * (0.18 + rng() * 0.55));
+          const wx = Math.round(cx - winW * 0.5 + (rng() * 2 - 1) * sw * 0.15);
+          if (wy > topY) nearWins.push([wx, wy, winW, winH]);
+        }
+      } else if (kind === 'dome') {
+        const dw  = 40 + Math.floor(rng() * 55);       // 40–94px wide
+        const dh  = sh * 0.54;                          // dome cap height
+        const bh  = sh - dh;                            // cylinder height
+        const dx  = Math.round(cx - dw * 0.5);
+        // Cylinder base
+        ctx.fillRect(dx, Math.round(horizonY - bh), dw, Math.round(bh));
+        // Dome cap — upper half-ellipse
+        ctx.beginPath();
+        ctx.ellipse(Math.round(cx), Math.round(horizonY - bh), dw * 0.5, dh,
+          0, Math.PI, Math.PI * 2, false);
+        ctx.closePath();
+        ctx.fill();
+        // Windows: grid of small cells on the cylinder band
+        const wCols = 2 + Math.floor(rng() * 4);
+        const rowSp = Math.max(6, Math.round(bh / (2 + rng() * 2.5)));
+        for (let r = 0; r * rowSp < bh - 4; r++) {
+          for (let c = 0; c < wCols; c++) {
+            if (rng() < 0.52) {
+              const wx = Math.round(dx + 5 + (c / wCols) * (dw - 10) + rng() * 3);
+              const wy = Math.round(horizonY - bh + r * rowSp + 3);
+              nearWins.push([wx, wy, 3, 2]);
+            }
+          }
+        }
+      } else {
+        // Gantry / orbital dock frame: uprights + top beam + mid beam + X-brace
+        const gw  = 55 + Math.floor(rng() * 70);       // 55–124px wide
+        const gx  = Math.round(cx - gw * 0.5);
+        const topY = Math.round(horizonY - sh);
+        const lw  = Math.max(3, Math.round(gw * 0.05));
+        const midY = Math.round(horizonY - sh * 0.48);
+        // Structural perimeter
+        ctx.fillRect(gx, topY, lw, Math.round(sh));
+        ctx.fillRect(gx + gw - lw, topY, lw, Math.round(sh));
+        ctx.fillRect(gx, topY, gw, lw);
+        ctx.fillRect(gx, midY, gw, lw);
+        // X-brace diagonals between the top beam and the mid beam
+        drawDiag(gx + lw, topY + lw, gx + gw - lw, midY);
+        drawDiag(gx + gw - lw, topY + lw, gx + lw, midY);
+        // Windows along the lower frame bay
+        const wCnt = 3 + Math.floor(rng() * 5);
+        for (let wi = 0; wi < wCnt; wi++) {
+          if (rng() < 0.58) {
+            const wx = gx + Math.round(lw + (wi / wCnt) * (gw - 2 * lw) + rng() * 3);
+            const wy = Math.round(horizonY - sh * (0.22 + rng() * 0.28));
+            nearWins.push([wx, wy, 3, 2]);
+          }
+        }
+      }
+    }
+
+    ctx.restore();
+  }
+
+  // ============================================================
+  // Window glow — additive pass over both silhouette layers.
+  // Far windows: 32% of near intensity (distance attenuation).
+  // ============================================================
+  if ((farWins.length > 0 || nearWins.length > 0) && windowA > 0.04) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = `rgb(${wr}, ${wg}, ${wb})`;
+    for (let i = 0; i < farWins.length; i++) {
+      ctx.globalAlpha = windowA * 0.32;
+      ctx.fillRect(farWins[i][0], farWins[i][1], farWins[i][2], farWins[i][3]);
+    }
+    for (let i = 0; i < nearWins.length; i++) {
+      ctx.globalAlpha = windowA;
+      ctx.fillRect(nearWins[i][0], nearWins[i][1], nearWins[i][2], nearWins[i][3]);
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// drawDuneSea — WO-V4-DESERT terrain signature.
+//
+// Sculpted dune sea: N sinuous ridge layers receding far→near, each with a
+// lit windward crest and a shadowed leeward slip-face.  Replaces the generic
+// parallax ridge renderer for DESERT worlds.
+//
+// Design notes:
+//   • depthFrac 0 = farthest ridge (near horizonY); 1 = nearest (near h).
+//   • Each crest is two summed sine waves for organic, non-repeating shape.
+//   • Aerial-perspective haze matches the generic ridge renderer (0.50 far scalar).
+//   • Wind-drift scroll (very slow; near dunes faster) gives life; seeded via
+//     model.seed — no Math.random / Date.now.
+//   • Crest highlight uses palette.accent (amber-gold) biased toward sunX side.
+//   • Shadow strip at the crest base punches in the slip-face depth read.
+//   • ctx.save / restore: one outer save wrapping the full dune loop.
+//   • DuneSeaConfig from DESERT_PROFILE drives ridgeCount / windScale / crestScale.
+// ---------------------------------------------------------------------------
+function drawDuneSea(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  t: number,
+  model: VistaModel,
+  cache: VistaCache,
+  dc: DayCycle,
+  sunX: number
+): void {
+  const { horizonY, hasAtmosphere } = cache;
+  const pal     = model.palette;
+  const groundH = h - horizonY;
+
+  // Read terrain-signature config from the DESERT profile.
+  const dsConf     = getProfile(model.planetType).duneSeaConfig;
+  const duneCount  = dsConf?.ridgeCount ?? 6;
+  const windScale  = dsConf?.windScale  ?? 1.0;
+  const crestScale = dsConf?.crestScale ?? 1.0;
+
+  // Seeded PRNG — sub-stream 'dune-sea' is unique to this renderer.
+  const rng = splitmix32(deriveChildSeed(model.seed, 'dune-sea'));
+
+  // Sun azimuth fraction (0=left, 1=right) — biases the crest highlight gradient.
+  const sunFrac = w > 0 ? sunX / w : 0.5;
+
+  // Horizon haze color for aerial-perspective blending (same derivation as the
+  // generic ridge renderer so far ridges desaturate into the same atmosphere).
+  const horBase = pal.skyHorizon;
+  const b       = dc.bright;
+  const hazeR   = hasAtmosphere ? Math.min(255, Math.round(horBase[0] * (0.4 + b * 0.6))) : 8;
+  const hazeG   = hasAtmosphere ? Math.min(255, Math.round(horBase[1] * (0.4 + b * 0.6))) : 8;
+  const hazeB   = hasAtmosphere ? Math.min(255, Math.round(horBase[2] * (0.4 + b * 0.6))) : 20;
+
+  // Ground-plane sand fill — drawn first so the terrain band has a sand base
+  // beneath all dune ridges.
+  {
+    const [sr, sg, sb] = pal.surface;
+    const fill = ctx.createLinearGradient(0, horizonY, 0, h);
+    perfCollector.recordAlloc();
+    fill.addColorStop(0, `rgb(${Math.round(sr * 0.82)}, ${Math.round(sg * 0.82)}, ${Math.round(sb * 0.84)})`);
+    fill.addColorStop(1, `rgb(${Math.round(sr * 0.52)}, ${Math.round(sg * 0.52)}, ${Math.round(sb * 0.54)})`);
+    ctx.fillStyle = fill;
+    ctx.fillRect(0, horizonY, w, groundH);
+  }
+
+  ctx.save();
+
+  for (let di = 0; di < duneCount; di++) {
+    // depthFrac: 0 = farthest (near horizon), 1 = nearest (camera foreground).
+    const depthFrac = di / Math.max(1, duneCount - 1);
+
+    // Crest Y: exponential distribution gives convincing perspective recession.
+    // Far dunes (di=0) sit just below horizonY; near dunes sit close to h.
+    const tFrac      = Math.pow(depthFrac, 0.75);
+    const crestBaseY = horizonY + tFrac * groundH * 0.90;
+
+    // Crest undulation amplitude — larger for near dunes (they loom over camera).
+    const amplitude = groundH * (0.030 + depthFrac * 0.090);
+
+    // Per-dune seeded shape: two sine frequencies + independent phase offsets.
+    const phaseA = rng() * Math.PI * 2;
+    const freqA  = 0.55 + rng() * 0.70;          // primary frequency scale
+    const phaseB = rng() * Math.PI * 2;
+    const freqB  = freqA * 1.72 + rng() * 0.40;  // harmonic — organic erg texture
+    const bRatio = 0.35 + rng() * 0.20;           // harmonic amplitude fraction
+
+    // Slow wind-drift parallax: near dunes scroll faster → depth sensation.
+    const windSpeed = (0.06 + depthFrac * 0.28) * windScale * (w / 1440);
+    const scrollOff = t * windSpeed;
+    const period    = w * (1.35 + rng() * 0.55);  // tiling period wider than frame
+
+    // Sample step: 4 px for smooth sinuous lines without over-sampling.
+    const step   = 4;
+    const numPts = Math.ceil(w / step) + 2;
+
+    // Inline crest-Y sampler at a pre-scrolled normalised position [0, 1].
+    const crestAt = (xNorm: number): number =>
+      crestBaseY
+      + Math.sin(xNorm * Math.PI * 2 * freqA + phaseA) * amplitude
+      + Math.sin(xNorm * Math.PI * 2 * freqB + phaseB) * amplitude * bRatio;
+
+    // --- Fill color: interpolate through pal.ridge[] array by depthFrac (0=far, 1=near) ---
+    // Mirrors the getRidgeColor pattern in pipeline.ts so dune fill colors track
+    // the same per-stratum palette as the generic ridge renderer would assign.
+    const ridge    = pal.ridge;
+    const ridgeLen = ridge.length;
+    const rawPos   = depthFrac * Math.max(1, ridgeLen - 1);
+    const lo       = Math.floor(rawPos);
+    const hi       = Math.min(lo + 1, ridgeLen - 1);
+    const ridgeMix = rawPos - lo;
+    const [loR, loG, loB] = ridge[lo]  ?? ([92, 48, 20] as RGB);
+    const [hiR, hiG, hiB] = ridge[hi]  ?? ([loR, loG, loB] as RGB);
+    const baseR = Math.round(loR * (1 - ridgeMix) + hiR * ridgeMix);
+    const baseG = Math.round(loG * (1 - ridgeMix) + hiG * ridgeMix);
+    const baseB = Math.round(loB * (1 - ridgeMix) + hiB * ridgeMix);
+
+    // Aerial-perspective haze: far ridges blend ~50% toward sky horizon color.
+    // Slightly softer than the generic ridge scalar (0.55) because sand is a
+    // lower-contrast, more atmospheric-looking surface than rocky strata.
+    const hazeAmt  = 0.50 * (1 - depthFrac) * (hasAtmosphere ? 1.0 : 0.10);
+    const hazeAmtC = 1 - hazeAmt;
+    const fillR    = Math.round(baseR * hazeAmtC + hazeR * hazeAmt);
+    const fillG    = Math.round(baseG * hazeAmtC + hazeG * hazeAmt);
+    const fillB    = Math.round(baseB * hazeAmtC + hazeB * hazeAmt);
+
+    // --- Slip-face body fill (the shadow face visible from the viewer) ---
+    ctx.beginPath();
+    ctx.moveTo(-step, h);
+    for (let xi = 0; xi <= numPts; xi++) {
+      const x    = (xi - 1) * step;
+      const xScr = (((x + scrollOff) % period) + period) % period;
+      ctx.lineTo(x, crestAt(xScr / period));
+    }
+    ctx.lineTo(w + step, h);
+    ctx.closePath();
+    ctx.fillStyle = `rgb(${fillR}, ${fillG}, ${fillB})`;
+    ctx.fill();
+
+    // --- Deep shadow strip just under the crest (slip-face top edge) ---
+    // A thin darkening band at the crest base sharpens the sculpted read and
+    // separates consecutive dune layers.
+    const shadowDepth = Math.max(3, 3 + depthFrac * 8);
+    if (dc.bright > 0.06) {
+      const shdAlpha = (0.30 + depthFrac * 0.22) * Math.max(0.1, dc.bright);
+      const shdR     = Math.round(fillR * 0.28);
+      const shdG     = Math.round(fillG * 0.28);
+      const shdB     = Math.round(fillB * 0.28);
+
+      ctx.save();
+      ctx.lineWidth   = shadowDepth;
+      ctx.lineJoin    = 'round';
+      ctx.strokeStyle = `rgba(${shdR}, ${shdG}, ${shdB}, ${shdAlpha.toFixed(3)})`;
+      ctx.beginPath();
+      for (let xi = 0; xi <= numPts; xi++) {
+        const x    = (xi - 1) * step;
+        const xScr = (((x + scrollOff) % period) + period) % period;
+        const y    = crestAt(xScr / period) + shadowDepth * 0.5;
+        if (xi === 0) ctx.moveTo(x, y);
+        else          ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // --- Lit windward crest highlight ---
+    // Warm amber strip at the dune apex — the windward face facing the sun.
+    // Width scales with depth (near dunes have wider, more prominent crests).
+    // A horizontal gradient biases the brightness toward the sun's azimuth.
+    if (dc.bright > 0.06) {
+      const [acR, acG, acB] = pal.accent;
+      const crestW   = Math.max(1.0, (1.2 + depthFrac * 3.5) * crestScale);
+      const crestAlp = (0.60 + depthFrac * 0.30) * dc.bright;
+
+      // Warm day-tint blend: accent (amber-gold) drives the lit crest read.
+      const warmBias = dc.warm * 24;
+      const crestR   = Math.min(255, Math.round(fillR * 0.30 + acR * 0.70 + warmBias));
+      const crestG   = Math.min(255, Math.round(fillG * 0.30 + acG * 0.70 + warmBias * 0.35));
+      const crestB   = Math.min(255, Math.round(fillB * 0.30 + acB * 0.70));
+
+      // Horizontal gradient: strong on the sun side, weak on the shadow side.
+      const strongAlp = crestAlp.toFixed(3);
+      const weakAlp   = (crestAlp * 0.40).toFixed(3);
+      const crestGrad = ctx.createLinearGradient(0, 0, w, 0);
+      perfCollector.recordAlloc();
+      if (sunFrac < 0.5) {
+        // Sun on left → windward (lit) faces left, slip-face faces right
+        crestGrad.addColorStop(0.0, `rgba(${crestR}, ${crestG}, ${crestB}, ${strongAlp})`);
+        crestGrad.addColorStop(0.6, `rgba(${crestR}, ${crestG}, ${crestB}, ${weakAlp})`);
+        crestGrad.addColorStop(1.0, `rgba(${crestR}, ${crestG}, ${crestB}, ${weakAlp})`);
+      } else {
+        // Sun on right → windward (lit) faces right, slip-face faces left
+        crestGrad.addColorStop(0.0, `rgba(${crestR}, ${crestG}, ${crestB}, ${weakAlp})`);
+        crestGrad.addColorStop(0.4, `rgba(${crestR}, ${crestG}, ${crestB}, ${weakAlp})`);
+        crestGrad.addColorStop(1.0, `rgba(${crestR}, ${crestG}, ${crestB}, ${strongAlp})`);
+      }
+
+      ctx.save();
+      ctx.lineWidth   = crestW;
+      ctx.lineJoin    = 'round';
+      ctx.strokeStyle = crestGrad;
+      ctx.beginPath();
+      for (let xi = 0; xi <= numPts; xi++) {
+        const x    = (xi - 1) * step;
+        const xScr = (((x + scrollOff) % period) + period) % period;
+        const y    = crestAt(xScr / period);
+        if (xi === 0) ctx.moveTo(x, y);
+        else          ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  ctx.restore();
 }
 
 // ---------------------------------------------------------------------------
@@ -1510,21 +3470,50 @@ function drawDepositGlyph(
   ctx.save();
 
   if (visual === 'ore-vein') {
-    // Jagged zigzag vein exposed in the terrain surface, in accent color
-    ctx.strokeStyle = `rgba(${ar}, ${ag}, ${ab}, ${(0.55 + intensity * 0.35).toFixed(3)})`;
+    // Mineral vein raised above the terrain — rendered as three overlaid strokes
+    // (shadow beneath, body, highlight on top) to read as an embedded ridge rather
+    // than a flat drawn line.
+    const vw        = sz * 1.8;
+    const mainAlpha = 0.55 + intensity * 0.35;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    // Shadow stroke: thicker, darker, offset slightly below
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.strokeStyle = `rgba(${Math.round(ar * 0.25)}, ${Math.round(ag * 0.22)}, ${Math.round(ab * 0.20)}, ${(mainAlpha * 0.55).toFixed(3)})`;
+    ctx.lineWidth   = Math.max(3.0, sz * 0.22);
+    ctx.beginPath();
+    ctx.moveTo(sx - vw * 0.5, sy + 1.5);
+    for (let i = 1; i <= 5; i++) {
+      ctx.lineTo(sx - vw * 0.5 + (i / 5) * vw, sy - (i % 2 === 1 ? sz * 0.55 : sz * 0.18) + 1.5);
+    }
+    ctx.stroke();
+
+    // Main body stroke in accent color
+    ctx.strokeStyle = `rgba(${ar}, ${ag}, ${ab}, ${mainAlpha.toFixed(3)})`;
     ctx.lineWidth   = Math.max(1.5, sz * 0.14);
-    ctx.lineCap     = 'round';
-    const vw = sz * 1.8;
     ctx.beginPath();
     ctx.moveTo(sx - vw * 0.5, sy);
     for (let i = 1; i <= 5; i++) {
       ctx.lineTo(sx - vw * 0.5 + (i / 5) * vw, sy - (i % 2 === 1 ? sz * 0.55 : sz * 0.18));
     }
     ctx.stroke();
+
+    // Highlight streak: thin bright line along the top edge of the vein ridge
+    ctx.strokeStyle = `rgba(${Math.min(255, ar + 60)}, ${Math.min(255, ag + 55)}, ${Math.min(255, ab + 50)}, ${(mainAlpha * 0.50).toFixed(3)})`;
+    ctx.lineWidth   = Math.max(0.7, sz * 0.055);
+    ctx.beginPath();
+    ctx.moveTo(sx - vw * 0.5, sy - 1.0);
+    for (let i = 1; i <= 5; i++) {
+      ctx.lineTo(sx - vw * 0.5 + (i / 5) * vw, sy - (i % 2 === 1 ? sz * 0.55 : sz * 0.18) - 1.0);
+    }
+    ctx.stroke();
+
     // Glint glow around the vein apex
     ctx.globalCompositeOperation = 'lighter';
     ctx.globalAlpha = 0.25 * intensity;
     const gg = ctx.createRadialGradient(sx, sy - sz * 0.3, 0, sx, sy - sz * 0.3, sz * 0.7);
+    perfCollector.recordAlloc();
     gg.addColorStop(0, `rgba(${ar}, ${ag}, ${ab}, 0.9)`);
     gg.addColorStop(1, `rgba(${ar}, ${ag}, ${ab}, 0)`);
     ctx.fillStyle = gg;
@@ -1541,6 +3530,7 @@ function drawDepositGlyph(
       const rise = t === 0 ? sz * 0.4 : sz * 0.4 + (t * 8 + pi * 2.1) % (sz * 1.4);
       const pr   = sz * (0.30 + pi * 0.10);
       const pg   = ctx.createRadialGradient(px2, sy - rise, 0, px2, sy - rise, pr * 1.8);
+      perfCollector.recordAlloc();
       pg.addColorStop(0, `rgba(${gR}, ${gG}, ${gB}, ${(0.30 * intensity).toFixed(3)})`);
       pg.addColorStop(1, `rgba(${gR}, ${gG}, ${gB}, 0)`);
       ctx.fillStyle = pg;
@@ -1554,6 +3544,7 @@ function drawDepositGlyph(
     const botW   = sz * 0.22;
     ctx.globalCompositeOperation = 'lighter';
     const vg = ctx.createLinearGradient(sx, sy, sx, sy - ventH);
+    perfCollector.recordAlloc();
     vg.addColorStop(0,   `rgba(${ar}, ${ag}, ${ab}, ${(0.55 * intensity).toFixed(3)})`);
     vg.addColorStop(0.6, `rgba(230, 230, 240, ${(0.30 * intensity).toFixed(3)})`);
     vg.addColorStop(1,   `rgba(230, 230, 240, 0)`);
@@ -1566,6 +3557,7 @@ function drawDepositGlyph(
     ctx.closePath();
     ctx.fill();
     const bg = ctx.createRadialGradient(sx, sy, 0, sx, sy, sz * 0.9);
+    perfCollector.recordAlloc();
     bg.addColorStop(0, `rgba(${ar}, ${ag}, ${ab}, ${(0.6 * intensity).toFixed(3)})`);
     bg.addColorStop(1, `rgba(${ar}, ${ag}, ${ab}, 0)`);
     ctx.fillStyle = bg;
@@ -1577,6 +3569,7 @@ function drawDepositGlyph(
     const ph = sz * 0.50;
     ctx.globalCompositeOperation = 'source-over';
     const pg = ctx.createRadialGradient(sx, sy, 0, sx, sy, pw);
+    perfCollector.recordAlloc();
     pg.addColorStop(0,   `rgba(${Math.round(ar * 0.15)}, ${Math.round(ag * 0.12)}, ${Math.round(ab * 0.20)}, ${(0.75 * intensity).toFixed(3)})`);
     pg.addColorStop(0.7, `rgba(${Math.round(ar * 0.10)}, ${Math.round(ag * 0.10)}, ${Math.round(ab * 0.15)}, ${(0.55 * intensity).toFixed(3)})`);
     pg.addColorStop(1,   `rgba(${Math.round(ar * 0.05)}, ${Math.round(ag * 0.05)}, ${Math.round(ab * 0.08)}, 0)`);
@@ -1594,7 +3587,8 @@ function drawDepositGlyph(
     ctx.stroke();
 
   } else if (visual === 'crystal') {
-    // Cluster of angular gem shapes glowing in accent color
+    // Cluster of angular gem shapes glowing in accent color.
+    // The primary (largest) gem gets an inner facet line for a cut-stone look.
     ctx.globalCompositeOperation = 'lighter';
     for (let ci = 0; ci < 4; ci++) {
       const cAngle = (ci / 4) * Math.PI * 2 + Math.PI * 0.15;
@@ -1612,13 +3606,28 @@ function drawDepositGlyph(
       ctx.lineTo(cx2 - cw2, cy2 - ch * 0.4);
       ctx.closePath();
       ctx.fill();
+
+      // Inner facet: bright highlight line on the right face of each gem
+      // (apex → right midpoint) — reads as the reflective polished surface
+      if (ci < 2) {
+        ctx.globalAlpha = (0.50 + intensity * 0.30) * (ci < 2 ? 0.85 : 0.55);
+        ctx.strokeStyle = `rgba(${Math.min(255, ar + 70)}, ${Math.min(255, ag + 65)}, ${Math.min(255, ab + 55)}, 1)`;
+        ctx.lineWidth   = Math.max(0.6, cw2 * 0.18);
+        ctx.lineCap     = 'round';
+        ctx.beginPath();
+        ctx.moveTo(cx2, cy2 - ch);
+        ctx.lineTo(cx2 + cw2 * 0.65, cy2 - ch * 0.45);
+        ctx.stroke();
+      }
     }
-    // Halo glow around cluster
+    // Diffuse halo glow around cluster — slightly wider than before for softness
     ctx.globalAlpha = 0.18 * intensity;
-    const glowR = sz * 1.1;
+    const glowR = sz * 1.25;
     const cg = ctx.createRadialGradient(sx, sy - sz * 0.3, 0, sx, sy - sz * 0.3, glowR);
-    cg.addColorStop(0, `rgba(${ar}, ${ag}, ${ab}, 0.8)`);
-    cg.addColorStop(1, `rgba(${ar}, ${ag}, ${ab}, 0)`);
+    perfCollector.recordAlloc();
+    cg.addColorStop(0,   `rgba(${ar}, ${ag}, ${ab}, 0.7)`);
+    cg.addColorStop(0.5, `rgba(${ar}, ${ag}, ${ab}, 0.25)`);
+    cg.addColorStop(1,   `rgba(${ar}, ${ag}, ${ab}, 0)`);
     ctx.fillStyle = cg;
     ctx.fillRect(sx - glowR, sy - glowR - sz * 0.3, glowR * 2, glowR * 2);
 
@@ -1636,6 +3645,7 @@ function drawDepositGlyph(
       const pulse  = t === 0 ? 1.0 : 0.5 + 0.5 * Math.sin(t * 1.2 + di * 1.3);
       const dr     = sz * (0.18 + di * 0.04);
       const dg2    = ctx.createRadialGradient(dx, dy, 0, dx, dy, dr * 2.2);
+      perfCollector.recordAlloc();
       dg2.addColorStop(0, `rgba(${blR}, ${blG}, ${blB}, ${(0.7 * pulse * intensity).toFixed(3)})`);
       dg2.addColorStop(1, `rgba(${blR}, ${blG}, ${blB}, 0)`);
       ctx.fillStyle = dg2;
@@ -1651,6 +3661,7 @@ function drawDepositGlyph(
     ctx.globalCompositeOperation = 'lighter';
     ctx.globalAlpha = 0.4 * intensity;
     const fg = ctx.createRadialGradient(sx, sy, 0, sx, sy, sz);
+    perfCollector.recordAlloc();
     fg.addColorStop(0, `rgba(${ar}, ${ag}, ${ab}, 0.8)`);
     fg.addColorStop(1, `rgba(${ar}, ${ag}, ${ab}, 0)`);
     ctx.fillStyle = fg;
@@ -1686,6 +3697,7 @@ function drawEnergyGlyph(
     const topW = sz * 1.2;
     const botW = sz * 0.3;
     const col  = ctx.createLinearGradient(sx, sy, sx, sy - colH);
+    perfCollector.recordAlloc();
     col.addColorStop(0,   `rgba(${ar}, ${Math.min(255, ag + 40)}, ${ab}, ${(0.7 * intensity).toFixed(3)})`);
     col.addColorStop(0.4, `rgba(210, 225, 240, ${(0.50 * intensity).toFixed(3)})`);
     col.addColorStop(1,   `rgba(200, 220, 240, 0)`);
@@ -1698,31 +3710,54 @@ function drawEnergyGlyph(
     ctx.closePath();
     ctx.fill();
     const bg = ctx.createRadialGradient(sx, sy, 0, sx, sy, sz * 1.5);
+    perfCollector.recordAlloc();
     bg.addColorStop(0, `rgba(${ar}, ${Math.min(255, ag + 20)}, ${ab}, ${(0.8 * intensity).toFixed(3)})`);
     bg.addColorStop(1, `rgba(${ar}, ${ag}, ${ab}, 0)`);
     ctx.fillStyle = bg;
     ctx.fillRect(sx - sz * 1.5, sy - sz * 1.5, sz * 3, sz * 3);
 
   } else if (source === 'TIDAL') {
-    // Three concentric wave arcs (semi-circles, open downward)
+    // Three concentric wave arcs — innermost thickest (shows wave height/energy),
+    // outermost thinnest (dissipating swell).  Semi-circles open downward.
     ctx.strokeStyle = `rgba(${ar}, ${ag}, ${ab}, ${(0.65 * intensity).toFixed(3)})`;
-    ctx.lineWidth   = Math.max(1.5, sz * 0.10);
     ctx.lineCap     = 'round';
     for (let wi = 0; wi < 3; wi++) {
       const wr    = sz * (0.35 + wi * 0.45);
       const shift = t === 0 ? 0 : Math.sin(t * 1.5 + wi * 1.0) * 0.06;
+      // Inner arcs are thicker (more wave energy); outer arcs taper to thinner
+      ctx.lineWidth   = Math.max(1.0, sz * (0.13 - wi * 0.03));
       ctx.globalAlpha = (0.70 - wi * 0.18) * intensity;
       ctx.beginPath();
       ctx.arc(sx, sy, wr, Math.PI + shift, Math.PI * 2 - shift);
       ctx.stroke();
     }
+    // Soft radial glow at center to ground the marker
+    ctx.globalAlpha = 0.18 * intensity;
+    const tg = ctx.createRadialGradient(sx, sy, 0, sx, sy, sz * 0.55);
+    perfCollector.recordAlloc();
+    tg.addColorStop(0, `rgba(${ar}, ${ag}, ${ab}, 0.7)`);
+    tg.addColorStop(1, `rgba(${ar}, ${ag}, ${ab}, 0)`);
+    ctx.fillStyle = tg;
+    ctx.fillRect(sx - sz * 0.55, sy - sz * 0.55, sz * 1.1, sz * 1.1);
 
   } else if (source === 'SOLAR') {
-    // Eight-ray sunburst + center disc, slowly rotating
+    // Eight-ray sunburst + center disc, slowly rotating.
+    // Outer corona: large dim radial disc behind the rays to read as radiated heat.
     const rayCount = 8;
     const innerR   = sz * 0.25;
     const outerR   = sz * 0.90;
     const rot      = t === 0 ? 0 : t * 0.12;
+
+    // Corona halo behind rays — soft diffuse disc
+    ctx.globalAlpha = 0.22 * intensity;
+    const corona = ctx.createRadialGradient(sx, sy, innerR * 0.5, sx, sy, sz * 1.55);
+    perfCollector.recordAlloc();
+    corona.addColorStop(0,   `rgba(${ar}, ${ag}, ${ab}, 0.65)`);
+    corona.addColorStop(0.5, `rgba(${ar}, ${ag}, ${ab}, 0.20)`);
+    corona.addColorStop(1,   `rgba(${ar}, ${ag}, ${ab}, 0)`);
+    ctx.fillStyle = corona;
+    ctx.fillRect(sx - sz * 1.55, sy - sz * 1.55, sz * 3.1, sz * 3.1);
+
     ctx.strokeStyle = `rgba(${ar}, ${ag}, ${ab}, ${(0.70 * intensity).toFixed(3)})`;
     ctx.lineWidth   = Math.max(1.5, sz * 0.08);
     ctx.lineCap     = 'round';
@@ -1809,6 +3844,7 @@ function drawHazardGlyph(
     ctx.closePath();
     ctx.clip();
     const lg = ctx.createLinearGradient(minX, minY, maxX, maxY);
+    perfCollector.recordAlloc();
     lg.addColorStop(0,   `rgba(200, 60, 10, ${(alphaFloor * 0.70).toFixed(3)})`);
     lg.addColorStop(0.5, `rgba(240, 100, 20, ${(alphaFloor * 0.85).toFixed(3)})`);
     lg.addColorStop(1,   `rgba(180, 40, 5,  ${(alphaFloor * 0.60).toFixed(3)})`);
@@ -1827,23 +3863,56 @@ function drawHazardGlyph(
     ctx.restore();
 
   } else if (visual === 'fault-line') {
-    // Dark jagged crack across the region — always contrasts with the ground
-    const segs = 8;
-    ctx.globalAlpha = alphaFloor;
-    ctx.strokeStyle = `rgba(30, 18, 10, 1)`;
-    ctx.lineWidth   = Math.max(2, rW * 0.035);
-    ctx.lineCap     = 'round'; ctx.lineJoin = 'round';
+    // Geological rift — three overlaid strokes (AO smear, dark crack body,
+    // hairline highlight) on an irregular accumulated-walk path.
+    // Determinism: seeded from stable integer pixel coords; no Math.random.
+    const segs  = 12;
+    const seed  = (Math.round(minX * 73856093) ^ Math.round(cy * 19349663) ^ segs) >>> 0;
+    const rng   = splitmix32(seed);
+    // Amplitude: crack threads the ground (≈rH*0.06–0.13); never a tall bolt.
+    const maxAmp = rH * Math.min(0.13, 0.06 + severity * 0.07);
+
+    // Pre-build Y offsets as an elastic random walk so the path wanders
+    // organically. Elastic pull (×0.68) prevents unlimited drift; slight
+    // downward bias (0.44 vs 0.5) gives the crack a natural sag.
+    const offsets: number[] = [0];
+    for (let si = 1; si <= segs; si++) {
+      const prev   = offsets[si - 1];
+      const step   = (rng() - 0.44) * maxAmp * 1.5;
+      const pulled = prev * 0.68 + step;
+      offsets.push(Math.max(-maxAmp, Math.min(maxAmp, pulled)));
+    }
+
+    ctx.lineCap  = 'round'; ctx.lineJoin = 'round';
+
+    // AO shadow smear: thick soft stroke grounding the crack to the terrain
+    ctx.globalAlpha = alphaFloor * 0.42;
+    ctx.strokeStyle = 'rgba(15, 10, 5, 0.70)';
+    ctx.lineWidth   = Math.max(5, rW * 0.072);
     ctx.beginPath(); ctx.moveTo(minX, cy);
     for (let si = 1; si <= segs; si++) {
-      ctx.lineTo(minX + (si / segs) * rW, cy + (si % 2 === 0 ? 1 : -1) * rH * (0.18 + severity * 0.15));
+      ctx.lineTo(minX + (si / segs) * rW, cy + offsets[si]);
     }
     ctx.stroke();
-    // Pale highlight on one edge for depth
-    ctx.strokeStyle = `rgba(180, 140, 80, ${(alphaFloor * 0.55).toFixed(3)})`;
+
+    // Dark crack body
+    ctx.globalAlpha = alphaFloor;
+    ctx.strokeStyle = 'rgba(30, 18, 10, 1)';
+    ctx.lineWidth   = Math.max(2, rW * 0.035);
+    ctx.beginPath(); ctx.moveTo(minX, cy);
+    for (let si = 1; si <= segs; si++) {
+      ctx.lineTo(minX + (si / segs) * rW, cy + offsets[si]);
+    }
+    ctx.stroke();
+
+    // Hairline highlight — cool desaturated grey, low alpha; suggests a
+    // catch-light on one rift rim, never reads as a drawn outline.
+    // Warm tan rgba(180,140,80) removed — it popped as clip-art.
+    ctx.strokeStyle = `rgba(150, 150, 160, ${(alphaFloor * 0.28).toFixed(3)})`;
     ctx.lineWidth   = Math.max(1, rW * 0.010);
     ctx.beginPath(); ctx.moveTo(minX, cy - 2);
     for (let si = 1; si <= segs; si++) {
-      ctx.lineTo(minX + (si / segs) * rW, cy + (si % 2 === 0 ? 1 : -1) * rH * (0.18 + severity * 0.15) - 2);
+      ctx.lineTo(minX + (si / segs) * rW, cy + offsets[si] - 2);
     }
     ctx.stroke();
 
@@ -1884,6 +3953,7 @@ function drawHazardGlyph(
     ctx.closePath();
     ctx.clip();
     const rg = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(rW, rH) * 0.6);
+    perfCollector.recordAlloc();
     rg.addColorStop(0,   `rgba(160, 200, 60, ${(alphaFloor * 0.55).toFixed(3)})`);
     rg.addColorStop(0.6, `rgba(110, 160, 30, ${(alphaFloor * 0.40).toFixed(3)})`);
     rg.addColorStop(1,   `rgba(80, 120, 20, 0)`);
@@ -1903,6 +3973,7 @@ function drawHazardGlyph(
   } else if (visual === 'flood-zone') {
     // Blue semi-transparent wash with ripple lines
     const fg2 = ctx.createLinearGradient(minX, minY, minX, maxY);
+    perfCollector.recordAlloc();
     fg2.addColorStop(0,   `rgba(40, 80, 160, ${(alphaFloor * 0.45).toFixed(3)})`);
     fg2.addColorStop(0.5, `rgba(30, 65, 140, ${(alphaFloor * 0.60).toFixed(3)})`);
     fg2.addColorStop(1,   `rgba(20, 50, 110, ${(alphaFloor * 0.40).toFixed(3)})`);
@@ -1924,14 +3995,23 @@ function drawHazardGlyph(
     }
 
   } else if (visual === 'snow-band') {
-    // White horizontal stripes across the region
+    // Horizontal snow bands: bright crest stripes alternating with cool blue-shadow
+    // troughs — reads as snowfield depth rather than flat painted stripes.
     const stripeCount = Math.max(3, Math.round(rH / 12));
-    ctx.lineWidth = Math.max(1, rH / stripeCount * 0.35);
-    ctx.lineCap   = 'butt';
+    ctx.lineCap = 'butt';
     for (let si = 0; si < stripeCount; si++) {
       const sy2 = minY + (si + 0.5) / stripeCount * rH;
-      ctx.globalAlpha = alphaFloor * (si % 2 === 0 ? 0.80 : 0.40);
-      ctx.strokeStyle  = `rgba(230, 240, 255, ${alphaFloor.toFixed(3)})`;
+      if (si % 2 === 0) {
+        // Snow crest: bright cold-white
+        ctx.lineWidth   = Math.max(1.2, rH / stripeCount * 0.38);
+        ctx.globalAlpha = alphaFloor * 0.82;
+        ctx.strokeStyle = 'rgba(232, 242, 255, 1)';
+      } else {
+        // Snow trough: cool blue-grey shadow between ridges
+        ctx.lineWidth   = Math.max(0.8, rH / stripeCount * 0.28);
+        ctx.globalAlpha = alphaFloor * 0.48;
+        ctx.strokeStyle = 'rgba(140, 168, 210, 1)';
+      }
       ctx.beginPath(); ctx.moveTo(minX, sy2); ctx.lineTo(maxX, sy2); ctx.stroke();
     }
 
@@ -1940,6 +4020,7 @@ function drawHazardGlyph(
     const advance = t === 0 ? 0.5 : ((t * 0.04 * severity) % 1.0);
     const frontX  = minX + advance * rW;
     const df      = ctx.createLinearGradient(frontX - rW * 0.3, 0, frontX + rW * 0.05, 0);
+    perfCollector.recordAlloc();
     df.addColorStop(0,   `rgba(180, 130, 70, 0)`);
     df.addColorStop(0.6, `rgba(180, 130, 70, ${(alphaFloor * 0.65).toFixed(3)})`);
     df.addColorStop(1,   `rgba(150, 100, 50, ${(alphaFloor * 0.45).toFixed(3)})`);
@@ -1976,6 +4057,7 @@ function drawHazardGlyph(
     ctx.beginPath(); ctx.arc(cx, cy, craterR, 0, Math.PI * 2); ctx.stroke();
     // Dark interior
     const ifill = ctx.createRadialGradient(cx, cy, 0, cx, cy, craterR * 0.88);
+    perfCollector.recordAlloc();
     ifill.addColorStop(0, `rgba(25, 20, 15, ${(alphaFloor * 0.55).toFixed(3)})`);
     ifill.addColorStop(1, `rgba(25, 20, 15, 0)`);
     ctx.fillStyle = ifill;
@@ -1999,19 +4081,828 @@ function drawHazardGlyph(
 }
 
 // ---------------------------------------------------------------------------
+// WO-V3-FLORA — per-kind flora silhouettes, gust-field sway, glitter twinkle
+// ---------------------------------------------------------------------------
+
+/** Shared gust field: coherent lateral sway across spatially-nearby flora.
+ *  sx (screen x) binds neighbors together; t drives the oscillation cycle.
+ *  Returns pixel tip-offset; bases stay fixed.  amplitude: 0=rigid, 0.28=max. */
+function gustSway(sx: number, t: number, sizePx: number, amplitude: number): number {
+  return Math.sin(sx * 0.018 + t * 1.7) * sizePx * amplitude;
+}
+
+/** Per-instance twinkle phase from screen position — deterministic, no RNG. */
+function instPhase(sx: number, sy: number): number {
+  return sx * 0.53 + sy * 0.37;
+}
+
+type FloraClass =
+  | 'broad-tree' | 'canopy-tree' | 'conifer'    | 'palm'
+  | 'vine'       | 'fern'        | 'kelp'        | 'seagrass' | 'coral'
+  | 'cactus'     | 'shrub'       | 'moss'        | 'grass'
+  | 'flower'     | 'engineered'  | 'generic';
+
+/** Map a scatter kind string → visual flora class for per-kind dispatch.
+ *
+ *  DEV invariant: every floraKind listed in profiles.ts must map to a non-'generic'
+ *  class.  The drawScatterInstances DEV assert fires if 'generic' is reached —
+ *  add a case here before shipping any new profile floraKind. */
+function getFloraClass(kind: string): FloraClass {
+  const k = kind.toLowerCase();
+  if (k === 'canopy-tree')                                       return 'canopy-tree';
+  if (k.includes('tree'))                                        return 'broad-tree';
+  if (k.includes('conifer'))                                     return 'conifer';
+  if (k.includes('palm'))                                        return 'palm';
+  if (k.includes('vine'))                                        return 'vine';
+  if (k.includes('fern') || k === 'biolumin-plant')             return 'fern';
+  if (k.includes('kelp'))                                        return 'kelp';
+  if (k.includes('seagrass'))                                    return 'seagrass';
+  if (k.includes('coral'))                                       return 'coral';
+  if (k === 'cactiform' || k.includes('cactus'))                return 'cactus';
+  // Engineered / ARTIFICIAL flora: check before 'shrub' so 'hydroponic-tray' and
+  // 'engineered-plant' route to drawScatterPlanter, not the organic shrub humps.
+  if (k.includes('engineered') || k.includes('hydroponic')
+      || k.includes('tray')    || k.includes('planter')
+      || k.includes('pod'))                                      return 'engineered';
+  if (k.includes('shrub') || k.includes('scrub'))               return 'shrub';
+  if (k.includes('moss') || k.includes('lichen'))               return 'moss';
+  if (k.includes('grass') || k.includes('tuft'))                return 'grass';
+  if (k.includes('flower'))                                      return 'flower';
+  return 'generic';
+}
+
+/** Lateral gust-sway amplitude per class (fraction of sizePx). */
+function getSwayAmplitude(fc: FloraClass): number {
+  switch (fc) {
+    case 'grass':       return 0.28;
+    case 'kelp':        return 0.25;
+    case 'seagrass':    return 0.25;
+    case 'palm':        return 0.22;
+    case 'vine':        return 0.20;
+    case 'flower':      return 0.20;
+    case 'fern':        return 0.18;
+    case 'coral':       return 0.15;
+    case 'generic':     return 0.15;
+    case 'canopy-tree': return 0.12;
+    case 'shrub':       return 0.12;
+    case 'broad-tree':  return 0.10;
+    case 'conifer':     return 0.08;
+    case 'engineered':  return 0.06;  // staked / sheltered plants — minimal sway
+    case 'cactus':      return 0.00;
+    case 'moss':        return 0.00;
+  }
+}
+
+// ---- Per-kind silhouette draw helpers ----------------------------------------
+// Convention: callers set ctx.globalAlpha before calling.
+// Helpers touch only fillStyle / strokeStyle / lineWidth / lineCap / lineJoin.
+// swayX = gustSway(sx, t, sizePx, getSwayAmplitude(fc)) — tip lateral offset.
+
+/** Broadleaf or jungle-canopy tree: tall trunk + STACKED TIERED crown layers.
+ *  isCanopy (canopy-tree) → 3 tiers, tall aspect, wide-to-narrow taper (jungle read);
+ *  !isCanopy (broad-tree) → 2 tiers, rounded taper (parkland/temperate read).
+ *
+ *  Crown redesign: lobes are arranged in HORIZONTAL ROWS at distinct Y levels, not
+ *  orbiting a single center in a ring.  Each tier is positioned above the previous
+ *  and narrower than it, producing a stacked-layer silhouette instead of a round blob.
+ *  Shadow lobes (wider spread, displaced down) + primary lobes (narrower, centered) overlap
+ *  to create scalloped tier edges.
+ *
+ *  Per-instance x-jitter derived from screen-pos hash (same idiom as Cactus/Shrub). */
+function drawScatterTree(
+  ctx: CanvasRenderingContext2D,
+  sx: number, sy: number, sizePx: number,
+  tr: number, tg: number, tb: number,
+  swayX: number, isCanopy: boolean,
+): void {
+  const trunkH     = sizePx * (isCanopy ? 0.58 : 0.48);
+  const trunkW     = Math.max(1.5, sizePx * 0.13);
+  const crownBaseY = sy - trunkH;   // y at top of trunk / base of crown
+
+  // Crown total vertical span and max half-width at widest (bottom) tier.
+  const crownTotalH = sizePx * (isCanopy ? 1.05 : 0.82);
+  const crownMaxHW  = sizePx * (isCanopy ? 0.50 : 0.54);  // half-width of widest tier
+
+  // Per-instance x-jitter — same hash idiom (deterministic, no Math.random).
+  const instSeed   = (Math.round(sx * 7 + sy * 3)) & 0xff;
+  const instJitter = (instSeed / 255 - 0.5) * 0.14;  // ±0.07 fraction of crownMaxHW
+
+  // Tier layout: [yFrac, widthFrac, lobeCount]
+  //   yFrac      — tier center Y = crownBaseY - crownTotalH * yFrac
+  //   widthFrac  — half-width = crownMaxHW * widthFrac (tapers toward top)
+  //   lobeCount  — lobes in horizontal row at this tier
+  const tiers: [number, number, number][] = isCanopy
+    ? [[0.20, 1.00, 5], [0.56, 0.68, 4], [0.88, 0.40, 3]]
+    : [[0.20, 1.00, 5], [0.76, 0.58, 3]];
+
+  // --- Bark trunk: dark body + key-lit left strip ---
+  const barkR = Math.round(tr * 0.45), barkG = Math.round(tg * 0.42), barkB = Math.round(tb * 0.35);
+  ctx.fillStyle = `rgb(${barkR}, ${barkG}, ${barkB})`;
+  ctx.fillRect(sx - trunkW * 0.5, sy - trunkH, trunkW, trunkH);
+  ctx.fillStyle = `rgb(${Math.min(255, barkR + 22)}, ${Math.min(255, barkG + 18)}, ${Math.min(255, barkB + 14)})`;
+  ctx.fillRect(sx - trunkW * 0.5, sy - trunkH, trunkW * 0.40, trunkH);
+
+  // --- Stacked crown tiers (drawn bottom → top so upper tiers paint over lower) ---
+  for (let ti = 0; ti < tiers.length; ti++) {
+    const [yFrac, widthFrac, lobeN] = tiers[ti];
+    const tierFrac   = ti / Math.max(1, tiers.length - 1);  // 0=bottom, 1=top
+
+    const tierCY  = crownBaseY - crownTotalH * yFrac;
+    const tierHW  = crownMaxHW * widthFrac;
+    const lobeR   = tierHW * (isCanopy ? 0.56 : 0.58);
+
+    // Sway increases toward top (crown tip moves more than the base).
+    const swayFrac = isCanopy ? 0.22 + tierFrac * 0.64 : 0.28 + tierFrac * 0.48;
+    const tierCX   = sx + swayX * swayFrac + instJitter * tierHW;
+
+    // Shadow lobes: wider spread, displaced downward — simulate depth at tier underside.
+    const shadeK = 0.74 + tierFrac * 0.06;  // upper tiers slightly brighter (sky-lit)
+    ctx.fillStyle = `rgb(${Math.round(tr * (shadeK - 0.14))}, ${Math.round(tg * (shadeK - 0.12))}, ${Math.round(tb * (shadeK - 0.16))})`;
+    ctx.beginPath();
+    for (let li = 0; li < lobeN; li++) {
+      const t2 = lobeN > 1 ? li / (lobeN - 1) - 0.5 : 0;   // -0.5 … +0.5
+      const lx = tierCX + t2 * tierHW * 1.52;
+      const ly = tierCY + lobeR * 0.24;   // displaced downward from tier center
+      ctx.moveTo(lx + lobeR, ly);
+      ctx.arc(lx, ly, lobeR, 0, Math.PI * 2);
+    }
+    ctx.fill();
+
+    // Primary lobes: narrower spread, at tier center — overlap with shadow creates scallop.
+    ctx.fillStyle = `rgb(${Math.round(tr * shadeK)}, ${Math.round(tg * shadeK)}, ${Math.round(tb * (shadeK - 0.02))})`;
+    ctx.beginPath();
+    for (let li = 0; li < lobeN; li++) {
+      const t2 = lobeN > 1 ? li / (lobeN - 1) - 0.5 : 0;
+      const lx = tierCX + t2 * tierHW * 1.18;
+      const ly = tierCY;
+      ctx.moveTo(lx + lobeR * 0.86, ly);
+      ctx.arc(lx, ly, lobeR * 0.86, 0, Math.PI * 2);
+    }
+    ctx.fill();
+  }
+
+  // Sky-lit highlight cap — upper-left of the top tier
+  const [topYFrac, topWF] = tiers[tiers.length - 1];
+  const topHW   = crownMaxHW * topWF;
+  const topLobeR = topHW * (isCanopy ? 0.56 : 0.58);
+  const topCX   = sx + swayX * (isCanopy ? 0.86 : 0.76) + instJitter * topHW;
+  const topCY   = crownBaseY - crownTotalH * topYFrac;
+  ctx.fillStyle = `rgb(${Math.min(255, tr + 40)}, ${Math.min(255, tg + 36)}, ${Math.min(255, tb + 26)})`;
+  ctx.beginPath();
+  ctx.arc(topCX - topHW * 0.22, topCY - topLobeR * 0.34, topLobeR * 0.38, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+/** Conifer — four stacked triangular tiers, taller + more layered than the old 3-tier.
+ *  Tiers overlap to produce the characteristic stepped silhouette of a spruce or pine.
+ *  Apex of each tier sways proportionally; base corners grounded. */
+function drawScatterConifer(
+  ctx: CanvasRenderingContext2D,
+  sx: number, sy: number, sizePx: number,
+  tr: number, tg: number, tb: number,
+  swayX: number,
+): void {
+  // [yBase, yApex, halfWidth, apexSwayFrac] — 4 tiers, total height ~1.42 × sizePx.
+  // Each tier's base overlaps the tier below, creating the layered stepped silhouette.
+  const tiers: [number, number, number, number][] = [
+    [sy,                   sy - sizePx * 0.38, sizePx * 0.54, 0.10],
+    [sy - sizePx * 0.22,   sy - sizePx * 0.68, sizePx * 0.38, 0.32],
+    [sy - sizePx * 0.48,   sy - sizePx * 0.98, sizePx * 0.24, 0.60],
+    [sy - sizePx * 0.76,   sy - sizePx * 1.42, sizePx * 0.11, 1.00],
+  ];
+  ctx.lineCap = 'round';
+  for (let ti = 0; ti < tiers.length; ti++) {
+    const [yBase, yApex, hw, sf] = tiers[ti];
+    // Lighter toward top for sky-lit silhouette (3 steps → 4 steps)
+    const shade = (3 - ti) * 7;
+    ctx.fillStyle = `rgb(${Math.min(255, tr + shade)}, ${Math.min(255, tg + shade)}, ${Math.min(255, tb + Math.round(shade * 0.8))})`;
+    ctx.beginPath();
+    ctx.moveTo(sx + swayX * sf, yApex);   // apex sways; base corners grounded
+    ctx.lineTo(sx - hw, yBase);
+    ctx.lineTo(sx + hw, yBase);
+    ctx.closePath();
+    ctx.fill();
+  }
+  // Dark trunk seam up through the full height
+  ctx.strokeStyle = `rgb(${Math.round(tr * 0.55)}, ${Math.round(tg * 0.55)}, ${Math.round(tb * 0.50)})`;
+  ctx.lineWidth   = Math.max(0.5, sizePx * 0.06);
+  ctx.beginPath();
+  ctx.moveTo(sx, sy);
+  ctx.lineTo(sx + swayX, sy - sizePx * 1.42);
+  ctx.stroke();
+}
+
+/** Hydroponic tray / engineered-plant — geometric planter box with structured uniform plants.
+ *  Reads as clearly artificial: a metallic tray base + evenly-spaced upright stems + oval
+ *  leaf caps.  Contrasts with organic flora (no random lobe spread; tray baseline is flat).
+ *  Sway is minimal (0.06 amplitude) — engineered plants are sheltered / staked.
+ *  Deterministic: swayX from gustSway; instSeed from sx/sy hash for plantCount variety. */
+function drawScatterPlanter(
+  ctx: CanvasRenderingContext2D,
+  sx: number, sy: number, sizePx: number,
+  tr: number, tg: number, tb: number,
+  swayX: number,
+): void {
+  const trayH = sizePx * 0.28;
+  const trayW = sizePx * 1.10;
+  const trayY = sy - trayH;
+
+  // --- Tray body: dark metallic container ---
+  const boxR = Math.round(tr * 0.32 + 18), boxG = Math.round(tg * 0.40 + 14), boxB = Math.round(tb * 0.44 + 18);
+  ctx.fillStyle = `rgb(${boxR}, ${boxG}, ${boxB})`;
+  ctx.fillRect(sx - trayW * 0.5, trayY, trayW, trayH);
+
+  // Rim highlight (top lip of tray — catches key light)
+  const rimH = Math.max(1, trayH * 0.15);
+  ctx.fillStyle = `rgb(${Math.min(255, boxR + 32)}, ${Math.min(255, boxG + 30)}, ${Math.min(255, boxB + 26)})`;
+  ctx.fillRect(sx - trayW * 0.5, trayY, trayW, rimH);
+
+  // Right-face edge shadow (3-D sense: front face slightly darker)
+  const sideW = Math.max(1, sizePx * 0.06);
+  ctx.fillStyle = `rgb(${Math.round(boxR * 0.70)}, ${Math.round(boxG * 0.70)}, ${Math.round(boxB * 0.70)})`;
+  ctx.fillRect(sx + trayW * 0.5 - sideW, trayY + rimH, sideW, trayH - rimH);
+
+  // --- Structured plants: 3 or 4 uniform stem + leaf-cap units ---
+  const instSeed   = (Math.round(sx * 7 + sy * 3)) & 0xff;
+  const plantCount = 3 + (instSeed & 1);   // 3 or 4, deterministic
+  const plantH     = sizePx * 0.52;
+  const stemW      = Math.max(1, sizePx * 0.09);
+  const spacing    = trayW / (plantCount + 1);
+
+  for (let pi = 0; pi < plantCount; pi++) {
+    const px  = sx - trayW * 0.5 + spacing * (pi + 1);
+    // Alternating slight lean for a regular engineered-garden look (deterministic)
+    const lean = ((pi ^ (instSeed >> 1)) & 1) === 0 ? sizePx * 0.025 : -sizePx * 0.025;
+    const topX = px + lean + swayX * 0.12;
+    const topY = trayY - plantH;
+
+    // Stem (dark greenish)
+    ctx.fillStyle = `rgb(${Math.round(tr * 0.48)}, ${Math.round(tg * 0.56)}, ${Math.round(tb * 0.44)})`;
+    ctx.fillRect(px - stemW * 0.5 + lean * 0.5, topY, stemW, plantH);
+
+    // Leaf cap: compact horizontal oval, slightly wider than stem
+    const capRx = sizePx * 0.17, capRy = sizePx * 0.12;
+    ctx.fillStyle = `rgb(${tr}, ${tg}, ${tb})`;
+    ctx.beginPath();
+    ctx.ellipse(topX, topY - capRy * 0.45, capRx, capRy, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Two horizontal leaf nubs mid-stem (engineered-plant silhouette cue)
+    const nubY   = topY + plantH * 0.42;
+    const nubLen = sizePx * 0.15;
+    const nubH   = Math.max(0.8, sizePx * 0.055);
+    ctx.fillStyle = `rgb(${Math.round(tr * 0.80)}, ${Math.round(tg * 0.85)}, ${Math.round(tb * 0.78)})`;
+    ctx.beginPath();
+    ctx.ellipse(px + lean - nubLen * 0.58, nubY, nubLen * 0.60, nubH, -Math.PI * 0.12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(px + lean + nubLen * 0.58, nubY, nubLen * 0.60, nubH, Math.PI * 0.12, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/** Palm — curved trunk bezier + 5 radiating fronds from crown. */
+function drawScatterPalm(
+  ctx: CanvasRenderingContext2D,
+  sx: number, sy: number, sizePx: number,
+  tr: number, tg: number, tb: number,
+  swayX: number,
+): void {
+  const lean = sizePx * 0.20 + swayX * 0.55;
+  const topX = sx + lean;
+  const topY = sy - sizePx;
+
+  // Trunk (curved bezier)
+  ctx.strokeStyle = `rgb(${Math.round(tr * 0.52)}, ${Math.round(tg * 0.50)}, ${Math.round(tb * 0.38)})`;
+  ctx.lineWidth   = Math.max(1.5, sizePx * 0.15);
+  ctx.lineCap     = 'round';
+  ctx.beginPath();
+  ctx.moveTo(sx, sy);
+  ctx.quadraticCurveTo(sx + lean * 0.55, sy - sizePx * 0.52, topX, topY);
+  ctx.stroke();
+
+  // 5 fronds — upper arc spanning ~150° (angles -2.6 → -0.5 rad)
+  ctx.strokeStyle = `rgb(${tr}, ${tg}, ${tb})`;
+  ctx.lineWidth   = Math.max(0.8, sizePx * 0.10);
+  const frondLen  = sizePx * 0.58;
+  for (let fi = 0; fi < 5; fi++) {
+    const angle = -2.6 + fi * 0.525;
+    const tipX  = topX + Math.cos(angle) * frondLen;
+    const tipY  = topY + Math.sin(angle) * frondLen * 0.65;
+    ctx.beginPath();
+    ctx.moveTo(topX, topY);
+    ctx.quadraticCurveTo(
+      topX + Math.cos(angle) * frondLen * 0.52,
+      topY + Math.sin(angle) * frondLen * 0.30,
+      tipX, tipY,
+    );
+    ctx.stroke();
+  }
+}
+
+/** Fern — arching fronds with pinnule side-shoots; also covers biolumin-plant. */
+function drawScatterFern(
+  ctx: CanvasRenderingContext2D,
+  sx: number, sy: number, sizePx: number,
+  tr: number, tg: number, tb: number,
+  swayX: number,
+): void {
+  const frondCount = 3 + (Math.round(sx * 3 + sy) & 1);
+  ctx.strokeStyle  = `rgb(${tr}, ${tg}, ${tb})`;
+  ctx.lineCap      = 'round';
+
+  for (let fi = 0; fi < frondCount; fi++) {
+    const tf    = fi / (frondCount - 1) - 0.5;           // -0.5 → 0.5
+    const angle = tf * Math.PI * 0.80;                   // spread ~144°
+    const tipX  = sx + Math.sin(angle) * sizePx * 0.88 + swayX * (0.30 + Math.abs(tf) * 0.45);
+    const tipY  = sy - Math.cos(angle) * sizePx * 0.88;
+    const cpX   = sx + Math.sin(angle) * sizePx * 0.50 + swayX * 0.18;
+    const cpY   = sy - Math.cos(angle) * sizePx * 0.42 - sizePx * 0.08;
+
+    ctx.lineWidth = Math.max(0.8, sizePx * 0.10);
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.quadraticCurveTo(cpX, cpY, tipX, tipY);
+    ctx.stroke();
+
+    // 3 pinnule pairs along frond (exact quadratic bezier position)
+    ctx.lineWidth = Math.max(0.4, sizePx * 0.058);
+    for (let pi = 1; pi <= 3; pi++) {
+      const pf  = pi / 4;
+      const t1  = 1 - pf;
+      const px  = t1 * t1 * sx  + 2 * pf * t1 * cpX + pf * pf * tipX;
+      const py  = t1 * t1 * sy  + 2 * pf * t1 * cpY + pf * pf * tipY;
+      const sLen = sizePx * 0.17 * (1 - pf * 0.35);
+      const sAng = angle + Math.PI * 0.48;
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      ctx.lineTo(px + Math.cos(sAng) * sLen, py + Math.sin(sAng) * sLen);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      ctx.lineTo(px - Math.cos(sAng) * sLen, py + Math.sin(sAng) * sLen);
+      ctx.stroke();
+    }
+  }
+}
+
+/** Vine cluster — two wavy stalks with side-leaf stubs. */
+function drawScatterVine(
+  ctx: CanvasRenderingContext2D,
+  sx: number, sy: number, sizePx: number,
+  tr: number, tg: number, tb: number,
+  swayX: number,
+): void {
+  ctx.strokeStyle = `rgb(${tr}, ${tg}, ${tb})`;
+  ctx.lineCap     = 'round';
+
+  for (let vi = 0; vi < 2; vi++) {
+    const ox   = (vi - 0.5) * sizePx * 0.48;
+    const wave = sizePx * 0.20 * (vi === 0 ? 1 : -1);
+    const topX = sx + ox + swayX;
+    const topY = sy - sizePx;
+
+    ctx.lineWidth = Math.max(0.7, sizePx * 0.09);
+    ctx.beginPath();
+    ctx.moveTo(sx + ox, sy);
+    ctx.bezierCurveTo(
+      sx + ox + wave,        sy - sizePx * 0.35,
+      sx + ox - wave * 0.5,  sy - sizePx * 0.68,
+      topX, topY,
+    );
+    ctx.stroke();
+
+    // 2 leaf stubs per vine
+    ctx.lineWidth = Math.max(0.4, sizePx * 0.065);
+    for (let li = 0; li < 2; li++) {
+      const lf   = (li + 0.35) / 2.2;
+      const lx   = sx + ox + (topX - sx - ox) * lf;
+      const ly   = sy + (topY - sy) * lf;
+      const ldir = li % 2 === 0 ? 1 : -1;
+      ctx.beginPath();
+      ctx.moveTo(lx, ly);
+      ctx.quadraticCurveTo(
+        lx + ldir * sizePx * 0.18, ly - sizePx * 0.07,
+        lx + ldir * sizePx * 0.26, ly + sizePx * 0.02,
+      );
+      ctx.stroke();
+    }
+  }
+}
+
+/** Kelp forest (wavy stalks + alternating blades) or seagrass (shorter, denser). */
+function drawScatterKelp(
+  ctx: CanvasRenderingContext2D,
+  sx: number, sy: number, sizePx: number,
+  tr: number, tg: number, tb: number,
+  swayX: number,
+  isSeagrass: boolean,
+): void {
+  const stalkCount = isSeagrass ? 4 : 2 + (Math.round(sx) & 1);
+  const height     = sizePx * (isSeagrass ? 0.70 : 1.08);
+  ctx.strokeStyle  = `rgb(${tr}, ${tg}, ${tb})`;
+  ctx.lineCap      = 'round';
+
+  for (let si = 0; si < stalkCount; si++) {
+    const offset = ((si / Math.max(1, stalkCount - 1)) - 0.5) * sizePx * 0.70;
+    const topX   = sx + offset * 0.45 + swayX;
+    const topY   = sy - height;
+    const wave   = sizePx * 0.16 * (si % 2 === 0 ? 1 : -1);
+
+    ctx.lineWidth = Math.max(0.6, sizePx * 0.08);
+    ctx.beginPath();
+    ctx.moveTo(sx + offset, sy);
+    ctx.bezierCurveTo(
+      sx + offset + wave,        sy - height * 0.32,
+      sx + offset - wave * 0.60, sy - height * 0.68,
+      topX, topY,
+    );
+    ctx.stroke();
+
+    // Alternating side blades for kelp (seagrass is blade-only by silhouette)
+    if (!isSeagrass && height > 5) {
+      ctx.lineWidth = Math.max(0.4, sizePx * 0.07);
+      for (let bl = 0; bl < 3; bl++) {
+        const blF  = (bl + 0.5) / 3;
+        const blX  = sx + offset + (topX - sx - offset) * blF;
+        const blY  = sy - height * blF;
+        const bDir = bl % 2 === 0 ? 1 : -1;
+        ctx.beginPath();
+        ctx.moveTo(blX, blY);
+        ctx.quadraticCurveTo(
+          blX + bDir * sizePx * 0.16, blY - sizePx * 0.07,
+          blX + bDir * sizePx * 0.23, blY + sizePx * 0.01,
+        );
+        ctx.stroke();
+      }
+    }
+  }
+}
+
+/** Branching coral cluster — Y-splits with rounded glowing tips. */
+function drawScatterCoral(
+  ctx: CanvasRenderingContext2D,
+  sx: number, sy: number, sizePx: number,
+  tr: number, tg: number, tb: number,
+  swayX: number,
+): void {
+  ctx.lineCap  = 'round';
+  ctx.lineJoin = 'round';
+
+  // [x0offset, y0offset, x1offset, y1offset, lineWidthFrac]
+  const branches: [number, number, number, number, number][] = [
+    [0,               0,               swayX * 0.30,                   -sizePx * 0.85, 0.12],
+    [swayX * 0.15,   -sizePx * 0.42,  -sizePx * 0.35 + swayX * 0.20, -sizePx * 0.85, 0.085],
+    [swayX * 0.15,   -sizePx * 0.42,   sizePx * 0.42 + swayX * 0.30, -sizePx * 0.78, 0.085],
+  ];
+
+  for (const [ox0, oy0, ox1, oy1, wf] of branches) {
+    ctx.strokeStyle = `rgb(${tr}, ${tg}, ${tb})`;
+    ctx.lineWidth   = Math.max(0.6, sizePx * wf);
+    ctx.beginPath();
+    ctx.moveTo(sx + ox0, sy + oy0);
+    ctx.lineTo(sx + ox1, sy + oy1);
+    ctx.stroke();
+
+    // Rounded lit tip
+    ctx.fillStyle = `rgb(${Math.min(255, tr + 30)}, ${Math.min(255, tg + 28)}, ${Math.min(255, tb + 28)})`;
+    ctx.beginPath();
+    ctx.arc(sx + ox1, sy + oy1, Math.max(1, sizePx * 0.075), 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/** Saguaro cactus — thick trunk + two upward-curving arms.  Rigid: no sway. */
+function drawScatterCactus(
+  ctx: CanvasRenderingContext2D,
+  sx: number, sy: number, sizePx: number,
+  tr: number, tg: number, tb: number,
+): void {
+  const trunkW = Math.max(2, sizePx * 0.24);
+  const trunkH = sizePx * 1.05;
+  // Deterministic arm-attach height — varies per-instance without Math.random
+  const armY   = sy - trunkH * (0.40 + (Math.round(sx * 7 + sy * 3) % 3) * 0.055);
+  const armLen = trunkH * 0.40;
+  const armW   = Math.max(1.5, sizePx * 0.15);
+
+  // Trunk body
+  ctx.fillStyle = `rgb(${tr}, ${tg}, ${tb})`;
+  ctx.fillRect(sx - trunkW * 0.5, sy - trunkH, trunkW, trunkH);
+
+  // Arms
+  ctx.strokeStyle = `rgb(${tr}, ${tg}, ${tb})`;
+  ctx.lineWidth   = armW;
+  ctx.lineCap     = 'round';
+  ctx.lineJoin    = 'round';
+
+  // Left arm
+  ctx.beginPath();
+  ctx.moveTo(sx - trunkW * 0.5, armY);
+  ctx.quadraticCurveTo(sx - sizePx * 0.44, armY - armLen * 0.14, sx - sizePx * 0.44, armY - armLen * 0.62);
+  ctx.stroke();
+
+  // Right arm (slightly different attach height for natural asymmetry)
+  const armYR = armY + trunkH * 0.06;
+  ctx.beginPath();
+  ctx.moveTo(sx + trunkW * 0.5, armYR);
+  ctx.quadraticCurveTo(sx + sizePx * 0.40, armYR - armLen * 0.12, sx + sizePx * 0.40, armYR - armLen * 0.55);
+  ctx.stroke();
+
+  // Ribbed spine highlight along trunk
+  ctx.strokeStyle = `rgb(${Math.min(255, tr + 38)}, ${Math.min(255, tg + 42)}, ${Math.min(255, tb + 22)})`;
+  ctx.lineWidth   = Math.max(0.5, sizePx * 0.045);
+  ctx.beginPath();
+  ctx.moveTo(sx, sy);
+  ctx.lineTo(sx, sy - trunkH * 0.96);
+  ctx.stroke();
+}
+
+/** Rounded bush — 2–3 overlapping ellipse humps with lit highlight. */
+function drawScatterShrub(
+  ctx: CanvasRenderingContext2D,
+  sx: number, sy: number, sizePx: number,
+  tr: number, tg: number, tb: number,
+  swayX: number,
+): void {
+  const humpCount = 2 + (Math.round(sx * 3 + sy * 2) & 1);
+  const humpR     = sizePx * 0.42;
+  const spread    = sizePx * 0.48;
+
+  // Ground shadow
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.18)';
+  ctx.beginPath();
+  ctx.ellipse(sx, sy, spread * humpCount * 0.35, humpR * 0.22, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Dark lower lobe (shaded underside)
+  ctx.fillStyle = `rgb(${Math.round(tr * 0.62)}, ${Math.round(tg * 0.62)}, ${Math.round(tb * 0.60)})`;
+  for (let hi = 0; hi < humpCount; hi++) {
+    const hx = sx + (hi / Math.max(1, humpCount - 1) - 0.5) * spread * 0.72 + swayX * 0.22;
+    ctx.beginPath();
+    ctx.ellipse(hx, sy - humpR * 0.38, humpR * 0.90, humpR * 0.68, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Main lit humps
+  ctx.fillStyle = `rgb(${tr}, ${tg}, ${tb})`;
+  for (let hi = 0; hi < humpCount; hi++) {
+    const hx = sx + (hi / Math.max(1, humpCount - 1) - 0.5) * spread * 0.72 + swayX * 0.22;
+    ctx.beginPath();
+    ctx.ellipse(hx, sy - humpR * 0.55, humpR, humpR * 0.80, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Sky-facing highlight on center hump
+  ctx.fillStyle = `rgb(${Math.min(255, tr + 32)}, ${Math.min(255, tg + 30)}, ${Math.min(255, tb + 25)})`;
+  ctx.beginPath();
+  ctx.ellipse(sx + swayX * 0.28, sy - humpR * 0.72, humpR * 0.38, humpR * 0.30, 0, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+/** Frost moss / ice lichen — wide flat patch with bumpy surface.  Rigid: no sway. */
+function drawScatterMoss(
+  ctx: CanvasRenderingContext2D,
+  sx: number, sy: number, sizePx: number,
+  tr: number, tg: number, tb: number,
+): void {
+  // Flat base
+  ctx.fillStyle = `rgb(${tr}, ${tg}, ${tb})`;
+  ctx.beginPath();
+  ctx.ellipse(sx, sy - sizePx * 0.10, sizePx * 0.78, sizePx * 0.20, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 3–4 lit rounded bumps across the surface
+  const bumpCount = 3 + (Math.round(sx * 3 + sy) & 1);
+  ctx.fillStyle   = `rgb(${Math.min(255, tr + 28)}, ${Math.min(255, tg + 32)}, ${Math.min(255, tb + 22)})`;
+  for (let bi = 0; bi < bumpCount; bi++) {
+    const bx = sx + (bi / Math.max(1, bumpCount - 1) - 0.5) * sizePx * 1.18;
+    ctx.beginPath();
+    ctx.ellipse(bx, sy - sizePx * 0.18, sizePx * 0.20, sizePx * 0.14, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/** Grass / tall-grass / tundra-grass — blades lean with gust sway. */
+function drawScatterGrass(
+  ctx: CanvasRenderingContext2D,
+  sx: number, sy: number, sizePx: number,
+  tr: number, tg: number, tb: number,
+  swayX: number,
+): void {
+  const blades = 3 + (Math.round(sx + sy) & 1);
+  ctx.strokeStyle = `rgb(${tr}, ${tg}, ${tb})`;
+  ctx.lineWidth   = Math.max(0.8, sizePx * 0.22);
+  ctx.lineCap     = 'round';
+  for (let bi = 0; bi < blades; bi++) {
+    const spread = (bi / (blades - 1) - 0.5) * sizePx * 1.6;
+    const lean   = spread * 0.28 + swayX;   // existing lean + gust
+    ctx.beginPath();
+    ctx.moveTo(sx + spread * 0.3, sy);
+    ctx.quadraticCurveTo(
+      sx + spread * 0.5 + lean * 0.5, sy - sizePx * 0.6,
+      sx + spread + lean,              sy - sizePx,
+    );
+    ctx.stroke();
+  }
+}
+
+/** Flower cluster — 2–3 petaled blooms on short stems, all sway together. */
+function drawScatterFlower(
+  ctx: CanvasRenderingContext2D,
+  sx: number, sy: number, sizePx: number,
+  tr: number, tg: number, tb: number,
+  swayX: number,
+): void {
+  const flowerCount = 2 + (Math.round(sx * 5 + sy * 3) & 1);
+  const stemH       = sizePx * 0.55;
+  const petalR      = Math.max(1.2, sizePx * 0.18);
+  const spread      = sizePx * 0.48;
+
+  for (let fi = 0; fi < flowerCount; fi++) {
+    const fx = sx + (fi / Math.max(1, flowerCount - 1) - 0.5) * spread + swayX * (0.28 + fi * 0.08);
+    const fy = sy - stemH;
+
+    // Stem
+    ctx.strokeStyle = `rgb(${Math.round(tr * 0.58)}, ${Math.round(tg * 0.68)}, ${Math.round(tb * 0.50)})`;
+    ctx.lineWidth   = Math.max(0.5, sizePx * 0.065);
+    ctx.lineCap     = 'round';
+    ctx.beginPath();
+    ctx.moveTo(fx, sy);
+    ctx.lineTo(fx, fy);
+    ctx.stroke();
+
+    // 4 petals in cross pattern
+    ctx.fillStyle = `rgb(${tr}, ${tg}, ${tb})`;
+    for (let pi = 0; pi < 4; pi++) {
+      const pAngle = pi * Math.PI * 0.5;
+      ctx.beginPath();
+      ctx.ellipse(
+        fx + Math.cos(pAngle) * petalR * 1.55,
+        fy + Math.sin(pAngle) * petalR * 1.42,
+        petalR, petalR * 0.70, pAngle, 0, Math.PI * 2,
+      );
+      ctx.fill();
+    }
+
+    // Bright yellow center
+    ctx.fillStyle = 'rgb(255, 238, 110)';
+    ctx.beginPath();
+    ctx.arc(fx, fy, petalR * 0.48, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// isRock — extended rock classifier (module-level so both buildVistaCache and
+// drawScatterInstances can share it without duplication).
+// Covers all profile rockKinds: obsidian, pumice, sandstone, scree, cliff, etc.
+// ---------------------------------------------------------------------------
+function isRock(kind: string): boolean {
+  const k = kind.toLowerCase();
+  return k.includes('rock')    || k.includes('boulder') || k.includes('stone') ||
+         k.includes('gravel')  || k.includes('pebble')  || k.includes('regolith') ||
+         k.includes('rubble')  || k.includes('shard')   || k.includes('obsidian') ||
+         k.includes('basalt')  || k.includes('pumice')  || k.includes('sandstone') ||
+         k.includes('scree')   || k.includes('cliff')   || k.includes('stack') ||
+         k.includes('strut')   || k.includes('plating') || k.includes('mound') ||
+         k.includes('drift')   || k.includes('ejecta')  || k.includes('tangle') ||
+         k.includes('outcrop') || k.includes('pillar');
+}
+
+// ---------------------------------------------------------------------------
+// drawGrassGroundCover — render a grass scatter group as dense turf, not N discrete tufts.
+//
+// Two sub-passes in one ctx.save/restore:
+//   1. Base fill — semi-transparent horizontal band covering the y-extent of the
+//      grass instances; gives a continuous carpet impression.
+//   2. Batched blades — all NEAR+MID instances' blades drawn into ONE beginPath/
+//      stroke() call per lineWidth bucket (two buckets: thick / thin).
+//      FAR instances (sizePx < farSzGate) are covered by the fill; no per-blade cost.
+//
+// Perf: N instances → 2 stroke() calls instead of N × (3–4 beginPath/stroke pairs).
+// Deterministic: motion from gustSway(sx, t, sizePx, 0.28); no Math.random/Date.now.
+// ---------------------------------------------------------------------------
+function drawGrassGroundCover(
+  ctx: CanvasRenderingContext2D,
+  t: number,
+  group: { kind: string; instances: { sx: number; sy: number; sizePx: number; tint: RGB; glow: number }[] },
+  brightK: number,
+  w: number,
+  farSzGate: number,
+): void {
+  const insts = group.instances;
+  if (insts.length === 0) return;
+
+  // Representative tint: median instance (stable across frame; no Math.random)
+  const [tr, tg, tb] = insts[Math.floor(insts.length * 0.5)].tint;
+
+  ctx.save();
+  ctx.globalAlpha = brightK * 0.78;
+
+  // 1. Base fill — covers the full y-span of the grass scatter band
+  let minSy = Infinity, maxSy = -Infinity, maxSzPx = 0;
+  for (const inst of insts) {
+    if (inst.sy   < minSy)   minSy   = inst.sy;
+    if (inst.sy   > maxSy)   maxSy   = inst.sy;
+    if (inst.sizePx > maxSzPx) maxSzPx = inst.sizePx;
+  }
+  const bandTop = minSy - maxSzPx;               // topmost blade tip across all instances
+  const bandH   = Math.max(4, maxSy - bandTop + maxSzPx * 0.25);
+  ctx.globalAlpha = brightK * 0.20;
+  ctx.fillStyle   = `rgb(${tr}, ${tg}, ${tb})`;
+  ctx.fillRect(0, bandTop, w, bandH);
+
+  // 2. Batched blades — two lineWidth buckets so stroke() is called at most twice
+  // Bucket split: instances with thick blades (sizePx * 0.22 ≥ 1.5) vs thin.
+  const thickInsts: typeof insts = [];
+  const thinInsts:  typeof insts = [];
+  for (const inst of insts) {
+    if (inst.sizePx < farSzGate) continue;  // FAR: base fill covers them, skip blades
+    if (inst.sizePx * 0.22 >= 1.5) {
+      thickInsts.push(inst);
+    } else {
+      thinInsts.push(inst);
+    }
+  }
+
+  ctx.strokeStyle = `rgb(${tr}, ${tg}, ${tb})`;
+  ctx.lineCap     = 'round';
+
+  for (const bucket of [thickInsts, thinInsts] as const) {
+    if (bucket.length === 0) continue;
+    ctx.lineWidth   = Math.max(0.8, bucket[0].sizePx * 0.22);
+    ctx.globalAlpha = brightK * 0.78;
+    ctx.beginPath();
+    for (const inst of bucket) {
+      const { sx, sy, sizePx } = inst;
+      const swayX  = gustSway(sx, t, sizePx, 0.28);
+      const blades = 3 + (Math.round(sx + sy) & 1);
+      for (let bi = 0; bi < blades; bi++) {
+        const spread = (bi / (blades - 1) - 0.5) * sizePx * 1.6;
+        const lean   = spread * 0.28 + swayX;
+        ctx.moveTo(sx + spread * 0.3, sy);
+        ctx.quadraticCurveTo(
+          sx + spread * 0.5 + lean * 0.5, sy - sizePx * 0.6,
+          sx + spread + lean,              sy - sizePx,
+        );
+      }
+    }
+    ctx.stroke();  // one stroke call for all blades in this bucket
+  }
+
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
 // drawScatterInstances — renders model.layers.features.scatters.
 //
-// Two-pass design to avoid composite bleed:
-//   Pass 1 (source-over): flora tufts + rock blobs — all non-glitter kinds.
-//   Pass 2 (lighter):     glitter-spark — additive halo driven by inst.glow.
-// After pass 2, ctx.restore() resets globalCompositeOperation to source-over.
+// Three-pass design:
+//   Pass 1 (source-over): depth-layered LOD for flora + flat blobs for rocks.
+//     GRASS kind → drawGrassGroundCover (batched, not per-tuft).
+//     Other flora → three LOD bands keyed on sy within the ground strip:
+//       FAR  (sy ≤ farThresh | sizePx < farSzGate) — silhouette-keyed shape per
+//              instance (lollipop for broad/canopy-tree, triangle for conifer, dot
+//              otherwise); max 2 fill() calls per group, all batched.
+//       MID  (between thresholds)                  — pre-baked midSprite blitted via
+//              drawImage (no per-frame path; small sway offset applied to dest rect).
+//       NEAR (sy > nearThresh & sizePx ≥ nearSzGate) — full per-kind draw helper
+//              with exact per-instance tint + sway (existing detailed paths).
+//     Rocks — unchanged: flattened ellipse blob + directional cast shadow.
+//     DEV assert: fires once per group if getFloraClass returns 'generic' for an
+//       unknown kind, so invisible-kind bugs can't hide again.
+//   Pass 2 (lighter): glitter-spark — additive halo + 4-point star (unchanged).
 //
-// Kind classification:
-//   rock / boulder / stone / gravel / pebble / regolith / rubble
-//                       → flattened ellipse blob + shadow
-//   glitter-spark       → 4-point star + additive radial glow halo
-//   everything else     → vegetation tuft (3–4 upward-curving strokes)
-//   truly unknown       → generic tinted dot (never throws)
+// Perf contract at 300+ instances:
+//   FAR (~33%): 1 fill call per group; no path per instance.
+//   MID (~30%): 1 drawImage per instance (GPU texture blit); no path builds.
+//   NEAR (~37%): full path draw, but only the closest tier — same cost as before
+//     for the set that actually matters visually.
+//   Grass: 2 stroke() calls total for all blades across all grass instances.
+//
+// Quality gate: cache.quality ('high'|'med'|'low') adjusts the LOD thresholds so
+//   lower-quality renders collapse more instances to cheaper LOD bands.
+//
+// Deterministic: seed/t only; no Math.random/Date.now.
+// ctx.save/restore balanced: one pair per pass.
+//
+// Flora class → NEAR draw function (getFloraClass dispatch):
+//   canopy-tree, broad-tree     → drawScatterTree   (multi-lobe scalloped crown + trunk)
+//   conifer                     → drawScatterConifer (stacked triangular tiers)
+//   palm                        → drawScatterPalm   (curved trunk + frond fan)
+//   vine                        → drawScatterVine   (wavy stalk + leaf stubs)
+//   fern, biolumin-plant        → drawScatterFern   (arching fronds + pinnules)
+//   kelp                        → drawScatterKelp   (wavy stalks + side blades)
+//   seagrass                    → drawScatterKelp   (isSeagrass=true)
+//   coral                       → drawScatterCoral  (Y-branch + rounded tips)
+//   cactus / cactiform          → drawScatterCactus (trunk + two arms; rigid)
+//   shrub / scrub               → drawScatterShrub   (2–3 rounded humps)
+//   moss / lichen               → drawScatterMoss    (flat patch + bumps; rigid)
+//   grass / tuft                → drawGrassGroundCover (not the NEAR switch)
+//   flower                      → drawScatterFlower  (petaled blooms on stems)
+//   engineered-plant / hydroponic-tray → drawScatterPlanter (metallic tray + structured plants)
+//   rock / boulder / stone …    → rock blob (no sway)
+//   glitter-spark               → Pass 2 only (skipped in Pass 1)
+//   unknown → 'generic' class   → drawScatterGrass fallback + DEV warning
 // ---------------------------------------------------------------------------
 function drawScatterInstances(
   ctx: CanvasRenderingContext2D,
@@ -2021,69 +4912,217 @@ function drawScatterInstances(
 ): void {
   if (cache.scatterScreens.length === 0) return;
 
-  const brightK = 0.55 + dc.bright * 0.45;
+  const brightK  = 0.55 + dc.bright * 0.45;
+  const lighting = cache.model.lighting;
 
-  const isRock = (kind: string): boolean => {
-    const k = kind.toLowerCase();
-    return k.includes('rock') || k.includes('boulder') || k.includes('stone') ||
-           k.includes('gravel') || k.includes('pebble') || k.includes('regolith') ||
-           k.includes('rubble');
+  const shadowAzRad = lighting.keyDir[0] * Math.PI / 180;
+  const shadowOffX  = -Math.cos(shadowAzRad);
+  const shadowKeyK  = Math.max(0.3, Math.min(1, lighting.keyIntensity));
+
+  // ---- LOD thresholds ----
+  // Depth bands keyed on sy within the land strip (horizonY → bottom of land).
+  // FAR: close to the horizon (tiny, hazy silhouette mass).
+  // NEAR: close to the viewer (large, full-detail draw).
+  const landBtm    = cache.hasWater ? cache.waterTopY : cache.h;
+  const groundH    = Math.max(1, landBtm - cache.horizonY);
+  // farThresh  — 22% from horizon (narrower FAR band → more instances eligible for MID/NEAR).
+  // nearThresh — 48% from horizon (NEAR starts mid-ground so ~52% of depth gets full detail).
+  const farThresh  = cache.horizonY + groundH * 0.22;
+  const nearThresh = cache.horizonY + groundH * 0.48;
+
+  // Quality-adjusted minimum sizePx gates — calibrated to the new flora size range.
+  // Flora primary: scale 0.018–0.058 → sizePx 14–44px.
+  // Flora dense:   scale 0.010–0.035 → sizePx 8–27px.
+  // farSzGate:  instances smaller than this always go to FAR regardless of sy.
+  // nearSzGate: instances must exceed this AND have sy > nearThresh to get NEAR detail.
+  //   Lowered vs previous (40/28/18) so more of the primary-flora range gets the
+  //   multi-lobe drawScatterTree path rather than collapsing to the sprite blit.
+  const q          = cache.quality;
+  const farSzGate  = q === 'low' ? 14 : q === 'med' ? 8 : 4;
+  const nearSzGate = q === 'low' ? 34 : q === 'med' ? 22 : 14;
+
+  // ---- Flora sprite lookup (O(k), k = small number of scatter groups) ----
+  const getSpriteFor = (kind: string): HTMLCanvasElement | undefined => {
+    for (const fg of cache.floraGroupCaches) {
+      if (fg.groupKind === kind) return fg.midSprite;
+    }
+    return undefined;
   };
 
-  // ---- Pass 1: source-over (flora tufts + rock blobs) ----
+  // ---- Pass 1: source-over (depth-layered flora LOD + rocks) ----
   ctx.save();
   ctx.globalCompositeOperation = 'source-over';
 
   for (const group of cache.scatterScreens) {
     if (group.kind === 'glitter-spark') continue;
+    if (group.kind === 'citadel') continue;  // drawn in post-flora pass (step 5g)
 
-    const rock = isRock(group.kind);
-    ctx.globalAlpha = brightK * 0.75;
+    if (isRock(group.kind)) {
+      // ---- ROCKS: unchanged — flattened blob + directional cast shadow ----
+      ctx.globalAlpha = brightK * 0.75;
+      for (const inst of group.instances) {
+        const { sx, sy, sizePx, tint } = inst;
+        const [tr, tg, tb] = tint;
 
-    for (const inst of group.instances) {
-      const { sx, sy, sizePx, tint } = inst;
-      const [tr, tg, tb] = tint;
-
-      if (rock) {
-        // Rounded blob — slightly flattened to sit on the ground
         ctx.fillStyle = `rgb(${tr}, ${tg}, ${tb})`;
         ctx.beginPath();
         ctx.ellipse(sx, sy, sizePx, sizePx * 0.60, 0, 0, Math.PI * 2);
         ctx.fill();
-        // Subtle cast shadow below
-        ctx.globalAlpha = brightK * 0.22;
+
+        const castX = sx + shadowOffX * sizePx * 0.40;
+        const castY = sy + sizePx * 0.28;
+        ctx.globalAlpha = brightK * shadowKeyK * 0.22;
         ctx.fillStyle   = 'rgba(0, 0, 0, 0.5)';
         ctx.beginPath();
-        ctx.ellipse(sx, sy + sizePx * 0.28, sizePx * 0.85, sizePx * 0.22, 0, 0, Math.PI * 2);
+        ctx.ellipse(castX, castY, sizePx * 0.85, sizePx * 0.22, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.globalAlpha = brightK * 0.75;
+      }
+      continue;
+    }
+
+    // ---- FLORA ----
+    const fc = getFloraClass(group.kind);
+
+    // DEV assert — fires once per group for any unmapped kind hitting the fallback.
+    // Prevents invisible-kind bugs from hiding silently behind the grass default.
+    if (import.meta.env.DEV && fc === 'generic') {
+      console.warn(`[vista/FLORA] Unmapped scatter kind "${group.kind}" → grass fallback. Add to getFloraClass().`);
+    }
+
+    // GRASS → dedicated ground-cover renderer (batched blades, not per-tuft dispatch)
+    if (fc === 'grass') {
+      drawGrassGroundCover(ctx, t, group, brightK, cache.w, farSzGate);
+      continue;
+    }
+
+    const amplitude = getSwayAmplitude(fc);
+    const midSprite = getSpriteFor(group.kind);
+
+    // ---- FAR LOD: silhouette-keyed shapes (max 2 fill() calls per group, still batched).
+    //   canopy-tree / broad-tree → lollipop (dark trunk stub + lifted canopy dot).
+    //   conifer                  → tiny upward triangle (reads as pine even at 4–8 px).
+    //   everything else          → round dot (original behaviour).
+    // Tint taken from first instance (imperceptible at FAR depth).
+    {
+      const [tr, tg, tb] = group.instances[0]?.tint ?? [160, 180, 130];
+
+      if (fc === 'canopy-tree' || fc === 'broad-tree') {
+        // Pass A — dark trunk stubs (batched rect paths)
+        const bR = Math.round(tr * 0.45), bG = Math.round(tg * 0.42), bB = Math.round(tb * 0.35);
+        ctx.fillStyle = `rgb(${bR}, ${bG}, ${bB})`;
+        ctx.beginPath();
+        let anyTrunk = false;
+        for (const inst of group.instances) {
+          if (inst.sy > farThresh && inst.sizePx >= farSzGate) continue;
+          const r  = Math.max(1.5, inst.sizePx * 0.50);
+          const tW = Math.max(0.5, r * 0.28);
+          const tH = r * 0.95;
+          ctx.rect(inst.sx - tW * 0.5, inst.sy - tH, tW, tH);
+          anyTrunk = true;
+        }
+        if (anyTrunk) { ctx.globalAlpha = brightK * 0.45; ctx.fill(); }
+
+        // Pass B — canopy dots lifted above the trunk base
+        ctx.fillStyle = `rgb(${tr}, ${tg}, ${tb})`;
+        ctx.beginPath();
+        let anyCanopy = false;
+        for (const inst of group.instances) {
+          if (inst.sy > farThresh && inst.sizePx >= farSzGate) continue;
+          const r  = Math.max(1.5, inst.sizePx * 0.50);
+          const cY = inst.sy - r * 0.78;
+          ctx.moveTo(inst.sx + r, cY);
+          ctx.arc(inst.sx, cY, r, 0, Math.PI * 2);
+          anyCanopy = true;
+        }
+        if (anyCanopy) { ctx.globalAlpha = brightK * 0.55; ctx.fill(); }
+
+      } else if (fc === 'conifer') {
+        // Tiny upward triangle — reads as a pine silhouette even at small scale
+        ctx.fillStyle = `rgb(${tr}, ${tg}, ${tb})`;
+        ctx.beginPath();
+        let anyFir = false;
+        for (const inst of group.instances) {
+          if (inst.sy > farThresh && inst.sizePx >= farSzGate) continue;
+          const r  = Math.max(1.5, inst.sizePx * 0.50);
+          const hw = r * 0.72;
+          const ht = r * 1.60;
+          ctx.moveTo(inst.sx,        inst.sy - ht);   // apex
+          ctx.lineTo(inst.sx - hw,   inst.sy);         // bottom-left
+          ctx.lineTo(inst.sx + hw,   inst.sy);         // bottom-right
+          ctx.closePath();
+          anyFir = true;
+        }
+        if (anyFir) { ctx.globalAlpha = brightK * 0.52; ctx.fill(); }
 
       } else {
-        // Vegetation tuft: 3–4 blades curving upward, spread by sizePx.
-        // Blade count is deterministic from position (no per-frame RNG).
-        const blades = 3 + (Math.round(sx + sy) & 1);
-        ctx.strokeStyle = `rgb(${tr}, ${tg}, ${tb})`;
-        ctx.lineWidth   = Math.max(0.8, sizePx * 0.22);
-        ctx.lineCap     = 'round';
-        for (let bi = 0; bi < blades; bi++) {
-          const spread = (bi / (blades - 1) - 0.5) * sizePx * 1.6;
-          const lean   = spread * 0.28;  // blades lean outward
-          ctx.beginPath();
-          ctx.moveTo(sx + spread * 0.3, sy);
-          ctx.quadraticCurveTo(
-            sx + spread * 0.5 + lean, sy - sizePx * 0.6,
-            sx + spread + lean,       sy - sizePx
-          );
-          ctx.stroke();
+        // Default: round dot (fern, shrub, palm, vine, etc.)
+        ctx.globalAlpha = brightK * 0.45;
+        ctx.fillStyle   = `rgb(${tr}, ${tg}, ${tb})`;
+        ctx.beginPath();
+        let anyFar = false;
+        for (const inst of group.instances) {
+          if (inst.sy > farThresh && inst.sizePx >= farSzGate) continue;  // skip non-FAR
+          const r = Math.max(1, inst.sizePx * 0.55);
+          ctx.moveTo(inst.sx + r, inst.sy);
+          ctx.arc(inst.sx, inst.sy, r, 0, Math.PI * 2);
+          anyFar = true;
         }
+        if (anyFar) ctx.fill();
+      }
+    }
+
+    // ---- MID LOD: sprite blit (drawImage — no per-frame path build) ----
+    // Sway approximated by shifting the destination rect horizontally.
+    // Sprite is FLORA_SPRITE_D × FLORA_SPRITE_D; blit formula scales it to sizePx*2.
+    if (midSprite) {
+      ctx.globalAlpha = brightK * 0.72;
+      for (const inst of group.instances) {
+        // Skip FAR instances (already drawn above) and NEAR instances (drawn below)
+        if (inst.sy <= farThresh || inst.sizePx < farSzGate) continue;
+        if (inst.sy > nearThresh && inst.sizePx >= nearSzGate) continue;
+        const { sx, sy, sizePx } = inst;
+        const swayOffset = gustSway(sx, t, sizePx, amplitude) * 0.25;
+        const dw = sizePx * 2;
+        const dh = sizePx * 2;
+        ctx.drawImage(midSprite, sx - sizePx + swayOffset, sy - dh, dw, dh);
+      }
+    }
+
+    // ---- NEAR LOD: full per-kind draw with exact tint + full sway ----
+    ctx.globalAlpha = brightK * 0.82;
+    for (const inst of group.instances) {
+      if (inst.sy <= nearThresh || inst.sizePx < nearSzGate) continue;
+      const { sx, sy, sizePx, tint } = inst;
+      const [tr, tg, tb] = tint;
+      const swayX = gustSway(sx, t, sizePx, amplitude);
+
+      switch (fc) {
+        case 'canopy-tree': drawScatterTree(ctx, sx, sy, sizePx, tr, tg, tb, swayX, true);   break;
+        case 'broad-tree':  drawScatterTree(ctx, sx, sy, sizePx, tr, tg, tb, swayX, false);  break;
+        case 'conifer':     drawScatterConifer(ctx, sx, sy, sizePx, tr, tg, tb, swayX);      break;
+        case 'palm':        drawScatterPalm(ctx, sx, sy, sizePx, tr, tg, tb, swayX);         break;
+        case 'vine':        drawScatterVine(ctx, sx, sy, sizePx, tr, tg, tb, swayX);         break;
+        case 'fern':        drawScatterFern(ctx, sx, sy, sizePx, tr, tg, tb, swayX);         break;
+        case 'kelp':        drawScatterKelp(ctx, sx, sy, sizePx, tr, tg, tb, swayX, false);  break;
+        case 'seagrass':    drawScatterKelp(ctx, sx, sy, sizePx, tr, tg, tb, swayX, true);   break;
+        case 'coral':       drawScatterCoral(ctx, sx, sy, sizePx, tr, tg, tb, swayX);        break;
+        case 'cactus':      drawScatterCactus(ctx, sx, sy, sizePx, tr, tg, tb);              break;
+        case 'shrub':       drawScatterShrub(ctx, sx, sy, sizePx, tr, tg, tb, swayX);        break;
+        case 'moss':        drawScatterMoss(ctx, sx, sy, sizePx, tr, tg, tb);                break;
+        case 'flower':      drawScatterFlower(ctx, sx, sy, sizePx, tr, tg, tb, swayX);       break;
+        case 'engineered':  drawScatterPlanter(ctx, sx, sy, sizePx, tr, tg, tb, swayX);      break;
+        case 'generic':
+        default:            drawScatterGrass(ctx, sx, sy, sizePx, tr, tg, tb, swayX);        break;
       }
     }
   }
 
   ctx.restore();
 
-  // ---- Pass 2: additive composite for glitter-spark ----
-  // Check first so we don't enter the save/restore for worlds with no glitter.
+  // ---- Pass 2: additive composite for glitter-spark with per-instance twinkle ----
+  // Unchanged: glitter counts are low enough that the per-instance createRadialGradient
+  // cost is acceptable; LOD is not applied here.
   let hasGlitter = false;
   for (const group of cache.scatterScreens) {
     if (group.kind === 'glitter-spark') { hasGlitter = true; break; }
@@ -2099,12 +5138,18 @@ function drawScatterInstances(
     for (const inst of group.instances) {
       const { sx, sy, sizePx, tint, glow } = inst;
       const [tr, tg, tb] = tint;
-      const glowStr = glow * brightK;
 
-      // Radial glow halo — intensity driven by the `glow` field
+      // Twinkle: alpha oscillates between ~0.48 and 1.0 per instance, deterministic.
+      // instPhase(sx, sy) puts each spark out of phase with its neighbors.
+      const phase   = instPhase(sx, sy);
+      const twinkle = 0.48 + 0.52 * (0.5 + 0.5 * Math.sin(t * 3.1 + phase));
+      const glowStr = glow * brightK * twinkle;
+
+      // Radial glow halo — intensity driven by `glow` + twinkle
       if (glowStr > 0.02) {
         const haloR = sizePx * (2.0 + glow * 2.5);
         const halo  = ctx.createRadialGradient(sx, sy, 0, sx, sy, haloR);
+        perfCollector.recordAlloc();
         halo.addColorStop(0, `rgba(${tr}, ${tg}, ${tb}, ${(glowStr * 0.55).toFixed(3)})`);
         halo.addColorStop(1, `rgba(${tr}, ${tg}, ${tb}, 0)`);
         ctx.globalAlpha = 1;
@@ -2121,13 +5166,13 @@ function drawScatterInstances(
       ctx.lineCap     = 'round';
 
       ctx.lineWidth   = Math.max(0.8, sizePx * 0.30);
-      ctx.globalAlpha = Math.min(1, glowStr * 1.2 + 0.4);
+      ctx.globalAlpha = Math.min(1, glowStr * 1.2 + 0.4) * twinkle;
       ctx.beginPath(); ctx.moveTo(sx - starLen, sy); ctx.lineTo(sx + starLen, sy); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(sx, sy - starLen); ctx.lineTo(sx, sy + starLen); ctx.stroke();
 
-      const diagLen   = starLen * 0.55;
+      const diagLen = starLen * 0.55;
       ctx.lineWidth   = Math.max(0.6, sizePx * 0.18);
-      ctx.globalAlpha = Math.min(1, glowStr * 0.8 + 0.25);
+      ctx.globalAlpha = Math.min(1, glowStr * 0.8 + 0.25) * twinkle;
       ctx.beginPath(); ctx.moveTo(sx - diagLen, sy - diagLen); ctx.lineTo(sx + diagLen, sy + diagLen); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(sx + diagLen, sy - diagLen); ctx.lineTo(sx - diagLen, sy + diagLen); ctx.stroke();
     }
@@ -2136,6 +5181,2530 @@ function drawScatterInstances(
   // ctx.restore() resets globalCompositeOperation to 'source-over' — no bleed into
   // the haze / particles / night-dim layers that follow.
   ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// drawCitadelStructure — settlement base drawn AFTER flora (step 5g).
+//
+// Reads the 'citadel' scatter group placed by pipeline.ts buildFeatures when
+// site.citadelCeiling > 0.  Draws a multi-tier settlement silhouette (central
+// tower + side wings + base platform + windows + night beacon) on top of the
+// flora canopy so the base is never occluded by the forest.
+//
+// Colors are derived from model.palette to read as a constructed surface:
+//   body  = ridge[0] lifted +50% toward white + warm offset → concrete/stone
+//   dark  = ridge[0] × 0.65                                  → shadow faces
+//   glow  = palette.accent                                    → windows / beacon
+//
+// All dimensions are proportional to inst.sizePx (the citadel's height in px):
+//   L2 at h=900 → sizePx ≈ 122 px   L3 → 153 px
+// ---------------------------------------------------------------------------
+function drawCitadelStructure(
+  ctx: CanvasRenderingContext2D,
+  t: number,
+  cache: VistaCache,
+  dc: DayCycle,
+): void {
+  const group = cache.scatterScreens.find(g => g.kind === 'citadel');
+  if (!group || group.instances.length === 0) return;
+
+  const inst             = group.instances[0];
+  const { sx, sy, sizePx } = inst;
+  const pal              = cache.model.palette;
+
+  // ---- Body colors — lifted from ridge base (world-matched concrete / stone) ----
+  const ridge = pal.ridge.length > 0 ? pal.ridge[0] : pal.surface;
+  const [rr, rg, rb] = ridge;
+  // Lit front face: +50% toward white, +8/+4 warm offset for concrete legibility.
+  const bR = Math.min(255, Math.round(rr + (255 - rr) * 0.50) + 8);
+  const bG = Math.min(255, Math.round(rg + (255 - rg) * 0.50) + 4);
+  const bB = Math.min(255, Math.round(rb + (255 - rb) * 0.50));
+  // Shadow face: darkened ridge.
+  const dR = Math.round(rr * 0.65);
+  const dG = Math.round(rg * 0.65);
+  const dB = Math.round(rb * 0.65);
+  // Wing face: intermediate tint between body and shadow.
+  const wR = Math.round(bR * 0.88);
+  const wG = Math.round(bG * 0.88);
+  const wB = Math.round(bB * 0.88);
+  // Window / beacon glow from palette accent.
+  const [ar, ag, ab] = pal.accent;
+  const brightK  = 0.35 + dc.bright * 0.65;
+  // Windows glow brighter at night; dim during daytime.
+  const winAlpha = Math.min(0.95, dc.bright < 0.45
+    ? 0.55 + (0.45 - dc.bright) * 1.1
+    : dc.bright * 0.28);
+
+  // ---- Proportional dimensions (all relative to sizePx = tower height) ----
+  const tH       = sizePx;                         // main tower height
+  const tW       = sizePx * 0.28;                  // main tower width
+  const lH       = sizePx * 0.60;                  // left wing height
+  const lW       = sizePx * 0.22;                  // left wing width
+  const rH       = sizePx * 0.52;                  // right wing height
+  const rW       = sizePx * 0.22;                  // right wing width
+  const platH    = Math.max(4, sizePx * 0.06);     // base platform strip
+  const shadowW  = tW * 0.18;                      // shadow face width (right of tower)
+  const gap      = tW * 0.08;                      // gap between tower and wings
+  const baseY    = sy;                              // ground line (bottom of structure)
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-over';
+
+  // ---- Base platform — spans full settlement footprint ----
+  ctx.globalAlpha = brightK;
+  ctx.fillStyle   = `rgb(${dR}, ${dG}, ${dB})`;
+  const platX0 = sx - tW * 0.5 - lW - gap;
+  const platX1 = sx + tW * 0.5 + rW + gap + shadowW;
+  ctx.fillRect(platX0, baseY - platH, platX1 - platX0, platH);
+
+  // ---- Left wing ----
+  ctx.fillStyle = `rgb(${wR}, ${wG}, ${wB})`;
+  ctx.fillRect(sx - tW * 0.5 - lW - gap, baseY - lH, lW, lH);
+  // Left wing inner shadow cap.
+  ctx.fillStyle = `rgb(${dR}, ${dG}, ${dB})`;
+  ctx.fillRect(sx - tW * 0.5 - gap, baseY - lH, gap * 0.5, lH);
+
+  // ---- Right wing ----
+  ctx.fillStyle = `rgb(${Math.round(bR * 0.85)}, ${Math.round(bG * 0.85)}, ${Math.round(bB * 0.85)})`;
+  ctx.fillRect(sx + tW * 0.5 + gap, baseY - rH, rW, rH);
+  // Right wing shadow face.
+  ctx.fillStyle = `rgb(${dR}, ${dG}, ${dB})`;
+  ctx.fillRect(sx + tW * 0.5 + gap + rW, baseY - rH, shadowW * 0.6, rH);
+
+  // ---- Main tower front face (brightest — lit side) ----
+  ctx.fillStyle = `rgb(${bR}, ${bG}, ${bB})`;
+  ctx.fillRect(sx - tW * 0.5, baseY - tH, tW, tH);
+  // Main tower shadow side (right).
+  ctx.fillStyle = `rgb(${dR}, ${dG}, ${dB})`;
+  ctx.fillRect(sx + tW * 0.5, baseY - tH, shadowW, tH);
+
+  // ---- Tower cap — peaked triangle above the main tower ----
+  ctx.fillStyle = `rgb(${bR}, ${bG}, ${bB})`;
+  ctx.beginPath();
+  ctx.moveTo(sx - tW * 0.5, baseY - tH);
+  ctx.lineTo(sx,             baseY - tH - tW * 0.40);   // apex
+  ctx.lineTo(sx + tW * 0.5, baseY - tH);
+  ctx.closePath();
+  ctx.fill();
+
+  // ---- Windows — main tower ----
+  ctx.globalAlpha = winAlpha;
+  ctx.fillStyle   = `rgb(${ar}, ${ag}, ${ab})`;
+  const winRows = Math.max(1, Math.floor(tH / (tW * 0.65)));
+  const winW    = Math.max(2, tW * 0.20);
+  const winH    = Math.max(2, tW * 0.14);
+  const winRowH = tH / (winRows + 1);
+  for (let row = 1; row <= winRows; row++) {
+    const wy = baseY - row * winRowH;
+    ctx.fillRect(sx - tW * 0.28, wy - winH * 0.5, winW, winH);
+    ctx.fillRect(sx + tW * 0.08, wy - winH * 0.5, winW, winH);
+  }
+
+  // ---- Windows — left wing (one central window) ----
+  if (lH > tW * 0.5) {
+    const lwW = Math.max(2, lW * 0.28);
+    const lwH = Math.max(2, lH * 0.12);
+    ctx.fillRect(sx - tW * 0.5 - lW - gap + lW * 0.28, baseY - lH * 0.5 - lwH * 0.5, lwW, lwH);
+  }
+
+  // ---- Beacon: top of the cap — pulsing at night, dim by day ----
+  const beaconY = baseY - tH - tW * 0.38;
+  const beaconR = Math.max(2, tW * 0.10);
+  const pulse   = dc.bright < 0.3
+    ? Math.min(0.95, 0.75 + Math.sin(t * 1.5) * 0.20)
+    : dc.bright * 0.28;
+  ctx.globalAlpha = pulse;
+  ctx.fillStyle   = `rgb(${ar}, ${ag}, ${ab})`;
+  ctx.beginPath();
+  ctx.arc(sx, beaconY, beaconR, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// drawRiverCorridor — WO-V7-CITADEL (river mode)
+//
+// Draws a tapered water corridor from the waterline (wTopY) up to the citadel
+// anchor, creating a natural river-valley scene: settlement on the far bank,
+// river receding in perspective toward the viewer.  The forest parts around BOTH
+// the river and the citadel footprint (cleared by pipeline.ts buildFeatures
+// riverMode path).
+//
+// Called from drawScene §5a+ — after all ground fills (§5a / §5a' / §5a''),
+// before flora scatter (§5f) — so the river sits beneath the canopy layer but
+// above the base ground gradient.
+//
+// Only invoked for TERRAN and JUNGLE when a 'citadel' scatter group is present.
+// TROPICAL and other types use the clearing fallback and never call this function.
+//
+// Corridor geometry: tapered trapezoid (wide at wTopY, narrow at citadel sy);
+// a sine-curve meander derived from model.seed prevents the ruler-straight look.
+// Visual channel sized slightly NARROWER than the pipeline's flora clearing so no
+// trees appear inside the rendered water strip.
+//
+// No Math.random, no Date.now.  ctx.save/restore balanced throughout.
+// ---------------------------------------------------------------------------
+function drawRiverCorridor(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  _t: number,
+  model: VistaModel,
+  cache: VistaCache,
+  dc: DayCycle,
+  _horizonY: number,
+  wTopY: number,
+): void {
+  void _t;       // static feature — seeded geometry, not animated
+  void _horizonY;
+
+  const citGroup = cache.scatterScreens.find(g => g.kind === 'citadel');
+  if (!citGroup || citGroup.instances.length === 0) return;
+
+  const inst              = citGroup.instances[0];
+  const { sx: citSX, sy: citSY, sizePx } = inst;
+  const pal               = model.palette;
+  const b                 = dc.bright;
+  const [wr, wg, wb]      = pal.water as [number, number, number];
+  const [sr, sg, sb]      = pal.surface;
+
+  // Re-derive citadelLevel from sizePx (inverse of the buildVistaCache scale formula:
+  //   sizePx = (0.08 + level * 0.04) * Math.min(w, h) * 0.85).
+  const minDim   = Math.min(w, h);
+  const modelSc  = sizePx / (minDim * 0.85);
+  const citLevel = Math.max(1, Math.min(5, Math.round((modelSc - 0.08) / 0.04)));
+
+  // Corridor half-widths in pixels — sized narrower than the pipeline's clearing
+  // corridor so the rendered water strip stays clean of trees at all winding points.
+  const hwTopPx    = (0.032 + citLevel * 0.006) * minDim;
+  const hwBottomPx = (0.062 + citLevel * 0.009) * minDim;  // modest width bump for readability
+
+  // Winding meander: one seeded horizontal displacement applied as sin(π·tf) so the
+  // channel starts/ends at citadelAnchorX with a visible S-curve between.
+  // Amplitude 1.375 → max |mAmp| = 0.6875 × hwTopPx (~2.5× the previous 0.275×).
+  // The pipeline flora-clearing corridor tracks this envelope via:
+  //   clearHW(tf) = lerp(top, bottom, tf) + riverMaxMeander × sin(π·tf)
+  // where riverMaxMeander = 0.75 × hwTopFrac (>0.6875) — always covers the render.
+  const mrng = splitmix32(deriveChildSeed(model.seed, 'river-meander'));
+  const mAmp = (mrng() - 0.5) * hwTopPx * 1.6;   // max ±0.8 × hwTopPx center displacement
+
+  // Build left/right edge arrays (N_STEPS) along the corridor.
+  // tf=0 → citadel top (narrow/far), tf=1 → waterline bottom (wide/near).
+  const N_STEPS   = 24;
+  const riverTopY = citSY;
+  const riverBotY = wTopY;
+  const leftPts : [number, number][] = [];
+  const rightPts: [number, number][] = [];
+  for (let i = 0; i <= N_STEPS; i++) {
+    const tf  = i / N_STEPS;
+    const py  = riverTopY + (riverBotY - riverTopY) * tf;
+    const cx  = citSX + mAmp * Math.sin(2 * Math.PI * tf);  // S-curve: one full oscillation
+    const hw  = hwTopPx + (hwBottomPx - hwTopPx) * tf;
+    leftPts.push([cx - hw, py]);
+    rightPts.push([cx + hw, py]);
+  }
+
+  // ---- Fill river corridor with water color ----
+  const fillAlpha = Math.min(0.92, 0.72 + b * 0.18);
+  ctx.save();
+  ctx.globalAlpha = fillAlpha;
+  ctx.fillStyle   = `rgb(${wr}, ${wg}, ${wb})`;
+  ctx.beginPath();
+  ctx.moveTo(leftPts[0][0], leftPts[0][1]);
+  for (let i = 1; i <= N_STEPS; i++) ctx.lineTo(leftPts[i][0], leftPts[i][1]);
+  for (let i = N_STEPS; i >= 0; i--) ctx.lineTo(rightPts[i][0], rightPts[i][1]);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+
+  // ---- Sun-glint highlight at the far (citadel) end ----
+  // Mimics light catching the river surface toward the horizon.
+  if (dc.sunUp) {
+    const glintH = (riverBotY - riverTopY) * 0.22;
+    if (glintH > 3) {
+      ctx.save();
+      // Clip to corridor polygon so the gradient stays inside the water channel.
+      ctx.beginPath();
+      ctx.moveTo(leftPts[0][0], leftPts[0][1]);
+      for (let i = 1; i <= N_STEPS; i++) ctx.lineTo(leftPts[i][0], leftPts[i][1]);
+      for (let i = N_STEPS; i >= 0; i--) ctx.lineTo(rightPts[i][0], rightPts[i][1]);
+      ctx.closePath();
+      ctx.clip();
+      const gA = (0.18 * b).toFixed(3);
+      const glintGrad = ctx.createLinearGradient(citSX, riverTopY, citSX, riverTopY + glintH);
+      perfCollector.recordAlloc();
+      glintGrad.addColorStop(0, `rgba(255, 255, 255, ${gA})`);
+      glintGrad.addColorStop(1, `rgba(255, 255, 255, 0)`);
+      ctx.fillStyle   = glintGrad;
+      ctx.globalAlpha = 1;
+      ctx.fillRect(citSX - hwBottomPx - 8, riverTopY, hwBottomPx * 2 + 16, glintH);
+      ctx.restore();
+    }
+  }
+
+  // ---- Earthy bank edges — thin warm stroke separating water from land ----
+  const bankR = Math.min(255, Math.round(sr * 0.70 + wr * 0.16 + 40));
+  const bankG = Math.min(255, Math.round(sg * 0.72 + wg * 0.16 + 30));
+  const bankB = Math.min(255, Math.round(sb * 0.68 + wb * 0.16 + 16));
+  const bankAlpha = Math.min(0.82, 0.44 * b + 0.22);
+  ctx.save();
+  ctx.globalAlpha = bankAlpha;
+  ctx.strokeStyle = `rgb(${bankR}, ${bankG}, ${bankB})`;
+  ctx.lineWidth   = Math.max(1, hwTopPx * 0.14);
+  ctx.beginPath();
+  ctx.moveTo(leftPts[0][0], leftPts[0][1]);
+  for (let i = 1; i <= N_STEPS; i++) ctx.lineTo(leftPts[i][0], leftPts[i][1]);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(rightPts[0][0], rightPts[0][1]);
+  for (let i = 1; i <= N_STEPS; i++) ctx.lineTo(rightPts[i][0], rightPts[i][1]);
+  ctx.stroke();
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// WO-V2-CLOUDS-RAYS helpers
+// ---------------------------------------------------------------------------
+
+// drawCumulusCloud — billowy cloud with lit-top lobes and a dark-base underside.
+// Each lobe is a radial gradient centred slightly above the cloud-centre Y so the
+// top is bright (sky-lit) and the underside is shaded.
+function drawCumulusCloud(
+  ctx: CanvasRenderingContext2D,
+  cx: number, cy: number,
+  cloudW: number, cloudH: number,
+  alpha: number,
+  tr: number, tg: number, tb: number,
+  lobeCount: number,
+  lobeOffsets: number[],
+): void {
+  const lobeR = Math.max(8, cloudH * 0.82);
+  const litR = Math.min(255, tr + 58);
+  const litG = Math.min(255, tg + 58);
+  const litB = Math.min(255, tb + 52);
+  const shR  = Math.max(0, tr - 38);
+  const shG  = Math.max(0, tg - 38);
+  const shB  = Math.max(0, tb - 32);
+
+  // Dark base underside — a single wide linear gradient across the cloud belly
+  const baseTop = cy;
+  const baseBtm = cy + lobeR * 0.55;
+  const sg = ctx.createLinearGradient(cx, baseTop, cx, baseBtm);
+  perfCollector.recordAlloc();
+  sg.addColorStop(0, `rgba(${shR}, ${shG}, ${shB}, 0)`);
+  sg.addColorStop(1, `rgba(${shR}, ${shG}, ${shB}, ${(alpha * 0.48).toFixed(3)})`);
+  ctx.fillStyle = sg;
+  ctx.fillRect(cx - cloudW * 0.62, baseTop, cloudW * 1.24, lobeR * 0.55);
+
+  // Lit-top lobe per section — bright centre fading outward
+  for (let lb = 0; lb < lobeCount; lb++) {
+    const lx = cx - cloudW * 0.42 + (lobeOffsets[lb] ?? lb / lobeCount) * cloudW * 0.84;
+    const ly = cy - lobeR * 0.08;
+    const lg = ctx.createRadialGradient(lx, ly - lobeR * 0.20, 0, lx, ly, lobeR);
+    perfCollector.recordAlloc();
+    lg.addColorStop(0,    `rgba(${litR}, ${litG}, ${litB}, ${(alpha * 1.00).toFixed(3)})`);
+    lg.addColorStop(0.45, `rgba(${tr}, ${tg}, ${tb},  ${(alpha * 0.68).toFixed(3)})`);
+    lg.addColorStop(0.80, `rgba(${tr}, ${tg}, ${tb},  ${(alpha * 0.20).toFixed(3)})`);
+    lg.addColorStop(1,    `rgba(${tr}, ${tg}, ${tb},  0)`);
+    ctx.fillStyle = lg;
+    ctx.beginPath();
+    ctx.arc(lx, ly, lobeR, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+// drawCirrusCloud — thin, wispy horizontal streak with feathered ends.
+// Three sub-strokes at slightly offset Y positions give a layered wispy look.
+function drawCirrusCloud(
+  ctx: CanvasRenderingContext2D,
+  cx: number, cy: number,
+  cloudW: number, cloudH: number,
+  alpha: number,
+  tr: number, tg: number, tb: number,
+): void {
+  const halfH = Math.max(1.5, cloudH * 0.55);
+  const alphas   = [0.88, 1.00, 0.62];
+  const widthMul = [0.72, 1.00, 0.56];
+  const yOffsets = [-halfH * 0.55, 0, halfH * 0.50];
+
+  for (let si = 0; si < 3; si++) {
+    const sy  = cy + yOffsets[si];
+    const hw  = cloudW * 0.5 * widthMul[si];
+    const hh  = Math.max(1, halfH * (1.0 - si * 0.22));
+    const a   = alpha * alphas[si];
+    const hg  = ctx.createLinearGradient(cx - hw, sy, cx + hw, sy);
+    perfCollector.recordAlloc();
+    hg.addColorStop(0,    `rgba(${tr}, ${tg}, ${tb}, 0)`);
+    hg.addColorStop(0.12, `rgba(${tr}, ${tg}, ${tb}, ${a.toFixed(3)})`);
+    hg.addColorStop(0.88, `rgba(${tr}, ${tg}, ${tb}, ${a.toFixed(3)})`);
+    hg.addColorStop(1,    `rgba(${tr}, ${tg}, ${tb}, 0)`);
+    ctx.fillStyle = hg;
+    ctx.fillRect(cx - hw, sy - hh, hw * 2, hh * 2);
+  }
+}
+
+// drawAshCloud — turbulent irregular mass used for volcanic ash and desert dust.
+// Multiple overlapping blobs at deterministic offsets (no Math.random in draw path).
+// A subtle t-driven scale pulse gives a slow churning turbulence feel.
+function drawAshCloud(
+  ctx: CanvasRenderingContext2D,
+  cx: number, cy: number,
+  cloudW: number, cloudH: number,
+  alpha: number,
+  tr: number, tg: number, tb: number,
+  t: number,
+  layer: number,
+): void {
+  const blobCount = 3 + layer;
+  const baseR     = Math.max(6, cloudH * 0.68);
+  for (let bi = 0; bi < blobCount; bi++) {
+    // Deterministic offsets via cheap prime-step hash — stable across frames
+    const bx = cx + (((bi * 127 + 13) % 100) / 100 - 0.50) * cloudW * 0.80;
+    const by = cy + (((bi *  53 +  7) % 100) / 100 - 0.50) * cloudH * 0.60;
+    const br = baseR * (0.48 + ((bi * 31 + 11) % 100) / 100 * 0.72);
+    // Slow turbulent pulse — deterministic via bi phase offset, never Math.random
+    const pulse = t === 0 ? 1 : 1 + 0.07 * Math.sin(t * 0.38 + bi * 1.27);
+    const rg = ctx.createRadialGradient(bx, by, 0, bx, by, br * pulse);
+    perfCollector.recordAlloc();
+    rg.addColorStop(0,    `rgba(${tr}, ${tg}, ${tb}, ${(alpha * 0.82).toFixed(3)})`);
+    rg.addColorStop(0.55, `rgba(${tr}, ${tg}, ${tb}, ${(alpha * 0.44).toFixed(3)})`);
+    rg.addColorStop(1,    `rgba(${tr}, ${tg}, ${tb}, 0)`);
+    ctx.fillStyle = rg;
+    ctx.fillRect(bx - br * pulse, by - br * pulse, br * pulse * 2, br * pulse * 2);
+  }
+}
+
+// drawNightSky — nebula wash, galactic band, and shooting stars.
+// All effects are gated on starVisibility so they fade out cleanly by day.
+// Night/twilight check: caller passes starVisibility > 0 threshold.
+function drawNightSky(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  horizonY: number,
+  t: number,
+  cache: VistaCache,
+  starVisibility: number,
+): void {
+  const nebula = cache.model.layers.celestial.nebula;
+
+  // Nebula wash — two offset radial lobes for a diffuse tinted glow in the night sky.
+  // Uses 'screen' composite so it brightens rather than painting over stars.
+  if (nebula && starVisibility > 0.25) {
+    const hue = nebula.hue;
+    const den = nebula.density * starVisibility;
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    // Primary lobe
+    const r1 = Math.max(w, horizonY) * 0.82;
+    const nx1 = w * 0.35;
+    const ny1 = horizonY * 0.28;
+    const nG1 = ctx.createRadialGradient(nx1, ny1, 0, nx1, ny1, r1);
+    perfCollector.recordAlloc();
+    nG1.addColorStop(0,   `hsla(${hue}, 62%, 24%, ${(den * 0.30).toFixed(3)})`);
+    nG1.addColorStop(0.5, `hsla(${hue}, 48%, 16%, ${(den * 0.14).toFixed(3)})`);
+    nG1.addColorStop(1,   `hsla(${hue}, 32%, 10%, 0)`);
+    ctx.fillStyle = nG1;
+    ctx.fillRect(0, 0, w, horizonY);
+    // Secondary lobe — shifted hue for depth
+    const r2  = r1 * 0.62;
+    const nx2 = w * 0.68;
+    const ny2 = horizonY * 0.44;
+    const nG2 = ctx.createRadialGradient(nx2, ny2, 0, nx2, ny2, r2);
+    perfCollector.recordAlloc();
+    nG2.addColorStop(0, `hsla(${(hue + 28) % 360}, 56%, 20%, ${(den * 0.20).toFixed(3)})`);
+    nG2.addColorStop(1, `hsla(${(hue + 28) % 360}, 40%, 10%, 0)`);
+    ctx.fillStyle = nG2;
+    ctx.fillRect(0, 0, w, horizonY);
+    ctx.restore();
+  }
+
+  // Galactic / milky-way band — seeded diagonal strip of concentrated star haze.
+  // The band origin and angle are baked in buildVistaCache so they're stable per seed.
+  if (cache.galacticBand && starVisibility > 0.40) {
+    const gb  = cache.galacticBand;
+    const gba = 0.10 * starVisibility;
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    ctx.translate(gb.cx, gb.cy);
+    ctx.rotate(gb.angle);
+    const bGrad = ctx.createLinearGradient(-gb.width, 0, gb.width, 0);
+    perfCollector.recordAlloc();
+    bGrad.addColorStop(0,    `rgba(200, 205, 240, 0)`);
+    bGrad.addColorStop(0.28, `rgba(200, 205, 240, ${(gba * 0.80).toFixed(3)})`);
+    bGrad.addColorStop(0.50, `rgba(210, 215, 255, ${gba.toFixed(3)})`);
+    bGrad.addColorStop(0.72, `rgba(200, 205, 240, ${(gba * 0.80).toFixed(3)})`);
+    bGrad.addColorStop(1,    `rgba(200, 205, 240, 0)`);
+    ctx.fillStyle = bGrad;
+    // Extend the band far enough in the rotated direction to cross the full sky
+    ctx.fillRect(-gb.width, -horizonY * 2, gb.width * 2, horizonY * 4);
+    ctx.restore();
+  }
+
+  // Shooting stars — brief streaks cycling in and out; deeply gated on starVisibility.
+  // Guard t > 0: the proof harness captures at t=0 (daytime) so this never fires there.
+  if (starVisibility > 0.65 && t > 0 && cache.shootingStarSeeds.length > 0) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (const ss of cache.shootingStarSeeds) {
+      // Each star fires once per ~17–45 s cycle; brief bright peak near sin=1.
+      const cycleT    = (t * ss.speed * 0.35 + ss.phase) % (Math.PI * 2);
+      const peakAlpha = Math.max(0, Math.sin(cycleT) - 0.78) * (1 / 0.22);
+      if (peakAlpha < 0.01) continue;
+      const finalAlpha = peakAlpha * starVisibility;
+      const sg = ctx.createLinearGradient(ss.x0, ss.y0, ss.x1, ss.y1);
+      perfCollector.recordAlloc();
+      sg.addColorStop(0,    `rgba(255, 255, 255, ${(finalAlpha * 0.95).toFixed(3)})`);
+      sg.addColorStop(0.35, `rgba(220, 235, 255, ${(finalAlpha * 0.50).toFixed(3)})`);
+      sg.addColorStop(1,    `rgba(200, 220, 255, 0)`);
+      ctx.strokeStyle = sg;
+      ctx.lineWidth   = 1.8;
+      ctx.lineCap     = 'round';
+      ctx.globalAlpha = 1;
+      ctx.beginPath();
+      ctx.moveTo(ss.x0, ss.y0);
+      ctx.lineTo(ss.x1, ss.y1);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+// drawGodRays — stylized wedge rays fanning from the sun through cloud gaps.
+// Rays are drawn BEFORE the cloud layer so clouds occlude them naturally — rays
+// appear in the gaps between cloud masses.  Uses 'lighter' composite for
+// additive glow.  Intensity peaks at low sun (golden hour).
+function drawGodRays(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  horizonY: number,
+  sunX: number,
+  sunY: number,
+  cache: VistaCache,
+  dc: DayCycle,
+): void {
+  // Only draw when atmosphere + clouds are present and sun is up
+  if (!dc.sunUp || !cache.hasAtmosphere || cache.cloudKind === 'none' || cache.clouds.length === 0) return;
+  // Rays are strongest near the horizon (sunAlt ≈ 0) and fade at zenith
+  const horizonPeak = Math.max(0, 1.0 - dc.sunAlt * 2.4);
+  const bloom       = cache.model.lighting.bloom;
+  const rayAlpha    = bloom * dc.bright * horizonPeak * 0.28;
+  if (rayAlpha < 0.005) return;
+
+  const { sc } = cache;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (const ray of cache.godRaySeeds) {
+    const baseDist = (horizonY - sunY) * ray.lenFrac;
+    if (baseDist <= 0) continue;
+    const aL   = ray.angle - ray.spread;
+    const aR   = ray.angle + ray.spread;
+    const x1   = sunX + Math.cos(aL) * baseDist;
+    const y1   = sunY + Math.sin(aL) * baseDist;
+    const x2   = sunX + Math.cos(aR) * baseDist;
+    const y2   = sunY + Math.sin(aR) * baseDist;
+    const midX = (x1 + x2) * 0.5;
+    const midY = (y1 + y2) * 0.5;
+    const rg   = ctx.createLinearGradient(sunX, sunY, midX, midY);
+    perfCollector.recordAlloc();
+    const a0   = rayAlpha * ray.alphaMul;
+    rg.addColorStop(0,   `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${a0.toFixed(3)})`);
+    rg.addColorStop(0.6, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(a0 * 0.28).toFixed(3)})`);
+    rg.addColorStop(1,   `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
+    ctx.fillStyle = rg;
+    ctx.beginPath();
+    ctx.moveTo(sunX, sunY);
+    ctx.lineTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// drawFrozenSheet — WO-V4-ICE
+// Cracked pack-ice surface: irregular ice plates separated by dark crack lines,
+// pressure ridges at plate collision seams, and subsurface glacial tint pockets.
+// Called from drawScene §4b — ICE planet type ONLY (water.type === 'frozen').
+// ARCTIC also carries water.type='frozen' but uses the base gradient; its full
+// sea-ice + aurora treatment is WO-V5-ARCTIC.
+// Seeded from model.seed via splitmix32; no Math.random / Date.now.
+// ctx.save/restore balanced throughout.
+// ---------------------------------------------------------------------------
+function drawFrozenSheet(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  t: number,
+  cache: VistaCache,
+  dc: DayCycle,
+  sunX: number,
+  wt: number,   // waterTopY in pixels
+  wh: number,   // h - wt (frozen band height)
+): void {
+  const model     = cache.model;
+  const { sc }    = cache;
+  const fsProfile = getProfile(model.planetType).frozenSheet;
+  if (!fsProfile) return;   // guard: only ICE carries this profile field
+
+  // Master PRNG for plate layout — one stable sequence per seed, no Date.now.
+  const rngFs = splitmix32(deriveChildSeed(model.seed, 'frozen-sheet'));
+
+  // ---- 1. Glacial subsurface tint pockets -----------------------------------
+  // Radial spots of deep blue-green visible through the ice to trapped water/air.
+  // Uses 'multiply' to darken/cool the pale base surface without clobbering it.
+  const TINT_COUNT = 4 + Math.floor(rngFs() * 4);  // 4–7 pockets
+  {
+    ctx.save();
+    ctx.globalCompositeOperation = 'multiply';
+    for (let i = 0; i < TINT_COUNT; i++) {
+      const tx = rngFs() * w;
+      const ty = wt + rngFs() * wh;
+      const tr = 40 + rngFs() * 80;                                // radius 40–120 px
+      const ta = fsProfile.glacialDepth * (0.08 + rngFs() * 0.10); // 0.05–0.18 scaled
+      const tg = ctx.createRadialGradient(tx, ty, 0, tx, ty, tr);
+      perfCollector.recordAlloc();
+      tg.addColorStop(0,   `rgba(62, 118, 185, ${ta.toFixed(3)})`);
+      tg.addColorStop(0.6, `rgba(80, 140, 205, ${(ta * 0.40).toFixed(3)})`);
+      tg.addColorStop(1,   'rgba(80, 140, 205, 0)');
+      ctx.fillStyle = tg;
+      const fy = Math.max(wt, ty - tr);
+      ctx.fillRect(Math.max(0, tx - tr), fy, tr * 2, Math.min(h, ty + tr) - fy);
+    }
+    ctx.restore();
+  }
+
+  // ---- 2. Build crack network -----------------------------------------------
+  // Horizontal seams cross the full width, fragmenting the band into strips.
+  // Vertical arms extend from those seams to further fragment each strip into plates.
+  interface CrackPath { pts: [number, number][]; kind: 'seam' | 'arm' }
+  const cracks: CrackPath[] = [];
+
+  // 2a) Horizontal plate seams
+  const hSeamMin     = fsProfile.hSeamRange[0];
+  const hSeamMax     = fsProfile.hSeamRange[1];
+  const H_SEAM_COUNT = hSeamMin + Math.floor(rngFs() * (hSeamMax - hSeamMin + 1));
+  const seamYFracs: number[] = [];
+  for (let i = 0; i < H_SEAM_COUNT; i++) {
+    const baseFrac = (i + 1) / (H_SEAM_COUNT + 1);
+    seamYFracs.push(Math.max(0.08, Math.min(0.92, baseFrac + (rngFs() - 0.5) * 0.18)));
+  }
+  seamYFracs.sort((a, b) => a - b);
+
+  for (const yFrac of seamYFracs) {
+    const baseY  = wt + yFrac * wh;
+    const STEPS  = 8 + Math.floor(rngFs() * 6);   // 8–13 waypoints
+    const pts: [number, number][] = [[0, baseY + (rngFs() - 0.5) * 8]];
+    for (let j = 1; j < STEPS; j++) {
+      const xj = (j / STEPS) * w;
+      const yj = baseY + (rngFs() - 0.5) * 22;    // ±11 px vertical jitter
+      pts.push([xj, yj]);
+    }
+    pts.push([w, baseY + (rngFs() - 0.5) * 8]);
+    cracks.push({ pts, kind: 'seam' });
+  }
+
+  // 2b) Vertical crack arms — 3–5 per strip; grow from the seam edge inward
+  const stripCount = seamYFracs.length + 1;
+  for (let si = 0; si < stripCount; si++) {
+    const stripTop = wt + (si === 0 ? 0 : seamYFracs[si - 1] * wh);
+    const stripBtm = wt + (si >= seamYFracs.length ? wh : seamYFracs[si] * wh);
+    const stripH   = stripBtm - stripTop;
+    if (stripH < 12) continue;
+    const nArms = 3 + Math.floor(rngFs() * 3);     // 3–5 arms per strip
+    for (let ai = 0; ai < nArms; ai++) {
+      const ax      = (0.08 + rngFs() * 0.84) * w;          // avoid canvas edges
+      const armH    = stripH * (0.30 + rngFs() * 0.55);     // 30–85% of strip height
+      const fromTop = rngFs() < 0.55;                        // grow from top or bottom edge
+      const startY  = fromTop ? stripTop : stripBtm;
+      const endY    = fromTop ? stripTop + armH : stripBtm - armH;
+      const ASTEPS  = 3 + Math.floor(rngFs() * 4);           // 3–6 waypoints
+      const pts: [number, number][] = [[ax, startY]];
+      for (let j = 1; j <= ASTEPS; j++) {
+        const frac = j / ASTEPS;
+        const axy  = ax + (rngFs() - 0.5) * 14;             // ±7 px horizontal drift
+        const ayy  = startY + frac * (endY - startY);
+        pts.push([axy, ayy]);
+      }
+      cracks.push({ pts, kind: 'arm' });
+    }
+  }
+
+  // ---- 3. Draw crack shadow underlayer (depth) ------------------------------
+  // A wider, darker stroke behind each crack gives visual depth to the fractures.
+  {
+    ctx.save();
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.lineCap  = 'round';
+    ctx.lineJoin = 'round';
+    for (const crack of cracks) {
+      ctx.save();
+      ctx.globalAlpha = crack.kind === 'seam'
+        ? fsProfile.crackContrast * 0.48
+        : fsProfile.crackContrast * 0.35;
+      ctx.strokeStyle = 'rgba(22, 38, 62, 1)';       // deep navy shadow
+      ctx.lineWidth   = crack.kind === 'seam' ? 5.5 : 3.0;
+      ctx.beginPath();
+      for (let j = 0; j < crack.pts.length; j++) {
+        const [px, py] = crack.pts[j];
+        if (j === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  // ---- 4. Draw primary crack lines ------------------------------------------
+  {
+    ctx.save();
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.lineCap  = 'round';
+    ctx.lineJoin = 'round';
+    for (const crack of cracks) {
+      ctx.save();
+      ctx.globalAlpha = crack.kind === 'seam'
+        ? fsProfile.crackContrast * 0.72
+        : fsProfile.crackContrast * 0.52;
+      ctx.strokeStyle = 'rgba(34, 54, 82, 1)';       // dark navy crack line
+      ctx.lineWidth   = crack.kind === 'seam' ? 2.8 : 1.6;
+      ctx.beginPath();
+      for (let j = 0; j < crack.pts.length; j++) {
+        const [px, py] = crack.pts[j];
+        if (j === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  // ---- 5. Pressure ridges — bright seams along plate collision lines --------
+  // Pack-ice plates buckle upward where they collide: a bright snow-white
+  // highlight above the seam, a cooler blue-shadow below.
+  {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap  = 'round';
+    ctx.lineJoin = 'round';
+    const ridgeBright = dc.sunUp ? Math.max(0.06, dc.bright * 0.28) : 0.04;
+    for (const crack of cracks) {
+      if (crack.kind !== 'seam') continue;    // ridges only on major plate seams
+      ctx.save();
+      // Bright snow-white edge above the seam (plate catching sunlight)
+      ctx.globalAlpha = ridgeBright;
+      ctx.strokeStyle = `rgba(${Math.min(255, sc.r + 80)}, ${Math.min(255, sc.g + 80)}, 255, 1)`;
+      ctx.lineWidth   = 1.4;
+      ctx.beginPath();
+      for (let j = 0; j < crack.pts.length; j++) {
+        const [px, py] = crack.pts[j];
+        if (j === 0) ctx.moveTo(px, py - 2); else ctx.lineTo(px, py - 2);
+      }
+      ctx.stroke();
+      // Cooler blue-white shadow below the seam (plate underside in shade)
+      ctx.globalAlpha = ridgeBright * 0.55;
+      ctx.strokeStyle = 'rgba(148, 188, 228, 1)';
+      ctx.lineWidth   = 0.9;
+      ctx.beginPath();
+      for (let j = 0; j < crack.pts.length; j++) {
+        const [px, py] = crack.pts[j];
+        if (j === 0) ctx.moveTo(px, py + 2); else ctx.lineTo(px, py + 2);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  // ---- 6. Plate-surface sun glint -------------------------------------------
+  // Broad flat elliptical glints scattered across the plate surfaces.
+  // Ice reflects a diffuse solar patch (softer + flatter than liquid specular).
+  // Glints pulse slowly with t; all RNG consumed before the skip-check so the
+  // sequence stays deterministic regardless of which glints pass the alpha gate.
+  if (dc.sunUp && dc.bright > 0.10) {
+    const GLINT_COUNT = 5 + Math.floor(rngFs() * 6);    // 5–10 glints
+    const rngGl = splitmix32(deriveChildSeed(model.seed, 'ice-glint'));
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < GLINT_COUNT; i++) {
+      // Consume all per-glint values before any conditional skip.
+      const gx   = rngGl() * w;
+      const gy   = wt + rngGl() * wh;
+      const gRad = 18 + rngGl() * 52;           // radius 18–70 px
+      const gAR  = 0.25 + rngGl() * 0.40;       // vertical aspect ratio (flat ellipse)
+      const gOff = rngGl();                      // [0,1) — speed offset + base alpha
+      const gPh  = rngGl() * Math.PI * 2;        // animation phase
+
+      const dxN  = (gx - sunX) / w;
+      const dFac = Math.max(0, 1 - Math.abs(dxN) * 1.6);   // dim away from sun column
+      const pulse = t === 0 ? 0.72 : 0.50 + 0.50 * Math.sin(t * (0.28 + gOff * 0.22) + gPh);
+      const alpha = dFac * dc.bright * (0.038 + gOff * 0.052) * pulse;
+      if (alpha < 0.01) continue;
+
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.scale(1, gAR);   // flatten circle → ellipse; restore() undoes the scale
+      const gg = ctx.createRadialGradient(gx, gy / gAR, 0, gx, gy / gAR, gRad);
+      perfCollector.recordAlloc();
+      gg.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 1)`);
+      gg.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
+      ctx.fillStyle = gg;
+      ctx.beginPath();
+      ctx.arc(gx, gy / gAR, gRad, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// drawAuroraCurtains — WO-V5-ARCTIC
+// ARCTIC signature: auroral ribbon curtains in the sky (phase='sky') and a
+// frozen tundra ground overlay with sastrugi banding + ice hummocks (phase='ground').
+//
+//   phase='sky'    Called from drawScene §2g — after ring-arc, before god-rays.
+//                  Draws 2–3 vertical auroral ribbon curtains in the upper sky
+//                  with additive 'lighter' composite glow.
+//   phase='ground' Called from drawScene §5a' — after ridge fills and §5a base.
+//                  Overlays sastrugi wind-ridges + scattered low ice hummocks and,
+//                  at night, a faint auroral ambient wash on the tundra.
+//
+// Aurora intensity peaks at full night (dc.sunUp false / low sunAlt) and
+// fades to a faint wash by day — coherent at dawn/dusk, near-zero at noon.
+// No Math.random/Date.now; seeded from model.seed via deriveChildSeed + splitmix32.
+// ctx.save/restore balanced; 'lighter' composite reset to 'source-over' before return.
+// Caller is responsible for the model.planetType === 'ARCTIC' gate.
+// ---------------------------------------------------------------------------
+function drawAuroraCurtains(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  horizonY: number,
+  t: number,
+  cache: VistaCache,
+  dc: DayCycle,
+  phase: 'sky' | 'ground',
+  groundBtm?: number,  // pixel bottom of ground fill band; required for 'ground' phase
+): void {
+  const model = cache.model;
+  const pal   = model.palette;
+
+  // Profile-driven config — reads ARCTIC-specific aurora tuning if present.
+  const cfg             = getProfile(model.planetType).auroraCurtains;
+  const curtainCountMax = cfg?.curtainCountMax ?? 3;
+  const intensity       = cfg?.intensity       ?? 1.0;
+
+  // Shared night intensity — drives aurora brightness in both phases.
+  // Peaks at full night (sunAlt deeply negative), fades at dawn/dusk, near-zero midday.
+  const rawNightI = dc.sunUp
+    ? Math.max(0, 0.22 - dc.sunAlt * 1.80)              // sunrise→0.22, midday→0
+    : Math.min(1.0, 0.60 + Math.abs(dc.sunAlt) * 0.40); // 0.60–1.0 through the night
+  const nightI = rawNightI * intensity;
+
+  // ---- phase='sky' — auroral ribbon curtains --------------------------------
+  if (phase === 'sky') {
+    const rngAur        = splitmix32(deriveChildSeed(model.seed, 'aurora-curtains'));
+    const CURTAIN_COUNT = Math.min(curtainCountMax, 2 + Math.floor(rngAur() * 2));  // 2 or 3
+
+    // Curtains span from near-zenith (4% of horizonY) down to ~68% of horizonY.
+    const curtainTop = horizonY * 0.04;
+    const curtainBtm = horizonY * 0.68;
+    const curtainH   = curtainBtm - curtainTop;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+
+    for (let ci = 0; ci < CURTAIN_COUNT; ci++) {
+      // Consume all per-curtain RNG values before any alpha gate so the sequence
+      // is deterministic regardless of which curtains pass the alpha threshold.
+      const cxFrac     = 0.12 + rngAur() * 0.76;         // x-centre [0.12, 0.88] of w
+      const halfW      = 38   + rngAur() * 68;            // half-width 38–106 px
+      const swayAmp    = 7    + rngAur() * 24;            // horizontal sway amplitude px
+      const swayFreq   = 2.2  + rngAur() * 2.2;           // curtain fold spatial frequency
+      const swaySpeed  = 0.07 + rngAur() * 0.11;          // slow drift speed
+      const swayPhase  = rngAur() * Math.PI * 2;          // seed-stable initial phase
+      const alphaBase  = 0.52 + rngAur() * 0.38;          // per-curtain base brightness
+      const colorShift = rngAur();                         // 0=green-dominant, 1=teal-dominant
+
+      const alpha = nightI * alphaBase;
+      if (alpha < 0.018) continue;
+
+      const cx = w * cxFrac;
+
+      // Wavy curtain polygon — STEPS waypoints on each vertical edge, same sway offset.
+      const STEPS = 22;
+      const leftPts:  [number, number][] = [];
+      const rightPts: [number, number][] = [];
+      for (let si = 0; si <= STEPS; si++) {
+        const frac = si / STEPS;
+        const cy   = curtainTop + frac * curtainH;
+        const sway = Math.sin(frac * swayFreq * Math.PI + swayPhase
+                              + (t === 0 ? 0 : t * swaySpeed)) * swayAmp;
+        leftPts.push([cx - halfW + sway, cy]);
+        rightPts.push([cx + halfW + sway, cy]);
+      }
+
+      // Colour gradient: magenta-violet crown (top) → green body → teal base.
+      // colorShift blends between two aurora hue pairs for per-curtain variety.
+      //   shift≈0: green body (30, 220, 80) + violet crown (120, 40, 220)
+      //   shift≈1: teal body  ( 0, 160, 200) + magenta crown (200, 30, 180)
+      const bodyR = Math.round(30  * (1 - colorShift));
+      const bodyG = Math.round(220 - colorShift * 60);
+      const bodyB = Math.round(80  + colorShift * 120);
+      const crnR  = Math.round(120 + colorShift * 80);
+      const crnG  = Math.round(40  - colorShift * 10);
+      const crnB  = Math.round(220 - colorShift * 40);
+
+      const grad = ctx.createLinearGradient(cx, curtainTop, cx, curtainBtm);
+      perfCollector.recordAlloc();
+      grad.addColorStop(0,    `rgba(${crnR}, ${crnG}, ${crnB}, 0)`);
+      grad.addColorStop(0.10, `rgba(${crnR}, ${crnG}, ${crnB}, ${(alpha * 0.45).toFixed(3)})`);
+      grad.addColorStop(0.30, `rgba(${bodyR}, ${bodyG}, ${bodyB}, ${alpha.toFixed(3)})`);
+      grad.addColorStop(0.58, `rgba(${bodyR}, ${bodyG}, ${bodyB}, ${(alpha * 0.38).toFixed(3)})`);
+      grad.addColorStop(1,    `rgba(${bodyR}, ${bodyG}, ${bodyB}, 0)`);
+
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      // Left edge: top → bottom
+      for (let i = 0; i <= STEPS; i++) {
+        const [px, py] = leftPts[i];
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      // Right edge: bottom → top (closes the ribbon polygon)
+      for (let i = STEPS; i >= 0; i--) {
+        const [px, py] = rightPts[i];
+        ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // MUST reset composite + globalAlpha before restore — 'lighter' is a classic leak.
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+    ctx.restore();
+    return;
+  }
+
+  // ---- phase='ground' — frozen tundra overlay --------------------------------
+  // Overlay drawn over the already-filled ridge/land surface for all ARCTIC worlds.
+  const gTop = horizonY;
+  const gBtm = groundBtm ?? h;
+  const gH   = gBtm - gTop;
+  if (gH <= 0) return;
+
+  const [sr, sg, sb] = pal.surface;  // ARCTIC surface: tundra gray-green [68, 92, 82]
+
+  // 1) Sastrugi banding — wind-carved ridges running horizontally across the tundra.
+  //    Thin paired crest-highlight + shadow-trough bands at seeded y-positions.
+  {
+    const rngSas    = splitmix32(deriveChildSeed(model.seed, 'arctic-sastrugi'));
+    const SAS_COUNT = 6 + Math.floor(rngSas() * 6);  // 6–11 bands
+    const brightFac = Math.max(0.25, dc.bright);
+
+    ctx.save();
+    for (let si = 0; si < SAS_COUNT; si++) {
+      const yFrac = rngSas();
+      const thick = 1.5 + rngSas() * 4.0;   // band height 1.5–5.5 px
+      const dark  = 0.06 + rngSas() * 0.09;
+      const lit   = 0.07 + rngSas() * 0.10;
+      const py    = gTop + yFrac * gH;
+
+      // Shadow trough below the crest (darker tundra tone)
+      ctx.globalAlpha = dark * brightFac;
+      ctx.fillStyle   = `rgb(${Math.max(0, sr - 28)}, ${Math.max(0, sg - 22)}, ${Math.max(0, sb - 18)})`;
+      ctx.fillRect(0, py, w, thick);
+
+      // Lit snow crest just above the trough (lighter / icier tone)
+      ctx.globalAlpha = lit * brightFac;
+      ctx.fillStyle   = `rgb(${Math.min(255, sr + 38)}, ${Math.min(255, sg + 42)}, ${Math.min(255, sb + 52)})`;
+      ctx.fillRect(0, py - 1.5, w, 1.5);
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
+  // 2) Ice hummocks — low rounded permafrost mounds scattered in the foreground zone.
+  //    Concentrated in the lower 50% of the ground band (nearer the camera).
+  {
+    const rngHum    = splitmix32(deriveChildSeed(model.seed, 'arctic-hummocks'));
+    const HUM_COUNT = 7 + Math.floor(rngHum() * 8);   // 7–14 hummocks
+    const fgBand    = gTop + gH * 0.50;                // foreground zone: lower half of ground
+    const brightFac = Math.max(0.30, dc.bright);
+
+    ctx.save();
+    for (let hi = 0; hi < HUM_COUNT; hi++) {
+      // Consume all per-hummock values before any gate.
+      const hx     = rngHum() * w;
+      const hyFrac = rngHum();
+      const hw     = 18 + rngHum() * 55;   // half-width 18–73 px
+      const hh     = 5  + rngHum() * 18;   // height 5–23 px (very low mounds)
+      const hAlp   = 0.50 + rngHum() * 0.38;
+      const hy     = fgBand + hyFrac * (gBtm - fgBand - 4);
+
+      // Hummock body: soft radial gradient ellipse, icier/lighter than the surface
+      const hg = ctx.createRadialGradient(hx, hy, 0, hx, hy, hw);
+      perfCollector.recordAlloc();
+      hg.addColorStop(0,    `rgba(${Math.min(255, sr + 48)}, ${Math.min(255, sg + 55)}, ${Math.min(255, sb + 72)}, ${(hAlp * brightFac).toFixed(3)})`);
+      hg.addColorStop(0.65, `rgba(${Math.min(255, sr + 18)}, ${Math.min(255, sg + 20)}, ${Math.min(255, sb + 28)}, ${(hAlp * brightFac * 0.35).toFixed(3)})`);
+      hg.addColorStop(1,    `rgba(${sr}, ${sg}, ${sb}, 0)`);
+      ctx.fillStyle = hg;
+      ctx.beginPath();
+      ctx.ellipse(hx, hy, hw, hh, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Bright snow cap on the upper arc — sun-lit highlight, fades below dc.bright threshold
+      if (dc.bright > 0.08) {
+        ctx.save();
+        ctx.globalAlpha = hAlp * dc.bright * 0.55;
+        ctx.fillStyle   = `rgba(${Math.min(255, sr + 85)}, ${Math.min(255, sg + 95)}, ${Math.min(255, sb + 105)}, 1)`;
+        ctx.beginPath();
+        ctx.ellipse(hx, hy - hh * 0.35, hw * 0.72, hh * 0.50, 0, Math.PI, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+    ctx.restore();
+  }
+
+  // 3) Aurora ambient wash on the ground — at night the curtains cast a faint
+  //    green-teal ambient glow on the tundra surface.
+  if (nightI > 0.12) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const washA    = nightI * 0.055;
+    const washGrad = ctx.createLinearGradient(0, gTop, 0, gBtm);
+    perfCollector.recordAlloc();
+    washGrad.addColorStop(0, `rgba(20, 110, 55, ${washA.toFixed(3)})`);
+    washGrad.addColorStop(1, `rgba(20, 110, 55, 0)`);
+    ctx.fillStyle = washGrad;
+    ctx.fillRect(0, gTop, w, gH);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// drawWaterFX — WO-V3-WATER-FX
+// Specular glitter column, sky flip-reflection, and whitecap/storm foam FX.
+// Called from drawScene §4b — liquid water types only (ocean/coastal/tidal-flat).
+// frozen and lava skip this; they carry no liquid-surface light optics.
+// ctx.save/restore is balanced inside every branch; 'lighter' composite is
+// always reset before return.
+// ---------------------------------------------------------------------------
+function drawWaterFX(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  t: number,
+  cache: VistaCache,
+  dc: DayCycle,
+  sunX: number,
+  wt: number,   // waterTopY in pixels
+  wh: number,   // h - wt
+): void {
+  const model  = cache.model;
+  const { sc } = cache;
+  const pal    = model.palette;
+  const b      = dc.bright;
+  const warm   = dc.warm;
+
+  // ---- 1. Sky flip-reflection ------------------------------------------------
+  // Reconstruct live sky colours mirroring the sky-step day-cycle math so the
+  // reflection reads as the actual sky above, not an arbitrary tint.
+  const horBase = pal.skyHorizon;
+  const topBase = pal.skyTop;
+  const horR  = Math.round(Math.min(255, horBase[0] * (0.40 + b * 0.60) + warm * 40));
+  const horG  = Math.round(Math.min(255, horBase[1] * (0.40 + b * 0.60) + warm * 18));
+  const horBl = Math.round(Math.min(255, horBase[2] * (0.40 + b * 0.60)));
+  const topR  = Math.round(Math.min(255, topBase[0] * (0.30 + b * 0.70) + warm * 15));
+  const topG  = Math.round(Math.min(255, topBase[1] * (0.30 + b * 0.70) + warm * 5));
+  const topBl = Math.round(Math.min(255, topBase[2] * (0.30 + b * 0.70)));
+
+  const reflH     = Math.min(wh * 0.36, 110);
+  const reflAlpha = 0.26 * b;
+
+  // Sky gradient reflected into the upper water band: horizon colour at the
+  // waterline (what you see looking toward the horizon), zenith colour deeper.
+  {
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    const reflGrad = ctx.createLinearGradient(0, wt, 0, wt + reflH);
+    perfCollector.recordAlloc();
+    reflGrad.addColorStop(0,    `rgba(${horR}, ${horG}, ${horBl}, ${reflAlpha.toFixed(3)})`);
+    reflGrad.addColorStop(0.55, `rgba(${Math.round((horR + topR) / 2)}, ${Math.round((horG + topG) / 2)}, ${Math.round((horBl + topBl) / 2)}, ${(reflAlpha * 0.42).toFixed(3)})`);
+    reflGrad.addColorStop(1,    `rgba(${topR}, ${topG}, ${topBl}, 0)`);
+    ctx.fillStyle = reflGrad;
+    ctx.fillRect(0, wt, w, reflH);
+    ctx.restore();
+  }
+
+  // Sun disc reflection patch — elliptical glow just below the waterline.
+  if (dc.sunUp) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    const patchW   = 52 + dc.bright * 68;
+    const patchH   = Math.min(reflH * 0.55, 55);
+    const sunAlpha = 0.20 * dc.bright;
+    const sunPatch = ctx.createRadialGradient(sunX, wt + 5, 0, sunX, wt + patchH, patchW);
+    perfCollector.recordAlloc();
+    sunPatch.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${sunAlpha.toFixed(3)})`);
+    sunPatch.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
+    ctx.fillStyle = sunPatch;
+    ctx.fillRect(sunX - patchW, wt, patchW * 2, patchH * 2);
+    ctx.restore();
+  }
+
+  // ---- 2. Specular glitter column -------------------------------------------
+  // Perspective sun-path: narrow at the waterline (far horizon), wide near the
+  // camera (bottom of the water band).  Positions seeded; twinkle animated via t.
+  // Tracks sunX across the full day cycle.
+  const sunAltFactor = dc.sunUp ? Math.max(0.15, dc.bright * 0.92) : 0;
+  if (sunAltFactor > 0.03) {
+    const SPARKLE_COUNT = 72;
+    const colMaxHW = w * 0.13;   // half-width at the near-camera end
+    const colMinHW = 5;           // half-width at the waterline (horizon end)
+    const colDepth = Math.min(wh * 0.88, h * 0.42);
+
+    const rngSp = splitmix32(deriveChildSeed(model.seed, 'water-fx'));
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = `rgba(${cache.reflTint}, 1)`;
+
+    for (let i = 0; i < SPARKLE_COUNT; i++) {
+      const f     = rngSp();               // 0=waterline (horizon), 1=near camera
+      const lx    = (rngSp() - 0.5) * 2;  // -1..1 relative to column centre
+      const phase = rngSp() * Math.PI * 2;
+      const sizeN = 0.7 + rngSp() * 1.9;  // radius in px
+
+      // Column fans out quadratically → natural perspective taper.
+      const halfW = colMinHW + (colMaxHW - colMinHW) * (f * f);
+      const sx    = sunX + lx * halfW;
+      const sy    = wt + f * colDepth;
+
+      if (sx < -4 || sx > w + 4) continue;
+
+      const twinkle     = t === 0 ? 0.72 : 0.42 + 0.58 * Math.sin(t * (0.85 + f * 1.7) + phase);
+      const depthBright = 0.18 + f * 0.82;  // closer = stronger specular
+      const alpha       = Math.min(0.80, twinkle * depthBright * sunAltFactor);
+      if (alpha < 0.04) continue;
+
+      ctx.globalAlpha = alpha;
+      ctx.beginPath();
+      ctx.arc(sx, sy, sizeN, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // ---- 3. Whitecap foam and storm-enhanced shoreline -------------------------
+  // whitecapDensity mirrors buildVistaCache derivation from water.chop.
+  const waterLayer      = model.layers.water!;
+  const whitecapDensity = Math.min(1, 0.3 + Math.max(0, waterLayer.chop) * 0.7);
+
+  // Seeded foam patches scattered across the water surface.
+  // Density and size scale with whitecapDensity; storm foamMul amplifies alpha.
+  if (whitecapDensity > 0.22) {
+    const FOAM_COUNT = Math.round(8 + whitecapDensity * 30);
+    const rngFm = splitmix32(deriveChildSeed(model.seed, 'water-foam'));
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = `rgba(${cache.foamColor}, 1)`;
+
+    for (let i = 0; i < FOAM_COUNT; i++) {
+      const fy   = rngFm();                    // depth fraction 0=horizon, 1=near camera
+      const fxn  = rngFm();                    // normalised x 0..1
+      const fph  = rngFm() * Math.PI * 2;      // animation phase
+      const flen = 10 + rngFm() * 30 * (0.5 + fy * 0.5);  // patch length in px
+      const fdir = rngFm() < 0.5 ? 1 : -1;    // drift direction (consumed every iter)
+
+      const sx    = fxn * w;
+      const drift = t === 0 ? 0 : t * (7 + fy * 18) * fdir;
+      const fsx   = sx + drift;
+      const sy    = wt + fy * wh;
+
+      if (fsx + flen * 0.5 < 0 || fsx - flen * 0.5 > w) continue;
+
+      const pulse  = t === 0 ? 0.78 : 0.48 + 0.52 * Math.sin(t * (1.1 + fy * 0.8) + fph);
+      const fAlpha = Math.min(0.52, pulse * whitecapDensity * (0.10 + fy * 0.32) * cache.foamMul);
+      if (fAlpha < 0.04) continue;
+
+      ctx.globalAlpha = fAlpha;
+      ctx.lineWidth   = 1.0 + fy * 2.0;
+      ctx.beginPath();
+      ctx.moveTo(fsx - flen * 0.5, sy);
+      ctx.lineTo(fsx + flen * 0.5, sy);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // Storm-enhanced shoreline foam — extra breaking water when foamMul > 1.5.
+  const stormExtra = Math.max(0, cache.foamMul - 1.5);
+  if (stormExtra > 0.05) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = `rgba(${cache.foamColor}, 1)`;
+    ctx.lineWidth   = 2.4;
+    const stormDrift = t === 0 ? 0 : t * 26;
+    ctx.beginPath();
+    for (let x = 0; x <= w; x += 6) {
+      const fy3 = wt + 4 + Math.sin((x + stormDrift) / 26 * Math.PI * 2) * 4.5 * Math.min(2.5, cache.foamMul);
+      if (x === 0) ctx.moveTo(x, fy3); else ctx.lineTo(x, fy3);
+    }
+    ctx.globalAlpha = Math.min(0.48, stormExtra * 0.24 * (t === 0 ? 0.88 : 0.76 + 0.24 * Math.sin(t * 1.9)));
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// drawAlpineRidges — WO-V5-MOUNTAINOUS  (revised: snow visibility + scree softness)
+//
+// Alpine terrain signature: 4 layered ridgelines receding far→near with
+// atmospheric-perspective haze; snow caps on upper ridge peaks; a scree +
+// treeline foreground band; and visible valley depth between consecutive ridges.
+//
+// Called from drawScene §5 — MOUNTAINOUS planet type only.
+// Replaces the generic ridge renderer + ground fill for this type.
+//
+// Seeding: 'alpine-ridges' splitmix32 stream for ridge profiles;
+//          'alpine-treeline' stream for the treeline silhouette — both isolated.
+// No Math.random / Date.now.
+// ctx.save / restore balanced throughout; no 'lighter' composite used outside
+// save/restore, so composite op + alpha remain at source-over/1 on exit.
+// ---------------------------------------------------------------------------
+function drawAlpineRidges(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  t: number,
+  model: VistaModel,
+  cache: VistaCache,
+  dc: DayCycle,
+  horizonY: number,
+  sunX: number,
+): void {
+  if (w <= 0) return;   // FIX 3: period = w*(…) = 0 → x%0 = NaN; guard here
+  const pal = model.palette;
+  const { hasAtmosphere } = cache;
+  const b = dc.bright;
+  const terrainBtm = cache.hasWater ? cache.waterTopY : h;
+  const terrainH   = terrainBtm - horizonY;
+  if (terrainH <= 0) return;
+
+  // Profile-driven config — reads MOUNTAINOUS-specific terrain signature if present.
+  const cfg = getProfile(model.planetType).alpineRidges;
+  const RIDGE_COUNT    = cfg?.ridgeCount    ?? 4;    // layered ridgelines far→near
+  const SNOW_LINE_FRAC = cfg?.snowLineFrac  ?? 0.60; // fraction of terrainH below which snow fades to zero
+                                                       // Near-ridge peaks reach ~0.34·H; 0.60 keeps them
+                                                       // inside the clip zone (was 0.30 → snow invisible).
+  const SCREE_FRAC     = cfg?.screeFrac     ?? 0.40; // fraction of post-near-ridge gap for the scree band
+  const TREE_STEP_PX   = cfg?.treeStepPx   ?? 14;   // pixel spacing between conifer spike tips
+
+  // Seeded PRNG — isolated label so this sub-stream never aliases other renderers.
+  const rng = splitmix32(deriveChildSeed(model.seed, 'alpine-ridges'));
+
+  // Sun azimuth fraction (0=left edge, 1=right edge) — biases snow glint direction.
+  // Safe: w > 0 guarded above.
+  const sunFrac = sunX / w;
+
+  // Atmospheric haze color — identical derivation to the generic ridge renderer so
+  // far ridges desaturate/lift into the same sky atmosphere.
+  const horBase = pal.skyHorizon;
+  const hazeR = hasAtmosphere ? Math.min(255, Math.round(horBase[0] * (0.4 + b * 0.6))) : 8;
+  const hazeG = hasAtmosphere ? Math.min(255, Math.round(horBase[1] * (0.4 + b * 0.6))) : 8;
+  const hazeB = hasAtmosphere ? Math.min(255, Math.round(horBase[2] * (0.4 + b * 0.6))) : 20;
+
+  // Snow color: palette.foam is the canonical snowcap/mist color for MOUNTAINOUS.
+  const [foamR, foamG, foamB] = pal.foam ?? ([198, 210, 220] as RGB);
+
+  // Snow line Y (pixels): ridge peaks above this Y carry snow.
+  const snowLineY = horizonY + SNOW_LINE_FRAC * terrainH;
+
+  // ---- Ground plane — alpine surface fill (rock/loam from pal.surface) ----
+  {
+    const [sr, sg, sb] = pal.surface;
+    const fill = ctx.createLinearGradient(0, horizonY, 0, terrainBtm);
+    perfCollector.recordAlloc();
+    fill.addColorStop(0, `rgb(${Math.round(sr * 0.90)}, ${Math.round(sg * 0.90)}, ${Math.round(sb * 0.88)})`);
+    fill.addColorStop(1, `rgb(${Math.round(sr * 0.58)}, ${Math.round(sg * 0.60)}, ${Math.round(sb * 0.56)})`);
+    ctx.fillStyle = fill;
+    ctx.fillRect(0, horizonY, w, terrainH);
+  }
+
+  // ---- Ridge layers: far (ri=0) → near (ri=RIDGE_COUNT-1) ----
+  ctx.save();
+  // Clip ridges to above the waterline when coastal water is present.
+  if (cache.hasWater) {
+    ctx.beginPath();
+    ctx.rect(0, 0, w, cache.waterTopY);
+    ctx.clip();
+  }
+
+  for (let ri = 0; ri < RIDGE_COUNT; ri++) {
+    const depthFrac = ri / Math.max(1, RIDGE_COUNT - 1);   // 0=far, 1=near
+
+    // Ridge base Y: exponential placement gives convincing perspective recession.
+    const tFrac      = Math.pow(depthFrac, 0.70);
+    const ridgeBaseY = horizonY + tFrac * terrainH * 0.85;
+
+    // Amplitude: near ridges tower higher over the camera.
+    const amplitude = terrainH * (0.12 + depthFrac * 0.20);
+
+    // Per-ridge seeded profile: two sinusoidal harmonics produce the macro alpine
+    // silhouette; a third high-frequency term adds rocky jaggedness.
+    //
+    // WO-VISTA-MOUNTAINOUS-IDENTITY: freqA used to be a FLAT 0.50-1.10 range
+    // for every layer — under 1.1 sine cycles across the full canvas width
+    // is ONE rounded hump, not "multiple jagged mountain peaks" (confirmed
+    // via live-mount screenshot: the whole ridge stack read as smooth
+    // rolling hills, not alpine geology, even with ample terrainH). Now
+    // scales with depthFrac so distant ridges stay a soft, hazy 1-2-hump
+    // horizon line (matching real atmospheric-perspective blur) while near
+    // ridges get 3-5 individually distinct peaks — the "foreground/
+    // midground peaks, ridgelines" the WANTED list asks for.
+    const phaseA = rng() * Math.PI * 2;
+    const freqA  = (1.0 + depthFrac * 1.8) + rng() * 0.60;
+    const phaseB = rng() * Math.PI * 2;
+    const freqB  = freqA * 1.70 + rng() * 0.40;
+    const bRatio = 0.30 + rng() * 0.18;
+    const phaseC = rng() * Math.PI * 2;
+    const freqC  = freqA * 4.20 + rng() * 0.80;
+    const cRatio = 0.07 + rng() * 0.05;
+
+    // Very slow atmospheric drift — mountains don't move; drift just prevents
+    // the vista from feeling fully frozen.  Near layers drift slightly faster.
+    const driftSpeed = (0.006 + depthFrac * 0.010) * (w / 1440);
+    const scrollOff  = t * driftSpeed;
+    // FIX 3: Math.max(1, …) ensures period ≥ 1 even when w is near 0.
+    const period     = Math.max(1, w * (1.30 + rng() * 0.55));
+
+    const STEP   = 4;
+    const numPts = Math.ceil(w / STEP) + 2;
+
+    // WO-VISTA-MOUNTAINOUS-IDENTITY-R2: the macro silhouette (freqA/freqB)
+    // now samples a TRIANGLE wave (linear ramps, sharp corners at both
+    // peak and valley) instead of abs(sin) (smooth rounded crest) —
+    // confirmed via live-mount screenshot that R1's freqA-depth-scaling
+    // alone still read as smooth rolling hills, since MORE humps of the
+    // SAME rounded shape is still rounded. A triangle wave gives genuinely
+    // angular, sawtooth mountain geometry while staying a CONTINUOUS
+    // connected ridgeline (unlike a power-sharpened sine, which collapses
+    // to a flat trough between peaks — isolated spikes, not a range).
+    // freqC (fine rocky jaggedness) stays plain sine — it's texture noise
+    // layered on the macro shape, not the silhouette itself.
+    const triangleWave = (phase: number): number => {
+      const p = phase - Math.floor(phase);
+      return p < 0.5 ? p * 2 : 2 - p * 2;
+    };
+    const ridgeAt = (xNorm: number): number =>
+      ridgeBaseY
+      - triangleWave(xNorm * freqA + phaseA / (Math.PI * 2)) * amplitude
+      - triangleWave(xNorm * freqB + phaseB / (Math.PI * 2)) * amplitude * bRatio
+      - Math.abs(Math.sin(xNorm * Math.PI * 2 * freqC + phaseC)) * amplitude * cRatio;
+
+    // ---- Fill color: interpolate pal.ridge[] by depthFrac (far→near) ----
+    const ridge    = pal.ridge;
+    const ridgeLen = ridge.length;
+    const rawPos   = depthFrac * Math.max(1, ridgeLen - 1);
+    const lo       = Math.floor(rawPos);
+    const hi       = Math.min(lo + 1, ridgeLen - 1);
+    const ridgeMix = rawPos - lo;
+    const [loR, loG, loB] = ridge[lo]  ?? ([74, 78, 91] as RGB);
+    const [hiR, hiG, hiB] = ridge[hi]  ?? ([loR, loG, loB] as RGB);
+    const baseR = Math.round(loR * (1 - ridgeMix) + hiR * ridgeMix);
+    const baseG = Math.round(loG * (1 - ridgeMix) + hiG * ridgeMix);
+    const baseB = Math.round(loB * (1 - ridgeMix) + hiB * ridgeMix);
+
+    // Atmospheric haze: far ridges blend ~55% toward sky horizon color.
+    // Identical scalar to the generic ridge renderer for visual continuity.
+    const hazeAmt  = 0.55 * (1 - depthFrac) * (hasAtmosphere ? 1.0 : 0.12);
+    const hazeAmtC = 1 - hazeAmt;
+    const fillR    = Math.round(baseR * hazeAmtC + hazeR * hazeAmt);
+    const fillG    = Math.round(baseG * hazeAmtC + hazeG * hazeAmt);
+    const fillB    = Math.round(baseB * hazeAmtC + hazeB * hazeAmt);
+
+    // Night cool-shift: ridges darken and push slightly cooler (bluer) at night.
+    const nightMix = Math.max(0, 1 - b * 2.2);
+    const coolR = Math.round(fillR * (1 - nightMix * 0.44));
+    const coolG = Math.round(fillG * (1 - nightMix * 0.30));
+    const coolB = Math.min(255, Math.round(fillB + nightMix * 16));
+
+    // ---- Ridge body fill ----
+    ctx.beginPath();
+    ctx.moveTo(-STEP, terrainBtm);
+    for (let xi = 0; xi <= numPts; xi++) {
+      const x    = (xi - 1) * STEP;
+      const xScr = (((x + scrollOff) % period) + period) % period;
+      ctx.lineTo(x, ridgeAt(xScr / period));
+    }
+    ctx.lineTo(w + STEP, terrainBtm);
+    ctx.closePath();
+    ctx.fillStyle = `rgb(${coolR}, ${coolG}, ${coolB})`;
+    ctx.fill();
+
+    // ---- Interleaved haze veil between layers (depth reinforcement) ----
+    // A thin atmosphere-colored gradient after each stratum makes each successive
+    // range appear through progressively thicker air.
+    if (ri < RIDGE_COUNT - 1 && hasAtmosphere) {
+      const veilAlpha = 0.06 * (1 - depthFrac) * Math.max(0.12, b);
+      if (veilAlpha > 0.003) {
+        const veilGrad = ctx.createLinearGradient(0, 0, 0, horizonY);
+        perfCollector.recordAlloc();
+        veilGrad.addColorStop(0,    `rgba(${hazeR}, ${hazeG}, ${hazeB}, ${(veilAlpha * 0.20).toFixed(3)})`);
+        veilGrad.addColorStop(0.65, `rgba(${hazeR}, ${hazeG}, ${hazeB}, ${veilAlpha.toFixed(3)})`);
+        veilGrad.addColorStop(1,    `rgba(${hazeR}, ${hazeG}, ${hazeB}, ${(veilAlpha * 0.35).toFixed(3)})`);
+        ctx.fillStyle = veilGrad;
+        ctx.fillRect(0, 0, w, horizonY);
+      }
+    }
+
+    // ---- Snow caps (FIX 1) ----
+    // Root cause of original invisibility: the old approach clipped a top-down
+    // gradient fill to the ridge polygon interior, covering y=[horizonY, 0.30·H].
+    // Near-ridge peaks sit at ~0.34·H from horizonY — entirely outside that zone —
+    // so the intersection was empty and no snow was painted.
+    //
+    // Fix: thick STROKE along ridgeAt, clipped to y < snowLineY (now 0.60·H).
+    // The stroke paints directly on the ridge crest regardless of polygon depth,
+    // guaranteeing visibility.  Thickness: 4px far (subtle) → 22px near (clearly reads).
+    // Alpha: 0.55 far → 0.95 near (day);  0.16 → 0.34 (night, faint moonlit luminosity).
+    {
+      const snowThick = Math.max(2, 4 + depthFrac * 18);
+      const snowAlpha = dc.sunUp
+        ? (0.55 + depthFrac * 0.40) * Math.max(0.35, b)   // 0.55 far → 0.95 near
+        : 0.16 + depthFrac * 0.18;                          // moonlit: 0.16 far → 0.34 near
+
+      // Warm bias toward the sun side; cooler at night (blue-white moonlit snow).
+      const warmBias  = dc.sunUp ? Math.round(dc.warm * 18) : 0;
+      const sideBoost = sunFrac < 0.5 ? 10 : 0;
+      const snowR = dc.sunUp ? Math.min(255, foamR + warmBias + sideBoost) : Math.round(foamR * 0.72);
+      const snowG = dc.sunUp ? Math.min(255, foamG + Math.round(warmBias * 0.40)) : Math.round(foamG * 0.80);
+      const snowB = dc.sunUp ? foamB : Math.min(255, Math.round(foamB * 0.90 + 12));
+
+      ctx.save();
+      // Clip to y < snowLineY — peaks below that line carry no snow.
+      ctx.beginPath();
+      ctx.rect(0, 0, w, snowLineY);
+      ctx.clip();
+
+      ctx.lineWidth   = snowThick;
+      ctx.lineJoin    = 'round';
+      ctx.lineCap     = 'round';
+      ctx.strokeStyle = `rgba(${snowR}, ${snowG}, ${snowB}, ${snowAlpha.toFixed(3)})`;
+      ctx.beginPath();
+      for (let xi = 0; xi <= numPts; xi++) {
+        const x    = (xi - 1) * STEP;
+        const xScr = (((x + scrollOff) % period) + period) % period;
+        const y    = ridgeAt(xScr / period);
+        if (xi === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // ---- Scree band + conifer treeline (nearest ridge foreground) ----
+  // The gap between the nearest ridge base and the ground/waterline carries:
+  //   • Scree: soft low-opacity gray-stone tint (FIX 2 — was hard opaque brown stripe).
+  //   • Treeline: jagged dark-green conifer spikes (structure confirmed by lead).
+  {
+    // Near-ridge base Y matches ridgeBaseY formula at depthFrac=1.
+    const nearBaseY = horizonY + terrainH * 0.85;
+    const gapH      = terrainBtm - nearBaseY;
+    if (gapH > 6) {
+      const screeBtmY = nearBaseY + gapH * SCREE_FRAC;
+
+      // FIX 2: alpha capped at 0.28 max — reads as a natural rock-debris tint over
+      // the ridge body, not a painted stripe.  Haze tint blended in to pull color
+      // toward cool neutral gray instead of warm brown.
+      const [sr, sg, sb] = pal.surface;
+      const scR = Math.round(sr * 0.72 + hazeR * 0.14);
+      const scG = Math.round(sg * 0.70 + hazeG * 0.14);
+      const scB = Math.round(sb * 0.74 + hazeB * 0.14);
+      const screeAlpha = 0.28 * Math.max(0.20, b + 0.20);
+
+      ctx.save();
+      const screeGrad = ctx.createLinearGradient(0, nearBaseY, 0, screeBtmY);
+      perfCollector.recordAlloc();
+      screeGrad.addColorStop(0, `rgba(${scR}, ${scG}, ${scB}, ${screeAlpha.toFixed(3)})`);
+      screeGrad.addColorStop(1, `rgba(${scR}, ${scG}, ${scB}, 0)`);
+      ctx.fillStyle = screeGrad;
+      ctx.fillRect(0, nearBaseY, w, screeBtmY - nearBaseY);
+      ctx.restore();
+
+      // Treeline: jagged conifer silhouette — dark triangular spikes seeded per-world.
+      const treeRng   = splitmix32(deriveChildSeed(model.seed, 'alpine-treeline'));
+      const treeBaseY = screeBtmY;
+      const treeHMax  = gapH * SCREE_FRAC * 0.90;
+
+      // Dark alpine green; fades at deep night but always maintains a minimum silhouette.
+      const treeR = dc.sunUp ? 22 : 12;
+      const treeG = dc.sunUp ? 36 : 20;
+      const treeB = dc.sunUp ? 22 : 14;
+      const treeA = Math.max(0.22, 0.55 * Math.max(0.40, b + 0.25));
+
+      ctx.save();
+      ctx.fillStyle = `rgba(${treeR}, ${treeG}, ${treeB}, ${treeA.toFixed(3)})`;
+      ctx.beginPath();
+      const numTrees = Math.ceil(w / TREE_STEP_PX);
+      ctx.moveTo(0, treeBaseY);
+      for (let ti = 0; ti <= numTrees; ti++) {
+        const tx    = ti * TREE_STEP_PX;
+        const peakH = treeHMax * (0.42 + treeRng() * 0.58);
+        const tw    = TREE_STEP_PX * (0.30 + treeRng() * 0.22);
+        // Triangle spike: step from baseline → apex → back to baseline.
+        ctx.lineTo(tx - tw * 0.5, treeBaseY);
+        ctx.lineTo(tx,            treeBaseY - peakH);
+        ctx.lineTo(tx + tw * 0.5, treeBaseY);
+      }
+      ctx.lineTo(w, treeBaseY);
+      ctx.lineTo(w, terrainBtm);
+      ctx.lineTo(0, terrainBtm);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  ctx.restore();
+  // FIX 4: no 'lighter' composite or alpha mutations outside save/restore blocks.
+  // Composite op and globalAlpha remain at source-over / 1 on exit — no reset needed.
+}
+
+// ---------------------------------------------------------------------------
+// drawCoastalLand — WO-V4-TERRAN
+//
+// Organic coastal-land signature for TERRAN worlds with water.type='coastal'.
+// Called from drawScene §5a in place of the flat fillRect ground strip.
+// Renders:
+//   1. Land polygon with a meandering lower edge (the composite shoreline).
+//   2. River-delta inlets — V-notch depressions in the shoreline that expose
+//      the water layer already painted beneath.
+//   3. Sandy beach gradient strip above the composite shore edge.
+//   4. Thin shore-edge highlight (daytime only).
+//
+// Seeding: one splitmix32 stream derived from model.seed+'coastal-land'.
+// No Math.random, no Date.now; ctx.save/restore balanced throughout.
+// ---------------------------------------------------------------------------
+function drawCoastalLand(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  t: number,
+  model: VistaModel,
+  cache: VistaCache,
+  dc: DayCycle,
+  horizonY: number,
+  wTopY: number,
+): void {
+  void t;  // structural param; shore shape is static (seeded, not animated)
+
+  const pal = model.palette;
+  const [sr, sg, sb] = pal.surface;
+  const [wr, wg, wb] = pal.water as [number, number, number];
+  const b = dc.bright;
+
+  // Profile-driven signature params — read once, used throughout.
+  const sig = getProfile(model.planetType).coastalSig;
+  const shoreAmp   = (sig?.shorelineAmplitude ?? 0.055) * h;  // max Y-deviation in pixels
+  const inletCount = sig?.deltaInletCount ?? 2;
+  const beachDepth = (sig?.beachDepth ?? 0.022) * h;          // beach strip height in pixels
+
+  // One seeded PRNG stream for this world's coastline — stable per model.seed.
+  const rng = splitmix32(deriveChildSeed(model.seed, 'coastal-land'));
+
+  // ---- Shore control points (meandering baseline) ----
+  // 15 anchor Y values spanning [0..w]; each deviates ±shoreAmp from the
+  // nominal waterline.  Smoothstep-interpolated between anchors in shoreYAt().
+  const N_CTRL = 14;
+  const ctrlY: number[] = [];
+  for (let i = 0; i <= N_CTRL; i++) {
+    ctrlY.push(wTopY + (rng() * 2 - 1) * shoreAmp);
+  }
+
+  // ---- Delta inlet placement ----
+  // Each inlet is a V-notch that lifts the shore upward (inland), letting the
+  // pre-painted water layer show through.  Reject placements too close together.
+  const MIN_GAP = w * 0.22;
+  const inlets: { cx: number; hwBase: number; depth: number }[] = [];
+  let att = 0;
+  while (inlets.length < inletCount && att < 40) {
+    att++;
+    const cx     = w * (0.14 + rng() * 0.72);           // clear of extreme edges
+    const hwBase = 14 + rng() * 24;                      // half-width at shore (14–38 px)
+    const depth  = shoreAmp * (0.85 + rng() * 1.20);    // how deep the channel cuts inland
+    if (!inlets.some((p) => Math.abs(p.cx - cx) < MIN_GAP)) {
+      inlets.push({ cx, hwBase, depth });
+    }
+  }
+
+  // ---- Composite shore Y function ----
+  // Returns the land-water boundary Y at canvas X.
+  // = smooth meander baseline + V-notch upward carves from each inlet.
+  // Smaller Y = inland (toward horizon); larger Y = toward viewer / into water.
+  const shoreYAt = (x: number): number => {
+    const fi = (x / w) * N_CTRL;
+    const i0 = Math.floor(fi);
+    const i1 = Math.min(i0 + 1, N_CTRL);
+    const f  = fi - i0;
+    const sm = f * f * (3 - 2 * f);                       // smoothstep blend
+    const base = ctrlY[i0] * (1 - sm) + ctrlY[i1] * sm;
+    let mod = 0;
+    for (const inlet of inlets) {
+      const dx = Math.abs(x - inlet.cx);
+      if (dx < inlet.hwBase) {
+        const p  = 1 - dx / inlet.hwBase;                 // 0 at edges, 1 at centre
+        const ps = p * p * (3 - 2 * p);                   // smoothstep for soft walls
+        mod = Math.min(mod, -inlet.depth * ps);            // negative → shore lifts inland
+      }
+    }
+    return base + mod;
+  };
+
+  // ---- Pre-fill narrow shore band with water color ----
+  // The composite shore can rise above wTopY, exposing canvas layers below.
+  // Pre-painting the water palette color into [wTopY - shoreAmp .. wTopY]
+  // ensures inlet channels and meander troughs reveal water, not sky.
+  ctx.save();
+  ctx.fillStyle = rgba(pal.water, 0.86);
+  ctx.fillRect(0, Math.max(horizonY, wTopY - shoreAmp - 4), w, shoreAmp + 4);
+  ctx.restore();
+
+  // ---- Land polygon ----
+  // Top edge at horizonY (flat); lower edge traces the composite shore curve.
+  ctx.save();
+  const landGrad = ctx.createLinearGradient(0, horizonY, 0, wTopY + shoreAmp * 0.6);
+  perfCollector.recordAlloc();
+  landGrad.addColorStop(0,    `rgb(${Math.round(sr * 0.86)}, ${Math.round(sg * 0.86)}, ${Math.round(sb * 0.86)})`);
+  landGrad.addColorStop(0.65, `rgb(${sr}, ${sg}, ${sb})`);
+  landGrad.addColorStop(1,    `rgb(${Math.round(sr * 0.78)}, ${Math.round(sg * 0.82)}, ${Math.round(sb * 0.74)})`);
+  ctx.fillStyle = landGrad;
+
+  ctx.beginPath();
+  ctx.moveTo(0, horizonY);
+  ctx.lineTo(w, horizonY);
+  // Shore right→left; closePath implicitly connects back to (0, horizonY).
+  for (let x = w; x >= 0; x -= 6) ctx.lineTo(x, shoreYAt(x));
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+
+  // ---- Sandy beach gradient ----
+  // Warm-sandy tonal strip of height beachDepth following the composite shore,
+  // blending transparent (inland) → sandy (at the water's edge).
+  // Clipped to the land polygon so beach colour never spills onto the water body.
+  const sandR = Math.min(255, Math.round(sr * 0.68 + wr * 0.18 + 64));
+  const sandG = Math.min(255, Math.round(sg * 0.70 + wg * 0.18 + 54));
+  const sandB = Math.min(255, Math.round(sb * 0.68 + wb * 0.18 + 38));
+  const beachA = Math.min(0.88, 0.55 * b + 0.22);
+
+  ctx.save();
+  // Clip to land polygon.
+  ctx.beginPath();
+  ctx.moveTo(0, horizonY);
+  ctx.lineTo(w, horizonY);
+  for (let x = w; x >= 0; x -= 6) ctx.lineTo(x, shoreYAt(x));
+  ctx.closePath();
+  ctx.clip();
+
+  // Beach strip: from shore edge upward beachDepth.
+  ctx.beginPath();
+  for (let x = 0; x <= w; x += 6) {
+    const sy = shoreYAt(x);
+    if (x === 0) ctx.moveTo(x, sy); else ctx.lineTo(x, sy);
+  }
+  for (let x = w; x >= 0; x -= 6) {
+    ctx.lineTo(x, Math.max(horizonY, shoreYAt(x) - beachDepth));
+  }
+  ctx.closePath();
+
+  const beachGrad = ctx.createLinearGradient(0, wTopY - beachDepth, 0, wTopY + shoreAmp * 0.5);
+  perfCollector.recordAlloc();
+  beachGrad.addColorStop(0,    `rgba(${sandR}, ${sandG}, ${sandB}, 0)`);
+  beachGrad.addColorStop(0.45, `rgba(${sandR}, ${sandG}, ${sandB}, ${(beachA * 0.52).toFixed(3)})`);
+  beachGrad.addColorStop(1,    `rgba(${sandR}, ${sandG}, ${sandB}, ${beachA.toFixed(3)})`);
+  ctx.fillStyle = beachGrad;
+  ctx.fill();
+  ctx.restore();
+
+  // ---- Shore-edge highlight (daytime only) ----
+  // Thin bright stroke along the shoreline; mimics sun glancing off wet sand.
+  if (dc.sunUp) {
+    ctx.save();
+    ctx.globalAlpha = 0.22 * b;
+    ctx.strokeStyle = `rgb(${Math.min(255, sandR + 24)}, ${Math.min(255, sandG + 20)}, ${Math.min(255, sandB + 16)})`;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let x = 0; x <= w; x += 6) {
+      const sy = shoreYAt(x);
+      if (x === 0) ctx.moveTo(x, sy); else ctx.lineTo(x, sy);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// drawLavaSea — WO-V4-VOLCANIC
+// Lava-sea signature: cooled basalt crust tessellated by a glowing molten
+// crack network.  Self-emissive — brightness is NOT keyed to the day cycle.
+// Called from drawScene §4b — lava water type only.
+// ctx.save/restore balanced inside every branch; 'lighter' composite always
+// reset before return.  No Math.random, no Date.now — seeded + deterministic.
+// ---------------------------------------------------------------------------
+function drawLavaSea(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  cache: VistaCache,
+): void {
+  const model = cache.model;
+  const wt    = cache.waterTopY;   // pixel Y of the waterline (top of lava band)
+  const wh    = h - wt;            // height of the lava band in pixels
+  if (wh <= 0) return;
+
+  const pal = model.palette;
+  // Lava surface color from palette.water — [200, 58, 10] for VOLCANIC.
+  const [wr, wg, wb] = pal.water  as [number, number, number];
+  // Hottest channel core from palette.accent — [255, 90, 20] for VOLCANIC.
+  const [ar, ag, ab] = pal.accent as [number, number, number];
+
+  // Seeded child RNG — isolated from every other draw path.
+  const rng = splitmix32(deriveChildSeed(model.seed, 'lava-sea'));
+
+  // ---- 1. Cooled crust overlay -----------------------------------------------
+  // Dark basalt layer on top of the base waterBand gradient.
+  // Opacity decreases near the camera (thinner crust, more glow leaking through).
+  {
+    ctx.save();
+    const crustGrad = ctx.createLinearGradient(0, wt, 0, h);
+    perfCollector.recordAlloc();
+    crustGrad.addColorStop(0,    'rgba(10, 4, 2, 0.80)');   // cool/thick at horizon
+    crustGrad.addColorStop(0.50, 'rgba(16, 6, 3, 0.64)');
+    crustGrad.addColorStop(1,    'rgba(24, 8, 4, 0.42)');   // thinner/warmer near camera
+    ctx.fillStyle = crustGrad;
+    ctx.fillRect(0, wt, w, wh);
+    ctx.restore();
+  }
+
+  // ---- 2. Crack channel network ----------------------------------------------
+  // Scatter N junction points (square Y-bias: more near horizon for perspective
+  // compression).  Connect nearby pairs with glowing crack lines — outer diffuse
+  // orange + narrow bright core.  Glow intensity and line width both scale toward
+  // the camera to reinforce depth.
+  const N = 52;
+  const jxArr: number[] = [];
+  const jyArr: number[] = [];
+  for (let i = 0; i < N; i++) {
+    jxArr.push(rng() * w);
+    // Squaring f concentrates junctions near the horizon (y=wt).
+    const f = rng();
+    jyArr.push(wt + f * f * wh);
+  }
+
+  // Max connection radius — roughly a quarter of the band span.
+  const RADIUS = Math.min(w * 0.30, wh * 0.55);
+
+  for (let i = 0; i < N; i++) {
+    const ax = jxArr[i];
+    const ay = jyArr[i];
+    // depthF: 0=near waterline (horizon, far), 1=near bottom (camera, close).
+    const depthF = Math.max(0, Math.min(1, (ay - wt) / Math.max(1, wh)));
+
+    const glowAlpha  = 0.08 + depthF * 0.50;   // outer diffuse alpha
+    const coreAlpha  = 0.14 + depthF * 0.62;   // inner core alpha
+    const outerWidth = 5  + depthF * 18;        // outer line width (px)
+    const coreWidth  = 1.2 + depthF * 5.2;      // inner line width (px)
+
+    const maxConn = rng() < 0.36 ? 3 : 2;
+    let   conn    = 0;
+
+    for (let j = i + 1; j < N && conn < maxConn; j++) {
+      const bx  = jxArr[j];
+      const by  = jyArr[j];
+      const dx  = bx - ax;
+      const dy  = by - ay;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len < 8 || len > RADIUS) continue;
+      conn++;
+
+      // Midpoint jitter — seeded once per edge (same for outer + inner draw).
+      const mx = (ax + bx) * 0.5 + (rng() - 0.5) * len * 0.20;
+      const my = (ay + by) * 0.5 + (rng() - 0.5) * len * 0.22;
+
+      // Outer diffuse glow — wide, dim orange channel.
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.lineCap   = 'round';
+      ctx.lineJoin  = 'round';
+      ctx.lineWidth = outerWidth;
+      ctx.strokeStyle = `rgba(${wr}, ${wg}, ${wb}, ${glowAlpha.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.quadraticCurveTo(mx, my, bx, by);
+      ctx.stroke();
+      ctx.restore();
+
+      // Inner core — narrow, bright yellow-orange; the visible molten channel.
+      const cR = Math.min(255, ar + 8);
+      const cG = Math.min(255, ag + 62);
+      const cB = Math.min(255, ab + 32);
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.lineCap   = 'round';
+      ctx.lineJoin  = 'round';
+      ctx.lineWidth = coreWidth;
+      ctx.strokeStyle = `rgba(${cR}, ${cG}, ${cB}, ${coreAlpha.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.quadraticCurveTo(mx, my, bx, by);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Hot junction node — radial glow where cracks converge.
+    const nodeR = 3 + depthF * 10;
+    const nodeA = 0.08 + depthF * 0.44;
+    const rimA  = 0.04 + depthF * 0.18;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const nodeGrad = ctx.createRadialGradient(ax, ay, 0, ax, ay, nodeR * 2.8);
+    perfCollector.recordAlloc();
+    nodeGrad.addColorStop(0,    `rgba(${Math.min(255, ar + 10)}, ${Math.min(255, ag + 90)}, ${Math.min(255, ab + 50)}, ${nodeA.toFixed(3)})`);
+    nodeGrad.addColorStop(0.45, `rgba(${wr}, ${wg}, ${wb}, ${rimA.toFixed(3)})`);
+    nodeGrad.addColorStop(1,    `rgba(${wr}, ${wg}, ${wb}, 0)`);
+    ctx.fillStyle = nodeGrad;
+    ctx.beginPath();
+    ctx.arc(ax, ay, nodeR * 2.8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // ---- 3. Shoreline incandescence -------------------------------------------
+  // Bright emissive band immediately below the waterline: the land–lava contact.
+  {
+    const shoreH = Math.min(wh * 0.20, 52);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const shoreGrad = ctx.createLinearGradient(0, wt, 0, wt + shoreH);
+    perfCollector.recordAlloc();
+    shoreGrad.addColorStop(0, `rgba(${ar}, ${ag}, ${ab}, 0.44)`);
+    shoreGrad.addColorStop(1, `rgba(${wr}, ${wg}, ${wb}, 0)`);
+    ctx.fillStyle = shoreGrad;
+    ctx.fillRect(0, wt, w, shoreH);
+    ctx.restore();
+  }
+
+  // ---- 4. Ground-uplift radiance -------------------------------------------
+  // Near-camera base glow: the molten sea under the crust radiates upward.
+  // Subtly underlights the foreground — reads as "facing a lava sea."
+  {
+    const radH = Math.min(wh * 0.38, 90);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const radGrad = ctx.createLinearGradient(0, h - radH, 0, h);
+    perfCollector.recordAlloc();
+    radGrad.addColorStop(0, `rgba(${wr}, ${wg}, ${wb}, 0)`);
+    radGrad.addColorStop(1, `rgba(${wr}, ${Math.round(wg * 0.65)}, ${Math.round(wb * 0.28)}, 0.24)`);
+    ctx.fillStyle = radGrad;
+    ctx.fillRect(0, h - radH, w, radH);
+    ctx.restore();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// drawOceanicSurface — WO-V5-OCEANIC
+//
+// Open-water signature for OCEANIC worlds: a layered parallax swell/crest
+// field, a perspective sun-glitter (or moon-glitter at night) specular track,
+// and 1–2 distant archipelago islets silhouetted near the horizon.
+//
+// Replaces the generic flat-water banding with a visibly distinctive open-ocean
+// read.  Called from drawScene §4b — OCEANIC planet type only.
+//
+// Seeding: child streams derived from model.seed — labels 'oceanic-surface',
+// 'oceanic-glitter', 'oceanic-islets' — each isolated from every other renderer.
+// No Math.random, no Date.now.  ctx.save/restore balanced throughout; all
+// 'lighter'/composite + globalAlpha values reset before return.
+// ---------------------------------------------------------------------------
+function drawOceanicSurface(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  t: number,
+  cache: VistaCache,
+  dc: DayCycle,
+  sunX: number,
+  wt: number,   // waterTopY in pixels
+  wh: number,   // h - wt (water band height in pixels)
+): void {
+  const model = cache.model;
+  const { sc }  = cache;
+  const pal     = model.palette;
+
+  // FIX 2: guard against degenerate canvas (w<=0 → period=0 → x%0=NaN).
+  if (w <= 0 || wh <= 0) return;
+
+  // Palette channels — OCEANIC carries all three in its basePalette.
+  const [wr, wg, wb] = pal.water  as [number, number, number];
+  const [ar, ag, ab] = pal.accent as [number, number, number];
+  const [sr, sg, sb] = pal.surface;
+
+  // Profile-driven config — reads OCEANIC-specific surface tuning if present.
+  const cfg          = getProfile(model.planetType).oceanicSurface;
+  const SWELL_COUNT  = cfg?.swellCount         ?? 6;
+  const SPARKLE_N    = cfg?.glitterCount        ?? 80;
+  const colMaxHWFrac = cfg?.glitterColumnWidth  ?? 0.12;
+
+  // ---- 1. Layered parallax swell field (far → near) -------------------------
+  // Six swell layers distribute from just below the waterline to the near edge
+  // of the water band.  Each is a seeded two-frequency sinusoid drawn as a
+  // filled polygon (the swell body) topped with a lit crest highlight.
+  // depthFrac: 0 = farthest (near horizon), 1 = nearest (camera foreground).
+  const rngSw = splitmix32(deriveChildSeed(model.seed, 'oceanic-surface'));
+  for (let si = 0; si < SWELL_COUNT; si++) {
+    const depthFrac = si / Math.max(1, SWELL_COUNT - 1);
+
+    // Exponential Y placement so swells bunch toward the horizon (perspective).
+    const tFrac = Math.pow(depthFrac, 0.65);
+    const baseY = wt + tFrac * wh * 0.88;
+
+    // Per-swell seeded shape — two frequencies + phases, harmonic ratio for
+    // an organic non-repeating open-ocean erg (mirrors the DuneSea idiom).
+    const phA  = rngSw() * Math.PI * 2;
+    const frqA = 0.40 + rngSw() * 0.60;
+    const phB  = rngSw() * Math.PI * 2;
+    const frqB = frqA * 1.55 + rngSw() * 0.30;
+    const bRat = 0.28 + rngSw() * 0.26;   // harmonic amplitude fraction
+
+    // Amplitude grows quadratically with depth: far swells are very subtle,
+    // near swells loom visibly over the camera (ocean-scale perspective).
+    const amp = wh * (0.006 + depthFrac * depthFrac * 0.058);
+
+    // Slow ocean drift — near swells scroll faster (parallax depth sensation).
+    const speed  = (0.038 + depthFrac * 0.22) * (w / 1440);
+    const scroll = t === 0 ? 0 : t * speed;
+    const period = w * (1.30 + rngSw() * 0.60);
+
+    // Inline crest sampler: pre-scrolled normalised position → canvas Y.
+    const crestAt = (x: number): number => {
+      const xn = (((x + scroll) % period) + period) % period / period;
+      return baseY
+        + Math.sin(xn * Math.PI * 2 * frqA + phA) * amp
+        + Math.sin(xn * Math.PI * 2 * frqB + phB) * amp * bRat;
+    };
+
+    // Swell body: filled slab from crest top to crest + slabH.
+    // Gradient: lighter at the crest tip, transparent at the slab bottom.
+    const slabH     = 3 + depthFrac * 20;
+    const fillAlpha = 0.05 + depthFrac * 0.13;
+    {
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(0, crestAt(0));
+      for (let x = 0; x <= w; x += 8) ctx.lineTo(x, crestAt(x));
+      for (let x = w; x >= 0; x -= 8) ctx.lineTo(x, crestAt(x) + slabH);
+      ctx.closePath();
+      const bodyGrad = ctx.createLinearGradient(0, baseY - amp, 0, baseY + slabH);
+      perfCollector.recordAlloc();
+      bodyGrad.addColorStop(0, `rgba(${Math.min(255, wr + 32)}, ${Math.min(255, wg + 46)}, ${Math.min(255, wb + 52)}, ${(fillAlpha * 0.75).toFixed(3)})`);
+      bodyGrad.addColorStop(1, `rgba(${wr}, ${wg}, ${wb}, 0)`);
+      ctx.fillStyle = bodyGrad;
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // Crest highlight: lit edge, brighter + wider near camera; day/night aware.
+    const crestBright = dc.sunUp
+      ? Math.max(0.05, dc.bright * 0.50)
+      : 0.06;
+    const crestAlpha = crestBright * (0.16 + depthFrac * 0.56);
+    if (crestAlpha > 0.015) {
+      const crestRgb = dc.sunUp
+        ? `${Math.min(255, sc.r + 38)}, ${Math.min(255, sc.g + 56)}, ${Math.min(255, sc.b + 68)}`
+        : `${Math.min(255, ar + 30)}, ${Math.min(255, ag + 20)}, ${Math.min(255, ab + 12)}`;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = crestAlpha;
+      ctx.strokeStyle = `rgba(${crestRgb}, 1)`;
+      ctx.lineWidth   = 0.7 + depthFrac * 2.8;
+      ctx.lineCap     = 'round';
+      ctx.beginPath();
+      for (let x = 0; x <= w; x += 6) {
+        const y = crestAt(x);
+        if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // ---- 2. Specular glitter track (sun day / moon-glitter night) -------------
+  // A perspective-tapered column aligned to sunX (day) or a derived moonX
+  // (night).  Column fans out quadratically: narrow at the horizon, broad near
+  // the camera.  Each sparkle twinkles via t + a seeded phase offset.
+  // Mirror of the drawWaterFX approach but broader (open-ocean scale) and
+  // distinct in color: teal-accent tint at night vs sun-star color by day.
+  const rngGl = splitmix32(deriveChildSeed(model.seed, 'oceanic-glitter'));
+
+  let   glitterX: number;
+  let   glitterAlphaScale: number;
+  if (dc.sunUp) {
+    glitterX         = sunX;
+    glitterAlphaScale = Math.max(0.10, dc.bright * 0.85);
+  } else {
+    // Night: moon-glitter track.  The moon is ~opposite the sun in azimuth;
+    // derive a plausible screen X from the night phase (dayPhase offset by 0.5).
+    const nightPhase  = (dc.dayPhase + 0.50) % 1.0;
+    glitterX          = w * (0.12 + nightPhase * 0.76);
+    glitterAlphaScale = 0.14 * dc.bodyBright;
+  }
+
+  if (glitterAlphaScale > 0.015) {
+    const colMaxHW  = w * colMaxHWFrac;  // half-width at camera (near) end (profile: glitterColumnWidth)
+    const colMinHW  = 5;                  // half-width at horizon (far) end
+    const colDepth  = Math.min(wh * 0.86, h * 0.42);
+
+    // Day: sun color; night: cool bioluminescent teal (accent palette).
+    const glitColorR = dc.sunUp ? sc.r                    : Math.min(255, ar + 50);
+    const glitColorG = dc.sunUp ? sc.g                    : Math.min(255, ag + 22);
+    const glitColorB = dc.sunUp ? sc.b                    : Math.min(255, ab + 16);
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = `rgba(${glitColorR}, ${glitColorG}, ${glitColorB}, 1)`;
+
+    for (let i = 0; i < SPARKLE_N; i++) {
+      // Consume all per-sparkle values before any conditional skip so the
+      // RNG sequence stays deterministic regardless of which sparkles are clipped.
+      const f     = rngGl();                   // 0=horizon, 1=camera
+      const lx    = (rngGl() - 0.5) * 2;      // −1..1 relative to column centre
+      const phase = rngGl() * Math.PI * 2;
+      const size  = 0.5 + rngGl() * 1.9;      // disc radius in px
+
+      // Column fans quadratically — natural perspective taper.
+      const halfW = colMinHW + (colMaxHW - colMinHW) * (f * f);
+      const sx    = glitterX + lx * halfW;
+      const sy    = wt + f * colDepth;
+
+      if (sx < -4 || sx > w + 4) continue;
+
+      // Dim sparkles that stray sideways away from the glitter-track axis.
+      const dxN  = (sx - glitterX) / Math.max(1, w);
+      const dFac = Math.max(0, 1 - Math.abs(dxN) * 2.6);
+
+      const twinkle = t === 0 ? 0.72 : 0.36 + 0.64 * Math.sin(t * (0.70 + f * 1.9) + phase);
+      const alpha   = Math.min(0.82, twinkle * (0.14 + f * 0.86) * glitterAlphaScale * dFac);
+      if (alpha < 0.012) continue;
+
+      ctx.globalAlpha = alpha;
+      ctx.beginPath();
+      ctx.arc(sx, sy, size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // ---- 3. Distant archipelago islets (1–2) silhouetted near the horizon -----
+  // FIX 1: islets must be clearly legible as land masses, not water artifacts.
+  // Sized to 6–18% canvas width and 28–58% of the band height; silhouette uses
+  // darkened surface rock (not blended with water) at high alpha so the dome
+  // stands out unambiguously against the open ocean.
+  const rngIs      = splitmix32(deriveChildSeed(model.seed, 'oceanic-islets'));
+  const isletCount = 1 + (rngIs() < 0.55 ? 1 : 0);  // 1 or 2; RNG consumed first
+  const isletBandH = wh * 0.25;                        // upper 25% of water band
+
+  // Silhouette: darkened surface rock — stays well below the water hue so the
+  // dome reads unambiguously as solid land, not a water tint.
+  const isR = Math.max(4,  Math.round(sr * 0.55));
+  const isG = Math.max(6,  Math.round(sg * 0.55));
+  const isB = Math.max(10, Math.round(sb * 0.58));
+  // Strong alpha — islets must be unambiguously visible day AND night.
+  const isletAlpha = 0.72 + dc.bright * 0.18;
+
+  for (let ii = 0; ii < isletCount; ii++) {
+    // Consume all per-islet RNG values before any conditional — stable sequence.
+    const cx  = (0.16 + rngIs() * 0.68) * w;
+    const iW  = w * (0.060 + rngIs() * 0.120);         // 6–18% of canvas — clearly legible
+    const iH  = isletBandH * (0.28 + rngIs() * 0.30);  // 28–58% of band — visible dome
+    const iOY = rngIs() * isletBandH * 0.08;
+    const iY  = wt + wh * 0.03 + iOY;                  // just below the waterline
+
+    if (iY + iH > h || iY < 0) continue;
+
+    // Main dome silhouette — filled bezier arc.
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = `rgba(${isR}, ${isG}, ${isB}, ${isletAlpha.toFixed(3)})`;
+    ctx.beginPath();
+    ctx.moveTo(cx - iW * 0.5, iY + iH);
+    ctx.bezierCurveTo(
+      cx - iW * 0.5, iY,
+      cx + iW * 0.5, iY,
+      cx + iW * 0.5, iY + iH,
+    );
+    ctx.closePath();
+    ctx.fill();
+
+    // Bioluminescent/lit rim along the top arc — day and night (night dimmer).
+    // Accent palette gives the characteristic teal glow of OCEANIC worlds.
+    const rimAlpha = dc.sunUp
+      ? Math.max(0.10, dc.bright * 0.30)
+      : 0.08 * dc.bodyBright;
+    if (rimAlpha > 0.04) {
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.strokeStyle = `rgba(${Math.min(255, ar + 22)}, ${Math.min(255, ag + 40)}, ${Math.min(255, ab + 34)}, ${rimAlpha.toFixed(3)})`;
+      ctx.lineWidth   = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(cx - iW * 0.5, iY + iH);
+      ctx.bezierCurveTo(
+        cx - iW * 0.5, iY,
+        cx + iW * 0.5, iY,
+        cx + iW * 0.5, iY + iH,
+      );
+      ctx.stroke();
+    }
+
+    // Thin waterline base — separates the islet foot from the water surface.
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = `rgba(${Math.min(255, ar + 40)}, ${Math.min(255, ag + 60)}, ${Math.min(255, ab + 52)}, ${(0.06 + dc.bright * 0.10).toFixed(3)})`;
+    ctx.lineWidth   = 1.0;
+    ctx.beginPath();
+    ctx.moveTo(cx - iW * 0.5, iY + iH);
+    ctx.lineTo(cx + iW * 0.5, iY + iH);
+    ctx.stroke();
+
+    // FIX 3: explicit composite reset before restore — consistency with all
+    // other draw fns in this file; prevents composite state leaking on refactor.
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// drawTropicalLagoon — WO-V5-TROPICAL
+// Lagoon signature: turquoise shallows grading to deeper water, a seeded
+// coral reef ring enclosing the lagoon, a sandy palm-fringed shoreline, and
+// a moonlit-desaturated shallows + moon-glitter track at night.
+// Called from drawScene §5a — TROPICAL planet type only, in place of the
+// plain ground-strip fillRect.  Draws into the water body [wTopY..h] first
+// (screen / lighter composite overlaid on the already-rendered wave layer),
+// then fills the land strip [horizonY..wTopY] with beach sand + palm
+// silhouettes anchored at the waterline.
+// Seeding: splitmix32(deriveChildSeed(seed, 'tropical-lagoon')) — isolated
+// from every other draw path.  No Math.random, no Date.now.
+// ctx.save/restore balanced throughout; all composite + globalAlpha reset
+// before return.
+// ---------------------------------------------------------------------------
+function drawTropicalLagoon(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  t: number,
+  cache: VistaCache,
+  dc: DayCycle,
+  sunX: number,
+  horizonY: number,   // top of the land strip (sky–land boundary)
+  wTopY: number,      // waterline Y (bottom of land strip, top of water body)
+): void {
+  const model = cache.model;
+  const pal   = model.palette;
+  const b     = dc.bright;
+  const wh    = h - wTopY;       // water body height in pixels
+  const landH = wTopY - horizonY; // land strip height in pixels
+
+  const [wr, wg, wb] = pal.water   as [number, number, number];
+  const [sr, sg, sb] = pal.surface;
+  const [ar, ag, ab] = pal.accent  as [number, number, number];
+  const [pfr, pfg, pfb] = pal.flora;   // compiled palette: flora is the vivid canopy/leaf hue
+
+  // Profile-driven config — reads TROPICAL-specific lagoon tuning if present.
+  const cfg = getProfile(model.planetType).tropicalLagoon;
+
+  // One seeded PRNG stream for this world's lagoon — stable per model.seed.
+  const rng = splitmix32(deriveChildSeed(model.seed, 'tropical-lagoon'));
+
+  // ---- 1. Turquoise shallows depth tint -----------------------------------------
+  // Screen composite over the already-rendered wave layer: lifts and saturates the
+  // near-waterline zone into vivid turquoise shallows, fading to nothing deeper.
+  // Day: warm cyan push keyed to palette.water; night: pale desaturated silver-blue.
+  if (wh > 0) {
+    const shallowH = Math.min(wh * (cfg?.shallowFrac ?? 0.42), 120);
+    const shR = dc.sunUp ? Math.min(255, Math.round(wr * 0.52 + 52)) : Math.min(255, Math.round(wr * 0.28 + 82));
+    const shG = dc.sunUp ? Math.min(255, Math.round(wg * 0.72 + 42)) : Math.min(255, Math.round(wg * 0.38 + 88));
+    const shB = dc.sunUp ? Math.min(255, Math.round(wb * 0.82 + 28)) : Math.min(255, Math.round(wb * 0.72 + 38));
+    const shA = dc.sunUp ? 0.28 * b : 0.20;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    const shallowGrad = ctx.createLinearGradient(0, wTopY, 0, wTopY + shallowH);
+    perfCollector.recordAlloc();
+    shallowGrad.addColorStop(0,   `rgba(${shR}, ${shG}, ${shB}, ${shA.toFixed(3)})`);
+    shallowGrad.addColorStop(0.5, `rgba(${shR}, ${shG}, ${shB}, ${(shA * 0.38).toFixed(3)})`);
+    shallowGrad.addColorStop(1,   `rgba(${shR}, ${shG}, ${shB}, 0)`);
+    ctx.fillStyle = shallowGrad;
+    ctx.fillRect(0, wTopY, w, shallowH);
+    ctx.restore();
+  }
+
+  // ---- 2. Reef ring (seeded elliptical arc) ------------------------------------
+  // A coral-toned arc spanning the mid-water zone — the reef head where the
+  // lagoon floor rises to near-surface.  Position and extent are seeded per-world;
+  // colour is warm (accent-derived) to distinguish it from the turquoise open water.
+  if (wh > 0) {
+    const reefCX = w * (0.25 + rng() * 0.50);
+    const reefCY = wTopY + wh * (0.18 + rng() * 0.22);
+    const reefRX = w * (0.22 + rng() * 0.26);
+    const reefRY = Math.max(4, wh * (0.040 + rng() * 0.030));
+    const reefA  = dc.sunUp ? 0.16 + rng() * 0.10 : 0.09 + rng() * 0.06;
+    // Warm coral tone blended from accent palette + ambient warm offset.
+    const rfR = Math.min(255, Math.round(ar * 0.52 + 155));
+    const rfG = Math.min(255, Math.round(ag * 0.18 + 108));
+    const rfB = Math.min(255, Math.round(ab * 0.07 +  64));
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    // Outer diffuse reef band.
+    ctx.globalAlpha = reefA;
+    ctx.strokeStyle = `rgb(${rfR}, ${rfG}, ${rfB})`;
+    ctx.lineWidth   = Math.max(4, reefRY * 1.75);
+    ctx.beginPath();
+    ctx.ellipse(reefCX, reefCY, reefRX, reefRY, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    // Inner bright crest line — surf break on top of the reef head.
+    ctx.globalAlpha = reefA * 0.52;
+    ctx.strokeStyle = `rgb(${Math.min(255, rfR + 42)}, ${Math.min(255, rfG + 38)}, ${Math.min(255, rfB + 28)})`;
+    ctx.lineWidth   = Math.max(2, reefRY * 0.55);
+    ctx.beginPath();
+    ctx.ellipse(reefCX, reefCY, reefRX, reefRY, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // ---- 3. Night: moon-glitter track -------------------------------------------
+  // When sun is down, a perspective-tapered column of pale silver-blue sparkles
+  // traces the moon's water reflection.  Mirrors the sun-glitter idiom in
+  // drawOceanicSurface: moonX derived from day-phase + 0.5 offset; column fans
+  // quadratically wide at the near-camera end.  Keyed to dc.bodyBright so the
+  // track fades smoothly at dawn/dusk.
+  if (!dc.sunUp && wh > 0) {
+    void sunX;  // sunX is unused at night (moon position derived from day-phase)
+    const nightPhase = (dc.dayPhase + 0.50) % 1.0;
+    const moonX      = w * (0.12 + nightPhase * 0.76);
+    const moonDepth  = Math.min(wh * 0.78, h * 0.35);
+    const moonColMax = w * 0.09;
+    const moonColMin = 3;
+    const rngMg = splitmix32(deriveChildSeed(model.seed, 'tropical-moonglitter'));
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = 'rgba(182, 208, 232, 1)';   // fixed cool silver-blue; no palette dependency
+
+    for (let i = 0; i < 46; i++) {
+      const f     = rngMg();
+      const lx    = (rngMg() - 0.5) * 2;
+      const phase = rngMg() * Math.PI * 2;
+      const sizeN = 0.5 + rngMg() * 1.35;
+      const halfW = moonColMin + (moonColMax - moonColMin) * (f * f);
+      const sx    = moonX + lx * halfW;
+      const sy    = wTopY + f * moonDepth;
+      if (sx < -4 || sx > w + 4) continue;
+      const twinkle = t === 0 ? 0.62 : 0.32 + 0.68 * Math.sin(t * (0.62 + f * 1.35) + phase);
+      const depth   = 0.12 + f * 0.74;
+      const alpha   = Math.min(0.62, twinkle * depth * 0.72 * dc.bodyBright);
+      if (alpha < 0.03) continue;
+      ctx.globalAlpha = alpha;
+      ctx.beginPath();
+      ctx.arc(sx, sy, sizeN, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // ---- 4. Sandy beach ground strip [horizonY..wTopY] ---------------------------
+  // Replaces the plain fillRect in §5a: a warm gradient lifts near the waterline
+  // (wet sand slightly cooler/darker than the dry beach above it).
+  if (landH > 0) {
+    const sandDR = Math.round(sr * 0.84);
+    const sandDG = Math.round(sg * 0.84);
+    const sandDB = Math.round(sb * 0.84);
+    const sandWR = Math.min(255, Math.round(sr * 0.82 + wr * 0.10));
+    const sandWG = Math.min(255, Math.round(sg * 0.82 + wg * 0.10));
+    const sandWB = Math.min(255, Math.round(sb * 0.82 + wb * 0.10));
+
+    ctx.save();
+    const sandGrad = ctx.createLinearGradient(0, horizonY, 0, wTopY);
+    perfCollector.recordAlloc();
+    sandGrad.addColorStop(0,    `rgb(${sandDR}, ${sandDG}, ${sandDB})`);   // darker at horizon
+    sandGrad.addColorStop(0.70, `rgb(${sr}, ${sg}, ${sb})`);               // full surface colour
+    sandGrad.addColorStop(1,    `rgb(${sandWR}, ${sandWG}, ${sandWB})`);   // slightly wet at waterline
+    ctx.fillStyle = sandGrad;
+    ctx.fillRect(0, horizonY, w, landH);
+    ctx.restore();
+
+    // Shore-edge highlight (daytime only) — sun glancing off wet sand.
+    if (dc.sunUp) {
+      ctx.save();
+      ctx.globalAlpha = 0.18 * b;
+      ctx.strokeStyle = `rgb(${Math.min(255, sr + 28)}, ${Math.min(255, sg + 26)}, ${Math.min(255, sb + 18)})`;
+      ctx.lineWidth   = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(0, wTopY);
+      ctx.lineTo(w, wTopY);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // ---- 5. Palm-fringe shoreline silhouettes ------------------------------------
+  // A minimal seeded scatter of palm silhouettes anchored near the waterline.
+  // Bases sit in the lower sand strip; fronds fan above the crown.
+  // Not connected to the flora-scatter system — purely shoreline decoration.
+  if (landH > 8 && cache.hasWater) {
+    const PALM_COUNT = (cfg?.palmCountBase ?? 4) + Math.floor(rng() * 4);  // 4–7 palms
+
+    // Flora colour keyed to day (vivid green) vs night (near-black silhouette).
+    const pR = dc.sunUp ? Math.round(pfr * (0.50 + b * 0.50)) : Math.round(pfr * 0.12);
+    const pG = dc.sunUp ? Math.round(pfg * (0.50 + b * 0.50)) : Math.round(pfg * 0.14);
+    const pB = dc.sunUp ? Math.round(pfb * (0.50 + b * 0.50)) : Math.round(pfb * 0.12);
+
+    for (let pi = 0; pi < PALM_COUNT; pi++) {
+      const px     = w * (0.06 + rng() * 0.88);        // avoid extreme canvas edges
+      const trunkH = 24 + rng() * 44;                   // trunk height 24–68 px
+      const lean   = (rng() - 0.5) * 0.30;              // lean angle ±0.15 rad
+      // Base near the waterline in the lower sand strip.
+      const baseY  = wTopY - rng() * landH * 0.30;
+      const topY   = Math.max(horizonY + 2, baseY - trunkH);  // crown clamped to above horizon
+      const actualH = baseY - topY;                     // real trunk height after clamp
+      const topX   = px + Math.sin(lean) * actualH;
+
+      // Trunk — thin tapered stroke.
+      ctx.save();
+      ctx.strokeStyle = dc.sunUp
+        ? `rgba(${Math.round(sr * 0.50)}, ${Math.round(sg * 0.42)}, ${Math.round(sb * 0.28)}, 0.82)`
+        : 'rgba(14, 10, 6, 0.78)';
+      ctx.lineWidth = 1.4 + rng() * 1.0;
+      ctx.lineCap   = 'round';
+      ctx.beginPath();
+      ctx.moveTo(px, baseY);
+      ctx.lineTo(topX, topY);
+      ctx.stroke();
+      ctx.restore();
+
+      // Frond fan — 4–6 arced arms radiating from the crown.
+      // a=0 = straight up; a=±1.1 rad = lateral fan extremes.
+      // Gravity droop: cos component muted by |sin| so lateral fronds tip downward.
+      const nFronds = 4 + Math.floor(rng() * 3);
+      const frondL  = 12 + rng() * 18;
+      ctx.save();
+      ctx.strokeStyle = `rgba(${pR}, ${pG}, ${pB}, ${dc.sunUp ? (0.72 + b * 0.22).toFixed(3) : '0.52'})`;
+      ctx.lineWidth   = 1.1;
+      ctx.lineCap     = 'round';
+      for (let fi = 0; fi < nFronds; fi++) {
+        const a    = lean + (-1.10 + fi / Math.max(nFronds - 1, 1) * 2.20);
+        const tipX = topX + Math.sin(a) * frondL;
+        const tipY = topY - Math.cos(a) * frondL + Math.abs(Math.sin(a)) * frondL * 0.28;
+        const ctX  = topX + Math.sin(a) * frondL * 0.46;
+        const ctY  = topY - Math.cos(a) * frondL * 0.46 - frondL * 0.10;
+        ctx.beginPath();
+        ctx.moveTo(topX, topY);
+        ctx.quadraticCurveTo(ctX, ctY, tipX, tipY);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// drawBarrenVacuum — WO-V6-BARREN  (updated: BARREN-LIFT)
+//
+// Airless vacuum signature for BARREN worlds.  Renders four passes:
+//   0. Day-side regolith brightness lift — sunlit airless surfaces reflect as
+//      dim light-gray (lunar-maria albedo).  Scales with dc.bright so the lit
+//      ground reads gray at noon; the terminator §3 re-darkens the shadow half.
+//   1. Supplementary dense starfield (top 50 % of sky) — no atmosphere to
+//      scatter sunlight, so stars blaze through even at noon.
+//   2. Hard-edged crater field across the ground plane — lit rim arc on the
+//      sunward side, hard shadow arc on the far side, recessed floor ellipse.
+//      No soft blurring: airless worlds have no atmospheric haze to soften edges.
+//   3. Crisp terminator shadow when the sun is near the horizon — a hard
+//      multiply band across the ground from the anti-sun side, plus a thin
+//      accent-tint edge line at the terminator boundary.
+//
+// Called from drawScene §5a'' — BARREN planet type ONLY.
+// Seeded via splitmix32(deriveChildSeed(model.seed, 'barren-vacuum'));
+// no Math.random, no Date.now.  ctx.save/restore balanced; arc() radii ≥ 1.
+// ---------------------------------------------------------------------------
+function drawBarrenVacuum(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  t: number,
+  model: VistaModel,
+  _cache: VistaCache,
+  dc: DayCycle,
+  horizonY: number,
+  sunX: number,
+): void {
+  void t;  // structural param — crater positions + star positions are seed-stable
+
+  const pal      = model.palette;
+  const [sr, sg, sb] = pal.surface;
+  const [ar, ag, ab] = pal.accent;
+
+  // One seeded PRNG stream for this world's barren-vacuum signature.
+  const rng = splitmix32(deriveChildSeed(model.seed, 'barren-vacuum'));
+
+  // ---- 1. Supplementary dense starfield (top 50 % of sky) --------------------
+  // Vacuum worlds carry no atmosphere to scatter sunlight, so distant stars are
+  // visible at any hour.  This additive pass layers extra tight stars onto the
+  // existing cache starfield for a truly airless black-sky read.  Drawn only in
+  // the top half of the sky to stay well clear of ridge silhouette intrusions.
+  const EXTRA_STARS = 80 + Math.floor(rng() * 41);  // 80–120
+  {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const skyLimit = horizonY * 0.50;
+    for (let i = 0; i < EXTRA_STARS; i++) {
+      const sx   = rng() * w;
+      const sy   = rng() * skyLimit;
+      const sSz  = Math.max(0.2, 0.20 + rng() * 0.70);   // 0.20–0.90 px
+      const warm = rng();                                  // cool→warm depth grade
+      const sR   = Math.round(192 + warm * 63);           // 192–255
+      const sG   = Math.round(212 + warm * 43);           // 212–255
+      const sB   = Math.round(255 - warm * 38);           // 217–255
+      const sA   = 0.22 + rng() * 0.50;                  // 0.22–0.72
+      ctx.globalAlpha = sA;
+      ctx.fillStyle   = `rgb(${sR}, ${sG}, ${sB})`;
+      ctx.beginPath();
+      ctx.arc(sx, sy, sSz, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // ---- 0. Day-side regolith brightness lift (BARREN-LIFT) ---------------------
+  // Airless surfaces in direct sunlight read as dim light-gray, not black — the
+  // Moon and Mercury under full sun sit at ~0.12 albedo but still register as
+  // clearly gray against black sky.  A flat semi-transparent gray overlay over
+  // the entire ground plane, scaled by dc.bright, lifts the surface so crater
+  // forms pop against a visible background.  The §3 terminator multiply
+  // re-darkens the shadow half, preserving the crisp lit→dark boundary.
+  // Night side (dc.sunUp false) is fully unaffected — no lift applied.
+  const groundH = h - horizonY;
+  if (dc.sunUp && dc.bright > 0.02 && groundH > 8) {
+    const liftA = dc.bright * 0.42;   // 0..0.42 — dim lunar-gray at noon, dark near horizon
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = `rgba(105, 102, 96, ${liftA.toFixed(3)})`;
+    ctx.fillRect(0, horizonY, w, groundH);
+    ctx.restore();
+  }
+
+  // ---- 2. Crater field (ground plane) ----------------------------------------
+  // Each crater: dark recessed floor + lit rim arc (toward sunX) + hard shadow
+  // arc (away from sunX).  No atmospheric blur — vacuum light is razor-sharp.
+  if (groundH > 8) {
+    const CRATER_COUNT = 6 + Math.floor(rng() * 7);   // 6–12 craters
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.lineCap = 'round';
+    for (let ci = 0; ci < CRATER_COUNT; ci++) {
+      const cx = (0.04 + rng() * 0.92) * w;
+      const cy = horizonY + (0.08 + rng() * 0.80) * groundH;
+      // Clamp radius ≥ 1 (arc() guard).
+      const r  = Math.max(1, 8 + Math.floor(rng() * 47));  // 8–54 px
+      // Angle from crater center toward the sun (lit side of the rim).
+      const litAngle = Math.atan2(horizonY * 0.5 - cy, sunX - cx);
+      const rimSpan  = Math.PI * 0.60;   // 108° per arc (lit + shadow)
+
+      // 2a) Dark recessed floor — ellipse offset slightly downward (depth cue).
+      const floorR = Math.max(1, Math.round(r * 0.62));
+      ctx.fillStyle = `rgba(${Math.max(0, sr - 20)}, ${Math.max(0, sg - 20)}, ${Math.max(0, sb - 14)}, 0.82)`;
+      ctx.beginPath();
+      ctx.arc(cx, cy + r * 0.10, floorR, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 2b) Lit rim — lighter-than-surface arc on the sunward side.
+      const hlR = Math.min(255, Math.round(ar * 0.50 + sr * 0.50 + 28));
+      const hlG = Math.min(255, Math.round(ag * 0.50 + sg * 0.50 + 20));
+      const hlB = Math.min(255, Math.round(ab * 0.50 + sb * 0.50 + 16));
+      ctx.strokeStyle = `rgba(${hlR}, ${hlG}, ${hlB}, 0.88)`;
+      ctx.lineWidth   = Math.max(1.0, r * 0.10);
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, litAngle - rimSpan * 0.5, litAngle + rimSpan * 0.5);
+      ctx.stroke();
+
+      // 2c) Shadow rim — hard dark arc on the opposite side; no feathering.
+      const shdAngle = litAngle + Math.PI;
+      ctx.strokeStyle = `rgba(${Math.max(0, Math.round(sr * 0.32))}, ${Math.max(0, Math.round(sg * 0.32))}, ${Math.max(0, Math.round(sb * 0.38))}, 0.92)`;
+      ctx.lineWidth   = Math.max(1.0, r * 0.13);
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, shdAngle - rimSpan * 0.5, shdAngle + rimSpan * 0.5);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // ---- 3. Terminator shadow — crisp day/night boundary at low sun angles ------
+  // No atmosphere = no twilight diffusion.  The boundary between lit and unlit
+  // ground is a hard line.  Only drawn when the sun is within ~16° of the horizon
+  // (sunAlt 0..0.28).
+  const sunAlt = dc.sunAlt;
+  if (dc.sunUp && sunAlt < 0.28 && groundH > 8) {
+    // shadowFrac: 1 when sun at horizon, fades to 0 when alt ≥ 0.28.
+    const shadowFrac = 1 - sunAlt / 0.28;
+    const shadowW    = shadowFrac * w * 0.52;   // width of shadowed ground from anti-sun edge
+    const sunOnRight = sunX > w * 0.5;
+    const termX      = sunOnRight ? shadowW : w - shadowW;
+
+    if (shadowW > 4) {
+      // Hard multiply shadow — the unlit half of the surface.
+      ctx.save();
+      ctx.globalCompositeOperation = 'multiply';
+      ctx.fillStyle = 'rgba(0, 0, 8, 0.70)';
+      if (sunOnRight) {
+        ctx.fillRect(0, horizonY, termX, h - horizonY);
+      } else {
+        ctx.fillRect(termX, horizonY, w - termX, h - horizonY);
+      }
+      ctx.restore();
+
+      // Thin accent-tint edge line — the last lit sliver before shadow.
+      const edgeA = (0.32 * (1 - shadowFrac * 0.45)).toFixed(3);
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.strokeStyle = `rgba(${ar}, ${ag}, ${ab}, ${edgeA})`;
+      ctx.lineWidth   = 1.5;
+      ctx.lineCap     = 'butt';
+      ctx.beginPath();
+      ctx.moveTo(termX, horizonY);
+      ctx.lineTo(termX, h);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// timed — perf-harness call-site wrapper (WO-PERF-HARNESS sub-part a).
+// Measures a draw* call as one named layer in perfCollector; a pure
+// passthrough (fn() with no performance.now() calls) when disabled, so
+// there is zero hot-path cost in prod. Wraps at the CALL SITE rather than
+// inside each draw* body — untouched function bodies stay byte-identical
+// regardless of internal early returns.
+// ---------------------------------------------------------------------------
+function timed(name: string, fn: () => void): void {
+  if (!perfCollector.enabled) { fn(); return; }
+  const __t0 = performance.now();
+  fn();
+  perfCollector.record(name, performance.now() - __t0);
 }
 
 // ---------------------------------------------------------------------------
@@ -2164,36 +7733,78 @@ function drawScene(
   // --- LIVE DAY/NIGHT CYCLE ---
   const dc = dayCycleAt(t, cache.dayPhaseOffset);
 
-  // 1) Sky gradient — rebuilt per frame from palette + day cycle
+  // 1) Sky gradient — consume model.layers.sky.gradient stops + day-cycle brightness.
+  //    The pipeline emits 2–3 stops (zenith, optional scatter-band, horizon) already
+  //    colour-matched to the palette; we apply the same day-cycle brightness curve
+  //    (0.30 dim → 1.0 full) and warm sunrise/sunset tint per stop.
+  //    scatterBands: thin atmospheric colour strips just above the horizon (WO-V2-CLOUDS-RAYS).
   {
     let g: CanvasGradient;
     if (!hasAtmosphere) {
       // VACUUM: near-black sky regardless of sun position
       g = ctx.createLinearGradient(0, 0, 0, horizonY * 1.15);
-      g.addColorStop(0, 'rgb(2, 2, 6)');
+      perfCollector.recordAlloc();
+      g.addColorStop(0,   'rgb(2, 2, 6)');
       g.addColorStop(0.6, 'rgb(4, 4, 12)');
-      g.addColorStop(1, 'rgb(8, 8, 20)');
+      g.addColorStop(1,   'rgb(8, 8, 20)');
     } else {
-      const b = dc.bright;
+      const b    = dc.bright;
       const warm = dc.warm;
-      const topBase = pal.skyTop;
-      const horBase = pal.skyHorizon;
-      const topR = Math.round(Math.min(255, topBase[0] * (0.3 + b * 0.7) + warm * 15));
-      const topG = Math.round(Math.min(255, topBase[1] * (0.3 + b * 0.7) + warm * 5));
-      const topB = Math.round(Math.min(255, topBase[2] * (0.3 + b * 0.7)));
-      const horR = Math.round(Math.min(255, horBase[0] * (0.4 + b * 0.6) + warm * 40));
-      const horG = Math.round(Math.min(255, horBase[1] * (0.4 + b * 0.6) + warm * 18));
-      const horB = Math.round(Math.min(255, horBase[2] * (0.4 + b * 0.6)));
-      const midR = Math.round((topR + horR) / 2);
-      const midG = Math.round((topG + horG) / 2);
-      const midB = Math.round((topB + horB) / 2);
+      const skyGrad = model.layers.sky.gradient;
       g = ctx.createLinearGradient(0, 0, 0, horizonY * 1.15);
-      g.addColorStop(0, `rgb(${topR}, ${topG}, ${topB})`);
-      g.addColorStop(0.6, `rgb(${midR}, ${midG}, ${midB})`);
-      g.addColorStop(1, `rgb(${horR}, ${horG}, ${horB})`);
+      perfCollector.recordAlloc();
+      if (skyGrad.length >= 2) {
+        // Drive each stop through the day-cycle brightness curve.
+        // Stops near 1.0 (horizon) get more warm sunrise/sunset tint than the zenith.
+        for (const stop of skyGrad) {
+          const [cr, cg, cb] = stop.color;
+          const wt  = stop.stop;   // warmth weight increases toward horizon
+          const r   = Math.round(Math.min(255, cr * (0.30 + b * 0.70) + warm * 42 * wt));
+          const cg2 = Math.round(Math.min(255, cg * (0.30 + b * 0.70) + warm * 16 * wt));
+          const cb2 = Math.round(Math.min(255, cb * (0.30 + b * 0.70)));
+          g.addColorStop(stop.stop, `rgb(${r}, ${cg2}, ${cb2})`);
+        }
+      } else {
+        // Fallback: manual two-stop from palette (should never reach here in practice)
+        const topBase = pal.skyTop;
+        const horBase = pal.skyHorizon;
+        const topR = Math.round(Math.min(255, topBase[0] * (0.30 + b * 0.70) + warm * 15));
+        const topG = Math.round(Math.min(255, topBase[1] * (0.30 + b * 0.70) + warm *  5));
+        const topB = Math.round(Math.min(255, topBase[2] * (0.30 + b * 0.70)));
+        const horR = Math.round(Math.min(255, horBase[0] * (0.40 + b * 0.60) + warm * 40));
+        const horG = Math.round(Math.min(255, horBase[1] * (0.40 + b * 0.60) + warm * 18));
+        const horB = Math.round(Math.min(255, horBase[2] * (0.40 + b * 0.60)));
+        g.addColorStop(0,   `rgb(${topR}, ${topG}, ${topB})`);
+        g.addColorStop(0.6, `rgb(${Math.round((topR+horR)/2)}, ${Math.round((topG+horG)/2)}, ${Math.round((topB+horB)/2)})`);
+        g.addColorStop(1,   `rgb(${horR}, ${horG}, ${horB})`);
+      }
     }
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, w, h);
+
+    // Scatter bands — thin atmospheric colour strips above the horizon.
+    // Drawn with 'screen' composite so they glow without washing out the gradient.
+    if (hasAtmosphere && dc.bright > 0.08) {
+      const scatterBands = model.layers.sky.scatterBands;
+      if (scatterBands.length > 0) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        for (const band of scatterBands) {
+          const bandCY = band.y * horizonY;
+          const bandHH = band.width * horizonY * 0.5;
+          const [br, bg2, bb] = band.color;
+          const bAlpha = dc.bright * 0.16;
+          const bGrad  = ctx.createLinearGradient(0, bandCY - bandHH, 0, bandCY + bandHH);
+          perfCollector.recordAlloc();
+          bGrad.addColorStop(0,   `rgba(${br}, ${bg2}, ${bb}, 0)`);
+          bGrad.addColorStop(0.5, `rgba(${br}, ${bg2}, ${bb}, ${bAlpha.toFixed(3)})`);
+          bGrad.addColorStop(1,   `rgba(${br}, ${bg2}, ${bb}, 0)`);
+          ctx.fillStyle = bGrad;
+          ctx.fillRect(0, bandCY - bandHH, w, bandHH * 2);
+        }
+        ctx.restore();
+      }
+    }
   }
 
   // 1a) Sunrise/sunset atmospheric band (atmospheric worlds only)
@@ -2204,6 +7815,7 @@ function drawScene(
     const wG = Math.min(255, Math.round(100 + sc.g * 0.18));
     const wB = Math.min(255, Math.round(20 + sc.b * 0.22));
     const sunriseBand = ctx.createLinearGradient(0, horizonY - bandH, 0, horizonY);
+    perfCollector.recordAlloc();
     sunriseBand.addColorStop(0,   `rgba(${wR}, ${wG}, ${wB}, 0)`);
     sunriseBand.addColorStop(0.5, `rgba(${wR}, ${Math.max(0, wG - 30)}, ${Math.max(0, wB - 10)}, ${(warmAlpha * 0.55).toFixed(3)})`);
     sunriseBand.addColorStop(1,   `rgba(${wR}, ${Math.max(0, wG - 60)}, 10, ${warmAlpha.toFixed(3)})`);
@@ -2216,10 +7828,11 @@ function drawScene(
 
   // 1b) Weather sky overlay
   if (hasAtmosphere && cache.skyDarken > 0) {
-    drawWeatherSky(ctx, w, horizonY, cache.skyDarken, cache.hazeColor);
+    timed('drawWeatherSky', () => drawWeatherSky(ctx, w, horizonY, cache.skyDarken, cache.hazeColor));
   }
 
-  // 2) Starfield — layout cached; twinkle per frame
+  // 2) Starfield — multi-layer color-graded (WO-V3-CELESTIAL).
+  //    Depth grade: dim (far) stars lean cool blue; bright (near) stars lean warm white.
   //    VACUUM: always full brightness.
   //    ATMOSPHERIC: fades out by day (starVisibility driven by sun altitude).
   const starVisibility = hasAtmosphere
@@ -2227,11 +7840,19 @@ function drawScene(
     : 1.0;
   if (cache.stars.length > 0 && starVisibility > 0.02) {
     ctx.save();
-    ctx.fillStyle = '#dfe7f5';
     for (let i = 0; i < cache.stars.length; i++) {
-      const s = cache.stars[i];
+      const s  = cache.stars[i];
       const tw = t === 0 ? 0.75 : 0.5 + 0.5 * Math.sin(t * s.twSpeed + s.twPhase);
-      ctx.globalAlpha = s.baseAlpha * tw * starVisibility;
+      const a  = s.baseAlpha * tw * starVisibility;
+      if (a < 0.005) continue;
+      // Depth-layer colour grade: baseAlpha is the depth proxy.
+      // Dim stars (far layer) are cool blue; bright stars (near) shift toward warm white.
+      const warm = Math.min(1, s.baseAlpha * 3.2);
+      const sr   = Math.round(198 + warm * 57);
+      const sg   = Math.round(215 + warm * 30);
+      const sb   = Math.round(255 - warm * 30);
+      ctx.globalAlpha = a;
+      ctx.fillStyle   = `rgb(${sr}, ${sg}, ${sb})`;
       ctx.beginPath();
       ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2);
       ctx.fill();
@@ -2239,23 +7860,102 @@ function drawScene(
     ctx.restore();
   }
 
-  // 2b) Drifting cloud bands (atmospheric worlds only)
-  if (hasAtmosphere && cache.clouds.length > 0) {
+  // 2e) Hero-star glints — bright foreground stars with 4-point cross (WO-V3-CELESTIAL).
+  //     'lighter' composite blooms over the dark sky; glint length breathes with t.
+  if (cache.heroStars.length > 0 && starVisibility > 0.05) {
     ctx.save();
-    for (let i = 0; i < cache.clouds.length; i++) {
-      const c = cache.clouds[i];
-      const span = w * 1.6;
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round';
+    for (let i = 0; i < cache.heroStars.length; i++) {
+      const hs = cache.heroStars[i];
+      const tw = t === 0 ? 0.75 : 0.5 + 0.5 * Math.sin(t * 0.42 + hs.glintPhase);
+      const a  = tw * starVisibility;
+      if (a < 0.04) continue;
+      const [hr, hg, hb] = hs.tint;
+      // Core disc
+      ctx.globalAlpha = Math.min(1, a * 1.4);
+      ctx.fillStyle   = `rgb(${hr}, ${hg}, ${hb})`;
+      ctx.beginPath();
+      ctx.arc(hs.x, hs.y, hs.r, 0, Math.PI * 2);
+      ctx.fill();
+      // Main cross arms (H + V)
+      const gl = hs.glintLen * tw;
+      ctx.lineWidth   = 0.9;
+      ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${(a * 0.92).toFixed(3)})`;
+      ctx.globalAlpha = 1;
+      ctx.beginPath(); ctx.moveTo(hs.x - gl, hs.y); ctx.lineTo(hs.x + gl, hs.y); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(hs.x, hs.y - gl); ctx.lineTo(hs.x, hs.y + gl); ctx.stroke();
+      // Diagonal arms at 55% length
+      const dgl = gl * 0.55;
+      ctx.lineWidth   = 0.6;
+      ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${(a * 0.55).toFixed(3)})`;
+      ctx.beginPath(); ctx.moveTo(hs.x - dgl, hs.y - dgl); ctx.lineTo(hs.x + dgl, hs.y + dgl); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(hs.x + dgl, hs.y - dgl); ctx.lineTo(hs.x - dgl, hs.y + dgl); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // 2c) Night sky — nebula wash, galactic band, shooting stars (WO-V2-CLOUDS-RAYS).
+  //     Gated on starVisibility so effects fade out cleanly well before sunrise.
+  if (hasAtmosphere && starVisibility > 0.25) {
+    timed('drawNightSky', () => drawNightSky(ctx, w, horizonY, t, cache, starVisibility));
+  }
+
+  // 2f) Ring arc — planet's own ring system as an overhead arc stretching horizon-to-horizon.
+  //     Drawn before clouds (rings are above the atmosphere) and before the sun disc.
+  if (model.layers.celestial.ringArc) {
+    timed('drawRingArc', () => drawRingArc(ctx, w, horizonY, model, dc));
+  }
+
+  // 2g) ARCTIC aurora curtains — sky phase (WO-V5-ARCTIC).
+  //     Drawn after stars + ring-arc, before god-rays and clouds.  Additive glow
+  //     so curtains bloom over the dark sky; intensity gated on nightI inside fn.
+  if (model.planetType === 'ARCTIC') {
+    timed('drawAuroraCurtains', () => drawAuroraCurtains(ctx, w, h, horizonY, t, cache, dc, 'sky'));
+  }
+
+  // 2d) God-rays — wedge fan from the sun, drawn BEFORE clouds so cloud masses
+  //     occlude them and the open gaps show through (WO-V2-CLOUDS-RAYS).
+  //     Sun position duplicated here (same formula as step 3) so we can draw rays
+  //     ahead of the sun disc.
+  if (dc.sunUp && hasAtmosphere && cache.godRaySeeds.length > 0) {
+    const rayPhase  = dc.dayPhase;
+    const rayXu     = cache.sunAzDir > 0 ? rayPhase : 1 - rayPhase;
+    const raySunX   = w * (0.06 + rayXu * 0.88);
+    const raySunY   = horizonY - Math.max(-0.05, dc.sunAlt) * horizonY * SKY_Y_SCALE;
+    timed('drawGodRays', () => drawGodRays(ctx, w, horizonY, raySunX, raySunY, cache, dc));
+  }
+
+  // 2b) Clouds — kind-distinct parallax layers (WO-V2-CLOUDS-RAYS).
+  //     Replaces the old single-style radial-gradient blob.
+  //     cumulus: lit-top / dark-base lobes  |  cirrus: thin feathered streaks
+  //     ash:     turbulent irregular masses  |  overcast: wide low-alpha deck
+  if (hasAtmosphere && cache.clouds.length > 0) {
+    const [cloudTR, cloudTG, cloudTB] = cache.model.layers.atmosphere.clouds.color;
+    const span = w * 1.6;
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    for (const c of cache.clouds) {
       const cx = (((c.x + t * c.speed) % span) + span) % span - w * 0.3;
-      const chh = h * c.hFrac;
-      const cy = Math.min(horizonY * c.yFrac * 2, horizonY - chh - 4);
-      ctx.globalCompositeOperation = 'lighter';
-      const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, c.w);
-      g.addColorStop(0, `rgba(${cache.cloudTint}, ${c.alpha.toFixed(3)})`);
-      g.addColorStop(1, `rgba(${cache.cloudTint}, 0)`);
-      ctx.fillStyle = g;
-      ctx.save(); ctx.translate(cx, cy); ctx.scale(1, chh / c.w); ctx.translate(-cx, -cy);
-      ctx.fillRect(cx - c.w, cy - c.w, c.w * 2, c.w * 2);
-      ctx.restore();
+      const ch = h * c.hFrac;
+      const cy = Math.min(horizonY * c.yFrac * 2, horizonY - ch - 4);
+      if (c.kind === 'cumulus') {
+        timed('drawCumulusCloud', () => drawCumulusCloud(ctx, cx, cy, c.w, ch, c.alpha,
+          cloudTR, cloudTG, cloudTB, c.lobeCount, c.lobeOffsets));
+      } else if (c.kind === 'cirrus') {
+        timed('drawCirrusCloud', () => drawCirrusCloud(ctx, cx, cy, c.w, ch, c.alpha, cloudTR, cloudTG, cloudTB));
+      } else if (c.kind === 'ash') {
+        timed('drawAshCloud', () => drawAshCloud(ctx, cx, cy, c.w, ch, c.alpha,
+          cloudTR, cloudTG, cloudTB, t, c.layer));
+      } else {
+        // Overcast deck — full-width band, linear gradient top→bottom
+        const og = ctx.createLinearGradient(0, cy, 0, cy + ch);
+        perfCollector.recordAlloc();
+        og.addColorStop(0, `rgba(${cloudTR}, ${cloudTG}, ${cloudTB}, ${(c.alpha * 0.82).toFixed(3)})`);
+        og.addColorStop(1, `rgba(${cloudTR}, ${cloudTG}, ${cloudTB}, ${(c.alpha * 0.28).toFixed(3)})`);
+        ctx.fillStyle = og;
+        ctx.fillRect(0, cy, w, ch);
+      }
     }
     ctx.restore();
   }
@@ -2273,54 +7973,66 @@ function drawScene(
   const sunWorldY = horizonY - dc.sunAlt * horizonY * SKY_Y_SCALE;
 
   if (dc.sunUp) {
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
     const horizonFade = Math.max(0.25, Math.min(1, dc.sunAlt * 4));
     // VACUUM: no weather dim on the sun disc
     const sunDim = (hasAtmosphere ? (1 - cache.skyDarken * 0.8) : 1) * horizonFade;
-    const breathe = t === 0 ? 1 : 0.92 + 0.08 * Math.sin(t * 0.5);
-    const coronaGrad = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, coronaR);
-    coronaGrad.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(0.35).toFixed(3)})`);
-    coronaGrad.addColorStop(0.35, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(0.12).toFixed(3)})`);
-    coronaGrad.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
-    ctx.globalAlpha = breathe * sunDim;
-    ctx.fillStyle = coronaGrad;
-    ctx.fillRect(sunX - coronaR, sunY - coronaR, coronaR * 2, coronaR * 2);
-    const cw = cache.coreWhite;
-    const discGrad = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, sunR);
-    discGrad.addColorStop(0, `rgba(${Math.min(255, sc.r + cw * 0.4)}, ${Math.min(255, sc.g + cw * 0.4)}, ${Math.min(255, sc.b + cw * 0.4)}, 0.98)`);
-    discGrad.addColorStop(0.6, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0.95)`);
-    discGrad.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0.5)`);
-    ctx.globalAlpha = sunDim;
-    ctx.fillStyle = discGrad;
-    ctx.beginPath();
-    ctx.arc(sunX, sunY, sunR, 0, Math.PI * 2);
-    ctx.fill();
-    if (cache.hasCompanion) {
-      const { c2, c2side, c2r } = cache;
-      const c2x = sunX + sunR * 4.5 * c2side;
-      const c2y = sunY + sunR * 1.8;
-      const cc = ctx.createRadialGradient(c2x, c2y, 0, c2x, c2y, c2r * 4);
-      cc.addColorStop(0, `rgba(${c2.r}, ${c2.g}, ${c2.b}, 0.4)`);
-      cc.addColorStop(1, `rgba(${c2.r}, ${c2.g}, ${c2.b}, 0)`);
-      ctx.fillStyle = cc;
-      ctx.fillRect(c2x - c2r * 4, c2y - c2r * 4, c2r * 8, c2r * 8);
+    if (cache.sunSpecial === 'accretion') {
+      // BLACK_HOLE — accretion disc replaces the normal corona+disc (WO-V3-CELESTIAL)
+      timed('drawAccretionDisc', () => drawAccretionDisc(ctx, sunX, sunY, cache, dc, t));
+    } else if (cache.sunSpecial === 'pulsar') {
+      // NEUTRON — sweeping lighthouse beams replace normal sun (WO-V3-CELESTIAL)
+      timed('drawPulsar', () => drawPulsar(ctx, sunX, sunY, cache, dc, t));
+    } else {
+      // Normal star: corona glow + disc + optional companion
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const breathe = t === 0 ? 1 : 0.92 + 0.08 * Math.sin(t * 0.5);
+      const coronaGrad = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, coronaR);
+      perfCollector.recordAlloc();
+      coronaGrad.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(0.35).toFixed(3)})`);
+      coronaGrad.addColorStop(0.35, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(0.12).toFixed(3)})`);
+      coronaGrad.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
+      ctx.globalAlpha = breathe * sunDim;
+      ctx.fillStyle = coronaGrad;
+      ctx.fillRect(sunX - coronaR, sunY - coronaR, coronaR * 2, coronaR * 2);
+      const cw = cache.coreWhite;
+      const discGrad = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, sunR);
+      perfCollector.recordAlloc();
+      discGrad.addColorStop(0, `rgba(${Math.min(255, sc.r + cw * 0.4)}, ${Math.min(255, sc.g + cw * 0.4)}, ${Math.min(255, sc.b + cw * 0.4)}, 0.98)`);
+      discGrad.addColorStop(0.6, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0.95)`);
+      discGrad.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0.5)`);
+      ctx.globalAlpha = sunDim;
+      ctx.fillStyle = discGrad;
       ctx.beginPath();
-      ctx.arc(c2x, c2y, c2r, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(${Math.min(255, c2.r + 60)}, ${Math.min(255, c2.g + 60)}, ${Math.min(255, c2.b + 60)}, 0.95)`;
+      ctx.arc(sunX, sunY, sunR, 0, Math.PI * 2);
       ctx.fill();
+      if (cache.hasCompanion) {
+        const { c2, c2side, c2r } = cache;
+        const c2x = sunX + sunR * 4.5 * c2side;
+        const c2y = sunY + sunR * 1.8;
+        const cc = ctx.createRadialGradient(c2x, c2y, 0, c2x, c2y, c2r * 4);
+        perfCollector.recordAlloc();
+        cc.addColorStop(0, `rgba(${c2.r}, ${c2.g}, ${c2.b}, 0.4)`);
+        cc.addColorStop(1, `rgba(${c2.r}, ${c2.g}, ${c2.b}, 0)`);
+        ctx.fillStyle = cc;
+        ctx.fillRect(c2x - c2r * 4, c2y - c2r * 4, c2r * 8, c2r * 8);
+        ctx.beginPath();
+        ctx.arc(c2x, c2y, c2r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(${Math.min(255, c2.r + 60)}, ${Math.min(255, c2.g + 60)}, ${Math.min(255, c2.b + 60)}, 0.95)`;
+        ctx.fill();
+      }
+      ctx.restore();
     }
-    ctx.restore();
   }
 
   // 3a) Sibling planets arcing across the sky
   if (cache.skyPlanets.length > 0) {
-    drawLandedSkyPlanets(ctx, w, horizonY, t, cache, dc);
+    timed('drawLandedSkyPlanets', () => drawLandedSkyPlanets(ctx, w, horizonY, t, cache, dc, sunWorldX, sunWorldY, dc.sunAlt, sunXu));
   }
 
   // 3b) Moons
   if (cache.moons.length > 0) {
-    drawLandedMoons(ctx, w, horizonY, t, cache, dc, sunWorldX, sunWorldY, dc.sunAlt, sunXu);
+    timed('drawLandedMoons', () => drawLandedMoons(ctx, w, horizonY, t, cache, dc, sunWorldX, sunWorldY, dc.sunAlt, sunXu));
   }
 
   // 4) Horizon glow
@@ -2330,7 +8042,15 @@ function drawScene(
   ctx.fillStyle = cache.glowGrad;
   ctx.fillRect(0, 0, w, h);
   if (dc.sunUp) {
-    const shg = ctx.createRadialGradient(sunX, horizonY, 0, sunX, horizonY, Math.max(w, h) * 0.35);
+    // sunGlareCap (WO-VISTA-MOUNTAINOUS-IDENTITY): this radial "sun highlight"
+    // glow is a SEPARATE additive source from the corona capped in
+    // buildVistaCache — both stack via 'lighter' blending, and this one has
+    // the larger footprint (0.35 * max(w,h) radius), so it needed the same
+    // cap to actually reduce the sky-blowout the critic reported. Present
+    // only on MOUNTAINOUS; `?? 1.0` reproduces the prior radius everywhere else.
+    const glareCap = getProfile(model.planetType).sunGlareCap ?? 1.0;
+    const shg = ctx.createRadialGradient(sunX, horizonY, 0, sunX, horizonY, Math.max(w, h) * 0.35 * glareCap);
+    perfCollector.recordAlloc();
     const sa = 0.22 * Math.max(0.2, dc.bright) * (1 + dc.warm * 0.8);
     shg.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${sa.toFixed(3)})`);
     shg.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
@@ -2347,6 +8067,26 @@ function drawScene(
     ctx.save();
     ctx.fillStyle = cache.waterBand;
     ctx.fillRect(0, wt, w, wh);
+
+    // Lava sea: cooled-crust crackle + emissive channel network over the base gradient.
+    // Self-emissive — not keyed to the day cycle; always visible.
+    if (cache.waterType === 'lava') {
+      timed('drawLavaSea', () => drawLavaSea(ctx, w, h, cache));
+    }
+
+    // Frozen sheet: cracked pack-ice plates + pressure ridges + glacial tint.
+    // ICE only — ARCTIC frozen water uses the simpler base gradient here;
+    // its sea-ice + aurora treatment is WO-V5-ARCTIC.
+    if (cache.waterType === 'frozen' && cache.model.planetType === 'ICE') {
+      timed('drawFrozenSheet', () => drawFrozenSheet(ctx, w, h, t, cache, dc, sunX, wt, wh));
+    }
+
+    // OCEANIC open-water signature: parallax swell field + sun/moon-glitter
+    // specular track + distant archipelago islets.  OCEANIC waterType is 'ocean';
+    // gate on planetType so coastal/tidal TERRAN variants are not affected.
+    if (cache.model.planetType === 'OCEANIC') {
+      timed('drawOceanicSurface', () => drawOceanicSurface(ctx, w, h, t, cache, dc, sunX, wt, wh));
+    }
 
     const crestRGB = dc.sunUp
       ? `${Math.min(255, sc.r + 30)}, ${Math.min(255, sc.g + 50)}, ${Math.min(255, sc.b + 60)}`
@@ -2389,6 +8129,7 @@ function drawScene(
       for (let x = w; x >= 0; x -= 10) ctx.lineTo(x, yAt(x) + slab);
       ctx.closePath();
       const faceGrad = ctx.createLinearGradient(0, baseY - amp, 0, baseY + slab);
+      perfCollector.recordAlloc();
       faceGrad.addColorStop(0, `rgba(${Math.round(70 + f * 60)}, ${Math.round(140 + f * 50)}, ${Math.round(175 + f * 40)}, ${(0.30 + f * 0.22).toFixed(3)})`);
       faceGrad.addColorStop(1, 'rgba(6, 26, 48, 0)');
       ctx.fillStyle = faceGrad;
@@ -2405,100 +8146,302 @@ function drawScene(
       ctx.restore();
     }
 
-    // Water surface waterline foam
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = 'rgba(220, 240, 250, 1)';
-    ctx.lineWidth = 1.4 * Math.min(2.5, cache.foamMul);
-    ctx.beginPath();
-    for (let x = 0; x <= w; x += 8) {
-      const drift = t === 0 ? 0 : t * 18;
-      const fy = wt + 1 + Math.sin((x + drift) / 40 * Math.PI * 2) * 1.6 * cache.foamMul;
-      if (x === 0) ctx.moveTo(x, fy); else ctx.lineTo(x, fy);
+    // Water surface waterline foam — color from model palette.foam.
+    // Skipped for lava: the shoreline incandescence in drawLavaSea handles the
+    // waterline edge; liquid-surface seafoam compositing doesn't apply to molten rock.
+    if (cache.waterType !== 'lava') {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.strokeStyle = `rgba(${cache.foamColor}, 1)`;
+      ctx.lineWidth = 1.4 * Math.min(2.5, cache.foamMul);
+      ctx.beginPath();
+      for (let x = 0; x <= w; x += 8) {
+        const drift = t === 0 ? 0 : t * 18;
+        const fy = wt + 1 + Math.sin((x + drift) / 40 * Math.PI * 2) * 1.6 * cache.foamMul;
+        if (x === 0) ctx.moveTo(x, fy); else ctx.lineTo(x, fy);
+      }
+      ctx.globalAlpha = Math.min(0.6, (0.22 + (t === 0 ? 0 : 0.06 * Math.sin(t * 2))) * cache.foamMul);
+      ctx.stroke();
+      ctx.restore();
     }
-    ctx.globalAlpha = Math.min(0.6, (0.22 + (t === 0 ? 0 : 0.06 * Math.sin(t * 2))) * cache.foamMul);
-    ctx.stroke();
-    ctx.restore();
+
+    // WO-V3-WATER-FX: specular glitter, flip-reflection, whitecap foam.
+    // Liquid types only — frozen and lava have no liquid-surface light optics.
+    if (cache.waterType !== 'frozen' && cache.waterType !== 'lava' && cache.waterType !== '') {
+      timed('drawWaterFX', () => drawWaterFX(ctx, w, h, t, cache, dc, sunX, wt, wh));
+    }
+
     ctx.restore();
   }
 
   // 5) Terrain layer — mode-branched.
-  //    'cloud-deck' → GAS_GIANT floating cloud horizon (no ridges, no ground plane)
-  //    'plating'    → ARTIFICIAL engineered flat surface (no ridges)
+  //    'cloud-deck'     → GAS_GIANT full-frame banded atmosphere (no ridges, no ground plane,
+  //                       no waterline — the whole canvas is atmosphere; WO-V6-GAS_GIANT)
+  //    'plating'        → ARTIFICIAL engineered flat surface (no ridges)
+  //    DESERT           → sculpted dune sea — sinuous ridges + lit/shadow crests (WO-V4-DESERT)
+  //    MOUNTAINOUS      → alpine ridgelines + snow caps + scree/treeline band (WO-V5-MOUNTAINOUS)
   //    'surface'/default → P0 parallax ridges + ground plane (unchanged)
   if (cache.terrainMode === 'cloud-deck') {
-    drawCloudDeck(ctx, w, h, t, model, cache, dc);
+    // GAS_GIANT: drawGasGiantBands fills the full canvas (0..h) with banded atmosphere,
+    // storm oval, and limb darkening — painting over the sky gradient from §1.
+    // Ground/ridge/water paths are already gated out by this else-if chain;
+    // §4b water is also skipped because GAS_GIANT has waterAllowList:[] → hasWater=false.
+    timed('drawGasGiantBands', () => drawGasGiantBands(ctx, w, h, t, model, cache, dc));
   } else if (cache.terrainMode === 'plating') {
-    drawPlating(ctx, w, h, t, model, cache, dc);
+    // ARTIFICIAL skyline: megastructure silhouettes root at horizonY and project
+    // upward into the sky band — drawn before plating so spires sit on the horizon
+    // while the plating deck fills the foreground ground plane below.
+    timed('drawArtificialSkyline', () => drawArtificialSkyline(ctx, w, h, t, model, cache, dc, sunX));
+    timed('drawPlating', () => drawPlating(ctx, w, h, t, model, cache, dc));
+  } else if (model.planetType === 'DESERT') {
+    // DESERT signature — replaces the generic ridge renderer with a sculpted dune sea.
+    // No water on DESERT worlds (waterAllowList: []), so no water-clip needed here.
+    timed('drawDuneSea', () => drawDuneSea(ctx, w, h, t, model, cache, dc, sunX));
+  } else if (model.planetType === 'MOUNTAINOUS') {
+    // MOUNTAINOUS alpine signature — layered snow-capped ridgelines receding into
+    // atmospheric haze + scree/treeline foreground band.  Handles coastal water clip
+    // internally so the pre-painted water band remains unobscured.
+    timed('drawAlpineRidges', () => drawAlpineRidges(ctx, w, h, t, model, cache, dc, horizonY, sunX));
   } else {
-    // Default surface path — EXACTLY as P0 (no changes to this branch)
-    if (!cache.hasWater && cache.ridgePts.length > 0) {
-      for (let li = 0; li < cache.ridgePts.length; li++) {
+    // Default surface path — ridges + ground plane draw regardless of water presence.
+    // When water is present, ridge fills clip to [0, waterTopY] so they remain visible
+    // as distant terrain features but don't obscure the water band below.
+    // The land strip [horizonY..waterTopY] is always filled when water is present.
+    const wTopY = cache.waterTopY;  // waterlineY*h, or h if no water
+    if (cache.ridgePts.length > 0) {
+      // Live sky horizon color for aerial-perspective tint — matches the sky gradient
+      // computed in step 1 so far ridges desaturate/lift into the same atmosphere.
+      const horBase = pal.skyHorizon;
+      const b = dc.bright;
+      const hazeR = hasAtmosphere ? Math.min(255, Math.round(horBase[0] * (0.4 + b * 0.6))) : 8;
+      const hazeG = hasAtmosphere ? Math.min(255, Math.round(horBase[1] * (0.4 + b * 0.6))) : 8;
+      const hazeB = hasAtmosphere ? Math.min(255, Math.round(horBase[2] * (0.4 + b * 0.6))) : 20;
+      // Normalized horizon Y bound (model space) — clamps ridge peaks inside sky dome.
+      const horizonNorm = model.layers.terrain.horizonY;
+      const layerCount = cache.ridgePts.length;
+
+      ctx.save();
+      if (cache.hasWater) {
+        // Clip ridges to above the waterline — distant terrain visible on the horizon
+        ctx.beginPath();
+        ctx.rect(0, 0, w, wTopY);
+        ctx.clip();
+      }
+
+      for (let li = 0; li < layerCount; li++) {
         const layer = cache.ridgePts[li];
-        const isFront = li === cache.ridgePts.length - 1;
-        const off = isFront ? 0 : t * layer.speed;
+        const depthFrac = layer.depthFrac;  // 0=far, 1=near
+
+        // All layers scroll; near layers (large speed) scroll fastest → proper parallax depth.
+        const off = t * layer.speed;
         const period = layer.period;
-        const n = layer.pts.length;
+        const microN = layer.pts.length;
+        const poly = layer.poly;
+        const polyN = poly.length;
+
+        // Per-stratum aerial-perspective tint: blend fill toward live sky horizon color.
+        // Far ridges (depthFrac≈0) are 55% hazed; near ridges (≈1) are ~5% hazed.
+        // Vacuum worlds use a very faint tint (no atmosphere = no scattering).
+        const hazeAmt = 0.55 * (1 - depthFrac) * (hasAtmosphere ? 1.0 : 0.15);
+        const hazeAmtC = 1 - hazeAmt;
+        const fr = Math.round(layer.fillRGB[0] * hazeAmtC + hazeR * hazeAmt);
+        const fg = Math.round(layer.fillRGB[1] * hazeAmtC + hazeG * hazeAmt);
+        const fb = Math.round(layer.fillRGB[2] * hazeAmtC + hazeB * hazeAmt);
+
         ctx.beginPath();
         ctx.moveTo(0, h);
         for (let x = 0; x <= w; x += 8) {
-          const u = (((x + off) % period) + period) % period;
-          const fi = (u / period) * n;
-          const i0 = Math.floor(fi) % n;
-          const i1 = (i0 + 1) % n;
-          const frac = fi - Math.floor(fi);
-          const s = frac * frac * (3 - 2 * frac);
-          const v = layer.pts[i0] * (1 - s) + layer.pts[i1] * s;
-          const yTop = h * layer.base - v * h * layer.amp;
-          ctx.lineTo(x, yTop);
+          // Tiling parallax scroll — wraps across the wider-than-screen period
+          const xScroll = (((x + off) % period) + period) % period;
+          const xFrac = xScroll / period;
+
+          // Sample real polyline for macro ridge shape.
+          // Polyline X is evenly spaced at i/(polyN-1) so we interpolate directly.
+          let macroY: number;
+          if (polyN < 2) {
+            macroY = polyN === 1 ? poly[0][1] : horizonNorm;
+          } else {
+            const fi = xFrac * (polyN - 1);
+            const i0 = Math.floor(fi);
+            const i1 = Math.min(i0 + 1, polyN - 1);
+            const frac = fi - i0;
+            const sm = frac * frac * (3 - 2 * frac);  // smoothstep
+            macroY = poly[i0][1] * (1 - sm) + poly[i1][1] * sm;
+          }
+
+          // Micro-roughness noise — bilateral jitter on top of the macro polyline shape.
+          // microAmp is depth-graded (far=0.004, near=0.022) for smooth-far / rough-near.
+          const fi2 = xFrac * microN;
+          const mi0 = Math.floor(fi2) % microN;
+          const mi1 = (mi0 + 1) % microN;
+          const mf = fi2 - Math.floor(fi2);
+          const ms = mf * mf * (3 - 2 * mf);
+          const noise = layer.pts[mi0] * (1 - ms) + layer.pts[mi1] * ms;  // [0, 1]
+          const micro = (noise - 0.5) * 2 * layer.microAmp;               // ±microAmp
+
+          // Clamp to [0, horizonNorm] — peaks stay inside sky dome, above ground plane.
+          const yNorm = Math.max(0, Math.min(horizonNorm, macroY + micro));
+          ctx.lineTo(x, yNorm * h);
         }
         ctx.lineTo(w, h);
         ctx.closePath();
-        ctx.fillStyle = layer.color;
+        ctx.fillStyle = `rgb(${fr}, ${fg}, ${fb})`;
         ctx.fill();
+
+        // Interleaved haze veil between ridge layers (not after the near/front layer).
+        // A thin atmosphere-colored gradient after each stratum reinforces depth —
+        // each successive range appears through progressively thicker air.
+        if (li < layerCount - 1 && hasAtmosphere) {
+          const veilAlpha = 0.07 * (1 - depthFrac) * Math.max(0.2, dc.bright);
+          if (veilAlpha > 0.004) {
+            const veilGrad = ctx.createLinearGradient(0, 0, 0, horizonY);
+            perfCollector.recordAlloc();
+            veilGrad.addColorStop(0,    `rgba(${hazeR}, ${hazeG}, ${hazeB}, ${(veilAlpha * 0.25).toFixed(3)})`);
+            veilGrad.addColorStop(0.65, `rgba(${hazeR}, ${hazeG}, ${hazeB}, ${veilAlpha.toFixed(3)})`);
+            veilGrad.addColorStop(1,    `rgba(${hazeR}, ${hazeG}, ${hazeB}, ${(veilAlpha * 0.4).toFixed(3)})`);
+            ctx.fillStyle = veilGrad;
+            ctx.fillRect(0, 0, w, horizonY);
+          }
+        }
+      }
+      ctx.restore();
+    }
+
+    // 5a) Ground / land-strip fill.
+    // Without water: fills from horizonY to h (full ground band when no ridges present).
+    // With water: always fills the land strip [horizonY..waterTopY] (the foreshore
+    // between the terrain horizon and the waterline, even when ridges are also present).
+    // When ridges are present and no water: ridges provide all fill — no extra rect needed.
+    // TERRAN/coastal branch: drawCoastalLand replaces the flat fillRect with an
+    // organic meandering shoreline + river-delta inlet channels (WO-V4-TERRAN).
+    // TROPICAL branch: drawTropicalLagoon replaces the flat fillRect with a sandy
+    // beach gradient + palm-fringe silhouettes, and overlays depth-tint + reef ring
+    // onto the already-rendered water body (WO-V5-TROPICAL).
+    if (cache.ridgePts.length === 0 || cache.hasWater) {
+      const groundY   = horizonY;
+      const groundBtm = cache.hasWater ? wTopY : h;
+      if (groundBtm > groundY) {
+        if (cache.waterType === 'coastal' && model.planetType === 'TERRAN') {
+          timed('drawCoastalLand', () => drawCoastalLand(ctx, w, h, t, model, cache, dc, horizonY, wTopY));
+        } else if (model.planetType === 'TROPICAL') {
+          // TROPICAL lagoon signature: turquoise shallows overlay, seeded reef ring,
+          // sandy beach gradient, and palm-fringe silhouettes at the waterline.
+          timed('drawTropicalLagoon', () => drawTropicalLagoon(ctx, w, h, t, cache, dc, sunX, horizonY, wTopY));
+        } else {
+          // INTERIM STOPGAP for DEFECT-vista-volcanic-ice-render — a flat,
+          // fully-opaque single-color fill reads fine for mid-tone surface
+          // colors but reads as a broken black void (VOLCANIC, near-black
+          // basalt [14,10,15]) or a blown-out white wash (ICE, near-white
+          // snowpack [203,217,241]) at the palette's tonal extremes — every
+          // OTHER same-family palette field (geologyBands, ridge*) clusters
+          // in that same extreme range by design, so blending toward any of
+          // them barely moves the visible value. Blending 35% toward
+          // middle-gray at the horizon-far edge instead is brightness-
+          // ADAPTIVE (pulls dark surfaces lighter, light surfaces darker,
+          // same formula, no per-type branch) while the camera-near edge
+          // stays the true canonical surface tone — breaks the flatness for
+          // every type that lands here (OCEANIC/ARCTIC/BARREN/JUNGLE too).
+          // Superseded and DELETED by WO-VISTA-VOLCANIC / WO-VISTA-ICE's
+          // dedicated terrain renderers; remove this block when those land.
+          const [sr, sg, sb] = model.palette.surface;
+          const MID_GRAY = 128;
+          const LIFT_FRAC = 0.35;
+          const farStop: RGB = [
+            sr + (MID_GRAY - sr) * LIFT_FRAC,
+            sg + (MID_GRAY - sg) * LIFT_FRAC,
+            sb + (MID_GRAY - sb) * LIFT_FRAC,
+          ];
+          const groundGrad = ctx.createLinearGradient(0, groundY, 0, groundBtm);
+          perfCollector.recordAlloc();
+          groundGrad.addColorStop(0, rgba(farStop, 1));
+          groundGrad.addColorStop(1, rgba(model.palette.surface, 1));
+          ctx.fillStyle = groundGrad;
+          ctx.fillRect(0, groundY, w, groundBtm - groundY);
+        }
       }
     }
 
-    // 5a) Ground plane (fallback if no ridges or water)
-    if (cache.ridgePts.length === 0 && !cache.hasWater) {
-      const groundY = horizonY;
-      const gfill = rgba(model.palette.surface, 1);
-      ctx.fillStyle = gfill;
-      ctx.fillRect(0, groundY, w, h - groundY);
+    // 5a') ARCTIC ground overlay — sastrugi banding + ice hummocks + aurora ground wash.
+    // Drawn over ridge fills and/or the §5a land-strip for all ARCTIC worlds.
+    if (model.planetType === 'ARCTIC') {
+      const arcticGBtm = cache.hasWater ? wTopY : h;
+      if (arcticGBtm > horizonY) {
+        timed('drawAuroraCurtains', () => drawAuroraCurtains(ctx, w, h, horizonY, t, cache, dc, 'ground', arcticGBtm));
+      }
     }
+
+    // 5a'') BARREN vacuum overlay — dense starfield + crater field + terminator shadow.
+    // Drawn over ridge fills; existing basalt rock scatter (§5f) renders on top.
+    if (model.planetType === 'BARREN') {
+      timed('drawBarrenVacuum', () => drawBarrenVacuum(ctx, w, h, t, model, cache, dc, horizonY, sunX));
+    }
+
+    // 5a+) River corridor — TERRAN/JUNGLE with citadel (river mode).
+    //      Water channel from waterlineY up to the citadel anchor; the forest was
+    //      cleared from this corridor by pipeline.ts buildFeatures (riverMode path).
+    //      Drawn after all ground fills so the channel reads as a cut through the
+    //      land surface; flora scatter (§5f) draws over the near banks.
+    if (
+      cache.hasWater &&
+      (model.planetType === 'TERRAN' || model.planetType === 'JUNGLE') &&
+      cache.scatterScreens.some(g => g.kind === 'citadel')
+    ) {
+      timed('drawRiverCorridor', () => drawRiverCorridor(ctx, w, h, t, model, cache, dc, horizonY, wTopY));
+    }
+  }
+
+  // 5a+++) Hero landform (WO-VISTA-TK1) — the single dominant midground focal
+  //        feature. Locked composition slot: AFTER the terrain fill (ridges +
+  //        ground plane + ARCTIC/BARREN overlays + river corridor) so the hero
+  //        silhouette sits visibly on solid ground rather than being painted
+  //        over by it, and BEFORE the small background landmarks (§5b) so the
+  //        hero reads as the dominant feature they sit alongside. No-op (null
+  //        geom) for all non-hero-shape types — see PlanetProfile.heroLandform.
+  if (cache.hero) {
+    timed('drawHeroLandform', () => drawHeroLandform(ctx, cache.hero, model.lighting, dc.bright));
   }
 
   // 5b) Terrain landmarks — silhouettes from model.layers.terrain.landmarks.
   //     Drawn for 'surface' and 'plating'; GAS_GIANT emits none so this is a no-op.
   if (cache.landmarks.length > 0) {
-    drawLandmarks(ctx, cache, dc);
+    timed('drawLandmarks', () => drawLandmarks(ctx, cache, dc));
   }
 
   // 5f) Feature scatters — flora tufts / rock blobs / glitter-sparks.
   //     Drawn after landmarks (scatters sit on the ground surface), before resource
   //     markers (which are more prominent signals on top of ambient scatter).
   //     Glitter-spark uses additive composite; reset to source-over afterward.
+  //     NOTE: the 'citadel' scatter kind is skipped inside drawScatterInstances and
+  //     drawn separately in step 5g so it always sits on top of the flora canopy.
   if (cache.scatterScreens.length > 0) {
-    drawScatterInstances(ctx, t, cache, dc);
+    timed('scatter', () => drawScatterInstances(ctx, t, cache, dc));
+  }
+
+  // 5g) Citadel structure — drawn AFTER flora scatter (step 5f) so the settlement
+  //     base is never occluded by the forest canopy.  NO-OP when the 'citadel'
+  //     scatter group is absent (site-gated in the pipeline: only emitted when
+  //     site.citadelCeiling > 0).
+  if (cache.scatterScreens.some(g => g.kind === 'citadel')) {
+    timed('drawCitadelStructure', () => drawCitadelStructure(ctx, t, cache, dc));
   }
 
   // 5c) Deposit markers — ore-vein / gas-seep / thermal-vent / hydrocarbon-pool /
   //     crystal / biolumin — drawn after terrain so they sit on the ground surface.
   for (const dm of cache.depositScreens) {
-    drawDepositGlyph(ctx, w, h, t, dm.sx, dm.sy, dm.visual, dm.intensity, model.palette.accent);
+    timed('drawDepositGlyph', () => drawDepositGlyph(ctx, w, h, t, dm.sx, dm.sy, dm.visual, dm.intensity, model.palette.accent));
   }
 
   // 5d) Energy source marker — GEOTHERMAL / TIDAL / SOLAR / WIND
   if (cache.energyScreen) {
     const em = cache.energyScreen;
-    drawEnergyGlyph(ctx, w, h, t, em.sx, em.sy, em.source, em.intensity, model.palette.accent);
+    timed('drawEnergyGlyph', () => drawEnergyGlyph(ctx, w, h, t, em.sx, em.sy, em.source, em.intensity, model.palette.accent));
   }
 
   // 5e) Hazard overlays — drawn with source-over + alpha floor (Truthfulness clause §2.5).
   //     Must remain visible even on high-desirability lush worlds: source-over prevents
   //     the bloom/lighter composite from washing the glyph out.
   for (const hz of cache.hazardScreens) {
-    drawHazardGlyph(ctx, w, h, t, hz.visual, hz.severity, hz.pts);
+    timed('drawHazardGlyph', () => drawHazardGlyph(ctx, w, h, t, hz.visual, hz.severity, hz.pts));
   }
 
   // 6) Atmosphere haze overlay (atmospheric worlds only)
@@ -2506,6 +8449,7 @@ function drawScene(
     ctx.save();
     ctx.globalCompositeOperation = 'source-over';
     const hazeGrad = ctx.createLinearGradient(0, horizonY * 0.7, 0, horizonY * 1.05);
+    perfCollector.recordAlloc();
     const [hr, hg, hb] = cache.hazeColor.split(',').map((s) => parseInt(s.trim(), 10));
     hazeGrad.addColorStop(0, `rgba(${hr}, ${hg}, ${hb}, 0)`);
     hazeGrad.addColorStop(1, `rgba(${hr}, ${hg}, ${hb}, ${(cache.hazeStrength * 0.35 * dc.bright).toFixed(3)})`);
@@ -2514,9 +8458,9 @@ function drawScene(
     ctx.restore();
   }
 
-  // 7) Particles — foreground atmospheric effects
-  if (cache.particles.length > 0) {
-    drawLandedParticles(ctx, w, h, t, cache);
+  // 7) Particles — foreground atmospheric effects (multi-kind compositor)
+  if (cache.particleGroups.length > 0) {
+    timed('drawLandedParticles', () => drawLandedParticles(ctx, w, h, t, cache));
   }
 
   // 8) Scene-level night dim (atmospheric worlds only — vacuum has no atmosphere
@@ -2528,6 +8472,14 @@ function drawScene(
     ctx.fillRect(0, 0, w, h);
     ctx.restore();
   }
+
+  // 9) Emissive light source (TK-2) — drawn LAST, after night-dim, so its
+  //    additive 'lighter' glow always reads clearly regardless of day/night
+  //    dimming (lava/aurora/alpenglow are self-emissive; night-dim darkening
+  //    everything ELSE first, then this glow sitting on top, is the correct
+  //    order). No-op (see lighting.ts's drawEmissiveGlow) for every biome
+  //    without model.lighting.emissiveSource — byte-identical for those.
+  timed('drawEmissiveGlow', () => drawEmissiveGlow(ctx, w, h, model.lighting, dc.skyDim));
 }
 
 // ---------------------------------------------------------------------------
@@ -2540,7 +8492,30 @@ export function mount(model: VistaModel, target: VistaTarget): VistaHandle {
   let w = canvas.width;
   let h = canvas.height;
   let currentModel = model;
+  // Tracks the last VistaInput so update(partial) can merge and regenerate.
+  // Undefined until the first update() call; react.tsx always passes the full
+  // VistaInput so the merge never loses unset fields.
+  let currentInput: VistaInput | undefined;
   let rafId: number | null = null;
+
+  // Offscreen scene buffer — allocated once here, resized on resize().
+  // drawScene() renders into offscreen; postProcess() composites to the visible canvas.
+  // This is the single shared buffer mandated by WO-V2-POST (no per-frame allocation).
+  const offscreen = document.createElement('canvas');
+  offscreen.width  = w;
+  offscreen.height = h;
+  let offCtx = offscreen.getContext('2d') as CanvasRenderingContext2D;
+
+  // Bloom scratch buffer — quarter-res; allocated once here, resized on resize().
+  // postProcess() downscales the scene into this, blurs it, and composites back
+  // additively.  Keeping it at 1/4 res makes the CSS filter blur much cheaper.
+  const bloomScratch = document.createElement('canvas');
+  bloomScratch.width  = Math.max(1, Math.ceil(w / 4));
+  bloomScratch.height = Math.max(1, Math.ceil(h / 4));
+
+  // Deterministic grain tile — rebuilt when model.seed changes, not per-frame.
+  let grainSeedKey = model.seed;
+  let grainTile    = buildGrainPattern(model);
 
   // Cache key incorporating everything that invalidates the pre-baked geometry.
   // Day-bucket busts the cache daily (sea state, weather tier are daily-deterministic).
@@ -2554,20 +8529,37 @@ export function mount(model: VistaModel, target: VistaTarget): VistaHandle {
 
   function getOrBuildCache(m: VistaModel, cw: number, ch: number): VistaCache {
     const key = makeKey(m, cw, ch);
-    // Rebuild when key changes or canvas context identity changes (remount)
-    if (!_cache || _cache.key !== key || _cache.ctx !== ctx) {
-      const c = buildVistaCache(ctx, m, cw, ch);
+    // Rebuild when key changes or offscreen context identity changes (remount/resize).
+    if (!_cache || _cache.key !== key || _cache.ctx !== offCtx) {
+      const c = buildVistaCache(offCtx, m, cw, ch);
       c.key = key;
       _cache = c;
     }
+    // Quality may change between frames without busting the cache key (no geometry rebuild).
+    // Update it live so drawScatterInstances reads the current LOD intent.
+    _cache.quality = currentInput?.view?.quality ?? 'high';
     return _cache;
   }
 
   let currentT = 0;
 
   function render(): void {
+    perfCollector.frameStart();
+    // Rebuild grain tile when model.seed changes (new planet loaded via update()).
+    if (currentModel.seed !== grainSeedKey) {
+      grainSeedKey = currentModel.seed;
+      grainTile    = buildGrainPattern(currentModel);
+    }
     const cache = getOrBuildCache(currentModel, w, h);
-    drawScene(ctx, w, h, currentT, currentModel, cache);
+    // Draw scene into the offscreen scene buffer.
+    drawScene(offCtx, w, h, currentT, currentModel, cache);
+    // Post-process chain: blit → bloom → vignette → split-tone grade → film grain.
+    const profile = getProfile(currentModel.planetType);
+    timed('postProcess', () => postProcess(
+      ctx, offscreen, w, h, currentModel, grainTile, profile.grade,
+      bloomScratch, currentInput?.view?.quality,
+    ));
+    perfCollector.frameEnd();
   }
 
   // Initial render at t=0 (reduced-motion / frozen frame)
@@ -2582,20 +8574,46 @@ export function mount(model: VistaModel, target: VistaTarget): VistaHandle {
     resize(newW: number, newH: number): void {
       canvas.width = newW;
       canvas.height = newH;
-      // Re-acquire context after resize (Chrome invalidates it on some resize paths)
+      // Re-acquire visible context after resize (Chrome invalidates it on some resize paths).
       const newCtx = canvas.getContext('2d');
       if (newCtx) ctx = newCtx;
+      // Resize offscreen scene buffer to match.
+      offscreen.width  = newW;
+      offscreen.height = newH;
+      const newOffCtx = offscreen.getContext('2d');
+      if (newOffCtx) offCtx = newOffCtx;
+      // Resize bloom scratch to stay at quarter-res.
+      bloomScratch.width  = Math.max(1, Math.ceil(newW / 4));
+      bloomScratch.height = Math.max(1, Math.ceil(newH / 4));
       w = newW;
       h = newH;
-      // Force cache rebuild by clearing the singleton (key includes dimensions)
+      // Force cache rebuild by clearing the singleton (key includes dimensions).
       _cache = null;
       render();
     },
 
     update(partial: Partial<VistaInput>): void {
-      // Hot-patch: merge partial into a new model via the generate pipeline.
-      // For now, force a cache bust and re-render with the existing model.
-      // A full update requires calling generate() (Lane B) externally.
+      // Hot-patch: merge partial into the tracked input, regenerate the model
+      // via the pipeline, swap it into the live mount, and re-render — all on
+      // the EXISTING canvas.  No dispose, no clearRect, no flash.
+      //
+      // Merge strategy: one level deep on the nested objects so that a partial
+      // { planet: { habitability: 0.8 } } only overrides the changed field
+      // rather than replacing the whole planet object.  react.tsx passes the
+      // full VistaInput, so either path produces a complete input.
+      const base: VistaInput = currentInput ?? (partial as VistaInput);
+      const merged: VistaInput = {
+        ...base,
+        ...partial,
+        planet: partial.planet
+          ? { ...base.planet, ...partial.planet }
+          : base.planet,
+        celestial: partial.celestial
+          ? { ...base.celestial, ...partial.celestial }
+          : base.celestial,
+      } as VistaInput;
+      currentInput = merged;
+      currentModel  = generateVista(merged);
       _cache = null;
       render();
     },
@@ -2606,6 +8624,7 @@ export function mount(model: VistaModel, target: VistaTarget): VistaHandle {
         rafId = null;
       }
       _cache = null;
+      offCtx.clearRect(0, 0, w, h);
       ctx.clearRect(0, 0, w, h);
     },
   };

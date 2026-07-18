@@ -19,6 +19,13 @@ export interface FirstLoginSession {
   exchange_id?: string;
   sequence_number?: number;
   ship_claimed?: string;
+  // WO-PUX-FLOGIN-RESUME: persisted guard identity, sourced from the server
+  // (src/utils/guard_personalities.py) instead of a client-side hash mirror.
+  guard_name?: string;
+  guard_title?: string;
+  guard_trait?: string;
+  guard_base_suspicion?: number;
+  guard_description?: string;
 }
 
 export interface DialogueAnalysis {
@@ -38,14 +45,27 @@ export interface DialogueAnalysis {
     negotiation_bonus: boolean;
     notoriety_penalty: boolean;
     guard_response: string;
+    // WO-PUX-FLOGIN-NICKNAME: present only on outcomes eligible for the
+    // nickname-confirmation prompt (absent on the escape-pod hard-fail
+    // path) -- carried through both the live dialogue response and the
+    // session-resume payload so a reload doesn't lose the pending prompt.
+    extracted_player_name?: string | null;
   };
   next_question?: string;
   next_exchange_id?: string;
 }
 
+// The confirm/decline verdict collected by NicknameConfirm.tsx before the
+// single POST /first-login/complete call (see nicknameConfirmLogic.ts for
+// why this is never round-tripped more than once).
+export interface NicknameVerdict {
+  confirmed: boolean;
+  override: string | null;
+}
+
 export interface CompleteFirstLoginResult {
   player_id: string;
-  nickname?: string;
+  nickname?: string | null;
   credits: number;
   ship: {
     id: string;
@@ -54,13 +74,38 @@ export interface CompleteFirstLoginResult {
   };
   negotiation_bonus: boolean;
   notoriety_penalty: boolean;
+  // Set only when nickname_confirmed was sent true and server-side
+  // validation rejected the candidate (length/charset/profanity/taken).
+  // Completion still succeeds -- the client surfaces this as an
+  // informational notice, never a blocker.
+  nickname_rejected_reason?: 'length' | 'charset' | 'profanity' | 'taken' | null;
+}
+
+// WO-PUX-FLOGIN-IDEMPOTENT: thrown by completeFirstLogin instead of the raw
+// axios error when the server's idempotency guard reports HTTP 400 "First
+// login already completed". That happens when an earlier /complete call
+// already succeeded server-side but its response never reached this client
+// (timeout, dropped connection, a manual retry) -- it is not a real
+// failure. Callers should recover by re-checking status via
+// checkFirstLoginStatus() and proceeding if it confirms completion, never
+// by surfacing this as a dead-end error.
+export class FirstLoginAlreadyCompletedError extends Error {
+  constructor() {
+    super('First login already completed');
+    this.name = 'FirstLoginAlreadyCompletedError';
+  }
 }
 
 interface FirstLoginContextType {
   requiresFirstLogin: boolean;
   isLoading: boolean;
   error: string | null;
-  
+  // Re-checks first-login status against the server and returns the fresh
+  // requires_first_login value directly (undefined if the check itself
+  // failed) -- callers recovering from a lost response need the value
+  // synchronously rather than waiting on a later re-render.
+  checkFirstLoginStatus: () => Promise<boolean | undefined>;
+
   // Session data
   session: FirstLoginSession | null;
   startSession: () => Promise<void>;
@@ -86,7 +131,7 @@ interface FirstLoginContextType {
   
   // Dialogue outcome
   dialogueOutcome: DialogueAnalysis['outcome'] | null;
-  completeFirstLogin: () => Promise<CompleteFirstLoginResult>;
+  completeFirstLogin: (verdict?: NicknameVerdict) => Promise<CompleteFirstLoginResult>;
   
   // UI state helpers
   resetError: () => void;
@@ -137,22 +182,29 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
     }
   }, [isAuthenticated, user, lastCheckTime]);
   
-  // Check if the player needs to go through first login
-  const checkFirstLoginStatus = async () => {
+  // Check if the player needs to go through first login. Returns the fresh
+  // requires_first_login value directly (undefined on failure) so callers
+  // that need it synchronously -- e.g. idempotent-completion recovery --
+  // don't have to wait on a later re-render of the reactive state.
+  const checkFirstLoginStatus = async (): Promise<boolean | undefined> => {
     setIsLoading(true);
     setError(null);
-    
+
     try {
       const response = await api.get('/api/v1/first-login/status');
-      setRequiresFirstLogin((response.data as any).requires_first_login);
-      
+      const requiresFirst = (response.data as any).requires_first_login;
+      setRequiresFirstLogin(requiresFirst);
+
       // If first login is required and there's an active session, load it
-      if ((response.data as any).requires_first_login && (response.data as any).session_id) {
+      if (requiresFirst && (response.data as any).session_id) {
         await startSession();
       }
+
+      return requiresFirst;
     } catch (error) {
       console.error('Error checking first login status:', error);
       setError('Failed to check first login status.');
+      return undefined;
     } finally {
       setIsLoading(false);
     }
@@ -172,28 +224,34 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
 
     try {
       const response = await api.post('/api/v1/first-login/session');
+      const data = response.data as any;
 
-      // Auto-reset any existing session on page load/reload
-      // This ensures players always start from ship selection when refreshing
-      if ((response.data as any).current_step !== 'ship_selection') {
-        await api.delete('/api/v1/first-login/session');
-        // Retry with a fresh session
-        const retryResponse = await api.post('/api/v1/first-login/session');
-        setSession(retryResponse.data as FirstLoginSession);
-        setCurrentPrompt((retryResponse.data as any).npc_prompt);
-        setExchangeId((retryResponse.data as any).exchange_id || null);
-        setDialogueHistory([{ npc: (retryResponse.data as any).npc_prompt, player: '' }]);
-        return;
+      setSession(data as FirstLoginSession);
+      setCurrentPrompt(data.npc_prompt);
+      setExchangeId(data.exchange_id || null);
+
+      if (data.resumed) {
+        // Replay the full persisted history instead of starting fresh — the
+        // only DELETE this context ever issues is the user-invoked explicit
+        // reset (resetSession), never an automatic one on reload.
+        const history = (data.dialogue_history || []).map((exchange: any) => ({
+          npc: exchange.npc_prompt,
+          player: exchange.player_response,
+          consistency: clampScore(exchange.consistency),
+          confidence: clampScore(exchange.confidence),
+          persuasiveness: clampScore(exchange.persuasiveness),
+        }));
+        setDialogueHistory(history);
+
+        // Resuming into the completion step: hydrate the outcome too, or
+        // OutcomeDisplay has nothing to render and the screen goes blank.
+        if (data.current_step === 'completion' && data.outcome) {
+          setDialogueOutcome(data.outcome);
+        }
+      } else {
+        // Fresh session — initialize dialogue history with the first NPC prompt.
+        setDialogueHistory([{ npc: data.npc_prompt, player: '' }]);
       }
-
-      setSession(response.data as FirstLoginSession);
-
-      // Set initial prompt and exchange ID
-      setCurrentPrompt((response.data as any).npc_prompt);
-      setExchangeId((response.data as any).exchange_id || null);
-
-      // Initialize dialogue history with the first NPC prompt
-      setDialogueHistory([{ npc: (response.data as any).npc_prompt, player: '' }]);
     } catch (error: any) {
       console.error('Error starting first login session:', error);
       
@@ -351,19 +409,39 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
     }
   };
   
-  // Complete the first login process
-  const completeFirstLogin = async (): Promise<CompleteFirstLoginResult> => {
+  // Complete the first login process. `verdict` carries the player's
+  // nickname-confirmation decision (WO-PUX-FLOGIN-NICKNAME); omitting it
+  // (a body-less call) is a decline, matching the server's pre-existing
+  // default -- the nickname stays null exactly as it did before this
+  // feature shipped.
+  const completeFirstLogin = async (verdict?: NicknameVerdict): Promise<CompleteFirstLoginResult> => {
     setIsLoading(true);
     setError(null);
 
     try {
-      const result = await api.post('/api/v1/first-login/complete');
+      const body = verdict
+        ? { nickname_confirmed: verdict.confirmed, nickname_override: verdict.override }
+        : undefined;
+      const result = await api.post('/api/v1/first-login/complete', body);
 
       // First login is now complete
       setRequiresFirstLogin(false);
 
       return result.data;
-    } catch (error) {
+    } catch (error: any) {
+      // WO-PUX-FLOGIN-IDEMPOTENT: the server's idempotency guard returns
+      // HTTP 400 "First login already completed" when an earlier /complete
+      // call already succeeded but its response was lost before reaching
+      // this client. That's not a real failure -- throw a distinguishable
+      // error so the caller can recover (re-check status, proceed) instead
+      // of dead-ending the player. Leave `error` state untouched here so a
+      // recoverable condition never renders as a failure.
+      const detail = error?.response?.data?.detail;
+      if (error?.response?.status === 400 && typeof detail === 'string' && /already completed/i.test(detail)) {
+        console.warn('[FirstLogin] /complete reported already-completed; caller should recover via status re-check.');
+        throw new FirstLoginAlreadyCompletedError();
+      }
+
       console.error('[FirstLogin:Error] Completion failed:', error);
       setError('Failed to complete first login process.');
       throw error;
@@ -398,7 +476,8 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
     requiresFirstLogin,
     isLoading,
     error,
-    
+    checkFirstLoginStatus,
+
     session,
     startSession,
     
