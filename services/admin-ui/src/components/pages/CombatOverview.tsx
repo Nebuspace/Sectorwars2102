@@ -447,24 +447,10 @@ export const CombatOverview: React.FC = () => {
             
             <div className="intervention-options">
               <button 
-                className="btn btn-warning"
-                onClick={() => handleIntervention('pause')}
-              >
-                Pause Combat
-              </button>
-              
-              <button 
                 className="btn btn-danger"
                 onClick={() => handleIntervention('end')}
               >
                 Force End Combat
-              </button>
-              
-              <button 
-                className="btn btn-info"
-                onClick={() => handleIntervention('reset')}
-              >
-                Reset Combat State
               </button>
               
               <button 
@@ -474,6 +460,22 @@ export const CombatOverview: React.FC = () => {
                 Restore Ships
               </button>
             </div>
+            <p
+              role="note"
+              style={{
+                margin: '12px 0 0 0',
+                padding: '8px 10px',
+                background: 'rgba(234, 179, 8, 0.12)',
+                border: '1px solid rgba(234, 179, 8, 0.35)',
+                borderRadius: '6px',
+                color: '#fbbf24',
+                fontSize: '0.82rem',
+                lineHeight: 1.4,
+              }}
+            >
+              Pause / Reset are unavailable — intervene accepts stop_combat, adjust_damage,
+              restore_shields, and declare_winner only. This modal does not invent those controls.
+            </p>
             
             <button 
               className="btn btn-secondary"
