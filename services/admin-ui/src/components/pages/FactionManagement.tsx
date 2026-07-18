@@ -366,7 +366,7 @@ const FactionManagement: React.FC = () => {
     <div className="faction-management">
       <PageHeader
         title="Faction Management"
-        subtitle="Monitor factions, territory, diplomacy, and active missions"
+        subtitle="Monitor factions, territory, and diplomacy"
       />
 
       {error && (
