@@ -1082,6 +1082,66 @@ describe('WindshieldTableau', () => {
     expect(flightCapture?.isFlying).toBe(false);
   });
 
+  // -------------------------------------------------------------------
+  // WO-TACTICAL-APPROACH-ENGAGE-SCROLL Part B: flight.approach(shipId) --
+  // a moving ship contact resolves via resolveShipPose(), WYSIWYG
+  // best-effort (glide toward wherever the `.other` marker is drawn).
+  // -------------------------------------------------------------------
+
+  it("resolves flight.approach(shipId) to a poseless human contact's own parked-anchor dot (WYSIWYG best-effort, not gated on real server pose)", async () => {
+    await mount({ ships: [TEST_SHIP] }); // TEST_SHIP carries no `pose` -- poseless human.
+    vi.useFakeTimers();
+    const other = container.querySelector('.other') as HTMLElement;
+    const targetXPct = parseFloat(other.style.left);
+    const targetYPct = parseFloat(other.style.top);
+
+    await act(async () => { flightCapture!.approach(TEST_SHIP.ship_id); });
+    await act(async () => { vi.advanceTimersByTime(1200); });
+
+    const ship = container.querySelector('.shipmk') as HTMLElement;
+    expect(parseFloat(ship.style.left)).toBeCloseTo(targetXPct, 1);
+    expect(parseFloat(ship.style.top)).toBeCloseTo(targetYPct, 1);
+    expect(flightCapture?.targetId).toBe(TEST_SHIP.ship_id);
+    expect(flightCapture?.isFlying).toBe(true);
+  });
+
+  it("resolves flight.approach(shipId) to a server-posed contact's x_pct/y_pct", async () => {
+    const posedShip = { ...TEST_SHIP, pose: { x_pct: 25, y_pct: 60, heading_deg: 0, leg: null } };
+    await mount({ ships: [posedShip] });
+    vi.useFakeTimers();
+
+    await act(async () => { flightCapture!.approach(posedShip.ship_id); });
+    await act(async () => { vi.advanceTimersByTime(1200); });
+
+    const ship = container.querySelector('.shipmk') as HTMLElement;
+    expect(parseFloat(ship.style.left)).toBeCloseTo(25, 1);
+    expect(parseFloat(ship.style.top)).toBeCloseTo(60, 1);
+  });
+
+  // -------------------------------------------------------------------
+  // WindshieldFlightContext.shipPos/contactPositions publish (Part B) --
+  // TACTICAL TARGET's Engage/Approach proximity split reads these.
+  // -------------------------------------------------------------------
+
+  it("publishes the player's own shipPos into the shared context once mounted", async () => {
+    await mount();
+    expect(flightCapture?.shipPos).not.toBeNull();
+  });
+
+  it('publishes every ship contact\'s resolved position into contactPositions, keyed by ship_id, using the SAME resolution the .other markers render from', async () => {
+    const posedShip = { ...TEST_SHIP, pose: { x_pct: 25, y_pct: 60, heading_deg: 0, leg: null } };
+    await mount({ ships: [posedShip] });
+    const contactPos = flightCapture?.contactPositions.get(posedShip.ship_id);
+    expect(contactPos?.xPct).toBeCloseTo(25, 1);
+    expect(contactPos?.yPct).toBeCloseTo(60, 1);
+  });
+
+  it('does not publish a ship contact lacking a ship_id into contactPositions', async () => {
+    const shipless = { player_id: 'p3', username: 'Ghost Signal', is_npc: false };
+    await mount({ ships: [shipless as unknown as typeof TEST_SHIP] });
+    expect(flightCapture?.contactPositions.size).toBe(0);
+  });
+
   it('mid-course redirect keeps momentum and arcs instead of parking to reorient', async () => {
     await mount();
     vi.useFakeTimers();

@@ -7,6 +7,7 @@ import React, {
   useState,
 } from 'react';
 import { useAutopilot } from './AutopilotContext';
+import type { PctPoint } from '../components/tactical/windshieldTableauLayout';
 
 /**
  * WindshieldFlightContext — the ONE shared flight-state store unifying the
@@ -55,6 +56,26 @@ export interface WindshieldFlightContextValue {
    *  start, natural arrival, or a halt) so `isFlying`/`targetId` above stay
    *  in sync with the real, rendered glide. */
   reportFlightState: (localFlying: boolean, targetId: string | null) => void;
+
+  // ---- Live position feed (WO-TACTICAL-APPROACH-ENGAGE-SCROLL Part B) ----
+  /** The player's own ship position in canonical %-space, published by the
+   *  mounted tableau every render tick — null before the tableau's first
+   *  mount/measurement (or whenever no tableau is mounted, e.g. docked/
+   *  landed). Proximity-gated UI (TACTICAL TARGET's Approach⇄Engage split)
+   *  reads this directly rather than re-deriving flight geometry itself. */
+  shipPos: PctPoint | null;
+  /** Every OTHER contact's resolved on-screen position this tick, keyed by
+   *  ship_id — the SAME resolution the tableau's own `.other` markers
+   *  render from (server pose, cosmetic NPC wander, or the poseless-human
+   *  parked anchor), so a consumer's proximity read never disagrees with
+   *  where the dot is actually drawn. Empty when no tableau is mounted. */
+  contactPositions: Map<string, PctPoint>;
+  /** The tableau calls this every render tick with its own live ship
+   *  position (mirrors reportFlightState). */
+  reportShipPos: (pos: PctPoint | null) => void;
+  /** The tableau calls this every render tick with every OTHER contact's
+   *  resolved position, keyed by ship_id (mirrors reportFlightState). */
+  reportContactPositions: (positions: Map<string, PctPoint>) => void;
 }
 
 const WindshieldFlightContext = createContext<WindshieldFlightContextValue | undefined>(undefined);
@@ -67,6 +88,8 @@ export const WindshieldFlightProvider: React.FC<{ children: React.ReactNode }> =
   const [arrivedTargetId, setArrivedTargetId] = useState<string | null>(null);
   const [pendingApproach, setPendingApproach] = useState<{ objectId: string; seq: number } | null>(null);
   const [stopSignal, setStopSignal] = useState(0);
+  const [shipPos, setShipPos] = useState<PctPoint | null>(null);
+  const [contactPositions, setContactPositions] = useState<Map<string, PctPoint>>(new Map());
   const approachSeqRef = useRef(0);
   const lastGlideTargetRef = useRef<string | null>(null);
   const wasLocalFlyingRef = useRef(false);
@@ -110,6 +133,14 @@ export const WindshieldFlightProvider: React.FC<{ children: React.ReactNode }> =
     setTargetId(tgt);
   }, []);
 
+  const reportShipPos = useCallback((pos: PctPoint | null) => {
+    setShipPos(pos);
+  }, []);
+
+  const reportContactPositions = useCallback((positions: Map<string, PctPoint>) => {
+    setContactPositions(positions);
+  }, []);
+
   const value = useMemo<WindshieldFlightContextValue>(() => ({
     isFlying: localFlying || autopilot.status === 'engaged',
     targetId,
@@ -119,7 +150,15 @@ export const WindshieldFlightProvider: React.FC<{ children: React.ReactNode }> =
     pendingApproach,
     stopSignal,
     reportFlightState,
-  }), [localFlying, autopilot.status, targetId, arrivedTargetId, approach, allStop, pendingApproach, stopSignal, reportFlightState]);
+    shipPos,
+    contactPositions,
+    reportShipPos,
+    reportContactPositions,
+  }), [
+    localFlying, autopilot.status, targetId, arrivedTargetId, approach, allStop,
+    pendingApproach, stopSignal, reportFlightState, shipPos, contactPositions,
+    reportShipPos, reportContactPositions,
+  ]);
 
   return (
     <WindshieldFlightContext.Provider value={value}>

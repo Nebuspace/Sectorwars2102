@@ -2,8 +2,10 @@
 /**
  * TacticalTargetPage — TACTICAL monitor's TARGET page (WO-UI2-DECK-
  * RECONCILE, §05, rewired by WO-TACTICAL-POPUP: rep-colored contacts,
- * clicking the NAME opens ContactActionMenu with whichever of ENGAGE/HAIL
- * apply, HAIL opens HailComposeDialog, reticle-select stays decoupled).
+ * clicking the NAME opens ContactActionMenu with whichever of ENGAGE/
+ * APPROACH/HAIL apply, HAIL opens HailComposeDialog, reticle-select stays
+ * decoupled; WO-TACTICAL-APPROACH-ENGAGE-SCROLL Part B: ENGAGE/APPROACH are
+ * now split by proximity via WindshieldFlightContext, not rep bucket).
  *
  * Mirrors DeckPageTabs.test.tsx's harness (jsdom + react-dom/client
  * createRoot + act(), no RTL) — the SAME harness this file already used
@@ -11,6 +13,16 @@
  * to document.body (ConfirmDialog's own idiom), so their content is
  * queried off `document.body`, not `container`, even though the row that
  * opened them lives inside `container`.
+ *
+ * Part B pulls in a REAL WindshieldFlightProvider (TacticalTargetPage now
+ * calls useWindshieldFlight() directly) -- mirrors WindshieldTableau.
+ * test.tsx's own harness for the same context. TacticalTargetPage.tsx also
+ * now imports distancePx/REFERENCE_BAND/ENGAGE_RANGE_EM from
+ * ../WindshieldTableau (the shared, not-duplicated range read), which
+ * transitively pulls in that module's own apiClient/AutopilotContext
+ * imports -- mocked below the SAME way WindshieldTableau.test.tsx already
+ * mocks them (neither is ever actually CALLED here since <WindshieldTableau>
+ * itself is never mounted in this file, only its named exports are used).
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -37,11 +49,46 @@ vi.mock('../../../contexts/GameContext', () => ({
   }),
 }));
 
+// Transitive-only (see file header): TacticalTargetPage.tsx now imports
+// pure geometry helpers from ../WindshieldTableau, which itself imports
+// apiClient + AutopilotContext at module scope -- mocked so those two real
+// modules' own top-level code never executes, matching WindshieldTableau.
+// test.tsx's own precedent.
+vi.mock('../../../services/apiClient', () => ({
+  default: { get: vi.fn(), post: vi.fn() },
+}));
+
+let autopilotState: { status: string; abort: ReturnType<typeof vi.fn> };
+vi.mock('../../../contexts/AutopilotContext', () => ({
+  useAutopilot: () => autopilotState,
+}));
+
 import TacticalTargetPage, { type TacticalContact } from '../pages/TacticalTargetPage';
+import { WindshieldFlightProvider, useWindshieldFlight } from '../../../contexts/WindshieldFlightContext';
+
+// Reference-band-relative near/far fixtures (WindshieldTableau.REFERENCE_BAND
+// = 1440x334.7px @18.09px/em, ENGAGE_RANGE_EM = DOCK_RANGE_EM*3 = 15em ~=
+// 271px) -- NEAR is a trivial 0.01%-xPct nudge (~0.14px), FAR is a 45%-xPct
+// span (~648px), both comfortably on the correct side of the threshold
+// regardless of the exact placeholder multiplier.
+const SHIP_POS = { xPct: 50, yPct: 50 };
+const NEAR_CONTACT_POS = { xPct: 50.01, yPct: 50 };
+const FAR_CONTACT_POS = { xPct: 95, yPct: 50 };
 
 describe('TacticalTargetPage', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;
+
+  // Captures the shared flight context alongside the real TacticalTargetPage
+  // mount, so a test can seed shipPos/contactPositions the same way
+  // WindshieldTableau would publish them, and read pendingApproach back out
+  // after an APPROACH click (mirrors WindshieldTableau.test.tsx's own
+  // flightCapture harness).
+  let flightCapture: ReturnType<typeof useWindshieldFlight> | null = null;
+  function FlightCapture() {
+    flightCapture = useWindshieldFlight();
+    return null;
+  }
 
   beforeEach(() => {
     localStorage.clear();
@@ -49,6 +96,8 @@ describe('TacticalTargetPage', () => {
     mockGetStatus.mockReset();
     mockSendPlayerMessage.mockReset();
     mockRefreshPlayerState.mockReset();
+    autopilotState = { status: 'idle', abort: vi.fn() };
+    flightCapture = null;
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -85,10 +134,25 @@ describe('TacticalTargetPage', () => {
   };
 
   const mount = async (contacts: TacticalContact[], onSelectContact?: (c: TacticalContact | null) => void, selectedShipId?: string | null) => {
+    flightCapture = null;
     await act(async () => {
       root.render(
-        <TacticalTargetPage contacts={contacts} onSelectContact={onSelectContact} selectedShipId={selectedShipId} />
+        <WindshieldFlightProvider>
+          <FlightCapture />
+          <TacticalTargetPage contacts={contacts} onSelectContact={onSelectContact} selectedShipId={selectedShipId} />
+        </WindshieldFlightProvider>
       );
+    });
+    await flush();
+  };
+
+  // Seeds the shared flight context the same way a mounted WindshieldTableau
+  // would publish it -- `near` puts `shipId` inside ENGAGE_RANGE_EM of the
+  // player's own ship, `far` puts it well outside.
+  const seedRange = async (shipId: string, near: boolean) => {
+    await act(async () => {
+      flightCapture!.reportShipPos(SHIP_POS);
+      flightCapture!.reportContactPositions(new Map([[shipId, near ? NEAR_CONTACT_POS : FAR_CONTACT_POS]]));
     });
     await flush();
   };
@@ -97,7 +161,7 @@ describe('TacticalTargetPage', () => {
   const name = (idx = 0) => row(idx).querySelector('.target-contact-name') as HTMLElement;
   // ContactActionMenu/HailComposeDialog both portal to document.body.
   const menu = () => document.body.querySelector('.contact-action-menu');
-  const menuItem = (variant: 'engage' | 'hail') =>
+  const menuItem = (variant: 'engage' | 'hail' | 'approach') =>
     menu()?.querySelector(`.contact-action-menu-item-${variant}`) as HTMLElement | null;
   const hailDialog = () => document.body.querySelector('.confirm-dialog-panel[aria-label^="Hail message"]');
   const hailInput = () => hailDialog()?.querySelector('.target-hail-input') as HTMLInputElement | null;
@@ -143,11 +207,13 @@ describe('TacticalTargetPage', () => {
     ]);
     expect(name(0).getAttribute('title')).toContain('WANTED');
     expect(name(1).getAttribute('title')).toContain('CLEAR');
-    // Hostile NPC can ENGAGE -> interactive trigger; peaceful NPC has
-    // neither ENGAGE (not is_npc red... it's blue) nor HAIL (is_npc) --
-    // no menu to offer, so its name is not a menu trigger.
+    // Both carry a ship_id: whichever of ENGAGE/APPROACH applies -> both
+    // are interactive triggers regardless of rep bucket (Part B: ENGAGE is
+    // proximity-only, not rep-gated, and APPROACH is universal for any
+    // ship-bearing contact) -- role coverage of the "no ship_id" no-menu
+    // case is its own dedicated test below.
     expect(name(0).getAttribute('role')).toBe('button');
-    expect(name(1).getAttribute('role')).toBeNull();
+    expect(name(1).getAttribute('role')).toBe('button');
   });
 
   it('an NPC with no archetype but notoriety >= 50 is also RED (mirrors CombatInterface fair-game threshold)', async () => {
@@ -158,39 +224,108 @@ describe('TacticalTargetPage', () => {
   });
 
   // ---------------------------------------------------------------------
-  // ContactActionMenu composition — canEngage/canHail are independent
-  // predicates now (WO-TACTICAL-POPUP), not an either/or button row.
+  // ContactActionMenu composition — canEngage/canApproach/canHail are
+  // independent predicates (WO-TACTICAL-POPUP, extended by Part B), not an
+  // either/or button row. ENGAGE/APPROACH are split by proximity
+  // (flight.shipPos/contactPositions vs ENGAGE_RANGE_EM), NOT rep bucket —
+  // seedRange() puts a contact in/out of range the same way a mounted
+  // WindshieldTableau would publish it.
   // ---------------------------------------------------------------------
 
-  it('menu shows ENGAGE only for a hostile NPC (never hailable — is_npc excludes HAIL)', async () => {
-    await mount([
-      { player_id: 'npc1', ship_id: '2', username: 'Crimson Corsair', is_npc: true, archetype: 'HOSTILE_RAIDER' },
-    ]);
-    await click(name());
-    expect(menuItem('engage')).toBeTruthy();
-    expect(menuItem('hail')).toBeNull();
-  });
-
-  it('menu shows HAIL only for a non-NPC BLUE contact', async () => {
+  it('menu shows HAIL + APPROACH (never ENGAGE) for a FAR non-NPC BLUE contact', async () => {
     await mount([
       { player_id: 'p1', ship_id: '1', username: 'Vega', reputation_tier: 'Lawful', personal_reputation: 40 },
     ]);
+    await seedRange('1', false);
     await click(name());
     expect(menuItem('hail')).toBeTruthy();
+    expect(menuItem('approach')).toBeTruthy();
     expect(menuItem('engage')).toBeNull();
   });
 
-  it('menu shows BOTH ENGAGE and HAIL for a hostile PLAYER contact (the old inline row could only ever show one)', async () => {
+  it('menu shows HAIL + ENGAGE (APPROACH gone) once the SAME player comes into range — the swap flips on a distance change', async () => {
+    await mount([
+      { player_id: 'p1', ship_id: '1', username: 'Vega', reputation_tier: 'Lawful', personal_reputation: 40 },
+    ]);
+    await seedRange('1', false);
+    await click(name());
+    expect(menuItem('approach')).toBeTruthy();
+    expect(menuItem('engage')).toBeNull();
+
+    await seedRange('1', true);
+    expect(menuItem('engage')).toBeTruthy();
+    expect(menuItem('approach')).toBeNull();
+    expect(menuItem('hail')).toBeTruthy(); // unaffected by the range swap
+  });
+
+  it('menu shows APPROACH only for a FAR NPC (never hailable — is_npc excludes HAIL)', async () => {
+    await mount([
+      { player_id: 'npc1', ship_id: '2', username: 'Merchant Vessel', is_npc: true, archetype: 'LAW_ENFORCEMENT' },
+    ]);
+    await seedRange('2', false);
+    await click(name());
+    expect(menuItem('approach')).toBeTruthy();
+    expect(menuItem('engage')).toBeNull();
+    expect(menuItem('hail')).toBeNull();
+  });
+
+  it('menu shows ENGAGE only for an IN-RANGE NPC with a ship (never hailable)', async () => {
+    await mount([
+      { player_id: 'npc1', ship_id: '2', username: 'Crimson Corsair', is_npc: true, archetype: 'HOSTILE_RAIDER' },
+    ]);
+    await seedRange('2', true);
+    await click(name());
+    expect(menuItem('engage')).toBeTruthy();
+    expect(menuItem('approach')).toBeNull();
+    expect(menuItem('hail')).toBeNull();
+  });
+
+  it('menu shows BOTH ENGAGE and HAIL for an IN-RANGE hostile PLAYER contact (the old inline row could only ever show one)', async () => {
     await mount([
       { player_id: 'p1', ship_id: '1', username: 'Dredge', reputation_tier: 'Outlaw', personal_reputation: -300 },
     ]);
+    await seedRange('1', true);
     await click(name());
     expect(menuItem('engage')).toBeTruthy();
     expect(menuItem('hail')).toBeTruthy();
     expect(menu()?.querySelectorAll('.contact-action-menu-item').length).toBe(2);
   });
 
-  it('shows no menu for an NPC with no ship_id (unattackable, unhailable)', async () => {
+  it('ENGAGE on an IN-RANGE BLUE/clean contact carries the rep-cost tooltip (title + aria-label) — v1 is a warning, not a hard block', async () => {
+    await mount([
+      { player_id: 'p1', ship_id: '1', username: 'Vega', reputation_tier: 'Lawful', personal_reputation: 40 },
+    ]);
+    await seedRange('1', true);
+    await click(name());
+    const engageBtn = menuItem('engage')!;
+    expect(engageBtn).toBeTruthy();
+    const warning = 'Engaging a clean target flags you as an outlaw: -100 rep + 1h grey';
+    expect(engageBtn.getAttribute('title')).toBe(warning);
+    expect(engageBtn.getAttribute('aria-label')).toContain(warning);
+  });
+
+  it('ENGAGE on an IN-RANGE RED/hostile contact carries NO cost tooltip', async () => {
+    await mount([
+      { player_id: 'p1', ship_id: '1', username: 'Dredge', reputation_tier: 'Outlaw', personal_reputation: -300 },
+    ]);
+    await seedRange('1', true);
+    await click(name());
+    const engageBtn = menuItem('engage')!;
+    expect(engageBtn.getAttribute('title')).toBeFalsy();
+  });
+
+  it('the menu opens for EVERY ship-bearing contact, incl. a CLEAR NPC (APPROACH-only, no rep gate on the trigger itself)', async () => {
+    await mount([
+      { player_id: 'npc1', ship_id: '2', username: 'Merchant Vessel', is_npc: true, archetype: 'LAW_ENFORCEMENT' },
+    ]);
+    // No seedRange() -- default/no position data reported yet still counts
+    // as "not in range", which is exactly the FAR/APPROACH default.
+    expect(name().getAttribute('role')).toBe('button');
+    await click(name());
+    expect(menuItem('approach')).toBeTruthy();
+  });
+
+  it('shows no menu for an NPC with no ship_id (unattackable, unhailable, nothing to approach)', async () => {
     await mount([{ player_id: 'npc1', username: 'Distant Contact', is_npc: true }]);
     expect(name().getAttribute('role')).toBeNull();
     await click(name());
@@ -202,6 +337,19 @@ describe('TacticalTargetPage', () => {
     expect(name().getAttribute('role')).toBe('button');
     await click(name());
     expect(menuItem('hail')).toBeTruthy();
+    expect(menuItem('approach')).toBeNull(); // no ship_id -- nothing to glide toward
+  });
+
+  it('APPROACH click calls flight.approach(ship_id) — resolves on the shared WindshieldFlightContext', async () => {
+    await mount([
+      { player_id: 'p1', ship_id: 'ship-9', username: 'Vega', reputation_tier: 'Lawful' },
+    ]);
+    await seedRange('ship-9', false);
+    await click(name());
+    await click(menuItem('approach')!);
+
+    expect(menu()).toBeNull(); // menu closes the instant an item is chosen
+    expect(flightCapture?.pendingApproach?.objectId).toBe('ship-9');
   });
 
   it('the row renders name-only -- no NPC badge, rep-tag chip, legend, or inline action buttons anywhere in the DOM', async () => {
@@ -259,6 +407,7 @@ describe('TacticalTargetPage', () => {
     await mount([
       { player_id: 'npc1', ship_id: '42', username: 'Crimson Corsair', is_npc: true, archetype: 'HOSTILE_RAIDER' },
     ]);
+    await seedRange('42', true);
     await click(name());
     await click(menuItem('engage')!);
 
@@ -277,6 +426,7 @@ describe('TacticalTargetPage', () => {
     await mount([
       { player_id: 'npc1', ship_id: '42', username: 'Crimson Corsair', is_npc: true, archetype: 'HOSTILE_RAIDER' },
     ]);
+    await seedRange('42', true);
     await click(name());
     await click(menuItem('engage')!);
 
@@ -438,6 +588,46 @@ describe('TacticalTargetPage', () => {
     await keydown('Escape');
     expect(menu()).toBeNull();
     expect(document.activeElement).toBe(name());
+  });
+
+  // Regression (mack HIGH, WO-TACTICAL-APPROACH-ENGAGE-SCROLL Part B REVISE):
+  // a mid-menu range flip (APPROACH -> ENGAGE) changes the focused item's
+  // React `key`, unmounting the focused button and mounting a new one at
+  // that DOM position -- ContactActionMenu's initial-focus effect must
+  // re-fire on that item-set change (not just on anchorEl) or focus drops
+  // silently to document.body and the keyboard user's next Enter/Space is
+  // inert until they mouse-click. mack's probe reproduced the drop; this
+  // pins the fix permanently.
+  it('a mid-menu range flip (Approach -> Engage swap) re-focuses the NEW first item, never drops to document.body', async () => {
+    // An NPC (canHail is always false for is_npc) so APPROACH/ENGAGE is the
+    // menu's ONLY item -- the swapped item IS the first item, making this
+    // assert the actual mack-HIGH scenario unambiguously (a HAIL-bearing
+    // player contact would leave HAIL, unaffected by the swap, sitting
+    // first -- a real but weaker proof that this fix doesn't rely on).
+    await mount([
+      { player_id: 'npc1', ship_id: '1', username: 'Merchant Vessel', is_npc: true, archetype: 'LAW_ENFORCEMENT' },
+    ]);
+    await seedRange('1', false); // FAR -- menu shows APPROACH only
+    await click(name());
+    const approachBtn = menuItem('approach');
+    expect(approachBtn).toBeTruthy();
+    expect(menuItem('hail')).toBeNull();
+
+    // A keyboard user has focused the APPROACH item (the menu's only item).
+    approachBtn!.focus();
+    expect(document.activeElement).toBe(approachBtn);
+
+    // Range flip while the menu stays open on the SAME anchor -- APPROACH's
+    // key unmounts, ENGAGE mounts in its place.
+    await seedRange('1', true);
+    const engageBtn = menuItem('engage');
+    expect(engageBtn).toBeTruthy();
+    expect(menuItem('approach')).toBeNull();
+
+    // Focus must land on the menu's new first item, never document.body.
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(menu()?.querySelector('[role="menuitem"]'));
+    expect(document.activeElement).toBe(engageBtn);
   });
 
   it('the empty-state carries a status role', async () => {

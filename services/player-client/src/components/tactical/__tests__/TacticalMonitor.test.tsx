@@ -40,8 +40,19 @@ vi.mock('../../../contexts/GameContext', () => ({
   }),
 }));
 
+// TacticalTargetPage now calls useWindshieldFlight() directly (WO-TACTICAL-
+// APPROACH-ENGAGE-SCROLL Part B) -- a real WindshieldFlightProvider wraps
+// every mount below (mirrors GameDashboard.tsx's own real wrapping), which
+// pulls in AutopilotContext transitively (WindshieldFlightProvider calls
+// useAutopilot()) -- mocked the same way WindshieldTableau.test.tsx/
+// TacticalTargetPage.test.tsx already do.
+vi.mock('../../../contexts/AutopilotContext', () => ({
+  useAutopilot: () => ({ status: 'idle', abort: vi.fn() }),
+}));
+
 import TacticalMonitor, { type TacticalContact } from '../TacticalMonitor';
 import { requestTacticalPage, __resetDeckNavBusForTests } from '../../../services/deckNavBus';
+import { WindshieldFlightProvider } from '../../../contexts/WindshieldFlightContext';
 
 describe('TacticalMonitor', () => {
   let container: HTMLElement;
@@ -87,11 +98,13 @@ describe('TacticalMonitor', () => {
   const mount = async (props: Partial<React.ComponentProps<typeof TacticalMonitor>> = {}) => {
     await act(async () => {
       root.render(
-        <TacticalMonitor
-          contacts={props.contacts ?? CONTACTS}
-          selectedShipId={props.selectedShipId}
-          onSelectContact={props.onSelectContact}
-        />
+        <WindshieldFlightProvider>
+          <TacticalMonitor
+            contacts={props.contacts ?? CONTACTS}
+            selectedShipId={props.selectedShipId}
+            onSelectContact={props.onSelectContact}
+          />
+        </WindshieldFlightProvider>
       );
     });
     await flush();

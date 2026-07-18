@@ -160,4 +160,38 @@ describe('WindshieldFlightContext', () => {
     await act(async () => { captured!.allStop(); });
     expect(captured?.stopSignal).toBe(2);
   });
+
+  // -------------------------------------------------------------------
+  // Live position feed (WO-TACTICAL-APPROACH-ENGAGE-SCROLL Part B) --
+  // reportShipPos/reportContactPositions mirror reportFlightState's own
+  // publish-in/read-out shape.
+  // -------------------------------------------------------------------
+
+  it('shipPos/contactPositions start null/empty before any tableau reports', async () => {
+    await mount();
+    expect(captured?.shipPos).toBeNull();
+    expect(captured?.contactPositions).toBeInstanceOf(Map);
+    expect(captured?.contactPositions.size).toBe(0);
+  });
+
+  it('reportShipPos publishes the tableau\'s own live position', async () => {
+    await mount();
+    await act(async () => { captured!.reportShipPos({ xPct: 42, yPct: 33 }); });
+    expect(captured?.shipPos).toEqual({ xPct: 42, yPct: 33 });
+
+    await act(async () => { captured!.reportShipPos(null); });
+    expect(captured?.shipPos).toBeNull();
+  });
+
+  it('reportContactPositions publishes every OTHER contact\'s resolved position, keyed by ship_id', async () => {
+    await mount();
+    const positions = new Map([
+      ['ship-alpha', { xPct: 10, yPct: 20 }],
+      ['ship-beta', { xPct: 80, yPct: 60 }],
+    ]);
+    await act(async () => { captured!.reportContactPositions(positions); });
+    expect(captured?.contactPositions.get('ship-alpha')).toEqual({ xPct: 10, yPct: 20 });
+    expect(captured?.contactPositions.get('ship-beta')).toEqual({ xPct: 80, yPct: 60 });
+    expect(captured?.contactPositions.size).toBe(2);
+  });
 });

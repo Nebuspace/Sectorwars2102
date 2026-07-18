@@ -19,7 +19,13 @@ import { createPortal } from 'react-dom';
 export interface ContactActionMenuItem {
   key: string;
   label: string;
-  variant?: 'engage' | 'hail';
+  variant?: 'engage' | 'hail' | 'approach';
+  /** Optional cost/consequence note (WO-TACTICAL-APPROACH-ENGAGE-SCROLL Part
+   *  B, e.g. ENGAGE on a clean contact) -- rendered as BOTH the native hover
+   *  `title` and folded into the item's own `aria-label`, never hover-only
+   *  (this file's sibling TacticalTargetPage.tsx already flags the same
+   *  never-color/hover-alone WCAG 1.4.1 concern for the rep bucket). */
+  title?: string;
   onSelect: () => void;
 }
 
@@ -69,11 +75,26 @@ const ContactActionMenu: React.FC<ContactActionMenuProps> = ({ anchorEl, items, 
   // Initial focus lands on the first item -- WAI-ARIA menu pattern; focus
   // returns to the trigger on unmount (Escape, outside-click, or an item
   // being chosen all funnel through the same unmount).
+  //
+  // Also re-fires when the ITEM-KEY SET changes while the menu stays open
+  // on the SAME anchor (WO-TACTICAL-APPROACH-ENGAGE-SCROLL Part B, mack
+  // HIGH): TacticalTargetPage's Approach<->Engage swap on a range-flip
+  // changes an item's `key` (`'approach'` -> `'engage'`), which unmounts
+  // the focused button and mounts a new one at that DOM position -- React
+  // does not preserve focus across a key change, and `anchorEl` alone
+  // never changes here, so depending on `anchorEl` only left focus
+  // stranded on the (now-removed) old button, dropping silently to
+  // `document.body` -- every subsequent Enter/Space went nowhere until the
+  // user re-focused by hand (mouse click). `itemKeys` below is a cheap
+  // signature (not the `items` array reference itself, which is a fresh
+  // object every parent render and would re-fire this on every keystroke
+  // elsewhere in the page, not just a real item-set change).
+  const itemKeys = items.map((item) => item.key).join(',');
   useEffect(() => {
     const first = menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]');
     first?.focus();
     return () => anchorEl?.focus();
-  }, [anchorEl]);
+  }, [anchorEl, itemKeys]);
 
   useEffect(() => {
     const focusables = () =>
@@ -127,6 +148,8 @@ const ContactActionMenu: React.FC<ContactActionMenuProps> = ({ anchorEl, items, 
           type="button"
           role="menuitem"
           className={`contact-action-menu-item${item.variant ? ` contact-action-menu-item-${item.variant}` : ''}`}
+          title={item.title}
+          aria-label={item.title ? `${item.label} — ${item.title}` : undefined}
           onClick={item.onSelect}
         >
           {item.label}

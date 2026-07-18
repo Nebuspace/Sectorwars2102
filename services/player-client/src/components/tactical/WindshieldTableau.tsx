@@ -162,6 +162,15 @@ const POPUP_H = 158;
 // solar-system-viewscreen.css must stay in sync with these values.
 const DOCK_RANGE_EM = 5;
 const DOCK_APPROACH_STANDOFF_EM = 3.5;
+/** WO-TACTICAL-APPROACH-ENGAGE-SCROLL Part B: how close (in REFERENCE_BAND
+ *  em, the same canonical-%-space convention DOCK_RANGE_EM uses) a ship
+ *  contact must be before TACTICAL TARGET's menu offers ENGAGE instead of
+ *  APPROACH. PLACEHOLDER — a small multiple of DOCK_RANGE_EM as a sensible
+ *  starting number; a Max-tunable dial once playtested, same convention as
+ *  DOCK_LAND_PROXIMITY_RANGE_EM. Exported (like distancePx/REFERENCE_BAND
+ *  below) so TacticalTargetPage.tsx computes the SAME range read the ship
+ *  markers below are drawn from, not a second, independently-drifting copy. */
+export const ENGAGE_RANGE_EM = DOCK_RANGE_EM * 3;
 // Local intra-system flight is ONE continuous position glide (accelerate →
 // cruise → decelerate, a single eased CSS transition over TRAVEL_MOVE_MS), with
 // the engine burn, RCS jets, and the retrograde flip layered on as a timed
@@ -235,11 +244,85 @@ function isInFlightPhase(phase: TravelPhase): boolean {
   );
 }
 
-function distancePx(a: PctPoint, b: PctPoint, band: BandGeometry): number {
+export function distancePx(a: PctPoint, b: PctPoint, band: BandGeometry): number {
   return Math.hypot(
     ((a.xPct - b.xPct) / 100) * band.widthPx,
     ((a.yPct - b.yPct) / 100) * band.heightPx,
   );
+}
+
+interface ResolvedShipPose {
+  xPct: number;
+  yPct: number;
+  headingDeg: number;
+  burning: boolean;
+  phaseClass: string;
+}
+
+/**
+ * Resolve a ship contact's on-screen pose — server ISP pose/leg when the
+ * server tracks one, else the local flight-profile fallback (cosmetic NPC
+ * wander, or a stable parked anchor for a poseless human — see
+ * FIX-POSELESS-FALLBACK below). Extracted (WO-TACTICAL-APPROACH-ENGAGE-
+ * SCROLL Part B) from what was three independently-inlined copies of this
+ * SAME branch: the `.other` render loop, the reticle-selection anchor
+ * (`selectedPos`), and now the pendingApproach resolver's ship-glide-target
+ * lookup + the per-tick publish into WindshieldFlightContext.contactPositions
+ * — one source of truth for "where is this contact's dot right now", so a
+ * proximity read (TACTICAL TARGET's Engage/Approach split) can never
+ * disagree with where the dot is actually drawn.
+ *
+ * Pure — `nowMs` is passed in (rather than read via a closed-over
+ * `ispNowMs()`) so this can live at module scope like every other geometry
+ * helper in this file.
+ */
+function resolveShipPose(
+  s: ShipPresence,
+  nowMs: number,
+  contactT: number,
+  contactDocks: ContactDock[],
+  bandAspect: number,
+): ResolvedShipPose {
+  if (s.pose) {
+    const sample = deriveIspPose(s.pose as IspPose, nowMs);
+    return {
+      xPct: sample.x_pct,
+      yPct: sample.y_pct,
+      headingDeg: sample.heading_deg,
+      burning: !!sample.burning,
+      phaseClass: ispPhaseToTravelClass(String(sample.phase)),
+    };
+  }
+  if (s.is_npc) {
+    // Decorative NPC traffic with no server-tracked pose --
+    // otherShipFlightPose's cosmetic wander is what it was BUILT for (no
+    // real position exists to render), unchanged.
+    const pose = otherShipFlightPose(String(s.ship_id), contactT, contactDocks, {
+      archetype: s.archetype,
+      activity: s.activity,
+      mission: s.mission,
+      bandAspect,
+    });
+    return {
+      xPct: pose.xPct,
+      yPct: pose.yPct,
+      headingDeg: pose.headingDeg,
+      burning: pose.burning,
+      phaseClass: pose.phase === 'brake-turn' ? 'brake-turn'
+        : pose.phase === 'final-orient' ? 'final-orient'
+        : pose.phase,
+    };
+  }
+  // FIX-POSELESS-FALLBACK (P0): a HUMAN contact with no pose data is a REAL
+  // player, not decorative traffic -- otherShipFlightPose is time-driven
+  // (contactT), so reusing it here made a real player's dot "port" between
+  // positions every poll instead of holding still. Render PARKED at a
+  // stable, deterministic per-contact anchor instead (otherPresencePosition
+  // -- the same per-UUID seed otherShipFlightPose itself starts from) until
+  // real pose data arrives; identical inputs -> identical anchor on every
+  // render, so both seats agree on where it's parked.
+  const parked = otherPresencePosition(s.player_id || String(s.ship_id));
+  return { xPct: parked.xPct, yPct: parked.yPct, headingDeg: 0, burning: false, phaseClass: 'idle' };
 }
 
 /** Stop near a station rather than directly on top of its glyph. */
@@ -322,7 +405,7 @@ const DEFAULT_REM_PX = 16;
  *  standing test fixture (`windshieldTableauLayout.test.ts`'s `FLIGHT_BAND`)
  *  — that fixture was already the ratified reference, just not yet wired
  *  into the runtime component itself. */
-const REFERENCE_BAND: BandGeometry = { widthPx: 1440, heightPx: 334.7, remPx: 18.09 };
+export const REFERENCE_BAND: BandGeometry = { widthPx: 1440, heightPx: 334.7, remPx: 18.09 };
 
 function toStaticSystem(data: any): StaticSystem {
   const d = data || {};
@@ -505,11 +588,23 @@ function orbitEllipse(star: StarAnchor, pos: PctPoint, key: string): React.React
   );
 }
 
+// A JS default parameter (`ships = []`) re-evaluates to a FRESH array
+// reference on every render when the caller omits the prop -- fine for the
+// render body (which already recomputes `.map()`/`.find()` derivations
+// every render regardless), but WO-TACTICAL-APPROACH-ENGAGE-SCROLL Part B
+// put `ships` into TWO useEffect dependency arrays whose effects publish
+// into the shared context; an unstable dependency-array entry there means
+// the effect re-fires every render, republishes, triggers a Provider
+// re-render, and re-fires again -- an infinite loop (confirmed by an OOM/
+// hang on this exact suite). ONE stable empty-array sentinel as the
+// default closes it.
+const EMPTY_SHIPS: ShipPresence[] = [];
+
 const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
   sectorId,
   hazardLevel = 0,
   planets = [],
-  ships = [],
+  ships = EMPTY_SHIPS,
   wrecks = [],
   formations = [],
   scanActive = false,
@@ -1102,6 +1197,41 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
     flight.reportFlightState(localTraveling || autopilot.status === 'engaged', glideTargetId);
   }, [localTraveling, autopilot.status, glideTargetId, flight.reportFlightState]);
 
+  // Publish the player's own live position (WO-TACTICAL-APPROACH-ENGAGE-
+  // SCROLL Part B) -- `shipPos` state is the same "good enough" resolution
+  // the DOCK_RANGE_EM proximity gates below already key off (not
+  // readLiveShipPos()'s real DOM read), so a proximity-gated consumer reads
+  // the same position this component already treats as authoritative.
+  useEffect(() => {
+    flight.reportShipPos(shipPos);
+  }, [shipPos, flight.reportShipPos]);
+
+  // Publish every OTHER contact's resolved position, keyed by ship_id,
+  // using the SAME resolveShipPose() the `.other` render loop below draws
+  // its dots from -- one source of truth, see that helper's own doc-comment.
+  // THROTTLED to ~2Hz (contactPublishThrottleRef) rather than firing a real
+  // context state-update on every contactT tick (~20fps): a proximity menu
+  // a player opens by hand doesn't need 20fps freshness, and an unthrottled
+  // publish here means every tick cascades a WindshieldFlightProvider
+  // state-update through every consumer (WindshieldTableau itself included)
+  // -- fine at 20fps in a real browser, but pathological under a test
+  // suite's `vi.advanceTimersByTime()` fast-forwards (thousands of RAF
+  // ticks fired synchronously) -- confirmed by an OOM crash on this exact
+  // suite before this throttle was added.
+  const contactPublishThrottleRef = useRef(0);
+  useEffect(() => {
+    const now = ispNowMs();
+    if (now - contactPublishThrottleRef.current < 500) return;
+    contactPublishThrottleRef.current = now;
+    const positions = new Map<string, PctPoint>();
+    ships.forEach((s) => {
+      if (!s.ship_id) return;
+      const pose = resolveShipPose(s, now, contactT, contactDocks, bandAspect);
+      positions.set(String(s.ship_id), { xPct: pose.xPct, yPct: pose.yPct });
+    });
+    flight.reportContactPositions(positions);
+  }, [ships, contactT, contactDocks, bandAspect, ispClockSkewMs, flight.reportContactPositions]);
+
   // A SOLAR row's "APPROACH ▸" click records a request on the shared
   // context (GameDashboard.tsx -> PlanetPortPair's onApproach ->
   // flight.approach(id)); resolve it against the fetched system data and
@@ -1118,10 +1248,26 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
     if (stationMatch) {
       const stationPos = stationPosition(star, stationMatch, safeRadiiStations);
       approachStation(stationMatch, stationPos);
+      return;
+    }
+    // WO-TACTICAL-APPROACH-ENGAGE-SCROLL Part B: a moving ship contact --
+    // resolved with the SAME resolveShipPose() the `.other` render loop
+    // below draws its dot from, so Approach glides toward exactly where the
+    // contact APPEARS (WYSIWYG best-effort, snapshot not pursuit -- see
+    // this file's own verify-first note above on why continuous chase is
+    // out of scope for v1).
+    const shipMatch = ships.find((s) => s.ship_id && String(s.ship_id) === String(objectId));
+    if (shipMatch) {
+      const pose = resolveShipPose(shipMatch, ispNowMs(), contactT, contactDocks, bandAspect);
+      travelTo({ xPct: pose.xPct, yPct: pose.yPct }, objectId);
+      return;
     }
     // Unresolvable (stale id from a since-changed sector) — no-op, matches
     // the context's own documented "no-op if the id can't be resolved".
-  }, [flight.pendingApproach, system, star, safeRadiiPlanets, safeRadiiStations, travelTo, approachStation]);
+  }, [
+    flight.pendingApproach, system, star, safeRadiiPlanets, safeRadiiStations, travelTo, approachStation,
+    ships, contactT, contactDocks, bandAspect,
+  ]);
 
   // A row/locrow ALL STOP click (flight.allStop()) bumps stopSignal. Instead of
   // freezing momentum in place, abort the planned destination and run an
@@ -1516,27 +1662,16 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
   const hasNebula = !!system?.nebula;
   const hasHazard = hazardLevel >= 5;
   const selectedShip = ships.find((s) => s.ship_id && String(s.ship_id) === String(selectedShipId));
-  const selectedPos = (() => {
-    if (!selectedShip?.ship_id) return null;
-    if (selectedShip.pose) {
-      const s = deriveIspPose(selectedShip.pose as IspPose, ispNowMs());
-      return { xPct: s.x_pct, yPct: s.y_pct };
-    }
-    // FIX-POSELESS-FALLBACK (P0): mirror the `.other` render loop's own
-    // pose-less branch exactly (NPC=cosmetic wander unchanged, human=parked
-    // stable anchor) so a selected contact's reticle never disagrees with
-    // where its own dot actually renders.
-    if (selectedShip.is_npc) {
-      const pose = otherShipFlightPose(String(selectedShip.ship_id), contactT, contactDocks, {
-        archetype: selectedShip.archetype,
-        activity: selectedShip.activity,
-        mission: selectedShip.mission,
-        bandAspect,
-      });
-      return { xPct: pose.xPct, yPct: pose.yPct };
-    }
-    return otherPresencePosition(selectedShip.player_id || String(selectedShip.ship_id));
-  })();
+  // resolveShipPose() -- mirrors the `.other` render loop's own resolution
+  // exactly (server pose / NPC cosmetic wander / poseless-human parked
+  // anchor) so a selected contact's reticle never disagrees with where its
+  // own dot actually renders.
+  const selectedPos = selectedShip?.ship_id
+    ? (() => {
+        const pose = resolveShipPose(selectedShip, ispNowMs(), contactT, contactDocks, bandAspect);
+        return { xPct: pose.xPct, yPct: pose.yPct };
+      })()
+    : null;
 
   return (
     <div ref={containerRef} className="ssv-tableau" onContextMenu={handleContextMenu}>
@@ -1825,52 +1960,12 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
             profile until the sector presence carries pose (Loop A tick). */}
         {ships.map((s) => {
           if (!s.ship_id) return null;
-          let xPct: number;
-          let yPct: number;
-          let headingDegVal: number;
-          let burningContact = false;
-          let phaseClass = 'idle';
-          if (s.pose) {
-            const sample = deriveIspPose(s.pose as IspPose, ispNowMs());
-            xPct = sample.x_pct;
-            yPct = sample.y_pct;
-            headingDegVal = sample.heading_deg;
-            burningContact = !!sample.burning;
-            phaseClass = ispPhaseToTravelClass(String(sample.phase));
-          } else if (s.is_npc) {
-            // Decorative NPC traffic with no server-tracked pose --
-            // otherShipFlightPose's cosmetic wander is what it was BUILT
-            // for (no real position exists to render), unchanged.
-            const pose = otherShipFlightPose(String(s.ship_id), contactT, contactDocks, {
-              archetype: s.archetype,
-              activity: s.activity,
-              mission: s.mission,
-              bandAspect,
-            });
-            xPct = pose.xPct;
-            yPct = pose.yPct;
-            headingDegVal = pose.headingDeg;
-            burningContact = pose.burning;
-            phaseClass = pose.phase === 'brake-turn' ? 'brake-turn'
-              : pose.phase === 'final-orient' ? 'final-orient'
-              : pose.phase;
-          } else {
-            // FIX-POSELESS-FALLBACK (P0): a HUMAN contact with no pose data
-            // is a REAL player, not decorative traffic -- otherShipFlightPose
-            // is time-driven (contactT), so reusing it here made a real
-            // player's dot "port" between positions every poll instead of
-            // holding still. Render PARKED at a stable, deterministic
-            // per-contact anchor instead (otherPresencePosition -- the same
-            // per-UUID seed otherShipFlightPose itself starts from) until
-            // real pose data arrives; identical inputs -> identical anchor
-            // on every render, so both seats agree on where it's parked.
-            const parked = otherPresencePosition(s.player_id || String(s.ship_id));
-            xPct = parked.xPct;
-            yPct = parked.yPct;
-            headingDegVal = 0;
-            burningContact = false;
-            phaseClass = 'idle';
-          }
+          const resolved = resolveShipPose(s, ispNowMs(), contactT, contactDocks, bandAspect);
+          const xPct = resolved.xPct;
+          const yPct = resolved.yPct;
+          const headingDegVal = resolved.headingDeg;
+          const burningContact = resolved.burning;
+          const phaseClass = resolved.phaseClass;
           const faction = shipFaction(s);
           const isPirate = faction.key === 'raider';
           const contactName = s.ship_name || faction.label;
