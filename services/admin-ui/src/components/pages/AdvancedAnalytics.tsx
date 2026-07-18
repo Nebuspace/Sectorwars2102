@@ -153,7 +153,7 @@ export const AdvancedAnalytics: React.FC = () => {
     <div className="advanced-analytics">
       <PageHeader
         title="Advanced Analytics"
-        subtitle="Generate custom reports, view predictions, and export data"
+        subtitle="Custom reports, performance metrics, and data export"
       />
 
       <div className="analytics-tabs">
