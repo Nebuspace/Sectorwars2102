@@ -258,7 +258,7 @@ const AITradingDashboard: React.FC = () => {
                 <p>
                   No AI model registry exists server-side — GET /api/v1/admin/ai/models
                   returns an empty list, and start/stop/train actions respond 501.
-                  Controls below stay demoted so they cannot look live.
+                  This tab does not invent Start / Stop / Retrain controls.
                 </p>
               </div>
             ) : (
@@ -295,34 +295,16 @@ const AITradingDashboard: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="model-actions">
-                    {model.status === 'active' && (
-                      <>
-                        <button 
-                          className="btn btn-outline"
-                          disabled
-                          title="Offline — POST /ai/models/:id/stop returns 501 (no model registry)"
-                        >
-                          Stop (offline)
-                        </button>
-                        <button 
-                          className="btn btn-outline"
-                          disabled
-                          title="Offline — POST /ai/models/:id/train returns 501 (no model registry)"
-                        >
-                          Retrain (offline)
-                        </button>
-                      </>
-                    )}
-                    {model.status === 'inactive' && (
-                      <button 
-                        className="btn btn-outline"
-                        disabled
-                        title="Offline — POST /ai/models/:id/start returns 501 (no model registry)"
-                      >
-                        Start (offline)
-                      </button>
-                    )}
+                  <div
+                    role="note"
+                    className="model-actions"
+                    style={{
+                      marginTop: '8px', padding: '8px 10px',
+                      background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)',
+                      borderRadius: '6px', color: '#fbbf24', fontSize: '0.78rem', lineHeight: 1.4
+                    }}
+                  >
+                    Start / Stop / Retrain unavailable: POST /api/v1/admin/ai/models/:id/start|stop|train returns 501 (no model registry). Stats above are read-only.
                   </div>
                 </div>
               ))}
