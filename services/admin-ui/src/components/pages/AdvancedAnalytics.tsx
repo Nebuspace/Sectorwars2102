@@ -169,7 +169,7 @@ export const AdvancedAnalytics: React.FC = () => {
           onClick={() => setActiveTab('predictive')}
         >
           <i className="fas fa-chart-line"></i>
-          Predictive Analytics
+          Predictive — unavailable
         </button>
         <button
           className={`tab ${activeTab === 'performance' ? 'active' : ''}`}
