@@ -136,48 +136,6 @@ export const TeamManagement: React.FC = () => {
         </div>
       )}
       
-      {/* Team Statistics Dashboard */}
-      {teamStats && (
-        <div className="team-stats-grid">
-          <div className="stat-card primary">
-            <h3>Total Teams</h3>
-            <div className="stat-value">{teamStats.totalTeams}</div>
-            <div className="stat-change">{teamStats.activeTeams} active</div>
-          </div>
-          <div className="stat-card">
-            <h3>Total Members</h3>
-            <div className="stat-value">{teamStats.totalMembers}</div>
-            <div className="stat-label">across all teams</div>
-          </div>
-          <div className="stat-card">
-            <h3>Average Team Size</h3>
-            <div className="stat-value">
-              {Number.isFinite(teamStats.averageTeamSize) ? teamStats.averageTeamSize.toFixed(1) : EM_DASH}
-            </div>
-            <div className="stat-label">members per team</div>
-          </div>
-          <div className="stat-card">
-            <h3>Active Alliances</h3>
-            <div className="stat-value">{teamStats.totalAlliances}</div>
-            <div className="stat-label">diplomatic agreements</div>
-          </div>
-          <div className="stat-card highlight">
-            <h3>Most Powerful</h3>
-            <div className="stat-value">{teamStats.mostPowerfulTeam?.name || 'N/A'}</div>
-            <div className="stat-label">by combat rating</div>
-          </div>
-          <div className="stat-card highlight">
-            <h3>Largest Team</h3>
-            <div className="stat-value">{teamStats.largestTeam?.name || 'N/A'}</div>
-            <div className="stat-label">
-              {teamStats.largestTeam?.memberCount !== undefined
-                ? `${teamStats.largestTeam.memberCount} members`
-                : EM_DASH}
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Search and Filter Controls */}
       <div className="team-controls">
         <div className="search-box">
@@ -470,6 +428,49 @@ export const TeamManagement: React.FC = () => {
           </>
         )}
       </div>
+      {/* Team Statistics Dashboard */}
+      {teamStats && (
+        <div className="team-stats-grid">
+          <div className="stat-card primary">
+            <h3>Total Teams</h3>
+            <div className="stat-value">{teamStats.totalTeams}</div>
+            <div className="stat-change">{teamStats.activeTeams} active</div>
+          </div>
+          <div className="stat-card">
+            <h3>Total Members</h3>
+            <div className="stat-value">{teamStats.totalMembers}</div>
+            <div className="stat-label">across all teams</div>
+          </div>
+          <div className="stat-card">
+            <h3>Average Team Size</h3>
+            <div className="stat-value">
+              {Number.isFinite(teamStats.averageTeamSize) ? teamStats.averageTeamSize.toFixed(1) : EM_DASH}
+            </div>
+            <div className="stat-label">members per team</div>
+          </div>
+          <div className="stat-card">
+            <h3>Active Alliances</h3>
+            <div className="stat-value">{teamStats.totalAlliances}</div>
+            <div className="stat-label">diplomatic agreements</div>
+          </div>
+          <div className="stat-card highlight">
+            <h3>Most Powerful</h3>
+            <div className="stat-value">{teamStats.mostPowerfulTeam?.name || 'N/A'}</div>
+            <div className="stat-label">by combat rating</div>
+          </div>
+          <div className="stat-card highlight">
+            <h3>Largest Team</h3>
+            <div className="stat-value">{teamStats.largestTeam?.name || 'N/A'}</div>
+            <div className="stat-label">
+              {teamStats.largestTeam?.memberCount !== undefined
+                ? `${teamStats.largestTeam.memberCount} members`
+                : EM_DASH}
+            </div>
+          </div>
+        </div>
+      )}
+
+
     </div>
   );
 };
