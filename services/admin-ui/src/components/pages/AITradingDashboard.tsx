@@ -153,7 +153,7 @@ const AITradingDashboard: React.FC = () => {
     <div className="ai-trading-dashboard">
       <PageHeader 
         title="AI Trading Intelligence" 
-        subtitle="Monitor and manage ARIA - the AI trading assistant"
+        subtitle="Monitor ARIA trading activity and model stats (read-only)"
       />
 
       {/* Connection Status */}
