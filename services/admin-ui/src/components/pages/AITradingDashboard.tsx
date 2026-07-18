@@ -227,11 +227,15 @@ const AITradingDashboard: React.FC = () => {
             <div className="info-grid">
               <div className="info-card">
                 <h3>🤖 ARIA Status</h3>
-                <p>The AI Trading Assistant is operational and learning from {metrics?.activeProfiles || 0} active player profiles.</p>
+                <p>
+                  ARIA admin surface is read-only: model start/stop/train and per-player
+                  scoring APIs are not live. Aggregate metrics below reflect whatever the
+                  server returns (often empty / em-dash).
+                </p>
                 <ul>
-                  <li>Price Prediction Model: {models.find(m => m.type === 'price_prediction')?.status || 'Unknown'}</li>
-                  <li>Route Optimization: {models.find(m => m.type === 'route_optimization')?.status || 'Unknown'}</li>
-                  <li>Behavior Analysis: {models.find(m => m.type === 'behavior_analysis')?.status || 'Unknown'}</li>
+                  <li>Price Prediction Model: {models.find(m => m.type === 'price_prediction')?.status || '—'}</li>
+                  <li>Route Optimization: {models.find(m => m.type === 'route_optimization')?.status || '—'}</li>
+                  <li>Behavior Analysis: {models.find(m => m.type === 'behavior_analysis')?.status || '—'}</li>
                 </ul>
               </div>
               
@@ -358,7 +362,7 @@ const AITradingDashboard: React.FC = () => {
 
         {selectedTab === 'profiles' && (
           <div className="profiles-section">
-            <h2>Player AI Profiles</h2>
+            <h2>Player AI Profiles — scoring unavailable</h2>
             <div className="profiles-table">
               <table>
                 <thead>
