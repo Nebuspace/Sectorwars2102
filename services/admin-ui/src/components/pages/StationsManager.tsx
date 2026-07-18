@@ -140,7 +140,7 @@ const StationsManager: React.FC = () => {
   if (loading) {
     return (
       <div className="page-container">
-        <PageHeader title="Stations Manager" subtitle="Comprehensive Station Administration" />
+        <PageHeader title="Stations Manager" subtitle="List and edit stations" />
         <div className="loading-container">
           <div className="loading-spinner"></div>
           <p>Loading stations...</p>
@@ -151,7 +151,7 @@ const StationsManager: React.FC = () => {
 
   return (
     <div className="page-container">
-      <PageHeader title="Stations Manager" subtitle="Comprehensive Station Administration" />
+      <PageHeader title="Stations Manager" subtitle="List and edit stations" />
       
       {error && (
         <div className="error-message">

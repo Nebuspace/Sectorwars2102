@@ -129,7 +129,7 @@ const PlanetsManager: React.FC = () => {
   if (loading) {
     return (
       <div className="page-container">
-        <PageHeader title="Planets Manager" subtitle="Comprehensive Planet Administration" />
+        <PageHeader title="Planets Manager" subtitle="List and edit planets" />
         <div className="loading-container">
           <div className="loading-spinner"></div>
           <p>Loading planets...</p>
@@ -140,7 +140,7 @@ const PlanetsManager: React.FC = () => {
 
   return (
     <div className="page-container">
-      <PageHeader title="Planets Manager" subtitle="Comprehensive Planet Administration" />
+      <PageHeader title="Planets Manager" subtitle="List and edit planets" />
       
       {error && (
         <div className="error-message">
