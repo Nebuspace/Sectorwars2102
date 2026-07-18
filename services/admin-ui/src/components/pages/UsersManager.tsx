@@ -265,7 +265,7 @@ const UsersManager: React.FC = () => {
     <div className="page-container">
       <PageHeader 
         title="User Management" 
-        subtitle="Manage user accounts, permissions, and access controls"
+        subtitle="List and edit user accounts — scopes via the Scopes page"
       />
       
       <div className="page-content">
