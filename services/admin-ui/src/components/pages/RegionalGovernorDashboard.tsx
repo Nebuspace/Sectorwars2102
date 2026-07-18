@@ -1147,13 +1147,24 @@ const RegionalGovernorDashboard: React.FC = () => {
           <div className="culture-tab">
             <h3>Cultural Identity</h3>
 
-            <div className="culture-config">
-              <div className="tab-unavailable-note">
-                Regional cultural identity (theme, motto, traditions, language) is set by a
-                region&apos;s <strong>owner</strong> from their own region console. There is currently
-                no admin endpoint to edit cultural identity for a selected region, so this control
-                is disabled here. Current values, when present, are shown in region details above.
-              </div>
+            <div
+              role="note"
+              style={{
+                margin: '0 0 12px 0',
+                padding: '10px 12px',
+                background: 'rgba(234, 179, 8, 0.12)',
+                border: '1px solid rgba(234, 179, 8, 0.35)',
+                borderRadius: '6px',
+                color: '#fbbf24',
+                fontSize: '0.82rem',
+                lineHeight: 1.4,
+              }}
+            >
+              Regional cultural identity (theme, motto, traditions, language) is set by a
+              region&apos;s <strong>owner</strong> from their region console. There is no
+              admin endpoint to edit it for a selected region — this tab does not invent
+              edit controls. Current values, when present, are shown below.
+            </div>
               {region?.aesthetic_theme?.variant || region?.language_pack?.variant ? (
                 <div className="culture-current">
                   <div className="stat-breakdown">
@@ -1162,7 +1173,6 @@ const RegionalGovernorDashboard: React.FC = () => {
                   </div>
                 </div>
               ) : null}
-            </div>
           </div>
         )}
       </div>
