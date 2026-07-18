@@ -324,37 +324,30 @@ export const SecurityDashboard: React.FC = () => {
 
       {activeTab === 'threats' && (
         <div className="security-threats">
-          <div className="threat-detection-panel">
-            <h3>Threat Detection Rules</h3>
-            <div
-              role="note"
-              style={{
-                margin: '0 0 16px 0', padding: '10px 12px',
-                background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)',
-                borderRadius: '6px', color: '#fbbf24', fontSize: '0.82rem', lineHeight: 1.4
-              }}
-            >
-              Threat-detection rule configuration is unavailable: no admin API exists
-              to load or persist detection rules. Live rate-limit / block metrics on
-              Overview come from <code style={{ color: '#fde68a' }}>/admin/security/report</code>;
-              this tab does not invent thresholds or toggle state.
-            </div>
+          <div
+            role="note"
+            style={{
+              margin: '0 0 16px 0', padding: '10px 12px',
+              background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)',
+              borderRadius: '6px', color: '#fbbf24', fontSize: '0.82rem', lineHeight: 1.4
+            }}
+          >
+            Threat-detection rule configuration is unavailable: no admin API exists
+            to load or persist detection rules. Live rate-limit / block metrics on
+            Overview come from <code style={{ color: '#fde68a' }}>/admin/security/report</code>.
+            This tab does not invent a Rules panel, thresholds, or toggle state.
           </div>
-
-          <div className="blocked-ips-panel">
-            <h3>IP Blocklist Management</h3>
-            <div
-              role="note"
-              style={{
-                margin: '0 0 16px 0', padding: '10px 12px',
-                background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)',
-                borderRadius: '6px', color: '#fbbf24', fontSize: '0.82rem', lineHeight: 1.4
-              }}
-            >
-              IP blocklist management is unavailable: no backend endpoint exists to
-              list, add, or remove blocked IPs. This tab does not invent an empty
-              blocklist or show disabled Add controls.
-            </div>
+          <div
+            role="note"
+            style={{
+              margin: '0 0 16px 0', padding: '10px 12px',
+              background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)',
+              borderRadius: '6px', color: '#fbbf24', fontSize: '0.82rem', lineHeight: 1.4
+            }}
+          >
+            IP blocklist management is unavailable: no backend endpoint exists to
+            list, add, or remove blocked IPs. This tab does not invent a Blocklist
+            Management panel or disabled Add controls.
           </div>
         </div>
       )}
@@ -383,7 +376,6 @@ export const SecurityDashboard: React.FC = () => {
           </div>
 
           <div className="settings-section">
-            <h3>Security Policies</h3>
             <div
               role="note"
               style={{
@@ -393,13 +385,12 @@ export const SecurityDashboard: React.FC = () => {
               }}
             >
               Security-policy configuration is unavailable: no admin API exists to
-              load or edit password / session policy. This section does not invent
-              defaults or show disabled Edit controls.
+              load or edit password / session policy. This settings area does not invent
+              a Policies panel, defaults, or disabled Edit controls.
             </div>
           </div>
 
           <div className="settings-section">
-            <h3>Security Headers</h3>
             <div
               role="note"
               style={{
@@ -410,7 +401,7 @@ export const SecurityDashboard: React.FC = () => {
             >
               Security-header status is unavailable: this UI does not probe response
               headers. Green “enabled” checks previously shown here were invented
-              chrome, not a live probe.
+              chrome, not a live probe — no Headers panel is shown.
             </div>
           </div>
         </div>
