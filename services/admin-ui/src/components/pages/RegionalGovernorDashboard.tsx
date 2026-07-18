@@ -584,6 +584,37 @@ const RegionalGovernorDashboard: React.FC = () => {
       <div className="governor-content">
         {activeTab === 'overview' && (
           <div className="overview-tab">
+            {/* Quick Actions */}
+            <div className="quick-actions">
+              <h3>Quick Actions</h3>
+              <div className="action-buttons">
+                <button
+                  onClick={() => setActiveTab('policies')}
+                  className="action-button primary"
+                >
+                  Create Policy
+                </button>
+                <button
+                  onClick={() => setActiveTab('elections')}
+                  className="action-button secondary"
+                >
+                  Manage Elections
+                </button>
+                <button
+                  onClick={() => setActiveTab('diplomacy')}
+                  className="action-button secondary"
+                >
+                  Diplomatic Relations
+                </button>
+                <button
+                  onClick={loadRegionalData}
+                  className="action-button refresh"
+                  disabled={loading}
+                >
+                  Refresh Data
+                </button>
+              </div>
+            </div>
             {/* Regional Overview */}
             <div className="overview-grid">
               <div className="stat-card">
@@ -645,37 +676,7 @@ const RegionalGovernorDashboard: React.FC = () => {
               </div>
             </div>
 
-            {/* Quick Actions */}
-            <div className="quick-actions">
-              <h3>Quick Actions</h3>
-              <div className="action-buttons">
-                <button
-                  onClick={() => setActiveTab('policies')}
-                  className="action-button primary"
-                >
-                  Create Policy
-                </button>
-                <button
-                  onClick={() => setActiveTab('elections')}
-                  className="action-button secondary"
-                >
-                  Manage Elections
-                </button>
-                <button
-                  onClick={() => setActiveTab('diplomacy')}
-                  className="action-button secondary"
-                >
-                  Diplomatic Relations
-                </button>
-                <button
-                  onClick={loadRegionalData}
-                  className="action-button refresh"
-                  disabled={loading}
-                >
-                  Refresh Data
-                </button>
-              </div>
-            </div>
+
           </div>
         )}
 
