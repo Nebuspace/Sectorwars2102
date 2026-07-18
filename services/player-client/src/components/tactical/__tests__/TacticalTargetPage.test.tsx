@@ -1,13 +1,16 @@
 // @vitest-environment jsdom
 /**
  * TacticalTargetPage — TACTICAL monitor's TARGET page (WO-UI2-DECK-
- * RECONCILE, §05: rep-colored contacts, context-aware ENGAGE/HAIL,
- * name-click→reticle, a11y text-tag alongside color).
+ * RECONCILE, §05, rewired by WO-TACTICAL-POPUP: rep-colored contacts,
+ * clicking the NAME opens ContactActionMenu with whichever of ENGAGE/HAIL
+ * apply, HAIL opens HailComposeDialog, reticle-select stays decoupled).
  *
  * Mirrors DeckPageTabs.test.tsx's harness (jsdom + react-dom/client
- * createRoot + act(), no RTL). combatAPI/greyStatusAPI aren't imported by
- * this component (only combatAPI is, and only from click handlers) --
- * mocked so ENGAGE assertions control the resolved outcome deterministically.
+ * createRoot + act(), no RTL) — the SAME harness this file already used
+ * pre-WO-TACTICAL-POPUP. ContactActionMenu/HailComposeDialog both portal
+ * to document.body (ConfirmDialog's own idiom), so their content is
+ * queried off `document.body`, not `container`, even though the row that
+ * opened them lives inside `container`.
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -74,6 +77,13 @@ describe('TacticalTargetPage', () => {
     await flush();
   };
 
+  const keydown = async (key: string, target: EventTarget = document) => {
+    await act(async () => {
+      target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+    });
+    await flush();
+  };
+
   const mount = async (contacts: TacticalContact[], onSelectContact?: (c: TacticalContact | null) => void, selectedShipId?: string | null) => {
     await act(async () => {
       root.render(
@@ -84,6 +94,14 @@ describe('TacticalTargetPage', () => {
   };
 
   const row = (idx = 0) => container.querySelectorAll('.target-contact-row')[idx] as HTMLElement;
+  const name = (idx = 0) => row(idx).querySelector('.target-contact-name') as HTMLElement;
+  // ContactActionMenu/HailComposeDialog both portal to document.body.
+  const menu = () => document.body.querySelector('.contact-action-menu');
+  const menuItem = (variant: 'engage' | 'hail') =>
+    menu()?.querySelector(`.contact-action-menu-item-${variant}`) as HTMLElement | null;
+  const hailDialog = () => document.body.querySelector('.confirm-dialog-panel[aria-label^="Hail message"]');
+  const hailInput = () => hailDialog()?.querySelector('.target-hail-input') as HTMLInputElement | null;
+  const hailSendBtn = () => hailDialog()?.querySelector('.confirm-dialog-btn.confirm') as HTMLElement | null;
 
   it('shows an empty state with no contacts', async () => {
     await mount([]);
@@ -91,98 +109,165 @@ describe('TacticalTargetPage', () => {
   });
 
   // ---------------------------------------------------------------------
-  // Rep-color buckets, a11y text tag alongside color (never color alone)
+  // Rep-color buckets — the permanent visible text tag/NPC badge were
+  // retired with the row-strip (WO-TACTICAL-POPUP); the bucket now
+  // survives in the name color (unchanged) and the `title` hover record.
   // ---------------------------------------------------------------------
 
-  it('buckets a Villain/Criminal/Outlaw player tier RED, tagged WANTED (text, not just color)', async () => {
+  it('buckets a Villain/Criminal/Outlaw player tier RED (name color + title record)', async () => {
     await mount([
       { player_id: 'p1', ship_id: '1', username: 'Dredge', reputation_tier: 'Outlaw', personal_reputation: -300 },
     ]);
-    const tag = row().querySelector('.target-rep-tag')!;
-    expect(tag.textContent).toBe('WANTED');
-    expect(tag.className).toContain('target-rep-red');
-    const name = row().querySelector('.target-contact-name') as HTMLElement;
-    expect(name.style.color).toBe('rgb(255, 90, 106)'); // #FF5A6A
+    expect(name().style.color).toBe('rgb(255, 90, 106)'); // #FF5A6A
+    expect(name().getAttribute('title')).toContain('WANTED');
   });
 
-  it('buckets a Suspicious player tier GRAY, tagged GREY-FLAG', async () => {
+  it('buckets a Suspicious player tier GRAY, title record says GREY-FLAG', async () => {
     await mount([
       { player_id: 'p1', ship_id: '1', username: 'Sable', reputation_tier: 'Suspicious', personal_reputation: -80 },
     ]);
-    const tag = row().querySelector('.target-rep-tag')!;
-    expect(tag.textContent).toBe('GREY-FLAG');
-    expect(tag.className).toContain('target-rep-gray');
+    expect(name().getAttribute('title')).toContain('GREY-FLAG');
   });
 
-  it('buckets Neutral/Lawful/Heroic/Legendary player tiers BLUE, tagged CLEAR', async () => {
+  it('buckets Neutral/Lawful/Heroic/Legendary player tiers BLUE, title record says CLEAR', async () => {
     await mount([
       { player_id: 'p1', ship_id: '1', username: 'Vega', reputation_tier: 'Lawful', personal_reputation: 40 },
     ]);
-    const tag = row().querySelector('.target-rep-tag')!;
-    expect(tag.textContent).toBe('CLEAR');
-    expect(tag.className).toContain('target-rep-blue');
+    expect(name().getAttribute('title')).toContain('CLEAR');
   });
 
-  it('buckets a hostile-archetype NPC RED (WANTED), a non-hostile NPC BLUE (CLEAR)', async () => {
+  it('buckets a hostile-archetype NPC RED, a non-hostile NPC BLUE (and non-interactive with no actions)', async () => {
     await mount([
       { player_id: 'npc1', ship_id: '2', username: 'Crimson Corsair', is_npc: true, archetype: 'HOSTILE_RAIDER' },
       { player_id: 'npc2', ship_id: '3', username: 'Merchant Vessel', is_npc: true, archetype: 'LAW_ENFORCEMENT' },
     ]);
-    expect(row(0).querySelector('.target-rep-tag')?.textContent).toBe('WANTED');
-    expect(row(1).querySelector('.target-rep-tag')?.textContent).toBe('CLEAR');
-    // NPC badge present on both, distinct from the rep tag.
-    expect(row(0).querySelector('.target-npc-badge')?.textContent).toBe('NPC');
+    expect(name(0).getAttribute('title')).toContain('WANTED');
+    expect(name(1).getAttribute('title')).toContain('CLEAR');
+    // Hostile NPC can ENGAGE -> interactive trigger; peaceful NPC has
+    // neither ENGAGE (not is_npc red... it's blue) nor HAIL (is_npc) --
+    // no menu to offer, so its name is not a menu trigger.
+    expect(name(0).getAttribute('role')).toBe('button');
+    expect(name(1).getAttribute('role')).toBeNull();
   });
 
   it('an NPC with no archetype but notoriety >= 50 is also RED (mirrors CombatInterface fair-game threshold)', async () => {
     await mount([
       { player_id: 'npc1', ship_id: '4', username: 'Rough Trader', is_npc: true, notoriety: 60 },
     ]);
-    expect(row().querySelector('.target-rep-tag')?.textContent).toBe('WANTED');
+    expect(name().getAttribute('title')).toContain('WANTED');
   });
 
   // ---------------------------------------------------------------------
-  // Context-aware ENGAGE / HAIL
+  // ContactActionMenu composition — canEngage/canHail are independent
+  // predicates now (WO-TACTICAL-POPUP), not an either/or button row.
   // ---------------------------------------------------------------------
 
-  it('shows ENGAGE (not HAIL) for a RED-bucket contact with a ship present', async () => {
+  it('menu shows ENGAGE only for a hostile NPC (never hailable — is_npc excludes HAIL)', async () => {
     await mount([
-      { player_id: 'p1', ship_id: '1', username: 'Dredge', reputation_tier: 'Outlaw', personal_reputation: -300 },
+      { player_id: 'npc1', ship_id: '2', username: 'Crimson Corsair', is_npc: true, archetype: 'HOSTILE_RAIDER' },
     ]);
-    expect(row().querySelector('.target-engage-btn')).toBeTruthy();
-    expect(row().querySelector('.target-hail-btn')).toBeNull();
+    await click(name());
+    expect(menuItem('engage')).toBeTruthy();
+    expect(menuItem('hail')).toBeNull();
   });
 
-  it('shows HAIL (not ENGAGE) for a non-NPC BLUE/GRAY contact with a player_id', async () => {
+  it('menu shows HAIL only for a non-NPC BLUE contact', async () => {
     await mount([
       { player_id: 'p1', ship_id: '1', username: 'Vega', reputation_tier: 'Lawful', personal_reputation: 40 },
     ]);
-    expect(row().querySelector('.target-hail-btn')).toBeTruthy();
-    expect(row().querySelector('.target-engage-btn')).toBeNull();
+    await click(name());
+    expect(menuItem('hail')).toBeTruthy();
+    expect(menuItem('engage')).toBeNull();
   });
 
-  it('shows neither action for an NPC with no ship_id (unattackable, unhailable)', async () => {
+  it('menu shows BOTH ENGAGE and HAIL for a hostile PLAYER contact (the old inline row could only ever show one)', async () => {
+    await mount([
+      { player_id: 'p1', ship_id: '1', username: 'Dredge', reputation_tier: 'Outlaw', personal_reputation: -300 },
+    ]);
+    await click(name());
+    expect(menuItem('engage')).toBeTruthy();
+    expect(menuItem('hail')).toBeTruthy();
+    expect(menu()?.querySelectorAll('.contact-action-menu-item').length).toBe(2);
+  });
+
+  it('shows no menu for an NPC with no ship_id (unattackable, unhailable)', async () => {
     await mount([{ player_id: 'npc1', username: 'Distant Contact', is_npc: true }]);
-    expect(row().querySelector('.target-engage-btn')).toBeNull();
-    expect(row().querySelector('.target-hail-btn')).toBeNull();
+    expect(name().getAttribute('role')).toBeNull();
+    await click(name());
+    expect(menu()).toBeNull();
   });
 
-  it('ENGAGE calls combatAPI.engage/getStatus and shows the resolved VICTORY headline', async () => {
+  it('trigger-gating fix: a hail-only contact with NO ship_id still opens the menu (old ship_id-only gate stranded it)', async () => {
+    await mount([{ player_id: 'p1', username: 'Comms Only', reputation_tier: 'Lawful' }]);
+    expect(name().getAttribute('role')).toBe('button');
+    await click(name());
+    expect(menuItem('hail')).toBeTruthy();
+  });
+
+  it('the row renders name-only -- no NPC badge, rep-tag chip, legend, or inline action buttons anywhere in the DOM', async () => {
+    await mount([
+      { player_id: 'npc1', ship_id: '2', username: 'Crimson Corsair', is_npc: true, archetype: 'HOSTILE_RAIDER' },
+    ]);
+    expect(container.querySelector('.target-npc-badge')).toBeNull();
+    expect(container.querySelector('.target-rep-tag')).toBeNull();
+    expect(container.querySelector('.target-legend')).toBeNull();
+    expect(container.querySelector('.target-contact-actions')).toBeNull();
+    expect(container.querySelector('.target-engage-btn')).toBeNull();
+    expect(container.querySelector('.target-hail-btn')).toBeNull();
+  });
+
+  it('Enter and Space (not just click) open the menu from the trigger', async () => {
+    await mount([{ player_id: 'p1', ship_id: '1', username: 'Vega', reputation_tier: 'Lawful' }]);
+
+    await keydown('Enter', name());
+    expect(menu()).toBeTruthy();
+
+    await keydown('Escape'); // close it back out before the next probe
+    expect(menu()).toBeNull();
+
+    await keydown(' ', name());
+    expect(menu()).toBeTruthy();
+  });
+
+  it('an outside click closes the menu', async () => {
+    await mount([{ player_id: 'p1', ship_id: '1', username: 'Vega', reputation_tier: 'Lawful' }]);
+    await click(name());
+    expect(menu()).toBeTruthy();
+
+    // ContactActionMenu ignores dismissals within 150ms of opening (guards
+    // against the same gesture that opened it); wait it out for a genuine
+    // outside interaction.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    });
+    await act(async () => {
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    });
+    await flush();
+
+    expect(menu()).toBeNull();
+  });
+
+  // ---------------------------------------------------------------------
+  // ENGAGE flow (via the menu)
+  // ---------------------------------------------------------------------
+
+  it('ENGAGE calls combatAPI.engage/getStatus, closes the menu, and shows the resolved VICTORY headline', async () => {
     mockEngage.mockResolvedValue({ status: 'initiated', combatId: 'c1' });
     mockGetStatus.mockResolvedValue({ status: 'completed', winner: 'self-1', creditsLooted: 500 });
 
     await mount([
-      { player_id: 'p1', ship_id: '42', username: 'Dredge', reputation_tier: 'Outlaw', personal_reputation: -300 },
+      { player_id: 'npc1', ship_id: '42', username: 'Crimson Corsair', is_npc: true, archetype: 'HOSTILE_RAIDER' },
     ]);
+    await click(name());
+    await click(menuItem('engage')!);
 
-    await click(row().querySelector('.target-engage-btn')!);
-
+    expect(menu()).toBeNull(); // menu closes the instant an item is chosen
     expect(mockEngage).toHaveBeenCalledWith('ship', '42');
     expect(mockGetStatus).toHaveBeenCalledWith('c1');
     expect(mockRefreshPlayerState).toHaveBeenCalled();
-    const result = row().querySelector('.target-result-msg')!;
+    const result = row().querySelector('.target-result-msg.ok')!;
     expect(result.textContent).toContain('VICTORY');
-    expect(result.className).toContain('ok');
   });
 
   it('ENGAGE shows DEFEATED and does not mark it ok when the target wins', async () => {
@@ -190,25 +275,33 @@ describe('TacticalTargetPage', () => {
     mockGetStatus.mockResolvedValue({ status: 'completed', winner: 'them' });
 
     await mount([
-      { player_id: 'p1', ship_id: '42', username: 'Dredge', reputation_tier: 'Outlaw', personal_reputation: -300 },
+      { player_id: 'npc1', ship_id: '42', username: 'Crimson Corsair', is_npc: true, archetype: 'HOSTILE_RAIDER' },
     ]);
-    await click(row().querySelector('.target-engage-btn')!);
+    await click(name());
+    await click(menuItem('engage')!);
 
-    const result = row().querySelector('.target-result-msg')!;
+    const result = row().querySelector('.target-result-msg.err')!;
     expect(result.textContent).toContain('DEFEATED');
-    expect(result.className).toContain('err');
   });
 
-  it('HAIL opens an inline composer and sendPlayerMessage fires on SEND', async () => {
+  // ---------------------------------------------------------------------
+  // HAIL flow (menu -> HailComposeDialog, portal'd to document.body)
+  // ---------------------------------------------------------------------
+
+  it('HAIL opens a dialog, closes the menu, and sendPlayerMessage fires on Send', async () => {
     mockSendPlayerMessage.mockResolvedValue({ message_id: 'm1', sent_at: '2026-01-01T00:00:00Z' });
 
     await mount([
       { player_id: 'p1', ship_id: '1', username: 'Vega', reputation_tier: 'Lawful', personal_reputation: 40 },
     ]);
+    await click(name());
+    await click(menuItem('hail')!);
 
-    await click(row().querySelector('.target-hail-btn')!);
-    const input = row().querySelector('.target-hail-input') as HTMLInputElement;
+    expect(menu()).toBeNull();
+    const input = hailInput()!;
     expect(input).toBeTruthy();
+    // Mount-focus lands on the input (WAI-ARIA dialog pattern).
+    expect(document.activeElement).toBe(input);
 
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
@@ -216,94 +309,139 @@ describe('TacticalTargetPage', () => {
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
 
-    await click(row().querySelector('.target-hail-send-btn')!);
+    await click(hailSendBtn()!);
 
     expect(mockSendPlayerMessage).toHaveBeenCalledWith('p1', 'Standing by', null, null);
-    expect(row().querySelector('.target-hail-compose')).toBeNull();
-    expect(row().querySelector('.target-result-msg')?.textContent).toBe('TRANSMITTED');
+    expect(hailDialog()).toBeNull();
+    expect(row().querySelector('.target-result-msg.ok')?.textContent).toBe('TRANSMITTED');
+  });
+
+  it('a failed HAIL keeps the dialog open and shows the error inside it', async () => {
+    mockSendPlayerMessage.mockRejectedValue(new Error('link down'));
+
+    await mount([
+      { player_id: 'p1', ship_id: '1', username: 'Vega', reputation_tier: 'Lawful' },
+    ]);
+    await click(name());
+    await click(menuItem('hail')!);
+
+    const input = hailInput()!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(input, 'hello');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await click(hailSendBtn()!);
+
+    expect(hailDialog()).toBeTruthy(); // stays open on failure so the user can retry
+    expect(hailDialog()?.querySelector('.target-result-msg.err')?.textContent).toBe('link down');
+    // Not duplicated in the row while still composing.
+    expect(row().querySelector('.target-result-msg.err')).toBeNull();
+  });
+
+  it('Escape cancels the HAIL dialog', async () => {
+    await mount([{ player_id: 'p1', ship_id: '1', username: 'Vega', reputation_tier: 'Lawful' }]);
+    await click(name());
+    await click(menuItem('hail')!);
+    expect(hailDialog()).toBeTruthy();
+
+    await keydown('Escape');
+    expect(hailDialog()).toBeNull();
   });
 
   // ---------------------------------------------------------------------
-  // name-click → reticle (spotlight selection)
+  // Reticle-select stays decoupled from menu open/close (WO-TACTICAL-
+  // POPUP file header) -- both fire off the same click when both apply;
+  // a hail-only contact with no ship_id opens the menu but never selects.
   // ---------------------------------------------------------------------
 
-  it('clicking the name selects the contact (reticle) only when a ship_id is present', async () => {
+  it('clicking the name both opens the menu and selects the reticle when a ship_id is present', async () => {
     const onSelectContact = vi.fn();
     await mount(
       [{ player_id: 'p1', ship_id: '1', username: 'Vega', reputation_tier: 'Lawful' }],
       onSelectContact
     );
-    const name = row().querySelector('.target-contact-name')!;
-    expect(name.getAttribute('role')).toBe('button');
-    // Not yet selected -- aria-pressed carries the toggle-state for SR
-    // users (the ◎ reticle badge is aria-hidden, so this is the only
-    // announced signal). aria-selected is spec-mismatched on role="button"
-    // (defined for option/tab/gridcell/row/treeitem) and some screen
-    // readers simply ignore it there -- aria-pressed is the correct
-    // pressed/selected toggle-state for a button (Samantha correction,
-    // WO-UI2-DECK-RECONCILE REVISE-2).
-    expect(name.getAttribute('aria-pressed')).toBe('false');
-    await click(name);
+    // Selection is announced via the visual ◎ badge (fed back in as the
+    // selectedShipId prop by the real parent), not aria-pressed on this
+    // menu-button trigger -- Pixel REVISE. Not re-asserted here since this
+    // mock doesn't feed selectedShipId back in; the badge-appears case is
+    // covered below by mounting pre-selected.
+    expect(row().querySelector('.target-selected-badge')).toBeNull();
+    await click(name());
     expect(onSelectContact).toHaveBeenCalledWith(expect.objectContaining({ username: 'Vega' }));
+    expect(menu()).toBeTruthy();
   });
 
-  it('re-clicking an already-selected contact clears the selection (toggle off)', async () => {
+  it('re-clicking an open-menu contact closes the menu and clears the selection (toggle off, same click drives both)', async () => {
+    const onSelectContact = vi.fn();
+    await mount(
+      [{ player_id: 'p1', ship_id: '1', username: 'Vega', reputation_tier: 'Lawful' }],
+      onSelectContact
+    );
+    await click(name()); // opens + selects
+    expect(menu()).toBeTruthy();
+    expect(onSelectContact).toHaveBeenLastCalledWith(expect.objectContaining({ username: 'Vega' }));
+
+    await click(name()); // closes + deselects -- same click drives both axes
+    expect(menu()).toBeNull();
+    expect(onSelectContact).toHaveBeenLastCalledWith(null);
+  });
+
+  it('a contact already selected externally (reticle-select elsewhere) still OPENS on click rather than deselecting -- menu-open state, not the selected prop, drives the toggle', async () => {
     const onSelectContact = vi.fn();
     await mount(
       [{ player_id: 'p1', ship_id: '1', username: 'Vega', reputation_tier: 'Lawful' }],
       onSelectContact,
-      '1'
+      '1' // pre-selected via the selectedShipId prop, menu never opened yet
     );
-    const name = row().querySelector('.target-contact-name')!;
-    expect(name.getAttribute('aria-pressed')).toBe('true');
-    await click(name);
-    expect(onSelectContact).toHaveBeenCalledWith(null);
+    // Selection is real (the ◎ badge is already showing) even though it's
+    // not announced via aria-pressed on this menu-button trigger.
+    expect(row().querySelector('.target-selected-badge')).toBeTruthy();
+    expect(name().getAttribute('aria-pressed')).toBeNull();
+    await click(name());
+    expect(menu()).toBeTruthy();
+    expect(onSelectContact).toHaveBeenLastCalledWith(expect.objectContaining({ username: 'Vega' }));
   });
 
-  it('a contact with no ship_id has a non-interactive name (no reticle target)', async () => {
+  it('a hail-only contact with no ship_id opens the menu but never fires onSelectContact (no reticle target to select)', async () => {
     const onSelectContact = vi.fn();
-    await mount([{ player_id: 'npc1', username: 'Distant Contact', is_npc: true }], onSelectContact);
-    const name = row().querySelector('.target-contact-name')!;
-    expect(name.getAttribute('role')).toBeNull();
-    expect(name.getAttribute('aria-pressed')).toBeNull();
+    await mount([{ player_id: 'p1', username: 'Comms Only', reputation_tier: 'Lawful' }], onSelectContact);
+    expect(name().getAttribute('aria-pressed')).toBeNull(); // dropped entirely -- trigger is menu-button-only now
+    await click(name());
+    expect(menu()).toBeTruthy();
+    expect(onSelectContact).not.toHaveBeenCalled();
   });
 
   // ---------------------------------------------------------------------
-  // a11y: live-region wiring (Pixel gate, WO-UI2-DECK-RECONCILE)
+  // a11y: menu-button semantics + focus management
   // ---------------------------------------------------------------------
 
-  it('the empty-state and the HAIL SEND button carry status roles/labels', async () => {
+  it('the trigger announces ONE pattern -- menu-button (aria-haspopup/aria-expanded), never aria-pressed too (Pixel REVISE)', async () => {
+    await mount([
+      { player_id: 'p1', ship_id: '1', username: 'Vega', reputation_tier: 'Lawful' },
+    ]);
+    expect(name().getAttribute('aria-haspopup')).toBe('menu');
+    expect(name().getAttribute('aria-expanded')).toBe('false');
+    expect(name().getAttribute('aria-pressed')).toBeNull();
+    await click(name());
+    expect(name().getAttribute('aria-expanded')).toBe('true');
+    expect(name().getAttribute('aria-pressed')).toBeNull();
+  });
+
+  it('opening the menu focuses its first item; Escape closes it and returns focus to the trigger', async () => {
+    await mount([
+      { player_id: 'p1', ship_id: '1', username: 'Dredge', reputation_tier: 'Outlaw' },
+    ]);
+    await click(name());
+    expect(document.activeElement).toBe(menu()?.querySelector('[role="menuitem"]'));
+
+    await keydown('Escape');
+    expect(menu()).toBeNull();
+    expect(document.activeElement).toBe(name());
+  });
+
+  it('the empty-state carries a status role', async () => {
     await mount([]);
     expect(container.querySelector('.empty-state')?.getAttribute('role')).toBe('status');
-  });
-
-  it('SEND carries a state-aware aria-label and aria-busy while sending', async () => {
-    let resolveSend: (v: any) => void;
-    mockSendPlayerMessage.mockImplementation(() => new Promise((resolve) => { resolveSend = resolve; }));
-
-    await mount([
-      { player_id: 'p1', ship_id: '1', username: 'Vega', reputation_tier: 'Lawful', personal_reputation: 40 },
-    ]);
-    await click(row().querySelector('.target-hail-btn')!);
-
-    const sendBtn = row().querySelector('.target-hail-send-btn')!;
-    expect(sendBtn.getAttribute('aria-label')).toBe('Send message (enter text first)');
-
-    const input = row().querySelector('.target-hail-input') as HTMLInputElement;
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
-      setter.call(input, 'Standing by');
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    expect(row().querySelector('.target-hail-send-btn')?.getAttribute('aria-label')).toBe('Send message');
-
-    await act(async () => {
-      row().querySelector('.target-hail-send-btn')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-    expect(row().querySelector('.target-hail-send-btn')?.getAttribute('aria-busy')).toBe('true');
-
-    await act(async () => {
-      resolveSend({ message_id: 'm1', sent_at: '2026-01-01T00:00:00Z' });
-    });
   });
 });

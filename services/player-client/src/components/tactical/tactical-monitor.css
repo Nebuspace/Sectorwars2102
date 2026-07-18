@@ -53,118 +53,27 @@
   text-shadow: 0 0 6px rgba(0, 217, 255, 0.7);
 }
 
-.target-npc-badge {
-  font-size: 0.55rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  padding: 0.05rem 0.3rem;
-  border: 1px solid rgba(255, 255, 255, 0.35);
-  border-radius: 2px;
-  color: rgba(255, 255, 255, 0.75);
-}
+/* NPC badge / rep-tag chip / legend / inline ENGAGE-HAIL action-row CSS
+   retired here (WO-TACTICAL-POPUP) — the row strip no longer shows them;
+   ENGAGE/HAIL moved into ContactActionMenu (contact-action-menu* below)
+   and HailComposeDialog (reuses .target-hail-input + .target-result-msg,
+   both kept). Zero remaining consumers in TacticalTargetPage.tsx. */
 
-/* Rep-status TEXT tag — ALWAYS visible alongside the name color (WCAG
-   1.4.1, never color-alone; same lesson as the retired threat-band
-   chips). The three tiers reuse the mockup's exact hex triad. */
-.target-rep-tag {
-  font-size: 0.55rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  padding: 0.05rem 0.3rem;
-  border-radius: 2px;
-  border: 1px solid currentColor;
-  white-space: nowrap;
-}
-
-.target-rep-red {
-  color: #FF5A6A;
-  background: rgba(255, 90, 106, 0.12);
-}
-
-.target-rep-gray {
-  color: #9AA6B5;
-  background: rgba(154, 166, 181, 0.1);
-}
-
-.target-rep-blue {
-  color: #5FB8FF;
-  background: rgba(95, 184, 255, 0.1);
-}
-
-.target-contact-actions {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 0.3rem;
-}
-
-.target-action-btn {
-  font-family: 'Courier New', monospace;
-  font-size: 0.6rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  padding: 0.2rem 0.55rem;
-  border-radius: 3px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.target-action-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.target-engage-btn {
-  background: rgba(239, 68, 68, 0.15);
-  border: 1px solid rgba(239, 68, 68, 0.5);
-  color: #ff8080;
-  text-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
-}
-
-.target-engage-btn:hover:not(:disabled) {
-  background: rgba(239, 68, 68, 0.25);
-}
-
-.target-hail-btn,
-.target-hail-send-btn {
-  background: rgba(0, 217, 255, 0.1);
-  border: 1px solid rgba(0, 217, 255, 0.45);
-  color: #00d9ff;
-}
-
-.target-hail-btn:hover:not(:disabled),
-.target-hail-send-btn:hover:not(:disabled) {
-  background: rgba(0, 217, 255, 0.2);
-}
-
-.target-hail-compose {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  width: 100%;
-}
-
+/* Standalone in HailComposeDialog's message area now (WO-TACTICAL-POPUP
+   moved it out of the old flex `.target-hail-compose` row) -- width:100%
+   fills the dialog instead of relying on a flex parent to size it. */
 .target-hail-input {
-  flex: 1;
-  min-width: 0;
-  height: 22px;
-  padding: 0 0.4rem;
+  width: 100%;
+  box-sizing: border-box;
+  height: 26px;
+  padding: 0 0.5rem;
   font-family: 'Courier New', monospace;
-  font-size: 0.6rem;
+  font-size: 0.7rem;
   background: rgba(0, 5, 12, 0.85);
   border: 1px solid rgba(0, 217, 255, 0.4);
   border-radius: 3px;
   color: #eaf6ff;
   outline: none;
-}
-
-.target-hail-cancel-btn {
-  background: transparent;
-  border: none;
-  color: rgba(255, 255, 255, 0.5);
-  font-size: 0.9rem;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0 0.2rem;
 }
 
 .target-result-msg {
@@ -182,14 +91,83 @@
   color: #ff5a6a;
 }
 
-.target-legend {
-  margin-top: 0.2rem;
-  padding-top: 0.4rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  font-size: 0.58rem;
-  color: rgba(255, 255, 255, 0.55);
-  letter-spacing: 0.02em;
-  line-height: 1.6;
+/* --- TARGET: ContactActionMenu (WO-TACTICAL-POPUP) — the row's ENGAGE/
+   HAIL popup, opened from the contact name. Portal'd to document.body
+   (position:fixed, coords computed by the component itself), so this is
+   deliberately NOT position:relative-anchored the way an inline dropdown
+   would be -- same reasoning as ConfirmDialog's own body-portal (deck-
+   monitor scroll body / ancestor transforms can never clip it). Same
+   HUD-glass language as SolarSystemViewscreen's .ssv-ctxmenu (frosted
+   glass, cyan border) for visual continuity across the cockpit's floating
+   menus. */
+.contact-action-menu {
+  position: fixed;
+  /* Matches the app's "in-context modal/panel" tier (medal-toast,
+     construction-venue, cockpit.css's own modals all sit at 1200) rather
+     than ConfirmDialog's base 1000 -- comfortably above any tactical
+     panel that could plausibly be open alongside it, still well below
+     the always-on-top priority-hail/combat-banner tier (8000+), which
+     this quick-menu has no business contesting with. */
+  z-index: 1200;
+  min-width: 128px;
+  box-sizing: border-box;
+  background: rgba(0, 10, 16, 0.92);
+  border: 1px solid rgba(0, 217, 255, 0.35);
+  border-radius: 4px;
+  backdrop-filter: blur(3px);
+  box-shadow:
+    0 0 14px rgba(0, 217, 255, 0.15),
+    inset 0 1px 0 rgba(0, 217, 255, 0.08);
+  padding: 0.3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-family: 'Courier New', monospace;
+}
+
+.contact-action-menu-item {
+  width: 100%;
+  text-align: left;
+  padding: 0.3rem 0.6rem;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: 'Courier New', monospace;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  background: transparent;
+  border: 1px solid transparent;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.contact-action-menu-item:hover,
+.contact-action-menu-item:focus-visible {
+  outline: none;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.contact-action-menu-item-engage {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: rgba(239, 68, 68, 0.5);
+  color: #ff8080;
+  text-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
+}
+
+.contact-action-menu-item-engage:hover,
+.contact-action-menu-item-engage:focus-visible {
+  background: rgba(239, 68, 68, 0.28);
+}
+
+.contact-action-menu-item-hail {
+  background: rgba(0, 217, 255, 0.1);
+  border-color: rgba(0, 217, 255, 0.45);
+  color: #00d9ff;
+}
+
+.contact-action-menu-item-hail:hover,
+.contact-action-menu-item-hail:focus-visible {
+  background: rgba(0, 217, 255, 0.22);
 }
 
 /* --- THREAT: law status / mines / hazard readout --- */
