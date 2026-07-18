@@ -275,28 +275,6 @@ export const ColonyOverview: React.FC = () => {
     <div className="colony-overview">
       <div className="overview-header">
         <h2>Colony Overview</h2>
-        <div className="header-stats">
-          <div className="stat-card">
-            <span className="stat-label">Total Colonies</span>
-            <span className="stat-value">{stats?.totalColonies || 0}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Active</span>
-            <span className="stat-value success">{stats?.activeColonies || 0}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Total Population</span>
-            <span className="stat-value">{formatNumber(stats?.totalPopulation || 0)}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Avg Morale</span>
-            <span className="stat-value">{Math.round(stats?.averageMorale || 0)}%</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Troubled</span>
-            <span className="stat-value error">{stats?.troubledColonies || 0}</span>
-          </div>
-        </div>
       </div>
 
       <div className="colony-controls">
@@ -448,6 +426,29 @@ export const ColonyOverview: React.FC = () => {
           </div>
         ))}
       </div>
+
+      <div className="header-stats">
+          <div className="stat-card">
+            <span className="stat-label">Total Colonies</span>
+            <span className="stat-value">{stats?.totalColonies || 0}</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Active</span>
+            <span className="stat-value success">{stats?.activeColonies || 0}</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Total Population</span>
+            <span className="stat-value">{formatNumber(stats?.totalPopulation || 0)}</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Avg Morale</span>
+            <span className="stat-value">{Math.round(stats?.averageMorale || 0)}%</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Troubled</span>
+            <span className="stat-value error">{stats?.troubledColonies || 0}</span>
+          </div>
+        </div>
 
       {selectedColony && (
         <div className="colony-detail-modal" onClick={() => setSelectedColony(null)}>
