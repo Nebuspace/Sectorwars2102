@@ -12,11 +12,41 @@
 .target-contact-list {
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  gap: 0.3rem;
+  /* WO-TACTICAL-APPROACH-ENGAGE-SCROLL Part A: an explicit scroll boundary
+     ON the list itself (not just relying on `.mbody`'s own overflow-y:auto,
+     cockpit-shell.css) -- 10+ contacts must scroll INTERNALLY, never grow
+     `.mon`/`.cockpit-console`/`.deck` past the cockpit's grid-allocated
+     slot (cockpit.css's `.cockpit-console{grid-template-rows:1fr}`).
+     `max-height:100%` (not a hand-picked calc(100vh - Npx)) deliberately:
+     `.mbody`'s own height is already DEFINITE by the time it reaches this
+     list -- `.stage *{min-height:0}` (cockpit-shell.css) plus the full
+     100vh-rooted fr/auto grid chain (`.stage` -> `.lower` -> `.deck` ->
+     `.cockpit-console` -> `.mon{flex:1 via .mbody}`) already resolves a
+     real pixel height for `.mbody` before any child is laid out, so a
+     percentage here inherits that correctly-computed budget instead of
+     re-deriving it from a hardcoded chrome-height subtraction that would
+     silently drift on --uiscale changes, docked/landed mode-band height
+     swaps, or the teleprinter transcript opening/closing. Verified via a
+     static computed-layout harness (real cockpit-shell.css/game-layout.css/
+     cockpit.css cascade, 1440x900, 15 rows): `.mbody` was already
+     correctly bounded and internally scrolling pre-fix -- this makes the
+     LIST itself (not the shared `.mbody` all three deck-monitors share)
+     the visible scroll boundary Max is asking for. */
+  max-height: 100%;
+  overflow-y: auto;
 }
 
 .target-contact-row {
-  padding: 0.4rem 0.5rem;
+  /* flex-shrink:0 -- without it, `.stage *{min-height:0}` (cockpit-
+     shell.css) lets these flex-column children shrink below their content
+     height to cram into `.target-contact-list`'s new max-height instead of
+     the LIST overflowing/scrolling as intended (caught empirically: rows
+     kept shrinking as contact count grew instead of holding a stable
+     height). flex-shrink:0 makes the row hold its natural content height
+     so excess count becomes list overflow, not squished rows. */
+  flex-shrink: 0;
+  padding: 0.25rem 0.5rem;
   background: rgba(255, 136, 0, 0.05);
   border: 1px solid rgba(255, 136, 0, 0.2);
   border-radius: 4px;
@@ -37,7 +67,7 @@
 
 .target-contact-name {
   font-family: 'Courier New', monospace;
-  font-size: 0.75rem;
+  font-size: 0.68rem;
   font-weight: 700;
   letter-spacing: 0.02em;
   cursor: pointer;
