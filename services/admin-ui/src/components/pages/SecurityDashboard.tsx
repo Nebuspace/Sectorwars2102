@@ -123,7 +123,7 @@ export const SecurityDashboard: React.FC = () => {
           onClick={() => setActiveTab('threats')}
         >
           <i className="fas fa-shield-alt"></i>
-          Threat Detection
+          Threats — unavailable
         </button>
         <button
           className={`tab ${activeTab === 'settings' ? 'active' : ''}`}
