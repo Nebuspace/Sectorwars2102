@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import uuid
 
-from src.services.intrasystem_movement_service import enrich_presence_with_live_pose
+from src.services.intrasystem_movement_service import (
+    current_npc_pose_xy,
+    enrich_presence_with_live_pose,
+)
 
 POSE = {
     "x_pct": 40.0, "y_pct": 60.0, "heading_deg": 90.0,
@@ -137,6 +140,10 @@ def test_npc_enrichment_is_preserved_unchanged_activity_mission_archetype_and_po
 
 
 def test_npc_missing_daily_schedule_mission_defaults_to_commerce():
+    """NULL pose AND no current_sector_id at all -- WO-API-A1's fallback
+    (below) needs a real sector to anchor a position against; with neither
+    a stored pose nor a sector, there is nothing to derive a position from,
+    so this stays poseless exactly as before this WO."""
     nid = str(uuid.uuid4())
     present = [_npc_entry(nid)]
     npc = _Row(
@@ -153,6 +160,43 @@ def test_npc_missing_daily_schedule_mission_defaults_to_commerce():
     assert enriched[0]["mission"] == "commerce"
     assert enriched[0]["activity"] is None
     assert "pose" not in enriched[0]
+
+
+def test_npc_null_pose_with_a_real_sector_gets_the_engage_gates_own_fallback_anchor():
+    """WO-API-A1 mack HIGH (Option A): a NULL-pose NPC that DOES have a
+    current_sector_id (e.g. never ticked by tick_npc_legs before landing in
+    a status tick_npc_legs never ticks -- ENGAGED_PENDING_ARRIVAL et al)
+    used to get NO pose key at all, sending the client to a DIFFERENT,
+    time-driven cosmetic wander while the engage-range gate's own
+    current_npc_pose_xy fallback (empty_idle_pose(sector, ship_key)) is a
+    FIXED anchor -- two different algorithms, false ENGAGE/APPROACH
+    affordance both directions. This enrichment must now build the
+    IDENTICAL fallback so the client renders the exact position the gate
+    evaluates."""
+    nid = str(uuid.uuid4())
+    ship_id = uuid.uuid4()
+    present = [_npc_entry(nid)]
+    npc = _Row(
+        id=uuid.UUID(nid),
+        current_activity=None,
+        daily_schedule=None,
+        archetype=None,
+        intrasystem_pose=None,
+        current_sector_id=42,
+        ship_id=ship_id,
+    )
+    session = _FakeSession(npcs=[npc])
+
+    enriched = enrich_presence_with_live_pose(session, present)
+
+    assert "pose" in enriched[0]
+    expected_x, expected_y = current_npc_pose_xy(npc)
+    assert enriched[0]["pose"]["x_pct"] == expected_x
+    assert enriched[0]["pose"]["y_pct"] == expected_y
+    # Deterministic -- calling the gate's own fallback a second time (a
+    # SEPARATE call the way the route's own precondition would) reproduces
+    # the SAME point, not a fresh random one.
+    assert current_npc_pose_xy(npc) == (expected_x, expected_y)
 
 
 def test_mixed_human_and_npc_entries_both_enriched_independently():

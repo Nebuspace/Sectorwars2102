@@ -65,9 +65,20 @@ export const DOCK_APPROACH_STANDOFF_EM = 3.5;
  *  contact must be before TACTICAL TARGET's menu offers ENGAGE instead of
  *  APPROACH. PLACEHOLDER — a small multiple of DOCK_RANGE_EM as a sensible
  *  starting number; a Max-tunable dial once playtested, same convention as
- *  DOCK_LAND_PROXIMITY_RANGE_EM. Exported (like distancePx/REFERENCE_BAND
- *  below) so TacticalTargetPage.tsx computes the SAME range read the ship
- *  markers below are drawn from, not a second, independently-drifting copy. */
+ *  DOCK_LAND_PROXIMITY_RANGE_EM.
+ *
+ *  WO-API-A1: POST /combat/engage is now SERVER-authoritative on this same
+ *  threshold (intrasystem_movement_service.ENGAGE_RANGE_EM, derived from
+ *  the server's own DOCK_LAND_PROXIMITY_RANGE_EM*3 -- the identical
+ *  derivation this constant uses), published read-only on GET
+ *  /sectors/{id}/contents (`engage_range_em`) and consumed via
+ *  `WindshieldFlightContext`'s `engageRangeEm` (WindshieldTableau.tsx
+ *  publishes it each fetch). This local constant is now ONLY the
+ *  pre-hydration FALLBACK default the context seeds itself with before the
+ *  first fetch resolves -- TacticalTargetPage.tsx's actual `inEngageRange`
+ *  enforcement reads `flight.engageRangeEm`, not this export, directly.
+ *  Kept exported (like distancePx/REFERENCE_BAND below) for that fallback
+ *  and for any other pre-hydration consumer. */
 export const ENGAGE_RANGE_EM = DOCK_RANGE_EM * 3;
 // Local intra-system flight is ONE continuous position glide (accelerate →
 // cruise → decelerate, a single eased CSS transition over TRAVEL_MOVE_MS), with

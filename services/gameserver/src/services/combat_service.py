@@ -868,6 +868,30 @@ class CombatService:
         if attacker.current_sector_id != defender.current_sector_id:
             return {"success": False, "message": "Target is not in your sector"}
 
+        # WO-API-A1 cipher MEDIUM (hub-ruled Option B): the route's own
+        # optimistic proximity pre-check (engage_combat) reads pose BEFORE
+        # this method's row locks -- a victim could warp into range or (more
+        # relevantly here) the route's check could have been satisfied a
+        # moment ago but the two players are no longer actually close by the
+        # time this call is reached (network delay, a scripted client
+        # racing the request against its own movement). attacker/defender
+        # are ALREADY locked (.populate_existing().with_for_update() above)
+        # by this point, so re-evaluating the SAME is_within_engage_range
+        # predicate here reads their genuinely-current, locked poses -- one
+        # shared predicate, two call sites (route + here), never a second
+        # independently-drifting copy. Dict-error, not HTTPException -- this
+        # file raises none; the route already treats a dict failure the
+        # same way it treats "Target is not in your sector" above.
+        from src.services import intrasystem_movement_service as isp
+        attacker_xy = isp.current_player_pose_xy(attacker)
+        defender_xy = isp.current_player_pose_xy(defender)
+        if not isp.is_within_engage_range(*attacker_xy, *defender_xy):
+            return {
+                "success": False,
+                "message": "Target is out of engagement range — move closer and try again",
+                "error": "ERR_TARGET_OUT_OF_RANGE",
+            }
+
         # Look up attack turn cost from DEFENDER's ship specification
         # Cost reflects difficulty of attacking that ship type (e.g., escape pod = 10,000 turns)
         defender_spec = self.db.query(ShipSpecification).filter(
@@ -1301,6 +1325,47 @@ class CombatService:
         if attacker.current_sector_id != npc_ship.sector_id:
             return {"success": False, "message": "Target is not in your sector"}
 
+        # WO-API-A1 cipher MEDIUM (hub-ruled Option B): the route's own
+        # optimistic proximity pre-check reads pose BEFORE this method's
+        # locks -- re-evaluate the SAME is_within_engage_range predicate
+        # here, under a genuinely LOCKED re-read of the NPC's pose, so a
+        # route-level bypass can never skip the gate. attacker is already
+        # locked above; the NPC's pose lives on NPCCharacter, not npc_ship
+        # (Ship), and is NOT otherwise locked by this method until the loot
+        # section below -- lock it HERE instead (same Player-then-Ship-then-
+        # NPCCharacter type order the loot section already uses later in
+        # this same function, just acquired earlier), with
+        # .populate_existing() so the route's own earlier unlocked pre-read
+        # of this exact row (player_combat.py's engage_combat) can never
+        # poison this read the way it could the loot query (see the sibling
+        # fix on that query, below in this same method). A missing
+        # NPCCharacter row here would violate the single-pilot invariant
+        # (models/npc_character.py) -- treat it the same as the route does:
+        # fail CLOSED, not open.
+        from src.models.npc_character import NPCCharacter
+        from src.services import intrasystem_movement_service as isp
+        npc_char = (
+            self.db.query(NPCCharacter)
+            .filter(NPCCharacter.ship_id == npc_ship.id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if npc_char is None:
+            return {
+                "success": False,
+                "message": "Target position could not be verified — try again",
+                "error": "ERR_TARGET_POSITION_UNVERIFIED",
+            }
+        attacker_xy = isp.current_player_pose_xy(attacker)
+        target_xy = isp.current_npc_pose_xy(npc_char)
+        if not isp.is_within_engage_range(*attacker_xy, *target_xy):
+            return {
+                "success": False,
+                "message": "Target is out of engagement range — move closer and try again",
+                "error": "ERR_TARGET_OUT_OF_RANGE",
+            }
+
         # Attack turn cost comes from the defender ship's specification,
         # exactly as in player-vs-player combat
         defender_spec = self.db.query(ShipSpecification).filter(
@@ -1345,9 +1410,23 @@ class CombatService:
                 if isinstance(qty, (int, float)) and qty > 0
             }
             from src.models.npc_character import NPCCharacter as _NPCCharacterLoot
+            # WO-API-A1 cipher HIGH: the engage-range gate's own route-level
+            # pre-check (player_combat.py's engage_combat) reads this SAME
+            # NPCCharacter row UNLOCKED, before this method's locks -- that
+            # caches it in this session's identity map. Without
+            # .populate_existing() here, .with_for_update() still acquires
+            # the DB-level row lock but does NOT refresh the ORM object's
+            # attributes from the now-locked row -- .credits would read the
+            # STALE cached value from the earlier unlocked pre-read, not the
+            # true current balance (which npc_trading_service.py's Loop A
+            # tick can mutate concurrently, outside this ship's own lock).
+            # A stale-HIGHER cached balance mints the difference to the
+            # attacker for free. Matches the sibling Player locks above
+            # (778-782), which already chain .populate_existing().
             looted_npc = (
                 self.db.query(_NPCCharacterLoot)
                 .filter(_NPCCharacterLoot.ship_id == npc_ship.id)
+                .populate_existing()
                 .with_for_update()
                 .first()
             )

@@ -94,6 +94,15 @@ def _make_player(
         team_id=team_id,
         is_suspect=is_suspect,
         suspect_until=suspect_until,
+        # WO-API-A1: attack_player now backstops on engage-range (SAME
+        # sector alone is not "in range") -- every fixture built through
+        # this shared helper shares this IDENTICAL literal pose, so
+        # attacker and defender are always at the same point regardless of
+        # which ship id keys their fallback anchor would otherwise use.
+        intrasystem_pose={
+            "x_pct": 50.0, "y_pct": 50.0, "heading_deg": 0.0,
+            "phase": "idle", "burning": False, "leg": None,
+        },
     )
 
 

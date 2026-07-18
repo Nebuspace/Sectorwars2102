@@ -831,8 +831,33 @@ def enrich_presence_with_live_pose(db: Session, present: List[Dict[str, Any]]) -
                 e["activity"] = (act.name if hasattr(act, "name") else str(act)) if act else None
                 e["mission"] = (n.daily_schedule or {}).get("mission") or "commerce"
                 e["archetype"] = n.archetype.name if n.archetype else None
-                if n.intrasystem_pose is not None:
-                    e["pose"] = pose_public(n.intrasystem_pose)
+                pose_source = n.intrasystem_pose
+                if pose_source is None:
+                    # WO-API-A1 mack HIGH (Option A): this branch used to
+                    # leave "pose" unset entirely for a NULL-pose NPC (one
+                    # that has never been ticked by tick_npc_legs -- e.g. an
+                    # ADR-0042 police officer dispatched straight into
+                    # ENGAGED_PENDING_ARRIVAL before its first idle-pose
+                    # seed). The client then fell to a DIFFERENT, time-
+                    # driven cosmetic wander (otherShipFlightPose) while the
+                    # engage-range gate's OWN NULL-pose fallback
+                    # (current_npc_pose_xy) computes a fixed
+                    # empty_idle_pose(sector, ship_key) anchor -- two
+                    # different algorithms, false ENGAGE/APPROACH
+                    # affordance in both directions. Build the IDENTICAL
+                    # fallback here (same inputs current_npc_pose_xy uses)
+                    # so the client renders the exact position the gate
+                    # evaluates. Needs a real sector to anchor against -- an
+                    # NPC with no sector at all (deceased/between-
+                    # assignments, models/npc_character.py) has nothing to
+                    # derive a position from; leave it poseless exactly as
+                    # before rather than fabricate a meaningless point.
+                    sector_id = getattr(n, "current_sector_id", None)
+                    if sector_id is not None:
+                        ship_key = str(getattr(n, "ship_id", None) or n.id)
+                        pose_source = empty_idle_pose(int(sector_id), ship_key)
+                if pose_source is not None:
+                    e["pose"] = pose_public(pose_source)
         else:
             p = player_by_id.get(str(e.get("player_id")))
             if p is not None and p.intrasystem_pose is not None:
@@ -958,6 +983,72 @@ def assert_dock_land_proximity(
             status_code=400,
             detail=f"You are too far from {target_label} to {action_word} — move closer and try again",
         )
+
+
+# ---------------------------------------------------------------------------
+# Server-gated engage-range proximity (WO-API-A1)
+#
+# The player-client ALREADY gates the TACTICAL TARGET menu's ENGAGE item on
+# distance -- see windshieldTableauHelpers.tsx's ENGAGE_RANGE_EM=
+# DOCK_RANGE_EM*3 + TacticalTargetPage.tsx's inEngageRange
+# (distancePx(shipPos, contactPos, REFERENCE_BAND) <=
+# ENGAGE_RANGE_EM*REFERENCE_BAND.remPx) -- but exactly like dock/land before
+# WO-ISP-DOCKPROX above, that gate only ever hid the menu item. Nothing
+# server-side stopped a direct POST /combat/engage from anywhere in the
+# sector; CombatService's own precondition only ever checked SAME-SECTOR,
+# never actual proximity within it.
+#
+# THIS IS A TUNABLE DIAL, NOT A FIXED FACT -- ENGAGE_RANGE_EM is DERIVED from
+# DOCK_LAND_PROXIMITY_RANGE_EM (never hand-copied), so it can never silently
+# drift from the server's own dock/land dial -- exactly mirroring how the
+# client derives ITS ENGAGE_RANGE_EM = DOCK_RANGE_EM*3 from its own
+# DOCK_RANGE_EM (both DOCK constants are already verified-matching, 5.0em
+# each side -- see WO-ISP-DOCKPROX's comment above). The *3 multiple itself
+# was a WO-TACTICAL-APPROACH-ENGAGE-SCROLL Part B PLACEHOLDER on the client
+# side, never playtested/tuned -- flagged prominently here, same as
+# DOCK_LAND_PROXIMITY_RANGE_EM, for Max to confirm or override. Same fixed
+# reference band (LAYOUT_BAND_WIDTH/HEIGHT/REM_PX) as dock/land -- the
+# server has no DOM to measure, so the fixed 1440x334.7 band IS the shared
+# coordinate system every proximity gate on both sides compares in.
+# ---------------------------------------------------------------------------
+ENGAGE_RANGE_EM = DOCK_LAND_PROXIMITY_RANGE_EM * 3
+
+
+def is_within_engage_range(
+    attacker_x_pct: float, attacker_y_pct: float, target_x_pct: float, target_y_pct: float
+) -> bool:
+    from src.services.intrasystem_layout import LAYOUT_BAND_REM_PX
+
+    threshold_px = ENGAGE_RANGE_EM * LAYOUT_BAND_REM_PX
+    return _pose_distance_px(attacker_x_pct, attacker_y_pct, target_x_pct, target_y_pct) <= threshold_px
+
+
+def current_npc_pose_xy(npc) -> Tuple[float, float]:
+    """NPC analog of current_player_pose_xy -- reads NPCCharacter.intrasystem_pose
+    directly. Unlike ensure_player_pose this does NOT mutate/persist a
+    missing pose onto the row -- a combat precondition check is not the
+    place to seed state a caller may not intend to keep (the engage attempt
+    can still fail a moment later for an unrelated reason). A not-yet-ticked
+    NPC with no stored pose falls back to its own sector's resting anchor
+    via empty_idle_pose, computed but never written.
+
+    NPC pose is kept GENUINELY current server-side by tick_npc_legs
+    (npc_tick_loops.py's scheduled sweep drives every ON_DUTY/OFF_DUTY NPC's
+    legs) -- it is not a client-only cosmetic wander -- so gating engage on
+    it gets the same real-position guarantee dock/land proximity already
+    gets from player pose, for both PvP and PvNPC targets alike."""
+    pose = getattr(npc, "intrasystem_pose", None)
+    if not pose:
+        sector_id = getattr(npc, "current_sector_id", None)
+        if sector_id is not None:
+            key = str(getattr(npc, "ship_id", None) or npc.id)
+            pose = empty_idle_pose(int(sector_id), key)
+        # else: no sector to anchor a fallback against (current_sector_id
+        # NULL = deceased/between-assignments, models/npc_character.py) --
+        # derive_pose(None) below degrades to its own generic
+        # empty_idle_pose(0, "unknown") rather than crash on int(None).
+    sample = derive_pose(pose)
+    return float(sample["x_pct"]), float(sample["y_pct"])
 
 
 def set_player_pose(db: Session, player, pose: Dict[str, Any]) -> Dict[str, Any]:

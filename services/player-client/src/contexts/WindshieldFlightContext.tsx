@@ -8,6 +8,7 @@ import React, {
 } from 'react';
 import { useAutopilot } from './AutopilotContext';
 import type { PctPoint } from '../components/tactical/windshieldTableauLayout';
+import { ENGAGE_RANGE_EM } from '../components/tactical/windshieldTableauHelpers';
 
 /**
  * WindshieldFlightContext — the ONE shared flight-state store unifying the
@@ -76,6 +77,21 @@ export interface WindshieldFlightContextValue {
   /** The tableau calls this every render tick with every OTHER contact's
    *  resolved position, keyed by ship_id (mirrors reportFlightState). */
   reportContactPositions: (positions: Map<string, PctPoint>) => void;
+
+  // ---- Server-published engage range (WO-API-A1) ----
+  /** The server-authoritative ENGAGE proximity threshold (REFERENCE_BAND
+   *  em) -- POST /combat/engage now enforces this SAME value, published on
+   *  GET /sectors/{id}/contents (`engage_range_em`). Defaults to the local
+   *  ENGAGE_RANGE_EM constant (windshieldTableauHelpers.tsx) until the
+   *  tableau's first /contents fetch resolves, so TACTICAL TARGET's
+   *  Approach/Engage split degrades to the pre-WO-API-A1 behavior for that
+   *  brief pre-hydration window rather than reading `undefined`. The
+   *  client-side check this drives is an OPTIMISTIC PREVIEW only -- the
+   *  server independently re-derives and enforces the identical gate. */
+  engageRangeEm: number;
+  /** The tableau calls this once per /contents fetch with the server-
+   *  published value (mirrors reportShipPos). */
+  reportEngageRangeEm: (em: number) => void;
 }
 
 const WindshieldFlightContext = createContext<WindshieldFlightContextValue | undefined>(undefined);
@@ -90,6 +106,7 @@ export const WindshieldFlightProvider: React.FC<{ children: React.ReactNode }> =
   const [stopSignal, setStopSignal] = useState(0);
   const [shipPos, setShipPos] = useState<PctPoint | null>(null);
   const [contactPositions, setContactPositions] = useState<Map<string, PctPoint>>(new Map());
+  const [engageRangeEm, setEngageRangeEm] = useState<number>(ENGAGE_RANGE_EM);
   const approachSeqRef = useRef(0);
   const lastGlideTargetRef = useRef<string | null>(null);
   const wasLocalFlyingRef = useRef(false);
@@ -141,6 +158,10 @@ export const WindshieldFlightProvider: React.FC<{ children: React.ReactNode }> =
     setContactPositions(positions);
   }, []);
 
+  const reportEngageRangeEm = useCallback((em: number) => {
+    setEngageRangeEm(em);
+  }, []);
+
   const value = useMemo<WindshieldFlightContextValue>(() => ({
     isFlying: localFlying || autopilot.status === 'engaged',
     targetId,
@@ -154,10 +175,12 @@ export const WindshieldFlightProvider: React.FC<{ children: React.ReactNode }> =
     contactPositions,
     reportShipPos,
     reportContactPositions,
+    engageRangeEm,
+    reportEngageRangeEm,
   }), [
     localFlying, autopilot.status, targetId, arrivedTargetId, approach, allStop,
     pendingApproach, stopSignal, reportFlightState, shipPos, contactPositions,
-    reportShipPos, reportContactPositions,
+    reportShipPos, reportContactPositions, engageRangeEm, reportEngageRangeEm,
   ]);
 
   return (

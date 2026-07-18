@@ -150,6 +150,13 @@ class SectorContentsResponse(BaseModel):
     wrecks: List[WreckResponse] = []
     # Gate structures (GET /warp-gates/sector/{id} passthrough).
     warp_gates: SectorStructuresResponse
+    # Server-authoritative ENGAGE proximity threshold, in REFERENCE_BAND em
+    # (WO-API-A1) -- intrasystem_movement_service.ENGAGE_RANGE_EM, the SAME
+    # value POST /combat/engage now enforces server-side. Published here
+    # (additive) so the player-client reads its ENGAGE menu-item range gate
+    # from the server instead of an independently-drifting local literal;
+    # see WindshieldFlightContext.tsx's engageRangeEm.
+    engage_range_em: float
 
 @router.get("/{sector_id}/planets", response_model=SectorPlanetsResponse)
 async def get_sector_planets(
@@ -495,6 +502,10 @@ async def get_sector_contents(
     #     100% read-only in the source route -- NPCCharacter query only). ---
     present = _enrich_players_present(db, sector.players_present or [])
 
+    # WO-API-A1: the same server-authoritative ENGAGE proximity dial
+    # POST /combat/engage now enforces -- a plain constant read, not a query.
+    from src.services import intrasystem_movement_service as isp
+
     # --- Formations: read without discovering (MoveOption precedent). ---
     from src.services.special_formation_service import (
         find_formations_for_sector,
@@ -538,4 +549,5 @@ async def get_sector_contents(
         formations=formation_responses,
         wrecks=wrecks,
         warp_gates=SectorStructuresResponse(**gates),
+        engage_range_em=isp.ENGAGE_RANGE_EM,
     )

@@ -212,6 +212,12 @@ def _make_ship(*, cargo=None, type_=ShipType.SCOUT_SHIP, sector_id=1, name="Test
     return ship
 
 
+_POSE = {
+    "x_pct": 50.0, "y_pct": 50.0, "heading_deg": 0.0,
+    "phase": "idle", "burning": False, "leg": None,
+}
+
+
 def _make_player(*, ship, quantum_shards=0):
     return types.SimpleNamespace(
         id=uuid.uuid4(),
@@ -241,6 +247,9 @@ def _make_player(*, ship, quantum_shards=0):
         grey_kind=None,
         settings={},
         team_id=None,
+        # WO-API-A1: attack_npc_ship now backstops on engage-range -- see
+        # module-level _POSE (shared with _make_npc_character below).
+        intrasystem_pose=dict(_POSE),
     )
 
 
@@ -258,6 +267,11 @@ def _make_npc_character(*, archetype, title=None, notoriety=80, name="Test NPC")
         notoriety=notoriety,
         faction_code="independent",
         display_name=f"{title + ' ' if title else ''}{name}".strip(),
+        # WO-API-A1: attack_npc_ship now backstops on engage-range -- the
+        # SAME literal pose _make_player uses, so attacker/npc are in range.
+        ship_id=None,  # set per-test where the real npc_ship id is known
+        current_sector_id=1,
+        intrasystem_pose=dict(_POSE),
     )
 
 

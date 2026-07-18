@@ -271,6 +271,12 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
   const [popup, setPopup] = useState<PopupState | null>(null);
   const [ctxMenu, setCtxMenu] = useState<CtxMenuState | null>(null);
   const ctxMenuRef = useRef<HTMLDivElement>(null);
+  // WO-API-A1: server-published ENGAGE proximity threshold from THIS
+  // sector's own /contents fetch below -- null until it resolves, so the
+  // report effect (near `flight`, below) can fall back to the local
+  // ENGAGE_RANGE_EM constant for that brief pre-hydration window instead of
+  // publishing a bogus 0/undefined into the shared context.
+  const [engageRangeEmFetched, setEngageRangeEmFetched] = useState<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -282,6 +288,8 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
       .then((res) => {
         if (cancelled) return;
         setSystem(toStaticSystem(res.data));
+        const em = res.data?.engage_range_em;
+        setEngageRangeEmFetched(typeof em === 'number' && em > 0 ? em : null);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -829,6 +837,14 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
   useEffect(() => {
     flight.reportShipPos(shipPos);
   }, [shipPos, flight.reportShipPos]);
+
+  // Publish the server-authoritative ENGAGE proximity threshold (WO-API-A1)
+  // -- falls back to the local ENGAGE_RANGE_EM constant until this sector's
+  // own /contents fetch resolves, so TACTICAL TARGET's Approach/Engage
+  // split never reads an unset value for that brief pre-hydration window.
+  useEffect(() => {
+    flight.reportEngageRangeEm(engageRangeEmFetched ?? ENGAGE_RANGE_EM);
+  }, [engageRangeEmFetched, flight.reportEngageRangeEm]);
 
   // Publish every OTHER contact's resolved position, keyed by ship_id,
   // using the SAME resolveShipPose() the `.other` render loop below draws

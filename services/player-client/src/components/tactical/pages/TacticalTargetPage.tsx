@@ -7,7 +7,7 @@ import { formatCredits } from '../../../utils/formatters';
 import ContactActionMenu, { type ContactActionMenuItem } from '../ContactActionMenu';
 import HailComposeDialog from '../HailComposeDialog';
 import { repBucket, type RepBucket } from '../contactClassification';
-import { distancePx, REFERENCE_BAND, ENGAGE_RANGE_EM } from '../WindshieldTableau';
+import { distancePx, REFERENCE_BAND } from '../WindshieldTableau';
 
 /**
  * TacticalTargetPage — TACTICAL monitor's TARGET page (WO-UI2-DECK-
@@ -57,7 +57,9 @@ import { distancePx, REFERENCE_BAND, ENGAGE_RANGE_EM } from '../WindshieldTablea
  * every render tick), a snapshot, not a continuous pursuit; a moving
  * contact can drift off that point mid-glide (noted, not solved -- v1
  * scope). ENGAGE and APPROACH are mutually exclusive per contact, split by
- * `inEngageRange` (ENGAGE_RANGE_EM, WindshieldTableau.tsx) against
+ * `inEngageRange` (`flight.engageRangeEm` — WO-API-A1: the SERVER-published
+ * proximity threshold, WindshieldFlightContext.tsx, no longer a local
+ * ENGAGE_RANGE_EM literal) against
  * `flight.shipPos`/`flight.contactPositions` -- APPROACH shows FAR,
  * ENGAGE shows IN RANGE, both requiring a ship_id (nothing to glide
  * toward or fire on without one).
@@ -320,7 +322,7 @@ const TacticalTargetPage: React.FC<TacticalTargetPageProps> = ({ contacts, selec
           !!contact.ship_id &&
           !!flight.shipPos &&
           !!contactPos &&
-          distancePx(flight.shipPos, contactPos, REFERENCE_BAND) <= ENGAGE_RANGE_EM * REFERENCE_BAND.remPx;
+          distancePx(flight.shipPos, contactPos, REFERENCE_BAND) <= flight.engageRangeEm * REFERENCE_BAND.remPx;
         const canEngage = inEngageRange && !!contact.ship_id;
         // WYSIWYG best-effort (file header): available whenever the
         // contact isn't already in engage range, for every ship-bearing

@@ -42,12 +42,32 @@ import pytest
 
 from src.models.combat import CombatResult
 from src.models.combat_log import CombatLog
+from src.models.npc_character import NPCCharacter as NPCCharacterModel
 from src.models.player import Player as PlayerModel
 from src.models.sector import Sector as SectorModel
 from src.models.ship import Ship as ShipModel
 from src.models.ship import ShipStatus, ShipType
 from src.services import combat_service as combat_service_module
 from src.services.combat_service import CombatService
+
+_POSE = {
+    "x_pct": 50.0, "y_pct": 50.0, "heading_deg": 0.0,
+    "phase": "idle", "burning": False, "leg": None,
+}
+
+
+@pytest.fixture(autouse=True)
+def _no_kia_processing(monkeypatch):
+    """WO-API-A1: attack_npc_ship's own engage-range backstop needs a REAL
+    NPCCharacter row now (see _FakeCombatDb.query below) -- stub out
+    handle_npc_ship_destroyed's separate internal NPCCharacter lookup so its
+    much larger Sector-lock/NPCDeathLog/squad machinery (out of THIS file's
+    scope) never has to be stood up. Same isolation-boundary convention as
+    test_combat_loot_history_nh3b.py's own identical fixture."""
+    monkeypatch.setattr(
+        "src.services.npc_spawn_service.handle_npc_ship_destroyed",
+        lambda *a, **k: None,
+    )
 
 _SRC_ROOT = pathlib.Path(__file__).resolve().parents[2] / "src"
 _COMBAT_SERVICE_PATH = _SRC_ROOT / "services" / "combat_service.py"
@@ -323,6 +343,9 @@ def _make_player(*, ship, personal_reputation=0, turns=999_999, max_turns=1_000,
         # completeness or attack_player raises AttributeError.
         is_suspect=False,
         suspect_until=None,
+        # WO-API-A1 (post-dates this file too): attack_player/attack_npc_ship
+        # now backstop on engage-range -- see module-level _POSE.
+        intrasystem_pose=dict(_POSE),
     )
 
 
@@ -411,11 +434,12 @@ class _FakeCombatDb:
     """Minimal synchronous Session double: routes .query(Model) by class,
     records every .add()ed row, no-ops flush/begin_nested/commit."""
 
-    def __init__(self, *, players, ship_first=None, sector=None, drones=None):
+    def __init__(self, *, players, ship_first=None, sector=None, drones=None, npc_char=None):
         self._players = {p.id: p for p in players}
         self._ship_first = ship_first
         self._sector = sector
         self._drones = drones or []
+        self._npc_char = npc_char
         self.added = []
         self.commits = 0
 
@@ -428,6 +452,8 @@ class _FakeCombatDb:
             return _StubQuery(first=self._sector, all_=[])
         if model is combat_service_module.Drone:
             return _StubQuery(first=None, all_=self._drones)
+        if model is NPCCharacterModel:
+            return _StubQuery(first=self._npc_char, all_=[])
         return _StubQuery(first=None, all_=[])
 
     def add(self, obj):
@@ -507,8 +533,13 @@ class TestNpcLegPersistsRegionSnapshot:
         npc_ship = _make_ship(name="NPC Hull")
         npc_ship.sector = sector  # bypass the lazy relationship load on a transient row
         attacker = _make_player(ship=_make_ship())
+        npc_char = types.SimpleNamespace(
+            id=uuid.uuid4(), ship_id=npc_ship.id, current_sector_id=1,
+            credits=0, archetype=None, title=None,
+            intrasystem_pose=dict(_POSE),
+        )
 
-        db = _FakeCombatDb(players=[attacker], ship_first=npc_ship, sector=sector)
+        db = _FakeCombatDb(players=[attacker], ship_first=npc_ship, sector=sector, npc_char=npc_char)
         cs = CombatService(db)
         monkeypatch.setattr(cs, "_resolve_ship_combat", lambda *a, **k: _victory_result())
 

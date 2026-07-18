@@ -30,14 +30,62 @@ import types
 import uuid
 from contextlib import contextmanager
 
+import pytest
+
 from src.models.cargo_wreck import CargoWreck
 from src.models.combat import CombatResult
 from src.models.combat_log import CombatLog
+from src.models.npc_character import NPCCharacter as NPCCharacterModel
 from src.models.player import Player as PlayerModel
 from src.models.sector import Sector as SectorModel
 from src.models.ship import Ship as ShipModel
 from src.models.ship import ShipStatus, ShipType
 from src.services.combat_service import CombatService
+
+
+@pytest.fixture(autouse=True)
+def _no_kia_processing(monkeypatch):
+    """WO-API-A1: attack_npc_ship's own engage-range backstop needs a REAL
+    (non-None) NPCCharacter row now, so this file's single-fixture-per-model
+    FakeSession can no longer rely on "NPCCharacter query returns None" to
+    keep handle_npc_ship_destroyed's OWN separate internal NPCCharacter
+    query (npc_spawn_service.py:1205-1213) a no-op -- that function goes on
+    to lock Sector rows, write NPCDeathLog, and mutate squad membership, none
+    of which this file's minimal Sector/NPCCharacter fixtures model (out of
+    scope -- NH3B is cargo_looted persistence only). Monkeypatches the SAME
+    lazy-import target combat_service.py's own ImportError-guarded import
+    resolves at call time, mirroring this file's existing _resolve_ship_
+    combat / _handle_ship_destruction isolation-boundary convention above."""
+    monkeypatch.setattr(
+        "src.services.npc_spawn_service.handle_npc_ship_destroyed",
+        lambda *a, **k: None,
+    )
+
+# WO-API-A1: attack_player/attack_npc_ship now backstop on engage-range --
+# every player/NPC fixture in this file shares this IDENTICAL literal pose,
+# so attacker/defender/npc are always at the same point regardless of which
+# ship id keys their fallback anchor would otherwise use.
+_POSE = {
+    "x_pct": 50.0, "y_pct": 50.0, "heading_deg": 0.0,
+    "phase": "idle", "burning": False, "leg": None,
+}
+
+
+def _make_npc_char(*, ship_id):
+    """NPCCharacter double for the engage-range backstop's own query
+    (combat_service.attack_npc_ship) -- now REAL (not None), so this same
+    query also feeds the pre-existing loot/quantum-drop-faucet code further
+    down attack_npc_ship (test_npc_quantum_drops.py's own _make_npc_
+    character shape, mirrored here) -- credits=0/archetype=None keeps both
+    of those blocks inert (NH3B is scoped to cargo_looted, not credits/
+    quantum-shard drops)."""
+    return types.SimpleNamespace(
+        id=uuid.uuid4(), name="Test NPC", title=None, archetype=None,
+        credits=0, notoriety=80, faction_code="independent",
+        display_name="Test NPC",
+        ship_id=ship_id, current_sector_id=1,
+        intrasystem_pose=dict(_POSE),
+    )
 
 # --- Shared fixtures ---------------------------------------------------- #
 
@@ -98,6 +146,9 @@ def _make_player(*, ship, personal_reputation=0, turns=999_999, max_turns=1_000)
         # completeness or attack_player raises AttributeError.
         is_suspect=False,
         suspect_until=None,
+        # WO-API-A1 (post-dates this file too): attack_player/attack_npc_ship
+        # now backstop on engage-range -- see module-level _POSE.
+        intrasystem_pose=dict(_POSE),
     )
 
 
@@ -193,10 +244,11 @@ class _FakeCombatDb:
     """Minimal synchronous Session double: routes .query(Model) by class,
     records every .add()ed row, and no-ops flush/begin_nested/commit."""
 
-    def __init__(self, *, players, ship_first=None, sector=None):
+    def __init__(self, *, players, ship_first=None, sector=None, npc_char=None):
         self._players = {p.id: p for p in players}
         self._ship_first = ship_first
         self._sector = sector
+        self._npc_char = npc_char
         self.added = []
         self.commits = 0
 
@@ -207,6 +259,12 @@ class _FakeCombatDb:
             return _StubQuery(first=self._ship_first, all_=[])
         if model is SectorModel:
             return _StubQuery(first=self._sector, all_=[])
+        if model is NPCCharacterModel:
+            # WO-API-A1: attack_npc_ship's own engage-range backstop AND the
+            # pre-existing loot-section query both hit this same model --
+            # one shared fixture, self._npc_char has credits=0 so the
+            # (unrelated to NH3B) credit-loot block stays inert regardless.
+            return _StubQuery(first=self._npc_char, all_=[])
         return _StubQuery(first=None, all_=[])
 
     def add(self, obj):
@@ -247,7 +305,8 @@ def test_npc_leg_persists_capped_actual_and_matches_response(monkeypatch):
     npc_ship.sector = sector  # bypass the lazy relationship load on a transient row
     attacker = _make_player(ship=attacker_ship)
 
-    db = _FakeCombatDb(players=[attacker], ship_first=npc_ship, sector=sector)
+    npc_char = _make_npc_char(ship_id=npc_ship.id)
+    db = _FakeCombatDb(players=[attacker], ship_first=npc_ship, sector=sector, npc_char=npc_char)
     cs = CombatService(db)
     monkeypatch.setattr(cs, "_resolve_ship_combat", lambda *a, **k: _victory_result())
 
@@ -328,7 +387,8 @@ def test_npc_leg_zero_transfer_persists_none_not_empty_dict(monkeypatch):
     npc_ship.sector = sector
     attacker = _make_player(ship=attacker_ship)
 
-    db = _FakeCombatDb(players=[attacker], ship_first=npc_ship, sector=sector)
+    npc_char = _make_npc_char(ship_id=npc_ship.id)
+    db = _FakeCombatDb(players=[attacker], ship_first=npc_ship, sector=sector, npc_char=npc_char)
     cs = CombatService(db)
     monkeypatch.setattr(cs, "_resolve_ship_combat", lambda *a, **k: _victory_result())
 
@@ -357,7 +417,8 @@ def test_npc_leg_wreck_still_spawns_and_transaction_still_commits(monkeypatch):
     npc_ship.sector = sector
     attacker = _make_player(ship=attacker_ship)
 
-    db = _FakeCombatDb(players=[attacker], ship_first=npc_ship, sector=sector)
+    npc_char = _make_npc_char(ship_id=npc_ship.id)
+    db = _FakeCombatDb(players=[attacker], ship_first=npc_ship, sector=sector, npc_char=npc_char)
     cs = CombatService(db)
     monkeypatch.setattr(cs, "_resolve_ship_combat", lambda *a, **k: _victory_result())
 
