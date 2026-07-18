@@ -185,7 +185,7 @@ const AITradingDashboard: React.FC = () => {
           className={`tab-button ${selectedTab === 'models' ? 'active' : ''}`}
           onClick={() => setSelectedTab('models')}
         >
-          AI Models
+          AI Models — read-only
         </button>
         <button 
           className={`tab-button ${selectedTab === 'predictions' ? 'active' : ''}`}
@@ -252,7 +252,7 @@ const AITradingDashboard: React.FC = () => {
 
         {selectedTab === 'models' && (
           <div className="models-section">
-            <h2>AI Model Management</h2>
+            <h2>AI Models — unavailable to manage</h2>
             {models.length === 0 ? (
               <div className="info-card" style={{ marginTop: '12px' }}>
                 <p>
