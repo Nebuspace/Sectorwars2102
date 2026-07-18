@@ -378,26 +378,6 @@ const FactionManagement: React.FC = () => {
         </div>
       )}
 
-      {/* Summary stat row */}
-      <div className="faction-stats-grid">
-        <div className="faction-stat-card">
-          <span className="faction-stat-label">Factions</span>
-          <span className="faction-stat-value">{summary.totalFactions.toLocaleString()}</span>
-        </div>
-        <div className="faction-stat-card">
-          <span className="faction-stat-label">Controlled Sectors</span>
-          <span className="faction-stat-value">{summary.totalTerritory.toLocaleString()}</span>
-        </div>
-        <div className="faction-stat-card">
-          <span className="faction-stat-label">Avg Aggression</span>
-          <span className="faction-stat-value">{summary.avgAggression.toFixed(1)}</span>
-        </div>
-        <div className="faction-stat-card">
-          <span className="faction-stat-label">Hostile Factions</span>
-          <span className="faction-stat-value faction-stat-danger">{summary.hostileCount}</span>
-        </div>
-      </div>
-
       {/* Filters */}
       <div className="faction-controls">
         <input
@@ -437,6 +417,26 @@ const FactionManagement: React.FC = () => {
         <button type="button" className="faction-btn faction-btn-primary" onClick={openCreateModal}>
           + Create Faction
         </button>
+      </div>
+
+      {/* Summary stat row (secondary — primary actions above, Scroll-Law) */}
+      <div className="faction-stats-grid">
+        <div className="faction-stat-card">
+          <span className="faction-stat-label">Factions</span>
+          <span className="faction-stat-value">{summary.totalFactions.toLocaleString()}</span>
+        </div>
+        <div className="faction-stat-card">
+          <span className="faction-stat-label">Controlled Sectors</span>
+          <span className="faction-stat-value">{summary.totalTerritory.toLocaleString()}</span>
+        </div>
+        <div className="faction-stat-card">
+          <span className="faction-stat-label">Avg Aggression</span>
+          <span className="faction-stat-value">{summary.avgAggression.toFixed(1)}</span>
+        </div>
+        <div className="faction-stat-card">
+          <span className="faction-stat-label">Hostile Factions</span>
+          <span className="faction-stat-value faction-stat-danger">{summary.hostileCount}</span>
+        </div>
       </div>
 
       {/* Faction table */}
