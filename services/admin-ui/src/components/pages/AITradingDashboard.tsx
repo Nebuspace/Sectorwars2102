@@ -215,7 +215,7 @@ const AITradingDashboard: React.FC = () => {
           className={`tab-button ${selectedTab === 'behavior-analytics' ? 'active' : ''}`}
           onClick={() => setSelectedTab('behavior-analytics')}
         >
-          Behavior Analytics
+          Behavior — aggregate
         </button>
       </div>
 
@@ -410,7 +410,7 @@ const AITradingDashboard: React.FC = () => {
 
         {selectedTab === 'behavior-analytics' && (
           <div className="behavior-analytics-section">
-            <h2>Player Behavior Analytics</h2>
+            <h2>Player Behavior — aggregate only</h2>
             <PlayerBehaviorAnalytics />
           </div>
         )}
