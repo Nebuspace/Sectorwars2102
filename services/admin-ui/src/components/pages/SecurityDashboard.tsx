@@ -100,7 +100,7 @@ export const SecurityDashboard: React.FC = () => {
     <div className="security-dashboard">
       <PageHeader
         title="Security Dashboard"
-        subtitle="Monitor and manage system security"
+        subtitle="Monitor security alerts and the HTTP audit trail"
       />
 
       <div className="security-tabs">
