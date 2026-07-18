@@ -61,6 +61,7 @@ export const ProductionMonitoring: React.FC = () => {
   const [stats, setStats] = useState<ProductionStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     loadProductionData();
@@ -80,16 +81,27 @@ export const ProductionMonitoring: React.FC = () => {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to load production data');
+        setError(
+          response.status === 404
+            ? 'Production monitoring endpoint not implemented — /api/v1/admin/colonization/production returned 404'
+            : `Failed to load production data (HTTP ${response.status})`
+        );
+        setProductionHistory([]);
+        setTrends([]);
+        setAlerts([]);
+        setStats(null);
+        return;
       }
 
       const data = await response.json();
-      setProductionHistory(data.history);
-      setTrends(data.trends);
-      setAlerts(data.alerts);
-      setStats(data.stats);
+      setProductionHistory(data.history ?? []);
+      setTrends(data.trends ?? []);
+      setAlerts(data.alerts ?? []);
+      setStats(data.stats ?? null);
+      setError(null);
     } catch (err) {
       console.error('Error loading production data:', err);
+      setError('Gameserver unreachable — network error fetching production data');
       setProductionHistory([]);
       setTrends([]);
       setAlerts([]);
@@ -192,6 +204,34 @@ export const ProductionMonitoring: React.FC = () => {
 
   if (loading) {
     return <div className="production-monitoring loading">Loading production data...</div>;
+  }
+
+  if (error) {
+    return (
+      <div className="production-monitoring">
+        <div className="monitoring-header">
+          <h2>Production Monitoring</h2>
+        </div>
+        <div
+          role="alert"
+          style={{
+            margin: '0 0 16px 0',
+            padding: '10px 12px',
+            background: 'rgba(239, 68, 68, 0.12)',
+            border: '1px solid rgba(239, 68, 68, 0.35)',
+            borderRadius: '6px',
+            color: '#fca5a5',
+            fontSize: '0.85rem',
+            lineHeight: 1.4,
+          }}
+        >
+          {error}
+        </div>
+        <button type="button" className="refresh-button" onClick={() => { setLoading(true); loadProductionData(); }}>
+          Retry
+        </button>
+      </div>
+    );
   }
 
   return (
