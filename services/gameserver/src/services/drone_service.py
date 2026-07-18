@@ -16,11 +16,16 @@ from src.models.player import Player
 from src.models.sector import Sector
 from src.models.team import Team
 from src.models.ship import Ship, ShipSpecification, UpgradeType
+from src.services.turn_service import regenerate_turns, spend_turns, refund_turns
 
 # ship-systems.md §2.7 / drones.md:62 — each Drone Bay upgrade level adds +2 drone
 # capacity. Mirrors GENESIS_CONTAINMENT's +2/level (genesis_service consumes that one
 # the same way). The level lives in ``Ship.upgrades[UpgradeType.DRONE_BAY.value]``.
 DRONE_CAPACITY_BONUS_PER_BAY_LEVEL = 2
+
+# turns.md:87 (WO-PROG-TURN-COSTS) — deploying a drone squadron costs 3 turns.
+# Canon previously marked this "📐 Design-only — currently 0"; this WO goes live.
+DRONE_DEPLOY_TURN_COST = 3
 
 
 class DroneService:
@@ -235,14 +240,16 @@ class DroneService:
         target_id: Optional[UUID] = None
     ) -> DroneDeployment:
         """
-        Deploy a drone to a sector.
-        
+        Deploy a drone to a sector. Charges DRONE_DEPLOY_TURN_COST turns
+        (turns.md:87) via the turn_service spend rail, row-locked BEFORE the
+        deployment mutation.
+
         Args:
             drone_id: ID of the drone to deploy
             sector_id: ID of the sector to deploy to
             deployment_type: Type of deployment (defense, patrol, mining, etc.)
             target_id: Optional target ID for specific missions
-            
+
         Returns:
             The deployment record
         """
@@ -262,11 +269,30 @@ class DroneService:
         # both flip a drone to DEPLOYED past the cap. The drone being deployed
         # is excluded from the field tally (it is about to occupy one slot, not
         # two), so a no-op re-deploy of an already-fielded drone is unchanged.
+        # Select the full Player row (not just its id) so the same locked row
+        # feeds the turn-spend rail below without a second query.
         locked = await self.session.execute(
-            select(Player.id).where(Player.id == drone.player_id).with_for_update()
+            select(Player).where(Player.id == drone.player_id).with_for_update()
         )
-        if locked.scalar_one_or_none() is None:
+        player = locked.scalar_one_or_none()
+        if player is None:
             raise ValueError("Player not found")
+
+        # ADR-0004 continuous regen: bring the pool current BEFORE the
+        # affordability check, inside the row lock already held above (mirrors
+        # every other spend site — turn-regeneration.md invariant 6).
+        # regenerate_turns is written sync-style (its medal `turn_regen` bonus
+        # lookup uses the sync ORM `.query()` API), but DroneService is fully
+        # async (AsyncSession). Bridge via `AsyncSession.run_sync`, the
+        # SQLAlchemy-blessed async<->sync bridge that runs the callable against
+        # the SAME underlying connection/row lock rather than opening a second
+        # transaction — a second locking SELECT on this player row here would
+        # deadlock against the lock already held above. (Calling
+        # regenerate_turns directly against the AsyncSession would not raise —
+        # the medal lookup's own defensive try/except would silently swallow
+        # the resulting AttributeError and degrade to a 0.0 medal bonus — so
+        # the bridge is required for correctness, not just to avoid a crash.)
+        await self.session.run_sync(regenerate_turns, player)
 
         max_drones = await self._get_max_drones(drone.player_id)
         deployed = await self._count_deployed_drones(
@@ -278,42 +304,72 @@ class DroneService:
                 f"at most {max_drones} drone(s) (you have {deployed} deployed)."
             )
 
-        # Recall any active deployment for this drone IN-LINE (no intermediate
-        # commit). recall_drone() commits internally, which would release the
-        # FOR UPDATE player lock acquired above before this deploy's own final
-        # commit — opening a race window where a concurrent deploy could slip
-        # past the cap. Doing the recall in the same transaction keeps the lock
-        # held continuously from the cap check through the single commit below.
-        prior = await self.session.execute(
-            select(DroneDeployment)
-            .where(and_(
-                DroneDeployment.drone_id == drone_id,
-                DroneDeployment.is_active == True
-            ))
-        )
-        prior_deployment = prior.scalar_one_or_none()
-        if prior_deployment is not None:
-            prior_deployment.is_active = False
-            prior_deployment.recalled_at = datetime.utcnow()
+        # turns.md:87 — checked (and cleanly rejected, before any state
+        # mutation or debit) using the same "Not enough turns ... Need N, have
+        # M" shape as quantum_service/slipdrive_service's exception-raising
+        # spend sites.
+        if player.turns < DRONE_DEPLOY_TURN_COST:
+            raise ValueError(
+                f"Not enough turns to deploy this drone squadron. "
+                f"Need {DRONE_DEPLOY_TURN_COST}, have {player.turns}"
+            )
 
-        # Update drone status and location
-        drone.status = DroneStatus.DEPLOYED.value
-        drone.sector_id = sector_id
-        drone.deployed_at = datetime.utcnow()
+        spend_turns(player, DRONE_DEPLOY_TURN_COST)
 
-        # Create deployment record
-        deployment = DroneDeployment(
-            drone_id=drone_id,
-            player_id=drone.player_id,
-            sector_id=sector_id,
-            deployment_type=deployment_type,
-            target_id=target_id,
-            is_active=True
-        )
+        try:
+            # Recall any active deployment for this drone IN-LINE (no
+            # intermediate commit). recall_drone() commits internally, which
+            # would release the FOR UPDATE player lock acquired above before
+            # this deploy's own final commit — opening a race window where a
+            # concurrent deploy could slip past the cap. Doing the recall in
+            # the same transaction keeps the lock held continuously from the
+            # cap check through the single commit below.
+            prior = await self.session.execute(
+                select(DroneDeployment)
+                .where(and_(
+                    DroneDeployment.drone_id == drone_id,
+                    DroneDeployment.is_active == True
+                ))
+            )
+            prior_deployment = prior.scalar_one_or_none()
+            if prior_deployment is not None:
+                prior_deployment.is_active = False
+                prior_deployment.recalled_at = datetime.utcnow()
 
-        self.session.add(deployment)
-        await self.session.commit()
-        await self.session.refresh(deployment)
+            # Update drone status and location
+            drone.status = DroneStatus.DEPLOYED.value
+            drone.sector_id = sector_id
+            drone.deployed_at = datetime.utcnow()
+
+            # Create deployment record
+            deployment = DroneDeployment(
+                drone_id=drone_id,
+                player_id=drone.player_id,
+                sector_id=sector_id,
+                deployment_type=deployment_type,
+                target_id=target_id,
+                is_active=True
+            )
+
+            self.session.add(deployment)
+            await self.session.commit()
+            await self.session.refresh(deployment)
+        except Exception:
+            # Abort-after-debit: everything above this except block is the
+            # only code that runs after spend_turns() (the prior-deployment
+            # recall, the drone status mutation, the deployment INSERT, the
+            # commit, and the post-commit refresh). If any of it raises —
+            # most plausibly a commit-time IntegrityError or a dropped
+            # connection — refund the in-memory balance BEFORE rolling back
+            # (rollback expires `player`, and a post-expiry attribute touch
+            # on an AsyncSession-backed object requires an await, which
+            # `refund_turns`'s plain attribute mutation cannot provide), then
+            # roll back the transaction so the deployment's partial mutations
+            # (and the debit itself) never persist, and re-raise so the
+            # caller sees the real failure rather than a false success.
+            refund_turns(player, DRONE_DEPLOY_TURN_COST)
+            await self.session.rollback()
+            raise
 
         return deployment
         

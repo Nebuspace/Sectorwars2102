@@ -13,9 +13,8 @@ import logging
 from src.models.faction import Faction, FactionType
 from src.models.reputation import Reputation, ReputationLevel
 from src.models.player import Player
-from src.models.sector import Sector
 from src.models.sector_faction_influence import SectorFactionInfluence
-from src.services.websocket_service import ConnectionManager
+from src.services.websocket_service import connection_manager as manager
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +35,6 @@ def _dispatch_faction_medals(db: Session, player_id: UUID) -> None:
             hook(db, player_id)
     except Exception as e:  # never let a medal hiccup break reputation
         logger.error("Faction medal dispatch hook failed: %s", e)
-manager = ConnectionManager()
 
 # Faction rivalry configuration: paired factions have a combined reputation cap.
 # Gaining standing with one faction limits how high you can go with its rival.
@@ -935,8 +933,10 @@ class FactionService:
         self.db.commit()
         self.db.refresh(faction)
         
-        # Broadcast territory change
-        await manager.broadcast({
+        # Broadcast territory change. There is no scoped "territory" audience
+        # (unlike sector/team/region) — every connected client fans out via
+        # broadcast_global, same as the other galaxy-wide realtime events.
+        await manager.broadcast_global({
             "type": "faction_territory_changed",
             "faction_id": str(faction_id),
             "faction_name": faction.name,

@@ -1,8 +1,11 @@
 """
 Guard Personality System for First Login
 
-Generates deterministic guard personalities based on session ID.
-MUST match frontend logic in services/player-client/src/utils/guardPersonalities.ts
+Generates deterministic guard personalities based on session ID. This is
+the sole source of guard identity — WO-PUX-FLOGIN-RESUME retired the
+client-side hash mirror (guardPersonalities.ts); the frontend now reads the
+persisted guard_* columns off the session/status responses instead of
+re-deriving them.
 """
 
 from dataclasses import dataclass
@@ -79,8 +82,9 @@ def get_guard_for_session(session_id: str) -> GuardPersonality:
     Get a consistent guard personality for a session.
     Uses session ID as seed for deterministic randomness.
 
-    CRITICAL: This logic must exactly match the frontend implementation
-    in services/player-client/src/utils/guardPersonalities.ts
+    Called once at session creation (first_login_service.py's
+    get_or_create_session) and persisted onto the FirstLoginSession row;
+    the frontend never re-derives this, it just reads the persisted columns.
     """
     # Simple hash function to convert session ID to number
     hash_value = 0

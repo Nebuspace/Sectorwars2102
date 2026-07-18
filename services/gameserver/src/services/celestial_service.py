@@ -553,20 +553,53 @@ def get_or_create_celestial(db, sector: Sector, min_bodies: int = 0) -> Dict[str
     return row.composition if row is not None else comp
 
 
+def get_celestial_read_only(db, sector: Sector, min_bodies: int = 0) -> Dict[str, Any]:
+    """Same return contract as ``get_or_create_celestial``, but NEVER writes.
+    If the skeleton isn't yet persisted, computes it in-memory via
+    ``generate_skeleton`` (pure, deterministic — this module's own
+    DETERMINISM CONTRACT guarantees the in-memory result is byte-identical
+    to whatever ``get_or_create_celestial`` would eventually persist)
+    instead of inserting it. For genuinely read-only callers (e.g. the
+    unified sector-contents endpoint, WO-UI2-INTRASYSTEM-MODEL REVISE) that
+    must never pace the first-visit skeleton-materialization write a normal
+    ``/system`` view performs."""
+    from src.models.sector_celestial import SectorCelestial
+
+    row = (
+        db.query(SectorCelestial)
+        .filter(SectorCelestial.sector_uuid == sector.id)
+        .first()
+    )
+    if row is not None:
+        return row.composition
+    return generate_skeleton(sector, min_bodies=min_bodies)
+
+
 def generate_system(
     db,
     sector: Sector,
     planets: List[Planet],
     stations: List[Station],
+    *,
+    read_only: bool = False,
 ) -> Dict[str, Any]:
     """Compose the full system description for a sector: the persisted procedural
     skeleton (star/belt/nebula/debris/HZ/body slots) with the real Planet and
     Station rows merged over it. Response shape is unchanged from the legacy
-    per-request generator."""
+    per-request generator.
+
+    ``read_only=True`` (WO-UI2-INTRASYSTEM-MODEL REVISE) sources the skeleton
+    via ``get_celestial_read_only`` instead of ``get_or_create_celestial``,
+    so the call can never trigger the first-visit persistence write —
+    default False preserves the existing route's behavior unchanged."""
     import copy
 
     real_planets = sorted(planets, key=_planet_sort_key)[:MAX_BODIES]
-    comp = get_or_create_celestial(db, sector, min_bodies=len(real_planets))
+    comp = (
+        get_celestial_read_only(db, sector, min_bodies=len(real_planets))
+        if read_only
+        else get_or_create_celestial(db, sector, min_bodies=len(real_planets))
+    )
 
     root_seed = int(comp.get("seed") or ((sector.sector_id * SECTOR_SEED_SALT) & _MASK64))
     # Deep-copy the skeleton bodies before merging — _merge_real_planets mutates

@@ -11,13 +11,14 @@ logger = logging.getLogger(__name__)
 
 # ----------------------------------------------------------------------------
 # [NO-CANON] Per-hull combat-mitigation table (B3) — shield_resistance &
-# armor_rating. These two ShipSpecification columns (models/ship.py:222-223,
-# defaulted 0.0) are CONSUMED by the combat resolver
-# (combat_service._apply_weapon_damage, combat_service.py:2277-2287): they are
+# armor_rating. These two columns (Ship: models/ship.py:263-264,
+# ShipSpecification: models/ship.py:393-394, defaulted 0.0) are CONSUMED by the
+# combat resolver (combat_service._apply_weapon_damage, combat_service.py:2162,
+# fraction clamp in _resistance_fraction, combat_service.py:2139): they are
 # FRACTIONS of incoming damage absorbed (shield component & hull component
-# respectively), clamped by _resistance_fraction to [0.0, 0.9]. Until now the
-# seeder never set them, so every hull absorbed 0% — these mitigations were
-# inert. This table makes them non-zero.
+# respectively), clamped to [0.0, 0.9]. Until now the seeder never set them, so
+# every hull absorbed 0% — these mitigations were inert. This table makes them
+# non-zero.
 #
 # *** THESE ARE [NO-CANON] MAGNITUDES — sw2102-docs gives no shield_resistance /
 # armor_rating numbers. The values below are a PROPOSAL for Max to bless. ***
@@ -29,14 +30,15 @@ logger = logging.getLogger(__name__)
 # *** BALANCE NOTE: this CHANGES combat absorption from 0% -> non-zero. It is a
 # deliberate (conservative) balance change; flagged for Max. ***
 #
-# WIRING CAVEAT (out of THIS file's lane, flag for a follow-up WO): combat reads
-# these off the Ship ROW (getattr(defender_ship, "shield_resistance"...)), and
-# the three Ship() constructors (ship_service.create_ship:63-112,
-# npc_spawn_service:391, first_login_service:1642) do NOT yet copy
-# shield_resistance / armor_rating from the spec, so live Ship rows stay at the
-# column default 0.0. Seeding the SPEC is necessary but not sufficient — a
-# downstream task must copy spec.shield_resistance / spec.armor_rating onto new
-# Ship rows for these to take effect in combat.
+# WIRING (out of THIS file's lane): combat reads these off the Ship ROW
+# (getattr(defender_ship, "shield_resistance"...)). All four Ship()
+# constructors now COPY shield_resistance / armor_rating from the spec onto
+# new Ship rows — ship_service.py:105-106, npc_spawn_service.py:424-425,
+# admin_ships.py:467-468, and first_login_service.py (starter ship, as of
+# WO-SB-CR2). The only open residual is pre-existing Ship rows created before
+# these copies landed: those stay at the column default 0.0 until a
+# human-gated backfill migration runs (deliberately deferred; see the WO's
+# openQuestions — NOT this file's lane).
 # ----------------------------------------------------------------------------
 _NO_CANON_MITIGATION = {
     # ESCAPE_POD: indestructible already; no mitigation needed. Keep 0.0.
@@ -56,6 +58,18 @@ _NO_CANON_MITIGATION = {
     ShipType.NPC_MARSHAL_INTERDICTOR:  {"shield_resistance": 0.15, "armor_rating": 0.15},
     ShipType.NPC_SENTINEL_INTERDICTOR: {"shield_resistance": 0.20, "armor_rating": 0.20},
 }
+
+# ----------------------------------------------------------------------------
+# Non-insurable hulls — the registry source of truth for
+# ShipSpecification.insurable (DATA_MODELS/ships.md:175;
+# FEATURES/gameplay/ship-insurance.md "Non-insurable ships"; ADR-0029). Every
+# hull absent from this set seeds insurable=True (the column default); WARP_JUMPER
+# and ESCAPE_POD seed insurable=False. This replaces the old route-level
+# NON_INSURABLE_TYPES enum set that used to live in ship_upgrades.py — the gate
+# now lives entirely in data, so flipping a hull's insurability is a registry
+# edit here, never a route-code change.
+# ----------------------------------------------------------------------------
+_NON_INSURABLE_TYPES = {ShipType.WARP_JUMPER, ShipType.ESCAPE_POD}
 
 # Ship specifications based on DOCS/FEATURES/SHIP_TYPES.md
 SHIP_SPECIFICATIONS = {
@@ -770,6 +784,7 @@ def seed_ship_specifications(db: Session) -> None:
             **_NO_CANON_MITIGATION.get(
                 ship_type, {"shield_resistance": 0.0, "armor_rating": 0.0}
             ),
+            "insurable": ship_type not in _NON_INSURABLE_TYPES,
         }
 
         # Check if specification already exists

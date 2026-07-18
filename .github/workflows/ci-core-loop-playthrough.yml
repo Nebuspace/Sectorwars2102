@@ -1,0 +1,130 @@
+name: ci-core-loop-playthrough
+
+# API-first playability guard (WO-QA-HEADLESS-PLAYTHROUGH phase 2; ADR-0094).
+# Runs the single browser-free core-loop playthrough integration test
+# (tests/integration/test_core_loop_playthrough.py) against a real Postgres +
+# the full app via an in-process TestClient: auth JSON-login ->
+# first-login-to-playable -> move -> dock -> trade -> haggle -> contract-accept
+# -> undock -> combat-poll, every step pure JSON API. It is the regression
+# guard that keeps ADR-0094's "the entire game is playable via API" pillar true
+# (proven live on heimdall 2026-07-10; this lane keeps it proven per-push).
+#
+# Separate workflow file (not a job in ci-build-test.yml) for the same reason
+# ci-schema-parity.yml is: it stands up Postgres and does a full poetry install
+# (incl. the dev group for pytest). ci-build-test.yml's header explicitly
+# excludes that ("cheap, DB-free ... none of these jobs stand up Postgres").
+#
+# Redis: NOT a service here on purpose. main.py's lifespan documents the Redis
+# connection as non-fatal (redis_pool stays None on failure; every caller gates
+# on it) -- the pure-API core loop needs no Redis-backed feature, so a
+# Postgres-only job is correct, not a gap.
+#
+# AI-SAFETY (delegated ruling D12): first-login/session calls a real AI
+# provider IFF OPENAI_API_KEY/ANTHROPIC_API_KEY are present at call time (a
+# previously-bitten live-paid-call risk). THREE independent layers keep this
+# job keyless: (1) this workflow forwards NO provider keys and the repo secret
+# store contains none to inherit; (2) the explicit "no provider keys" step
+# below fails the job loud if either ever appears; (3) the test itself
+# monkeypatches both providers' is_available -> False and takes the ESCAPE_POD
+# claim path. Plus the standing zero-balance provider-funding floor.
+#
+# D9: this is the lane that ACTIVATES the dormant ARIA_ENCRYPTION_KEY repo
+# secret -- unlike ci-schema-parity's inline dummy, this job runs the real app
+# end-to-end and forwards the real secret, which both encrypts real ARIA rows
+# during the run and validates the secret is a usable Fernet key.
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  core-loop-playthrough:
+    name: API core-loop playthrough (live app + postgres)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # Matches docker-compose.yml's postgres:15-alpine.
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: playthrough
+          POSTGRES_PASSWORD: playthrough
+          POSTGRES_DB: playthrough
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # conftest.py requires BOTH; the db fixture + the app share this one CI
+      # database (alembic migrates it below, so the schema is present for
+      # whichever URL the fixture engine resolves).
+      DATABASE_URL: postgresql://playthrough:playthrough@localhost:5432/playthrough
+      DATABASE_TEST_URL: postgresql://playthrough:playthrough@localhost:5432/playthrough
+      # Settings._validate_security_config requires these (dummy, format-valid;
+      # JWT_SECRET >= 32 chars, ADMIN_PASSWORD >= 12).
+      JWT_SECRET: ci-playthrough-dummy-jwt-secret-not-a-real-secret-32c
+      ADMIN_USERNAME: ci-playthrough
+      ADMIN_PASSWORD: ci-playthrough-dummy-password
+      # THE dormant D9 secret, activated here (NOT a dummy): this job runs the
+      # real app end-to-end, so it needs a real Fernet key AND forwarding the
+      # secret validates it is usable. Present on this repo's own pushes/PRs;
+      # a fork PR (no secrets) would fail app-boot here -- acceptable for a
+      # private pre-v1 repo with no external forks.
+      ARIA_ENCRYPTION_KEY: ${{ secrets.ARIA_ENCRYPTION_KEY }}
+      TESTING_FROM_HOST: "false"
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # Matches services/gameserver/Dockerfile's python:3.12-slim.
+          python-version: "3.12"
+
+      - name: Install Poetry
+        run: pip install poetry
+
+      - name: Install gameserver dependencies (main + dev — needs pytest)
+        working-directory: services/gameserver
+        run: |
+          poetry config virtualenvs.create false
+          poetry install --no-root
+
+      # AI-SAFETY layer 2 (D12): fail LOUD if any provider key leaked into the
+      # job env before the app can ever call one. Layer 1 = nothing forwarded /
+      # none in the secret store; layer 3 = the in-test monkeypatch.
+      - name: Assert NO AI provider keys present (fail-loud)
+        run: |
+          if [ -n "${OPENAI_API_KEY:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "::error::A provider API key is present in the playthrough CI env -- refusing to run (risks live paid AI calls). Remove it from the job/secret store."
+            exit 1
+          fi
+          echo "No OPENAI_API_KEY / ANTHROPIC_API_KEY in env -- safe to run."
+
+      - name: Alembic upgrade head (fresh DB, full migration chain)
+        working-directory: services/gameserver
+        run: alembic upgrade head
+
+      - name: Run the API core-loop playthrough
+        working-directory: services/gameserver
+        # Fail-on-skip belt: pytest exits 0 on a SKIP, so a fixture that can't
+        # seed would silently green a hollow guard (the exact false-green trap
+        # this lane exists to avoid). Assert >=1 test actually PASSED. The
+        # fixture self-seeds a minimal Terran Space region on a fresh DB, so it
+        # RUNS here rather than skipping.
+        run: |
+          set -o pipefail
+          python -m pytest tests/integration/test_core_loop_playthrough.py -q | tee /tmp/playthrough.out
+          grep -qE "[1-9][0-9]* passed" /tmp/playthrough.out || {
+            echo "::error::playthrough was skipped or errored -- refusing to pass CI on a hollow guard (no seeded Terran Space region?)"
+            exit 1
+          }

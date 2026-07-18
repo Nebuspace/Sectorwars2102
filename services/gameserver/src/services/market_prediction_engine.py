@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, desc, func
 
+from src.core.commodity_economy import COMMODITY_BASE_PRICES
 from src.models.market_transaction import MarketTransaction, MarketPrice, PriceHistory
 from src.models.station import Station
 from src.utils.error_handling import generate_error_id
@@ -93,11 +94,13 @@ class MarketPredictionEngine:
     to predict commodity prices and identify trading opportunities.
     """
 
-    # Core commodities traded in the game
-    COMMODITIES = [
-        "ore", "organics", "equipment", "fuel",
-        "luxury_goods", "gourmet_food", "exotic_technology", "colonists",
-    ]
+    # Core commodities traded in the game. Derived from commodity_economy's
+    # single price table (WO-ARCH-RES-2H-RUNTIME-VOCAB) instead of a hand-kept
+    # literal that had drifted from the 9-commodity wire (was missing
+    # precious_metals). Import-time only — no DB read; auto-tracks any future
+    # change to COMMODITY_BASE_PRICES (incl. Max's pending precious_metals
+    # ruling — see DECISIONS).
+    COMMODITIES = list(COMMODITY_BASE_PRICES)
 
     def __init__(self):
         self.short_window = 5   # Short-term moving average window

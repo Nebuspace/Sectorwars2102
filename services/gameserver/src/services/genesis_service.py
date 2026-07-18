@@ -163,6 +163,50 @@ MAX_PURCHASES_PER_WEEK = 3
 MAX_PLANETS_PER_SECTOR = 5
 
 
+def compute_genesis_costs(tier: str, registration: str, personal_reputation: Optional[int]) -> Dict[str, Any]:
+    """Device-cost + Colonial Registry registration-fee computation (FROZEN
+    registry contract). This is the SINGLE source of truth for what a genesis
+    deploy costs: ``GenesisService.deploy_genesis_device`` (the charge) and the
+    read-only ``GET /genesis/quote`` route (the quote) both call this exact
+    function, so a quote can never drift from what deploy actually charges
+    (WO-API-B2) — there is no second, independently-maintained copy of the
+    formula anywhere.
+
+    Registry fees: Registered 10,000; Clandestine 60,000; Chartered =
+    10,000 + 40,000 * (1 - clamp(rep/1000, 0, 1) * 0.75) — scales DOWN with
+    reputation. Raises ValueError on an invalid tier/registration, mirroring
+    the validation deploy_genesis_device performs inline before this call.
+    """
+    tier = (tier or "").lower()
+    if tier not in GENESIS_TIERS:
+        raise ValueError(f"Invalid genesis device tier: {tier}. Must be one of: {list(GENESIS_TIERS.keys())}")
+
+    registration = (registration or "registered").lower()
+    if registration not in ("clandestine", "registered", "chartered"):
+        raise ValueError(
+            f"Invalid registration status: {registration}. "
+            "Must be one of: clandestine, registered, chartered"
+        )
+
+    device_cost = GENESIS_TIERS[tier]["cost"]
+    if registration == "clandestine":
+        registration_fee = 60000
+    elif registration == "chartered":
+        rep = personal_reputation or 0
+        rep_factor = max(0.0, min(1.0, rep / 1000.0))
+        registration_fee = int(10000 + 40000 * (1 - rep_factor * 0.75))
+    else:  # registered
+        registration_fee = 10000
+
+    return {
+        "tier": tier,
+        "registration": registration,
+        "device_cost": device_cost,
+        "registration_fee": registration_fee,
+        "total_cost": device_cost + registration_fee,
+    }
+
+
 class GenesisService:
     """Service for the full genesis device system."""
 
@@ -366,7 +410,11 @@ class GenesisService:
         tier_config = GENESIS_TIERS[tier]
 
         # --- Load player with lock to prevent concurrent purchase race ---
-        player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
+        # WO-MONEY-REREAD-SERVICES: player was already loaded unlocked by the
+        # route's get_current_player dependency on this same session;
+        # populate_existing() forces this lock to re-read live credits rather
+        # than returning the stale identity-mapped instance.
+        player = self.db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
         if not player:
             raise ValueError("Player not found")
 
@@ -424,21 +472,15 @@ class GenesisService:
             )
 
         # --- Check credits (device tier sequence cost + registration fee) ---
-        cost = tier_config["cost"]
-        # Registry fees (FROZEN contract): Registered 10,000; Clandestine 60,000;
-        # Chartered = 10,000 + 40,000 * (1 - clamp(rep/1000, 0, 1) * 0.75).
-        # The player row is already locked above, so personal_reputation is safe
-        # to read for the Chartered curve.
-        if registration == "clandestine":
-            registration_fee = 60000
-        elif registration == "chartered":
-            rep = player.personal_reputation or 0
-            rep_factor = max(0.0, min(1.0, rep / 1000.0))
-            registration_fee = int(10000 + 40000 * (1 - rep_factor * 0.75))
-        else:  # registered
-            registration_fee = 10000
-
-        total_cost = cost + registration_fee
+        # Delegates to the module-level compute_genesis_costs — the SAME
+        # function GET /genesis/quote calls — so the charge below can never
+        # drift from the quote the client displayed (WO-API-B2). The player
+        # row is already locked above, so personal_reputation is safe to read
+        # for the Chartered curve.
+        _costs = compute_genesis_costs(tier, registration, player.personal_reputation)
+        cost = _costs["device_cost"]
+        registration_fee = _costs["registration_fee"]
+        total_cost = _costs["total_cost"]
         if player.credits < total_cost:
             raise ValueError(
                 f"Insufficient credits. You have {player.credits:,} but need "
@@ -933,6 +975,18 @@ class GenesisService:
             tier_info["can_deploy"] = can_deploy
             tiers[tier_name] = tier_info
 
+        # Reputation gate (ADR-0088, GENESIS_MIN_REPUTATION above — the same
+        # bar enforced at acquisition in player.py's purchase_genesis_device
+        # and at deploy in _enforce_deploy_restrictions). Exposed here so the
+        # client can render the requirement BEFORE the player clicks "Acquire
+        # Device", instead of only surfacing it on the 400 the gate raises.
+        rep = player.personal_reputation or 0
+        reputation_gate = {
+            "required": GENESIS_MIN_REPUTATION,
+            "current": rep,
+            "met": rep >= GENESIS_MIN_REPUTATION,
+        }
+
         return {
             "purchases_this_week": purchases_this_week,
             "purchases_remaining": remaining,
@@ -942,6 +996,36 @@ class GenesisService:
             "ship_genesis_capacity": ship_capacity,
             "formation_hours": self.formation_hours,
             "tiers": tiers,
+            "reputation_gate": reputation_gate,
+        }
+
+    def get_genesis_quote(self, player_id: UUID, tier: str, registration: str) -> Dict[str, Any]:
+        """Read-only quote for a (tier, registration) pair, priced for the
+        CURRENT player's reputation (WO-API-B2). Calls the exact same
+        ``compute_genesis_costs`` that ``deploy_genesis_device`` charges from,
+        so a quote is structurally guaranteed to equal the eventual charge —
+        no DB writes, no credits/reputation/device mutation, no commit.
+        """
+        player = self.db.query(Player).filter(Player.id == player_id).first()
+        if not player:
+            raise ValueError("Player not found")
+
+        costs = compute_genesis_costs(tier, registration, player.personal_reputation)
+
+        rep = player.personal_reputation or 0
+        return {
+            "tier": costs["tier"],
+            "registration": costs["registration"],
+            "device_cost": costs["device_cost"],
+            "registration_fee": costs["registration_fee"],
+            "total_cost": costs["total_cost"],
+            "player_credits": player.credits,
+            "can_afford": player.credits >= costs["total_cost"],
+            "reputation_gate": {
+                "required": GENESIS_MIN_REPUTATION,
+                "current": rep,
+                "met": rep >= GENESIS_MIN_REPUTATION,
+            },
         }
 
     # ------------------------------------------------------------------ #

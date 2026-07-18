@@ -7,7 +7,9 @@ import math
 import uuid
 
 from src.core.database import get_db
-from src.auth.dependencies import get_current_admin
+from src.auth.admin_scopes import GALAXY_MANAGE, PLAYERS_VIEW
+from src.auth.dependencies import require_scope
+from src.services.admin_action_attempt import admin_action_attempt
 from src.models.user import User
 from src.models.galaxy import Galaxy
 from src.models.cluster import Cluster, ClusterType
@@ -69,255 +71,290 @@ class WarpTunnelEnhancedRequest(BaseModel):
 
 router = APIRouter()
 
-# DEPRECATED: Zone-based galaxy generation endpoint removed
-# Use POST /admin/galaxy/generate instead, which uses the updated region-based architecture
-# Architecture: Galaxy → Region → Cluster → Sector (zones eliminated)
-
 @router.put("/sector/{sector_id}", response_model=dict)
 async def update_sector(
     sector_id: int,
     request: SectorUpdateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Update sector properties"""
-    sector = db.query(Sector).filter(Sector.sector_id == sector_id).first()
-    
-    if not sector:
-        raise HTTPException(status_code=404, detail="Sector not found")
-    
-    # Update fields if provided
-    if request.name is not None:
-        sector.name = request.name
-    
-    if request.type is not None:
-        # Map string to enum
-        type_map = {
-            "normal": SectorSpecialType.NORMAL,
-            "nebula": SectorSpecialType.NEBULA,
-            "asteroid_field": SectorSpecialType.ASTEROID_FIELD,
-            "radiation_zone": SectorSpecialType.RADIATION_ZONE,
-            "warp_storm": SectorSpecialType.WARP_STORM
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="sector_update_enhanced",
+        target_type="sector",
+        target_id=str(sector_id),
+        payload={},
+    ) as attempt:
+        sector = db.query(Sector).filter(Sector.sector_id == sector_id).first()
+
+        if not sector:
+            raise HTTPException(status_code=404, detail="Sector not found")
+
+        if request.name is not None:
+            sector.name = request.name
+
+        if request.type is not None:
+            type_map = {
+                "normal": SectorSpecialType.NORMAL,
+                "nebula": SectorSpecialType.NEBULA,
+                "asteroid_field": SectorSpecialType.ASTEROID_FIELD,
+                "radiation_zone": SectorSpecialType.RADIATION_ZONE,
+                "warp_storm": SectorSpecialType.WARP_STORM
+            }
+            sector.special_type = type_map.get(request.type, SectorSpecialType.NORMAL)
+
+        if request.hazard_level is not None:
+            sector.hazard_level = request.hazard_level
+
+        if request.is_navigable is not None:
+            sector.navhazard = not request.is_navigable
+
+        if request.is_explorable is not None:
+            sector.is_discovered = request.is_explorable
+
+        if request.resources is not None:
+            sector.resources = request.resources
+
+        attempt.succeed()
+
+        return {
+            "id": str(sector.id),
+            "sector_id": sector.sector_id,
+            "name": sector.name,
+            "type": sector.special_type.value,
+            "hazard_level": sector.hazard_level,
+            "updated": True
         }
-        sector.special_type = type_map.get(request.type, SectorSpecialType.NORMAL)
-    
-    if request.hazard_level is not None:
-        sector.hazard_level = request.hazard_level
-    
-    if request.is_navigable is not None:
-        sector.navhazard = not request.is_navigable
-    
-    if request.is_explorable is not None:
-        sector.is_discovered = request.is_explorable
-    
-    if request.resources is not None:
-        sector.resources = request.resources
-    
-    db.commit()
-    
-    return {
-        "id": str(sector.id),
-        "sector_id": sector.sector_id,
-        "name": sector.name,
-        "type": sector.special_type.value,
-        "hazard_level": sector.hazard_level,
-        "updated": True
-    }
 
 
 @router.post("/port/create", response_model=dict)
 async def create_port(
     request: StationCreateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Create a new port in a sector"""
-    # Check if sector exists and doesn't have a port
-    sector = db.query(Sector).filter(Sector.sector_id == request.sector_id).first()
-    
-    if not sector:
-        raise HTTPException(status_code=404, detail="Sector not found")
-    
-    if sector.has_port:
-        raise HTTPException(status_code=400, detail="Sector already has a port")
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="port_create_enhanced",
+        target_type="station",
+        target_id="pending",
+        payload={"sector_id": request.sector_id},
+    ) as attempt:
+        sector = db.query(Sector).filter(Sector.sector_id == request.sector_id).first()
 
-    # Validate station class
-    try:
-        station_class = StationClass(request.port_class)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid port class: {request.port_class}")
+        if not sector:
+            raise HTTPException(status_code=404, detail="Sector not found")
 
-    # Create port (defense values map into the Station.defenses JSONB)
-    station = Station(
-        name=request.name,
-        sector_id=request.sector_id,
-        sector_uuid=sector.id,
-        station_class=station_class,
-        type=StationType.TRADING,
-        status=StationStatus.OPERATIONAL,
-        owner_id=None,  # Admin-created ports are NPC owned
-        tax_rate=request.tax_rate,
-        commodities=request.commodities,
-        services=request.services,
-        defenses={
-            "defense_drones": request.defense_drones,
-            "max_defense_drones": 50,
-            "auto_turrets": request.has_turrets,
-            "defense_grid": False,
-            "shield_strength": 50,
-            "patrol_ships": 0,
-            "military_contract": False
+        if sector.has_port:
+            raise HTTPException(status_code=400, detail="Sector already has a port")
+
+        try:
+            station_class = StationClass(request.port_class)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid port class: {request.port_class}")
+
+        station = Station(
+            name=request.name,
+            sector_id=request.sector_id,
+            sector_uuid=sector.id,
+            station_class=station_class,
+            type=StationType.TRADING,
+            status=StationStatus.OPERATIONAL,
+            owner_id=None,
+            tax_rate=request.tax_rate,
+            commodities=request.commodities,
+            services=request.services,
+            defenses={
+                "defense_drones": request.defense_drones,
+                "max_defense_drones": 50,
+                "auto_turrets": request.has_turrets,
+                "defense_grid": False,
+                "shield_strength": 50,
+                "patrol_ships": 0,
+                "military_contract": False
+            }
+        )
+
+        db.add(station)
+        sector.has_port = True
+        db.flush()
+        attempt.target_id = str(station.id)
+        attempt.succeed()
+
+        return {
+            "id": str(station.id),
+            "name": station.name,
+            "sector_id": station.sector_id,
+            "station_class": station.station_class.value,
+            "created": True
         }
-    )
-
-    db.add(station)
-    sector.has_port = True
-    db.commit()
-
-    return {
-        "id": str(station.id),
-        "name": station.name,
-        "sector_id": station.sector_id,
-        "station_class": station.station_class.value,
-        "created": True
-    }
 
 
 @router.post("/planet/create", response_model=dict)
 async def create_planet(
     request: PlanetCreateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Create a new planet in a sector"""
-    # Check if sector exists and doesn't have a planet
-    sector = db.query(Sector).filter(Sector.sector_id == request.sector_id).first()
-    
-    if not sector:
-        raise HTTPException(status_code=404, detail="Sector not found")
-    
-    if sector.has_planet:
-        raise HTTPException(status_code=400, detail="Sector already has a planet")
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="planet_create_enhanced",
+        target_type="planet",
+        target_id="pending",
+        payload={"sector_id": request.sector_id},
+    ) as attempt:
+        sector = db.query(Sector).filter(Sector.sector_id == request.sector_id).first()
 
-    # CRT size-gate: a planet's size caps its citadel level (small worlds can't pack a
-    # full citadel). Clamp the admin-requested level so an admin can't create an
-    # over-cap planet — the same invariant citadel_service.start_upgrade enforces.
-    from src.services.structures import max_citadel_level_for_size
-    planet_size = max(1, min(10, request.size))
-    clamped_citadel_level = max(0, min(request.citadel_level, max_citadel_level_for_size(planet_size)))
+        if not sector:
+            raise HTTPException(status_code=404, detail="Sector not found")
 
-    # Create planet
-    planet = Planet(
-        name=request.name,
-        sector_id=request.sector_id,
-        planet_type=request.planet_type,
-        owner_id=None,  # Uncolonized
-        size=planet_size,
-        citadel_level=clamped_citadel_level,
-        shield_level=request.shield_level,
-        colonists=request.colonists,
-        production=request.production_rates,
-        breeding_rate=request.breeding_rate,
-        morale=100,
-        treasury=0,
-        fighters=request.fighters,
-        max_fighters=10000,
-        under_attack=False
-    )
-    
-    db.add(planet)
-    sector.has_planet = True
-    db.commit()
-    
-    return {
-        "id": str(planet.id),
-        "name": planet.name,
-        "sector_id": planet.sector_id,
-        "planet_type": planet.planet_type,
-        "created": True
-    }
+        if sector.has_planet:
+            raise HTTPException(status_code=400, detail="Sector already has a planet")
+
+        from src.services.structures import max_citadel_level_for_size
+        planet_size = max(1, min(10, request.size))
+        clamped_citadel_level = max(
+            0, min(request.citadel_level, max_citadel_level_for_size(planet_size))
+        )
+
+        planet = Planet(
+            name=request.name,
+            sector_id=request.sector_id,
+            planet_type=request.planet_type,
+            owner_id=None,
+            size=planet_size,
+            citadel_level=clamped_citadel_level,
+            shield_level=request.shield_level,
+            colonists=request.colonists,
+            production=request.production_rates,
+            breeding_rate=request.breeding_rate,
+            morale=100,
+            treasury=0,
+            fighters=request.fighters,
+            max_fighters=10000,
+            under_attack=False
+        )
+
+        db.add(planet)
+        sector.has_planet = True
+        db.flush()
+        attempt.target_id = str(planet.id)
+        attempt.succeed()
+
+        return {
+            "id": str(planet.id),
+            "name": planet.name,
+            "sector_id": planet.sector_id,
+            "planet_type": planet.planet_type,
+            "created": True
+        }
 
 
 @router.post("/warp-tunnel/create-enhanced", response_model=dict)
 async def create_enhanced_warp_tunnel(
     request: WarpTunnelEnhancedRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Create a warp tunnel with enhanced options"""
-    from src.models.warp_tunnel import WarpTunnelType, WarpTunnelStatus
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="warp_tunnel_create_enhanced",
+        target_type="warp_tunnel",
+        target_id="pending",
+        payload={
+            "source_sector_id": request.source_sector_id,
+            "target_sector_id": request.target_sector_id,
+        },
+    ) as attempt:
+        from src.models.warp_tunnel import WarpTunnelType, WarpTunnelStatus
 
-    # Validate sectors exist (request carries human-readable Integer sector numbers;
-    # WarpTunnel FKs reference the Sector UUID primary key, so resolve to .id below).
-    source = db.query(Sector).filter(Sector.sector_id == request.source_sector_id).first()
-    target = db.query(Sector).filter(Sector.sector_id == request.target_sector_id).first()
+        source = db.query(Sector).filter(Sector.sector_id == request.source_sector_id).first()
+        target = db.query(Sector).filter(Sector.sector_id == request.target_sector_id).first()
 
-    if not source or not target:
-        raise HTTPException(status_code=404, detail="Source or target sector not found")
+        if not source or not target:
+            raise HTTPException(status_code=404, detail="Source or target sector not found")
 
-    # Check if warp already exists (real model fields: origin_/destination_sector_id, by UUID)
-    existing = db.query(WarpTunnel).filter(
-        ((WarpTunnel.origin_sector_id == source.id) &
-         (WarpTunnel.destination_sector_id == target.id)) |
-        ((WarpTunnel.origin_sector_id == target.id) &
-         (WarpTunnel.destination_sector_id == source.id))
-    ).first()
+        existing = db.query(WarpTunnel).filter(
+            ((WarpTunnel.origin_sector_id == source.id) &
+             (WarpTunnel.destination_sector_id == target.id)) |
+            ((WarpTunnel.origin_sector_id == target.id) &
+             (WarpTunnel.destination_sector_id == source.id))
+        ).first()
 
-    if existing:
-        raise HTTPException(status_code=400, detail="Warp tunnel already exists between these sectors")
+        if existing:
+            raise HTTPException(
+                status_code=400,
+                detail="Warp tunnel already exists between these sectors",
+            )
 
-    # Map the request's tunnel_type ("natural"/"artificial") to the model enum;
-    # unknown values fall back to STANDARD (matches admin_comprehensive's pattern).
-    try:
-        tunnel_type = WarpTunnelType[request.tunnel_type.upper()]
-    except KeyError:
-        tunnel_type = WarpTunnelType.STANDARD
+        try:
+            tunnel_type = WarpTunnelType[request.tunnel_type.upper()]
+        except KeyError:
+            tunnel_type = None
+        if tunnel_type not in (WarpTunnelType.NATURAL, WarpTunnelType.ARTIFICIAL):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Invalid tunnel_type: {request.tunnel_type!r} "
+                    "(must be 'natural' or 'artificial')"
+                ),
+            )
 
-    # Access control / toll do not have dedicated WarpTunnel columns; persist them
-    # in the access_requirements JSONB so the intent isn't lost.
-    access_requirements = {
-        "access_control": request.access_control,
-        "toll_amount": request.toll_amount or 0,
-    }
+        access_requirements = {
+            "access_control": request.access_control,
+            "toll_amount": request.toll_amount or 0,
+        }
 
-    # Create warp tunnel using the REAL model fields.
-    warp = WarpTunnel(
-        name=f"{source.name} <-> {target.name}",
-        origin_sector_id=source.id,
-        destination_sector_id=target.id,
-        type=tunnel_type,
-        status=WarpTunnelStatus.ACTIVE,
-        is_bidirectional=not request.is_one_way,
-        stability=request.stability / 100.0,
-        turn_cost=request.turn_cost,
-        is_public=(request.access_control == "public"),
-        access_requirements=access_requirements,
-        created_by_player_id=None,  # admin-created; no player owner
-    )
+        warp = WarpTunnel(
+            name=f"{source.name} <-> {target.name}",
+            origin_sector_id=source.id,
+            destination_sector_id=target.id,
+            type=tunnel_type,
+            status=WarpTunnelStatus.ACTIVE,
+            is_bidirectional=not request.is_one_way,
+            stability=request.stability / 100.0,
+            turn_cost=request.turn_cost,
+            is_public=(request.access_control == "public"),
+            access_requirements=access_requirements,
+            created_by_player_id=None,
+        )
 
-    db.add(warp)
-    source.has_warp_tunnel = True
-    if not request.is_one_way:
-        target.has_warp_tunnel = True
+        db.add(warp)
+        source.has_warp_tunnel = True
+        if not request.is_one_way:
+            target.has_warp_tunnel = True
 
-    db.commit()
+        db.flush()
+        attempt.target_id = str(warp.id)
+        attempt.succeed()
 
-    return {
-        "id": str(warp.id),
-        "source_sector_id": request.source_sector_id,
-        "target_sector_id": request.target_sector_id,
-        "is_one_way": request.is_one_way,
-        "stability": request.stability,
-        "created": True
-    }
-
+        return {
+            "id": str(warp.id),
+            "source_sector_id": request.source_sector_id,
+            "target_sector_id": request.target_sector_id,
+            "is_one_way": request.is_one_way,
+            "stability": request.stability,
+            "created": True
+        }
 
 @router.get("/sectors/enhanced", response_model=dict)
 async def get_enhanced_sectors(
     region_id: Optional[str] = None,
     cluster_id: Optional[str] = None,
     include_contents: bool = True,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get sectors with enhanced information"""

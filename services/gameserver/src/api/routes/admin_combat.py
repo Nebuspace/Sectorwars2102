@@ -11,7 +11,8 @@ from sqlalchemy import func, desc, and_
 from pydantic import BaseModel, Field
 
 from src.core.database import get_db
-from src.auth.dependencies import require_admin
+from src.auth.admin_scopes import COMBAT_INTERVENE, PLAYERS_VIEW
+from src.auth.dependencies import require_scope
 from src.models.user import User
 from src.models.combat_log import CombatLog
 from src.models.player import Player
@@ -138,7 +139,7 @@ async def get_live_combat_feed(
     combat_type: Optional[str] = Query(None, description="Filter by combat type"),
     sector_id: Optional[UUID] = Query(None, description="Filter by sector"),
     active_only: bool = Query(True, description="Show only active combats"),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """
@@ -175,7 +176,7 @@ async def get_live_combat_feed(
 async def intervene_in_combat(
     combat_id: UUID,
     request: CombatInterventionRequest,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(COMBAT_INTERVENE)),
     db: Session = Depends(get_db)
 ):
     """
@@ -226,7 +227,7 @@ async def intervene_in_combat(
 async def get_combat_balance_analytics(
     timeframe: str = Query("7d", description="Timeframe: 1d, 7d, 30d"),
     group_by: str = Query("ship_type", description="Group by: ship_type, player_level, combat_type, overall"),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """
@@ -262,7 +263,7 @@ async def get_combat_balance_analytics(
 async def get_combat_disputes(
     status: Optional[str] = Query(None, description="Filter by status: pending_review, investigating, resolved"),
     limit: int = Query(50, ge=1, le=100, description="Number of disputes to return"),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """
@@ -302,7 +303,7 @@ async def get_combat_disputes(
 @router.get("/stats", response_model=CombatStatsResponse)
 async def get_combat_stats(
     time_filter: str = Query("24h", description="Time filter: 24h, 7d, 30d"),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """
@@ -384,7 +385,7 @@ async def get_combat_logs(
     offset: int = Query(0, ge=0, description="Pagination offset"),
     combat_type: Optional[str] = Query(None, description="Filter by combat type"),
     outcome: Optional[str] = Query(None, description="Filter by outcome"),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """
@@ -477,7 +478,7 @@ async def get_combat_logs(
 async def resolve_combat_dispute(
     combat_id: UUID,
     resolution: CombatResolutionRequest,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(COMBAT_INTERVENE)),
     db: Session = Depends(get_db)
 ):
     """
@@ -509,7 +510,7 @@ async def resolve_combat_dispute(
 
 @router.get("/dashboard-summary")
 async def get_combat_dashboard_summary(
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """

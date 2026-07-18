@@ -11,6 +11,7 @@ OWASP Security Implementation:
 - A09: Comprehensive audit logging
 """
 
+import asyncio
 import json
 import logging
 from typing import Dict, Any, Optional
@@ -28,6 +29,7 @@ from src.services.enhanced_websocket_service import get_enhanced_websocket_servi
 from src.services.audit_service import AuditService
 from src.models.player import Player
 from src.core.config import settings
+from src.core.commodity_economy import COMMODITY_BASE_PRICES
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ws", tags=["websocket"])
@@ -194,6 +196,42 @@ async def enhanced_trading_websocket(
             logger.warning(f"Failed to log WebSocket disconnect audit event: {e}")
 
 
+def _parse_market_stream_commodities(commodities: str) -> list:
+    """Resolve the ``?commodities=`` query param to canon lowercase slugs.
+
+    Canon vocabulary is lowercase (COMMODITY_BASE_PRICES keys — the same
+    slugs every MarketPrice writer stores and every publish_market_update
+    channel is built from), not the previous UPPER_CASE / non-canon list
+    ("LUXURY"/"TECHNOLOGY" matched no publisher channel, and
+    gourmet_food/exotic_technology/colonists/precious_metals were entirely
+    missing — WO-ARCH-RES-2H-RUNTIME-VOCAB). 'ALL' expands to the full canon
+    set; unknown/stale slugs are silently dropped.
+    """
+    valid_commodities = list(COMMODITY_BASE_PRICES)
+    if commodities == "ALL":
+        return valid_commodities
+    commodity_list = [c.strip().lower() for c in commodities.split(",")]
+    return [c for c in commodity_list if c in valid_commodities]
+
+
+def _unwrap_pubsub_envelope(raw: Any) -> Any:
+    """Undo RedisPubSubService.publish_market_update's own envelope.
+
+    That service always wraps whatever ``market_data`` a caller gives it
+    inside a ``{"type": "market_update", "commodity": ..., "data": ...,
+    "timestamp": ...}`` envelope before publishing to Redis. Forwarding that
+    ALREADY-wrapped payload to the client under a second top-level ``data``
+    key double-wraps it (a client would need ``data.data.buy_price`` instead
+    of ``data.buy_price``). Every writer on the ``market:*`` channels goes
+    through that one service method, so unwrapping is safe and unconditional
+    whenever the shape matches; anything else (a future publisher that isn't
+    pre-enveloped) passes through unchanged (WO-RT-MARKET-STREAM-CLIENT).
+    """
+    if isinstance(raw, dict) and "data" in raw and "type" in raw:
+        return raw["data"]
+    return raw
+
+
 @router.websocket("/market-stream")
 async def public_market_stream(
     websocket: WebSocket,
@@ -229,14 +267,10 @@ async def public_market_stream(
 
     try:
         await websocket.accept()
-        
-        # Parse commodities
-        if commodities == "ALL":
-            commodity_list = ["ORE", "ORGANICS", "EQUIPMENT", "FUEL", "LUXURY", "TECHNOLOGY"]
-        else:
-            commodity_list = [c.strip().upper() for c in commodities.split(",")]
-            valid_commodities = ["ORE", "ORGANICS", "EQUIPMENT", "FUEL", "LUXURY", "TECHNOLOGY"]
-            commodity_list = [c for c in commodity_list if c in valid_commodities]
+
+        # Parse commodities — see _parse_market_stream_commodities docstring
+        # (WO-ARCH-RES-2H-RUNTIME-VOCAB).
+        commodity_list = _parse_market_stream_commodities(commodities)
         
         if not commodity_list:
             await websocket.send_json({
@@ -263,29 +297,59 @@ async def public_market_stream(
         # Subscribe to market channels
         channels = [f"market:{commodity}" for commodity in commodity_list]
         await pubsub.subscribe(*channels)
-        
-        try:
-            async for message in pubsub.listen():
-                if message["type"] == "message":
-                    # Forward market data to client
-                    market_data = json.loads(message["data"])
-                    await websocket.send_json({
-                        "type": "market_update",
-                        "commodity": message["channel"].split(":")[1],
-                        "data": market_data,
-                        "timestamp": datetime.now(UTC).isoformat()
-                    })
-                    
-                # Check for client heartbeat
-                try:
-                    # Non-blocking receive to check connection
-                    await websocket.receive_text()
-                except Exception as e:
-                    logger.warning(f"Failed to check WebSocket client heartbeat: {e}")
 
+        async def _forward_market_updates():
+            async for message in pubsub.listen():
+                if message["type"] != "message":
+                    continue
+                envelope = json.loads(message["data"])
+                await websocket.send_json({
+                    "type": "market_update",
+                    "commodity": message["channel"].split(":", 1)[1],
+                    "data": _unwrap_pubsub_envelope(envelope),
+                    "timestamp": datetime.now(UTC).isoformat()
+                })
+
+        async def _watch_for_disconnect():
+            # This is a read-only, send-only stream -- the client never sends
+            # anything meaningful. But Starlette only learns a client has
+            # gone away when something RECEIVES on the socket (the pending
+            # ASGI "websocket.disconnect" event otherwise just sits unread,
+            # forever). This task's sole job is to raise WebSocketDisconnect
+            # the moment that happens; any inbound text is simply discarded.
+            #
+            # The PREVIOUS version of this loop called `receive_text()`
+            # inline, once per pub/sub event, expecting it to be
+            # non-blocking ("check for client heartbeat") -- it isn't:
+            # receive_text() awaits until the client sends something or
+            # disconnects, so the forwarding loop stalled forever on the
+            # very first pub/sub event (even the harmless "subscribe" ack)
+            # unless the client proactively sent a frame after every single
+            # message. Running disconnect-detection concurrently instead of
+            # inline is what actually makes this endpoint deliver more than
+            # one update (WO-RT-MARKET-STREAM-CLIENT).
+            while True:
+                await websocket.receive_text()
+
+        forward_task = asyncio.create_task(_forward_market_updates())
+        disconnect_task = asyncio.create_task(_watch_for_disconnect())
+        try:
+            done, pending = await asyncio.wait(
+                {forward_task, disconnect_task},
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            for task in done:
+                task.result()
         except WebSocketDisconnect:
             logger.info(f"Public market stream disconnected from {client_ip}")
-            
+        finally:
+            for task in (forward_task, disconnect_task):
+                if not task.done():
+                    task.cancel()
+
     except Exception as e:
         logger.error(f"Public market stream error: {e}")
         

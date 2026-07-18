@@ -20,6 +20,7 @@ import logging
 import uuid
 import hashlib
 import re
+import unicodedata
 from datetime import datetime, timedelta, date
 from typing import List, Dict, Any, Optional, Union, Tuple
 from dataclasses import dataclass, asdict
@@ -129,6 +130,32 @@ class CrossSystemRecommendation:
             "expires_at": self.expires_at.isoformat(),
             "security_clearance_required": self.security_clearance_required.value
         }
+
+
+def _normalize_security_level(value: Any) -> SecurityLevel:
+    """WO-SWEEP-RECO-STRVALUE: AIComprehensiveAssistant.security_level is a
+    plain String(20) DB column (src/models/enhanced_ai_models.py:80) --
+    NOT a native Postgres enum -- with a Python-side SecurityLevel enum
+    default applied only at construction. A brand-new assistant (this
+    request's own CREATE branch in _validate_and_authenticate, :216-221)
+    still carries that enum instance in memory pre-commit. Any EXISTING
+    assistant loaded via the SELECT at :208-212 -- the common, repeat-
+    visit case -- comes back from SQLAlchemy as the raw column value: a
+    plain str (e.g. "standard"), since the column type has no Enum()
+    coercion to apply on read. Every site that stores assistant.
+    security_level into CrossSystemRecommendation.security_clearance_
+    required (typed SecurityLevel) assumed the enum unconditionally, and
+    to_dict() / both enhanced_ai.py recommendation routes / this file's
+    own get_ai_performance_metrics all later call .value on it --
+    'str' object has no attribute 'value' the instant an EXISTING
+    assistant reaches any of those paths. Normalize once, at every read
+    site, rather than trusting each of the 7 call sites to handle both
+    shapes -- a deliberate boundary fix, not a papered-over guard: the
+    field genuinely IS ambiguously typed at the ORM layer (str vs enum
+    depending on whether this row has been round-tripped through the DB
+    yet), and normalizing to the declared type is the correct closure,
+    not a workaround."""
+    return value if isinstance(value, SecurityLevel) else SecurityLevel(value)
 
 
 @dataclass
@@ -258,57 +285,36 @@ class EnhancedAIService:
         """
         if not user_input:
             return ""
-        
+
         # Convert to string and limit length
         user_input = str(user_input)[:self.max_conversation_length]
-        
+
+        # ADR-0057 A-V1 layer 1 -- Unicode NFKC normalization, FIRST,
+        # before any pattern check below sees the input. Mirrors
+        # ai_security_service.sanitize_input's own layer-1 fix
+        # (WO-ARIA-PROMPT-DEFENSE) -- this is a SEPARATE sanitizer used
+        # for the general/template AI-conversation path, not just chat,
+        # so it gets the same hardening independently.
+        user_input = unicodedata.normalize('NFKC', user_input)
+
         # Remove HTML tags and dangerous characters. `[^<>]*` (rather than
         # `[^>]*`) prevents the inner class from running over `<`, eliminating
         # the O(n²) polynomial-redos pattern CodeQL flags.
         user_input = re.sub(r'<[^<>]*>', '', user_input)
         user_input = re.sub(r'[<>"\'`]', '', user_input)
         user_input = re.sub(r'javascript:|data:|vbscript:', '', user_input, flags=re.IGNORECASE)
-        
+
         # Remove potential SQL injection patterns
         user_input = re.sub(r'(union|select|insert|update|delete|drop|exec|script)\s', '', user_input, flags=re.IGNORECASE)
-        
-        # Apply prompt injection filtering
-        user_input = self._filter_prompt_injections(user_input)
-        
-        return user_input.strip()
 
-    def _filter_prompt_injections(self, user_input: str) -> str:
-        """
-        SECURITY: Filter potential prompt injection attacks
-        """
-        # Common prompt injection patterns
-        injection_patterns = [
-            r'ignore\s+previous\s+instructions',
-            r'disregard\s+above',
-            r'forget\s+everything',
-            r'you\s+are\s+now',
-            r'act\s+as\s+if',
-            r'pretend\s+you\s+are',
-            r'imagine\s+you\s+are',
-            r'system\s*:\s*you',
-            r'assistant\s*:\s*you',
-            r'human\s*:\s*you',
-            r'override\s+instructions',
-            r'new\s+instructions',
-            r'forget\s+your\s+role',
-            r'ignore\s+your\s+training'
-        ]
-        
-        # Check for injection patterns
-        filtered_input = user_input
-        for pattern in injection_patterns:
-            if re.search(pattern, user_input, re.IGNORECASE):
-                # Log security event
-                logger.warning(f"Potential prompt injection attempt detected: {pattern}")
-                # Replace with safe text
-                filtered_input = re.sub(pattern, '[filtered]', filtered_input, flags=re.IGNORECASE)
-        
-        return filtered_input
+        # ADR-0057 A-V1 layer 4 -- versioned pattern list, defense-in-depth
+        # (WO-ARIA-PROMPT-DEFENSE). Replaces the old inline injection_
+        # patterns list that used to live directly in this method (Accept
+        # #4: "inline regex lists in enhanced_ai_service.py are GONE").
+        from src.services.aria_pattern_guard import get_pattern_guard
+        user_input = get_pattern_guard().filter(user_input)
+
+        return user_input.strip()
 
     def _sanitize_response(self, response: str) -> str:
         """
@@ -478,13 +484,32 @@ class EnhancedAIService:
         # and with expire_on_commit=True the commit expires this ORM object —
         # a later attribute access (security_level below) would then trigger a
         # sync lazy-reload on the async session and raise greenlet_spawn.
-        security_level = assistant.security_level
+        # WO-SWEEP-RECO-STRVALUE: also normalize here -- see
+        # _normalize_security_level's docstring for why assistant.
+        # security_level is sometimes a plain str.
+        security_level = _normalize_security_level(assistant.security_level)
         player_id_str = str(assistant.player_id)
 
         # Leverage existing ARIA trading intelligence
         aria_recommendations = await self.trading_service.get_trading_recommendations(
             self.db, player_id_str, max_count
         )
+
+        # WO-SWEEP-RECO-GREENLET-2: the locals above only protect THIS
+        # function's own reads. get_trading_recommendations' final step,
+        # _save_recommendations_to_db, commits unconditionally on BOTH the
+        # profile-create AND profile-exists paths (it's not gated on the
+        # branch that added the profile-create refresh in c29b31c) -- so
+        # `assistant` comes back from this call expired every time, not just
+        # on a fresh DB. The CALLER (get_comprehensive_recommendations)
+        # keeps using `assistant` after this returns: further
+        # has_permission(...) checks for combat/colony/station, and the
+        # unconditional assistant_id=assistant.id in the trailing
+        # _log_security_event call. Refresh here, once, at the one place
+        # that both knows a commit just happened and still holds the
+        # reference, so every downstream read -- in this function's own
+        # future callers too, not just today's -- gets a live object.
+        await self.db.refresh(assistant)
 
         enhanced_recommendations = []
         for rec in aria_recommendations:
@@ -566,7 +591,7 @@ class EnhancedAIService:
                     },
                     confidence=0.8,
                     expires_at=datetime.utcnow() + timedelta(hours=1),
-                    security_clearance_required=assistant.security_level
+                    security_clearance_required=_normalize_security_level(assistant.security_level)
                 )
                 recommendations.append(rec)
         else:
@@ -591,7 +616,7 @@ class EnhancedAIService:
                     },
                     confidence=0.85,
                     expires_at=datetime.utcnow() + timedelta(days=7),
-                    security_clearance_required=assistant.security_level
+                    security_clearance_required=_normalize_security_level(assistant.security_level)
                 )
                 recommendations.append(rec)
         
@@ -635,7 +660,7 @@ class EnhancedAIService:
                     },
                     confidence=0.9,
                     expires_at=datetime.utcnow() + timedelta(days=30),
-                    security_clearance_required=assistant.security_level
+                    security_clearance_required=_normalize_security_level(assistant.security_level)
                 )
                 recommendations.append(rec)
         
@@ -693,7 +718,7 @@ class EnhancedAIService:
                     },
                     confidence=0.8,
                     expires_at=datetime.utcnow() + timedelta(days=7),
-                    security_clearance_required=assistant.security_level
+                    security_clearance_required=_normalize_security_level(assistant.security_level)
                 )
                 recommendations.append(rec)
         
@@ -733,7 +758,7 @@ class EnhancedAIService:
                 },
                 confidence=0.85,
                 expires_at=datetime.utcnow() + timedelta(days=14),
-                security_clearance_required=assistant.security_level
+                security_clearance_required=_normalize_security_level(assistant.security_level)
             )
             recommendations.append(rec)
         
@@ -823,7 +848,7 @@ class EnhancedAIService:
             
             # Generate response based on intent
             _gen_start = time.perf_counter()
-            response = await self._generate_ai_response(intent_analysis, assistant, conversation_context)
+            response, mode = await self._generate_ai_response(intent_analysis, assistant, conversation_context)
             _gen_elapsed_ms = int((time.perf_counter() - _gen_start) * 1000)
 
             # SECURITY: Sanitize AI response content
@@ -831,13 +856,24 @@ class EnhancedAIService:
 
             # Log conversation for learning and audit
             await self._log_conversation(assistant_id, sanitized_input, response, conversation_context, _gen_elapsed_ms)
-            
-            return {
+
+            result = {
                 "response": response,
                 "intent": intent_analysis,
                 "conversation_id": conversation_context.session_id,
                 "response_time": datetime.utcnow().isoformat()
             }
+            # WO-ARIA-CHAT-LLM: additive, ONLY when the LLM chat path is
+            # active (mode is None on the flag-off path — see
+            # _generate_ai_response) — the dict above is otherwise
+            # byte-identical to the pre-WO shape (the pinned contract).
+            if mode is not None:
+                result["mode"] = mode
+                # Max's GO amendment: a Resonance-ledger accounting SEAM —
+                # a documented hook point only. The ledger itself is a
+                # future post-ADR-0092 WO; deliberately always None here.
+                result["ledger_entry"] = None
+            return result
             
         except Exception as e:
             await self._log_security_event(
@@ -928,16 +964,43 @@ class EnhancedAIService:
         
         return entities
 
-    async def _generate_ai_response(self, intent_analysis: Dict[str, Any], 
+    async def _generate_ai_response(self, intent_analysis: Dict[str, Any],
+                                  assistant: AIComprehensiveAssistant,
+                                  context: ConversationContext) -> Tuple[str, Optional[str]]:
+        """WO-ARIA-CHAT-LLM orchestrator — built DARK behind
+        settings.ARIA_LLM_CHAT_ENABLED (default False).
+
+        Returns (response_text, mode). mode is None when the flag is off:
+        the call below is the EXACT pre-existing call this method used to
+        make itself (now named _generate_template_response, body
+        unchanged) — flag-off behavior is byte-identical to before this
+        WO, which is the pinned contract (test_aria_chat_llm.py). mode is
+        "llm" or "template" only once the flag is on.
+        """
+        from src.core.config import settings
+
+        if not settings.ARIA_LLM_CHAT_ENABLED:
+            return await self._generate_template_response(intent_analysis, assistant, context), None
+
+        llm_text = await self._try_llm_chat_response(intent_analysis, assistant, context)
+        if llm_text is not None:
+            return llm_text, "llm"
+        return await self._generate_template_response(intent_analysis, assistant, context), "template"
+
+    async def _generate_template_response(self, intent_analysis: Dict[str, Any],
                                   assistant: AIComprehensiveAssistant,
                                   context: ConversationContext) -> str:
         """
         Generate intelligent AI response based on intent analysis
         Coordinates responses across all game systems
+
+        WO-ARIA-CHAT-LLM: renamed from _generate_ai_response, body
+        UNCHANGED — retained VERBATIM as the documented fallback mode
+        (flag-off, or the LLM path failing/being unavailable).
         """
         primary_intent = intent_analysis["primary_intent"]
         entities = intent_analysis["entities"]
-        
+
         try:
             if primary_intent == "trading":
                 return await self._generate_trading_response(assistant, entities, context)
@@ -953,10 +1016,148 @@ class EnhancedAIService:
                 return await self._generate_help_response(assistant, entities, context)
             else:
                 return await self._generate_general_response(assistant, entities, context)
-                
+
         except Exception as e:
             logger.error(f"Error generating AI response: {e}")
             return "I encountered an issue processing your request. Could you please rephrase your question?"
+
+    def _apply_cheap_prompt_defense_layers(
+        self, raw_input: str, player_id: uuid.UUID, context: ConversationContext,
+    ) -> Optional[str]:
+        """ADR-0057 A-V1 layers 1 (NFKC), 2 (JSON-envelope breakout / A-I2),
+        and 4 (versioned pattern list) -- the cheap, always-on pre-filters
+        (WO-ARIA-PROMPT-DEFENSE), run in canonical order, self-contained
+        so _try_llm_chat_response's own gate doesn't depend on the caller
+        having already sanitized the text. process_natural_language_
+        query's upstream _sanitize_user_input already applies layers 1+4
+        too (general AI-conversation path, not chat-specific) -- running
+        them again here is deliberate belt-and-suspenders for the one
+        call this WO exists to protect, not a correctness dependency;
+        NFKC is idempotent and a second pattern-guard pass over
+        already-filtered text is a cheap no-op.
+
+        Returns None when layer 2 detects an envelope-breakout attempt --
+        the A-I2 violation + escalation-ladder penalty is already applied
+        (via ai_security_service, same detector/ladder validate_input's
+        route-level call already uses) before returning. The caller
+        treats None exactly like any other _try_llm_chat_response
+        failure signal, falling back to the template engine."""
+        # Layer 1
+        normalized = unicodedata.normalize('NFKC', raw_input or "")
+
+        # Layer 2 (A-I2)
+        from src.services.ai_security_service import SecurityViolationType, get_security_service
+        security_service = get_security_service()
+        session_id = getattr(context, "session_id", "") or ""
+        envelope_violations = security_service.detect_envelope_breakout(
+            normalized, str(player_id), session_id,
+        )
+        if envelope_violations:
+            security_service.log_security_violations(envelope_violations)
+            security_service.apply_security_penalty(str(player_id), SecurityViolationType.MALFORMED_ENVELOPE)
+            logger.warning("ARIA prompt-defense layer 2 rejected chat input: envelope breakout (ERR_ARIA_MALFORMED_INPUT)")
+            return None
+
+        # Layer 4
+        from src.services.aria_pattern_guard import get_pattern_guard
+        return get_pattern_guard().filter(normalized)
+
+    async def _try_llm_chat_response(self, intent_analysis: Dict[str, Any],
+                                  assistant: AIComprehensiveAssistant,
+                                  context: ConversationContext) -> Optional[str]:
+        """WO-ARIA-CHAT-LLM's LLM-path attempt — a single, clearly-
+        delineated seam (the provider call in the middle of this method)
+        that WO-ARIA-PROMPT-DEFENSE wraps with ADR-0057 A-V1's five-layer
+        defense, in canonical order: 1 (NFKC) -> 2 (envelope/A-I2) -> 4
+        (pattern list) -> 3 (input classifier, load-bearing) -> [provider
+        call] -> 5 (output classifier, load-bearing). Layers 3+5 only run
+        when settings.ARIA_PROMPT_CLASSIFIER_ENABLED is True (BUILT DARK,
+        same convention as ARIA_LLM_CHAT_ENABLED -- see config.py); when
+        False, 1+2+4 still gate every call (never "regex-only" -- NFKC +
+        envelope-breakout detection + versioned patterns already exceed
+        that bar), but the load-bearing classifiers are skipped, matching
+        this method's pre-existing behavior for any caller that predates
+        this WO. Returns the LLM's text on success, or None on ANY
+        failure — missing player row, an envelope-breakout / classifier
+        rejection, no provider available, a raised provider exception, or
+        an empty/None reply — so the caller (_generate_ai_response)
+        always has a clean "fall back to the template engine" signal and
+        never has to catch anything itself. A layer-5-flagged OUTPUT is
+        the one exception: per canon, a flagged reply is replaced with a
+        generic refusal and returned as a normal (mode="llm") reply,
+        not collapsed to None/template -- ARIA still answers, just safely.
+
+        The cost-cap gate (check_cost_limits_detailed) already ran
+        upstream of this whole call chain, in the ROUTE (enhanced_ai.py /
+        websocket_service.py's handle_aria_chat) — a request only reaches
+        process_natural_language_query, and therefore this method, once
+        it has already cleared that gate. This method does not re-check
+        cost caps (WO's own "don't duplicate" instruction) and issues at
+        most one main-dispatch provider attempt per chat turn (plus, when
+        classifiers are enabled, up to two additional cheap classifier
+        calls)."""
+        try:
+            stmt = select(Player).where(Player.id == assistant.player_id)
+            result = await self.db.execute(stmt)
+            player = result.scalar_one_or_none()
+            if player is None:
+                return None
+
+            raw_input = intent_analysis.get("original_input", "")
+            gated_input = self._apply_cheap_prompt_defense_layers(raw_input, assistant.player_id, context)
+            if gated_input is None:
+                return None
+
+            from src.core.config import settings
+            classifier = None
+            if settings.ARIA_PROMPT_CLASSIFIER_ENABLED:
+                from src.services.aria_classifier_service import (
+                    INJECT_PROBABILITY_THRESHOLD, get_aria_classifier_service,
+                )
+                classifier = get_aria_classifier_service()
+                input_verdict = await classifier.classify_input(gated_input)
+                if input_verdict is None or input_verdict.inject_probability >= INJECT_PROBABILITY_THRESHOLD:
+                    logger.warning(
+                        "ARIA prompt-defense layer 3 rejected chat input (verdict=%s)", input_verdict,
+                    )
+                    return None
+
+            game_state = await self._analyze_player_strategic_position(assistant.player_id)
+
+            from src.services.ai_prompts import AriaChatPrompts
+            prompts = AriaChatPrompts.build_chat_prompt(
+                consciousness_level=player.aria_consciousness_level or 1,
+                relationship_score=player.aria_relationship_score or 0,
+                player_name=player.username,
+                game_state=game_state,
+                user_input=gated_input,
+            )
+
+            from src.services.ai_provider_service import get_ai_provider_service
+            provider_service = get_ai_provider_service()
+            reply_text, _provider_used = await provider_service.generate_chat_reply(
+                prompts["system"], prompts["user"],
+            )
+            if not reply_text:
+                return None
+
+            if classifier is not None:
+                output_verdict = await classifier.classify_output(reply_text)
+                if output_verdict is None or output_verdict.flagged:
+                    logger.warning(
+                        "ARIA prompt-defense layer 5 flagged output (verdict=%s) -- replaced with generic refusal",
+                        output_verdict,
+                    )
+                    # Canon (ADR-0057 A-V1 layer 5): "A flagged response is
+                    # replaced with a generic 'I can't help with that'
+                    # before send" -- ARIA still answers (mode="llm"), the
+                    # unsafe text just never reaches the player.
+                    return "I can't help with that."
+
+            return reply_text
+        except Exception as e:
+            logger.warning(f"ARIA LLM chat path failed, falling back to template engine: {e}")
+            return None
 
     async def _generate_trading_response(self, assistant: AIComprehensiveAssistant,
                                        entities: Dict[str, List[str]], context: ConversationContext) -> str:
@@ -1197,7 +1398,14 @@ What would you like help with today?"""
                 ai_response_text=ai_response,
                 response_type="answer",
                 response_confidence=0.8,  # Default confidence
-                response_time_ms=elapsed_ms,
+                # WO-SWEEP-CHATLOG-CONSTRAINT: ai_conversation_logs has
+                # CheckConstraint(response_time_ms > 0, name=
+                # "positive_response_time") -- fast template-path replies
+                # can measure 0ms (perf_counter int-truncation on a
+                # sub-millisecond response), which would otherwise die at
+                # write time. 0 was never a legitimate value to store, so
+                # a 1ms floor is semantically honest, not a workaround.
+                response_time_ms=max(1, elapsed_ms),
                 conversation_context={
                     "topic": context.current_topic,
                     # security_level may be a SecurityLevel enum or already a raw
@@ -1207,10 +1415,23 @@ What would you like help with today?"""
                 privacy_level="standard",
                 data_retention_days=365  # 1 year retention
             )
-            
-            self.db.add(conversation_log)
+
+            # WO-SWEEP-CHATLOG-CONSTRAINT: conversation logging must be
+            # BEST-EFFORT -- a logging failure must never fail the chat
+            # response. The plain db.add() below this comment used to rely
+            # entirely on the calling transaction's own commit, which
+            # meant any DB-level failure here (a constraint violation, or
+            # any future schema drift) would only surface at that OUTER
+            # commit, poisoning the whole request rather than just this
+            # one log row. SAVEPOINT-isolate it instead, mirroring the
+            # established idiom (aria_personal_intelligence_service.py's
+            # record_market_observation_sync / bounty_service.py:774) --
+            # this method's own try/except then absorbs the failure.
+            async with self.db.begin_nested():
+                self.db.add(conversation_log)
+                await self.db.flush()
             # Commit handled by calling transaction
-            
+
         except Exception as e:
             logger.error(f"Failed to log conversation: {e}")
             # Don't raise - logging failure shouldn't break conversation
@@ -1385,7 +1606,7 @@ What would you like help with today?"""
                     "total_patterns": pattern_metrics.total_patterns or 0,
                     "avg_success_rate": float(pattern_metrics.avg_success_rate or 0)
                 },
-                "security_level": assistant.security_level.value,
+                "security_level": _normalize_security_level(assistant.security_level).value,
                 "last_active": assistant.last_active.isoformat()
             }
             

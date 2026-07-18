@@ -2016,7 +2016,20 @@ def upgrade() -> None:
     op.create_foreign_key('fk_players_team_id_teams', 'players', 'teams', ['team_id'], ['id'], ondelete='SET NULL')
     op.create_foreign_key('fk_players_user_id_users', 'players', 'users', ['user_id'], ['id'], ondelete='CASCADE')
 
-    op.drop_table('_database_metadata')
+    # FIXED, WO-QTI-MIGRATION-CHAIN-FRESH: a bare op.drop_table('_database_metadata')
+    # here fails on BOTH possible fresh-bootstrap orderings --
+    #   (a) init scripts ran (services/database/init/01-init-database.sql
+    #       creates the table; 03-seed-data.sql creates a VIEW
+    #       database_initialization_status ON it) -> plain DROP TABLE raises
+    #       DependentObjectsStillExist; the view must go first.
+    #   (b) init scripts never ran (a bare/cold-bootstrap Postgres with no
+    #       docker-entrypoint-initdb.d pass) -> the table never existed ->
+    #       a non-IF-EXISTS DROP raises UndefinedTable.
+    # Named DROP ... IF EXISTS for both objects handles both orderings as a
+    # no-op when absent, without a blind CASCADE that would silently take
+    # down any future unrelated dependent someone adds on this table.
+    op.execute("DROP VIEW IF EXISTS database_initialization_status")
+    op.execute("DROP TABLE IF EXISTS _database_metadata")
 
     # Re-enable FK constraint checking
     op.execute("SET session_replication_role = 'origin';")

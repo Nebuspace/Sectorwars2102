@@ -277,7 +277,10 @@ async def place_building(
     cost_credits = int(cost.get("credits", 0) or 0)
 
     # 3b. lock the player row (AFTER the planet row) for credit safety.
-    locked_player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    # populate_existing() refreshes the identity-mapped object from the DB row
+    # under the lock — without it, get_current_player's earlier unlocked load
+    # is returned stale.
+    locked_player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
     if locked_player is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Player not found")
     if int(locked_player.credits or 0) < cost_credits:
@@ -351,7 +354,10 @@ async def decommission_building(
     refund = int(res.get("refund_credits", 0) or 0)
 
     # Credit the refund to the owning player (lock the player row after the planet row).
-    locked_player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    # populate_existing() refreshes the identity-mapped object from the DB row
+    # under the lock — without it, get_current_player's earlier unlocked load
+    # is returned stale.
+    locked_player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
     if locked_player is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Player not found")
     locked_player.credits = int(locked_player.credits or 0) + refund

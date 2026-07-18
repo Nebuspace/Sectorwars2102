@@ -902,9 +902,16 @@ class RegionalGovernanceService:
         offset: int = 0
     ) -> List[Dict[str, Any]]:
         """Get members of a region"""
+        # Canonical display-name fallback (nickname, else user.username, else
+        # "Unknown Player") — see Player.display_name_expr for the full
+        # rationale; this is the SQL twin of the Player.username @property.
         result = await db.execute(
-            select(RegionalMembership, Player.username)
+            select(
+                RegionalMembership,
+                Player.display_name_expr()
+            )
             .join(Player, RegionalMembership.player_id == Player.id)
+            .join(User, Player.user_id == User.id)
             .where(RegionalMembership.region_id == region_id)
             .order_by(RegionalMembership.joined_at.desc())
             .limit(limit)
@@ -1548,10 +1555,17 @@ class RegionalGovernanceService:
 
         # Re-read the policy under a row lock so the read-modify-write of the
         # tallies is atomic against a concurrent vote on the same policy.
+        # WO-MONEY-REREAD-SERVICES: policy was already loaded unlocked by the
+        # route (regional_governance.py) on this same AsyncSession; the
+        # Query-API's .populate_existing() has no async-select equivalent, so
+        # execution_options(populate_existing=True) forces this locked
+        # re-read to actually refresh votes_for/votes_against/status from the
+        # DB instead of returning the stale identity-mapped instance.
         locked = await db.execute(
             select(RegionalPolicy)
             .where(RegionalPolicy.id == policy.id)
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
         policy = locked.scalar_one()
 

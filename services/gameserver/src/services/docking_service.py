@@ -47,7 +47,9 @@ from sqlalchemy.orm import Session
 
 from src.core import game_time
 from src.models.docking import DockingQueueEntry, DockingSlipOccupancy
+from src.models.npc_character import NPCCharacter
 from src.models.player import Player
+from src.models.ship import Ship, ShipSize, ShipSpecification
 from src.models.station import Station
 
 logger = logging.getLogger(__name__)
@@ -353,45 +355,84 @@ def service_charge_multiplier_for(station: Station) -> float:
     return max(_SERVICE_CHARGE_MIN, min(_SERVICE_CHARGE_MAX, mult))
 
 
-def docking_fee_for(station: Station) -> int:
+# Canon docking-fee matrix (FEATURES/economy/station-protection.md §Docking
+# fee economics, lines 117-136): a base fee by ship SIZE, multiplied by the
+# station's security TIER. Escape Pod (ShipSize.TINY) needs no special case —
+# its 0cr base times any multiplier is still 0, so "Escape Pod always free"
+# falls straight out of the table.
+_DOCKING_BASE_FEE_BY_SIZE: Dict[ShipSize, int] = {
+    ShipSize.TINY: 0,
+    ShipSize.SMALL: 100,
+    ShipSize.MEDIUM: 250,
+    ShipSize.LARGE: 500,
+    ShipSize.CAPITAL: 1000,
+}
+
+# station-protection.md same section: none=free, basic=1.0x, standard=1.5x,
+# premium=3.0x. Keyed on Station.security_level's lowercased string (see
+# src.models.station.SECURITY_TIER_RANK); an unranked/unknown tier reads as
+# "none" there already, so it naturally falls through to 0x here too.
+_DOCKING_TIER_MULTIPLIER: Dict[str, float] = {
+    "none": 0.0,
+    "basic": 1.0,
+    "standard": 1.5,
+    "premium": 3.0,
+}
+
+# NO-CANON: the docking-fee matrix is keyed on the player-facing ship-size
+# axis (Tiny/Small/Medium/Large/Capital). Canon is silent on hulls that carry
+# no size (today: the two NPC-only Interdictor specs — ship_specifications_
+# seeder.py sets their ship_size to None) and on a spec-lookup miss. Falls
+# back to Medium, a conservative mid-tier default, pending canon guidance.
+_DOCKING_FEE_SIZE_FALLBACK = ShipSize.MEDIUM
+
+
+def ship_size_for(db: Session, ship: Optional[Ship]) -> Optional[ShipSize]:
+    """Resolve a ship's canon size axis via its ShipSpecification registry row.
+
+    Size lives on the registry (ShipSpecification.ship_size), not the Ship
+    instance itself — see ship_specifications_seeder.py. Returns None when
+    ``ship`` is None, no registry row matches its type, or the matched row's
+    ship_size is NULL (the NPC-only Interdictor hulls); callers pass that
+    None straight into docking_fee_for, which applies the Medium fallback.
+    """
+    if ship is None:
+        return None
+    spec = db.query(ShipSpecification).filter(ShipSpecification.type == ship.type).first()
+    return spec.ship_size if spec is not None else None
+
+
+def docking_fee_for(station: Station, ship_size: Optional[ShipSize] = None) -> int:
     """Transient docking fee in credits.
 
-    Canon names docking fees (they fund the station treasury) but does not
-    specify amounts — this table is the documented interpretation:
-    capital CLASS_0 50cr · class 1-2 25 · 3-6 50 · 7-10 100 · 11 150 ·
-    spacedock 200 · tradedock 250. Same precedence as slip_capacity_for.
+    Canon (FEATURES/economy/station-protection.md §Docking fee economics,
+    lines 117-136): base fee by ship SIZE times the station's security-tier
+    multiplier — e.g. a Large ship docking at a Premium-tier station pays
+    500 x 3.0 = 1,500cr. A "none"-tier station is fee-free at every size
+    (0x multiplier); this is a deliberate canon behavior, not a bug.
+
+    ``ship_size`` is normally resolved by the caller via ship_size_for() so
+    this function itself stays DB-free / unit-testable. None (unresolved,
+    no ship, or a NULL-size NPC hull) falls back to Medium — see
+    _DOCKING_FEE_SIZE_FALLBACK.
 
     OWNER OVERRIDE (B4 consume-side): when the station owner has set a docking
     fee AND enabled the toggle (port_ownership_service.set_docking_fee writes
     price_modifiers['docking_fee'] + ['docking_fee_enabled']), that owner amount
-    REPLACES the base-table value. The amount was already clamped to the canon
-    50-500 cr range by the setter; we defensively clamp again here. When the
-    owner has not set a fee, or has it disabled, this returns the base-table
-    value EXACTLY as before — a port with no fee set behaves identically to
-    today. Reading the override here makes every docking-fee consume site (dock
-    charge, bump cost, slip-info quote, admin display) honor it through one
-    source of truth.
+    REPLACES the size/tier matrix value below, regardless of size or tier. The
+    amount was already clamped to the canon 50-500 cr range by the setter; we
+    defensively clamp again here. When the owner has not set a fee, or has it
+    disabled, this falls through to the size/tier matrix. Reading the override
+    here makes every docking-fee consume site (dock charge, bump cost,
+    slip-info quote, admin display) honor it through one source of truth.
     """
     override = _owner_docking_fee_override(station)
     if override is not None:
         return override
-    tier = getattr(station, "tradedock_tier", None)
-    if tier in ("A", "B"):
-        return 250
-    if getattr(station, "is_spacedock", False):
-        return 200
-    cls = station.station_class.value if station.station_class is not None else None
-    if cls == 0:
-        return 50
-    if cls in (1, 2):
-        return 25
-    if cls is not None and 3 <= cls <= 6:
-        return 50
-    if cls is not None and 7 <= cls <= 10:
-        return 100
-    if cls == 11:
-        return 150
-    return 50
+    size = ship_size if ship_size is not None else _DOCKING_FEE_SIZE_FALLBACK
+    base = _DOCKING_BASE_FEE_BY_SIZE.get(size, _DOCKING_BASE_FEE_BY_SIZE[_DOCKING_FEE_SIZE_FALLBACK])
+    multiplier = _DOCKING_TIER_MULTIPLIER.get(station.security_level, 0.0)
+    return int(round(base * multiplier))
 
 
 def occupant_tenure_hours(occupancy: DockingSlipOccupancy, now=None) -> float:
@@ -592,6 +633,75 @@ def release(db: Session, station: Optional[Station], player: Player) -> bool:
     return True
 
 
+def acquire_for_npc(
+    db: Session, station: Station, npc: NPCCharacter, ship_id: Optional[UUID] = None,
+) -> bool:
+    """Best-effort transient-slip claim for a TRADER-archetype NPC
+    (WO-P9-realtime-npc-trader-slips, npc-traders.md § Market participation
+    -- "traders occupy real docking slips like players"). Idempotent: a
+    no-op (returns True) if this NPC already holds a slip at THIS station
+    (npc_id is UNIQUE galaxy-wide, mirroring player_id's own invariant).
+
+    Deliberately NOT a hard economic gate: unlike the player path, a full
+    station does not block the trade -- run_trade_stop's sell/buy program
+    always completes regardless of slip availability (canon's own "the
+    economy is driven by real product moved by real actors" principle
+    takes priority; inventing an NPC queue/reject path is a materially
+    bigger feature this WO does not ask for). A trader simply occupies a
+    slip WHEN one is free, for the player-visible congestion effect and
+    the anti-camp tenure bookkeeping; when the transient pool is already
+    full it trades without holding one. No reputation gate, no FIFO queue,
+    no bump eligibility for NPCs -- those are player-specific mechanics.
+
+    Locks the station row (the SAME row run_trade_stop's own caller query
+    already holds at call time -- a same-transaction re-lock is a no-op,
+    not a new contention point). Does NOT commit.
+    """
+    station = db.query(Station).filter(Station.id == station.id).with_for_update().first()
+    if station is None:
+        return False
+
+    existing = db.query(DockingSlipOccupancy).filter(
+        DockingSlipOccupancy.npc_id == npc.id
+    ).first()
+    if existing is not None:
+        if existing.station_id == station.id:
+            return True
+        # Held elsewhere (a prior stop's slip the reconciliation sweep
+        # hasn't cleared yet) -- release it before claiming a new one so
+        # an NPC never holds two slips across the galaxy at once. Mirrors
+        # acquire()'s own WO-DOCK-500 Leg 2 defensive clear for players
+        # (same invariant, same failure class, already fixed there once).
+        db.delete(existing)
+        db.flush()
+
+    capacity = slip_capacity_for(station)
+    occupied = len(_transient_occupancies(db, station.id))
+    if occupied >= capacity:
+        return False
+
+    db.add(DockingSlipOccupancy(
+        station_id=station.id,
+        npc_id=npc.id,
+        ship_id=ship_id,
+        slip_class=DockingSlipOccupancy.SLIP_CLASS_TRANSIENT,
+    ))
+    db.flush()
+    return True
+
+
+def release_for_npc(db: Session, npc: NPCCharacter) -> bool:
+    """Release npc's slip, if any. Tolerates a missing row silently (never
+    acquired one, or already released). Does NOT commit."""
+    occupancy = db.query(DockingSlipOccupancy).filter(
+        DockingSlipOccupancy.npc_id == npc.id
+    ).first()
+    if occupancy is None:
+        return False
+    db.delete(occupancy)
+    return True
+
+
 def _notify_bumped(user_id, station_name: str) -> None:
     """Best-effort WebSocket notice to the evicted player.
 
@@ -631,7 +741,13 @@ def bump(db: Session, station: Station, bumper: Player, occupant_player_id) -> D
     within the same transaction.
     """
     # 1. Lock the station row — serializes against acquire() and other bumps.
-    station = db.query(Station).filter(Station.id == station.id).with_for_update().first()
+    station = (
+        db.query(Station)
+        .filter(Station.id == station.id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
 
     occupancy = db.query(DockingSlipOccupancy).filter(
         DockingSlipOccupancy.station_id == station.id,
@@ -661,7 +777,13 @@ def bump(db: Session, station: Station, bumper: Player, occupant_player_id) -> D
     # 2. Lock both player rows in ASCENDING player-id order (deadlock avoidance).
     locked: Dict[Any, Player] = {}
     for pid in sorted([bumper.id, occupancy.player_id]):
-        row = db.query(Player).filter(Player.id == pid).with_for_update().first()
+        row = (
+            db.query(Player)
+            .filter(Player.id == pid)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
         if row is not None:
             locked[pid] = row
     bumper = locked.get(bumper.id, bumper)
@@ -670,7 +792,10 @@ def bump(db: Session, station: Station, bumper: Player, occupant_player_id) -> D
         raise BumpError(404, "Occupant player no longer exists")
 
     # 3. Charge the bumper 5x the docking fee; fee funds the station treasury.
-    fee = docking_fee_for(station)
+    # Resolve size from the bumper's OWN docking ship — the quote/charge
+    # agreement the size/tier matrix requires holds across dock and bump too.
+    bump_ship_size = ship_size_for(db, bumper.current_ship)
+    fee = docking_fee_for(station, bump_ship_size)
     cost = fee * BUMP_COST_MULTIPLIER
     if bumper.credits < cost:
         raise BumpError(
@@ -796,7 +921,11 @@ def acquire_long_term(
     # Lock the player row to safely deduct credits (no other player row
     # involved here, so no ordering concern beyond station-first).
     player_locked = (
-        db.query(Player).filter(Player.id == player.id).with_for_update().first()
+        db.query(Player)
+        .filter(Player.id == player.id)
+        .populate_existing()
+        .with_for_update()
+        .first()
     )
     if player_locked is None:
         return {"status": "error", "detail": "Player not found"}

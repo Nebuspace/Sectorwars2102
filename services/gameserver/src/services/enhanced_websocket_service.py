@@ -20,7 +20,7 @@ from typing import Dict, List, Set, Optional, Any, Union
 from datetime import datetime, timedelta, UTC
 from dataclasses import dataclass, asdict
 from collections import defaultdict
-from uuid import uuid4
+from uuid import uuid4, UUID
 import logging
 
 from fastapi import WebSocket, WebSocketDisconnect, HTTPException
@@ -93,7 +93,6 @@ class EnhancedWebSocketService:
         # Service dependencies
         self.ai_trading_service = None  # Lazy loaded
         self.trading_service = None     # Lazy loaded
-        self.enhanced_ai_service = None # Lazy loaded
         self.market_service = get_market_service(redis_client)  # Real-time market data
         
         # Security configuration
@@ -258,8 +257,19 @@ class EnhancedWebSocketService:
                 await self._handle_heartbeat(player_id)
             
             else:
-                # Fall back to base handler for standard messages
-                await self.connection_manager.handle_websocket_message(player_id, message)
+                # Fall back to base handler for standard messages.
+                # handle_websocket_message is a MODULE-level function in
+                # websocket_service.py, NOT a ConnectionManager method --
+                # self.connection_manager.handle_websocket_message(...) does
+                # not exist and raised AttributeError on every message type
+                # this branch was meant to handle (chat_message,
+                # request_sector_players, etc.), silently swallowed by this
+                # method's own except-clause below and surfaced to the player
+                # as a generic "Internal server error" (WO-RT-MARKET-STREAM-
+                # CLIENT). Imported locally to dodge any circular-import risk
+                # between this module and websocket_service.py.
+                from src.services.websocket_service import handle_websocket_message
+                await handle_websocket_message(player_id, message)
                 
         except Exception as e:
             logger.error(f"Error handling WebSocket message: {e}")
@@ -699,47 +709,46 @@ class EnhancedWebSocketService:
                               db: AsyncSession, session: WebSocketSession):
         """Handle ARIA conversational AI requests with full cross-system intelligence"""
         try:
-            # Initialize services if needed
-            if not self.enhanced_ai_service:
-                from src.services.enhanced_ai_service import get_enhanced_ai_service
-                self.enhanced_ai_service = await get_enhanced_ai_service(db)
-            
             user_input = message.get("content", "")
             conversation_id = message.get("conversation_id", str(uuid4()))
             context_type = message.get("context", "general")  # trading, combat, colony, port, strategic
-            
-            # Build conversation context with player's current state
-            conversation_context = await self._build_aria_context(player_id, context_type, db)
 
-            # Check if this is a market intelligence query
-            if any(keyword in user_input.lower() for keyword in ["market", "price", "commodity", "trade"]):
-                # Add real-time market data
-                subscribed_commodities = list(self.market_subscriptions.get(player_id, []))
-                if subscribed_commodities:
-                    market_data = await self._get_current_market_data(subscribed_commodities, db)
-                    conversation_context["market_data"] = market_data
-            
-            # Process with ARIA's enhanced intelligence
-            response = await self.enhanced_ai_service.process_player_query(
-                player_id=player_id,
-                query=user_input,
-                conversation_id=conversation_id,
-                context=conversation_context
-            )
-            
+            # EnhancedAIService binds an AsyncSession at construction and uses
+            # it implicitly in every method -- it must NOT be cached on self,
+            # because this service is a process-wide singleton
+            # (get_enhanced_websocket_service()) shared across every player's
+            # connection, each with its OWN long-lived `db`. Caching it would
+            # silently pin every player's ARIA query to whichever session
+            # first triggered the lazy-init. Open a session scoped to just
+            # this query instead -- mirrors the proven
+            # websocket_service.handle_aria_chat() pattern, which already
+            # does the same for the same reason. process_natural_language_query
+            # authenticates the player and pulls live game state (trading,
+            # combat, colony, etc.) from the DB itself; it takes no external
+            # context payload, so the WS-side game-state context this branch
+            # used to build for the old (nonexistent) API has no home here.
+            async with AsyncSessionLocal() as aria_db:
+                ai_service = EnhancedAIService(aria_db)
+                response = await ai_service.process_natural_language_query(
+                    player_id=UUID(player_id),
+                    user_input=user_input,
+                    conversation_id=conversation_id
+                )
+                await aria_db.commit()
+
             # Extract actionable items from ARIA's response
             actions = await self._extract_aria_actions(response, player_id, db)
-            
+
             # Send response with any actions
             await self.send_message(player_id, {
                 "type": "aria_response",
-                "conversation_id": conversation_id,
+                "conversation_id": response.get("conversation_id", conversation_id),
                 # (send_message stamps a top-level "timestamp" on every outbound
                 # frame, so this path already satisfies ARIAResponseMessage.)
                 "data": {
                     "message": response.get("response", ""),
-                    "confidence": response.get("confidence", 0.95),
-                    "context_used": response.get("context_type", context_type),
+                    "confidence": response.get("intent", {}).get("confidence", 0.95),
+                    "context_used": response.get("intent", {}).get("primary_intent", context_type),
                     "actions": actions,
                     "suggestions": response.get("suggestions", []),
                     "learning_note": response.get("learning_note", None)
@@ -913,8 +922,22 @@ class EnhancedWebSocketService:
 
                 player, user = row
 
-                # Grant permissions based on player/user status
-                if user.is_admin:
+                # C3: do NOT read the hybrid is_admin attribute here — User is
+                # loaded via AsyncSession; that getter runs a sync Session.query
+                # and raises MissingGreenlet (swallowed below → silent
+                # {trading}-only). Query active grants async instead, mirroring
+                # user_has_active_scope.
+                from src.models.admin_scope_grant import AdminScopeGrant
+
+                grant_result = await db.execute(
+                    select(AdminScopeGrant.id)
+                    .where(
+                        AdminScopeGrant.user_id == user.id,
+                        AdminScopeGrant.revoked_at.is_(None),
+                    )
+                    .limit(1)
+                )
+                if grant_result.first() is not None:
                     base_permissions.add("admin")
                     base_permissions.add("automation")
 

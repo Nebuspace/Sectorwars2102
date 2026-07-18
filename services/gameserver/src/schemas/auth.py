@@ -42,6 +42,18 @@ class RefreshToken(BaseModel):
     refresh_token: str = Field(..., description="Refresh token to get new access token")
 
 
+class WelcomeBackOutcome(BaseModel):
+    """Returning-player turn-bonus outcome surfaced on login (WO-PUX-WBACK-SURFACE).
+
+    Mirrors the subset of ``turn_service.welcome_back()``'s result dict the
+    client needs to render a one-shot toast; ``old_turns``/``new_turns`` stay
+    server-internal (extra dict keys are dropped by pydantic on validation).
+    """
+    granted: bool
+    bonus: int
+    days_inactive: int
+
+
 class AuthResponse(BaseModel):
     access_token: str
     refresh_token: str
@@ -49,3 +61,6 @@ class AuthResponse(BaseModel):
     user_id: str
     requires_mfa: Optional[bool] = False
     mfa_enabled: Optional[bool] = False
+    # Read-only data field (WO-PUX-WBACK-SURFACE) -- null unless the login just
+    # granted a welcome-back bonus. No effect on token issuance or auth logic.
+    welcome_back: Optional[WelcomeBackOutcome] = None

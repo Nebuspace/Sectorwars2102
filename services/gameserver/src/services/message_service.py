@@ -3,7 +3,7 @@ Message Service for handling player communication
 """
 
 from collections import defaultdict, deque
-from typing import Optional, List, Dict, Any, Deque
+from typing import Optional, Dict, Any, Deque
 from datetime import datetime
 from time import monotonic
 from uuid import UUID, uuid4
@@ -16,11 +16,8 @@ from sqlalchemy import and_, or_, desc
 from src.models.message import Message
 from src.models.player import Player
 from src.models.team import Team
-from src.services.websocket_service import ConnectionManager
+from src.services.websocket_service import connection_manager as manager
 from src.services.notification_service import NotificationService
-
-# Global manager instance
-manager = ConnectionManager()
 
 logger = logging.getLogger(__name__)
 
@@ -215,11 +212,15 @@ class MessageService:
     ) -> Dict[str, Any]:
         """Get player's inbox messages"""
         
-        # Base query for messages sent to this player
+        # Base query for messages sent to this player. moderation_status
+        # IS NULL excludes moderator-deleted messages (audit-trail-only,
+        # not player-visible) -- unread_count below inherits this filter
+        # since it further-filters this same query.
         query = db.query(Message).filter(
             and_(
                 Message.recipient_id == player_id,
-                Message.deleted_by_recipient == False
+                Message.deleted_by_recipient == False,
+                Message.moderation_status.is_(None)
             )
         )
         
@@ -262,14 +263,16 @@ class MessageService:
         if not team or not any(member.id == player_id for member in team.members):
             raise ValueError("Player is not a member of this team")
         
-        # Get team messages
+        # Get team messages. moderation_status IS NULL excludes
+        # moderator-deleted messages (audit-trail-only, not player-visible).
         query = db.query(Message).filter(
             and_(
                 Message.team_id == team_id,
                 or_(
                     Message.deleted_by_sender == False,
                     Message.sender_id != player_id
-                )
+                ),
+                Message.moderation_status.is_(None)
             )
         )
         
@@ -348,7 +351,10 @@ class MessageService:
         # Get latest message from each thread
         from sqlalchemy import func
         
-        # Subquery to get latest message per thread
+        # Subquery to get latest message per thread. moderation_status
+        # IS NULL here keeps a moderator-deleted message from being picked
+        # as a thread's "latest" (its sent_at would otherwise win the max()
+        # and surface it via the join below).
         latest_messages = db.query(
             Message.thread_id,
             func.max(Message.sent_at).label('latest_sent')
@@ -361,18 +367,22 @@ class MessageService:
                 or_(
                     and_(Message.sender_id == player_id, Message.deleted_by_sender == False),
                     and_(Message.recipient_id == player_id, Message.deleted_by_recipient == False)
-                )
+                ),
+                Message.moderation_status.is_(None)
             )
         ).group_by(Message.thread_id).subquery()
-        
-        # Get the actual messages
+
+        # Get the actual messages. moderation_status IS NULL is repeated
+        # here (defense in depth alongside the subquery filter above) so
+        # this query stays correct even if the join condition alone would
+        # have let a deleted row through on a sent_at tie.
         query = db.query(Message).join(
             latest_messages,
             and_(
                 Message.thread_id == latest_messages.c.thread_id,
                 Message.sent_at == latest_messages.c.latest_sent
             )
-        )
+        ).filter(Message.moderation_status.is_(None))
         
         total = query.count()
         
@@ -415,32 +425,26 @@ class MessageService:
 
         # Notify all admin users about the flagged message
         try:
-            from src.models.user import User
-            admin_users = db.query(User).filter(
-                User.is_admin == True,
-                User.is_active == True
-            ).all()
-
             flagging_player = db.query(Player).filter(Player.id == flagged_by).first()
             flagged_by_name = flagging_player.username if flagging_player else str(flagged_by)
 
-            for admin_user in admin_users:
-                # Send WebSocket notification to admin connections
-                admin_notification = {
-                    "type": "flagged_message_alert",
-                    "message_id": str(message_id),
-                    "flagged_by": str(flagged_by),
-                    "flagged_by_name": flagged_by_name,
-                    "reason": reason,
-                    "message_preview": message.content[:200] if message.content else "",
-                    "sender_id": str(message.sender_id),
-                    "flagged_at": datetime.utcnow().isoformat()
-                }
-                await manager.send_personal_message(str(admin_user.id), admin_notification)
+            # Broadcast to every connected admin (admins register in
+            # admin_connections via connect_admin, not active_connections —
+            # a per-admin send_personal_message loop would never reach them).
+            admin_notification = {
+                "type": "flagged_message_alert",
+                "message_id": str(message_id),
+                "flagged_by": str(flagged_by),
+                "flagged_by_name": flagged_by_name,
+                "reason": reason,
+                "message_preview": message.content[:200] if message.content else "",
+                "sender_id": str(message.sender_id),
+                "flagged_at": datetime.utcnow().isoformat()
+            }
+            await manager.broadcast_to_admins(admin_notification)
 
             logger.warning(
-                f"Message {message_id} flagged by {flagged_by} for: {reason}. "
-                f"Notified {len(admin_users)} admin(s)."
+                f"Message {message_id} flagged by {flagged_by} for: {reason}."
             )
         except Exception as e:
             logger.error(f"Failed to notify admins about flagged message {message_id}: {e}")
@@ -464,8 +468,13 @@ class MessageService:
             return False
         
         if action == "delete":
-            # Hard delete the message
-            db.delete(message)
+            # Soft delete: keep the row (and the moderator stamps below) for
+            # the audit log -- messaging.md "Moderated messages remain in
+            # the database for the audit log even after content removal".
+            # Player-facing reads filter moderation_status IS NULL; admin
+            # queries (admin_messages.py) are untouched and keep full
+            # visibility, including previously-deleted rows.
+            message.moderation_status = "deleted"
         elif action == "unflag":
             message.flagged = False
             message.flagged_reason = None

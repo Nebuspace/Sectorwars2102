@@ -283,7 +283,7 @@ def sell_planet_surplus(
 
     # Lock the player row (leaf) AFTER the planet row.
     locked_player = (
-        db.query(Player).filter(Player.id == player_id).with_for_update().first()
+        db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
     )
     if locked_player is None:
         raise SurplusSaleError(404, "Player not found.")

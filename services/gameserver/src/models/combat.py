@@ -15,6 +15,11 @@ class CombatType(enum.Enum):
     SHIP_VS_DRONES = "SHIP_VS_DRONES"
     PLANET_DEFENSE = "PLANET_DEFENSE"
     PORT_DEFENSE = "PORT_DEFENSE"
+    # Not a distinct CombatLog.combat_type (sector-drone engagements log as
+    # SHIP_VS_DRONES) — tags the +5% sector-defence bonus applied to deployed
+    # defender drones' return fire (combat.md#sector-drones). Referenced via
+    # its .value as a combat_details entry tag in
+    # CombatService._resolve_sector_drone_combat (WO-DRN-COMBAT-RECORD).
     SECTOR_DEFENSE = "SECTOR_DEFENSE"
 
 

@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 DECAY_PCT_PER_DAY = {
     ShipType.LIGHT_FREIGHTER: 1.0,
     ShipType.FAST_COURIER: 1.0,
+    # FC mirror per ship-roster.md Citizen Clipper — P2W firewall: no edge, no deficit.
+    ShipType.CITIZEN_CLIPPER: 1.0,
     ShipType.SCOUT_SHIP: 1.0,
     ShipType.CARGO_HAULER: 2.0,
     ShipType.COLONY_SHIP: 2.0,

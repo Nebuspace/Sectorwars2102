@@ -12,6 +12,8 @@ from sqlalchemy.orm import selectinload
 
 from src.core.commodity_economy import base_price as commodity_base_price
 from src.core.database import get_async_session
+from src.core.station_class_map import apply_class_pattern
+from src.core.station_security_tiers import _derive_station_security_tier
 from src.models.sector import Sector, SectorType
 from src.models.planet import Planet
 from src.models.station import Station
@@ -19,14 +21,106 @@ from src.models.warp_tunnel import WarpTunnel, WarpTunnelType, WarpTunnelStatus
 from src.models.region import Region, RegionType
 from src.models.zone import Zone
 from src.models.cluster import Cluster, ClusterType
+from src.services.nebula_color import NEBULA_COLOR_HEX, derive_nebula_color
 
 import logging
 
 logger = logging.getLogger(__name__)
 
+# WO-P2-econ-blackmarket-venue-spawn Leg C, Part 2 (nexus-hub placement).
+# [NO-CANON] black-market.md's Locations table (:22-29) places "Class-0
+# Black Market station" venues in "Frontier zone, Fringe Alliance territory"
+# but gives no placement rate/count -- neither that section nor the earlier
+# design brief (audit/design-briefs/black-market.md) pins a number beyond
+# "the Implementer seeds a handful of BLACK_MARKET-type stations in
+# Frontier-zone sectors". This constant is that invented default, proposed
+# to DECISIONS.md rather than silently treated as canon.
+#
+# Math (Central Nexus's current fixed shape: total_sectors=5000,
+# cluster_count=20 -> 250 sectors/cluster, 5 of the 20 clusters are
+# FRONTIER_OUTPOST -- clusters 5/6/15/17/20, _create_nexus_clusters:315-330
+# -- so 1250 frontier sectors; FRONTIER_OUTPOST already halves port density
+# to 2.5% (effective_port_density, :422-424), so ~31 ports/cluster * 5 =~
+# 156 frontier ports total): at 4% of THOSE ports, expected count is
+# 156 * 0.04 =~ 6 BLACK_MARKET stations hub-wide -- a genuine "handful",
+# not a majority of frontier space and not vanishingly rare either.
+BLACK_MARKET_FRONTIER_CHANCE = 0.04
+
+
+def _synthesize_cluster_nebula_fields(cluster: Cluster, nebula_sector_count: int) -> None:
+    """WO-GWQ-NEXUS-NEBULA-FIELDS: give a nexus-generated cluster the same
+    canon nebula fields bang import derives, so quantum_service.harvest_nebula
+    stops rejecting every generator-made nebula as 'uncharted'
+    (_HARVEST_YIELD_BANDS keys on the six canon colors only).
+
+    NO-CANON [flag to DECISIONS]: bang emits a per-sector {type, density}
+    sample that bang_import_service._finalize_cluster_nebula_fields averages
+    into quantum_field_strength; nexus's synthetic sectors carry only a bare
+    SectorType.NEBULA flag with no density to average. Convention adopted
+    here: roll ONE uniform 1-100 field strength per nebula-bearing cluster
+    (the same 0-100 domain the shared boundary table keys on) rather than
+    fabricating per-sector densities to average. nebula_type/color_hex are
+    then derived from that roll via the SAME shared derive_nebula_color /
+    NEBULA_COLOR_HEX bang import uses (src.services.nebula_color), so a
+    generator-made nebula cluster harvests through the identical six-color
+    band table.
+
+    A cluster with zero NEBULA sectors is left untouched — all three fields
+    stay at their column default (None), matching bang import's "no nebula
+    samples -> all three None" convention.
+    """
+    if nebula_sector_count <= 0:
+        return
+    field_strength = float(random.randint(1, 100))
+    color = derive_nebula_color(field_strength)
+    cluster.quantum_field_strength = field_strength
+    cluster.nebula_type = color
+    cluster.color_hex = NEBULA_COLOR_HEX[color]
+
 
 class NexusGenerationService:
     """Service for generating the Central Nexus - a sparse 5000-sector galactic hub organized by clusters"""
+
+    # ----- WO-TD-NEXGEN-1: TradeDock seeding (Central Nexus quota) --------
+    # Mirrors bang_import_service._TRADEDOCK_QUOTAS["central_nexus"] /
+    # repair_tradedocks.py's QUOTAS["central_nexus"] (tradedock-shipyard.md
+    # #galaxy-generation-seeding: "3 in Central Nexus: 1 Tier-A + 2 Tier-B").
+    # Ported rather than imported — bang_import_service pulls in the docker
+    # SDK at module scope, an unwanted hard dependency for this in-process
+    # generator (see WO-TD-NEXGEN-1 report).
+    _TRADEDOCK_TIERS: Tuple[str, str, str] = ("A", "B", "B")
+    # Tier-A flagship names — distinct literal strings from bang's own
+    # Central Nexus names carry no live collision risk: this generator and
+    # the bang path can never BOTH populate the same Central Nexus region
+    # (_check_existing_nexus / bang's own existing-region guard each refuse
+    # a second Central Nexus). Keep in sync with
+    # bang_import_service._TRADEDOCK_TIER_A_NAMES_BY_REGION["central_nexus"]
+    # and repair_tradedocks.py's TIER_A_NAMES_BY_REGION["central_nexus"].
+    _TRADEDOCK_TIER_A_NAMES: Tuple[str, ...] = ("TradeDock Nexus Prime", "TradeDock Nexus Apex")
+    _TRADEDOCK_TIER_B_NAMES: Tuple[str, ...] = ("TradeDock Meridian", "TradeDock Crucible", "TradeDock Bastion")
+
+    # Per-commodity baseline for a freshly-seeded TradeDock's Station.commodities
+    # JSONB, ready for apply_class_pattern(..., StationClass.CLASS_11, rng) to
+    # finalize. Mirrors bang_import_service._build_full_commodities({})'s
+    # output shape/values (WO-TD-NEXGEN-1: "same book shape the bang path
+    # writes") — ported locally rather than imported, same docker-SDK
+    # rationale as the tier names above. base_price sources from the ADR-0082
+    # single source of truth (src.core.commodity_economy), matching every
+    # other freshly-constructed station in this codebase; capacity/
+    # production_rate/price_variance are local bootstrap shape, not price
+    # econ (see bang_import_service._COMMODITY_DEFAULTS /
+    # repair_tradedocks.py's COMMODITY_DEFAULTS — keep the three in sync).
+    _TRADEDOCK_COMMODITY_SHAPE: Dict[str, Dict[str, int]] = {
+        "ore": {"capacity": 5000, "production_rate": 100, "price_variance": 20},
+        "organics": {"capacity": 3000, "production_rate": 80, "price_variance": 25},
+        "equipment": {"capacity": 2000, "production_rate": 50, "price_variance": 30},
+        "fuel": {"capacity": 4000, "production_rate": 120, "price_variance": 15},
+        "luxury_goods": {"capacity": 800, "production_rate": 20, "price_variance": 40},
+        "gourmet_food": {"capacity": 600, "production_rate": 15, "price_variance": 35},
+        "exotic_technology": {"capacity": 200, "production_rate": 5, "price_variance": 50},
+        "colonists": {"capacity": 500, "production_rate": 10, "price_variance": 10},
+        "precious_metals": {"capacity": 400, "production_rate": 8, "price_variance": 30},
+    }
 
     def __init__(self):
         self.total_sectors = 5000  # Central Nexus size (per spec)
@@ -106,6 +200,15 @@ class NexusGenerationService:
                 generation_stats["total_ports"] += cluster_stats["ports"]
                 generation_stats["total_planets"] += cluster_stats["planets"]
 
+                # WO-GWQ-NEXUS-NEBULA-FIELDS: any cluster that just got >=1
+                # NEBULA sector needs the canon nebula fields quantum_service
+                # harvest gates on — mutate the SAME Cluster ORM object
+                # _create_nexus_clusters added to this session; the trailing
+                # session.flush() below picks up the change.
+                _synthesize_cluster_nebula_fields(
+                    cluster, cluster_stats.get("nebula_sectors", 0)
+                )
+
                 current_sector_num = end_sector + 1
                 logger.info(f"Cluster {cluster.name} completed: {cluster_stats}")
 
@@ -114,6 +217,24 @@ class NexusGenerationService:
             warp_tunnel_count = await self._generate_warp_tunnels(session, str(nexus_region.id))
             generation_stats["total_warp_tunnels"] = warp_tunnel_count
             logger.info(f"Created {warp_tunnel_count} warp tunnels")
+
+            # WO-TD-NEXGEN-1: seed the canon TradeDock quota (1 Tier-A + 2
+            # Tier-B) so a live-route-generated Nexus keeps the
+            # Warp-Jumper-capable-shipyard guarantee bang-imported galaxies
+            # already have (tradedock-shipyard.md
+            # #galaxy-generation-seeding). Must run AFTER warp tunnels exist
+            # (placement needs live inbound-warp counts) and BEFORE the
+            # market-price sweep below, so the new stations get swept into
+            # it for free.
+            logger.info("Seeding Central Nexus TradeDocks...")
+            tradedock_stats = await self._seed_nexus_tradedocks(
+                session, str(nexus_region.id), nexus_clusters
+            )
+            generation_stats["tradedocks_created"] = tradedock_stats["tradedocks_created"]
+            generation_stats["tradedock_placement_warnings"] = tradedock_stats[
+                "tradedock_placement_warnings"
+            ]
+            logger.info(f"Seeded {tradedock_stats['tradedocks_created']} TradeDocks")
 
             # Create MarketPrice entries for all generated stations
             logger.info("Creating market prices for Central Nexus stations...")
@@ -310,7 +431,7 @@ class NexusGenerationService:
         the exact same code path (and RNG-call sequence) as before this WO, so
         an unbiased Nexus is byte-identical to today.
         """
-        stats = {"sectors": 0, "ports": 0, "planets": 0}
+        stats = {"sectors": 0, "ports": 0, "planets": 0, "nebula_sectors": 0}
 
         # WO-GX1 bias parameters (NO-CANON magnitudes from the work order)
         is_resource_rich = cluster_type == ClusterType.RESOURCE_RICH
@@ -381,7 +502,6 @@ class NexusGenerationService:
                 # admin.py:1495, admin_comprehensive.py:970); a list detonates
                 # combat + admin in every military sector.
                 sector_data["defenses"] = {
-                    "defense_drones": 0,
                     "owner_id": None,
                     "owner_name": None,
                     "team_id": None,
@@ -393,6 +513,7 @@ class NexusGenerationService:
             # FRONTIER_OUTPOST: more nebula. NEVER the starter (sector 1).
             if is_frontier and sector_num != 1 and random.random() < nebula_chance:
                 sector_data["type"] = SectorType.NEBULA
+                stats["nebula_sectors"] += 1
 
             batch_sectors.append(sector_data)
             stats["sectors"] += 1
@@ -401,7 +522,7 @@ class NexusGenerationService:
             # FRONTIER_OUTPOST halves effective station density (fewer ports);
             # all other cluster types use the baseline 5% density unchanged.
             if sector_num == 1 or random.random() < effective_port_density:
-                port_data = self._generate_port_for_sector(sector_num, region_id)
+                port_data = self._generate_port_for_sector(sector_num, region_id, is_frontier=is_frontier)
                 batch_ports.append(port_data)
                 stats["ports"] += 1
 
@@ -425,11 +546,35 @@ class NexusGenerationService:
 
         return stats
 
-    def _generate_port_for_sector(self, sector_num: int, region_id: str) -> Dict[str, Any]:
+    def _generate_port_for_sector(
+        self, sector_num: int, region_id: str, is_frontier: bool = False,
+    ) -> Dict[str, Any]:
         """Generate a port configuration for a sector in Central Nexus
 
         Sparse generation: Ports are randomly distributed with mixed types.
         Sector 1 always gets a high-quality trading station for starter access.
+
+        ``is_frontier`` (WO-P2-econ-blackmarket-venue-spawn Leg C, Part 2,
+        default False): when the calling cluster is FRONTIER_OUTPOST, this
+        port has a BLACK_MARKET_FRONTIER_CHANCE roll to become a
+        StationType.BLACK_MARKET venue instead of the normal random type
+        pool (black-market.md :22-29 -- "Frontier zone, Fringe Alliance
+        territory"). The roll is a SEPARATE, ADDITIONAL random.random() call
+        that only fires when is_frontier=True, so a non-frontier caller (the
+        default) takes the exact same RNG-call sequence as before this WO --
+        byte-identical generation for every other cluster type, matching
+        this file's own WO-GX1 "unbiased path is unchanged" convention.
+        station_class is left untouched either way -- venue TYPE and CLASS
+        are orthogonal (the whole point of Leg A's fix one WO ago: never
+        derive BLACK_MARKET from station_class again).
+
+        The existing Fringe-Alliance (OUTLAWS) RECOGNIZED-tier rep gate
+        (contraband_service.py's _passes_rep_gate, already shipped) covers
+        any station with this type regardless of how it was created -- no
+        additional discovery wiring needed here. Canon's "Hidden sector" row
+        (:27, sectors absent from nav tables) is a DIFFERENT venue type in
+        the same Locations table, not this one -- is_nexus_protected /
+        sector.py:129 deliberately NOT wired onto these stations.
         """
         from src.models.station import StationClass, StationType, StationStatus
 
@@ -448,6 +593,30 @@ class NexusGenerationService:
                 # long-term docking slips, distinct from a regional Capital
                 # (also CLASS_0, but 80 / 30). docking_service reads this flag.
                 "is_starport_prime": True,
+                # WO-CMB-PORT-DEF-SEED-1: class-scaled defenses (replaces the
+                # flat Column default). CLASS_0 borrows the Class-5 profile —
+                # see Station._STATION_DEFENSE_BY_CLASS docstring.
+                "defenses": Station.default_defenses_for_class(StationClass.CLASS_0),
+                # WO-TD-NEXGEN-1: Central Nexus's CLASS_0 hub is one of
+                # canon's three literal Standard/Premium anchors ("Nexus
+                # Starport Prime") — _derive_station_security_tier resolves
+                # this to "premium" unconditionally for
+                # region_type="central_nexus" (cluster_type doesn't affect
+                # the anchor branches, so None is safe here). NOTE: this
+                # branch (sector_num == 1) is currently DEAD in the live
+                # generate-route call chain — Central Nexus sector numbering
+                # starts at 301 (generate_central_nexus's
+                # current_sector_num), so sector_num never equals 1 here;
+                # see this WO's report.
+                "security": {
+                    "tier": _derive_station_security_tier(
+                        region_type="central_nexus",
+                        cluster_type=None,
+                        station_class=StationClass.CLASS_0,
+                        is_spacedock=False,
+                        tradedock_tier=None,
+                    )
+                },
             }
 
         # Random port types for other sectors
@@ -458,6 +627,14 @@ class NexusGenerationService:
             StationType.DIPLOMATIC,
             StationType.SCIENTIFIC
         ])
+
+        # Leg C Part 2: Frontier-zone black-market placement (see this
+        # method's own docstring + the module-level BLACK_MARKET_FRONTIER_
+        # CHANCE constant for the [NO-CANON] rate + its math). A SEPARATE
+        # roll, only taken for frontier ports, so non-frontier generation's
+        # RNG-call sequence is unchanged.
+        if is_frontier and random.random() < BLACK_MARKET_FRONTIER_CHANCE:
+            port_type = StationType.BLACK_MARKET
 
         # Random port class (mostly mid-tier)
         port_class = random.choice([
@@ -478,7 +655,10 @@ class NexusGenerationService:
             "station_class": port_class,
             "type": port_type,
             "status": StationStatus.OPERATIONAL,
-            "size": size
+            "size": size,
+            # WO-CMB-PORT-DEF-SEED-1: class-scaled defenses (replaces the
+            # flat Column default) for every freshly-generated port.
+            "defenses": Station.default_defenses_for_class(port_class),
         }
     
     def _generate_planet_for_sector(self, sector_num: int, region_id: str) -> Dict[str, Any]:
@@ -607,28 +787,23 @@ class NexusGenerationService:
             "gourmet_food": {"base_price": commodity_base_price("gourmet_food"), "quantity": 150, "capacity": 600},
             "exotic_technology": {"base_price": commodity_base_price("exotic_technology"), "quantity": 50, "capacity": 200},
             "colonists": {"base_price": commodity_base_price("colonists"), "quantity": 100, "capacity": 500},
+            # PENDING-RULING(precious_metals): not added here; see mailbox
+            # ruling (b), 2026-07-02T01:54:42Z.
         }
 
-        # Trading patterns by station class
-        trading_patterns = {
-            StationClass.CLASS_0: {"buys": ["special_goods"], "sells": ["special_goods", "colonists"]},
-            StationClass.CLASS_1: {"buys": ["ore"], "sells": ["organics", "equipment"]},
-            StationClass.CLASS_2: {"buys": ["organics"], "sells": ["ore", "equipment"]},
-            StationClass.CLASS_3: {"buys": ["equipment"], "sells": ["ore", "organics"]},
-            StationClass.CLASS_4: {"buys": [], "sells": ["ore", "organics", "equipment", "fuel"]},
-            StationClass.CLASS_5: {"buys": ["ore", "organics", "equipment", "fuel"], "sells": []},
-            StationClass.CLASS_6: {"buys": ["ore", "organics"], "sells": ["equipment", "fuel"]},
-            StationClass.CLASS_7: {"buys": ["equipment", "fuel"], "sells": ["ore", "organics"]},
-            StationClass.CLASS_8: {"buys": ["ore", "organics", "equipment", "fuel"], "sells": []},
-            StationClass.CLASS_9: {"buys": [], "sells": ["ore", "organics", "equipment", "fuel"]},
-            StationClass.CLASS_10: {"buys": ["gourmet_food"], "sells": ["luxury_goods", "exotic_technology"]},
-            StationClass.CLASS_11: {"buys": ["exotic_technology"], "sells": ["equipment", "fuel"]},
-        }
+        # Trading patterns by station class now read from the declared SoT
+        # (src.core.station_class_map) instead of a private shadow copy —
+        # collapses the WO-ARCH-RES-2E divergence. Behavior change: CLASS_4
+        # gains buys=['exotic_technology'] (station_class_map.py:45), CLASS_5
+        # gains sells=['luxury_goods'] (:46), CLASS_11 becomes
+        # buys=sells=['exotic_technology','luxury_goods'] (:52-55, per
+        # FEATURES/economy/trading.md#class-11).
+        from src.core.station_class_map import get_class_pattern
 
         prices_created = 0
 
         for station in stations:
-            pattern = trading_patterns.get(station.station_class, {"buys": [], "sells": []})
+            pattern = get_class_pattern(station.station_class)
             buys_list = pattern.get("buys", [])
             sells_list = pattern.get("sells", [])
 
@@ -667,6 +842,349 @@ class NexusGenerationService:
 
         await session.flush()
         return prices_created
+
+    # ----- WO-TD-NEXGEN-1: TradeDock seeding -------------------------------
+
+    @staticmethod
+    def _derive_tradedock_placements(
+        clusters: List[Any],
+        cluster_id_by_sector: Dict[int, Any],
+        inbound_warp_count: Dict[int, int],
+        occupied_sectors: set,
+        tiers: Tuple[str, ...],
+        rng: random.Random,
+    ) -> Tuple[List[Dict[str, Any]], List[str]]:
+        """Pure placement-selection for the Central Nexus TradeDock quota
+        (WO-TD-NEXGEN-1). No DB access — every input is plain data, so this
+        is directly unit-testable without a session
+        (tests/unit/test_nexus_tradedock_seed.py). ``clusters`` accepts any
+        object exposing ``.id``/``.type`` (a real :class:`Cluster` row or a
+        lightweight test double).
+
+        Canon (tradedock-shipyard.md:436-440, galaxy-generation.md#step-95):
+        place at sectors in an EXPANSE-zone commerce cluster (this
+        generator's ``ClusterType.TRADE_HUB``) with >=2 inbound warps; never
+        the starter cluster (``clusters[0]``, "Commerce Central Hub") or a
+        FRONTIER_OUTPOST cluster; avoid sectors already carrying a station
+        (which already excludes Nexus's only anchor, Sector 1 Starport
+        Prime — inside the starter cluster). Also reserves ``clusters[9]``
+        ("Gateway Plaza" — commented in ``_create_nexus_clusters`` as
+        "ANCHOR: Capital") even though no code path currently seeds a Nexus
+        Capital station there; the reservation costs nothing (three other
+        TRADE_HUB clusters qualify) and keeps the slot free for whenever
+        that anchor is built.
+
+        NO-CANON fallback (flagged via the returned ``warnings``, per the
+        WO): if no qualifying commerce-cluster sector has >=2 inbound warps,
+        fall back to the best-connectivity sector in any non-starter,
+        non-FRONTIER_OUTPOST cluster (connectivity floor relaxed, exclusions
+        kept). If even that is exhausted (should be unreachable at Central
+        Nexus's 5000-sector/5% density scale), fall back to any free
+        non-starter/non-Capital-anchor sector — the point of this WO is to
+        never again silently ship a Nexus with zero TradeDocks.
+
+        Returns ``(placements, warnings)``: each placement is
+        ``{"sector_id": int, "tier": "A"|"B", "cluster_type": ClusterType}``;
+        warnings are human-readable ``[NO-CANON]`` strings, one per fallback
+        actually used (empty on the canon-compliant happy path).
+        """
+        warnings: List[str] = []
+        occupied = set(occupied_sectors)
+
+        starter_cluster_id = clusters[0].id if clusters else None
+        reserved_cluster_ids = {starter_cluster_id}
+        if len(clusters) > 9:
+            reserved_cluster_ids.add(clusters[9].id)  # "Gateway Plaza" Capital-anchor slot
+
+        def _sectors_for(cluster_ids: set, min_inbound: int) -> List[int]:
+            return sorted(
+                s for s, cid in cluster_id_by_sector.items()
+                if cid in cluster_ids
+                and s not in occupied
+                and inbound_warp_count.get(s, 0) >= min_inbound
+            )
+
+        commerce_cluster_ids = {
+            c.id for c in clusters
+            if c.type == ClusterType.TRADE_HUB and c.id not in reserved_cluster_ids
+        }
+        candidate_pool = _sectors_for(commerce_cluster_ids, 2)
+        # Canon has no preference ordering among qualifying commerce-cluster
+        # sectors, so the primary pool is drawn uniformly at random (matches
+        # bang_import_service._apply_tradedock_seeding's own rng.randrange
+        # popping). The fallback ladder below is different: canon's own
+        # wording ("fall back to the MOST POPULOUS cluster") is a
+        # deterministic best-of preference, not a random draw, so fallback
+        # pools are consumed front-to-back in best-connectivity order
+        # instead of via rng.randrange.
+        prefer_best_connectivity = False
+
+        if not candidate_pool:
+            fallback_cluster_ids = {
+                c.id for c in clusters
+                if c.id not in reserved_cluster_ids and c.type != ClusterType.FRONTIER_OUTPOST
+            }
+            fallback_pool = _sectors_for(fallback_cluster_ids, 0)
+            fallback_pool.sort(key=lambda s: inbound_warp_count.get(s, 0), reverse=True)
+            if fallback_pool:
+                warnings.append(
+                    "[NO-CANON] no non-starter TRADE_HUB (EXPANSE-zone commerce) "
+                    "cluster had a free sector with >=2 inbound warps; fell back "
+                    "to the best-connectivity non-starter/non-FRONTIER cluster "
+                    f"(best candidate: sector {fallback_pool[0]}, "
+                    f"{inbound_warp_count.get(fallback_pool[0], 0)} inbound warps)."
+                )
+            candidate_pool = fallback_pool
+            prefer_best_connectivity = True
+
+        if not candidate_pool:
+            candidate_pool = sorted(
+                s for s, cid in cluster_id_by_sector.items()
+                if cid not in reserved_cluster_ids and s not in occupied
+            )
+            if candidate_pool:
+                warnings.append(
+                    "[NO-CANON] exhausted the broadened fallback pool too; "
+                    "placed in any free non-starter/non-Capital-anchor sector."
+                )
+            prefer_best_connectivity = False  # no connectivity ranking at this tier
+
+        placements: List[Dict[str, Any]] = []
+        cluster_type_by_id = {c.id: c.type for c in clusters}
+        for tier in tiers:
+            if not candidate_pool:
+                warnings.append(
+                    f"[NO-CANON] no free sector left to seed the Tier-{tier} TradeDock."
+                )
+                continue
+            pick_index = 0 if prefer_best_connectivity else rng.randrange(len(candidate_pool))
+            sector_id = candidate_pool.pop(pick_index)
+            occupied.add(sector_id)
+            placements.append(
+                {
+                    "sector_id": sector_id,
+                    "tier": tier,
+                    "cluster_type": cluster_type_by_id.get(cluster_id_by_sector.get(sector_id)),
+                }
+            )
+        return placements, warnings
+
+    @classmethod
+    def _tradedock_baseline_commodities(cls) -> Dict[str, Dict[str, Any]]:
+        """Fully-inert 9-key commodities dict (quantity 0, buys=sells=False),
+        ready for ``apply_class_pattern`` to finalize against a station
+        class. Mirrors ``bang_import_service._build_full_commodities({})``'s
+        output shape — see ``_TRADEDOCK_COMMODITY_SHAPE``'s docstring for why
+        this is a local port rather than an import."""
+        out: Dict[str, Dict[str, Any]] = {}
+        for name, cfg in cls._TRADEDOCK_COMMODITY_SHAPE.items():
+            base = commodity_base_price(name)
+            out[name] = {
+                "quantity": 0,
+                "capacity": cfg["capacity"],
+                "base_price": base,
+                "current_price": base,
+                "production_rate": cfg["production_rate"],
+                "price_variance": cfg["price_variance"],
+                "buys": False,
+                "sells": False,
+            }
+        return out
+
+    @staticmethod
+    def _tradedock_services(tier: str) -> Dict[str, Any]:
+        """TradeDock service flags — identical shape to
+        ``bang_import_service._apply_tradedock_seeding`` /
+        ``repair_tradedocks.py``'s TradeDock rows; only ``luxury_amenities``
+        varies by tier."""
+        return {
+            "ship_dealer": True,
+            "ship_repair": True,
+            "ship_maintenance": True,
+            "ship_upgrades": True,
+            "insurance": True,
+            "drone_shop": True,
+            "genesis_dealer": False,
+            "mine_dealer": True,
+            "diplomatic_services": False,
+            "storage_rental": True,
+            "market_intelligence": True,
+            "refining_facility": True,
+            "luxury_amenities": tier == "A",
+        }
+
+    @classmethod
+    def _build_tradedock_station_row(
+        cls,
+        *,
+        sector_id: int,
+        tier: str,
+        name: str,
+        cluster_type: Optional[ClusterType],
+        region_id: str,
+        rng: random.Random,
+    ) -> Dict[str, Any]:
+        """Build one TradeDock ``Station`` row, dict-shaped for the same
+        ``insert(Station), batch`` bulk-insert pattern every other station in
+        this generator uses. Pure aside from ``rng`` (threaded, not the
+        module-global ``random``, so callers control reproducibility).
+
+        Security tier: WO-TD-NEXGEN-1 REVISE ruling — all 3 Central Nexus
+        TradeDocks (Tier-A AND both Tier-B) seed "standard", unconditionally
+        (no lawless-cluster downgrade — this matches how the shared
+        ``_derive_station_security_tier`` helper already treats Tier-A,
+        which returns "standard" before it ever reaches its own
+        lawless-cluster check). Canon (station-protection.md:28-33) is
+        silent on TradeDock tiers under either reading of "Terran Space hub
+        stations", so where canon is silent the WO's own stated acceptance
+        criterion ("the 3 TradeDocks read standard") governs — Tier-B
+        TradeDocks are shipyards holding expensive construction
+        reservations and shouldn't sit behind weaker protection than their
+        Tier-A sibling. This deliberately bypasses ``_derive_station_
+        security_tier`` here rather than widening that helper's own
+        ``tradedock_tier == "A"`` branch: the helper is also
+        bang_import_service.py's single source of truth, and this ruling is
+        scoped to Central Nexus TradeDocks seeded by this generator, not a
+        blanket canon change — whether bang-imported TradeDocks should get
+        the same treatment is escalated to the orchestrator as a DOC-GAP.
+        """
+        from src.models.station import StationClass, StationType, StationStatus
+
+        commodities = apply_class_pattern(
+            cls._tradedock_baseline_commodities(), StationClass.CLASS_11, rng
+        )
+        return {
+            "name": name,
+            "sector_id": sector_id,
+            "region_id": region_id,
+            "station_class": StationClass.CLASS_11,
+            "type": StationType.SHIPYARD,
+            "status": StationStatus.OPERATIONAL,
+            "size": 10,
+            "commodities": commodities,
+            "services": cls._tradedock_services(tier),
+            "is_spacedock": False,
+            "tradedock_tier": tier,
+            "defenses": Station.default_defenses_for_class(StationClass.CLASS_11),
+            "security": {
+                # WO-TD-NEXGEN-1 REVISE ruling: both tiers seed "standard"
+                # unconditionally — see docstring above. ``cluster_type`` is
+                # intentionally not consulted here (unlike the shared
+                # helper's lawless-cluster downgrade) and stays a parameter
+                # only for interface stability with the other station-row
+                # builders in this generator.
+                "tier": "standard",
+            },
+            "description": (
+                "Tier-A TradeDock — Warp-Jumper-capable construction shipyard."
+                if tier == "A"
+                else "Tier-B TradeDock — standard construction shipyard."
+            ),
+        }
+
+    async def _seed_nexus_tradedocks(
+        self, session: AsyncSession, region_id: str, clusters: List[Cluster]
+    ) -> Dict[str, Any]:
+        """WO-TD-NEXGEN-1: seed the canon Central Nexus TradeDock quota
+        (1 Tier-A + 2 Tier-B) into a LIVE-route-generated Nexus, so the
+        Warp-Jumper-capable-shipyard guarantee a bang-imported galaxy
+        already has (tradedock-shipyard.md #galaxy-generation-seeding) also
+        holds for galaxies built through this in-process generator — today
+        this route produces a Nexus with ZERO TradeDocks (zero writers of
+        ``tradedock_tier`` anywhere in this file before this WO).
+
+        Must run AFTER :meth:`_generate_warp_tunnels` (placement needs live
+        inbound-warp counts) and BEFORE
+        :meth:`_create_market_prices_for_nexus_stations` (so the new
+        stations are swept into that existing per-station-class MarketPrice
+        pass for free) — see the call order in
+        :meth:`generate_central_nexus`; that method is untouched
+        (WO-ARCH-RES-2E DO-NOT-TOUCH).
+
+        Placement logic (cluster/connectivity filtering, starter/anchor
+        exclusion, fallback) is the pure, DB-free
+        :meth:`_derive_tradedock_placements` — this method is the thin DB
+        glue: three read queries, then a single bulk insert.
+        """
+        sector_rows = (
+            await session.execute(
+                select(Sector.id, Sector.sector_id, Sector.cluster_id).where(
+                    Sector.region_id == region_id
+                )
+            )
+        ).all()
+        sector_int_by_uuid: Dict[Any, int] = {row.id: row.sector_id for row in sector_rows}
+        cluster_id_by_sector: Dict[int, Any] = {row.sector_id: row.cluster_id for row in sector_rows}
+        sector_uuids = list(sector_int_by_uuid.keys())
+
+        inbound_warp_count: Dict[int, int] = {}
+        if sector_uuids:
+            tunnel_rows = (
+                await session.execute(
+                    select(
+                        WarpTunnel.origin_sector_id,
+                        WarpTunnel.destination_sector_id,
+                        WarpTunnel.is_bidirectional,
+                    ).where(WarpTunnel.origin_sector_id.in_(sector_uuids))
+                )
+            ).all()
+            for origin_uuid, dest_uuid, is_bidirectional in tunnel_rows:
+                dest_int = sector_int_by_uuid.get(dest_uuid)
+                if dest_int is not None:
+                    inbound_warp_count[dest_int] = inbound_warp_count.get(dest_int, 0) + 1
+                if is_bidirectional:
+                    origin_int = sector_int_by_uuid.get(origin_uuid)
+                    if origin_int is not None:
+                        inbound_warp_count[origin_int] = inbound_warp_count.get(origin_int, 0) + 1
+
+        occupied_result = await session.execute(
+            select(Station.sector_id).where(Station.region_id == region_id)
+        )
+        occupied_sectors = {row[0] for row in occupied_result.all()}
+
+        rng = random.Random(f"nexus-tradedock:{region_id}")
+        placements, warnings = self._derive_tradedock_placements(
+            clusters,
+            cluster_id_by_sector,
+            inbound_warp_count,
+            occupied_sectors,
+            self._TRADEDOCK_TIERS,
+            rng,
+        )
+        for warning in warnings:
+            logger.warning("Nexus TradeDock placement: %s", warning)
+
+        tier_a_names = list(self._TRADEDOCK_TIER_A_NAMES)
+        tier_b_names = list(self._TRADEDOCK_TIER_B_NAMES)
+        rng.shuffle(tier_b_names)
+        name_counters = {"A": 0, "B": 0}
+
+        batch_stations: List[Dict[str, Any]] = []
+        for placement in placements:
+            tier = placement["tier"]
+            names = tier_a_names if tier == "A" else tier_b_names
+            name = names[name_counters[tier] % len(names)]
+            name_counters[tier] += 1
+            batch_stations.append(
+                self._build_tradedock_station_row(
+                    sector_id=placement["sector_id"],
+                    tier=tier,
+                    name=name,
+                    cluster_type=placement["cluster_type"],
+                    region_id=region_id,
+                    rng=random.Random(
+                        f"nexus-tradedock:{region_id}:{placement['sector_id']}:{name}"
+                    ),
+                )
+            )
+
+        if batch_stations:
+            await session.execute(insert(Station), batch_stations)
+
+        return {
+            "tradedocks_created": len(batch_stations),
+            "tradedock_placement_warnings": warnings,
+        }
 
     async def _generate_warp_tunnels(self, session: AsyncSession, region_id: str) -> int:
         """Generate warp tunnels for Central Nexus with SPARSE density (0.3x multiplier).
@@ -796,20 +1314,13 @@ class NexusGenerationService:
                 (sector1.z_coord - sector2.z_coord) ** 2) ** 0.5
 
     def _choose_warp_tunnel_type(self) -> WarpTunnelType:
-        """Choose a warp tunnel type randomly."""
-        weights = {
-            WarpTunnelType.STANDARD: 60,
-            WarpTunnelType.QUANTUM: 15,
-            WarpTunnelType.ANCIENT: 10,
-            WarpTunnelType.ARTIFICIAL: 8,
-            WarpTunnelType.UNSTABLE: 7
-        }
-
-        choices = []
-        for tunnel_type, weight in weights.items():
-            choices.extend([tunnel_type] * weight)
-
-        return random.choice(choices)
+        """All Nexus-generated tunnels are NATURAL (sectors.md:42-48 — the
+        enum has exactly two canon values; ARTIFICIAL is reserved for the
+        fedspace starter binding, which this generator does not stamp, and
+        for player-built warp gates via warp_gate_service.py). The prior
+        STANDARD/QUANTUM/ANCIENT/UNSTABLE weighted roll minted non-canon
+        types and is removed (WO-GWQ-TUNNELTYPE)."""
+        return WarpTunnelType.NATURAL
 
     def _get_stability_for_tunnel_type(self, tunnel_type: WarpTunnelType) -> float:
         """Get stability value for a warp tunnel type."""
@@ -824,22 +1335,17 @@ class NexusGenerationService:
         return stability_map.get(tunnel_type, 0.8)
 
     def _get_turn_cost_for_tunnel_type(self, tunnel_type: WarpTunnelType, distance: float) -> int:
-        """Calculate turn cost for a warp tunnel."""
-        # Base cost based on standard distance
-        base_cost = max(1, int(distance / 10))
+        """Calculate turn cost for a warp tunnel.
 
-        # Adjust based on tunnel type
-        multiplier_map = {
-            WarpTunnelType.NATURAL: 1.0,
-            WarpTunnelType.ARTIFICIAL: 0.7,
-            WarpTunnelType.STANDARD: 1.0,
-            WarpTunnelType.QUANTUM: 0.5,  # Faster
-            WarpTunnelType.ANCIENT: 0.8,
-            WarpTunnelType.UNSTABLE: 1.5  # Slower, riskier
-        }
-
-        adjusted_cost = int(base_cost * multiplier_map.get(tunnel_type, 1.0))
-        return max(1, adjusted_cost)  # Ensure at least 1 turn
+        NO-CANON: routing cost is type-independent (sectors.md:47 — NATURAL
+        and generator-placed ARTIFICIAL tunnels are "indistinguishable in
+        routing cost and stability"). The prior per-type multiplier map
+        (NATURAL/STANDARD 1.0, ARTIFICIAL 0.7, QUANTUM 0.5, ANCIENT 0.8,
+        UNSTABLE 1.5) is removed; every tunnel this generator mints uses the
+        same distance-scaled base cost. tunnel_type is kept in the signature
+        for interface stability (WO-GWQ-TUNNELTYPE).
+        """
+        return max(1, int(distance / 10))  # Ensure at least 1 turn
 
 
 # Singleton instance

@@ -18,11 +18,12 @@ from src.core.database import get_async_db
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
 from src.models.ai_trading import (
-    AIMarketPrediction, 
-    PlayerTradingProfile, 
+    AIMarketPrediction,
+    PlayerTradingProfile,
     AIRecommendation,
     AIModelPerformance
 )
+from src.models.route_optimization_run import RouteOptimizationRun
 from src.services.ai_trading_service import AITradingService, TradingRecommendation, MarketAnalysis, OptimalRoute
 
 router = APIRouter(prefix="/ai", tags=["AI Trading Intelligence"])
@@ -323,7 +324,34 @@ async def optimize_trading_route(
             request.cargo_capacity,
             request.max_stops
         )
-        
+
+        # Best-effort telemetry write for the NH18 admin feed (WO-SB-RO2).
+        # Never allowed to fail the player's request.
+        try:
+            db.add(
+                RouteOptimizationRun(
+                    player_id=current_player.id,
+                    objective="ai_trading",
+                    start_sector=request.start_sector,
+                    end_sector=None,
+                    sectors=optimal_route.sectors,
+                    total_profit=optimal_route.total_profit,
+                    total_distance=optimal_route.total_distance,
+                    # OptimalRoute.estimated_time is MINUTES (ai_trading_service.py:104,
+                    # :288 `int(total_time_hours * 60)`) — convert to hours for this
+                    # column, which every other objective already records in hours.
+                    total_time_hours=optimal_route.estimated_time / 60.0,
+                    cargo_efficiency=0.0,
+                    route_confidence=0.0,
+                )
+            )
+            await db.commit()
+        except Exception as record_exc:
+            logger.error(
+                f"Failed to record route optimization run for player {current_player.id}: {record_exc}"
+            )
+            await db.rollback()
+
         return {
             "sectors": optimal_route.sectors,
             "total_profit": optimal_route.total_profit,

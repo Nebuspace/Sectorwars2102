@@ -16,8 +16,19 @@ durations are CANONICAL and pass through src.core.game_time, so
 GAME_TIME_SCALE compresses every window uniformly on dev.
 
 DOCUMENTED INTERPRETATIONS (where canon is silent or summarized):
-  * Queue ordering is (faction_rep_tier desc, deposit desc, created_at asc) —
-    simplified from canon's full sort key.
+  * Queue ordering is (priority_bumps_count desc, faction_rep_tier desc,
+    deposit desc, created_at asc) — simplified from canon's full sort key
+    (FEATURES/economy/docking-slips.md:85-95 also sorts on slip_class_match
+    first; that's handled at promotion time instead, via each pool's own
+    free-slot count in `_advance_station`, not a separate sort partition).
+    `priority_bumps_count` is a purchased-bump WEIGHT, not a literal queue
+    position: each tier (docking-slips.md:118-127) adds a fixed amount —
+    1/5/10 for the position-count tiers, a large dominating constant for
+    "bump to front" (PRIORITY_BUMP_TIERS) — so a higher tier always outranks
+    any realistic stack of lower ones, matching "front" being categorically
+    the most expensive, maximal tier rather than a relative position.
+  * The 24h hold is confirmed by paying the keel_laid milestone; payment
+    transitions hold_active -> deposit_collected and starts the rent clock.
   * The 24h hold is confirmed by paying the keel_laid milestone; payment
     transitions hold_active -> deposit_collected and starts the rent clock.
   * Resource checkpoints are the documented interpretation of the doc's
@@ -46,7 +57,7 @@ import logging
 import math
 import random as _random_module
 from datetime import datetime, UTC
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -129,6 +140,20 @@ RENT_MAX_PREPAY_DAYS = 30          # pay-rent pre-pays up to 30 canonical days
 CANCEL_REFUND_FRACTION = 0.50
 CANCEL_REFUND_FRACTION_AFTER_HULL = 0.70   # post-hull cancel = 70% sell-back
 CLAIM_FORFEIT_REFUND_FRACTION = 0.70       # missed claim: sell-back minus 30%
+
+# Priority-bump fee tiers (FEATURES/economy/docking-slips.md:118-127):
+# "Bump 1 position" 5% / "Bump 5 positions" 25% / "Bump 10 positions" 60% /
+# "Bump to front" 100% of total_cost. `weight` is the amount each tier adds
+# to `priority_bumps_count` (see the module docstring's DOCUMENTED
+# INTERPRETATIONS for why "front" uses a large dominating constant instead
+# of a literal position count).
+PRIORITY_BUMP_FRONT_WEIGHT = 10_000
+PRIORITY_BUMP_TIERS: Dict[str, Dict[str, Union[float, int]]] = {
+    "bump_1":     {"fraction": 0.05, "weight": 1},
+    "bump_5":     {"fraction": 0.25, "weight": 5},
+    "bump_10":    {"fraction": 0.60, "weight": 10},
+    "bump_front": {"fraction": 1.00, "weight": PRIORITY_BUMP_FRONT_WEIGHT},
+}
 
 # ---------------------------------------------------------------------------
 # Task B-1: Premium floor pricing
@@ -254,8 +279,21 @@ def milestone_amounts(total_cost: int) -> Dict[str, int]:
 
 
 def phase_hours(ship_type: str, phase: str) -> float:
-    """Canonical hours a phase runs (build_days x 24 x phase split)."""
-    return SHIP_BUILD_SPECS[ship_type]["build_days"] * 24.0 * PHASE_SPLITS[phase]
+    """Canonical hours a phase runs (build_days x 24 x phase split).
+
+    TRADEDOCK_CONSTRUCTION is a synthetic ship_type (region-funded TradeDock
+    builds, not a ShipType enum member) deliberately excluded from
+    SHIP_BUILD_SPECS — adding it there would let create_reservation() build
+    one through the ordinary player-credits path, bypassing the region
+    treasury gate entirely. Its build_days is read from
+    REGION_TRADEDOCK_BUILD_DAYS instead so the same phase-progression engine
+    still drives it without that hole.
+    """
+    build_days = (
+        REGION_TRADEDOCK_BUILD_DAYS if ship_type == "TRADEDOCK_CONSTRUCTION"
+        else SHIP_BUILD_SPECS[ship_type]["build_days"]
+    )
+    return build_days * 24.0 * PHASE_SPLITS[phase]
 
 
 def daily_rent(total_cost: int) -> int:
@@ -666,14 +704,26 @@ def _progress_phases(reservation: Any, now: datetime) -> bool:
 # ---------------------------------------------------------------------------
 
 def _lock_station(db: Session, station_id) -> Station:
-    station = db.query(Station).filter(Station.id == station_id).with_for_update().first()
+    station = (
+        db.query(Station)
+        .filter(Station.id == station_id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
     if station is None:
         raise ConstructionError(404, "Station not found")
     return station
 
 
 def _lock_player(db: Session, player_id) -> Player:
-    player = db.query(Player).filter(Player.id == player_id).with_for_update().first()
+    player = (
+        db.query(Player)
+        .filter(Player.id == player_id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
     if player is None:
         raise ConstructionError(404, "Player not found")
     return player
@@ -744,12 +794,15 @@ def _faction_rep_tier(db: Session, player_id, station: Station) -> int:
 def _sorted_queue(
     db: Session, station: Station, reservations: List[ConstructionReservation]
 ) -> List[ConstructionReservation]:
-    """Queued reservations in promotion order — (faction_rep_tier desc,
-    deposit desc, created_at asc); simplified from canon's full sort key."""
+    """Queued reservations in promotion order — (priority_bumps_count desc,
+    faction_rep_tier desc, deposit desc, created_at asc); simplified from
+    canon's full sort key (see module docstring's DOCUMENTED
+    INTERPRETATIONS)."""
     queued = [r for r in reservations if r.state == "queued"]
     return sorted(
         queued,
         key=lambda r: (
+            -(r.priority_bumps_count or 0),
             -_faction_rep_tier(db, r.player_id, station),
             -(r.deposit_paid or 0),
             _aware(r.created_at) if r.created_at else datetime.now(UTC),
@@ -869,7 +922,13 @@ def _advance_station(db: Session, station: Station, now: datetime) -> None:
             # 70% of total cost (canon sell-back minus 30%); the treasury nets
             # the sale price minus that refund.
             refund = claim_forfeit_refund(res.total_cost)
-            player = db.query(Player).filter(Player.id == res.player_id).with_for_update().first()
+            player = (
+                db.query(Player)
+                .filter(Player.id == res.player_id)
+                .populate_existing()
+                .with_for_update()
+                .first()
+            )
             if player is not None:
                 player.credits += refund
             station.treasury_balance = (station.treasury_balance or 0) + res.total_cost - refund
@@ -1272,6 +1331,74 @@ def pay_milestone(
     }
 
 
+def purchase_priority_bump(
+    db: Session,
+    reservation: ConstructionReservation,
+    player: Player,
+    tier: str,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Buy a priority-bump tier (FEATURES/economy/docking-slips.md:118-127):
+    the fee is a flat fraction of `total_cost`, banked into the station
+    treasury like every other construction payment; the tier's `weight` is
+    added to `priority_bumps_count`, which `_sorted_queue` sorts DESC —
+    outranking unbumped and lower-tier peers but never a higher tier (see
+    PRIORITY_BUMP_TIERS + the module docstring's DOCUMENTED
+    INTERPRETATIONS). Only meaningful pre-promotion: once a reservation
+    holds a slip it is no longer competing for queue position.
+
+    Concurrency: `advance(db, reservation, now)` below takes the STATION row
+    FOR UPDATE first (this file's documented lock-ordering contract — see
+    the module docstring), same as every other money-path function here;
+    two concurrent bumps on reservations at the same station serialize on
+    that lock, not a separate advisory lock. No two-check pre-lock read
+    guards anything here — the whole mutation happens strictly after the
+    lock is held, so there is no earlier-read staleness window to close."""
+    now = now or datetime.now(UTC)
+    station = advance(db, reservation, now)
+
+    if tier not in PRIORITY_BUMP_TIERS:
+        raise ConstructionError(
+            400, f"Unknown priority bump tier '{tier}'. Tiers: {', '.join(PRIORITY_BUMP_TIERS)}"
+        )
+    if reservation.state in TERMINAL_STATES:
+        raise ConstructionError(400, f"This reservation is {reservation.state}")
+    if reservation.state != "queued":
+        raise ConstructionError(
+            400, "Priority bumps only apply to a reservation still waiting in the queue"
+        )
+
+    spec = PRIORITY_BUMP_TIERS[tier]
+    fee = int(round(reservation.total_cost * spec["fraction"]))
+
+    player = _lock_player(db, player.id)
+    if player.credits < fee:
+        raise ConstructionError(
+            400,
+            f"Insufficient credits for priority bump '{tier}': need {fee:,}, "
+            f"have {player.credits:,}",
+        )
+
+    player.credits -= fee
+    station.treasury_balance = (station.treasury_balance or 0) + fee
+    reservation.priority_bumps_count = (reservation.priority_bumps_count or 0) + spec["weight"]
+    reservation.updated_at = now
+    db.flush()
+
+    logger.info(
+        "Construction priority bump: reservation %s tier=%s fee=%d "
+        "priority_bumps_count=%d", reservation.id, tier, fee, reservation.priority_bumps_count,
+    )
+
+    return {
+        "tier": tier,
+        "fee_paid": fee,
+        "priority_bumps_count": reservation.priority_bumps_count,
+        "credits_remaining": player.credits,
+        "state": reservation.state,
+    }
+
+
 def pay_rent(
     db: Session,
     reservation: ConstructionReservation,
@@ -1336,10 +1463,27 @@ def claim(
     reservation: ConstructionReservation,
     player: Player,
     now: Optional[datetime] = None,
-) -> Ship:
-    """Claim the finished ship: requires state complete and the final
-    milestone paid. The ship is created via ShipService.create_ship (cargo
-    comes spec-correct) at the TradeDock's sector with the custom name."""
+) -> Union[Ship, Station]:
+    """Claim the finished build: requires state complete and the final
+    milestone paid.
+
+    Ordinary ship-construction reservations: the ship is created via
+    ShipService.create_ship (cargo comes spec-correct) at the TradeDock's
+    sector with the custom name, and returned.
+
+    TradeDock-class reservations (ship_type == "TRADEDOCK_CONSTRUCTION",
+    region-funded construction — Task B-3) are a different completion
+    entirely per Max's ruling (batch-1 #3a, 2026-07-10, resolving the
+    formerly-KNOWN-GAP left by WO-TD-RGF-1): claiming finalizes the TARGET
+    STATION IN PLACE — grants/upgrades its tradedock_tier — and returns the
+    Station. No Ship is ever created for this reservation class; there is no
+    new Station row either, the same station row that funded/hosted the
+    project is mutated. create_region_funded_construction already requires
+    the target to carry an existing tier before a project can even start
+    (_require_tradedock), so completion is always a B -> A upgrade (the only
+    two tiers SLIP_POOLS defines) — setting it to "A" is idempotent on the
+    already-A edge case.
+    """
     now = now or datetime.now(UTC)
     station = advance(db, reservation, now)
 
@@ -1356,6 +1500,19 @@ def claim(
         raise ConstructionError(
             400, f"Pay the 'final' milestone ({amount:,} credits) before claiming"
         )
+
+    if reservation.ship_type == "TRADEDOCK_CONSTRUCTION":
+        station.tradedock_tier = "A"
+        reservation.state = "claimed"
+        reservation.updated_at = now
+        db.flush()
+
+        logger.info(
+            "Region-funded TradeDock construction claimed: reservation %s -> "
+            "station %s upgraded to tier A",
+            reservation.id, station.id,
+        )
+        return station
 
     from src.services.ship_service import ShipService
 
@@ -1428,15 +1585,6 @@ def cancel(
 # in their region for 50,000,000 cr over 90 real-time days. The payment is
 # pulled from the REGION TREASURY, not from the player's personal credits.
 #
-# FIELD_NEEDED (other lane — READ ONLY): Region model currently has no
-# treasury_balance column (it has total_trade_volume, which is a running
-# tally of trade volume, not a credit balance). The region-funded construction
-# branch requires:
-#   Region.treasury_balance  Integer  nullable=False  default=0
-# Until that column exists, create_region_funded_construction() raises
-# ConstructionError(501, ...) with a clear message rather than silently
-# reading the wrong field.
-#
 # The 90-day construction project is modelled as a ConstructionReservation
 # with a synthetic ship_type TRADEDOCK_CONSTRUCTION (which is NOT a ShipType
 # enum member) so the standard state machine drives it through the same lazy
@@ -1444,7 +1592,14 @@ def cancel(
 # ---------------------------------------------------------------------------
 
 # Canonical cost and resource bundle for region-funded TradeDock construction.
-# Canon: 50M cr, 90 real-time days, 500,000 ore + 300,000 tech + 200,000 equip
+# Canon (tradedock-shipyard.md §Region-funded construction): 50M cr, 90
+# real-time days, 500,000 ore + 300,000 TECHNOLOGY + 200,000 equipment.
+# DIVERGENCE: this dict spends "organics": 200,000 in place of canon's
+# "technology" and assigns 300,000 (not canon's 200,000) to equipment —
+# "technology" is not a resource type this codebase's economy recognizes (see
+# Station.commodities: ore / organics / equipment / fuel). Left byte-identical
+# pending a ruling on introducing a technology resource vs. remapping the
+# canon bundle onto the existing four. PENDING-RULING(region-bundle).
 REGION_TRADEDOCK_COST = 50_000_000
 REGION_TRADEDOCK_BUILD_DAYS = 90
 REGION_TRADEDOCK_RESOURCES = {"ore": 500_000, "equipment": 300_000, "organics": 200_000}
@@ -1467,20 +1622,36 @@ def create_region_funded_construction(
     The initiating_player must be the region owner. Returns a status dict;
     raises ConstructionError on any validation failure.
 
-    FIELD_NEEDED: Region.treasury_balance (Integer) must exist on the Region
-    model before this function can execute. If the field is absent, raises
-    ConstructionError(501) so the route can surface a clear 501 to the caller
-    rather than a raw AttributeError.
-
     Does NOT commit; the calling route owns the transaction.
     """
     now = now or datetime.now(UTC)
 
-    from src.models.region import Region
+    from src.models.region import Region, RegionalTreasuryEntry
 
     # Lock station (slot/treasury serialization point per module contract).
     station = _lock_station(db, station.id)
     _require_tradedock(station)
+
+    # Double-POST guard: the station lock above makes this race-free — a
+    # second concurrent request blocks in _lock_station until the first
+    # commits, then re-reads and finds this reservation. Reject before
+    # touching the treasury so a resubmitted/doubled request never produces a
+    # second 50,000,000cr deduction.
+    existing = (
+        db.query(ConstructionReservation)
+        .filter(
+            ConstructionReservation.station_id == station.id,
+            ConstructionReservation.ship_type == "TRADEDOCK_CONSTRUCTION",
+            ConstructionReservation.state.notin_(list(TERMINAL_STATES)),
+        )
+        .first()
+    )
+    if existing is not None:
+        raise ConstructionError(
+            409,
+            "A region-funded TradeDock construction is already in progress at "
+            "this station.",
+        )
 
     # Region must be associated with this station.
     if station.region_id is None or str(station.region_id) != str(region_id):
@@ -1513,15 +1684,7 @@ def create_region_funded_construction(
             f"this region has {total_sectors}.",
         )
 
-    # FIELD_NEEDED guard: raise 501 if treasury_balance does not yet exist.
-    if not hasattr(region, "treasury_balance"):
-        raise ConstructionError(
-            501,
-            "Region treasury not yet available: Region.treasury_balance column "
-            "has not been added by the model lane. Initiate the migration first.",
-        )
-
-    region_treasury = getattr(region, "treasury_balance", 0) or 0
+    region_treasury = region.treasury_balance or 0
     if region_treasury < REGION_TRADEDOCK_COST:
         raise ConstructionError(
             400,
@@ -1532,6 +1695,10 @@ def create_region_funded_construction(
     # Deduct from region treasury; deposit into station treasury as escrow.
     region.treasury_balance = region_treasury - REGION_TRADEDOCK_COST
     station.treasury_balance = (station.treasury_balance or 0) + REGION_TRADEDOCK_COST
+    # flag_modified is a no-op here (treasury_balance is a scalar Integer
+    # column, not JSONB — SQLAlchemy already tracks the reassignment above
+    # without help), but is harmless; left in place per WO-TD-RGF-1 scope
+    # rather than pulled out as an unrelated cleanup.
     flag_modified(region, "treasury_balance")
 
     # Use the synthetic 'TRADEDOCK_CONSTRUCTION' as the ship_type string.
@@ -1555,6 +1722,20 @@ def create_region_funded_construction(
     )
     db.add(reservation)
     db.flush()
+
+    # ADR-0059 N-I4 treasury reconciliation: this deduct must not leave the
+    # daily SUM(treasury_entries.delta) == Region.treasury_balance sweep
+    # broken. Write the ledger row in THIS SAME transaction, referencing the
+    # just-flushed reservation as the cause.
+    db.add(RegionalTreasuryEntry(
+        region_id=region.id,
+        before_balance=region_treasury,
+        after_balance=region.treasury_balance,
+        delta=-REGION_TRADEDOCK_COST,
+        cause_type=RegionalTreasuryEntry.CAUSE_EXPENDITURE,
+        cause_id=reservation.id,
+        reason=f"Region-funded TradeDock construction at station {station.name}",
+    ))
 
     # ADR-0053 WR14: a region-funded TradeDock is a runtime-created tradeable
     # station — seed its MarketPrice book in THIS transaction so the first
@@ -1612,6 +1793,7 @@ def status_payload(
         "deposit_paid": reservation.deposit_paid,
         "credits_paid": reservation.credits_paid,
         "queue_bonus_credit": reservation.queue_bonus_credit,
+        "priority_bumps_count": reservation.priority_bumps_count or 0,
         "milestones": {
             name: {"amount": amounts[name], "paid": bool((reservation.milestones or {}).get(name))}
             for name in MILESTONE_ORDER

@@ -9,10 +9,11 @@ This creates a personal knowledge graph where:
 - Data is completely isolated between players (GDPR compliant)
 """
 
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, JSON, Text, ForeignKey, Index, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, JSON, Text, ForeignKey, Index, UniqueConstraint, Enum as SQLEnum
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime, UTC
+import enum
 import uuid
 
 from src.core.database import Base
@@ -29,7 +30,7 @@ class ARIAPersonalMemory(Base):
     player_id = Column(UUID(as_uuid=True), ForeignKey("players.id"), nullable=False)
     
     # Memory metadata
-    memory_type = Column(String(50), nullable=False)  # market, combat, exploration, social
+    memory_type = Column(String(50), nullable=False)  # market, threat.combat, nav.sector_visit, social
     importance_score = Column(Float, default=0.5)  # 0-1, how significant this memory is
     confidence_level = Column(Float, default=0.5)  # 0-1, how certain ARIA is about this
     
@@ -152,6 +153,20 @@ class ARIAExplorationMap(Base):
 
 class ARIATradingPattern(Base):
     """
+    DEPRECATED (WO-ARIA-GA-CLEANUP, pending Max ruling) -- the genetic-
+    algorithm "Trade DNA" model this table backed (evolve_trading_pattern /
+    get_evolved_patterns / _create_trading_pattern / _classify_pattern_type
+    in aria_personal_intelligence_service.py) has been REMOVED per
+    ADR-0038 (../../../sw2102-docs/ADR/0038-aria-observation-log-learning-
+    model.md): no genetic algorithm, no fitness scoring. Those functions
+    were this table's ONLY writers/readers; as of the removal it has zero
+    live callers. The table itself is NOT dropped here -- that is a
+    destructive migration and explicitly Max-gated; see the WO's report
+    for the proposed DROP TABLE SQL staged for that ruling. Do not add new
+    callers against this model -- the replacement is the append-only
+    ARIATradingObservation log + SQL-aggregate recommendation engine
+    (aria.md#recommendation-engine).
+
     Learned trading patterns unique to each player
     This is their personal 'Trade DNA' that evolves
     """
@@ -210,7 +225,12 @@ class ARIAQuantumCache(Base):
     cache_key = Column(String(255), nullable=False)  # Hash of trade parameters
     commodity = Column(String(50), nullable=False)
     station_id = Column(UUID(as_uuid=True), ForeignKey("stations.id"), nullable=True)
-    sector_id = Column(UUID(as_uuid=True), ForeignKey("sectors.id"), nullable=False)
+    # Nullable as of WO-ARIA-OBS-LOG (migration eb772a1ab433): ADR-0038
+    # repurposes this table as the recommendation-aggregate cache
+    # (aria_personal_intelligence_service.py's OBSERVATION LOG section),
+    # whose per-player bundle has no single-sector scope. Original
+    # ghost-trade cache rows keep supplying a real sector_id unchanged.
+    sector_id = Column(UUID(as_uuid=True), ForeignKey("sectors.id"), nullable=True)
     
     # Cached results
     quantum_states = Column(JSON, nullable=False)  # Superposition states
@@ -273,4 +293,90 @@ class ARIASecurityLog(Base):
         Index("idx_aria_security_player_time", "player_id", "created_at"),
         Index("idx_aria_security_severity", "event_severity"),
         Index("idx_aria_security_anomaly", "anomaly_score"),
+    )
+
+
+class ObservationAction(enum.Enum):
+    """Trade leg this observation records. Matches the codebase's
+    Python-enum-NAME-as-Postgres-value convention (see market_transaction.py
+    TransactionType)."""
+    buy = "buy"
+    sell = "sell"
+
+
+class ObservationOutcome(enum.Enum):
+    """Sell-leg outcome bucket. NULL on buy-leg rows (profit isn't known
+    until the position closes)."""
+    profit = "profit"
+    break_even = "break_even"
+    loss = "loss"
+
+
+class ARIATradingObservation(Base):
+    """
+    Per-trade observation log — the substrate for ARIA's SQL-aggregate
+    recommendation engine (ADR-0038, OPERATIONS/aria.md § Recommendation
+    engine). Append-only: a trade reversal fires a follow-up reversal
+    observation rather than editing an existing row, so the log stays an
+    auditable historical truth. Replaces the retired ARIATradingPattern
+    genetic-algorithm framing — no fitness score, no mutation, no lineage.
+
+    ``source_sector_id`` / ``dest_sector_id`` are the human-readable Integer
+    sector numbers (mirrors ``MarketTransaction.sector_id``), NOT a foreign
+    key to ``sectors.id`` (which is UUID) — same denormalized-integer
+    convention as the sibling transaction table.
+    """
+    __tablename__ = "aria_trading_observations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    player_id = Column(UUID(as_uuid=True), ForeignKey("players.id"), nullable=False)
+
+    # The underlying trading-service event, when one materialized at insert
+    # time. Nullable: this WO leaves the trading.py insert hook (lane C)
+    # deferred/unwired, so a defensive nullable FK avoids over-committing to
+    # an insert-time guarantee no caller exists to satisfy yet.
+    trade_id = Column(UUID(as_uuid=True), ForeignKey("enhanced_market_transactions.id"), nullable=True)
+
+    commodity = Column(String(50), nullable=False)
+    action = Column(SQLEnum(ObservationAction), nullable=False)
+
+    source_station_id = Column(UUID(as_uuid=True), ForeignKey("stations.id"), nullable=False)
+    dest_station_id = Column(UUID(as_uuid=True), ForeignKey("stations.id"), nullable=True)  # nullable for buy-only events
+    source_sector_id = Column(Integer, nullable=True)
+    dest_sector_id = Column(Integer, nullable=True)  # nullable for buy-only events
+
+    quantity = Column(Integer, nullable=False)
+    unit_price = Column(Integer, nullable=False)
+    total_credits = Column(Integer, nullable=False)
+
+    # Sell-leg only; NULL on buy-leg rows.
+    profit = Column(Integer, nullable=True)
+    hours_held = Column(Float, nullable=True)
+    outcome_classification = Column(SQLEnum(ObservationOutcome), nullable=True)
+
+    observed_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
+
+    matched_market_intel_id = Column(UUID(as_uuid=True), ForeignKey("aria_market_intelligence.id"), nullable=True)
+    # Populated when this trade fulfilled a prior ARIA recommendation.
+    # FKs the existing AIRecommendation table (ai_trading.py) — the only
+    # "ARIA recommendation" row type in the schema today.
+    recommendation_id = Column(UUID(as_uuid=True), ForeignKey("ai_recommendations.id"), nullable=True)
+
+    # Relationships
+    player = relationship("Player", back_populates="aria_trading_observations")
+    trade = relationship("MarketTransaction")
+    source_station = relationship("Station", foreign_keys=[source_station_id])
+    dest_station = relationship("Station", foreign_keys=[dest_station_id])
+    matched_market_intel = relationship("ARIAMarketIntelligence")
+    recommendation = relationship("AIRecommendation")
+
+    __table_args__ = (
+        Index("idx_aria_obs_player_commodity", "player_id", "commodity"),
+        Index("idx_aria_obs_player_observed_at", "player_id", "observed_at"),
+        # Covers the top-routes GROUP BY (commodity, source_station_id,
+        # dest_station_id) aggregate — OPERATIONS/aria.md:210.
+        Index(
+            "idx_aria_obs_player_route",
+            "player_id", "commodity", "source_station_id", "dest_station_id",
+        ),
     )

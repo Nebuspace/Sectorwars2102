@@ -713,7 +713,7 @@ class ShipUpgradeService:
     def _get_ship_and_player(self, ship_id: uuid.UUID, player_id: uuid.UUID) -> tuple:
         """Fetch and validate ship ownership. Returns (ship, player, error_dict).
         Locks the player row to prevent concurrent purchase race conditions."""
-        player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
+        player = self.db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
         if not player:
             return None, None, {"success": False, "message": "Player not found"}
 

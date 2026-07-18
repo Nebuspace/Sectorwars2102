@@ -9,20 +9,54 @@ from src.core.config import settings
 from src.core.security import get_password_hash
 from src.models.user import User
 from src.models.admin_credentials import AdminCredentials
+from src.models.admin_scope_grant import AdminScopeGrant
 from src.models.faction import Faction, FactionType
+from src.auth.admin_scopes import META_SCOPES
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_meta_scope_grants(db: Session, user: User) -> int:
+    """Insert missing active META_SCOPES grants for ``user`` (idempotent).
+
+    Bootstrap / self-heal path for greenfield + existing default admin.
+    Returns the number of rows inserted.
+    """
+    inserted = 0
+    for scope in META_SCOPES:
+        exists = (
+            db.query(AdminScopeGrant.id)
+            .filter(
+                AdminScopeGrant.user_id == user.id,
+                AdminScopeGrant.scope == scope,
+                AdminScopeGrant.revoked_at.is_(None),
+            )
+            .first()
+        )
+        if exists:
+            continue
+        db.add(
+            AdminScopeGrant(
+                id=uuid.uuid4(),
+                user_id=user.id,
+                scope=scope,
+                granted_by=user.id,  # self-grant (canon-allowed for bootstrap)
+            )
+        )
+        inserted += 1
+    return inserted
 
 
 def create_default_admin(db: Session, max_retries: int = 3) -> None:
     """
     Create default admin user if it doesn't exist.
-    This function specifically checks for the admin user defined in settings
-    and creates it if it doesn't exist.
-    
-    Args:
-        db: Database session
-        max_retries: Maximum number of times to retry on database error
+
+    RBAC Phase B: existence is keyed on username (NOT ``User.is_admin`` SQL,
+    which is an EXISTS(active grant) expression — using that on a fresh
+    deploy before grants exist caused a re-INSERT / IntegrityError boot-loop).
+    Minting inserts the 3 META_SCOPES grants in the SAME transaction as the
+    user + credentials (Max 2026-07-17: boot-bootstrap grants, don't just set
+    the flag).
     """
     retry_count = 0
     admin_username = settings.ADMIN_USERNAME
@@ -30,14 +64,24 @@ def create_default_admin(db: Session, max_retries: int = 3) -> None:
 
     while retry_count < max_retries:
         try:
-            # Check if the specific admin user exists (not just any admin)
+            # Username-only — avoids EXISTS boot-loop on greenfield.
             default_admin = db.query(User).filter(
                 User.username == admin_username,
-                User.is_admin == True
             ).first()
             
             if default_admin:
                 logger.info(f"Default admin user '{admin_username}' already exists, skipping creation")
+
+                # Sync flat flag + heal missing meta grants (greenfield self-heal).
+                if not default_admin.is_admin:
+                    default_admin.is_admin = True
+                inserted = _ensure_meta_scope_grants(db, default_admin)
+                if inserted:
+                    logger.info(
+                        "Healed %d missing meta-scope grant(s) for %s",
+                        inserted,
+                        admin_username,
+                    )
                 
                 # Verify admin credentials also exist
                 admin_creds = db.query(AdminCredentials).filter(
@@ -53,12 +97,17 @@ def create_default_admin(db: Session, max_retries: int = 3) -> None:
                             password_hash=hashed_password
                         )
                         db.add(admin_creds)
-                        db.commit()
-                        logger.info(f"Created credentials for existing admin user {admin_username}")
                     except Exception as e:
                         db.rollback()
                         logger.error(f"Failed to create credentials for existing admin: {str(e)}")
                         traceback.print_exc()
+                        return
+
+                try:
+                    db.commit()
+                except Exception as e:
+                    db.rollback()
+                    logger.error(f"Failed to commit default-admin heal: {str(e)}")
                 
                 return
             
@@ -87,10 +136,19 @@ def create_default_admin(db: Session, max_retries: int = 3) -> None:
                     password_hash=hashed_password
                 )
                 db.add(admin_creds)
+
+                # 3 meta-scopes atomically with the user (sole greenfield path
+                # to admin-hood alongside the flat flag).
+                _ensure_meta_scope_grants(db, admin)
                 
                 # Commit the transaction
                 db.commit()
-                logger.info(f"Default admin user '{admin_username}' created with ID: {admin.id}")
+                logger.info(
+                    "Default admin user '%s' created with ID %s + %d meta scopes",
+                    admin_username,
+                    admin.id,
+                    len(META_SCOPES),
+                )
                 
                 if admin_username == "admin" and admin_password == "admin":
                     logger.warning(

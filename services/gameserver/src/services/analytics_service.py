@@ -44,7 +44,14 @@ class AnalyticsService:
             total_players = len(all_players)
             total_active_players = len(active_players)
             
-            # Players online now (simplified - players who logged in within last hour)
+            # Players online now -- last_login-within-1h approximation.
+            # This is the Redis-down FALLBACK figure only: the route
+            # (admin_comprehensive.get_real_time_analytics) overwrites this
+            # with the live presence-set cardinality
+            # (activity:online_players, player_activity_service
+            # .get_online_player_count) whenever Redis is reachable, and
+            # only falls back to this value when it isn't. Kept here,
+            # unchanged, as that fallback.
             one_hour_ago = now - timedelta(hours=1)
             recent_users = self.db.query(User).filter(
                 User.last_login >= one_hour_ago

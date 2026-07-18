@@ -25,11 +25,13 @@ listed defaults so nothing blocks):
 * **[OPEN-4]** ``base_price`` for the no-legal-market items. The values below are
   invented defaults grounded in current code where a reference exists:
   - ``WEAPONS`` 2000, ``CONTRABAND_SUBSTANCES`` 1500, ``SLAVES`` 2500 — fixed
-    "Federation seizure-value" placeholders (FEATURES leaves these abstract).
-  - ``STOLEN_GOODS`` 100 — a legal-commodity mid reference (matches
-    ``commodity_economy.COMMODITY_BASE_PRICES["luxury_goods"]["base"] == 100``).
-  - ``RESTRICTED_TECH`` 250 — the ``exotic_technology`` reference
-    (``commodity_economy.COMMODITY_BASE_PRICES["exotic_technology"]["base"]``).
+    "Federation seizure-value" placeholders (FEATURES leaves these abstract);
+    pure literals, reference no legal commodity.
+  - ``STOLEN_GOODS`` — a legal-commodity mid reference, derived at import time
+    from ``commodity_economy.base_price("luxury_goods")`` (SoT, WO-ARCH-RES-2I-C)
+    rather than the drift-prone literal 100 it used to be.
+  - ``RESTRICTED_TECH`` — the ``exotic_technology`` reference, likewise derived
+    from ``commodity_economy.base_price("exotic_technology")``.
 """
 
 from __future__ import annotations
@@ -37,6 +39,8 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass, field
 from typing import Dict, List, Mapping
+
+from src.core.commodity_economy import base_price as _commodity_base_price
 
 
 # ── Severity tiers (drive fine multiplier + suspect/wanted flip in the service) ─
@@ -131,7 +135,7 @@ ILLEGAL_COMMODITY_CATALOG: Dict[IllegalCommodity, IllegalCommodityMeta] = {
         },
     ),
     IllegalCommodity.STOLEN_GOODS: IllegalCommodityMeta(
-        base_price=100,  # [OPEN-4] legal-commodity mid ref (luxury_goods base)
+        base_price=_commodity_base_price("luxury_goods"),  # [OPEN-4] legal-commodity mid ref
         category_multiplier=2.00,
         severity=IllegalSeverity.LIGHT,
         federation_rep_delta=-50,
@@ -140,7 +144,7 @@ ILLEGAL_COMMODITY_CATALOG: Dict[IllegalCommodity, IllegalCommodityMeta] = {
         },
     ),
     IllegalCommodity.RESTRICTED_TECH: IllegalCommodityMeta(
-        base_price=250,  # [OPEN-4] exotic_technology ref (COMMODITY_BASE_PRICES)
+        base_price=_commodity_base_price("exotic_technology"),  # [OPEN-4] exotic_technology ref
         category_multiplier=2.50,
         severity=IllegalSeverity.MODERATE,
         federation_rep_delta=-100,

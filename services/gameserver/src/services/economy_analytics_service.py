@@ -2,17 +2,39 @@
 Economy Analytics Service for Admin Dashboard
 """
 
+import logging
 import uuid
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_, desc
+from sqlalchemy.orm.attributes import flag_modified
 
+from src.core.commodity_economy import (
+    COMMODITY_BASE_PRICES,
+    base_price as commodity_base_price,
+    canonical_commodity,
+)
 from src.models.market_transaction import MarketTransaction, MarketPrice, PriceHistory, EconomicMetrics
 from src.models.station import Station
-from src.models.resource import ResourceType
 from src.models.player import Player
 from src.services.audit_service import AuditService, AuditAction
+from src.services.trading_service import TradingService
+
+
+logger = logging.getLogger(__name__)
+
+
+class InterventionError(Exception):
+    """Raised when a market intervention cannot honestly complete; carries
+    an HTTP status hint for the route (mirrors ConstructionError in
+    construction_service.py — same carry-a-status-code-from-service-to-route
+    convention)."""
+
+    def __init__(self, status_code: int, detail: str):
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
 
 
 class EconomyAnalyticsService:
@@ -155,7 +177,7 @@ class EconomyAnalyticsService:
             manipulation_alerts = self._detect_market_manipulation()
             alerts.extend(manipulation_alerts)
         except Exception:
-            pass
+            logger.warning("get_market_alerts: _detect_market_manipulation failed, manipulation alerts dropped", exc_info=True)
 
         # Sort by severity and timestamp
         severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
@@ -165,7 +187,16 @@ class EconomyAnalyticsService:
 
     def perform_market_intervention(self, intervention_type: str,
                                   parameters: Dict[str, Any]) -> Dict[str, Any]:
-        """Perform market intervention actions"""
+        """Perform market intervention actions.
+
+        The INTERVENTION audit row is written ONLY once the dispatched
+        action returns without raising — i.e. only after a real, committed
+        state change. Any raised exception (unknown type, invalid input,
+        freeze_trading's honest 501, or a genuine DB error) rolls back and
+        writes NO audit row (WO-ADM-ECON-TRUTH: previously every outcome,
+        success OR failure, logged an unconditional INTERVENTION row,
+        corrupting the audit trail with phantom entries for actions that
+        changed nothing)."""
         intervention_id = uuid.uuid4()
 
         try:
@@ -204,22 +235,10 @@ class EconomyAnalyticsService:
                 "message": f"Market intervention '{intervention_type}' completed successfully"
             }
 
-        except Exception as e:
+        except Exception:
+            # No audit row: a rejected/failed intervention never committed a
+            # state change, so it must not appear as one in the trail.
             self.db.rollback()
-
-            # Log failed intervention
-            self.audit_service.log_action(
-                user_id=parameters.get('admin_id'),
-                action=AuditAction.INTERVENTION,
-                resource_type="economy",
-                resource_id=str(intervention_id),
-                details={
-                    "intervention_type": intervention_type,
-                    "status": "failed",
-                    "error": str(e)
-                }
-            )
-
             raise
 
     # Helper methods
@@ -334,9 +353,7 @@ class EconomyAnalyticsService:
             now = datetime.utcnow()
             day_ago = now - timedelta(days=1)
 
-            for resource in ResourceType:
-                resource_name = resource.value
-
+            for resource_name in COMMODITY_BASE_PRICES:
                 # Get current average buy price
                 current_avg = (
                     self.db.query(func.avg(MarketPrice.buy_price))
@@ -363,7 +380,7 @@ class EconomyAnalyticsService:
                 else:
                     inflation[resource_name] = 0.0
         except Exception:
-            pass
+            logger.warning("_calculate_inflation_rates: inflation calculation failed, partial/empty inflation dict returned", exc_info=True)
 
         return inflation
 
@@ -379,8 +396,7 @@ class EconomyAnalyticsService:
 
             # Get bid-ask spreads
             spreads = {}
-            for resource in ResourceType:
-                resource_name = resource.value
+            for resource_name in COMMODITY_BASE_PRICES:
                 prices = (
                     self.db.query(MarketPrice.buy_price, MarketPrice.sell_price)
                     .filter(MarketPrice.commodity == resource_name)
@@ -489,15 +505,15 @@ class EconomyAnalyticsService:
         prices = {}
 
         try:
-            for resource in ResourceType:
+            for resource_name in COMMODITY_BASE_PRICES:
                 avg_price = (
                     self.db.query(func.avg(MarketPrice.buy_price))
-                    .filter(MarketPrice.commodity == resource.value)
+                    .filter(MarketPrice.commodity == resource_name)
                     .scalar()
                 )
-                prices[resource.value] = float(avg_price) if avg_price else 0
+                prices[resource_name] = float(avg_price) if avg_price else 0
         except Exception:
-            pass
+            logger.warning("_get_average_prices: average price calculation failed, partial/empty prices dict returned", exc_info=True)
 
         return prices
 
@@ -506,12 +522,12 @@ class EconomyAnalyticsService:
         volatility = {}
 
         try:
-            for resource in ResourceType:
+            for resource_name in COMMODITY_BASE_PRICES:
                 # Get price history for last 24h
                 prices = (
                     self.db.query(PriceHistory.buy_price)
                     .filter(
-                        PriceHistory.commodity == resource.value,
+                        PriceHistory.commodity == resource_name,
                         PriceHistory.snapshot_date >= datetime.utcnow() - timedelta(days=1)
                     )
                     .all()
@@ -522,11 +538,11 @@ class EconomyAnalyticsService:
                     avg = sum(price_values) / len(price_values)
                     variance = sum((p - avg) ** 2 for p in price_values) / len(price_values)
                     std_dev = variance ** 0.5
-                    volatility[resource.value] = round((std_dev / avg * 100) if avg > 0 else 0, 2)
+                    volatility[resource_name] = round((std_dev / avg * 100) if avg > 0 else 0, 2)
                 else:
-                    volatility[resource.value] = 0
+                    volatility[resource_name] = 0
         except Exception:
-            pass
+            logger.warning("_calculate_price_volatility: volatility calculation failed, partial/empty volatility dict returned", exc_info=True)
 
         return volatility
 
@@ -630,7 +646,7 @@ class EconomyAnalyticsService:
                     "recommended_action": "Investigate player trading patterns and consider temporary trading restrictions"
                 })
         except Exception:
-            pass
+            logger.warning("_detect_market_manipulation: wash-trading detection query failed, manipulation alerts dropped", exc_info=True)
 
         return alerts
 
@@ -662,53 +678,145 @@ class EconomyAnalyticsService:
         }
 
     def _inject_liquidity(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
-        """Inject resources into the market"""
+        """Inject real stock into a station's market (WO-ADM-ECON-TRUTH).
+
+        Writes the injected quantities into the SAME dual storage the
+        trade paths mutate on every buy/sell — station.commodities[commodity]
+        ["quantity"] (the JSONB TradingService reprices from) plus the
+        mirrored MarketPrice.quantity row (see trading.py's buy/sell
+        handlers, e.g. :501-517) — then re-syncs pricing off the new stock
+        via TradingService.update_market_prices so the injection is both
+        persisted and immediately reflected in the price the station quotes.
+        Previously this only queried the Station and returned a dict with
+        NO write at all — a pure echo of the request.
+
+        A resource_type that doesn't resolve to a canonical commodity is
+        rejected (mirrors the 2H _reset_market_prices vocabulary guard); a
+        negative or non-numeric quantity is rejected; a commodity the
+        station doesn't stock is skipped (that station never carries it —
+        not an error, matches how calculate_dynamic_price treats a missing
+        entry). Quantity is clamped to the commodity's capacity, the same
+        physical bound stock-regen advances toward. If nothing in the
+        request resolves to an actual write, this raises rather than
+        return a hollow 'success'.
+        """
         station_id = parameters.get('station_id')
         resources = parameters.get('resources', {})
 
-        station = self.db.query(Station).filter(Station.id == station_id).first()
+        if not resources:
+            raise ValueError("No resources specified for injection")
+
+        # Station-first lock order (matches trading.py's buy/sell paths):
+        # lock before mutating the commodities JSONB.
+        station = (
+            self.db.query(Station)
+            .filter(Station.id == station_id)
+            .with_for_update()
+            .first()
+        )
         if not station:
             raise ValueError("Station not found")
+
+        commodities = station.commodities or {}
+        injected: Dict[str, int] = {}
+        skipped: Dict[str, str] = {}
+
+        for resource_type, amount in resources.items():
+            canonical = canonical_commodity(resource_type)
+            if canonical not in COMMODITY_BASE_PRICES:
+                skipped[resource_type] = "unknown commodity"
+                continue
+
+            try:
+                amount = int(amount)
+            except (TypeError, ValueError):
+                skipped[resource_type] = "non-numeric quantity"
+                continue
+
+            if amount < 0:
+                skipped[resource_type] = "negative quantity rejected"
+                continue
+
+            # commodities is station.commodities itself (only falls back to
+            # a throwaway {} when station.commodities is None, in which case
+            # no key can match below) — mutating commodity_cfg in place
+            # mutates the real JSONB attribute.
+            commodity_cfg = commodities.get(canonical)
+            if commodity_cfg is None:
+                skipped[resource_type] = "station does not stock this commodity"
+                continue
+
+            capacity = commodity_cfg.get("capacity", 0) or 0
+            current_qty = commodity_cfg.get("quantity", 0)
+            new_qty = min(current_qty + amount, capacity) if capacity > 0 else current_qty + amount
+            commodity_cfg["quantity"] = new_qty
+            injected[canonical] = new_qty - current_qty
+
+        if not injected:
+            raise ValueError(f"No resources injected: {skipped}")
+
+        flag_modified(station, "commodities")
+        self.db.flush()
+
+        # Re-sync MarketPrice.quantity + reprice off the updated stock — the
+        # same sync the trade paths perform after mutating the commodities
+        # JSONB, so the injection is visible to the /admin/economy/market-data
+        # read and to the next trade's pricing, not just to the station row.
+        TradingService(self.db).update_market_prices(station.id)
 
         return {
             "station_id": str(station_id),
             "station_name": station.name,
-            "resources_injected": resources
+            "resources_injected": injected,
+            "skipped": skipped,
         }
 
     def _freeze_trading(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
-        """Freeze trading for specific resources or ports"""
-        return {
-            "status": "trading_freeze_initiated",
-            "duration_minutes": parameters.get('duration_minutes', 60),
-            "affected_resources": parameters.get('resources', []),
-            "affected_ports": parameters.get('port_ids', [])
-        }
+        """Trading-freeze has zero consumers repo-wide (grep freeze_trading|
+        trading_freeze hits only this file and the admin_economy.py
+        docstring) and is off-canon: sw2102-docs/OPERATIONS/admin-ui.md's
+        real admin capability list names 'market interventions (price cap /
+        floor / supply injection)' but never trading-freeze. Previously this
+        returned a canned 'trading_freeze_initiated' dict with no state
+        stored anywhere a trade path could ever check — a pure phantom.
+        Raise an honest 501 rather than half-implement an unenforced flag
+        (DECISIONS Pending: should trading-freeze become a real, enforced
+        capability?)."""
+        raise InterventionError(
+            501,
+            "freeze_trading is not implemented — no trade path checks a "
+            "freeze flag, so this would be an unenforced no-op. Off-canon "
+            "capability; see DECISIONS Pending on whether to build it for real."
+        )
 
     def _reset_market_prices(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
-        """Reset market prices to baseline values"""
+        """Reset market prices to their canonical baseline.
+
+        Baseline now comes from commodity_economy.base_price() — the single
+        source of truth every other economy consumer already derives from —
+        instead of a hand-maintained dict that wrote non-canon values (e.g.
+        fuel 100 vs canon base 12) and carried six slugs no MarketPrice
+        writer has ever stored a row under. An unknown/non-canon
+        resource_type is now rejected rather than silently defaulted to 100
+        (WO-ARCH-RES-2H-RUNTIME-VOCAB — DATA bugfix only; this does not touch
+        the admin route's auth/gating)."""
         resource_type = parameters.get('resource_type')
+        canonical = canonical_commodity(resource_type) if resource_type else None
 
-        # Get baseline prices
-        baseline_prices = {
-            "fuel": 100,
-            "organics": 150,
-            "equipment": 200,
-            "technology": 500,
-            "luxury_items": 1000,
-            "precious_metals": 750,
-            "raw_materials": 50,
-            "plasma": 2000,
-            "bio_samples": 1500,
-            "dark_matter": 5000,
-            "quantum_crystals": 10000
-        }
+        if canonical not in COMMODITY_BASE_PRICES:
+            return {
+                "resource_type": resource_type,
+                "error": f"Unknown commodity '{resource_type}' — no canonical base price",
+                "affected_ports": 0,
+            }
 
-        baseline = baseline_prices.get(resource_type, 100)
+        baseline = commodity_base_price(canonical)
 
-        # Update all prices
+        # Update all prices (filter on the canonical slug — the wire vocab
+        # every MarketPrice writer actually stores, e.g. "fuel_ore" resolves
+        # to "ore").
         affected = self.db.query(MarketPrice).filter(
-            MarketPrice.commodity == resource_type
+            MarketPrice.commodity == canonical
         ).update({
             "buy_price": int(baseline * 0.9),
             "sell_price": int(baseline * 1.1),

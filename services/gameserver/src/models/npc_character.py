@@ -159,6 +159,8 @@ class NPCCharacter(Base):
     # Location — GLOBAL sectors.sector_id (see module docstring divergence
     # note). NULL = deceased / between assignments.
     current_sector_id = Column(Integer, nullable=True, index=True)
+    # In-system pose (WO-ISP) — same JSONB shape as Player.intrasystem_pose.
+    intrasystem_pose = Column(JSONB, nullable=True)
 
     # 1:1 piloted ship (canon "Single-pilot" invariant). SET NULL so the
     # character row survives ship-row deletion.

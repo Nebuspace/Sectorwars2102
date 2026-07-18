@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 from sqlalchemy import select, update, func, and_, or_
+from sqlalchemy.exc import MultipleResultsFound
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timedelta
 import uuid
@@ -25,7 +26,10 @@ from src.models.station import Station
 from src.models.ship import Ship
 from src.models.region_invite import RegionInvite
 from src.services.regional_governance_service import RegionalGovernanceService
+from src.services.policy_proposal_rules import validate_proposed_changes
 from src.services import trading_service
+from src.services import construction_service
+from src.services.construction_service import ConstructionError
 from src.services.region_invite_service import (
     RegionInviteService,
     DEFAULT_MAX_USES,
@@ -122,6 +126,29 @@ class GovernanceConfigUpdate(BaseModel):
     voting_threshold: float = Field(ge=0.1, le=0.9)
     election_frequency_days: int = Field(ge=30, le=365)
     constitutional_text: Optional[str] = None
+    # ADR-0059 N-D5 owner-configurable participation threshold
+    # (regional-governance.md:91, band [0.25, 0.60]). Optional so a caller
+    # that omits it leaves the region's existing dial untouched; read back
+    # via regional_governance_service.quorum_pct_for_region.
+    governance_quorum_pct: Optional[float] = Field(None, ge=0.25, le=0.60)
+
+
+class MemberDialsUpdate(BaseModel):
+    """Owner request to adjust one member's regional-governance dials
+    (SYSTEMS/regional-governance.md:71-76 -- owner-adjustable voting power,
+    citizen tier target 1.5; the :77 auto-recalc is DESIGN-ONLY and is NOT
+    built here). Both fields are optional -- a partial PATCH sends only what
+    changed.
+
+    ``voting_power`` is clamped to the canon [0.0, 5.0] band. 0.0 is a
+    DELIBERATE allowance (NO-CANON extension, not spelled out in the doc):
+    it lets an owner disenfranchise a member outright, since
+    RegionalMembership.can_vote already gates on voting_power > 0.
+
+    ``local_rank`` is free text bounded by the column's String(50) limit;
+    canon defines no vocabulary for its contents (NO-CANON format)."""
+    voting_power: Optional[float] = Field(None, ge=0.0, le=5.0)
+    local_rank: Optional[str] = Field(None, max_length=50)
 
 
 class PolicyCreate(BaseModel):
@@ -182,6 +209,18 @@ class TariffSet(BaseModel):
     rate: float = Field(..., description="Requested tariff rate (clamped to the E-F2 cap on write)")
 
 
+class TradedockConstructionRequest(BaseModel):
+    """Owner request to fund construction of a new TradeDock (WO-TD-RGF-1).
+
+    ``station_id`` is the existing station the project is initiated against
+    (see construction_service.create_region_funded_construction for the full
+    precondition contract — the station must already carry a tradedock_tier
+    and sit inside the caller's region). Cost, region-ownership, and
+    ≥ 500-sector eligibility are re-derived and re-checked server-side; none
+    of that is trusted from the request body."""
+    station_id: uuid.UUID
+
+
 class TreatyPropose(BaseModel):
     """Owner request to PROPOSE a treaty to another region (WO-TREATY).
 
@@ -215,17 +254,93 @@ def _serialize_invite(invite: RegionInvite) -> Dict[str, Any]:
     }
 
 
-async def get_user_region(db: AsyncSession, user_id: uuid.UUID) -> Optional[Region]:
-    """Get the region owned by the current user"""
+class AmbiguousRegionOwnerError(Exception):
+    """Raised by get_user_region when the caller owns 2+ regions and no
+    region_id was supplied to disambiguate (WO-DRIFT-admin-gov-multiregion-
+    owner-500). Carries every owned region so the route layer can 400 with a
+    pick-list -- get_user_region / verify_region_owner NEVER silently choose
+    one on the caller's behalf."""
+
+    def __init__(self, regions: List[Region]) -> None:
+        self.regions = regions
+        super().__init__("Ambiguous region owner: region_id required")
+
+
+async def get_owned_regions(db: AsyncSession, user_id: uuid.UUID) -> List[Region]:
+    """All regions owned by user_id, ordered by name for a stable pick-list."""
     result = await db.execute(
-        select(Region).where(Region.owner_id == user_id)
+        select(Region).where(Region.owner_id == user_id).order_by(Region.name)
     )
-    return result.scalar_one_or_none()
+    return list(result.scalars().all())
 
 
-async def verify_region_owner(db: AsyncSession, user: User) -> Region:
-    """Verify that the user owns a region and return it"""
-    region = await get_user_region(db, user.id)
+async def get_user_region(
+    db: AsyncSession, user_id: uuid.UUID, region_id: Optional[uuid.UUID] = None
+) -> Optional[Region]:
+    """Resolve the region the caller is acting on as owner.
+
+    ``region_id`` given: return that region IFF owned by user_id (id AND
+    owner_id both match in one query -- mirrors RegionInviteService.
+    owns_region) -- else None. id is the primary key so this can never raise
+    MultipleResultsFound. The caller (verify_region_owner) turns None into a
+    flat 403, never distinguishing "doesn't exist" from "someone else's
+    region" for a non-owner.
+
+    ``region_id`` absent: the original single-region lookup, unchanged for a
+    1-region owner (same single query, same scalar_one_or_none()). A
+    2+-region owner previously blew this up with an unhandled
+    MultipleResultsFound (500, the bug this fixes); that is now caught and
+    re-raised as AmbiguousRegionOwnerError carrying every owned region, so the
+    route can 400 with a pick-list instead of a crash or a silent pick.
+    """
+    if region_id is not None:
+        result = await db.execute(
+            select(Region).where(
+                and_(Region.id == region_id, Region.owner_id == user_id)
+            )
+        )
+        return result.scalar_one_or_none()
+
+    result = await db.execute(select(Region).where(Region.owner_id == user_id))
+    try:
+        return result.scalar_one_or_none()
+    except MultipleResultsFound:
+        raise AmbiguousRegionOwnerError(await get_owned_regions(db, user_id))
+
+
+async def verify_region_owner(
+    db: AsyncSession, user: User, region_id: Optional[uuid.UUID] = None
+) -> Region:
+    """Verify the user owns the region being acted on and return it.
+
+    - ``region_id`` given: 403 if not owned by this user -- an authz denial,
+      never a 404 (does not leak whether region_id exists at all).
+    - ``region_id`` absent + exactly 1 owned region: that region (unchanged
+      back-compat path for every existing /my-region/* caller).
+    - ``region_id`` absent + 0 owned regions: 404 (unchanged).
+    - ``region_id`` absent + 2+ owned regions: 400 listing the owned regions
+      -- NEVER a silent pick (WO-DRIFT-admin-gov-multiregion-owner-500).
+    """
+    if region_id is not None:
+        region = await get_user_region(db, user.id, region_id)
+        if region is None:
+            raise HTTPException(status_code=403, detail="Not the region owner")
+        return region
+
+    try:
+        region = await get_user_region(db, user.id)
+    except AmbiguousRegionOwnerError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "ERR_AMBIGUOUS_REGION_OWNER",
+                "message": "You own multiple regions; pass region_id to select one.",
+                "regions": [
+                    {"id": str(r.id), "name": r.name, "display_name": r.display_name}
+                    for r in exc.regions
+                ],
+            },
+        )
     if not region:
         raise HTTPException(status_code=404, detail="No region found for this user")
     return region
@@ -234,10 +349,11 @@ async def verify_region_owner(db: AsyncSession, user: User) -> Region:
 @router.get("/my-region")
 async def get_my_region(
     current_user: User = Depends(require_auth),
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Get information about the user's owned region"""
-    region = await verify_region_owner(db, current_user)
+    region = await verify_region_owner(db, current_user, region_id)
     
     return {
         "id": str(region.id),
@@ -262,6 +378,11 @@ async def get_my_region(
         "total_sectors": region.total_sectors,
         "active_players_30d": region.active_players_30d,
         "total_trade_volume": float(region.total_trade_volume),
+        # WO-TD-RGF-1: the owner panel needs this to show treasury vs. the
+        # 50,000,000cr region-funded TradeDock cost. Safe to return as-is —
+        # verify_region_owner() above already 404s a non-owner before this
+        # dict is ever built, so this route is owner-gated by construction.
+        "treasury_balance": region.treasury_balance,
         "created_at": region.created_at.isoformat(),
         "updated_at": region.updated_at.isoformat()
     }
@@ -270,10 +391,11 @@ async def get_my_region(
 @router.get("/my-region/stats")
 async def get_regional_stats(
     current_user: User = Depends(require_auth),
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Get comprehensive statistics for the user's region"""
-    region = await verify_region_owner(db, current_user)
+    region = await verify_region_owner(db, current_user, region_id)
     
     # Get membership statistics
     membership_stats = await db.execute(
@@ -363,10 +485,11 @@ async def get_regional_stats(
 async def update_economic_config(
     config: EconomicConfigUpdate,
     current_user: User = Depends(require_auth),
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Update economic configuration for the user's region"""
-    region = await verify_region_owner(db, current_user)
+    region = await verify_region_owner(db, current_user, region_id)
     
     # Validate trade bonuses
     for resource, bonus in config.trade_bonuses.items():
@@ -398,40 +521,46 @@ async def update_economic_config(
 async def update_governance_config(
     config: GovernanceConfigUpdate,
     current_user: User = Depends(require_auth),
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Update governance configuration for the user's region"""
-    region = await verify_region_owner(db, current_user)
+    region = await verify_region_owner(db, current_user, region_id)
     
     # Validate governance type
     if config.governance_type not in ['autocracy', 'democracy', 'council']:
         raise HTTPException(status_code=400, detail="Invalid governance type")
     
     # Update region
+    values: Dict[str, Any] = dict(
+        governance_type=config.governance_type,
+        voting_threshold=config.voting_threshold,
+        election_frequency_days=config.election_frequency_days,
+        constitutional_text=config.constitutional_text,
+        updated_at=datetime.utcnow()
+    )
+    if config.governance_quorum_pct is not None:
+        values["governance_quorum_pct"] = config.governance_quorum_pct
+
     await db.execute(
         update(Region)
         .where(Region.id == region.id)
-        .values(
-            governance_type=config.governance_type,
-            voting_threshold=config.voting_threshold,
-            election_frequency_days=config.election_frequency_days,
-            constitutional_text=config.constitutional_text,
-            updated_at=datetime.utcnow()
-        )
+        .values(**values)
     )
-    
+
     await db.commit()
-    
+
     return {"message": "Governance configuration updated successfully"}
 
 
 @router.get("/my-region/policies")
 async def get_regional_policies(
     current_user: User = Depends(require_auth),
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Get all policies for the user's region"""
-    region = await verify_region_owner(db, current_user)
+    region = await verify_region_owner(db, current_user, region_id)
     
     result = await db.execute(
         select(RegionalPolicy)
@@ -463,11 +592,12 @@ async def get_regional_policies(
 async def create_policy(
     policy_data: PolicyCreate,
     current_user: User = Depends(require_auth),
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Create a new policy proposal for the user's region"""
-    region = await verify_region_owner(db, current_user)
-    
+    region = await verify_region_owner(db, current_user, region_id)
+
     # Get current user's player record
     player_result = await db.execute(
         select(Player).where(Player.user_id == current_user.id)
@@ -475,7 +605,17 @@ async def create_policy(
     player = player_result.scalar_one_or_none()
     if not player:
         raise HTTPException(status_code=404, detail="Player record not found")
-    
+
+    # Validate proposed_changes AT PROPOSAL TIME (canon "Validator catches at
+    # proposal time (400)") — mirrors the member POST below, so an owner and a
+    # citizen proposal are held to the identical known-keys/bounds contract.
+    errors = validate_proposed_changes(policy_data.proposed_changes)
+    if errors:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "ERR_INVALID_PROPOSED_CHANGES", "errors": errors},
+        )
+
     # Create policy
     voting_closes_at = datetime.utcnow() + timedelta(days=policy_data.voting_duration_days)
     
@@ -503,10 +643,11 @@ async def create_policy(
 @router.get("/my-region/elections")
 async def get_regional_elections(
     current_user: User = Depends(require_auth),
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Get all elections for the user's region"""
-    region = await verify_region_owner(db, current_user)
+    region = await verify_region_owner(db, current_user, region_id)
     
     result = await db.execute(
         select(RegionalElection)
@@ -533,10 +674,11 @@ async def get_regional_elections(
 async def start_election(
     election_data: ElectionCreate,
     current_user: User = Depends(require_auth),
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Start a new election for the user's region"""
-    region = await verify_region_owner(db, current_user)
+    region = await verify_region_owner(db, current_user, region_id)
     
     # Check if there's already an active election for this position
     existing_election = await db.scalar(
@@ -582,10 +724,11 @@ async def start_election(
 @router.get("/my-region/treaties")
 async def get_regional_treaties(
     current_user: User = Depends(require_auth),
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Get all treaties for the user's region"""
-    region = await verify_region_owner(db, current_user)
+    region = await verify_region_owner(db, current_user, region_id)
     
     result = await db.execute(
         select(RegionalTreaty, Region.name.label('partner_name'))
@@ -670,6 +813,7 @@ async def propose_treaty(
     body: TreatyPropose,
     current_user: User = Depends(require_auth),
     db: AsyncSession = Depends(get_async_session),
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Propose a treaty FROM the caller's owned region TO another region.
 
@@ -679,7 +823,7 @@ async def propose_treaty(
     owner accepts. 400 if proposing to one's own region; 404 if the counterparty
     region does not exist; 409 if a live (proposed/active) treaty already exists
     between the pair (either direction)."""
-    region = await verify_region_owner(db, current_user)
+    region = await verify_region_owner(db, current_user, region_id)
 
     result = await RegionalGovernanceService.propose_treaty(
         db,
@@ -787,10 +931,11 @@ async def terminate_treaty(
 async def update_cultural_identity(
     culture_data: CulturalUpdate,
     current_user: User = Depends(require_auth),
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Update cultural identity for the user's region"""
-    region = await verify_region_owner(db, current_user)
+    region = await verify_region_owner(db, current_user, region_id)
     
     # Update region
     await db.execute(
@@ -814,35 +959,68 @@ async def get_regional_members(
     current_user: User = Depends(require_auth),
     db: AsyncSession = Depends(get_async_session),
     limit: int = 100,
-    offset: int = 0
+    offset: int = 0,
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Get members of the user's region"""
-    region = await verify_region_owner(db, current_user)
-    
-    result = await db.execute(
-        select(RegionalMembership, Player.username)
-        .join(Player, RegionalMembership.player_id == Player.id)
-        .where(RegionalMembership.region_id == region.id)
-        .order_by(RegionalMembership.joined_at.desc())
-        .limit(limit)
-        .offset(offset)
+    region = await verify_region_owner(db, current_user, region_id)
+
+    # Delegate to the service (single source of truth for the
+    # Player.username-is-a-property fallback query) rather than duplicating
+    # the same query inline here.
+    return await RegionalGovernanceService.get_regional_members(
+        db, region.id, limit=limit, offset=offset
     )
-    members = result.all()
-    
-    return [
-        {
-            "player_id": str(membership.player_id),
-            "username": username,
-            "membership_type": membership.membership_type,
-            "reputation_score": membership.reputation_score,
-            "local_rank": membership.local_rank,
-            "voting_power": float(membership.voting_power),
-            "joined_at": membership.joined_at.isoformat(),
-            "last_visit": membership.last_visit.isoformat(),
-            "total_visits": membership.total_visits
-        }
-        for membership, username in members
-    ]
+
+
+@router.patch("/my-region/members/{player_id}")
+async def update_member_dials(
+    player_id: uuid.UUID,
+    body: MemberDialsUpdate,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+    region_id: Optional[uuid.UUID] = None,
+):
+    """Adjust a region member's voting_power / local_rank (region OWNER
+    only; SYSTEMS/regional-governance.md:71-76).
+
+    404 if the caller owns no region (verify_region_owner) or if
+    ``player_id`` does not resolve to a RegionalMembership in the caller's
+    region; 400 if neither field is supplied. Schema-level 422 covers the
+    [0.0, 5.0] voting_power band and the 50-char local_rank cap."""
+    region = await verify_region_owner(db, current_user, region_id)
+
+    result = await db.execute(
+        select(RegionalMembership).where(
+            RegionalMembership.region_id == region.id,
+            RegionalMembership.player_id == player_id
+        )
+    )
+    membership = result.scalar_one_or_none()
+    if membership is None:
+        raise HTTPException(status_code=404, detail="Member not found in this region")
+
+    values: Dict[str, Any] = {}
+    if body.voting_power is not None:
+        values["voting_power"] = body.voting_power
+    if body.local_rank is not None:
+        values["local_rank"] = body.local_rank
+    if not values:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    await db.execute(
+        update(RegionalMembership)
+        .where(RegionalMembership.id == membership.id)
+        .values(**values)
+    )
+    await db.commit()
+
+    return {
+        "message": "Member dials updated successfully",
+        "player_id": str(player_id),
+        "voting_power": values.get("voting_power", float(membership.voting_power)),
+        "local_rank": values.get("local_rank", membership.local_rank),
+    }
 
 
 # =====================================================================
@@ -1022,6 +1200,176 @@ async def get_election_results(
 
 
 # =====================================================================
+# Member-facing governance discovery + policy proposal (WO-REGOV-CITIZEN-API).
+#
+# Before this slice the /my-region/* reads above served the REGION OWNER
+# only; a member (citizen/resident/visitor) had no route to discover any
+# policy/election/treaty id at all — only per-id vote/candidate actions
+# existed (:838 vote, :867 candidates, :903 policy-vote, :981 results). These
+# four routes close that gap: membership-verified reads (mirrors the :932
+# get_my_membership pattern — 403 for a non-member, 404 for a missing region)
+# that CALL the already-existing (previously uncalled) service read methods,
+# plus a member policy PROPOSAL route.
+#
+# NO-CANON: FEATURES …/regional-governance.md:159-168 targets a proposal gate
+# of "regional reputation >= 100" — no regional-reputation field exists on
+# RegionalMembership today (only the per-region reputation_score used for
+# candidacy, which is a DIFFERENT canon number). Gating instead on citizen/
+# resident membership with can_vote (region.py:260-263), same as the vote-
+# casting routes. Flagged to DECISIONS for the real threshold.
+# =====================================================================
+
+def _serialize_policy(policy: RegionalPolicy) -> Dict[str, Any]:
+    """Shape a RegionalPolicy for the member-facing API (mirrors the owner
+    /my-region/policies serialization above)."""
+    return {
+        "id": str(policy.id),
+        "policy_type": policy.policy_type,
+        "title": policy.title,
+        "description": policy.description,
+        "proposed_changes": policy.proposed_changes,
+        "proposed_by": str(policy.proposed_by),
+        "proposed_at": policy.proposed_at.isoformat(),
+        "voting_closes_at": policy.voting_closes_at.isoformat(),
+        "votes_for": policy.votes_for,
+        "votes_against": policy.votes_against,
+        "status": policy.status,
+        "approval_percentage": policy.approval_percentage,
+    }
+
+
+def _serialize_election_for_member(election: RegionalElection) -> Dict[str, Any]:
+    """Shape a RegionalElection for the member-facing API (mirrors the owner
+    /my-region/elections serialization above)."""
+    return {
+        "id": str(election.id),
+        "position": election.position,
+        "candidates": election.candidates,
+        "voting_opens_at": election.voting_opens_at.isoformat(),
+        "voting_closes_at": election.voting_closes_at.isoformat(),
+        "results": election.results,
+        "status": election.status,
+    }
+
+
+async def _require_member(
+    db: AsyncSession, region: Region, player: Player
+) -> Dict[str, Any]:
+    """403 ERR_NOT_A_MEMBER if the caller is not a member of `region` (any
+    tier, or an in-region colony owner, counts — mirrors the :932
+    get_my_membership read). Returns the membership-status dict so callers
+    needing can_vote don't have to re-fetch it."""
+    status = await RegionalGovernanceService.get_membership_status(
+        db, region.id, player.id
+    )
+    if not status.get("is_member"):
+        raise HTTPException(status_code=403, detail="ERR_NOT_A_MEMBER")
+    return status
+
+
+@router.get("/{region_id}/policies")
+async def list_region_policies_for_member(
+    region_id: uuid.UUID,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Member-scoped policy discovery — any region member (not just the
+    owner) can list policy ids. 404 if the region does not exist; 403 if the
+    caller is not a member. Calls the pre-existing (previously uncalled)
+    RegionalGovernanceService.get_regional_policies."""
+    region = await _get_region_by_id(db, region_id)
+    player = await _get_current_player(db, current_user)
+    await _require_member(db, region, player)
+
+    policies = await RegionalGovernanceService.get_regional_policies(db, region.id)
+    return [_serialize_policy(p) for p in policies]
+
+
+@router.get("/{region_id}/elections")
+async def list_region_elections_for_member(
+    region_id: uuid.UUID,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Member-scoped election discovery — any region member can list election
+    ids. 404 if the region does not exist; 403 if the caller is not a member.
+    Calls the pre-existing (previously uncalled)
+    RegionalGovernanceService.get_regional_elections."""
+    region = await _get_region_by_id(db, region_id)
+    player = await _get_current_player(db, current_user)
+    await _require_member(db, region, player)
+
+    elections = await RegionalGovernanceService.get_regional_elections(db, region.id)
+    return [_serialize_election_for_member(e) for e in elections]
+
+
+@router.get("/{region_id}/treaties")
+async def list_region_treaties_for_member(
+    region_id: uuid.UUID,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Member-scoped treaty discovery — any region member can list treaty
+    ids. 404 if the region does not exist; 403 if the caller is not a member.
+    Calls the pre-existing (previously uncalled)
+    RegionalGovernanceService.get_regional_treaties.
+
+    NO-CANON: the full `terms` payload is REDACTED for this member-facing
+    view (citizens see type/partner/status/expiry, not the negotiated terms
+    — the owner-scoped /my-region/treaties read is unaffected and still
+    returns terms in full). Flagged to DECISIONS."""
+    region = await _get_region_by_id(db, region_id)
+    player = await _get_current_player(db, current_user)
+    await _require_member(db, region, player)
+
+    treaties = await RegionalGovernanceService.get_regional_treaties(db, region.id)
+    return [{k: v for k, v in treaty.items() if k != "terms"} for treaty in treaties]
+
+
+@router.post("/{region_id}/policies")
+async def create_policy_proposal_for_member(
+    region_id: uuid.UUID,
+    policy_data: PolicyCreate,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Member-scoped policy proposal — any eligible citizen/resident (not
+    just the owner) may propose. 404 if the region does not exist; 403 if the
+    caller is not a member or is not vote-eligible (ERR_NOT_ELIGIBLE — see the
+    NO-CANON note on this section re: the reputation>=100 target). 400 if
+    proposed_changes fails policy_proposal_rules.validate_proposed_changes
+    (an unknown key or an out-of-band value) — no row is written on a 400.
+    Calls the pre-existing (previously uncalled)
+    RegionalGovernanceService.create_policy_proposal."""
+    region = await _get_region_by_id(db, region_id)
+    player = await _get_current_player(db, current_user)
+    status = await _require_member(db, region, player)
+    if not status.get("can_vote"):
+        raise HTTPException(status_code=403, detail="ERR_NOT_ELIGIBLE")
+
+    errors = validate_proposed_changes(policy_data.proposed_changes)
+    if errors:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "ERR_INVALID_PROPOSED_CHANGES", "errors": errors},
+        )
+
+    new_policy = await RegionalGovernanceService.create_policy_proposal(
+        db,
+        region_id=region.id,
+        proposer_id=player.id,
+        policy_data=policy_data.model_dump(),
+    )
+    if new_policy is None:
+        raise HTTPException(status_code=500, detail="ERR_POLICY_CREATE_FAILED")
+
+    return {
+        "message": "Policy proposal created successfully",
+        "policy_id": str(new_policy.id),
+    }
+
+
+# =====================================================================
 # Region invite onramp — owner-gated mint / list / revoke (WO-IL3).
 # Brief: audit/design-briefs/invite-link-onramp.md §4.2.
 #
@@ -1165,4 +1513,73 @@ def set_region_tariff_endpoint(
     return {
         "message": "Region tariff updated successfully",
         "tariff_rate": clamped,
+    }
+
+
+# =====================================================================
+# Region-funded TradeDock construction (WO-TD-RGF-1).
+#
+# construction_service.create_region_funded_construction carries the full
+# precondition/state-machine contract (owner check, ≥ 500-sector gate,
+# treasury deduct + escrow, ledger write, market-book seed) and previously
+# had zero callers. This wires it up, running on the sync Session
+# construction_service expects (mirrors set_region_tariff_endpoint above).
+# =====================================================================
+
+def _region_construction_status(error: ConstructionError) -> int:
+    """Remap select construction_service statuses to more precise REST
+    semantics for this route: the service's generic 400 for the < 500-sector
+    precondition becomes 409 (a region-state conflict, consistent with the
+    409 this route also returns for a double-POST); its generic 400 for
+    insufficient region treasury becomes 402, mirroring the established
+    insufficient-funds -> 402 convention elsewhere in this codebase
+    (research_cockpit.py, black_market.py, planet_grid.py, first_login.py).
+    Every other code (403 non-owner, 404 region, 409 double-post) is already
+    precise and passes through unchanged."""
+    if error.status_code == 400:
+        detail_lower = error.detail.lower()
+        if "sectors" in detail_lower:
+            return 409
+        if "treasury" in detail_lower:
+            return 402
+    return error.status_code
+
+
+@router.post("/my-region/tradedock-construction")
+def create_region_funded_tradedock(
+    body: TradedockConstructionRequest,
+    current_user: User = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """Fund construction of a new TradeDock at ``station_id`` (region OWNER
+    only). Pulls 50,000,000 cr from the REGION treasury, not the caller's
+    personal credits.
+
+    404 if the caller has no Player record, or ``station_id`` doesn't
+    resolve to a station linked to any region; otherwise every further
+    validation (ownership, sector count, treasury, in-progress guard) is
+    delegated to construction_service.create_region_funded_construction and
+    remapped to REST-precise codes by ``_region_construction_status``: 403
+    non-owner, 409 < 500 sectors or a build already in progress at this
+    station, 402 insufficient region treasury."""
+    player = db.query(Player).filter(Player.user_id == current_user.id).first()
+    if player is None:
+        raise HTTPException(status_code=404, detail="Player record not found")
+
+    station = db.query(Station).filter(Station.id == body.station_id).first()
+    if station is None or station.region_id is None:
+        raise HTTPException(status_code=404, detail="Station not found in any region")
+
+    try:
+        result = construction_service.create_region_funded_construction(
+            db, station, player, station.region_id
+        )
+        db.commit()
+    except ConstructionError as e:
+        db.rollback()
+        raise HTTPException(status_code=_region_construction_status(e), detail=e.detail)
+
+    return {
+        "message": "Region-funded TradeDock construction initiated",
+        **result,
     }

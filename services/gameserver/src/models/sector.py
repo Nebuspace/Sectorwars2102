@@ -99,10 +99,10 @@ class Sector(Base):
     # Resources - aligned with data definition
     resources = Column(JSONB, nullable=False, default={
         "has_asteroids": False,
-        "asteroid_yield": {
+        "asteroid_yield": {  # keys match the frozen mining harvest contract exactly
             "ore": 0,
             "precious_metals": 0,
-            "radioactives": 0
+            "quantum_shards": 0
         },
         "gas_clouds": [],
         "has_scanned": False
@@ -115,7 +115,6 @@ class Sector(Base):
     
     # Defenses - aligned with data definition
     defenses = Column(JSONB, nullable=False, default={
-        "defense_drones": 0,
         "owner_id": None,
         "owner_name": None,
         "team_id": None,
@@ -137,6 +136,16 @@ class Sector(Base):
     active_events = Column(JSONB, nullable=False, default=[])  # Current sector events
     special_features = Column(ARRAY(String), nullable=False, default=[])
     description = Column(String, nullable=True)
+
+    # WO-P4-play-beacon-kernel (message-beacons.md:87-101): denormalized
+    # array of beacon summaries for a fast sector-arrival read, kept in sync
+    # by message_beacon_service on deploy/salvage/expiry/FIFO-displacement.
+    # Nullable (not default=[]) -- an ADDITIVE column on an existing table;
+    # NULL reads as "no beacons" everywhere this is consumed (mirrors
+    # Station.security's own nullable-JSONB + defensive-read convention),
+    # avoiding a backfill migration for existing rows. Shape:
+    # [{"id", "deployer_nickname", "deployed_at", "preview", "expiry"}, ...]
+    message_beacons = Column(JSONB, nullable=True)
     
     # Navigation properties
     nav_hazards = Column(JSONB, nullable=False, default={})  # Navigation hazards

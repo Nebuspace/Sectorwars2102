@@ -12,7 +12,8 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 
 from src.core.database import get_db
-from src.auth.dependencies import get_current_player, get_current_admin
+from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.dependencies import get_current_player, require_scope
 from src.models.player import Player
 from src.models.user import User
 from src.services.ranking_service import RankingService, RANK_DEFINITIONS
@@ -498,7 +499,7 @@ async def get_rank_progress(
 @router.get("/leaderboard", response_model=LeaderboardResponse)
 async def get_rankings_leaderboard(
     limit: int = Query(default=20, ge=1, le=100, description="Number of players to return"),
-    admin: User = Depends(get_current_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db),
 ):
     """Get the top players ranked by military rank points. Admin only."""
