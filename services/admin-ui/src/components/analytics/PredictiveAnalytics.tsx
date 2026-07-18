@@ -11,7 +11,7 @@ export const PredictiveAnalytics: React.FC = () => {
   return (
     <div className="predictive-analytics">
       <div className="analytics-header">
-        <h2>Predictive Analytics</h2>
+        <h2>Predictive Analytics — unavailable</h2>
       </div>
       <div
         role="note"
