@@ -1,0 +1,136 @@
+name: ci-schema-parity
+
+# Blocking gate (WO-QTI-PARITY-CI): proves the SQLAlchemy model registry
+# matches a database built from NOTHING but the full Alembic migration
+# chain -- never Base.metadata.create_all(), which silently heals
+# model/migration drift a genuinely fresh deploy never gets (see
+# scripts/schema_parity_check.py's own docstring for the two confirmed
+# incidents that motivated this tool: market_prices.port_id vs.
+# MarketPrice.station_id, and the enum name-vs-value defect class).
+# `alembic upgrade head` against an empty Postgres instance doubles as a
+# fresh-migration-chain smoke test independent of what the parity tool
+# itself finds -- a forked/broken migration history fails this job too.
+#
+# Deliberately a separate workflow file, not a new job in ci-build-test.yml:
+# that file's own header states its jobs are "cheap, DB-free ... none of
+# these jobs stand up Postgres" -- this job is neither (a full `poetry
+# install` of the main dependency group, including the
+# scikit-learn/prophet/pandas/scipy stack, plus a live Postgres service
+# container). A separate file keeps that scope claim true and gives this
+# gate its own self-documenting name.
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  schema-parity:
+    name: schema parity (fresh migration chain)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # Matches docker-compose.yml's postgres:15-alpine (all three
+        # service definitions there use this same tag).
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: parity
+          POSTGRES_PASSWORD: parity
+          POSTGRES_DB: parity
+        ports:
+          - 5432:5432
+        # GH Actions withholds the job's own steps until this health
+        # check passes -- no separate wait-for-postgres step needed.
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # Real target for both alembic and the parity tool itself.
+      DATABASE_URL: postgresql://parity:parity@localhost:5432/parity
+      # src.core.config.Settings has no default for these three and
+      # raises ValueError at import time otherwise. Both `alembic upgrade
+      # head` (env.py imports src.core.database, which imports
+      # src.core.config at module level) and schema_parity_check.py
+      # (imports src.main) trigger that import -- verified by reading
+      # both files, not assumed. Dummy, format-valid values only; never
+      # used for anything but passing Settings' own validation
+      # (JWT_SECRET >= 32 chars, ADMIN_PASSWORD >= 12 -- both enforced by
+      # Settings._validate_security_config).
+      JWT_SECRET: ci-schema-parity-dummy-jwt-secret-not-a-real-secret-32c
+      ADMIN_USERNAME: ci-schema-parity
+      ADMIN_PASSWORD: ci-schema-parity-dummy-password
+      # ARIA_ENCRYPTION_KEY joined the no-default set 2026-07-10 (07bf5cfb):
+      # Settings._validate_security_config now requires it AND validates that
+      # it parses as a real Fernet key -- so unlike the presence/length-only
+      # vars above, a random dummy string won't pass. This is a throwaway
+      # format-valid Fernet key generated once for CI; it never encrypts or
+      # decrypts anything (this job builds a fresh parity DB with zero
+      # encrypted rows -- it only needs Settings() to construct so `alembic
+      # upgrade head` and schema_parity_check.py can import the app). Inline
+      # dummy, NOT ${{ secrets.ARIA_ENCRYPTION_KEY }}, on purpose: matches the
+      # JWT/ADMIN dummy convention above and survives fork-PR runs where
+      # secrets aren't injected. The real per-env key lives only in each
+      # host's .env + the CI secret store (for a future real-pytest lane).
+      ARIA_ENCRYPTION_KEY: 7Wx6aTfsNcQQDOQWQY6vv8UAEAbJkL5ngNZW_Z0HHq0=
+      # Grepped: only tests/conftest.py reads this (neither alembic/env.py
+      # nor schema_parity_check.py touches it, so it's a no-op for this
+      # specific job today) -- set anyway to match the house convention
+      # ("the container sets TESTING_FROM_HOST=false") in case that
+      # changes.
+      TESTING_FROM_HOST: "false"
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # Matches services/gameserver/Dockerfile's `FROM python:3.12-slim`
+          # (the same choice ci-build-test.yml / ci-lint.yml already made).
+          python-version: "3.12"
+
+      - name: Install Poetry
+        run: pip install poetry
+
+      - name: Install gameserver dependencies
+        working-directory: services/gameserver
+        # `virtualenvs.create false` + main group only mirrors the
+        # Dockerfile's `production` stage exactly (poetry installs
+        # straight into this job's system interpreter, so later steps
+        # invoke `alembic` / `python` directly, no `poetry run` prefix --
+        # same convention start.sh uses). Alembic + schema_parity_check.py
+        # both need the full app import chain (main group), but neither
+        # needs pytest/ruff/mypy/etc. (dev group).
+        run: |
+          poetry config virtualenvs.create false
+          poetry install --no-root --without dev
+
+      - name: Alembic upgrade head (fresh DB, full migration chain)
+        working-directory: services/gameserver
+        run: alembic upgrade head
+
+      - name: Schema parity check (human-readable, gates the build)
+        working-directory: services/gameserver
+        run: python scripts/schema_parity_check.py --database-url "$DATABASE_URL"
+
+      - name: Schema parity report (JSON artifact)
+        # Runs even if the gate step above already failed the job --
+        # the JSON report is most useful exactly when something broke.
+        if: always()
+        working-directory: services/gameserver
+        run: python scripts/schema_parity_check.py --database-url "$DATABASE_URL" --json > schema_parity_report.json
+
+      - name: Upload schema parity report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: schema-parity-report
+          path: services/gameserver/schema_parity_report.json
+          retention-days: 30
