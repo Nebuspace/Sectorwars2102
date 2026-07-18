@@ -429,9 +429,9 @@ const AITradingDashboard: React.FC = () => {
             <div className="metric-trend">Model Performance</div>
           </div>
           <div className="metric-card">
-            <h3>Active Profiles</h3>
+            <h3>Active Profiles (count only)</h3>
             <div className="metric-value">{metrics.activeProfiles.toLocaleString()}</div>
-            <div className="metric-label">Players Using AI</div>
+            <div className="metric-label">Rows returned — scoring unavailable</div>
           </div>
           <div className="metric-card">
             <h3>Acceptance Rate</h3>
