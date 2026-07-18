@@ -601,12 +601,6 @@ const RegionalGovernorDashboard: React.FC = () => {
                   Manage Elections
                 </button>
                 <button
-                  onClick={() => setActiveTab('diplomacy')}
-                  className="action-button secondary"
-                >
-                  Diplomatic Relations
-                </button>
-                <button
                   onClick={loadRegionalData}
                   className="action-button refresh"
                   disabled={loading}
