@@ -50,8 +50,17 @@ const ContactActionMenu: React.FC<ContactActionMenuProps> = ({ anchorEl, items, 
       Math.max(MENU_MARGIN, anchorRect.left),
       window.innerWidth - menuRect.width - MENU_MARGIN
     );
+    // Flip up when there's no room below the anchor -- a bottom-of-list
+    // contact would otherwise just get clamped upward by the Math.min
+    // below, landing the menu overlapping its own trigger row instead of
+    // opening in the natural direction (WO-TACTICAL-POPUP browser-prove
+    // note: visible but fragile). The final clamp stays as a backstop for
+    // the (rarer) case where even the above-anchor position overflows the
+    // top -- same clamped-anchor idiom as the below-anchor path.
+    const fitsBelow = anchorRect.bottom + 4 + menuRect.height + MENU_MARGIN <= window.innerHeight;
+    const preferredTop = fitsBelow ? anchorRect.bottom + 4 : anchorRect.top - menuRect.height - 4;
     const top = Math.min(
-      Math.max(MENU_MARGIN, anchorRect.bottom + 4),
+      Math.max(MENU_MARGIN, preferredTop),
       window.innerHeight - menuRect.height - MENU_MARGIN
     );
     setStyle({ left, top });

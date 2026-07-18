@@ -444,4 +444,47 @@ describe('TacticalTargetPage', () => {
     await mount([]);
     expect(container.querySelector('.empty-state')?.getAttribute('role')).toBe('status');
   });
+
+  // WO-TACTICAL-POPUP hub browser-prove polish note: a bottom-of-list
+  // contact's trigger sat near the viewport bottom -- the old positioning
+  // always anchored the menu BELOW the trigger, then clamped `top` upward
+  // to stay in-viewport, landing the menu overlapping its own trigger row
+  // instead of opening in the natural (flipped-up) direction.
+  it('flips the menu UP when the trigger anchor is near the viewport bottom, instead of clamping it into an overlap with its own row', async () => {
+    const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: Element
+    ) {
+      if (this.classList?.contains('target-contact-name')) {
+        // Anchor sits near the bottom of a (jsdom-default ~768px) viewport.
+        return {
+          width: 120, height: 20, top: 730, left: 40, right: 160, bottom: 750, x: 40, y: 730,
+          toJSON: () => ({}),
+        } as DOMRect;
+      }
+      if (this.classList?.contains('contact-action-menu')) {
+        return {
+          width: 140, height: 150, top: 0, left: 0, right: 140, bottom: 150, x: 0, y: 0,
+          toJSON: () => ({}),
+        } as DOMRect;
+      }
+      return { width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+    });
+
+    try {
+      await mount([
+        { player_id: 'p1', ship_id: '1', username: 'Vega', reputation_tier: 'Lawful', personal_reputation: 40 },
+      ]);
+      await click(name());
+
+      const menuEl = menu() as HTMLElement;
+      expect(menuEl).toBeTruthy();
+      const top = parseFloat(menuEl.style.top);
+      // The menu (150px tall + the same 4px gap the below-anchor path
+      // uses) must land fully ABOVE the anchor's own top (730) -- never
+      // overlapping the trigger row it opened from.
+      expect(top + 150 + 4).toBeLessThanOrEqual(730);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
