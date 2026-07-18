@@ -290,74 +290,6 @@ const PlayerAnalytics: React.FC = () => {
           </div>
         ) : (
           <div className="space-y-4">
-            {/* Enhanced Player Metrics */}
-            {state.metrics && (
-              <section className="section">
-                <div className="section-header">
-                  <div>
-                    <h3 className="section-title">📊 Player Metrics</h3>
-                    <p className="section-subtitle">Real-time player analytics and performance indicators</p>
-                  </div>
-                </div>
-                
-                <div className="grid grid-auto-fit-sm gap-4">
-                  <div className={`dashboard-stat-card${analyticsAvailable ? '' : ' stat-not-tracked'}`} data-variant="primary">
-                    <div className="dashboard-stat-header">
-                      <span className="dashboard-stat-icon">👥</span>
-                      <h4 className="dashboard-stat-title">Active Players</h4>
-                    </div>
-                    <div className="dashboard-stat-value">{analyticsAvailable ? state.metrics.total_active_players.toLocaleString() : <>&mdash;</>}</div>
-                    <div className="dashboard-stat-description">{analyticsAvailable ? `Online: ${state.metrics.players_online_now}` : 'Analytics endpoint unavailable'}</div>
-                  </div>
-
-                  <div className={`dashboard-stat-card${analyticsAvailable ? '' : ' stat-not-tracked'}`}>
-                    <div className="dashboard-stat-header">
-                      <span className="dashboard-stat-icon">💰</span>
-                      <h4 className="dashboard-stat-title">Total Credits</h4>
-                    </div>
-                    <div className="dashboard-stat-value">{analyticsAvailable ? state.metrics.total_credits_circulation.toLocaleString() : <>&mdash;</>}</div>
-                    <div className="dashboard-stat-description">{analyticsAvailable ? 'In Circulation' : 'Analytics endpoint unavailable'}</div>
-                  </div>
-
-                  <div className="dashboard-stat-card stat-not-tracked">
-                    <div className="dashboard-stat-header">
-                      <span className="dashboard-stat-icon">⏱️</span>
-                      <h4 className="dashboard-stat-title">Session Time</h4>
-                    </div>
-                    <div className="dashboard-stat-value">&mdash;</div>
-                    <div className="dashboard-stat-description">No session tracking yet</div>
-                  </div>
-
-                  <div className={`dashboard-stat-card${analyticsAvailable ? '' : ' stat-not-tracked'}`}>
-                    <div className="dashboard-stat-header">
-                      <span className="dashboard-stat-icon">🆕</span>
-                      <h4 className="dashboard-stat-title">New Players</h4>
-                    </div>
-                    <div className="dashboard-stat-value">{analyticsAvailable ? state.metrics.new_players_today : <>&mdash;</>}</div>
-                    <div className="dashboard-stat-description">{analyticsAvailable ? 'Today' : 'Analytics endpoint unavailable'}</div>
-                  </div>
-
-                  <div className="dashboard-stat-card stat-not-tracked">
-                    <div className="dashboard-stat-header">
-                      <span className="dashboard-stat-icon">📈</span>
-                      <h4 className="dashboard-stat-title">Retention Rate</h4>
-                    </div>
-                    <div className="dashboard-stat-value">&mdash;</div>
-                    <div className="dashboard-stat-description">No retention telemetry surfaced yet</div>
-                  </div>
-
-                  <div className={`dashboard-stat-card${analyticsAvailable ? '' : ' stat-not-tracked'}`} data-variant="warning">
-                    <div className="dashboard-stat-header">
-                      <span className="dashboard-stat-icon">🚨</span>
-                      <h4 className="dashboard-stat-title">Security Alerts</h4>
-                    </div>
-                    <div className="dashboard-stat-value">{analyticsAvailable ? state.metrics.suspicious_activity_alerts : <>&mdash;</>}</div>
-                    <div className="dashboard-stat-description">{analyticsAvailable ? 'Suspicious Activity' : 'Analytics endpoint unavailable'}</div>
-                  </div>
-                </div>
-              </section>
-            )}
-
             {/* Enhanced Player Controls */}
             <section className="section">
               <div className="card">
@@ -389,9 +321,10 @@ const PlayerAnalytics: React.FC = () => {
                         </span>
                         <button 
                           onClick={() => setState(prev => ({ ...prev, showBulkOperations: true }))}
-                          className="btn btn-sm btn-primary"
+                          className="btn btn-sm btn-outline"
+                          title="Backend POST /admin/players/bulk-operation is not implemented"
                         >
-                          📋 Bulk Operations
+                          📋 Bulk Ops (offline)
                         </button>
                       </div>
                     )}
@@ -585,11 +518,11 @@ const PlayerAnalytics: React.FC = () => {
                                     ✏️
                                   </button>
                                   <button 
-                                    className="btn btn-xs btn-error"
+                                    className="btn btn-xs btn-outline"
                                     onClick={() => {
                                       setState(prev => ({ ...prev, selectedPlayer: player, showEmergencyOps: true }));
                                     }}
-                                    title="Emergency Operations"
+                                    title="Offline — emergency-operation endpoint not implemented"
                                   >
                                     🚨
                                   </button>
@@ -695,217 +628,73 @@ const PlayerAnalytics: React.FC = () => {
                 </div>
               </div>
             </section>
-          </div>
-        )}
+            {/* Enhanced Player Metrics */}
+            {state.metrics && (
+              <section className="section">
+                <div className="section-header">
+                  <div>
+                    <h3 className="section-title">📊 Player Metrics</h3>
+                    <p className="section-subtitle">Secondary overview — find/edit players above (Scroll-Law)</p>
+                  </div>
+                </div>
+                
+                <div className="grid grid-auto-fit-sm gap-4">
+                  <div className={`dashboard-stat-card${analyticsAvailable ? '' : ' stat-not-tracked'}`} data-variant="primary">
+                    <div className="dashboard-stat-header">
+                      <span className="dashboard-stat-icon">👥</span>
+                      <h4 className="dashboard-stat-title">Active Players</h4>
+                    </div>
+                    <div className="dashboard-stat-value">{analyticsAvailable ? state.metrics.total_active_players.toLocaleString() : <>&mdash;</>}</div>
+                    <div className="dashboard-stat-description">{analyticsAvailable ? `Online: ${state.metrics.players_online_now}` : 'Analytics endpoint unavailable'}</div>
+                  </div>
 
-        {/* Enhanced Player Detail Modal */}
-        {state.selectedPlayer && !state.editMode && !state.showAssetManager && !state.showEmergencyOps && (
-          <div className="modal-overlay" onClick={closePlayerDetail}>
-            <div className="modal modal-lg" onClick={(e) => e.stopPropagation()}>
-              <div className="modal-header">
-                <h3 className="modal-title">Player Details: {state.selectedPlayer.username}</h3>
-                <div className="flex items-center gap-2">
-                  <button onClick={toggleEditMode} className="btn btn-sm btn-primary">
-                    ✏️ Edit
-                  </button>
-                  <button className="btn btn-sm btn-ghost" onClick={closePlayerDetail}>×</button>
-                </div>
-              </div>
-              
-              <div className="modal-body">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  <div className="space-y-4">
-                    <h4 className="text-lg font-semibold">Account Information</h4>
-                    <div className="space-y-3">
-                      <div>
-                        <div className="text-sm text-muted">User ID</div>
-                        <div className="font-mono text-sm">{state.selectedPlayer.id}</div>
-                      </div>
-                      <div>
-                        <div className="text-sm text-muted">Username</div>
-                        <div className="font-medium">{state.selectedPlayer.username}</div>
-                      </div>
-                      <div>
-                        <div className="text-sm text-muted">Email</div>
-                        <div>{state.selectedPlayer.email}</div>
-                      </div>
-                      <div>
-                        <div className="text-sm text-muted">Status</div>
-                        <span className={`badge ${
-                          state.selectedPlayer.status === 'active' ? 'badge-success' : 
-                          state.selectedPlayer.status === 'banned' ? 'badge-error' : 'badge-secondary'
-                        }`}>
-                          {state.selectedPlayer.status}
-                        </span>
-                      </div>
-                      <div>
-                        <div className="text-sm text-muted">Account Created</div>
-                        <div>{new Date(state.selectedPlayer.created_at).toLocaleDateString()}</div>
-                      </div>
-                      <div>
-                        <div className="text-sm text-muted">Last Login</div>
-                        <div>{state.selectedPlayer.activity.last_login ? new Date(state.selectedPlayer.activity.last_login).toLocaleString() : '—'}</div>
-                      </div>
+                  <div className={`dashboard-stat-card${analyticsAvailable ? '' : ' stat-not-tracked'}`}>
+                    <div className="dashboard-stat-header">
+                      <span className="dashboard-stat-icon">💰</span>
+                      <h4 className="dashboard-stat-title">Total Credits</h4>
                     </div>
+                    <div className="dashboard-stat-value">{analyticsAvailable ? state.metrics.total_credits_circulation.toLocaleString() : <>&mdash;</>}</div>
+                    <div className="dashboard-stat-description">{analyticsAvailable ? 'In Circulation' : 'Analytics endpoint unavailable'}</div>
                   </div>
-                  
-                  <div className="space-y-4">
-                    <h4 className="text-lg font-semibold">Game Statistics</h4>
-                    <div className="space-y-3">
-                      <div>
-                        <div className="text-sm text-muted">Credits</div>
-                        <div className="font-mono text-lg">{state.selectedPlayer.credits.toLocaleString()}</div>
-                      </div>
-                      <div>
-                        <div className="text-sm text-muted">Current Location</div>
-                        <div>
-                          {getRegionName(state.selectedPlayer.current_region_id)}, Sector {state.selectedPlayer.current_sector_id || 'Unknown'}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-sm text-muted">Turns Remaining</div>
-                        <div>{state.selectedPlayer.turns}</div>
-                      </div>
-                      <div>
-                        <div className="text-sm text-muted">Combat Rating</div>
-                        <div>{state.selectedPlayer.activity.combat_rating}</div>
-                      </div>
-                      <div>
-                        <div className="text-sm text-muted">Trade Volume</div>
-                        <div className="font-mono">{state.selectedPlayer.activity.total_trade_volume.toLocaleString()}</div>
-                      </div>
-                      <div>
-                        <div className="text-sm text-muted">Team</div>
-                        <div>{state.selectedPlayer.team_id || 'None'}</div>
-                      </div>
-                    </div>
-                  </div>
-                  
-                  <div className="space-y-4">
-                    <h4 className="text-lg font-semibold">Assets & Inventory</h4>
-                    <div className="space-y-3">
-                      <div>
-                        <div className="text-sm text-muted">Ships Owned</div>
-                        <div>{state.selectedPlayer.assets.ships_count}</div>
-                      </div>
-                      <div>
-                        <div className="text-sm text-muted">Planets Owned</div>
-                        <div>{state.selectedPlayer.assets.planets_count}</div>
-                      </div>
-                      <div>
-                        <div className="text-sm text-muted">Ports Owned</div>
-                        <div>{state.selectedPlayer.assets.stations_count}</div>
-                      </div>
-                      <div>
-                        <div className="text-sm text-muted">Current Ship</div>
-                        <div>{state.selectedPlayer.current_ship_id || 'None'}</div>
-                      </div>
-                      <div>
-                        <div className="text-sm text-muted">Total Asset Value</div>
-                        <div className="font-mono">{state.selectedPlayer.assets.total_value.toLocaleString()}</div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              
-              <div className="modal-footer">
-                <div className="flex gap-3">
-                  <button 
-                    className="btn btn-outline"
-                    onClick={() => setState(prev => ({ ...prev, showAssetManager: true }))}
-                  >
-                    🏭 Manage Assets
-                  </button>
-                  <button 
-                    className="btn btn-error"
-                    onClick={() => setState(prev => ({ ...prev, showEmergencyOps: true }))}
-                  >
-                    🚨 Emergency Ops
-                  </button>
-                  <button 
-                    className="btn btn-primary"
-                    onClick={toggleEditMode}
-                  >
-                    ✏️ Edit Player
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-        
-        {/* Player Detail Editor Modal */}
-        {state.selectedPlayer && state.editMode && (
-          <div className="modal-overlay" onClick={() => setState(prev => ({ ...prev, editMode: false }))}>
-            <PlayerDetailEditor
-              player={state.selectedPlayer}
-              onClose={() => setState(prev => ({ ...prev, editMode: false, selectedPlayer: null }))}
-              onSave={(updatedPlayer) => {
-                // Update the player in the list
-                setState(prev => ({
-                  ...prev,
-                  players: prev.players.map(p => p.id === updatedPlayer.id ? updatedPlayer : p),
-                  selectedPlayer: updatedPlayer,
-                  editMode: false
-                }));
-              }}
-            />
-          </div>
-        )}
-        
-        {state.showBulkOperations && (
-          <div className="modal-overlay" onClick={() => setState(prev => ({ ...prev, showBulkOperations: false }))}>
-            <BulkOperationPanel
-              selectedPlayers={state.selectedPlayers.map(id => state.players.find(p => p.id === id)!).filter(Boolean)}
-              onClose={() => setState(prev => ({ ...prev, showBulkOperations: false, selectedPlayers: [] }))}
-              onComplete={(operation, results) => {
-                console.log(`Bulk operation ${operation} completed:`, results);
-                // Refresh the player data after bulk operation
-                fetchPlayerData();
-                // Clear selection after operation
-                setState(prev => ({ ...prev, selectedPlayers: [] }));
-              }}
-            />
-          </div>
-        )}
-        
-        {state.selectedPlayer && state.showAssetManager && (
-          <div className="modal-overlay" onClick={() => setState(prev => ({ ...prev, showAssetManager: false }))}>
-            <PlayerAssetManager
-              player={state.selectedPlayer}
-              onClose={() => setState(prev => ({ ...prev, showAssetManager: false }))}
-              onUpdate={(updatedPlayer) => {
-                // Update the player in the list
-                setState(prev => ({
-                  ...prev,
-                  players: prev.players.map(p => p.id === updatedPlayer.id ? updatedPlayer : p),
-                  selectedPlayer: updatedPlayer
-                }));
-              }}
-            />
-          </div>
-        )}
-        
-        {state.selectedPlayer && state.showEmergencyOps && (
-          <div className="modal-overlay" onClick={() => setState(prev => ({ ...prev, showEmergencyOps: false }))}>
-            <EmergencyOperationsPanel
-              player={state.selectedPlayer}
-              onClose={() => setState(prev => ({ ...prev, showEmergencyOps: false }))}
-              onUpdate={(updatedPlayer) => {
-                // Update the player in the list
-                setState(prev => ({
-                  ...prev,
-                  players: prev.players.map(p => p.id === updatedPlayer.id ? updatedPlayer : p),
-                  selectedPlayer: updatedPlayer
-                }));
-              }}
-            />
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
 
-export default PlayerAnalytics;
+                  <div className="dashboard-stat-card stat-not-tracked">
+                    <div className="dashboard-stat-header">
+                      <span className="dashboard-stat-icon">⏱️</span>
+                      <h4 className="dashboard-stat-title">Session Time</h4>
+                    </div>
+                    <div className="dashboard-stat-value">&mdash;</div>
+                    <div className="dashboard-stat-description">No session tracking yet</div>
+                  </div>
+
+                  <div className={`dashboard-stat-card${analyticsAvailable ? '' : ' stat-not-tracked'}`}>
+                    <div className="dashboard-stat-header">
+                      <span className="dashboard-stat-icon">🆕</span>
+                      <h4 className="dashboard-stat-title">New Players</h4>
+                    </div>
+                    <div className="dashboard-stat-value">{analyticsAvailable ? state.metrics.new_players_today : <>&mdash;</>}</div>
+                    <div className="dashboard-stat-description">{analyticsAvailable ? 'Today' : 'Analytics endpoint unavailable'}</div>
+                  </div>
+
+                  <div className="dashboard-stat-card stat-not-tracked">
+                    <div className="dashboard-stat-header">
+                      <span className="dashboard-stat-icon">📈</span>
+                      <h4 className="dashboard-stat-title">Retention Rate</h4>
+                    </div>
+                    <div className="dashboard-stat-value">&mdash;</div>
+                    <div className="dashboard-stat-description">No retention telemetry surfaced yet</div>
+                  </div>
+
+                  <div className={`dashboard-stat-card${analyticsAvailable ? '' : ' stat-not-tracked'}`} data-variant="warning">
+                    <div className="dashboard-stat-header">
+                      <span className="dashboard-stat-icon">🚨</span>
+                      <h4 className="dashboard-stat-title">Security Alerts</h4>
+                    </div>
+                    <div className="dashboard-stat-value">{analyticsAvailable ? state.metrics.suspicious_activity_alerts : <>&mdash;</>}</div>
+                    <div className="dashboard-stat-description">{analyticsAvailable ? 'Suspicious Activity' : 'Analytics endpoint unavailable'}</div>
+                  </div>
+                </div>
+              </section>
+            )}
+
+          </div>
+        )}
