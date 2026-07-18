@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../utils/auth';
 import { PlayerModel } from '../../types/playerManagement';
-import { useToast, useConfirm } from '../../contexts/ToastContext';
 import './player-detail-editor.css';
 
 interface PlayerDetailEditorProps {
@@ -23,8 +22,6 @@ interface PlayerEditData {
 }
 
 const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose, onSave }) => {
-  const toast = useToast();
-  const confirm = useConfirm();
   const [editData, setEditData] = useState<PlayerEditData>({
     username: player.username,
     email: player.email,
@@ -43,12 +40,8 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
   const [availableRegions, setAvailableRegions] = useState<any[]>([]);
   const [unsavedChanges, setUnsavedChanges] = useState(false);
 
-  // Emergency operations are disabled: the backend route
-  // POST /api/v1/admin/players/{id}/emergency does not exist (the only
-  // emergency route is ship-scoped, admin_ships.py:205). The four buttons
-  // below are hard-disabled so this can't fire from the UI. Re-enable by
-  // removing the guard in handleEmergencyAction and the `disabled`/`title`
-  // props on the buttons once WO-ADM-EMERG-BACKEND ships (Max-gated).
+  // Honesty: player-scoped emergency route does not exist (only ship-scoped
+  // at admin_ships.py:205). Do not invent teleport/rescue/reset/clear chrome.
   const EMERGENCY_ENDPOINT = 'POST /api/v1/admin/players/{id}/emergency';
 
   useEffect(() => {
@@ -157,47 +150,6 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
     } catch (error: any) {
       console.error('Failed to update player:', error);
       const errorMessage = error.response?.data?.detail || 'Failed to update player';
-      setErrors([errorMessage]);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleEmergencyAction = async (action: string) => {
-    // Guard: see the EMERGENCY_ENDPOINT comment above. Deleting this block
-    // is the one-line re-enable once the backend route ships.
-    if (EMERGENCY_ENDPOINT) {
-      toast.error(`Emergency operations are unavailable: ${EMERGENCY_ENDPOINT} is not implemented.`);
-      return;
-    }
-
-    if (!(await confirm({
-      title: 'Emergency Action',
-      message: `Are you sure you want to ${action} this player?`,
-      danger: true,
-      confirmLabel: 'Proceed',
-    }))) {
-      return;
-    }
-
-    setLoading(true);
-    try {
-      await api.post(`/api/v1/admin/players/${player.id}/emergency`, {
-        action: action,
-        reason: `Admin emergency action: ${action}`
-      });
-
-      // Refresh the player data
-      if (action === 'teleport_home') {
-        handleFieldChange('current_sector_id', 1); // Assuming sector 1 is home
-      } else if (action === 'reset_turns') {
-        handleFieldChange('turns', 1000); // Default turn reset
-      }
-
-      toast.success(`${action} completed successfully`);
-    } catch (error: any) {
-      console.error(`Failed to ${action}:`, error);
-      const errorMessage = error.response?.data?.detail || `Failed to ${action}`;
       setErrors([errorMessage]);
     } finally {
       setLoading(false);
@@ -358,39 +310,17 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
 
         <div className="editor-section">
           <h4>Emergency Operations</h4>
-          <div className="emergency-controls">
-            <button
-              onClick={() => handleEmergencyAction('teleport_home')}
-              className="emergency-btn teleport"
-              disabled
-              title={`Disabled — missing backend endpoint ${EMERGENCY_ENDPOINT}`}
-            >
-              🏠 Teleport to Home
-            </button>
-            <button
-              onClick={() => handleEmergencyAction('reset_turns')}
-              className="emergency-btn turns"
-              disabled
-              title={`Disabled — missing backend endpoint ${EMERGENCY_ENDPOINT}`}
-            >
-              🔄 Reset Turns
-            </button>
-            <button
-              onClick={() => handleEmergencyAction('rescue_ship')}
-              className="emergency-btn rescue"
-              disabled
-              title={`Disabled — missing backend endpoint ${EMERGENCY_ENDPOINT}`}
-            >
-              🚁 Rescue Ship
-            </button>
-            <button
-              onClick={() => handleEmergencyAction('clear_debt')}
-              className="emergency-btn debt"
-              disabled
-              title={`Disabled — missing backend endpoint ${EMERGENCY_ENDPOINT}`}
-            >
-              💳 Clear Debt
-            </button>
+          <div
+            role="note"
+            style={{
+              margin: '0', padding: '10px 12px',
+              background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)',
+              borderRadius: '6px', color: '#fbbf24', fontSize: '0.82rem', lineHeight: 1.4
+            }}
+          >
+            Emergency operations are unavailable: the backend endpoint{' '}
+            <code style={{ color: '#fde68a' }}>{EMERGENCY_ENDPOINT}</code> is not implemented.
+            This editor does not invent teleport / reset-turns / rescue / clear-debt controls.
           </div>
         </div>
 
@@ -467,25 +397,17 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
                 </div>
               )}
 
-              <div className="aria-controls">
-                <button
-                  onClick={() => toast.info('ARIA data reset functionality will be implemented')}
-                  className="aria-btn reset"
-                >
-                  🔄 Reset ARIA Learning
-                </button>
-                <button
-                  onClick={() => toast.info('ARIA retrain functionality will be implemented')}
-                  className="aria-btn retrain"
-                >
-                  🧠 Retrain Personal Model
-                </button>
-                <button
-                  onClick={() => toast.info('ARIA export functionality will be implemented')}
-                  className="aria-btn export"
-                >
-                  📊 Export ARIA Data
-                </button>
+              <div
+                role="note"
+                className="aria-controls"
+                style={{
+                  margin: '12px 0 0', padding: '10px 12px',
+                  background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)',
+                  borderRadius: '6px', color: '#fbbf24', fontSize: '0.82rem', lineHeight: 1.4
+                }}
+              >
+                ARIA reset / retrain / export actions are unavailable: no admin API exists for them.
+                Metrics above are read-only from the player payload.
               </div>
             </>
           ) : (
