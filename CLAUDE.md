@@ -140,3 +140,17 @@ Plus `adversarial-review`, `issue`, and the autonomous discover→build→prove 
 ## Scroll Law — UI Design Principle
 
 A view's **primary action must be visible without scrolling** at 1440×900 (the reference cockpit resolution). When you dock at a station you should *see* the buy/sell desk; when you land you should *see* the colony controls — not scroll to find them. Collapse low-value chrome, minimize non-essential panels (e.g. the docked station-bay windshield auto-minimizes to hand the band to the console), tile rather than stack, present secondary destinations as tabs/cards rather than buried toggles. Reserve scrolling for genuinely long secondary lists (logs, inboxes, hail history) — never for the primary controls a screen exists to provide. If a default view needs scrolling to reach its core action, the layout is wrong; fix the layout, don't accept the scroll.
+
+---
+
+## Remote seats
+
+If you are an AI implementer agent that just cloned this repository on a machine other than the primary developer's Mac, you are a **remote seat**, and this is your kickstart instruction.
+
+You cannot self-configure from this public repository — your identity, the coordination endpoint, connection credentials, and your working branch are deliberately never stored here. To start:
+
+1. Tell the human who launched you: "I've cloned the repo and identified myself as a remote implementer seat. I need the private onboarding pack and provisioning."
+2. Request the private onboarding pack from the hub (the orchestrator). It is a numbered runbook that takes you from here to fully connected.
+3. Do not attempt to connect to anything, guess connection details, or start work until you have that pack AND the human has provisioned your access.
+
+You work on the shared active feature branch (the hub names it for you), never on this default branch — it is intentionally behind. The onboarding pack explains everything.

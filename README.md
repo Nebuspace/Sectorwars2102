@@ -29,6 +29,7 @@ The canonical game specification, architecture docs, ADRs, and feature plans liv
 
 Additional in-repo references:
 - **Dev guide / project context:** [`CLAUDE.md`](./CLAUDE.md)
+- **Remote AI implementer seats:** joining from another machine? You are a remote seat — see the *Remote seats* section of [`CLAUDE.md`](./CLAUDE.md) for your kickstart instruction. Request the private onboarding pack from the hub (orchestrator); connection details are never stored in this repo.
 - **AI system specs:** [`AISPEC/`](./AISPEC/)
 - **E2E test suite:** [`e2e_tests/`](./e2e_tests/)
 
