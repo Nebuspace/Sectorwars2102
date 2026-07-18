@@ -121,15 +121,6 @@ const AITradingDashboard: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
-  const handleModelAction = async (modelId: string, action: 'start' | 'stop' | 'train') => {
-    try {
-      await api.post(`/api/v1/admin/ai/models/${modelId}/${action}`);
-      await fetchData();
-    } catch (err) {
-      console.error(`Failed to ${action} model:`, err);
-      alert(`Failed to ${action} model`);
-    }
-  };
 
   const getStatusColor = (status: string | null) => {
     if (status == null) return '';
@@ -262,6 +253,15 @@ const AITradingDashboard: React.FC = () => {
         {selectedTab === 'models' && (
           <div className="models-section">
             <h2>AI Model Management</h2>
+            {models.length === 0 ? (
+              <div className="info-card" style={{ marginTop: '12px' }}>
+                <p>
+                  No AI model registry exists server-side — GET /api/v1/admin/ai/models
+                  returns an empty list, and start/stop/train actions respond 501.
+                  Controls below stay demoted so they cannot look live.
+                </p>
+              </div>
+            ) : (
             <div className="models-grid">
               {models.map(model => (
                 <div key={model.id} className="model-card">
@@ -299,31 +299,35 @@ const AITradingDashboard: React.FC = () => {
                     {model.status === 'active' && (
                       <>
                         <button 
-                          className="btn btn-warning"
-                          onClick={() => handleModelAction(model.id, 'stop')}
+                          className="btn btn-outline"
+                          disabled
+                          title="Offline — POST /ai/models/:id/stop returns 501 (no model registry)"
                         >
-                          Stop
+                          Stop (offline)
                         </button>
                         <button 
-                          className="btn btn-primary"
-                          onClick={() => handleModelAction(model.id, 'train')}
+                          className="btn btn-outline"
+                          disabled
+                          title="Offline — POST /ai/models/:id/train returns 501 (no model registry)"
                         >
-                          Retrain
+                          Retrain (offline)
                         </button>
                       </>
                     )}
                     {model.status === 'inactive' && (
                       <button 
-                        className="btn btn-success"
-                        onClick={() => handleModelAction(model.id, 'start')}
+                        className="btn btn-outline"
+                        disabled
+                        title="Offline — POST /ai/models/:id/start returns 501 (no model registry)"
                       >
-                        Start
+                        Start (offline)
                       </button>
                     )}
                   </div>
                 </div>
               ))}
             </div>
+            )}
           </div>
         )}
 
