@@ -433,41 +433,35 @@ const UniverseManager: React.FC = () => {
           />
         );
       default:
+        // Galaxy generation lives at /universe/bang (BangGalaxyPage) — Phase 4A cutover.
         return (
           <>
-            {false ? (
-              // Inline generator branch removed in bang cutover (Phase 4A); see /universe/bang.
-              null
-            ) : (
-              <>
-                <div className="universe-tabs">
-                  <button 
-                    className={`tab ${activeTab === 'galaxy' ? 'active' : ''}`}
-                    onClick={() => setActiveTab('galaxy')}
-                  >
-                    🌌 Galaxy Overview
-                  </button>
-                  <button 
-                    className={`tab ${activeTab === 'sectors' ? 'active' : ''}`}
-                    onClick={() => setActiveTab('sectors')}
-                  >
-                    🔲 Sectors
-                  </button>
-                  <button 
-                    className={`tab ${activeTab === 'map' ? 'active' : ''}`}
-                    onClick={() => setActiveTab('map')}
-                  >
-                    🗺️ Galaxy Map
-                  </button>
-                </div>
+            <div className="universe-tabs">
+              <button
+                className={`tab ${activeTab === 'galaxy' ? 'active' : ''}`}
+                onClick={() => setActiveTab('galaxy')}
+              >
+                🌌 Galaxy Overview
+              </button>
+              <button
+                className={`tab ${activeTab === 'sectors' ? 'active' : ''}`}
+                onClick={() => setActiveTab('sectors')}
+              >
+                🔲 Sectors
+              </button>
+              <button
+                className={`tab ${activeTab === 'map' ? 'active' : ''}`}
+                onClick={() => setActiveTab('map')}
+              >
+                🗺️ Galaxy Map
+              </button>
+            </div>
 
-                <div className="universe-content">
-                  {activeTab === 'galaxy' && renderGalaxyOverview()}
-                  {activeTab === 'sectors' && renderSectorsGrid()}
-                  {activeTab === 'map' && renderGalaxyMap()}
-                </div>
-              </>
-            )}
+            <div className="universe-content">
+              {activeTab === 'galaxy' && renderGalaxyOverview()}
+              {activeTab === 'sectors' && renderSectorsGrid()}
+              {activeTab === 'map' && renderGalaxyMap()}
+            </div>
           </>
         );
     }

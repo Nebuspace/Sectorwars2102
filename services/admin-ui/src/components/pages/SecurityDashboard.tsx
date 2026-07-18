@@ -334,47 +334,10 @@ export const SecurityDashboard: React.FC = () => {
                 borderRadius: '6px', color: '#fbbf24', fontSize: '0.82rem', lineHeight: 1.4
               }}
             >
-              Threat-detection rule configuration is unavailable: no backend endpoint
-              exists to persist rule changes. The rules below reflect server-side
-              defaults and are read-only.
-            </div>
-            <div className="detection-rules">
-              <div className="rule-item active">
-                <div className="rule-header">
-                  <span className="rule-name">Brute Force Detection</span>
-                  <label className="toggle">
-                    <input type="checkbox" defaultChecked disabled />
-                    <span className="toggle-slider"></span>
-                  </label>
-                </div>
-                <div className="rule-config">
-                  Threshold: 5 failed attempts in 5 minutes
-                </div>
-              </div>
-              <div className="rule-item active">
-                <div className="rule-header">
-                  <span className="rule-name">API Rate Limiting</span>
-                  <label className="toggle">
-                    <input type="checkbox" defaultChecked disabled />
-                    <span className="toggle-slider"></span>
-                  </label>
-                </div>
-                <div className="rule-config">
-                  Limit: 100 requests per minute per user
-                </div>
-              </div>
-              <div className="rule-item">
-                <div className="rule-header">
-                  <span className="rule-name">Suspicious Pattern Detection</span>
-                  <label className="toggle">
-                    <input type="checkbox" disabled />
-                    <span className="toggle-slider"></span>
-                  </label>
-                </div>
-                <div className="rule-config">
-                  AI-powered anomaly detection (disabled)
-                </div>
-              </div>
+              Threat-detection rule configuration is unavailable: no admin API exists
+              to load or persist detection rules. Live rate-limit / block metrics on
+              Overview come from <code style={{ color: '#fde68a' }}>/admin/security/report</code>;
+              this tab does not invent thresholds or toggle state.
             </div>
           </div>
 
@@ -389,22 +352,8 @@ export const SecurityDashboard: React.FC = () => {
               }}
             >
               IP blocklist management is unavailable: no backend endpoint exists to
-              add or remove blocked IPs. This list is read-only.
-            </div>
-            <div className="ip-blocklist">
-              <div className="add-ip-form">
-                <input type="text" placeholder="Enter IP address to block" disabled />
-                <button className="btn btn-primary" disabled title="Disabled — no IP blocklist backend endpoint">
-                  <i className="fas fa-plus"></i>
-                  Add to Blocklist
-                </button>
-              </div>
-              <div className="blocked-ips-list">
-                <div style={{ padding: '20px', textAlign: 'center', color: '#9ca3af' }}>
-                  <i className="fas fa-shield-alt" style={{ fontSize: '1.5rem', marginBottom: '8px', display: 'block' }}></i>
-                  No blocked IPs. The blocklist is empty.
-                </div>
-              </div>
+              list, add, or remove blocked IPs. This tab does not invent an empty
+              blocklist or show disabled Add controls.
             </div>
           </div>
         </div>
@@ -443,62 +392,25 @@ export const SecurityDashboard: React.FC = () => {
                 borderRadius: '6px', color: '#fbbf24', fontSize: '0.82rem', lineHeight: 1.4
               }}
             >
-              Security-policy editing is unavailable: no backend endpoint exists to
-              persist policy changes. The values below reflect server-side defaults
-              and are read-only.
-            </div>
-            <div className="policy-list">
-              <div className="policy-item">
-                <div className="policy-header">
-                  <h4>Password Requirements</h4>
-                  <button className="btn btn-secondary" disabled title="Disabled — no policy-config backend endpoint">
-                    <i className="fas fa-edit"></i>
-                    Edit
-                  </button>
-                </div>
-                <ul className="policy-rules">
-                  <li>Minimum 12 characters</li>
-                  <li>At least one uppercase letter</li>
-                  <li>At least one number</li>
-                  <li>At least one special character</li>
-                </ul>
-              </div>
-              <div className="policy-item">
-                <div className="policy-header">
-                  <h4>Session Management</h4>
-                  <button className="btn btn-secondary" disabled title="Disabled — no policy-config backend endpoint">
-                    <i className="fas fa-edit"></i>
-                    Edit
-                  </button>
-                </div>
-                <ul className="policy-rules">
-                  <li>Session timeout: 30 minutes</li>
-                  <li>Maximum concurrent sessions: 3</li>
-                  <li>Remember me duration: 7 days</li>
-                </ul>
-              </div>
+              Security-policy configuration is unavailable: no admin API exists to
+              load or edit password / session policy. This section does not invent
+              defaults or show disabled Edit controls.
             </div>
           </div>
 
           <div className="settings-section">
             <h3>Security Headers</h3>
-            <div className="headers-status">
-              <div className="header-item enabled">
-                <i className="fas fa-check-circle"></i>
-                <span>X-Frame-Options: DENY</span>
-              </div>
-              <div className="header-item enabled">
-                <i className="fas fa-check-circle"></i>
-                <span>X-Content-Type-Options: nosniff</span>
-              </div>
-              <div className="header-item enabled">
-                <i className="fas fa-check-circle"></i>
-                <span>Strict-Transport-Security: max-age=31536000</span>
-              </div>
-              <div className="header-item enabled">
-                <i className="fas fa-check-circle"></i>
-                <span>Content-Security-Policy: default-src &apos;self&apos;</span>
-              </div>
+            <div
+              role="note"
+              style={{
+                margin: '0 0 16px 0', padding: '10px 12px',
+                background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)',
+                borderRadius: '6px', color: '#fbbf24', fontSize: '0.82rem', lineHeight: 1.4
+              }}
+            >
+              Security-header status is unavailable: this UI does not probe response
+              headers. Green “enabled” checks previously shown here were invented
+              chrome, not a live probe.
             </div>
           </div>
         </div>
