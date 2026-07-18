@@ -77,7 +77,7 @@ export const PermissionsDashboard: React.FC = () => {
           onClick={() => setActiveTab('matrix')}
         >
           <i className="fas fa-th"></i>
-          Permission Matrix
+          Matrix — design-only
         </button>
         <button
           className={`tab ${activeTab === 'users' ? 'active' : ''}`}
