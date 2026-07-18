@@ -1511,6 +1511,47 @@
   border-radius: 12px;
   padding: var(--space-lg);
   border: 1px solid var(--border-color);
+  transition: opacity 0.15s ease;
+}
+
+/* WO-API-B1: a server /trading/quote fetch is in flight (debounce or
+   network) for the params currently on screen — the numbers shown are
+   either the previous quote or a 0 placeholder, never a locally-computed
+   guess, so this is purely a "hang on" signal, not a stale-data warning. */
+.trade-summary-card.pending {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+/* mack LOW: quote-fetch failure banner — mirrors the existing
+   .error-message palette/spacing so it reads as the same "something's
+   wrong" language as the rest of the modal, not a one-off. */
+.quote-error-banner {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid #ef4444;
+  border-radius: 8px;
+  padding: var(--space-md);
+  margin-bottom: var(--space-md);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  color: #ef4444;
+}
+
+.quote-retry-btn {
+  background: transparent;
+  border: 1px solid #ef4444;
+  border-radius: 6px;
+  padding: var(--space-xs) var(--space-md);
+  color: #ef4444;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.quote-retry-btn:hover {
+  background: rgba(239, 68, 68, 0.15);
 }
 
 .summary-row {

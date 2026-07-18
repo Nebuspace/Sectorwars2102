@@ -59,6 +59,23 @@ interface TradeCalculation {
   fitsInCargo: boolean;
 }
 
+/** Server-authoritative price/tax/total preview from POST /trading/quote
+ *  (WO-API-B1) — the single source of truth the trade modal renders instead
+ *  of recomputing this math client-side. resourceType/quantity/action echo
+ *  back the params the quote was computed for, so a response that lands
+ *  after the player has already changed the quantity/mode/commodity can be
+ *  told apart from a fresh one (see quoteIsCurrent below). */
+interface TradeQuote {
+  resourceType: string;
+  quantity: number;
+  action: 'buy' | 'sell';
+  unitPrice: number;
+  subtotal: number;
+  taxRate: number;
+  tax: number;
+  total: number;
+}
+
 interface BumpableOccupant {
   player_id: string;
   name: string;
@@ -169,8 +186,35 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
   // Local in-flight guard: the global isLoading no longer flips on trades
   // (initial-hydration-only semantics), so double-submit protection lives here.
   const [isExecuting, setIsExecuting] = useState<boolean>(false);
+  // mack MEDIUM: isExecuting (state) only disables the button AFTER a
+  // re-render, which is too late to stop a fast double-click firing
+  // executeTrade twice before the first render lands (the 2nd call finds a
+  // haggle already consumed and silently re-buys at the full posted price).
+  // This ref is checked+set synchronously before the first await, closing
+  // that window; isExecuting stays purely to drive the disabled/label UI.
+  // Scope (mack, accepted as a follow-on, not fixed here): this is a
+  // SINGLE-TAB guard — a second browser tab/window has its own React tree
+  // and its own executingRef, so the same posted-price double-charge race
+  // isn't closed across tabs. That needs server-side idempotency (a
+  // client-supplied request key the commit path dedupes on), tracked by
+  // the hub as a follow-on to this WO, not attempted here.
+  const executingRef = useRef(false);
   const [tradeMode, setTradeMode] = useState<'buy' | 'sell'>('buy');
   const [tradeCalculation, setTradeCalculation] = useState<TradeCalculation | null>(null);
+  // WO-API-B1: server-authoritative price/tax/total preview, replacing the
+  // client's own duplicate formula. `quote` is cleared (and `quoteLoading`
+  // set) whenever the params it's stale for don't match the current
+  // selection — see the fetch effect and quoteIsCurrent below.
+  const [quote, setQuote] = useState<TradeQuote | null>(null);
+  const [quoteLoading, setQuoteLoading] = useState(false);
+  // mack LOW: a swallowed quote-fetch failure used to leave the previous
+  // (mismatched) quote in place forever with no message and no way to
+  // retry short of nudging a param — Confirm just silently stayed disabled.
+  // quoteError drives a visible retry affordance; quoteRetryNonce is bumped
+  // by that button to force the fetch effect to re-run with IDENTICAL
+  // params (its dependency array wouldn't otherwise change).
+  const [quoteError, setQuoteError] = useState(false);
+  const [quoteRetryNonce, setQuoteRetryNonce] = useState(0);
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   // ADR-0079: when true, the trade modal shows the numerical haggle desk in
   // place of the quantity/summary body. Quantity is FROZEN while haggling (the
@@ -404,48 +448,96 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
       .reduce((a, b) => a + b, 0);
   };
 
-  // Calculate trade costs when parameters change
+  // WO-API-B1: fetch the server-authoritative price/tax/total preview
+  // instead of recomputing it locally. Debounced (250ms) so dragging the
+  // quantity slider doesn't fire a request per pixel; the in-flight
+  // request is cancelled (via the `cancelled` flag) if params change again
+  // before it resolves, so a slow/stale response can never clobber a
+  // fresher one. Skipped entirely while haggling — the haggle desk shows
+  // its own live negotiation state, not this preview.
   useEffect(() => {
-    if (selectedResource && marketInfo && tradeQuantity > 0) {
-      const resource = marketInfo.resources[selectedResource];
-      if (resource) {
-        // sell_price = what the station charges when the player buys;
-        // buy_price = what the station pays when the player sells
-        const unitPrice = tradeMode === 'buy' ? resource.sell_price : resource.buy_price;
-        const subtotal = unitPrice * tradeQuantity;
-        // Station tariff follows routes/trading.py: the market endpoint
-        // reports the EFFECTIVE rate (0 at unowned stations) and the server
-        // truncates with int() — Math.floor here. Added on top of buys,
-        // withheld from sell proceeds. GET /market prices arrive
-        // player-effective (rank modifiers applied server-side), so this math
-        // consumes them as-is.
-        const taxAmount = Math.floor(subtotal * (marketInfo.port.tax_rate ?? 0));
-        const totalCost = tradeMode === 'buy' ? subtotal + taxAmount : subtotal - taxAmount;
-
-        // Check affordability and cargo space
-        const isAffordable = tradeMode === 'buy'
-          ? (playerState?.credits || 0) >= totalCost
-          : true; // Can always sell if you have the resource
-
-        const currentCargo = getCargoUsed();
-        const cargoCapacity = getCargoCapacity();
-        const fitsInCargo = tradeMode === 'buy'
-          ? (currentCargo + tradeQuantity) <= cargoCapacity
-          : true; // Selling always frees up cargo space
-
-        setTradeCalculation({
-          resourceType: selectedResource,
+    if (!selectedPort || !selectedResource || tradeQuantity <= 0 || haggleMode) {
+      return;
+    }
+    let cancelled = false;
+    setQuoteLoading(true);
+    setQuoteError(false);
+    const timer = window.setTimeout(() => {
+      apiClient
+        .post('/api/v1/trading/quote', {
+          station_id: selectedPort,
+          resource_type: selectedResource,
           quantity: tradeQuantity,
-          unitPrice,
-          totalCost,
-          isAffordable,
-          fitsInCargo
+          action: tradeMode,
+        })
+        .then(response => {
+          if (cancelled) return;
+          const data = response.data;
+          setQuote({
+            resourceType: data.resource_type,
+            quantity: data.quantity,
+            action: data.action,
+            unitPrice: data.unit_price,
+            subtotal: data.subtotal,
+            taxRate: data.tax_rate,
+            tax: data.tax,
+            total: data.total,
+          });
+          setQuoteError(false);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          // mack LOW: surface the failure (a banner + Retry button in the
+          // render below) instead of silently leaving the previous
+          // (mismatched) quote in place forever. canExecuteTrade's
+          // freshness check still keeps Confirm gated on a CURRENT quote,
+          // so this is purely "tell the player and let them retry."
+          setQuoteError(true);
+        })
+        .finally(() => {
+          if (!cancelled) setQuoteLoading(false);
         });
-      }
+    }, 250); // NO-CANON: debounce window — propose+flag (mirrors the price-flash duration precedent above)
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [selectedPort, selectedResource, tradeQuantity, tradeMode, haggleMode, quoteRetryNonce]);
+
+  // Derive affordability/cargo-fit from the server quote — ONLY once it's
+  // current for the exact params on screen (see quoteIsCurrent below); a
+  // stale or in-flight quote must never gate Confirm on the WRONG total.
+  useEffect(() => {
+    const quoteIsCurrent =
+      !!quote &&
+      quote.resourceType === selectedResource &&
+      quote.action === tradeMode &&
+      quote.quantity === tradeQuantity;
+
+    if (selectedResource && marketInfo && tradeQuantity > 0 && quoteIsCurrent && quote) {
+      const isAffordable = tradeMode === 'buy'
+        ? (playerState?.credits || 0) >= quote.total
+        : true; // Can always sell if you have the resource
+
+      const currentCargo = getCargoUsed();
+      const cargoCapacity = getCargoCapacity();
+      const fitsInCargo = tradeMode === 'buy'
+        ? (currentCargo + tradeQuantity) <= cargoCapacity
+        : true; // Selling always frees up cargo space
+
+      setTradeCalculation({
+        resourceType: selectedResource,
+        quantity: tradeQuantity,
+        unitPrice: quote.unitPrice,
+        totalCost: quote.total,
+        isAffordable,
+        fitsInCargo
+      });
     } else {
       setTradeCalculation(null);
     }
-  }, [selectedResource, marketInfo, tradeQuantity, tradeMode, playerState, currentShip]);
+  }, [selectedResource, marketInfo, tradeQuantity, tradeMode, playerState, currentShip, quote]);
 
   // Show loading state if player state isn't loaded yet
   if (!playerState) {
@@ -574,6 +666,10 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
     setSelectedResource('');
     setTradeQuantity(1);
     setExpandedSparkline(null);
+    // A quote from the OLD port must never linger and display (even
+    // dimmed/pending) against a NEW port's commodity list.
+    setQuote(null);
+    setQuoteError(false);
   };
 
   const handleResourceChange = (resourceType: string) => {
@@ -584,6 +680,9 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
     setHaggleMode(false);
     // Directly open the trade modal so the player can immediately buy/sell
     setShowConfirmDialog(true);
+    // See handlePortChange — never show a stale commodity's quote here.
+    setQuote(null);
+    setQuoteError(false);
   };
 
   const handleTradeModeChange = (mode: 'buy' | 'sell') => {
@@ -594,6 +693,8 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
     setShowConfirmDialog(false);
     setHaggleMode(false);
     setTradeQuantity(1);
+    setQuote(null);
+    setQuoteError(false);
   };
 
   // Close the trade modal AND reset haggle state in one place — used by the
@@ -649,13 +750,63 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
   // `qtyOverride` is supplied by the haggle accept path so the trade fires at
   // the exact quantity the session was opened against, independent of React's
   // async state flush (the slider is hidden during haggling, so they match —
-  // this is belt-and-braces against a stale closure).
+  // this is belt-and-braces against a stale closure). It ALSO doubles as the
+  // "came from haggle accept" signal below: that path's price integrity is
+  // already guaranteed server-side (the single-use consume_agreed_price), so
+  // the pre-commit quote re-check (which re-fetches the POSTED price, not
+  // the haggled one) does not apply to it.
   const executeTrade = async (qtyOverride?: number) => {
     const qty = qtyOverride ?? tradeQuantity;
-    if (isExecuting || !canExecuteTrade(qty) || !selectedPort || !selectedResource) return;
+    const viaHaggleAccept = qtyOverride !== undefined;
+    if (executingRef.current || !canExecuteTrade(qty) || !selectedPort || !selectedResource) return;
+    executingRef.current = true;
     setIsExecuting(true);
 
     try {
+      if (!viaHaggleAccept) {
+        // mack HIGH: MarketPrice is a single row shared by every player at
+        // this station — ANY player's trade reprices it, and the price
+        // stack itself (rank/rep/tariff/lever) can move too. quoteIsCurrent
+        // only tracks resource/mode/quantity, not market state, so the
+        // total on screen can be stale by the time Confirm is actually
+        // clicked (a slow network, or just the player reading the dialog).
+        // Re-fetch a fresh quote right here, immediately before charging;
+        // if it differs from what's displayed, update the display and STOP
+        // short of charging — the player must see the new number and click
+        // Confirm again rather than being silently charged something other
+        // than what they were looking at. Residual (mack, downgraded to
+        // MEDIUM): the market can still move in the sub-RTT gap between
+        // THIS re-fetch resolving and buy_resource/sell_resource's own
+        // locked recompute a moment later — bounded to one network
+        // round-trip, not zero. Fully closing that needs a server-side
+        // price/version token (hub follow-on), not done here.
+        const freshResponse = await apiClient.post('/api/v1/trading/quote', {
+          station_id: selectedPort,
+          resource_type: selectedResource,
+          quantity: qty,
+          action: tradeMode,
+        });
+        const fresh = freshResponse.data;
+        if (!quote || fresh.total !== quote.total) {
+          setQuote({
+            resourceType: fresh.resource_type,
+            quantity: fresh.quantity,
+            action: fresh.action,
+            unitPrice: fresh.unit_price,
+            subtotal: fresh.subtotal,
+            taxRate: fresh.tax_rate,
+            tax: fresh.tax,
+            total: fresh.total,
+          });
+          addNotification({
+            title: 'Price Changed',
+            content: `The market moved — the new total is ${formatCredits(fresh.total)}. Review and confirm again.`,
+            level: 'warning'
+          });
+          return; // requires an explicit second Confirm click at the new price
+        }
+      }
+
       let result;
       if (tradeMode === 'buy') {
         result = await buyResource(selectedPort, selectedResource, qty);
@@ -704,35 +855,24 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
         level: 'error'
       });
     } finally {
+      executingRef.current = false;
       setIsExecuting(false);
     }
   };
 
-  // --- Station tariff math (follows routes/trading.py) ---
-  // The market endpoint reports the EFFECTIVE tax rate: 0 means genuinely
-  // untaxed (unowned station), non-zero is the owner's lever. Prices from
-  // GET /market are player-effective server-side (rank modifiers already
-  // applied), so these helpers consume them as-is.
-  const getEffectiveTaxRate = (): number => marketInfo?.port.tax_rate ?? 0;
-
-  const getTradeUnitPrice = (): number => {
-    if (!selectedResource || !marketInfo) return 0;
-    const resource = marketInfo.resources[selectedResource];
-    if (!resource) return 0;
-    return tradeMode === 'buy' ? resource.sell_price : resource.buy_price;
-  };
-
-  const getTradeSubtotal = (): number => getTradeUnitPrice() * tradeQuantity;
-
-  // Server truncates: tax_amount = int(total * tax_rate)
-  const getTradeTaxAmount = (): number =>
-    Math.floor(getTradeSubtotal() * getEffectiveTaxRate());
-
-  // Buy: tariff added on top of goods cost. Sell: tariff withheld from gross.
-  const getTradeTotal = (): number =>
-    tradeMode === 'buy'
-      ? getTradeSubtotal() + getTradeTaxAmount()
-      : getTradeSubtotal() - getTradeTaxAmount();
+  // WO-API-B1: the modal renders ONLY server-quoted numbers — no local
+  // unit-price/tax/total formula. `quote` may be one generation stale
+  // during the debounce window (avoids flashing the card to zero on every
+  // keystroke); `quoteIsCurrent` tells the render whether it matches the
+  // params on screen right now, and gates the pending visual — Confirm
+  // itself is independently gated via tradeCalculation (null until the
+  // quote is current, see the effect above).
+  const quoteIsCurrent =
+    !!quote &&
+    quote.resourceType === selectedResource &&
+    quote.action === tradeMode &&
+    quote.quantity === tradeQuantity;
+  const quotePending = quoteLoading || !quoteIsCurrent;
 
   if (!playerState?.is_docked) {
     return (
@@ -1178,6 +1318,7 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
                   commodity={selectedResource}
                   side={tradeMode}
                   quantity={haggleQuantity}
+                  taxRate={marketInfo?.port.tax_rate ?? 0}
                   commodityLabel={formatName(selectedResource)}
                   personalityLabel={traderPersonality?.label ?? null}
                   onBack={() => setHaggleMode(false)}
@@ -1196,6 +1337,12 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
               {/* Quantity Slider */}
               <div className="quantity-section">
                 <label>Quantity</label>
+                {/* mack optional LOW: quantity is locked during isExecuting
+                    so a nudge mid-flight can't visually diverge from the
+                    quantity actually being charged (traced harmless to the
+                    charge itself — buyResource/sellResource capture qty in
+                    a local before any await — but a moving number while a
+                    trade is in flight is confusing regardless). */}
                 <div className="quantity-slider-container">
                   <input
                     type="range"
@@ -1204,12 +1351,13 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
                     value={tradeQuantity}
                     onChange={(e) => setTradeQuantity(parseInt(e.target.value))}
                     className="quantity-slider"
+                    disabled={isExecuting}
                   />
                   <div className="quantity-input-group">
                     <button
                       className="qty-btn"
                       onClick={() => setTradeQuantity(Math.max(1, tradeQuantity - 1))}
-                      disabled={tradeQuantity <= 1}
+                      disabled={isExecuting || tradeQuantity <= 1}
                     >
                       −
                     </button>
@@ -1220,38 +1368,58 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
                       value={tradeQuantity}
                       onChange={(e) => setTradeQuantity(Math.max(1, Math.min(getMaxQuantity(), parseInt(e.target.value) || 1)))}
                       className="quantity-input"
+                      disabled={isExecuting}
                     />
                     <button
                       className="qty-btn"
                       onClick={() => setTradeQuantity(Math.min(getMaxQuantity(), tradeQuantity + 1))}
-                      disabled={tradeQuantity >= getMaxQuantity()}
+                      disabled={isExecuting || tradeQuantity >= getMaxQuantity()}
                     >
                       +
                     </button>
                   </div>
                 </div>
                 <div className="quantity-presets">
-                  <button onClick={() => setTradeQuantity(1)}>1</button>
-                  <button onClick={() => setTradeQuantity(Math.floor(getMaxQuantity() * 0.25) || 1)}>
+                  <button onClick={() => setTradeQuantity(1)} disabled={isExecuting}>1</button>
+                  <button onClick={() => setTradeQuantity(Math.floor(getMaxQuantity() * 0.25) || 1)} disabled={isExecuting}>
                     25% ({Math.floor(getMaxQuantity() * 0.25) || 1})
                   </button>
-                  <button onClick={() => setTradeQuantity(Math.floor(getMaxQuantity() * 0.5) || 1)}>
+                  <button onClick={() => setTradeQuantity(Math.floor(getMaxQuantity() * 0.5) || 1)} disabled={isExecuting}>
                     50% ({Math.floor(getMaxQuantity() * 0.5) || 1})
                   </button>
-                  <button onClick={() => setTradeQuantity(Math.floor(getMaxQuantity() * 0.75) || 1)}>
+                  <button onClick={() => setTradeQuantity(Math.floor(getMaxQuantity() * 0.75) || 1)} disabled={isExecuting}>
                     75% ({Math.floor(getMaxQuantity() * 0.75) || 1})
                   </button>
-                  <button onClick={() => setTradeQuantity(getMaxQuantity() || 1)}>
+                  <button onClick={() => setTradeQuantity(getMaxQuantity() || 1)} disabled={isExecuting}>
                     Max ({getMaxQuantity()})
                   </button>
                 </div>
               </div>
 
-              {/* Trade Summary */}
-              <div className="trade-summary-card">
+              {/* mack LOW: a quote fetch failure is surfaced here rather than
+                  silently leaving Confirm dead with no explanation — Retry
+                  bumps quoteRetryNonce, forcing the fetch effect to re-run
+                  with identical params. */}
+              {quoteError && (
+                <div className="quote-error-banner">
+                  <span>Couldn't fetch the current price.</span>
+                  <button
+                    type="button"
+                    className="quote-retry-btn"
+                    onClick={() => setQuoteRetryNonce(n => n + 1)}
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
+
+              {/* Trade Summary — every number here comes from the server
+                  quote (WO-API-B1); `quotePending` (dimmed via CSS) signals
+                  a debounce/fetch in flight rather than blanking the card. */}
+              <div className={`trade-summary-card${quotePending ? ' pending' : ''}`}>
                 <div className="summary-row">
                   <span>Unit Price</span>
-                  <span className="value">{formatCredits(getTradeUnitPrice())}</span>
+                  <span className="value">{formatCredits(quote?.unitPrice ?? 0)}</span>
                 </div>
                 <div className="summary-row">
                   <span>Quantity</span>
@@ -1259,22 +1427,22 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
                 </div>
                 <div className="summary-row">
                   <span>{tradeMode === 'buy' ? 'Goods Cost' : 'Gross Earnings'}</span>
-                  <span className="value">{formatCredits(getTradeSubtotal())}</span>
+                  <span className="value">{formatCredits(quote?.subtotal ?? 0)}</span>
                 </div>
                 {/* Server-authoritative station tariff — rendered even at 0.0%
                     so the charged total always matches this preview
                     (routes/trading.py adds it on buys, withholds it on sells) */}
                 <div className="summary-row tariff-row">
-                  <span>Station tariff ({(getEffectiveTaxRate() * 100).toFixed(1)}%)</span>
+                  <span>Station tariff ({((quote?.taxRate ?? 0) * 100).toFixed(1)}%)</span>
                   <span className="value">
-                    {tradeMode === 'buy' ? '+' : '−'}{formatCredits(getTradeTaxAmount())}
+                    {tradeMode === 'buy' ? '+' : '−'}{formatCredits(quote?.tax ?? 0)}
                   </span>
                 </div>
                 <div className="summary-divider"></div>
                 <div className="summary-row total">
                   <span>{tradeMode === 'buy' ? 'Total Cost' : 'Total Earnings'}</span>
                   <span className="value highlight">
-                    {formatCredits(getTradeTotal())}
+                    {formatCredits(quote?.total ?? 0)}
                   </span>
                 </div>
 
@@ -1287,8 +1455,8 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
                     </div>
                     <div className="summary-row">
                       <span>After Purchase</span>
-                      <span className={`value ${((playerState?.credits || 0) - getTradeTotal()) < 0 ? 'error' : 'success'}`}>
-                        {formatCredits((playerState?.credits || 0) - getTradeTotal())}
+                      <span className={`value ${((playerState?.credits || 0) - (quote?.total ?? 0)) < 0 ? 'error' : 'success'}`}>
+                        {formatCredits((playerState?.credits || 0) - (quote?.total ?? 0))}
                       </span>
                     </div>
                     <div className="summary-row">
@@ -1310,7 +1478,7 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
                     <div className="summary-row">
                       <span>After Sale</span>
                       <span className="value success">
-                        {formatCredits((playerState?.credits || 0) + getTradeTotal())}
+                        {formatCredits((playerState?.credits || 0) + (quote?.total ?? 0))}
                       </span>
                     </div>
                   </>

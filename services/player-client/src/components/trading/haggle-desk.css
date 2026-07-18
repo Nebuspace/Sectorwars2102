@@ -338,6 +338,50 @@
   opacity: 0.7 !important;
 }
 
+/* mack HIGH-2: tax-inclusive caveat on the live-offer and deal-struck
+   totals — same muted weight as .haggle-agreed-note, inline rather than
+   block. */
+.haggle-tax-note {
+  font-size: 0.72rem;
+  opacity: 0.7;
+}
+
+/* mack MEDIUM (rev-3): the accepted-quote fetch failed — PROMINENT, not
+   muted like .haggle-tax-note above, because missing this at the "Deal
+   struck!" moment means committing to a number that isn't what gets
+   charged. Mirrors TradingInterface's own .quote-error-banner /
+   .quote-retry-btn palette (trading-interface.css) so the two "a /trading/
+   quote fetch failed" surfaces in this modal read as the same language. */
+.haggle-quote-error {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid #ef4444;
+  border-radius: 8px;
+  padding: var(--space-md);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  color: #ef4444;
+  font-size: var(--text-sm);
+  text-align: left;
+  width: 100%;
+}
+
+.haggle-quote-retry-btn {
+  background: transparent;
+  border: 1px solid #ef4444;
+  border-radius: 6px;
+  padding: var(--space-xs) var(--space-md);
+  color: #ef4444;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.haggle-quote-retry-btn:hover {
+  background: rgba(239, 68, 68, 0.15);
+}
+
 .haggle-outcome-reject {
   border-color: rgba(239, 68, 68, 0.5);
 }

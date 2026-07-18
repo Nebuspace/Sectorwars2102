@@ -41,6 +41,13 @@ class TradeRequest(BaseModel):
     quantity: int = Field(..., gt=0, le=100000, description="Must be between 1 and 100,000")
 
 
+class TradeQuoteRequest(BaseModel):
+    station_id: str
+    resource_type: str
+    quantity: int = Field(..., gt=0, le=100000, description="Must be between 1 and 100,000")
+    action: str = Field(..., description="'buy' or 'sell'")
+
+
 class StationDockRequest(BaseModel):
     station_id: str
 
@@ -295,6 +302,60 @@ def compute_effective_unit_price(
             price /= lever_mult
 
     return clamp_to_commodity_band(commodity, int(price))
+
+
+def compute_buy_totals(unit_price: int, quantity: int, tax_rate: float) -> Dict[str, int]:
+    """Shared buy-side money math (WO-API-B1): the SAME arithmetic /buy's
+    commit path and /quote's read-only preview both call, so a quote can
+    never drift from what the next real buy actually charges. tax_amount
+    truncates (Python ``int()``), matching the commit path's existing
+    convention."""
+    total_cost = unit_price * quantity
+    tax_amount = int(total_cost * tax_rate)
+    return {
+        "total_cost": total_cost,
+        "tax_amount": tax_amount,
+        "total_with_tax": total_cost + tax_amount,
+    }
+
+
+def compute_sell_totals(unit_price: int, quantity: int, tax_rate: float) -> Dict[str, int]:
+    """Shared sell-side money math (WO-API-B1) — mirrors compute_buy_totals
+    for payouts; see its docstring."""
+    total_earnings = unit_price * quantity
+    tax_amount = int(total_earnings * tax_rate)
+    return {
+        "total_earnings": total_earnings,
+        "tax_amount": tax_amount,
+        "net_earnings": total_earnings - tax_amount,
+    }
+
+
+def _peek_agreed_haggle_price(
+    db: Session, player: Player, station: Station, commodity: str, side: str
+) -> Optional[float]:
+    """Read-only counterpart to HaggleService.consume_agreed_price (WO-API-B1):
+    returns the accepted-but-not-yet-consumed per-unit haggle price for
+    (station, commodity, side) WITHOUT clearing it, so /quote can preview
+    exactly what the next real buy/sell will charge without burning the
+    single-use haggle result (consume_agreed_price marks it "consumed" —
+    calling that from a quote would silently make the FOLLOWING real trade
+    fall back to the posted price, breaking quote == charge). Same
+    accepted-only gate as consume_agreed_price. Defensive: a haggle-state
+    read failure degrades to None (posted price)."""
+    try:
+        from src.services.haggle_service import HaggleService
+        status = HaggleService(db).get_status(player, station, commodity, side)
+        session = status.get("session")
+        if not session or session.get("status") != "accepted":
+            return None
+        agreed = session.get("agreed_price")
+        if agreed is None:
+            return None
+        return float(agreed)
+    except Exception:
+        logger.warning("haggle price peek failed (quote); using posted price", exc_info=True)
+        return None
 
 
 async def _publish_trade_tick(
@@ -593,9 +654,6 @@ async def buy_resource(
     except Exception:
         logger.warning("haggle price consume failed (buy); using posted price", exc_info=True)
 
-    # Calculate total cost
-    total_cost = effective_buy_price * trade_request.quantity
-
     # REAL TAX (port-ownership canon): trades pay the station's tax_rate
     # into its treasury — but canon frames the tax as an OWNER lever, so
     # unowned (NPC) stations levy none. The station row is already locked
@@ -603,8 +661,21 @@ async def buy_resource(
     tax_rate = (
         station.tax_rate if (station.owner_id is not None and station.tax_rate is not None) else 0.0
     )
-    tax_amount = int(total_cost * tax_rate)
-    total_with_tax = total_cost + tax_amount
+    # WO-API-B1: compute_buy_totals is the SAME callable /quote uses — this
+    # is the single source of truth for the tax/total math (not just the
+    # unit price), so for the SAME resolved inputs a quote and this charge
+    # compute byte-identical numbers. That does NOT make the number a
+    # player looked at in /quote a minute ago a promise — the inputs
+    # themselves (MarketPrice, rank/rep/tariff/lever) can move between the
+    # two calls; TradingInterface's executeTrade re-quotes immediately
+    # before calling this route and re-confirms on drift, which narrows the
+    # gap to one RTT, not zero. Closing that residual fully needs a server-
+    # side price/version token (mack follow-on, tracked by the hub) — not
+    # done here.
+    _buy_totals = compute_buy_totals(effective_buy_price, trade_request.quantity, tax_rate)
+    total_cost = _buy_totals["total_cost"]
+    tax_amount = _buy_totals["tax_amount"]
+    total_with_tax = _buy_totals["total_with_tax"]
 
     # Check if player has enough credits (goods + station trade tax)
     if current_player.credits < total_with_tax:
@@ -939,9 +1010,6 @@ async def sell_resource(
     except Exception:
         logger.warning("haggle price consume failed (sell); using posted price", exc_info=True)
 
-    # Calculate total earnings (gross, before station trade tax)
-    total_earnings = effective_sell_price * trade_request.quantity
-
     # REAL TAX (port-ownership canon): the station's tax_rate is withheld
     # from sale proceeds and credited to its treasury — but canon frames
     # the tax as an OWNER lever, so unowned (NPC) stations levy none. The
@@ -950,8 +1018,12 @@ async def sell_resource(
     tax_rate = (
         station.tax_rate if (station.owner_id is not None and station.tax_rate is not None) else 0.0
     )
-    tax_amount = int(total_earnings * tax_rate)
-    net_earnings = total_earnings - tax_amount
+    # WO-API-B1: compute_sell_totals is the SAME callable /quote uses — see
+    # compute_buy_totals's comment on the buy side.
+    _sell_totals = compute_sell_totals(effective_sell_price, trade_request.quantity, tax_rate)
+    total_earnings = _sell_totals["total_earnings"]
+    tax_amount = _sell_totals["tax_amount"]
+    net_earnings = _sell_totals["net_earnings"]
 
     # Execute the trade
     try:
@@ -1197,6 +1269,119 @@ async def sell_resource(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Trade failed: {str(e)}")
+
+
+@router.post("/quote")
+async def get_trade_quote(
+    quote_request: TradeQuoteRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player)
+):
+    """Server-authoritative READ-ONLY preview of what /buy or /sell would
+    charge/pay for these exact parameters (WO-API-B1). Mirrors the commit
+    path's price resolution EXACTLY — compute_effective_unit_price, the
+    same accepted-haggle override (peeked, not consumed), then
+    compute_buy_totals/compute_sell_totals — so the client can drop its
+    own duplicate price/tax/total formula and just render this response.
+
+    Deliberately takes no row locks, applies no clamp/reprice, records no
+    transaction, and consumes no haggle session: calling this any number of
+    times back-to-back for the same parameters returns the SAME number,
+    because nothing in between could have changed it.
+
+    That guarantee is scoped to "nothing changed the market in between" — it
+    is NOT a guarantee across a time gap. MarketPrice is a single row shared
+    by every player at this station; ANY player's trade reprices it
+    (_reprice_after_trade), and the price/rep/rank/tariff/lever stack this
+    endpoint reads can itself move between calls. A quote is therefore only
+    exact for the market state at the moment it was taken — a real gap (the
+    player reading the confirm dialog, a slow network) can see a DIFFERENT
+    number at commit time. The client is expected to re-quote immediately
+    before charging and re-confirm on drift (see TradingInterface.tsx's
+    executeTrade) rather than trust an old quote blindly.
+    """
+    action = quote_request.action.lower()
+    if action not in ("buy", "sell"):
+        raise HTTPException(status_code=400, detail="action must be 'buy' or 'sell'")
+
+    if not current_player.is_docked:
+        raise HTTPException(status_code=400, detail="You must be docked at a station to trade")
+
+    station = _get_station_or_404(db, quote_request.station_id)
+
+    if current_player.current_sector_id != station.sector_id:
+        raise HTTPException(status_code=400, detail="You must be in the same sector as the station")
+
+    # Same lazy-init idiom GET /market/{id} already uses — populates
+    # MarketPrice rows from the commodities JSONB on first read. Not a
+    # "trade write": no player credits/cargo/market VALUE changes.
+    _ensure_market_prices(db, station)
+
+    commodity_cfg = (station.commodities or {}).get(quote_request.resource_type)
+    if action == "buy" and commodity_cfg is not None and not commodity_cfg.get("sells", False):
+        raise HTTPException(status_code=400, detail="Station does not sell this resource")
+    if action == "sell" and commodity_cfg is not None and not commodity_cfg.get("buys", False):
+        raise HTTPException(status_code=400, detail="Station does not buy this resource")
+
+    market_price = db.query(MarketPrice).filter(
+        MarketPrice.station_id == quote_request.station_id,
+        MarketPrice.commodity == quote_request.resource_type
+    ).first()
+    if not market_price:
+        raise HTTPException(status_code=404, detail="Resource not available at this port")
+
+    # Same station-stock check /buy enforces (BUY only — sell_resource has
+    # no analogous cap; a station never runs out of room to buy FROM a
+    # player). Without this, a quote for more than the station has in
+    # stock would price successfully while the real /buy 400s on the same
+    # quantity — a mirrors-the-commit-path-exactly violation.
+    if action == "buy" and market_price.quantity < quote_request.quantity:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Station only has {market_price.quantity} units available"
+        )
+
+    # Same base_price selection the buy/sell routes use: BUY reads the
+    # station's sell_price, SELL reads its buy_price.
+    base_price = market_price.sell_price if action == "buy" else market_price.buy_price
+    unit_price = compute_effective_unit_price(
+        db, current_player, station, quote_request.resource_type, action, base_price,
+    )
+
+    # Haggle peek: if the player has an accepted-but-not-yet-consumed
+    # negotiated price for this (station, commodity, action), the NEXT real
+    # trade will charge/pay THAT instead of the posted price — preview it
+    # here too, same re-clamp the commit path applies, without consuming
+    # the single-use session.
+    peeked = _peek_agreed_haggle_price(db, current_player, station, quote_request.resource_type, action)
+    if peeked is not None:
+        unit_price = clamp_to_commodity_band(quote_request.resource_type, int(round(peeked)))
+
+    tax_rate = (
+        station.tax_rate if (station.owner_id is not None and station.tax_rate is not None) else 0.0
+    )
+
+    if action == "buy":
+        totals = compute_buy_totals(unit_price, quote_request.quantity, tax_rate)
+        subtotal = totals["total_cost"]
+        total = totals["total_with_tax"]
+    else:
+        totals = compute_sell_totals(unit_price, quote_request.quantity, tax_rate)
+        subtotal = totals["total_earnings"]
+        total = totals["net_earnings"]
+
+    return {
+        "station_id": quote_request.station_id,
+        "resource_type": quote_request.resource_type,
+        "quantity": quote_request.quantity,
+        "action": action,
+        "unit_price": unit_price,
+        "subtotal": subtotal,
+        "tax_rate": tax_rate,
+        "tax": totals["tax_amount"],
+        "total": total,
+    }
 
 
 @router.get("/market/{station_id}", response_model=MarketInfoResponse)

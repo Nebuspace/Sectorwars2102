@@ -132,6 +132,25 @@ export interface GenesisDeploymentResponse {
   genesisDevicesRemaining: number;
 }
 
+// Server-authoritative quote for a (tier, registration) pair (WO-API-B2).
+// Sourced from the same cost function the deploy route charges from, so
+// total_cost here is guaranteed to equal what a deploy of the same inputs
+// would charge for the current player.
+export interface GenesisQuoteResponse {
+  tier: 'basic' | 'enhanced' | 'advanced';
+  registration: 'clandestine' | 'registered' | 'chartered';
+  device_cost: number;
+  registration_fee: number;
+  total_cost: number;
+  player_credits: number;
+  can_afford: boolean;
+  reputation_gate: {
+    required: number;
+    current: number;
+    met: boolean;
+  };
+}
+
 export interface SpecializationResponse {
   success: boolean;
   specialization: ColonySpecialization;

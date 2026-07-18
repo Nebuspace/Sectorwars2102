@@ -184,6 +184,17 @@ export const planetaryAPI = {
       body: JSON.stringify({ sectorId, planetName, tier, registration })
     }),
 
+  // Server-authoritative quote for a (tier, registration) pair, priced for
+  // the current player's reputation (WO-API-B2). Read-only — makes no
+  // credit/reputation/device change. Returns exactly what deployGenesis
+  // would charge for the same inputs, since both are sourced from the same
+  // server-side cost function.
+  getGenesisQuote: (
+    tier: 'basic' | 'enhanced' | 'advanced',
+    registration: 'clandestine' | 'registered' | 'chartered' = 'registered'
+  ) =>
+    apiRequest(`/api/v1/genesis/quote?tier=${tier}&registration=${registration}`),
+
   specializePlanet: (planetId: string, specialization: string) =>
     apiRequest(`/api/v1/planets/${planetId}/specialize`, {
       method: 'PUT',
@@ -1098,6 +1109,32 @@ export const haggleAPI = {
     ),
 };
 
+// Trading price-quote API (WO-API-B1) — server-authoritative READ-ONLY
+// preview of what POST /trading/buy or /trading/sell would charge/pay right
+// now (unit_price/subtotal/tax_rate/tax/total). If the caller has an
+// accepted-but-unconsumed haggle session for this (station, commodity,
+// side), the quote peeks that price too (without consuming it) so it stays
+// the single source of truth even mid-haggle — see HaggleDesk's "Deal
+// struck" total (mack HIGH-2: the desk used to show a tax-FREE total while
+// the actual charge applies the station's tax_rate).
+export const tradingAPI = {
+  quote: (
+    stationId: string,
+    resourceType: string,
+    quantity: number,
+    action: 'buy' | 'sell'
+  ) =>
+    apiRequest('/api/v1/trading/quote', {
+      method: 'POST',
+      body: JSON.stringify({
+        station_id: stationId,
+        resource_type: resourceType,
+        quantity,
+        action,
+      }),
+    }),
+};
+
 // Trade Contract APIs (SYSTEMS/contracts.md, gameserver contracts.py) —
 // per-station board reads, accept/complete/abandon transitions, and
 // player-issued posting/cancel. Callers type-cast the response at the call
@@ -1200,6 +1237,7 @@ export const gameAPI = {
   regionOwner: regionOwnerAPI,
   construction: constructionAPI,
   haggle: haggleAPI,
+  trading: tradingAPI,
   resource: resourceAPI,
   contracts: contractsAPI,
   storage: storageAPI,
