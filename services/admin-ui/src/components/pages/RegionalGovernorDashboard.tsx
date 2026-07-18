@@ -1122,13 +1122,23 @@ const RegionalGovernorDashboard: React.FC = () => {
               )}
             </div>
 
-            <div className="diplomatic-actions">
-              <h4>Diplomatic Actions</h4>
-              <div className="tab-unavailable-note">
-                Diplomatic actions (trade agreements, defense pacts, cultural exchange,
-                diplomatic messages) are not yet available — the server has no regional
-                diplomacy endpoint. Existing treaties are listed above when present.
-              </div>
+            <div
+              role="note"
+              style={{
+                margin: '16px 0 0 0',
+                padding: '10px 12px',
+                background: 'rgba(234, 179, 8, 0.12)',
+                border: '1px solid rgba(234, 179, 8, 0.35)',
+                borderRadius: '6px',
+                color: '#fbbf24',
+                fontSize: '0.82rem',
+                lineHeight: 1.4,
+              }}
+            >
+              Diplomatic actions (trade agreements, defense pacts, cultural exchange,
+              diplomatic messages) are unavailable — no regional diplomacy endpoint.
+              Existing treaties are listed above when present. This tab does not invent
+              an Actions button bar.
             </div>
           </div>
         )}
