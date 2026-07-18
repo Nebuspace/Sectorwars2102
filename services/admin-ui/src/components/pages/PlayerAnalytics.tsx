@@ -322,7 +322,7 @@ const PlayerAnalytics: React.FC = () => {
                         <button 
                           onClick={() => setState(prev => ({ ...prev, showBulkOperations: true }))}
                           className="btn btn-sm btn-outline"
-                          title="Backend POST /admin/players/bulk-operation is not implemented"
+                          title="Bulk operations UI is present; backend endpoints are not live"
                         >
                           📋 Bulk Ops (offline)
                         </button>
@@ -518,11 +518,11 @@ const PlayerAnalytics: React.FC = () => {
                                     ✏️
                                   </button>
                                   <button 
-                                    className="btn btn-xs btn-outline"
+                                    className="btn btn-xs btn-error"
                                     onClick={() => {
                                       setState(prev => ({ ...prev, selectedPlayer: player, showEmergencyOps: true }));
                                     }}
-                                    title="Offline — emergency-operation endpoint not implemented"
+                                    title="Emergency Operations"
                                   >
                                     🚨
                                   </button>
@@ -628,13 +628,14 @@ const PlayerAnalytics: React.FC = () => {
                 </div>
               </div>
             </section>
+
             {/* Enhanced Player Metrics */}
             {state.metrics && (
               <section className="section">
                 <div className="section-header">
                   <div>
                     <h3 className="section-title">📊 Player Metrics</h3>
-                    <p className="section-subtitle">Secondary overview — find/edit players above (Scroll-Law)</p>
+                    <p className="section-subtitle">Real-time player analytics and performance indicators</p>
                   </div>
                 </div>
                 
@@ -698,3 +699,217 @@ const PlayerAnalytics: React.FC = () => {
 
           </div>
         )}
+
+        {/* Enhanced Player Detail Modal */}
+        {state.selectedPlayer && !state.editMode && !state.showAssetManager && !state.showEmergencyOps && (
+          <div className="modal-overlay" onClick={closePlayerDetail}>
+            <div className="modal modal-lg" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h3 className="modal-title">Player Details: {state.selectedPlayer.username}</h3>
+                <div className="flex items-center gap-2">
+                  <button onClick={toggleEditMode} className="btn btn-sm btn-primary">
+                    ✏️ Edit
+                  </button>
+                  <button className="btn btn-sm btn-ghost" onClick={closePlayerDetail}>×</button>
+                </div>
+              </div>
+              
+              <div className="modal-body">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <div className="space-y-4">
+                    <h4 className="text-lg font-semibold">Account Information</h4>
+                    <div className="space-y-3">
+                      <div>
+                        <div className="text-sm text-muted">User ID</div>
+                        <div className="font-mono text-sm">{state.selectedPlayer.id}</div>
+                      </div>
+                      <div>
+                        <div className="text-sm text-muted">Username</div>
+                        <div className="font-medium">{state.selectedPlayer.username}</div>
+                      </div>
+                      <div>
+                        <div className="text-sm text-muted">Email</div>
+                        <div>{state.selectedPlayer.email}</div>
+                      </div>
+                      <div>
+                        <div className="text-sm text-muted">Status</div>
+                        <span className={`badge ${
+                          state.selectedPlayer.status === 'active' ? 'badge-success' : 
+                          state.selectedPlayer.status === 'banned' ? 'badge-error' : 'badge-secondary'
+                        }`}>
+                          {state.selectedPlayer.status}
+                        </span>
+                      </div>
+                      <div>
+                        <div className="text-sm text-muted">Account Created</div>
+                        <div>{new Date(state.selectedPlayer.created_at).toLocaleDateString()}</div>
+                      </div>
+                      <div>
+                        <div className="text-sm text-muted">Last Login</div>
+                        <div>{state.selectedPlayer.activity.last_login ? new Date(state.selectedPlayer.activity.last_login).toLocaleString() : '—'}</div>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="space-y-4">
+                    <h4 className="text-lg font-semibold">Game Statistics</h4>
+                    <div className="space-y-3">
+                      <div>
+                        <div className="text-sm text-muted">Credits</div>
+                        <div className="font-mono text-lg">{state.selectedPlayer.credits.toLocaleString()}</div>
+                      </div>
+                      <div>
+                        <div className="text-sm text-muted">Current Location</div>
+                        <div>
+                          {getRegionName(state.selectedPlayer.current_region_id)}, Sector {state.selectedPlayer.current_sector_id || 'Unknown'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-sm text-muted">Turns Remaining</div>
+                        <div>{state.selectedPlayer.turns}</div>
+                      </div>
+                      <div>
+                        <div className="text-sm text-muted">Combat Rating</div>
+                        <div>{state.selectedPlayer.activity.combat_rating}</div>
+                      </div>
+                      <div>
+                        <div className="text-sm text-muted">Trade Volume</div>
+                        <div className="font-mono">{state.selectedPlayer.activity.total_trade_volume.toLocaleString()}</div>
+                      </div>
+                      <div>
+                        <div className="text-sm text-muted">Team</div>
+                        <div>{state.selectedPlayer.team_id || 'None'}</div>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="space-y-4">
+                    <h4 className="text-lg font-semibold">Assets & Inventory</h4>
+                    <div className="space-y-3">
+                      <div>
+                        <div className="text-sm text-muted">Ships Owned</div>
+                        <div>{state.selectedPlayer.assets.ships_count}</div>
+                      </div>
+                      <div>
+                        <div className="text-sm text-muted">Planets Owned</div>
+                        <div>{state.selectedPlayer.assets.planets_count}</div>
+                      </div>
+                      <div>
+                        <div className="text-sm text-muted">Ports Owned</div>
+                        <div>{state.selectedPlayer.assets.stations_count}</div>
+                      </div>
+                      <div>
+                        <div className="text-sm text-muted">Current Ship</div>
+                        <div>{state.selectedPlayer.current_ship_id || 'None'}</div>
+                      </div>
+                      <div>
+                        <div className="text-sm text-muted">Total Asset Value</div>
+                        <div className="font-mono">{state.selectedPlayer.assets.total_value.toLocaleString()}</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="modal-footer">
+                <div className="flex gap-3">
+                  <button 
+                    className="btn btn-outline"
+                    onClick={() => setState(prev => ({ ...prev, showAssetManager: true }))}
+                    title="Asset manager UI is present; backend endpoints are not live"
+                  >
+                    🏭 Assets (offline)
+                  </button>
+                  <button 
+                    className="btn btn-outline"
+                    onClick={() => setState(prev => ({ ...prev, showEmergencyOps: true }))}
+                    title="Emergency ops UI is present; backend endpoints are not live"
+                  >
+                    🚨 Emergency (offline)
+                  </button>
+                  <button 
+                    className="btn btn-primary"
+                    onClick={toggleEditMode}
+                  >
+                    ✏️ Edit Player
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+        
+        {/* Player Detail Editor Modal */}
+        {state.selectedPlayer && state.editMode && (
+          <div className="modal-overlay" onClick={() => setState(prev => ({ ...prev, editMode: false }))}>
+            <PlayerDetailEditor
+              player={state.selectedPlayer}
+              onClose={() => setState(prev => ({ ...prev, editMode: false, selectedPlayer: null }))}
+              onSave={(updatedPlayer) => {
+                // Update the player in the list
+                setState(prev => ({
+                  ...prev,
+                  players: prev.players.map(p => p.id === updatedPlayer.id ? updatedPlayer : p),
+                  selectedPlayer: updatedPlayer,
+                  editMode: false
+                }));
+              }}
+            />
+          </div>
+        )}
+        
+        {state.showBulkOperations && (
+          <div className="modal-overlay" onClick={() => setState(prev => ({ ...prev, showBulkOperations: false }))}>
+            <BulkOperationPanel
+              selectedPlayers={state.selectedPlayers.map(id => state.players.find(p => p.id === id)!).filter(Boolean)}
+              onClose={() => setState(prev => ({ ...prev, showBulkOperations: false, selectedPlayers: [] }))}
+              onComplete={(operation, results) => {
+                console.log(`Bulk operation ${operation} completed:`, results);
+                // Refresh the player data after bulk operation
+                fetchPlayerData();
+                // Clear selection after operation
+                setState(prev => ({ ...prev, selectedPlayers: [] }));
+              }}
+            />
+          </div>
+        )}
+        
+        {state.selectedPlayer && state.showAssetManager && (
+          <div className="modal-overlay" onClick={() => setState(prev => ({ ...prev, showAssetManager: false }))}>
+            <PlayerAssetManager
+              player={state.selectedPlayer}
+              onClose={() => setState(prev => ({ ...prev, showAssetManager: false }))}
+              onUpdate={(updatedPlayer) => {
+                // Update the player in the list
+                setState(prev => ({
+                  ...prev,
+                  players: prev.players.map(p => p.id === updatedPlayer.id ? updatedPlayer : p),
+                  selectedPlayer: updatedPlayer
+                }));
+              }}
+            />
+          </div>
+        )}
+        
+        {state.selectedPlayer && state.showEmergencyOps && (
+          <div className="modal-overlay" onClick={() => setState(prev => ({ ...prev, showEmergencyOps: false }))}>
+            <EmergencyOperationsPanel
+              player={state.selectedPlayer}
+              onClose={() => setState(prev => ({ ...prev, showEmergencyOps: false }))}
+              onUpdate={(updatedPlayer) => {
+                // Update the player in the list
+                setState(prev => ({
+                  ...prev,
+                  players: prev.players.map(p => p.id === updatedPlayer.id ? updatedPlayer : p),
+                  selectedPlayer: updatedPlayer
+                }));
+              }}
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default PlayerAnalytics;
