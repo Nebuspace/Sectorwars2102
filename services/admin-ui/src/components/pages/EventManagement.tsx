@@ -267,32 +267,6 @@ const EventManagement: React.FC = () => {
         subtitle="Create and manage dynamic game events"
       />
       
-      {/* Event Statistics */}
-      {eventStats && (
-        <div className="event-stats-grid">
-          <div className="event-stat-card">
-            <h3 className="event-stat-title">Total Events</h3>
-            <span className="event-stat-value">{eventStats.total_events.toLocaleString()}</span>
-          </div>
-          <div className="event-stat-card">
-            <h3 className="event-stat-title">Active</h3>
-            <span className="event-stat-value">{eventStats.active_events.toLocaleString()}</span>
-          </div>
-          <div className="event-stat-card">
-            <h3 className="event-stat-title">Scheduled</h3>
-            <span className="event-stat-value">{eventStats.scheduled_events.toLocaleString()}</span>
-          </div>
-          <div className="event-stat-card">
-            <h3 className="event-stat-title">Participants</h3>
-            <span className="event-stat-value">{eventStats.total_participants.toLocaleString()}</span>
-          </div>
-          <div className="event-stat-card">
-            <h3 className="event-stat-title">Rewards Given</h3>
-            <span className="event-stat-value">{eventStats.rewards_distributed.toLocaleString()}</span>
-          </div>
-        </div>
-      )}
-
       <div className="events-content">
         {/* Events Controls */}
         <div className="events-controls">
@@ -588,6 +562,33 @@ const EventManagement: React.FC = () => {
           </button>
         </div>
       </div>
+      {/* Event Statistics */}
+      {eventStats && (
+        <div className="event-stats-grid">
+          <div className="event-stat-card">
+            <h3 className="event-stat-title">Total Events</h3>
+            <span className="event-stat-value">{eventStats.total_events.toLocaleString()}</span>
+          </div>
+          <div className="event-stat-card">
+            <h3 className="event-stat-title">Active</h3>
+            <span className="event-stat-value">{eventStats.active_events.toLocaleString()}</span>
+          </div>
+          <div className="event-stat-card">
+            <h3 className="event-stat-title">Scheduled</h3>
+            <span className="event-stat-value">{eventStats.scheduled_events.toLocaleString()}</span>
+          </div>
+          <div className="event-stat-card">
+            <h3 className="event-stat-title">Participants</h3>
+            <span className="event-stat-value">{eventStats.total_participants.toLocaleString()}</span>
+          </div>
+          <div className="event-stat-card">
+            <h3 className="event-stat-title">Rewards Given</h3>
+            <span className="event-stat-value">{eventStats.rewards_distributed.toLocaleString()}</span>
+          </div>
+        </div>
+      )}
+
+
     </div>
   );
 };
