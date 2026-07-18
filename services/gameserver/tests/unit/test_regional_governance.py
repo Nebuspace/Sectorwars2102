@@ -45,29 +45,42 @@ class TestRegionalGovernanceService:
     @pytest.fixture
     def sample_player(self):
         """Sample player for testing"""
+        # Player.username is a read-only @property (nickname or user.username),
+        # not a mapped column — it has no setter, so it can't be passed as a
+        # constructor kwarg. Use nickname, which is the actual mapped column
+        # backing the display name, to keep the same test intent.
         return Player(
             id=uuid.uuid4(),
             user_id=uuid.uuid4(),
-            username="test_player",
+            nickname="test_player",
             credits=5000
         )
     
     @pytest.mark.asyncio
     async def test_get_region_by_owner_success(self, mock_db, sample_region):
         """Test successful region retrieval by owner"""
-        mock_db.execute.return_value.scalar_one_or_none.return_value = sample_region
-        
+        # A bare AsyncMock() auto-vivifies nested attribute chains as AsyncMock
+        # too, so mock_db.execute.return_value.scalar_one_or_none() would return
+        # an un-awaited coroutine instead of sample_region. Rebind execute to an
+        # AsyncMock whose return_value is a plain (sync) MagicMock, matching a
+        # real SQLAlchemy Result.
+        mock_db.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=sample_region))
+        )
+
         result = await RegionalGovernanceService.get_region_by_owner(
             mock_db, sample_region.owner_id
         )
-        
+
         assert result == sample_region
         mock_db.execute.assert_called_once()
-    
+
     @pytest.mark.asyncio
     async def test_get_region_by_owner_not_found(self, mock_db):
         """Test region retrieval when owner has no region"""
-        mock_db.execute.return_value.scalar_one_or_none.return_value = None
+        mock_db.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+        )
         
         result = await RegionalGovernanceService.get_region_by_owner(
             mock_db, uuid.uuid4()
@@ -96,8 +109,15 @@ class TestRegionalGovernanceService:
         treaties_mock = MagicMock()
         treaties_mock.return_value = 1
         
-        # Setup mock responses
-        mock_db.execute.side_effect = [membership_mock]
+        # Setup mock responses. get_regional_stats first calls
+        # _expire_stale_treaties (one execute() for the lazy-settle UPDATE,
+        # reading only .rowcount) before its own membership-stats execute() —
+        # side_effect needs an entry for each, in call order. Rebinding execute
+        # to a fresh AsyncMock also avoids the nested-auto-AsyncMock trap where
+        # a bare AsyncMock()'s attribute chains resolve to un-awaited coroutines.
+        mock_db.execute = AsyncMock(
+            side_effect=[MagicMock(rowcount=0), membership_mock]
+        )
         mock_db.scalar.side_effect = [2, 3, 1]  # elections, policies, treaties
         
         result = await RegionalGovernanceService.get_regional_stats(
@@ -108,7 +128,8 @@ class TestRegionalGovernanceService:
         assert result['citizen_count'] == 50
         assert result['resident_count'] == 30
         assert result['visitor_count'] == 20
-        assert result['average_reputation'] == 73.75  # Weighted average
+        # Weighted average: (85.5*50 + 70.2*30 + 60.0*20) / 100 = 75.81
+        assert result['average_reputation'] == 75.81
         assert result['active_elections'] == 2
         assert result['pending_policies'] == 3
         assert result['treaties_count'] == 1
@@ -179,10 +200,14 @@ class TestRegionalGovernanceService:
             'voting_duration_days': 7
         }
         
+        # 'voting_duration_days' is consumed by the service to compute
+        # voting_closes_at -- it isn't a RegionalPolicy column, so it can't be
+        # passed through the constructor. mock_policy is only used for its .id
+        # below, so drop the non-column key.
         mock_policy = RegionalPolicy(
             id=uuid.uuid4(),
             region_id=sample_region.id,
-            **policy_data
+            **{k: v for k, v in policy_data.items() if k != 'voting_duration_days'}
         )
         
         mock_db.commit.return_value = None
@@ -278,8 +303,12 @@ class TestRegionalGovernanceService:
             )
         ]
         
+        # Rebind execute to an AsyncMock returning a plain MagicMock so the
+        # chained .scalars().all() resolves synchronously (a bare AsyncMock()'s
+        # auto-vivified attribute chain would return an un-awaited coroutine).
+        mock_db.execute = AsyncMock(return_value=MagicMock())
         mock_db.execute.return_value.scalars.return_value.all.return_value = mock_policies
-        
+
         result = await RegionalGovernanceService.get_regional_policies(
             mock_db, sample_region.id
         )
@@ -305,8 +334,9 @@ class TestRegionalGovernanceService:
             )
         ]
         
+        mock_db.execute = AsyncMock(return_value=MagicMock())
         mock_db.execute.return_value.scalars.return_value.all.return_value = mock_elections
-        
+
         result = await RegionalGovernanceService.get_regional_elections(
             mock_db, sample_region.id
         )
@@ -328,8 +358,13 @@ class TestRegionalGovernanceService:
             ), "Partner Region")
         ]
         
-        mock_db.execute.return_value.all.return_value = mock_treaties
-        
+        # get_regional_treaties first calls _expire_stale_treaties (one execute()
+        # for the lazy-settle UPDATE, reading only .rowcount) before its own
+        # treaties execute() -- side_effect needs an entry for each, in order.
+        mock_db.execute = AsyncMock(
+            side_effect=[MagicMock(rowcount=0), MagicMock(all=MagicMock(return_value=mock_treaties))]
+        )
+
         result = await RegionalGovernanceService.get_regional_treaties(
             mock_db, sample_region.id
         )
@@ -384,8 +419,11 @@ class TestRegionalGovernanceService:
             ), "test_player2")
         ]
         
-        mock_db.execute.return_value.all.return_value = mock_members
-        
+        # Rebind execute to an AsyncMock returning a plain MagicMock so the
+        # chained .all() resolves synchronously (a bare AsyncMock()'s
+        # auto-vivified attribute chain would return an un-awaited coroutine).
+        mock_db.execute = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=mock_members)))
+
         result = await RegionalGovernanceService.get_regional_members(
             mock_db, sample_region.id
         )
@@ -700,9 +738,10 @@ class TestGrantRegionCitizenshipPrimitive:
             )
         assert result["ok"] is True
         # A freshly-INSERTED row is born at the citizen tier with weight, so the
-        # promote checks are no-ops -> CONFIRMED (the insert IS the grant; this
-        # matches the original colony-path behavior).
-        assert result["code"] == "CITIZENSHIP_CONFIRMED"
+        # promote checks are no-ops -- but the insert itself IS a grant, so the
+        # code must say GRANTED, not CONFIRMED (commit f37613c / WO-IL2: IL6's
+        # redeem path keys off GRANTED meaning "newly granted").
+        assert result["code"] == "CITIZENSHIP_GRANTED"
         assert result["membership_type"] == MembershipType.CITIZEN.value
         assert result["voting_power"] >= 1.0
         mock_db.add.assert_called_once()

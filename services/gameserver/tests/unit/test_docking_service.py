@@ -65,38 +65,16 @@ class TestSlipCapacityTable:
         assert docking_service.slip_capacity_for(station) == 30
 
 
-class TestDockingFeeTable:
-    """Documented interpretation table: capital 50 · 1-2: 25 · 3-6: 50 ·
-    7-10: 100 · 11: 150 · spacedock 200 · tradedock 250."""
+# NOTE: docking_fee_for no longer keys off station_class/is_spacedock/
+# tradedock_tier -- it's the canon ship-SIZE x security-TIER matrix
+# (FEATURES/economy/station-protection.md §Docking fee economics). The old
+# TestDockingFeeTable here asserted a station-class-based table whose own
+# docstring admitted it was an undocumented interpretation, not canon; it's
+# been replaced by the full matrix suite in test_station_security_fees.py.
 
-    @pytest.mark.parametrize("station_class,expected", [
-        (StationClass.CLASS_0, 50),
-        (StationClass.CLASS_1, 25),
-        (StationClass.CLASS_2, 25),
-        (StationClass.CLASS_3, 50),
-        (StationClass.CLASS_6, 50),
-        (StationClass.CLASS_7, 100),
-        (StationClass.CLASS_10, 100),
-        (StationClass.CLASS_11, 150),
-    ])
-    def test_class_buckets(self, station_class, expected):
-        assert docking_service.docking_fee_for(make_station(station_class)) == expected
 
-    def test_spacedock(self):
-        station = make_station(StationClass.CLASS_5, is_spacedock=True)
-        assert docking_service.docking_fee_for(station) == 200
-
-    @pytest.mark.parametrize("tier", ["A", "B"])
-    def test_tradedock(self, tier):
-        station = make_station(StationClass.CLASS_5, tradedock_tier=tier)
-        assert docking_service.docking_fee_for(station) == 250
-
-    def test_tradedock_tier_checked_before_spacedock(self):
-        station = make_station(StationClass.CLASS_5, is_spacedock=True, tradedock_tier="B")
-        assert docking_service.docking_fee_for(station) == 250
-
-    def test_bump_cost_is_five_times_fee(self):
-        assert docking_service.BUMP_COST_MULTIPLIER == 5
+def test_bump_cost_is_five_times_fee():
+    assert docking_service.BUMP_COST_MULTIPLIER == 5
 
 
 def make_occupancy(docked_minutes_ago: float):

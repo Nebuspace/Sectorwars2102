@@ -245,14 +245,21 @@ def test_archetype_for_station_class():
 
 # ── jsonb-schema archetype defaults ───────────────────────────────────────────
 def test_archetype_defaults_match_jsonb_schema():
+    # memory_duration_days values are FEATURES/economy/haggling.md's per-
+    # archetype table (Max DECISION #4, 2026-06-22) — Federation=14,
+    # Black Market=90, confirmed identical in DATA_MODELS/jsonb-schema.md's
+    # own archetype-defaults table (both docs and trader_personalities.py's
+    # _ARCHETYPE_DEFAULTS agree; no reconcile note needed). Previously pinned
+    # 30 / 7 here — the pre-DECISION jsonb-schema.md defaults, stale against
+    # both the code and both docs (WO-QA-STALE-HAGGLE-TEST).
     fed = tp.default_personality(tp.TraderArchetype.FEDERATION)
     assert fed["haggling_difficulty"] == 3
     assert fed["preferred_appeal_types"] == ["procedural", "compliance"]
-    assert fed["memory_duration_days"] == 30
+    assert fed["memory_duration_days"] == 14
     assert fed["trust_level"] == 0  # NOT the legacy 50
     bm = tp.default_personality(tp.TraderArchetype.BLACK_MARKET)
     assert bm["haggling_difficulty"] == 9
-    assert bm["memory_duration_days"] == 7
+    assert bm["memory_duration_days"] == 90
 
 
 # ── ADR-0079 schema reconcile (legacy → canonical) ────────────────────────────

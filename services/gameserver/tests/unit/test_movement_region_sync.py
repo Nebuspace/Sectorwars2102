@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.models.sector import Sector
 from src.services.movement_service import MovementService
 
 
@@ -22,14 +23,31 @@ def make_player(current_sector_id=1001, current_region_id=None):
     """Lightweight stand-in carrying the attributes _execute_movement touches."""
     return SimpleNamespace(
         id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        username="test_player",
+        team_id=None,
         current_sector_id=current_sector_id,
         current_region_id=current_region_id,
         is_docked=True,
         is_landed=False,
         current_port_id=uuid.uuid4(),
         current_planet_id=None,
-        current_ship=SimpleNamespace(sector_id=current_sector_id),
+        current_ship_id=uuid.uuid4(),
+        # hangar/tow_state default to None (nullable JSONB, ship.py:294/311) --
+        # matches an un-hangared, non-towing ship so the WO-AE Carrier
+        # ride-along and tow-follow blocks short-circuit. name/type feed the
+        # WS presence-entry snapshot _execute_movement builds inline.
+        current_ship=SimpleNamespace(
+            sector_id=current_sector_id,
+            hangar=None,
+            tow_state=None,
+            name="Test Ship",
+            type=SimpleNamespace(name="SCOUT"),
+        ),
         turns=100,
+        # lifetime_turns_spent: Integer, nullable=False, default=0 (player.py:36)
+        # -- spend_turns() increments it on every move.
+        lifetime_turns_spent=0,
         aria_total_interactions=0,
         aria_consciousness_level=1,
         aria_bonus_multiplier=1.0,
@@ -109,7 +127,16 @@ class TestExecuteMovementRegionSync:
 
         result = service._execute_movement(player, 1301, turn_cost=2)
 
-        assert mock_db.query.call_count == 1
+        # Scoped to Sector queries specifically -- _execute_movement has since
+        # grown best-effort hooks (mine detonation / ARIA exploration-map /
+        # special-formation discovery) that issue their own unrelated
+        # db.query() calls, so a raw mock_db.query.call_count would no longer
+        # isolate the regression this test actually guards: the destination
+        # Sector fetched once and reused (not re-queried for sector_info).
+        sector_query_calls = [
+            c for c in mock_db.query.call_args_list if c.args and c.args[0] is Sector
+        ]
+        assert len(sector_query_calls) == 1
         assert result["sector"]["id"] == 1301
         assert result["sector"]["name"] == "Nexus Gate"
         assert result["turn_cost"] == 2
