@@ -629,6 +629,97 @@ const EconomyDashboard: React.FC = () => {
             </div>
           )}
           
+          {/* Market Data Controls */}
+          <div className="market-controls">
+            <div className="commodity-filter">
+              <label htmlFor="commodity-select">Filter by Commodity:</label>
+              <select 
+                id="commodity-select"
+                value={selectedCommodity} 
+                onChange={(e) => setSelectedCommodity(e.target.value)}
+              >
+                <option value="all">All Commodities</option>
+                {commodities.map(commodity => (
+                  <option key={commodity} value={commodity}>{getResourceLabel(commodity)}</option>
+                ))}
+              </select>
+            </div>
+            
+            <button onClick={fetchEconomicData} className="refresh-btn">
+              🔄 Refresh Data
+            </button>
+          </div>
+
+          {/* Market Data Table */}
+          <div className="market-data-section">
+            <h3>Market Data</h3>
+            <div className="market-table-container">
+              <table className="market-table">
+                <thead>
+                  <tr>
+                    <th>Port</th>
+                    <th>Sector</th>
+                    <th>Commodity</th>
+                    <th>Buy Price</th>
+                    <th>Sell Price</th>
+                    <th>Quantity</th>
+                    <th>Profit Margin</th>
+                    <th>Last Updated</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredMarketData.map((item, index) => {
+                    const profitMargin = ((item.sell_price - item.buy_price) / item.buy_price * 100);
+                    return (
+                      <tr key={index}>
+                        <td data-label="Port">{item.port_name}</td>
+                        <td data-label="Sector">{item.sector_name}</td>
+                        <td data-label="Commodity">
+                          <span className={`commodity-badge ${item.commodity.toLowerCase()}`}>
+                            {item.commodity}
+                          </span>
+                        </td>
+                        <td data-label="Buy Price" className="price">{item.buy_price.toLocaleString()}</td>
+                        <td data-label="Sell Price" className="price">{item.sell_price.toLocaleString()}</td>
+                        <td data-label="Quantity">{item.quantity.toLocaleString()}</td>
+                        <td data-label="Profit Margin" className={`profit-margin ${profitMargin > 20 ? 'high' : profitMargin > 10 ? 'medium' : 'low'}`}>
+                          {profitMargin.toFixed(1)}%
+                        </td>
+                        <td data-label="Last Updated">{new Date(item.last_updated).toLocaleTimeString()}</td>
+                        <td data-label="Actions">
+                          <div className="action-btn-group">
+                            <button
+                              className="action-btn intervention"
+                              onClick={() => {
+                                const newPriceStr = prompt(`Set new buy price for ${item.commodity}:`, item.buy_price.toString());
+                                if (newPriceStr === null) return;
+                                const newPrice = parseFloat(newPriceStr);
+                                if (!Number.isFinite(newPrice) || newPrice <= 0) {
+                                  toast.error('Enter a valid positive price.');
+                                  return;
+                                }
+                                handlePriceIntervention(item.station_id, item.commodity, item.buy_price, newPrice);
+                              }}
+                            >
+                              💱 Intervene
+                            </button>
+                            <button
+                              className="action-btn inject"
+                              onClick={() => handleInjectSupply(item.station_id, item.commodity, item.port_name)}
+                            >
+                              📦 Inject
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
           {/* Economic Health Metrics */}
           <div className="metrics-grid">
             {metrics && (
@@ -831,97 +922,6 @@ const EconomyDashboard: React.FC = () => {
                 No alerts created this session yet.
               </div>
             )}
-          </div>
-
-          {/* Market Data Controls */}
-          <div className="market-controls">
-            <div className="commodity-filter">
-              <label htmlFor="commodity-select">Filter by Commodity:</label>
-              <select 
-                id="commodity-select"
-                value={selectedCommodity} 
-                onChange={(e) => setSelectedCommodity(e.target.value)}
-              >
-                <option value="all">All Commodities</option>
-                {commodities.map(commodity => (
-                  <option key={commodity} value={commodity}>{getResourceLabel(commodity)}</option>
-                ))}
-              </select>
-            </div>
-            
-            <button onClick={fetchEconomicData} className="refresh-btn">
-              🔄 Refresh Data
-            </button>
-          </div>
-
-          {/* Market Data Table */}
-          <div className="market-data-section">
-            <h3>Market Data</h3>
-            <div className="market-table-container">
-              <table className="market-table">
-                <thead>
-                  <tr>
-                    <th>Port</th>
-                    <th>Sector</th>
-                    <th>Commodity</th>
-                    <th>Buy Price</th>
-                    <th>Sell Price</th>
-                    <th>Quantity</th>
-                    <th>Profit Margin</th>
-                    <th>Last Updated</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredMarketData.map((item, index) => {
-                    const profitMargin = ((item.sell_price - item.buy_price) / item.buy_price * 100);
-                    return (
-                      <tr key={index}>
-                        <td data-label="Port">{item.port_name}</td>
-                        <td data-label="Sector">{item.sector_name}</td>
-                        <td data-label="Commodity">
-                          <span className={`commodity-badge ${item.commodity.toLowerCase()}`}>
-                            {item.commodity}
-                          </span>
-                        </td>
-                        <td data-label="Buy Price" className="price">{item.buy_price.toLocaleString()}</td>
-                        <td data-label="Sell Price" className="price">{item.sell_price.toLocaleString()}</td>
-                        <td data-label="Quantity">{item.quantity.toLocaleString()}</td>
-                        <td data-label="Profit Margin" className={`profit-margin ${profitMargin > 20 ? 'high' : profitMargin > 10 ? 'medium' : 'low'}`}>
-                          {profitMargin.toFixed(1)}%
-                        </td>
-                        <td data-label="Last Updated">{new Date(item.last_updated).toLocaleTimeString()}</td>
-                        <td data-label="Actions">
-                          <div className="action-btn-group">
-                            <button
-                              className="action-btn intervention"
-                              onClick={() => {
-                                const newPriceStr = prompt(`Set new buy price for ${item.commodity}:`, item.buy_price.toString());
-                                if (newPriceStr === null) return;
-                                const newPrice = parseFloat(newPriceStr);
-                                if (!Number.isFinite(newPrice) || newPrice <= 0) {
-                                  toast.error('Enter a valid positive price.');
-                                  return;
-                                }
-                                handlePriceIntervention(item.station_id, item.commodity, item.buy_price, newPrice);
-                              }}
-                            >
-                              💱 Intervene
-                            </button>
-                            <button
-                              className="action-btn inject"
-                              onClick={() => handleInjectSupply(item.station_id, item.commodity, item.port_name)}
-                            >
-                              📦 Inject
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
           </div>
 
           {/* Economic Analysis Charts */}
