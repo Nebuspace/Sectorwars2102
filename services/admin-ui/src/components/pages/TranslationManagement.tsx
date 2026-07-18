@@ -236,26 +236,6 @@ const TranslationManagement: React.FC = () => {
           </div>
         )}
 
-        {!error && !loading && languages.length > 0 && (
-          <section className="tm-stats-grid">
-            <div className="tm-stat-card">
-              <span className="tm-stat-label">Languages</span>
-              <span className="tm-stat-value">{languages.length}</span>
-              <span className="tm-stat-sub">{activeCount} active</span>
-            </div>
-            <div className="tm-stat-card">
-              <span className="tm-stat-label">Avg Completion</span>
-              <span className={`tm-stat-value ${completionClass(averageCompletion)}`}>{averageCompletion}%</span>
-              <span className="tm-stat-sub">across all languages</span>
-            </div>
-            <div className="tm-stat-card">
-              <span className="tm-stat-label">Fully Translated</span>
-              <span className="tm-stat-value tm-good">{fullyTranslated}</span>
-              <span className="tm-stat-sub">at 100% coverage</span>
-            </div>
-          </section>
-        )}
-
         <section className="tm-section">
           <div className="tm-section-header">
             <div>
@@ -335,6 +315,26 @@ const TranslationManagement: React.FC = () => {
             </div>
           ) : null}
         </section>
+
+        {!error && !loading && languages.length > 0 && (
+          <section className="tm-stats-grid">
+            <div className="tm-stat-card">
+              <span className="tm-stat-label">Languages</span>
+              <span className="tm-stat-value">{languages.length}</span>
+              <span className="tm-stat-sub">{activeCount} active</span>
+            </div>
+            <div className="tm-stat-card">
+              <span className="tm-stat-label">Avg Completion</span>
+              <span className={`tm-stat-value ${completionClass(averageCompletion)}`}>{averageCompletion}%</span>
+              <span className="tm-stat-sub">across all languages</span>
+            </div>
+            <div className="tm-stat-card">
+              <span className="tm-stat-label">Fully Translated</span>
+              <span className="tm-stat-value tm-good">{fullyTranslated}</span>
+              <span className="tm-stat-sub">at 100% coverage</span>
+            </div>
+          </section>
+        )}
 
         {selectedCode && (
           <section className="tm-section">
