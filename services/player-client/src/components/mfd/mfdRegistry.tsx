@@ -1,10 +1,29 @@
 /**
- * mfdRegistry — the nine MFD page definitions, decoupled from screens.
+ * mfdRegistry — the five MFD page definitions, decoupled from screens.
  *
  * Pages are lazy chunks so a faulting or heavy page never taxes the
  * console shell. Accents reuse the NAV_ITEMS palette (Law-5 system
  * colors). Predicates receive the memoized MFDSnapshot and must stay
  * pure + synchronous.
+ *
+ * WO-UI1-CHROME-COMPLETE dropped 'aria-terminal' — ARIA is absorbed into
+ * the teleprinter (components/aria/Teleprinter.tsx), which now carries
+ * the ADR-0072 grammar + free-chat directly, landing the ratified MFD
+ * slate (canon §05 L578: "A: STAT · CRGO · QTM — B: POS · COMM", no ARIA
+ * tab).
+ *
+ * WO-UI2-DECK-RECONCILE previously dropped four entries down to that same
+ * ratified slate:
+ *   - threat-readiness  → MOVED to the deck TACTICAL monitor's [THREAT] page
+ *   - salvage           → MOVED to the deck SOLAR SYSTEM monitor's [SALVAGE] page
+ *   - turn-economy, reputation → already-dead entries (WO-PLAYERINFO id=147
+ *     dropped their sidebar softkeys; nothing referenced them since)
+ * AriaTerminalPage.tsx, SalvagePage.tsx, ThreatPage.tsx, and
+ * TurnEconomyPage.tsx (the four now-unwired components) are DELETED
+ * (WO-UI5-RETIREMENT+GLASS — zero remaining consumers, confirmed by grep).
+ * ReputationPage.tsx is the one exception: still live, reused directly by
+ * components/player/PlayerInfo.tsx's and components/layouts/StatusBar.tsx's
+ * dossier reputation tabs — kept on disk, just no MFD registry entry.
  */
 
 import React from 'react';
@@ -41,22 +60,6 @@ export const MFD_PAGES: Record<MFDPageId, MFDPageDef> = {
     status: 'shipped',
     Component: React.lazy(() => import('./pages/CargoPage')),
   },
-  'turn-economy': {
-    id: 'turn-economy',
-    title: 'TURN ECONOMY',
-    softLabel: 'TURN',
-    accent: '#00FF7F',
-    status: 'shipped',
-    Component: React.lazy(() => import('./pages/TurnEconomyPage')),
-  },
-  'threat-readiness': {
-    id: 'threat-readiness',
-    title: 'THREAT READINESS',
-    softLabel: 'THRT',
-    accent: '#FF4D6D',
-    status: 'shipped',
-    Component: React.lazy(() => import('./pages/ThreatPage')),
-  },
   'quantum-drive': {
     id: 'quantum-drive',
     title: 'QUANTUM DRIVE',
@@ -69,7 +72,7 @@ export const MFD_PAGES: Record<MFDPageId, MFDPageDef> = {
   'nav-position': {
     id: 'nav-position',
     title: 'NAV / POSITION',
-    softLabel: 'NAV',
+    softLabel: 'POS',
     accent: '#00D9FF',
     status: 'shipped',
     Component: React.lazy(() => import('./pages/NavPositionPage')),
@@ -77,31 +80,14 @@ export const MFD_PAGES: Record<MFDPageId, MFDPageDef> = {
     // carries the aria-event channel (one channel per page).
     alertChannel: 'autopilot-pause',
   },
-  'aria-terminal': {
-    id: 'aria-terminal',
-    title: 'ARIA TERMINAL',
-    softLabel: 'ARIA',
-    accent: '#7B2FFF',
-    status: 'shipped',
-    Component: React.lazy(() => import('./pages/AriaTerminalPage')),
-    alertChannel: 'aria-event',
-  },
   'comms-crew': {
     id: 'comms-crew',
     title: 'COMMS / CREW',
     softLabel: 'COMM',
     accent: '#00FF7F',
-    status: 'partial',
+    status: 'shipped',
     Component: React.lazy(() => import('./pages/CommsCrewPage')),
     alertChannel: 'new-message',
-  },
-  'reputation': {
-    id: 'reputation',
-    title: 'REPUTATION',
-    softLabel: 'REP',
-    accent: '#FFD700',
-    status: 'shipped',
-    Component: React.lazy(() => import('./pages/ReputationPage')),
   },
 };
 

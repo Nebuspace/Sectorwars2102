@@ -11,7 +11,9 @@ interface Language {
   code: string;
   name: string;
   nativeName: string;
-  direction: string;
+  // Optional: the SUPPORTED_LANGUAGES static config (src/i18n.ts) doesn't
+  // carry a direction field, unlike the API response and the error fallback.
+  direction?: string;
   isActive: boolean;
   completionPercentage: number;
 }
@@ -47,7 +49,6 @@ const LanguageSwitcher: React.FC<LanguageSwitcherProps> = ({
             code,
             name: info.name,
             nativeName: info.nativeName,
-            direction: info.direction,
             isActive: code === 'en' || ['es', 'fr', 'zh-CN', 'pt'].includes(code),
             completionPercentage: code === 'en' ? 100 : 0
           }));

@@ -1,5 +1,4 @@
 import { useRef } from 'react';
-import { useFrame } from '@react-three/fiber';
 import { Text, Cone } from '@react-three/drei';
 import { Vector3 } from 'three';
 import * as THREE from 'three';
@@ -20,14 +19,6 @@ interface PlayerMarker3DProps {
 
 export default function PlayerMarker3D({ player, position, lodLevel }: PlayerMarker3DProps) {
   const markerRef = useRef<THREE.Group>(null);
-
-  // Simple pulsing animation
-  useFrame((state) => {
-    if (markerRef.current) {
-      const time = state.clock.getElapsedTime();
-      markerRef.current.scale.setScalar(1 + Math.sin(time * 3) * 0.1);
-    }
-  });
 
   if (lodLevel.detail === 'low') return null;
 

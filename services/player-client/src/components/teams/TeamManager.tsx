@@ -9,7 +9,6 @@ import type {
   TeamMemberApiResponse,
   TeamPermissionsApiResponse
 } from '../../types/team';
-import GameLayout from '../layouts/GameLayout';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import EmptyState from '../common/EmptyState';
 import LoadingState from '../common/LoadingState';
@@ -21,11 +20,9 @@ import './team-manager.css';
    keeps its identity across loading/error/no-team/team branches and never
    remounts mid-session. */
 const CrewShell: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <GameLayout>
-    <CockpitInstrument title="CREW MANIFEST" accent="#00FF7F" subtitle="TEAM OPERATIONS">
-      {children}
-    </CockpitInstrument>
-  </GameLayout>
+  <CockpitInstrument title="CREW MANIFEST" accent="#00FF7F" subtitle="TEAM OPERATIONS">
+    {children}
+  </CockpitInstrument>
 );
 
 // --- Wire mappers ----------------------------------------------------------

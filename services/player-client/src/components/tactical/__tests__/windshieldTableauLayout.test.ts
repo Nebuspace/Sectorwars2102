@@ -1,0 +1,844 @@
+/**
+ * windshieldTableauLayout — pure-function proof (WO-UI2-WINDSHIELD-TABLEAU).
+ * Zero DOM, zero React — determinism + geometry only.
+ */
+import { describe, it, expect } from 'vitest';
+import {
+  starAnchor,
+  bodyOrbitEllipse,
+  ORBIT_TILT_RATIO,
+  beltStyle,
+  orbitalPosition,
+  bodyPosition,
+  stationPosition,
+  moonOrbits,
+  bodySizeEm,
+  scanPosition,
+  otherPresencePosition,
+  otherShipFlightPose,
+  OTHER_FLIGHT_ORIENT_MS,
+  OTHER_FLIGHT_MOVE_MS,
+  selfRestingAnchor,
+  headingDeg,
+  nebulaArcs,
+  debrisArc,
+  safeOrbitRadii,
+  MOON_DOT_MIN_EM,
+  MOON_DOT_MAX_EM,
+  STAR_MIN_SIZE_VS_LARGEST_PLANET,
+  BODY_SIZE_EM_MAX,
+  ORBIT_AU_MAX,
+  pltagLabelHalfWidthEm,
+  labelEdgeLean,
+  PLTAG_LABEL_BASE_EM,
+  PLTAG_LABEL_PER_CHAR_EM,
+  type BandGeometry,
+  type PctPoint,
+} from '../windshieldTableauLayout';
+import type { SystemBody, SystemStation } from '../SolarSystemViewscreen';
+
+const BODY: SystemBody = {
+  slot: 0, orbit_au: 0.5, kind: 'TERRAN', size_class: 3,
+  palette: { hue: 100, sat: 40 }, rings: false, moons: 3, phase_deg: 90,
+  real: true, planet_id: 'p1', name: 'Test World',
+};
+
+const STATION: SystemStation = { station_id: 's1', name: 'Dock', type: 'trading_post', orbit_au: 0.6, phase_deg: 180 };
+
+describe('starAnchor', () => {
+  it('is deterministic per sectorId', () => {
+    const a = starAnchor(5, null);
+    const b = starAnchor(5, null);
+    expect(a).toEqual(b);
+  });
+
+  it('anchors off-center-left (a "sliver", not a centered orrery)', () => {
+    const a = starAnchor(5, null);
+    expect(a.xPct).toBeGreaterThanOrEqual(9);
+    expect(a.xPct).toBeLessThanOrEqual(14);
+    expect(a.yPct).toBeGreaterThanOrEqual(42);
+    expect(a.yPct).toBeLessThanOrEqual(50);
+  });
+
+  it('differs across sectors (not one shared skeleton)', () => {
+    const a = starAnchor(1, null);
+    const b = starAnchor(2, null);
+    expect(a).not.toEqual(b);
+  });
+
+  it('sizes by star kind (bigger for a blue supergiant than a red dwarf)', () => {
+    const dwarf = starAnchor(9, { kind: 'M_DWARF', label: '', color: '#fff' });
+    const giant = starAnchor(9, { kind: 'O_BLUE_SUPER', label: '', color: '#fff' });
+    expect(giant.sizeEm).toBeGreaterThan(dwarf.sizeEm);
+  });
+
+  // WO-TABLEAU-TUNE (live-playtest #18): "represent the star... as MUCH
+  // LARGER than the planets" — must hold for EVERY star kind, not just the
+  // naturally-huge ones, against whatever bodies are actually in the system.
+  it('is floored at STAR_MIN_SIZE_VS_LARGEST_PLANET x the largest real body present, even for a modest star kind', () => {
+    const bodies = [
+      { ...BODY, slot: 0, size_class: 3 }, // bodySizeEm ≈ 1.39
+      { ...BODY, slot: 1, size_class: 10 }, // bodySizeEm = 2.4 (ceiling) — the largest
+    ];
+    const largest = Math.max(...bodies.map(bodySizeEm));
+    const star = starAnchor(9, { kind: 'G_YELLOW', label: '', color: '#fff' }, bodies);
+    expect(star.sizeEm).toBeGreaterThanOrEqual(largest * STAR_MIN_SIZE_VS_LARGEST_PLANET);
+  });
+
+  it('still floors correctly with zero bodies (no system data yet)', () => {
+    const star = starAnchor(9, { kind: 'G_YELLOW', label: '', color: '#fff' }, []);
+    expect(star.sizeEm).toBeGreaterThan(0);
+  });
+
+  it('a naturally giant star kind is unaffected by the floor (already clears it on its own factor)', () => {
+    const bodies = [{ ...BODY, slot: 0, size_class: 10 }]; // bodySizeEm = 2.4 (ceiling)
+    const floor = bodySizeEm(bodies[0]) * STAR_MIN_SIZE_VS_LARGEST_PLANET;
+    const dwarfStar = starAnchor(9, { kind: 'M_DWARF', label: '', color: '#fff' }, bodies);
+    const giantStar = starAnchor(9, { kind: 'RED_GIANT', label: '', color: '#fff' }, bodies);
+    expect(dwarfStar.sizeEm).toBeCloseTo(floor, 1); // clamped up to the floor (rounded to 1dp)
+    expect(giantStar.sizeEm).toBeGreaterThan(floor); // already above it on its own factor
+  });
+});
+
+// ---- T0-2 (orbit-line view): a real per-body ellipse REPLACES the old
+// generic, cosmetic-only decorativeRings -- every planet/station/wreck
+// visibly rides its own orbit line, derived FROM its already-computed
+// position (T0-1's fan/rank placement untouched).
+
+describe('bodyOrbitEllipse', () => {
+  it('the ellipse path passes EXACTLY through the body position it was derived from', () => {
+    const star = starAnchor(3, null);
+    // A spread of positions, not just axis-aligned ones.
+    const positions: PctPoint[] = [
+      { xPct: star.xPct + 30, yPct: star.yPct + 10 },
+      { xPct: star.xPct - 5, yPct: star.yPct + 40 },
+      { xPct: star.xPct + 60, yPct: star.yPct - 20 },
+      { xPct: star.xPct + 5, yPct: star.yPct - 3 },
+    ];
+    for (const pos of positions) {
+      const ellipse = bodyOrbitEllipse(star, pos);
+      expect(ellipse).not.toBeNull();
+      const dx = pos.xPct - ellipse!.cxPct;
+      const dy = pos.yPct - ellipse!.cyPct;
+      const residual = Math.abs((dx / ellipse!.rxPct) ** 2 + (dy / ellipse!.ryPct) ** 2 - 1);
+      expect(residual).toBeLessThan(1e-9);
+    }
+  });
+
+  it('is centered on the star', () => {
+    const star = starAnchor(7, null);
+    const ellipse = bodyOrbitEllipse(star, { xPct: star.xPct + 20, yPct: star.yPct + 15 });
+    expect(ellipse!.cxPct).toBe(star.xPct);
+    expect(ellipse!.cyPct).toBe(star.yPct);
+  });
+
+  it('the tilt (ry/rx) is always ORBIT_TILT_RATIO, matching the retired decorativeRings\' own ratio (2.4/1.6=1.5)', () => {
+    const star = starAnchor(7, null);
+    expect(ORBIT_TILT_RATIO).toBeCloseTo(1.5);
+    for (const pos of [{ xPct: star.xPct + 12, yPct: star.yPct + 8 }, { xPct: star.xPct - 40, yPct: star.yPct + 2 }]) {
+      const ellipse = bodyOrbitEllipse(star, pos)!;
+      expect(ellipse.ryPct / ellipse.rxPct).toBeCloseTo(ORBIT_TILT_RATIO);
+    }
+  });
+
+  it('returns null for the degenerate case (body exactly at the star anchor)', () => {
+    const star = starAnchor(7, null);
+    expect(bodyOrbitEllipse(star, { xPct: star.xPct, yPct: star.yPct })).toBeNull();
+  });
+
+  it('different body positions produce different ellipses (not one shared/fixed shape)', () => {
+    const star = starAnchor(7, null);
+    const a = bodyOrbitEllipse(star, { xPct: star.xPct + 20, yPct: star.yPct + 5 })!;
+    const b = bodyOrbitEllipse(star, { xPct: star.xPct + 55, yPct: star.yPct - 30 })!;
+    expect(a.rxPct).not.toBeCloseTo(b.rxPct);
+  });
+
+  it('works for any star-relative point, not just orbit_au-derived ones (e.g. a station or a scatter-positioned wreck)', () => {
+    const star = starAnchor(7, null);
+    const stationLikePos = { xPct: star.xPct + 25, yPct: star.yPct - 8 };
+    const ellipse = bodyOrbitEllipse(star, stationLikePos);
+    expect(ellipse).not.toBeNull();
+    const dx = stationLikePos.xPct - ellipse!.cxPct;
+    const dy = stationLikePos.yPct - ellipse!.cyPct;
+    expect(Math.abs((dx / ellipse!.rxPct) ** 2 + (dy / ellipse!.ryPct) ** 2 - 1)).toBeLessThan(1e-9);
+  });
+});
+
+describe('beltStyle', () => {
+  it('is centered on the star, mostly off-frame by design (>100%)', () => {
+    const star = starAnchor(3, null);
+    const belt = beltStyle(star);
+    expect(belt.xPct).toBe(star.xPct);
+    expect(belt.wPct).toBeGreaterThan(100);
+    expect(belt.hPct).toBeGreaterThan(100);
+  });
+});
+
+describe('orbitalPosition / bodyPosition / stationPosition', () => {
+  it('has zero time term — same inputs always produce the same position (no system-level animation at rest)', () => {
+    const star = starAnchor(3, null);
+    const a = orbitalPosition(star, 0.5, 90);
+    const b = orbitalPosition(star, 0.5, 90);
+    expect(a).toEqual(b);
+  });
+
+  it('places the body on the star-centered elliptical plane via cos/sin of phase_deg', () => {
+    const star = { xPct: 10, yPct: 45, sizeEm: 4 };
+    const pos0 = orbitalPosition(star, 0.5, 0); // due "right" of the star
+    expect(pos0.xPct).toBeGreaterThan(star.xPct);
+    expect(pos0.yPct).toBeCloseTo(star.yPct);
+    const pos90 = orbitalPosition(star, 0.5, 90); // due "below"
+    expect(pos90.yPct).toBeGreaterThan(star.yPct);
+    expect(pos90.xPct).toBeCloseTo(star.xPct);
+  });
+
+  it('bodyPosition/stationPosition are thin wrappers over orbitalPosition using orbit_au+phase_deg', () => {
+    const star = starAnchor(3, null);
+    expect(bodyPosition(star, BODY)).toEqual(orbitalPosition(star, BODY.orbit_au, BODY.phase_deg));
+    expect(stationPosition(star, STATION)).toEqual(orbitalPosition(star, STATION.orbit_au, STATION.phase_deg));
+  });
+});
+
+describe('moonOrbits', () => {
+  it('returns exactly `moons` entries, deterministic per (sectorId, body.slot)', () => {
+    const a = moonOrbits(7, BODY);
+    const b = moonOrbits(7, BODY);
+    expect(a.length).toBe(BODY.moons);
+    expect(a).toEqual(b);
+  });
+
+  it('returns none for a body with moons=0', () => {
+    expect(moonOrbits(7, { ...BODY, moons: 0 })).toEqual([]);
+  });
+
+  it('every orbit has a positive radius and duration (slow, subtle local motion)', () => {
+    for (const m of moonOrbits(7, BODY)) {
+      expect(m.radiusEm).toBeGreaterThan(0);
+      expect(m.durationS).toBeGreaterThan(0);
+    }
+  });
+
+  it('revolution duration is slow (40-90s/lap), not the erratic fast spin Max flagged (live-playtest #9)', () => {
+    for (const m of moonOrbits(7, BODY)) {
+      expect(m.durationS).toBeGreaterThanOrEqual(40);
+      expect(m.durationS).toBeLessThanOrEqual(90);
+    }
+  });
+
+  it('radius is scaled off the PARENT body\'s own rendered size — just outside its disc edge, not a flat detached value', () => {
+    const smallBody: SystemBody = { ...BODY, size_class: 1, moons: 1 };
+    const bigBody: SystemBody = { ...BODY, size_class: 10, moons: 1 };
+    const smallRadiusEm = bodySizeEm(smallBody) / 2;
+    const bigRadiusEm = bodySizeEm(bigBody) / 2;
+
+    const [smallMoon] = moonOrbits(7, smallBody);
+    const [bigMoon] = moonOrbits(7, bigBody);
+
+    // Every moon sits OUTSIDE its own parent's disc (radius > the parent's
+    // own radius), and — because the ratio to the parent scales with the
+    // parent, not a fixed em — a small planet's moon never lands as far out
+    // (in absolute em) as a big planet's, unlike a flat/detached radius.
+    expect(smallMoon.radiusEm).toBeGreaterThan(smallRadiusEm);
+    expect(bigMoon.radiusEm).toBeGreaterThan(bigRadiusEm);
+    expect(smallMoon.radiusEm).toBeLessThan(bigMoon.radiusEm);
+  });
+
+  it('multiple moons on the same body stagger outward (no two share a radius)', () => {
+    const multiMoon: SystemBody = { ...BODY, moons: 3 };
+    const orbits = moonOrbits(7, multiMoon);
+    const radii = orbits.map((o) => o.radiusEm);
+    expect(new Set(radii.map((r) => Math.round(r * 1000))).size).toBe(radii.length);
+  });
+
+  // ---- WO-TABLEAU-TUNE (live-playtest #17): moon families ----------------
+
+  it('every moon of ONE planet co-rotates — a single shared direction, not independently random per moon', () => {
+    const family: SystemBody = { ...BODY, moons: 5 };
+    const orbits = moonOrbits(7, family);
+    const directions = new Set(orbits.map((o) => o.clockwise));
+    expect(directions.size).toBe(1);
+  });
+
+  it('family direction is deterministic per planet id (body.slot) and MAY differ planet-to-planet', () => {
+    const bodyA: SystemBody = { ...BODY, slot: 0, moons: 2 };
+    // Deterministic: same body -> same direction on a second, independent call.
+    expect(moonOrbits(7, bodyA)[0].clockwise).toBe(moonOrbits(7, { ...bodyA })[0].clockwise);
+    // Across a spread of slots, both directions actually occur (not hardcoded
+    // to always-clockwise or always-counter) — proves per-planet variation
+    // is real, not coincidental to a single sample.
+    const seen = new Set(
+      Array.from({ length: 12 }, (_, slot) => moonOrbits(7, { ...BODY, slot, moons: 1 })[0].clockwise)
+    );
+    expect(seen.size).toBe(2);
+  });
+
+  it('consecutive orbital tracks never compete — the radial gap always clears MOON_DOT_MAX_EM (the largest possible moon-dot diameter)', () => {
+    const family: SystemBody = { ...BODY, moons: 6 };
+    const radii = moonOrbits(7, family).map((o) => o.radiusEm).sort((a, b) => a - b);
+    for (let i = 1; i < radii.length; i++) {
+      expect(radii[i] - radii[i - 1]).toBeGreaterThan(MOON_DOT_MAX_EM);
+    }
+  });
+
+  it('moon-dot sizes are varied within a family and stay within the MOON_DOT_MIN_EM..MOON_DOT_MAX_EM band', () => {
+    const family: SystemBody = { ...BODY, moons: 6 };
+    const sizes = moonOrbits(7, family).map((o) => o.sizeEm);
+    for (const s of sizes) {
+      expect(s).toBeGreaterThanOrEqual(MOON_DOT_MIN_EM);
+      expect(s).toBeLessThanOrEqual(MOON_DOT_MAX_EM);
+    }
+    expect(new Set(sizes.map((s) => Math.round(s * 1000))).size).toBeGreaterThan(1); // not all identical
+  });
+});
+
+describe('bodySizeEm', () => {
+  it('clamps to [0.9, 2.4]em and grows with size_class', () => {
+    expect(bodySizeEm({ ...BODY, size_class: 0 })).toBeCloseTo(0.9); // floor
+    expect(bodySizeEm({ ...BODY, size_class: 20 })).toBeCloseTo(2.4); // ceiling
+    expect(bodySizeEm({ ...BODY, size_class: 5 })).toBeGreaterThan(bodySizeEm({ ...BODY, size_class: 2 }));
+  });
+});
+
+describe('scanPosition / otherPresencePosition', () => {
+  it('are deterministic per id and stay within the visible-ish scatter bounds', () => {
+    const a = scanPosition('wreck-1');
+    const b = scanPosition('wreck-1');
+    expect(a).toEqual(b);
+    expect(a.xPct).toBeGreaterThanOrEqual(8);
+    expect(a.xPct).toBeLessThanOrEqual(92);
+
+    const c = otherPresencePosition('ship-1');
+    const d = otherPresencePosition('ship-1');
+    expect(c).toEqual(d);
+  });
+
+  it('different ids land at different positions (no collision by construction... in practice)', () => {
+    expect(scanPosition('wreck-1')).not.toEqual(scanPosition('wreck-2'));
+  });
+});
+
+describe('otherShipFlightPose', () => {
+  const docks = [
+    { xPct: 20, yPct: 40 },
+    { xPct: 70, yPct: 35 },
+    { xPct: 55, yPct: 70 },
+  ];
+
+  it('is deterministic for the same (id, t, docks)', () => {
+    const a = otherShipFlightPose('ship-a', 12.5, docks, { archetype: 'TRADER' });
+    const b = otherShipFlightPose('ship-a', 12.5, docks, { archetype: 'TRADER' });
+    expect(a).toEqual(b);
+  });
+
+  it('orients in place before translating (no curved wander)', () => {
+    // Pick a t deep enough that phaseOffset is overcome: scan a window for orienting.
+    let foundOrient = false;
+    let foundAccel = false;
+    let foundBrakeTurn = false;
+    let foundBrake = false;
+    for (let t = 0; t < 180; t += 0.25) {
+      const p = otherShipFlightPose('marshal-flight', t, docks, {
+        archetype: 'LAW_ENFORCEMENT',
+        activity: 'PATROL',
+      });
+      if (p.phase === 'orienting') {
+        foundOrient = true;
+        // Position must stay put during orient (compare to nearby sample).
+        const p2 = otherShipFlightPose('marshal-flight', t + 0.05, docks, {
+          archetype: 'LAW_ENFORCEMENT',
+          activity: 'PATROL',
+        });
+        if (p2.phase === 'orienting') {
+          expect(Math.hypot(p2.xPct - p.xPct, p2.yPct - p.yPct)).toBeLessThan(0.05);
+        }
+      }
+      if (p.phase === 'accelerating') {
+        foundAccel = true;
+        expect(p.burning).toBe(true);
+      }
+      if (p.phase === 'brake-turn') {
+        foundBrakeTurn = true;
+        expect(p.burning).toBe(false);
+      }
+      if (p.phase === 'braking') {
+        foundBrake = true;
+        expect(p.burning).toBe(true);
+      }
+    }
+    expect(foundOrient).toBe(true);
+    expect(foundAccel).toBe(true);
+    expect(foundBrakeTurn).toBe(true);
+    expect(foundBrake).toBe(true);
+  });
+
+  it('translates on a straight eased chord during the move window', () => {
+    // Find an accelerating sample, then a later braking sample on same leg —
+    // cross-track deviation from the chord must stay near zero.
+    let from: { xPct: number; yPct: number } | null = null;
+    let to: { xPct: number; yPct: number } | null = null;
+    const samples: { xPct: number; yPct: number }[] = [];
+    for (let t = 0; t < 200; t += 0.5) {
+      const p = otherShipFlightPose('trader-chord', t, docks, { archetype: 'TRADER' });
+      if (p.phase === 'orienting' && !from) {
+        from = { xPct: p.xPct, yPct: p.yPct };
+      }
+      if (from && (p.phase === 'accelerating' || p.phase === 'gliding' || p.phase === 'brake-turn' || p.phase === 'braking')) {
+        samples.push({ xPct: p.xPct, yPct: p.yPct });
+      }
+      if (from && p.phase === 'final-orient') {
+        to = { xPct: p.xPct, yPct: p.yPct };
+        break;
+      }
+    }
+    expect(from).not.toBeNull();
+    expect(to).not.toBeNull();
+    expect(samples.length).toBeGreaterThan(3);
+    const dx = to!.xPct - from!.xPct;
+    const dy = to!.yPct - from!.yPct;
+    const len = Math.hypot(dx, dy) || 1;
+    for (const s of samples) {
+      const cross = Math.abs((s.xPct - from!.xPct) * dy - (s.yPct - from!.yPct) * dx) / len;
+      expect(cross).toBeLessThan(0.15);
+    }
+  });
+
+  it('traders prefer habitable docks over barren in aggregate', () => {
+    const tagged = [
+      { xPct: 20, yPct: 40, bucket: 'habitable' as const },
+      { xPct: 70, yPct: 35, bucket: 'habitable' as const },
+      { xPct: 55, yPct: 70, bucket: 'barren' as const },
+      { xPct: 40, yPct: 55, bucket: 'barren' as const },
+    ];
+    const ends: { xPct: number; yPct: number }[] = [];
+    for (let ship = 0; ship < 24; ship += 1) {
+      for (let t = 0; t < 90; t += 2) {
+        const p = otherShipFlightPose(`trader-bias-${ship}`, t, tagged, {
+          archetype: 'TRADER',
+          mission: 'commerce',
+        });
+        if (p.phase === 'final-orient' || p.phase === 'idle') {
+          ends.push({ xPct: p.xPct, yPct: p.yPct });
+          break;
+        }
+      }
+    }
+    expect(ends.length).toBeGreaterThan(10);
+    const near = (a: { xPct: number; yPct: number }, b: { xPct: number; yPct: number }) =>
+      Math.hypot(a.xPct - b.xPct, a.yPct - b.yPct) < 1.5;
+    let habHits = 0;
+    let barrenHits = 0;
+    for (const e of ends) {
+      if (tagged.filter((d) => d.bucket === 'habitable').some((d) => near(e, d))) habHits += 1;
+      else if (tagged.filter((d) => d.bucket === 'barren').some((d) => near(e, d))) barrenHits += 1;
+    }
+    expect(habHits).toBeGreaterThan(barrenHits);
+  });
+
+  it('exposes the shared flight timing constants used by the player hull', () => {
+    expect(OTHER_FLIGHT_ORIENT_MS).toBe(1000);
+    expect(OTHER_FLIGHT_MOVE_MS).toBe(6400);
+  });
+});
+
+describe('selfRestingAnchor', () => {
+  it('is deterministic per sectorId', () => {
+    expect(selfRestingAnchor(11)).toEqual(selfRestingAnchor(11));
+  });
+});
+
+describe('headingDeg', () => {
+  it('is 0 for a stationary point', () => {
+    const p = { xPct: 10, yPct: 10 };
+    expect(headingDeg(p, p)).toBe(0);
+  });
+
+  it('points right (0deg) when moving due +x', () => {
+    expect(headingDeg({ xPct: 0, yPct: 0 }, { xPct: 10, yPct: 0 })).toBeCloseTo(0);
+  });
+
+  it('points down (90deg) when moving due +y', () => {
+    expect(headingDeg({ xPct: 0, yPct: 0 }, { xPct: 0, yPct: 10 })).toBeCloseTo(90);
+  });
+
+  // ---- FIX B (Max live-playtest): aspect-correct the heading so the ship
+  // faces its ACTUAL visual travel direction. %-deltas are % of DIFFERENT
+  // axes (width vs height) -- on the ~4.3:1 wide-short flight band, atan2 on
+  // the raw %s over-steepens the angle (points too vertical).
+
+  const REAL_BAND_WIDTH_PX = 1440;
+  const REAL_BAND_HEIGHT_PX = 334.7; // 18.5em flight-rest, this file's own convention
+  const REAL_BAND_ASPECT = REAL_BAND_HEIGHT_PX / REAL_BAND_WIDTH_PX;
+
+  it('aspect-corrects: equal on-screen PX right+down reads ~45deg (not the %-distorted steeper angle), at real band px dims', () => {
+    const pxDelta = 100; // arbitrary equal px in both directions
+    const from = { xPct: 10, yPct: 40 };
+    const to = {
+      xPct: from.xPct + (pxDelta / REAL_BAND_WIDTH_PX) * 100,
+      yPct: from.yPct + (pxDelta / REAL_BAND_HEIGHT_PX) * 100,
+    };
+    const corrected = headingDeg(from, to, REAL_BAND_ASPECT);
+    expect(corrected).toBeCloseTo(45, 1);
+
+    // The OLD (default bandAspect=1, no aspect correction) angle for the
+    // exact same %-space delta is measurably STEEPER -- proves this is a
+    // real behavioral fix, not a no-op refactor.
+    const uncorrected = headingDeg(from, to);
+    expect(uncorrected).toBeGreaterThan(corrected + 10); // ~76.9deg vs 45deg
+  });
+
+  it('directly right / directly below stay ~0deg / ~90deg regardless of bandAspect (axis-aligned moves are aspect-independent)', () => {
+    expect(headingDeg({ xPct: 0, yPct: 0 }, { xPct: 10, yPct: 0 }, REAL_BAND_ASPECT)).toBeCloseTo(0);
+    expect(headingDeg({ xPct: 0, yPct: 0 }, { xPct: 0, yPct: 10 }, REAL_BAND_ASPECT)).toBeCloseTo(90);
+  });
+
+  it('defaults to the old square-container behavior (bandAspect=1) when omitted -- callers without real geometry (or mid-mount, before bandBox is measured) are unaffected', () => {
+    const from = { xPct: 0, yPct: 0 };
+    const to = { xPct: 10, yPct: 7 };
+    expect(headingDeg(from, to)).toBeCloseTo(headingDeg(from, to, 1));
+  });
+});
+
+describe('nebulaArcs / debrisArc', () => {
+  it('nebulaArcs is deterministic and returns 2-3 bands', () => {
+    const a = nebulaArcs(4);
+    const b = nebulaArcs(4);
+    expect(a).toEqual(b);
+    expect(a.length).toBeGreaterThanOrEqual(2);
+    expect(a.length).toBeLessThanOrEqual(3);
+  });
+
+  it('debrisArc centers on the ring midpoint radius', () => {
+    const arc = debrisArc({ inner_au: 0.4, outer_au: 0.8 });
+    expect(arc.rFrac).toBeCloseTo(0.6);
+  });
+});
+
+// ---- T1-A (Max live-playtest): every body/station must stay in-band -------
+
+describe('safeOrbitRadii / orbitalPosition(safeRadii) — T1-A in-band invariant', () => {
+  // A representative WIDE-SHORT band, computed from the real flight-mode
+  // formula this component actually renders into at 1440x900 (cockpit-
+  // shell.css `.band{--band-h-flight:18.5em}` + game-layout.css's
+  // `div.game-container{font-size:calc(clamp(10px,0.3vw+1.53vh,24px)*var(--uiscale))}`
+  // resolved at 1440x900, uiscale=1: 0.3*14.4 + 1.53*9 = 18.09px root em,
+  // band height = 18.5 * 18.09 ~= 334.7px; band width = the full stage
+  // width, ~1440px (the band row has no column split — game-layout.css's
+  // `.lower{grid-template-columns:19% 81%}` split only applies one row
+  // down). A second, TIGHTER geometry (ARIA-2 panel mode, 12.5em) is swept
+  // too below, so this isn't tuned to one specific height.
+  const FLIGHT_BAND: BandGeometry = { widthPx: 1440, heightPx: 334.7, remPx: 18.09 };
+  const ARIA2_BAND: BandGeometry = { widthPx: 1440, heightPx: 226.1, remPx: 18.09 }; // 12.5em
+
+  // Any actual body/station footprint this component ever renders — the
+  // same ceiling WindshieldTableau.tsx passes (its own OBJECT_FOOTPRINT_EM_MAX).
+  const MAX_OBJECT_EM = 3.2;
+
+  it('the footprint ceiling used below stays a superset of BODY_SIZE_EM_MAX (drift guard)', () => {
+    expect(MAX_OBJECT_EM).toBeGreaterThanOrEqual(BODY_SIZE_EM_MAX);
+  });
+
+  // QUEUE-PERF-TEST-FOOTPRINT (2026-07-16): the FULL-fidelity grid (every
+  // 0.02 AU x every 2deg, across the full sector lists this describe block
+  // used to sweep inline) times out on a quiet box — harness weight (Vitest's
+  // per-expect() overhead at these iteration counts), NOT math: the
+  // equivalent 19,680-position sweep in the Python server-side twin
+  // (services/gameserver/src/services/intrasystem_layout.py, the byte-for-
+  // byte parity port of this same math) runs in 105ms. Split per hub ruling
+  // across ALL THREE sweep tests below (not just the one the ticket named —
+  // the other two shared the same grid density and were ALSO slow enough to
+  // exceed their own 20s override once measured in isolation, which would
+  // have kept "full tactical suite runs green without timeout noise" from
+  // actually being true): each keeps a FAST variant here (smaller sector
+  // sample + a coarser step) for regression sensitivity in every default
+  // `npm test` run, while the FULL sector list at the original fine step
+  // moved to `windshieldTableauLayout.perfsweep.test.ts` (excluded from the
+  // default suite via vitest.config.ts, runnable on demand via
+  // `npm run test:perf`) so the exhaustive coverage is preserved somewhere
+  // runnable without poisoning every default run.
+  const STEP_AU = 0.02;
+  const STEP_DEG = 2;
+  const FAST_STEP_AU = 0.1;
+  const FAST_STEP_DEG = 10;
+
+  function assertInBand(
+    band: BandGeometry,
+    sectorSamples: number[],
+    emWidth = MAX_OBJECT_EM,
+    emHeight = emWidth,
+    stepAu = STEP_AU,
+    stepDeg = STEP_DEG,
+  ) {
+    const halfObjXPct = ((emWidth / 2) * band.remPx / band.widthPx) * 100;
+    const halfObjYPct = ((emHeight / 2) * band.remPx / band.heightPx) * 100;
+    for (const sectorId of sectorSamples) {
+      const star = starAnchor(sectorId, null);
+      const radii = safeOrbitRadii(star, band, emWidth, emHeight);
+      for (let au = 0.2; au <= ORBIT_AU_MAX + 1e-9; au += stepAu) {
+        for (let deg = 0; deg < 360; deg += stepDeg) {
+          const pos = orbitalPosition(star, au, deg, radii);
+          // The FULL rendered rect (center +/- half footprint) must stay
+          // inside [0,100]% on both axes -- not just the center point.
+          expect(pos.xPct - halfObjXPct).toBeGreaterThanOrEqual(-1e-6);
+          expect(pos.xPct + halfObjXPct).toBeLessThanOrEqual(100 + 1e-6);
+          expect(pos.yPct - halfObjYPct).toBeGreaterThanOrEqual(-1e-6);
+          expect(pos.yPct + halfObjYPct).toBeLessThanOrEqual(100 + 1e-6);
+        }
+      }
+    }
+  }
+
+  it('every (orbit_au, phase_deg) in the live contract range stays fully in-band, across a spread of sectors, at the flight-mode band height', () => {
+    // 21 = the live symptom sector; 77 = the WindshieldTableau.test.tsx
+    // fixture sector -- both kept in the fast sample; full [1,2,5,9,21,40,77]
+    // x the fine 0.02/2deg grid runs in the perfsweep file.
+    assertInBand(FLIGHT_BAND, [1, 21, 77], MAX_OBJECT_EM, MAX_OBJECT_EM, FAST_STEP_AU, FAST_STEP_DEG);
+  });
+
+  it('also holds at the tighter ARIA-2 panel-mode band height (12.5em) -- the fix isn\'t tuned to one specific height', () => {
+    assertInBand(ARIA2_BAND, [1, 21], MAX_OBJECT_EM, MAX_OBJECT_EM, FAST_STEP_AU, FAST_STEP_DEG);
+  });
+
+  // ---- station-scale footprint (WindshieldTableau.tsx's own
+  // STATION_FOOTPRINT_EM_WIDTH_MAX/HEIGHT_MAX) — a MUCH wider margin than a
+  // planet disc needs, which surfaced a real edge case a live Playwright
+  // proof caught: at cos(phase_deg)=0 (or sin=0) the per-quadrant radius
+  // contributes NOTHING to that axis, so a star anchored close to an edge
+  // (starAnchor's own 9-14% left range) can itself sit inside a wide
+  // object's margin — no radius scaling fixes that, only orbitalPosition's
+  // final xMinPct/xMaxPct/yMinPct/yMaxPct hard clamp does (SafeOrbitRadii's
+  // own doc-comment). Fast sample spans first/last/live-symptom sectors --
+  // full 0-40 sweep runs in the perfsweep file (see this describe block's
+  // own QUEUE-PERF-TEST-FOOTPRINT doc-comment above).
+  it('holds at station-scale footprint margins too (20em wide x 5em tall) -- the star-anchor-inside-the-margin edge case a live proof caught', () => {
+    assertInBand(FLIGHT_BAND, [0, 21, 40], 20, 5, FAST_STEP_AU, FAST_STEP_DEG);
+  });
+
+  it('an out-of-contract orbit_au beyond ORBIT_AU_MAX is defensively clamped, not extrapolated past the safe box', () => {
+    const star = starAnchor(21, null);
+    const radii = safeOrbitRadii(star, FLIGHT_BAND, MAX_OBJECT_EM);
+    const atCeiling = orbitalPosition(star, ORBIT_AU_MAX, 0, radii);
+    const beyond = orbitalPosition(star, ORBIT_AU_MAX + 5, 0, radii); // absurd stray value
+    expect(beyond).toEqual(atCeiling);
+  });
+
+  it('without safeRadii, orbitalPosition is byte-identical to the pre-T1-A unclamped math (decorative callers, and any caller before a real band is measured, are unaffected)', () => {
+    const star = starAnchor(3, null);
+    const withoutRadii = orbitalPosition(star, 0.5, 40);
+    const rx = 0.5 * 80; // AU_SEMI_X_PCT
+    const ry = 0.5 * 120; // AU_SEMI_Y_PCT
+    const rad = (40 * Math.PI) / 180;
+    expect(withoutRadii.xPct).toBeCloseTo(star.xPct + Math.cos(rad) * rx);
+    expect(withoutRadii.yPct).toBeCloseTo(star.yPct + Math.sin(rad) * ry);
+  });
+
+  it('bodyPosition/stationPosition forward safeRadii through to orbitalPosition unchanged', () => {
+    const star = starAnchor(21, null);
+    const radii = safeOrbitRadii(star, FLIGHT_BAND, MAX_OBJECT_EM);
+    const body = { slot: 0, orbit_au: 0.6, kind: 'TERRAN', size_class: 4, palette: { hue: 0, sat: 0 }, rings: false, moons: 0, phase_deg: 200, real: true, planet_id: 'p', name: 'X' };
+    const station = { station_id: 's', name: 'S', type: 'trading_post', orbit_au: 0.6, phase_deg: 200 };
+    expect(bodyPosition(star, body, radii)).toEqual(orbitalPosition(star, body.orbit_au, body.phase_deg, radii));
+    expect(stationPosition(star, station, radii)).toEqual(orbitalPosition(star, station.orbit_au, station.phase_deg, radii));
+  });
+
+  it('degrades to zero radius (never negative) for a direction with no usable room', () => {
+    // A star pinned at the very edge with a huge footprint eats all the room.
+    const tinyBand: BandGeometry = { widthPx: 50, heightPx: 50, remPx: 18 };
+    const radii = safeOrbitRadii({ xPct: 1, yPct: 1, sizeEm: 4 }, tinyBand, MAX_OBJECT_EM);
+    expect(radii.leftPctPerAu).toBe(0);
+    expect(radii.upPctPerAu).toBe(0);
+    expect(radii.rightPctPerAu).toBeGreaterThanOrEqual(0);
+    expect(radii.downPctPerAu).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// ---- T0-1 (Max live-catch, sector 1): bodies must stay DISTINCT, not just
+// in-band -- the hole T1-A's own review missed. All-left-hemisphere-phase
+// data collapsed onto the far-left-anchored star's own xPct regardless of
+// orbit_au (leftPctPerAu~=0 by construction there); fixed by making X
+// primarily orbit_au-driven (see orbitalPosition's own T0-1 doc-comment).
+
+describe('T0-1 — bodies stay DISTINCT and SPREAD, not just in-band (sector-1 live-catch)', () => {
+  const FLIGHT_BAND: BandGeometry = { widthPx: 1440, heightPx: 334.7, remPx: 18.09 };
+  const PLANET_EM = 2.6; // mirrors WindshieldTableau.tsx's own PLANET_FOOTPRINT_EM_MAX
+
+  // Max's own live repro, verbatim: sector 1, all 6 bodies at cos(phase)<0
+  // (118deg/119deg/251deg/228deg/160deg/135deg are all in the left
+  // hemisphere) -- the exact input that piled onto the star pre-fix.
+  const SECTOR_1_BODIES: SystemBody[] = [
+    { slot: 0, orbit_au: 0.2507, kind: 'BARREN', size_class: 3, palette: { hue: 30, sat: 20 }, rings: false, moons: 0, phase_deg: 118, real: false },
+    { slot: 1, orbit_au: 0.4176, kind: 'TERRAN', size_class: 5, palette: { hue: 120, sat: 45 }, rings: false, moons: 1, phase_deg: 119, real: true, planet_id: 'new-earth', name: 'New Earth' },
+    { slot: 2, orbit_au: 0.5784, kind: 'GAS_GIANT', size_class: 8, palette: { hue: 40, sat: 55 }, rings: true, moons: 2, phase_deg: 251, real: false },
+    { slot: 3, orbit_au: 0.6802, kind: 'BARREN', size_class: 4, palette: { hue: 25, sat: 15 }, rings: false, moons: 0, phase_deg: 228, real: false },
+    { slot: 4, orbit_au: 0.8275, kind: 'VOLCANIC', size_class: 6, palette: { hue: 10, sat: 60 }, rings: false, moons: 0, phase_deg: 160, real: false },
+    { slot: 5, orbit_au: 0.9438, kind: 'GAS_GIANT', size_class: 9, palette: { hue: 200, sat: 50 }, rings: true, moons: 3, phase_deg: 135, real: false },
+  ];
+
+  // A "sector-21-like" 7-body set with a full phase spread across all four
+  // quadrants (not all-left) -- the no-regression case: T1-A's own good
+  // spread on mixed-phase data must survive this redesign untouched.
+  const SECTOR_21_LIKE_BODIES: SystemBody[] = [
+    { slot: 0, orbit_au: 0.22, kind: 'BARREN', size_class: 3, palette: { hue: 30, sat: 20 }, rings: false, moons: 0, phase_deg: 20, real: false },
+    { slot: 1, orbit_au: 0.35, kind: 'TERRAN', size_class: 4, palette: { hue: 120, sat: 45 }, rings: false, moons: 1, phase_deg: 95, real: true, planet_id: 'p1', name: 'World 1' },
+    { slot: 2, orbit_au: 0.48, kind: 'ICE', size_class: 5, palette: { hue: 200, sat: 40 }, rings: false, moons: 0, phase_deg: 160, real: false },
+    { slot: 3, orbit_au: 0.6, kind: 'GAS_GIANT', size_class: 7, palette: { hue: 40, sat: 55 }, rings: true, moons: 2, phase_deg: 210, real: false },
+    { slot: 4, orbit_au: 0.72, kind: 'BARREN', size_class: 4, palette: { hue: 25, sat: 15 }, rings: false, moons: 0, phase_deg: 280, real: false },
+    { slot: 5, orbit_au: 0.85, kind: 'VOLCANIC', size_class: 6, palette: { hue: 10, sat: 60 }, rings: false, moons: 0, phase_deg: 300, real: true, planet_id: 'p6', name: 'World 6' },
+    { slot: 6, orbit_au: 0.93, kind: 'GAS_GIANT', size_class: 9, palette: { hue: 200, sat: 50 }, rings: true, moons: 3, phase_deg: 75, real: false },
+  ];
+
+  function assertDistinctAndSpread(sectorId: number, bodies: SystemBody[], label: string) {
+    const star = starAnchor(sectorId, { kind: 'K_ORANGE', label: '', color: '#fff' }, bodies);
+    const radii = safeOrbitRadii(star, FLIGHT_BAND, PLANET_EM);
+    const placed = bodies.map((b) => {
+      const pos = bodyPosition(star, b, radii);
+      return {
+        xPx: (pos.xPct / 100) * FLIGHT_BAND.widthPx,
+        yPx: (pos.yPct / 100) * FLIGHT_BAND.heightPx,
+        diamPx: bodySizeEm(b) * FLIGHT_BAND.remPx,
+      };
+    });
+
+    // 1. IN-BAND (T1-A, must survive this redesign).
+    for (const p of placed) {
+      expect(p.xPx - p.diamPx / 2).toBeGreaterThanOrEqual(-0.5);
+      expect(p.xPx + p.diamPx / 2).toBeLessThanOrEqual(FLIGHT_BAND.widthPx + 0.5);
+      expect(p.yPx - p.diamPx / 2).toBeGreaterThanOrEqual(-0.5);
+      expect(p.yPx + p.diamPx / 2).toBeLessThanOrEqual(FLIGHT_BAND.heightPx + 0.5);
+    }
+
+    // 2. DISTINCT -- min pairwise center-to-center distance >= 1.2x the
+    // LARGER of the two bodies' own diameters.
+    let minDist = Infinity;
+    for (let i = 0; i < placed.length; i++) {
+      for (let j = i + 1; j < placed.length; j++) {
+        const dx = placed[i].xPx - placed[j].xPx;
+        const dy = placed[i].yPx - placed[j].yPx;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const threshold = 1.2 * Math.max(placed[i].diamPx, placed[j].diamPx);
+        minDist = Math.min(minDist, dist);
+        expect(dist, `${label}: bodies ${i}/${j} too close (${dist.toFixed(1)}px < ${threshold.toFixed(1)}px)`).toBeGreaterThanOrEqual(threshold);
+      }
+    }
+
+    // 3. SPREAD -- x-centers span >= 50% of the band width.
+    const xs = placed.map((p) => p.xPx);
+    const xRange = Math.max(...xs) - Math.min(...xs);
+    expect(xRange, `${label}: x-range ${xRange.toFixed(1)}px`).toBeGreaterThanOrEqual(FLIGHT_BAND.widthPx * 0.5);
+
+    return { minDist, xRangePx: xRange, placed };
+  }
+
+  it('sector-1 repro (all 6 bodies left-hemisphere phase): stays in-band, all 6 DISTINCT, x-range >=50% of band width', () => {
+    const { minDist, xRangePx } = assertDistinctAndSpread(1, SECTOR_1_BODIES, 'sector-1');
+    // eslint-disable-next-line no-console
+    console.log(`[T0-1 proof] sector-1: minPairwiseDist=${minDist.toFixed(1)}px, xRange=${xRangePx.toFixed(1)}px (band width ${FLIGHT_BAND.widthPx}px)`);
+    expect(minDist).toBeGreaterThan(0);
+  });
+
+  it('sector-21-like 7-body mixed-phase case: no regression -- stays in-band, distinct, and well-spread', () => {
+    const { minDist, xRangePx } = assertDistinctAndSpread(21, SECTOR_21_LIKE_BODIES, 'sector-21-like');
+    // eslint-disable-next-line no-console
+    console.log(`[T0-1 proof] sector-21-like: minPairwiseDist=${minDist.toFixed(1)}px, xRange=${xRangePx.toFixed(1)}px (band width ${FLIGHT_BAND.widthPx}px)`);
+    expect(minDist).toBeGreaterThan(0);
+  });
+
+  it('X is monotonic in orbit_au at a fixed phase (the "further out = further right" fan, independent of the old left/right radius branch)', () => {
+    const star = starAnchor(1, { kind: 'K_ORANGE', label: '', color: '#fff' }, SECTOR_1_BODIES);
+    const radii = safeOrbitRadii(star, FLIGHT_BAND, PLANET_EM);
+    const xs = [0.25, 0.4, 0.55, 0.7, 0.85, 0.94].map((au) => orbitalPosition(star, au, 200, radii).xPct); // same phase for all -- isolates the orbit_au term
+    for (let i = 1; i < xs.length; i++) {
+      expect(xs[i]).toBeGreaterThan(xs[i - 1]);
+    }
+  });
+
+  it("regression guard (was WO-UI-PLTAG-CLAMP discovery, closed by QUEUE-XPCT-SATURATION-STACK): at phase_deg=0 (max X_SECONDARY_WIGGLE_FRACTION contribution), DIFFERENT orbit_au values must stay DISTINCT, not saturate onto the same clamped xPct -- this file originally caught 0.85/0.95 collapsing onto one pixel here; xWiggleTaper's own doc-comment has the fix + monotonicity proof", () => {
+    const star = starAnchor(1, { kind: 'K_ORANGE', label: '', color: '#fff' }, SECTOR_1_BODIES);
+    const radii = safeOrbitRadii(star, FLIGHT_BAND, PLANET_EM);
+    const x085 = orbitalPosition(star, 0.85, 0, radii).xPct;
+    const x095 = orbitalPosition(star, 0.95, 0, radii).xPct;
+    expect(x085).not.toBeCloseTo(x095, 1);
+    expect(x095).toBeGreaterThan(x085);
+  });
+
+  it('QUEUE-XPCT-SATURATION-STACK: X is strictly monotonic in orbit_au across a DENSE ladder at phase_deg=0 -- the exact saturating phase (max wiggle contribution), not just the 200deg case above which never actually exercised the collapse. Every position also stays in-band.', () => {
+    const star = starAnchor(1, { kind: 'K_ORANGE', label: '', color: '#fff' }, SECTOR_1_BODIES);
+    const radii = safeOrbitRadii(star, FLIGHT_BAND, PLANET_EM);
+    // 0.80 -> ORBIT_AU_MAX (0.95) -- the densest part of the OLD collapse
+    // band (old code: everything from ~0.8375 up flattened to one pixel).
+    const orbitAus = [0.80, 0.82, 0.84, 0.85, 0.86, 0.88, 0.90, 0.92, 0.94, 0.95];
+    const xs = orbitAus.map((au) => orbitalPosition(star, au, 0, radii).xPct);
+    for (let i = 1; i < xs.length; i++) {
+      expect(xs[i], `orbit_au ${orbitAus[i]} vs ${orbitAus[i - 1]}: xPct ${xs[i]} not > ${xs[i - 1]}`).toBeGreaterThan(xs[i - 1]);
+    }
+    for (const x of xs) {
+      expect(x).toBeGreaterThanOrEqual(0);
+      expect(x).toBeLessThanOrEqual(radii.xMaxPct);
+    }
+  });
+
+  it('an orbit_au beyond ORBIT_AU_MAX (e.g. 1.0, seen live from generate_orbits\' cumulative-walk normalization) is NOT a saturation-collapse case -- it aliases to the IDENTICAL position as orbit_au=ORBIT_AU_MAX itself via the pre-existing, unrelated defensive au clamp (both inputs collapse to the SAME internal `au` before this WO\'s fix ever runs), so it is intentionally excluded from the strict-monotonicity ladder above', () => {
+    const star = starAnchor(1, { kind: 'K_ORANGE', label: '', color: '#fff' }, SECTOR_1_BODIES);
+    const radii = safeOrbitRadii(star, FLIGHT_BAND, PLANET_EM);
+    const atMax = orbitalPosition(star, 0.95, 0, radii).xPct;
+    const beyondMax = orbitalPosition(star, 1.0, 0, radii).xPct;
+    expect(beyondMax).toBe(atMax);
+  });
+});
+
+describe('pltagLabelHalfWidthEm / labelEdgeLean (WO-UI-PLTAG-CLAMP)', () => {
+  // Matches this WO's own zero-footprint Playwright harness measurement at
+  // 1440x900 flight-mode band (`.ssv-tableau`'s real getComputedStyle
+  // fontSize, the SAME call bandBox.remPx makes) -- independently confirmed
+  // 15px in T2-E's own harness too (`.game-container`'s
+  // `calc(clamp(10px,1.05vw,15px)*--uiscale)` formula maxes out at 15px by
+  // 1440px viewport width).
+  const BAND: BandGeometry = { widthPx: 1438, heightPx: 277.5, remPx: 15 };
+
+  it('is monotonic increasing with name length', () => {
+    const lens = [4, 10, 16, 21, 50].map((n) => pltagLabelHalfWidthEm('x'.repeat(n)));
+    for (let i = 1; i < lens.length; i++) {
+      expect(lens[i]).toBeGreaterThan(lens[i - 1]);
+    }
+  });
+
+  it('matches the documented base+per-char formula exactly', () => {
+    expect(pltagLabelHalfWidthEm('12345')).toBeCloseTo((PLTAG_LABEL_BASE_EM + PLTAG_LABEL_PER_CHAR_EM * 5) / 2, 10);
+  });
+
+  it('never underestimated any of the 5 live-measured real body names this WO calibrated against (4/10/16/21/50 chars, real .pltag rendered widths at BAND.remPx=15)', () => {
+    // measuredHalfWidthPx from this WO's own report (Playwright, 1440x900):
+    // "Mars"(4)=15.6px, "New Terran"(10)=32.0px, "Old Aldebaran Six"(16)=51.1px,
+    // "Earth (Central Nexus)"(21)=62.1px, 50-char ceiling name=141.3px.
+    const cases: Array<[string, number]> = [
+      ['Mars', 15.6],
+      ['New Terran', 32.0],
+      ['Old Aldebaran Six', 51.1],
+      ['Earth (Central Nexus)', 62.1],
+      ['New Terra Prime Settlement Colony Alpha Station Ni', 141.3],
+    ];
+    for (const [name, measuredHalfWidthPx] of cases) {
+      const estimatedHalfWidthPx = pltagLabelHalfWidthEm(name) * BAND.remPx;
+      expect(estimatedHalfWidthPx).toBeGreaterThanOrEqual(measuredHalfWidthPx);
+    }
+  });
+
+  it('labelEdgeLean returns null (no lean) without real band geometry -- mid-mount safety, mirrors every other T1-A no-op-before-band-measured convention', () => {
+    expect(labelEdgeLean(99, pltagLabelHalfWidthEm('Earth (Central Nexus)'), undefined)).toBeNull();
+  });
+
+  it('labelEdgeLean returns null for a body comfortably in the middle regardless of name length', () => {
+    expect(labelEdgeLean(50, pltagLabelHalfWidthEm('New Terra Prime Settlement Colony Alpha Station Ni'), BAND)).toBeNull();
+  });
+
+  it('labelEdgeLean returns "right" for the T1-A-clamped worst-case right-edge position (xPct~98.64%, this WO\'s own measured ceiling) with the live-longest 21-char name', () => {
+    expect(labelEdgeLean(98.6439, pltagLabelHalfWidthEm('Earth (Central Nexus)'), BAND)).toBe('right');
+  });
+
+  it('labelEdgeLean returns null at that SAME worst-case position for a short name (no unnecessary lean, preserves the default centered look)', () => {
+    expect(labelEdgeLean(98.6439, pltagLabelHalfWidthEm('Mars'), BAND)).toBeNull();
+  });
+
+  it('labelEdgeLean is symmetric: "left" for the mirrored near-left-edge position', () => {
+    expect(labelEdgeLean(100 - 98.6439, pltagLabelHalfWidthEm('Earth (Central Nexus)'), BAND)).toBe('left');
+  });
+});

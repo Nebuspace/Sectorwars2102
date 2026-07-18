@@ -12,6 +12,7 @@ import TerraformPanel from './TerraformPanel';
 import ResearchPanel from './ResearchPanel';
 import ProductionPanel, { type ProductionLine } from './ProductionPanel';
 import type { RoleAllocation, ProdRole, PerColonistRates } from './CoupledColonistSliders';
+import DeckPageTabs from './DeckPageTabs';
 import '../planetary/planet-manager.css'; // .modal-overlay / .modal-content
 import './cockpit-colony.css';
 
@@ -183,40 +184,60 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
 
   // Tab definitions — the active one renders its panel; a glanceable readout
   // appears on each tab so the player keeps the key vital without leaving it.
-  const tabs: { key: ColonyTab; label: string; icon: string }[] = [
-    { key: 'citadel', label: 'Citadel', icon: '⬡' },
-    { key: 'grid', label: 'Grid', icon: '▦' },
-    { key: 'terraform', label: 'Terraform', icon: '🌍' },
-    { key: 'research', label: 'Research', icon: '⟳' },
-    { key: 'production', label: 'Production', icon: '🏭' },
-    { key: 'defense', label: 'Defense', icon: '🛡️' },
-    { key: 'safe', label: 'Safe', icon: '🔐' },
+  // `accent` matches the per-panel accent each tab's own instrument already
+  // carries (CitadelPanel/GridPanel/TerraformPanel/ResearchPanel/ProductionPanel
+  // — Law 5), so the tab bar reads as one console of distinct lit stations
+  // rather than a single flat color. Fed to DeckPageTabs as each page's
+  // own `accent` (WO-UI2-CANON-A-COLONY), which sets --tab-accent per
+  // button — cockpit-colony.css picks it up without a per-tab CSS rule.
+  const tabs: { key: ColonyTab; label: string; icon: string; accent: string }[] = [
+    { key: 'citadel', label: 'Citadel', icon: '⬡', accent: '#fbbf24' },
+    { key: 'grid', label: 'Grid', icon: '▦', accent: '#a78bfa' },
+    { key: 'terraform', label: 'Terraform', icon: '🌍', accent: '#34d399' },
+    { key: 'research', label: 'Research', icon: '⟳', accent: '#22d3ee' },
+    { key: 'production', label: 'Production', icon: '🏭', accent: '#7dd3fc' },
+    { key: 'defense', label: 'Defense', icon: '🛡️', accent: '#f87171' },
+    { key: 'safe', label: 'Safe', icon: '🔐', accent: '#2dd4bf' },
   ];
+
+  // DeckPageTabs pages — one per management tab, each carrying its own
+  // station's Law-5 accent (WO-UI2-CANON-A-COLONY: DeckPageTabs' per-page
+  // accent), so the migrated rail still lights each tab in its own color
+  // instead of one flat rail accent.
+  const deckPages = tabs.map((t) => ({
+    id: t.key,
+    label: (
+      <>
+        <span className="cmc-tab-icon" aria-hidden="true">{t.icon}</span>
+        <span className="cmc-tab-label">{t.label}</span>
+      </>
+    ),
+    accent: t.accent,
+  }));
 
   return (
     <div className="colony-mgmt-console">
-      <div className="cmc-tabbar" role="tablist" aria-label="Colony management">
-        {tabs.map((t) => (
-          <button
-            key={t.key}
-            type="button"
-            role="tab"
-            aria-selected={tab === t.key}
-            className={`cmc-tab${tab === t.key ? ' active' : ''}`}
-            // Switching tabs dismisses the Specialization drawer so its
-            // absolute inset:0 overlay can't cover a different tab's panel.
-            onClick={() => { setTab(t.key); setShowSpecialization(false); }}
-          >
-            <span className="cmc-tab-icon" aria-hidden="true">{t.icon}</span>
-            <span className="cmc-tab-label">{t.label}</span>
-          </button>
-        ))}
-        {/* Genesis is a SPACE action (seed a NEW colony in an EMPTY sector) — it
-            belongs to the ship/Cargo context, not the cockpit of a planet you're
-            standing on. Deploy lives on the ship Cargo MFD (CargoPage). */}
-      </div>
+      <DeckPageTabs
+        pages={deckPages}
+        activeId={tab}
+        // Switching tabs dismisses the Specialization drawer so its
+        // absolute inset:0 overlay can't cover a different tab's panel.
+        onSelect={(id) => { setTab(id as ColonyTab); setShowSpecialization(false); }}
+        ariaLabel="Colony management"
+        accent="#fbbf24"
+        idBase="cmc"
+        className="cmc-tabbar"
+      />
+      {/* Genesis is a SPACE action (seed a NEW colony in an EMPTY sector) — it
+          belongs to the ship/Cargo context, not the cockpit of a planet you're
+          standing on. Deploy lives on the ship Cargo MFD (CargoPage). */}
 
-      <div className="cmc-body" role="tabpanel">
+      <div
+        className="cmc-body"
+        role="tabpanel"
+        id={`cmc-panel-${tab}`}
+        aria-labelledby={`cmc-tab-${tab}`}
+      >
         {tab === 'citadel' && (
           <CitadelPanel
             planetId={planetId}

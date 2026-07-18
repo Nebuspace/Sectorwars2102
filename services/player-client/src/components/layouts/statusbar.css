@@ -1,0 +1,750 @@
+/* StatusBar — the persistent one-flex-row status bar (WO-UI0-STATUSBAR
+   sub-part a; cockpit-redesign-v10-RATIFIED.html:438-449, 496-502: "STATUS
+   BAR — one flex row — overlap structurally impossible"). SUPERSEDES
+   PlayerVitalsHud's role once mounted at the serial integration step.
+
+   WO-UI0-SHELL-TRANSPLANT Leaf L1: re-emitted onto cockpit-shell.css's
+   `.sbar` shell primitive — that rule now owns this row's flex/gap/padding/
+   background/border-bottom geometry (auto-placed into `.stage` grid row 1
+   by DOM order, see GameLayout.tsx's own mount-site comment; no `grid-area`
+   needed any more, that was the PRE-transplant grid's own named-area
+   mechanism and is dead weight now). This rule is trimmed to the bits
+   `.sbar` doesn't cover: the dropdown-escape mechanism below. */
+/* Selector is `.game-container .status-bar` (specificity 0,0,2,0 — the same
+   ancestor-scoping convention as `.game-container .game-sidebar` in
+   game-layout.css) — NOT a bare `.status-bar`. `.status-bar` was a GLOBAL,
+   unscoped class-name collision: App.css (a dead 8px progress-bar rule
+   under the landing page's `.terminal-content` "GALAXY STATS" panel — no
+   live element currently renders it, see that rule's own comment),
+   siege-status-monitor.css (a defense-readout bar under `.defense-item`),
+   and spacedock.css (a service-status row under `.service-status`) each
+   also declare their OWN top-level `.status-bar` rule — ancestor-scoping
+   keeps this one structurally disjoint from all three regardless of
+   specificity ties or file load order (confirmed by grepping each usage
+   site; full incident history preserved in git blame on this file).
+
+   The root ALSO keeps the bare `status-bar` classname (alongside `sbar`)
+   as a stable structural hook: GameLayout.statusBarIntegration.test.tsx
+   (a sibling file, out of this leaf's scope) pins `.game-container >
+   .status-bar` as the CSS-Grid auto-placement precondition, and
+   StatusBar.tsx's own tests query it too. */
+.game-container .status-bar {
+  position: relative;
+  z-index: 25; /* stacks the dropdown panels above `.band`'s own paint-
+    containment stacking context -- cockpit-shell.css sets `contain: paint`
+    on that later DOM-order sibling, which forces a new stacking context;
+    without an explicit z-index here this row's `position:relative` alone
+    (z-index:auto) would paint BEHIND it, burying every dropdown under the
+    ambient scene. Not covered by `.sbar` (no z-index/position in that
+    shell rule at all) -- kept, not superseded. */
+  overflow: visible; /* dropdown panels below must escape the row's own box
+    (`.sbar` doesn't set overflow either -- default visible, but explicit
+    here documents the intent and survives if that ever changes). */
+}
+
+/* WO-TRANCHE-0716 type-scale #19: every font-size in this file is `em`, not
+   the naive 1:1 rem->em swap the numbers might suggest. EVERY element this
+   file styles is a DOM descendant of `<div className="sbar status-bar">`
+   (StatusBar.tsx's own root -- confirmed no createPortal anywhere in that
+   file, so nothing here escapes it), and `.sbar` itself already carries
+   `font-size: .78em` (cockpit-shell.css, the frozen ratified artifact --
+   not editable from this lane). Without compensation, every value here
+   would compound under that .78 on top of whatever it already says (e.g. a
+   naive un-compensated .75 em value would render at .78*.75=.585 of the
+   `.game-container` root, not the flat .75 the original .75rem value
+   intended). Every declaration below is therefore `(intended flat
+   coefficient) / .78`, so the FINAL computed size lands at
+   `(intended coefficient) * .game-container's font-size`, exactly matching
+   what `rem` gave before (just now root-relative instead of pinned to the
+   document's fixed 16px `:root`). Verified via a live Playwright harness
+   (`.harness-tmp/`, real cockpit-shell.css + this file loaded, two
+   `.game-container` font-size roots) -- see WO-TRANCHE-0716 STATUS for the
+   numbers table. `.mfd-page-title` (mfd.css) has the identical `.sbar`
+   compounding for the same reason (it only ever renders inside this file's
+   dossier tab, via ReputationPage) and carries the same style of
+   compensation there. */
+
+/* ── Shared chip button (name / location triggers) ─────────────────────── */
+.sb-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: rgba(0, 217, 255, 0.06);
+  border: 1px solid rgba(0, 217, 255, 0.3);
+  border-radius: 4px;
+  padding: 0.3rem 0.6rem;
+  color: var(--color-text, #c9d4e3);
+  font-size: 0.9615em;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 14rem;
+}
+
+.sb-chip:hover {
+  background: rgba(0, 217, 255, 0.14);
+  box-shadow: 0 0 8px rgba(0, 217, 255, 0.3);
+}
+
+.sb-chip-icon {
+  font-size: 1.1538em;
+  line-height: 1;
+}
+
+/* `.sb-chip-caret` retired (WO-UI0-SHELL-TRANSPLANT integration cleanup
+   item 4) — both chip triggers that used it (name, location) now render
+   `.chip.who`/`.chip.loc` (cockpit-shell.css), whose own `::after` rule
+   supplies the " ▾" caret; the manual span is gone from both, so this
+   rule had no remaining consumer (grep-confirmed). */
+
+/* ── Dropdown panel shell shared by dossier + location ──────────────────── */
+.sb-dossier,
+.sb-location {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+/* Pilot name color is bound as an inline `style` on the element itself
+   (StatusBar.tsx) now, not via this class -- `.chip.who` (cockpit-shell.css,
+   2 classes) would otherwise always beat a bare single-class color rule
+   here regardless of CSS load order. text-transform doesn't collide with
+   anything `.chip.who` sets, so it stays a plain class rule. */
+.sb-name-chip {
+  text-transform: uppercase;
+}
+
+.sb-name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 8rem;
+}
+
+.sb-location-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 9rem;
+}
+
+.sb-dropdown {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  left: 0;
+  z-index: 40;
+  background: rgba(4, 12, 20, 0.97);
+  border: 1px solid rgba(0, 217, 255, 0.35);
+  border-radius: 6px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55), 0 0 16px rgba(0, 217, 255, 0.15);
+  white-space: normal;
+}
+
+/* Dossier — a FIXED-SIZE tabbed console (Accept #5) so opening it never
+   reflows the row or jumps size between tabs; each tab body scrolls
+   internally instead. */
+.sb-dossier-panel {
+  width: 24rem;
+  max-width: calc(100vw - 2rem);
+  /* WO-UI-DOSSIER-DROPDOWN-FIT (STRUCTURAL UPDATE, WO-UI0-SHELL-TRANSPLANT):
+     the `--teleprinter-h`-based cap this used is RETIRED — that formula
+     depended on the OLD grid row order (statusbar THIRD, teleprinter LAST,
+     so "room below statusbar" == exactly teleprinter's own height). The
+     new `.stage` grid puts the status bar FIRST (game-layout.css) — the
+     room below it down to the viewport bottom is now band+teleprinter+
+     lower combined, dramatically MORE than teleprinter's ~268px alone, so
+     reusing that var (now permanently unset — nothing writes it anymore)
+     would under-cap this dropdown far below the room actually available.
+     Replaced with a conservative viewport-relative cap (statusbar's own
+     ~3.5rem height + this dropdown's 0.4rem top-anchor gap + a margin).
+     WO-UI0-SHELL-TRANSPLANT Leaf L1 (StatusBar) tightening: swapped the
+     raw `100vh` for `var(--svh)` (index.css) -- `#root` applies `zoom:
+     var(--ui-scale)`, so a bare `vh` used INSIDE it resolves against the
+     UNZOOMED real viewport and is then re-scaled by zoom (at 80% UI scale,
+     `100vh` renders ~80% of the true viewport, under-capping this panel);
+     `--svh` (`100vh / var(--ui-scale, 1)`) is the codebase's own
+     established compensation for exactly this (see index.css's own
+     `--svh`/`--svh1` doc-comment and every other in-#root full-height
+     surface that already uses it). The `4.5rem` arithmetic itself was
+     already correct for the top-row position (statusbar height + anchor
+     gap + margin, independent of row order) -- only the unit needed the
+     fix. `display:flex` + `overflow:hidden` here (NOT `.sb-dropdown`,
+     shared with `.sb-location-panel`) turns this into "cap the whole
+     panel, let the body absorb the shrink" — see `.sb-dossier-body`'s
+     `flex: 0 1 18rem` below, which keeps the ORIGINAL fixed 18rem size
+     whenever there's room and only shrinks (never grows) when there
+     isn't, so the "never reflows between tabs" contract above still
+     holds at both sizes. */
+  max-height: calc(var(--svh) - 4.5rem);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sb-dossier-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem;
+  padding: 0.5rem 0.5rem 0;
+  border-bottom: 1px solid rgba(0, 217, 255, 0.2);
+}
+
+.sb-dossier-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px 3px 0 0;
+  color: var(--color-text-muted, #7e8ca0);
+  font-size: 0.7949em;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 0.35rem 0.5rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.sb-dossier-tab:hover {
+  color: var(--color-text, #c9d4e3);
+}
+
+.sb-dossier-tab.active {
+  color: #00d9ff;
+  border-color: rgba(0, 217, 255, 0.4);
+  border-bottom-color: transparent;
+  background: rgba(0, 217, 255, 0.08);
+}
+
+.sb-dossier-body {
+  /* flex-grow:0 (never balloon past 18rem just because the panel has extra
+     room) flex-shrink:1 (absorb ALL of the panel's own max-height clamp —
+     the tabs row above stays `flex: 0 0 auto`, fixed) flex-basis:18rem
+     (the original size). min-height:0 overrides flexbox's default
+     min-height:auto (= content's min-content size), which would otherwise
+     block shrinking below that AND stop `overflow-y: auto` from ever
+     engaging. Replaces the old fixed `height: 18rem; max-height: 60vh` —
+     the raw `vh` cap had the same #root-zoom scale-correctness problem the
+     parent's `max-height` comment above documents. */
+  flex: 0 1 18rem;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.7rem;
+}
+
+/* ── Identity tab ────────────────────────────────────────────────────────── */
+.sb-identity-name {
+  font-size: 1.2179em;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 0.6rem;
+}
+
+.sb-identity-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+}
+
+.sb-identity-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.sb-identity-k {
+  font-size: 0.7051em;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--color-text-muted, #7e8ca0);
+}
+
+.sb-identity-v {
+  font-size: 1.0897em;
+  font-weight: 700;
+}
+
+/* ── Settings tab (embedded UI-scale slider — WO-UI5-DOSSIER) ───────────── */
+.sb-settings-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  align-items: stretch;
+}
+
+.sb-settings-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.sb-settings-row-control {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.sb-settings-range {
+  flex: 1 1 auto;
+  accent-color: #00d9ff;
+}
+
+/* Deliberate STUB — no PayPal/subscription wiring (payments carve-out,
+   human-gated, out of this WO's scope). */
+.sb-settings-subscription-stub {
+  display: inline-block;
+  width: fit-content;
+  padding: 0.25rem 0.6rem;
+  border: 1px dashed rgba(126, 140, 160, 0.4);
+  border-radius: 3px;
+  font-size: 0.8718em;
+  color: var(--color-text-muted, #7e8ca0);
+  cursor: not-allowed;
+}
+
+.sb-settings-link {
+  color: #00d9ff;
+  font-size: 1.0000em;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.sb-settings-link:hover {
+  text-decoration: underline;
+}
+
+/* ── Service Record tab (composes RankDisplay + MedalShowcase) ─────────── */
+.sb-service-record {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+/* ── Colonies roster tab ─────────────────────────────────────────────────── */
+.sb-colonies-loading,
+.sb-colonies-error {
+  font-size: 0.9615em;
+  color: var(--color-text-muted, #7e8ca0);
+}
+
+.sb-colonies-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.sb-colonies-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.35rem 0.4rem;
+  border: 1px solid rgba(0, 217, 255, 0.15);
+  border-radius: 4px;
+  font-size: 0.9231em;
+}
+
+.sb-colonies-name {
+  font-weight: 700;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sb-colonies-sector {
+  color: var(--color-text-muted, #7e8ca0);
+}
+
+.sb-colonies-pop {
+  color: var(--color-text-muted, #7e8ca0);
+}
+
+.sb-colonies-siege {
+  color: var(--health-danger, #ef4444);
+  font-weight: 700;
+  font-size: 0.7692em;
+  letter-spacing: 0.05em;
+}
+
+.sb-colonies-footer {
+  margin: 0.6rem 0 0;
+  font-size: 0.8333em;
+  color: var(--color-text-muted, #7e8ca0);
+  font-style: italic;
+}
+
+/* ── Crew (team summary) tab ─────────────────────────────────────────────── */
+.sb-crew-loading,
+.sb-crew-error {
+  font-size: 0.9615em;
+  color: var(--color-text-muted, #7e8ca0);
+}
+
+.sb-crew-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.sb-crew-name {
+  /* Pixel a11y fix: now an <h2> (was a plain div) -- reset the UA
+     stylesheet's default heading margin so the visual is unchanged. */
+  margin: 0;
+  font-size: 1.0897em;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.sb-crew-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+}
+
+.sb-crew-link {
+  color: #00d9ff;
+  font-size: 0.9231em;
+  font-weight: 700;
+  text-decoration: none;
+  align-self: flex-start;
+}
+
+.sb-crew-link:hover {
+  text-decoration: underline;
+}
+
+/* ── Location dropdown ───────────────────────────────────────────────────── */
+.sb-location-panel {
+  width: 20rem;
+  max-width: calc(100vw - 2rem);
+}
+
+.sb-location-header {
+  padding: 0.6rem 0.7rem;
+  border-bottom: 1px solid rgba(0, 217, 255, 0.2);
+}
+
+.sb-location-header-sector {
+  font-size: 1.0897em;
+  font-weight: 700;
+  color: #00d9ff;
+}
+
+.sb-location-header-region {
+  font-size: 0.8333em;
+  color: var(--color-text-muted, #7e8ca0);
+  letter-spacing: 0.05em;
+}
+
+/* Sector type + docked/landed scene readout — relocated from the deleted
+   canvas-corner HudChips (id="location"/"station"/"landed"). */
+.sb-location-header-type {
+  font-size: 0.7692em;
+  color: var(--color-text-muted, #7e8ca0);
+  letter-spacing: 0.08em;
+  margin-top: 0.15rem;
+}
+
+.sb-location-header-scene {
+  font-size: 0.8974em;
+  font-weight: 600;
+  margin-top: 0.35rem;
+  color: var(--color-text, #c9d4e3);
+}
+
+.sb-location-body {
+  padding: 0.6rem 0.7rem;
+  min-height: 2rem;
+}
+
+/* ── Vitals cluster + REP badge ──────────────────────────────────────────── */
+/* WO-UI0-SHELL-TRANSPLANT Leaf L1 retarget: this element is NO LONGER the
+   flex-growing region that pushes the vitals to the row's right edge --
+   the artifact's own `.grow` spacer (cockpit-shell.css: `flex:1`, rendered
+   as a real element in StatusBar.tsx immediately before this div) does
+   that job now, matching the artifact's flat row structure. `.sb-vitals`
+   is kept purely as a DOM grouping node -- GameLayout.
+   statusBarIntegration.test.tsx (a sibling file, out of this leaf's scope)
+   still queries `.sb-vitals`'s presence as its "StatusBar's own vitals
+   cluster is present" pin. `display: contents` removes it from the box
+   tree entirely, so its `.vit` children lay out as DIRECT flex items of
+   `.sbar` itself and pick up that row's own `gap` -- no nested flex
+   context to reconcile with the shell's. (Supersedes the prior WO-UIPC-
+   STATUSBAR-VITALS-LAYOUT fix, whose `flex:1 1 auto` + `justify-content:
+   space-between` mechanism this retargeting replaces outright, not just
+   relocates -- see git history for that incident's own detail.) */
+.sb-vitals {
+  display: contents;
+}
+
+.sb-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.28rem;
+  white-space: nowrap;
+}
+
+/* WO-TOPBAR-SPACING: the credits->reputation run's own rhythm, distinct
+   from `.sbar`'s tighter row-wide gap (cockpit-shell.css, shared with the
+   name/location chips on the left and the settings/logout icons on the
+   right -- that .55em gap alone left every metric packed at the same
+   ~7.75px whether it's a genuinely different group or just two halves of
+   one reading, so nothing read as its own unit). `.vit + .vit` catches
+   every vital that immediately follows another vital in DOM order --
+   `display:contents` on `.sb-vitals` (above) makes them true flex siblings
+   of `.sbar`, so the sibling combinator still applies even though there's
+   no `.sb-vitals` box. `.sb-credits` is exempt as the run's first item (no
+   `.vit` precedes it, `.grow` doesn't carry the class), so no divider
+   floats immediately after the spacer. em is safe here: every non-credits
+   `.vit` element inherits `.sbar`'s own base font-size directly -- their
+   bumped display sizes live on nested `.sb-*` children (`.sb-turns-count`,
+   `.sb-drone`, etc.), never on the `.vit` element itself except for
+   `.sb-credits` (which is always first and so never matched here) -- so
+   1em resolves identically for turns/drones/mines/link/bounty/rep
+   regardless of each item's own displayed value size. The divider is a
+   hairline in the same muted gray `.sb-k`/`--color-text-muted` already
+   uses elsewhere in this file, not the cyan chip-accent -- it should read
+   as a quiet rhythm mark, not compete with the row's cyan chips. */
+.vit + .vit {
+  margin-left: 0.5em;
+  padding-left: 0.5em;
+  border-left: 1px solid rgba(126, 140, 160, 0.25);
+}
+
+.sb-k {
+  font-size: 0.6410em;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: var(--color-text-muted, #7e8ca0);
+  text-transform: uppercase;
+}
+
+.sb-v {
+  font-size: 1.0256em;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.3px;
+}
+
+.sb-sub {
+  font-size: 0.8974em;
+  font-weight: 600;
+  opacity: 0.6;
+}
+
+/* Compound `.vit.sb-credits` (2 classes), not bare `.sb-credits` -- both
+   selectors are on the SAME element, and a bare single class here would
+   TIE `.vit`'s own bare `color:#9FB4CC` (cockpit-shell.css) on specificity,
+   leaving the winner dependent on CSS bundle/load order. The compound form
+   deterministically outranks it regardless.
+
+   WO-UI-STATUSBAR-VITALS value hierarchy (Max playtest #27): CREDITS +
+   TURNS are the PRIMARY vitals -- bumped one size step above the secondary
+   tier (drones/mines/LINK, unchanged below) so they read as the headline
+   numbers rather than smaller than the mine count. 1.02rem is ~1.16x
+   `.vit.sb-mines b`'s 0.88rem (both measured against the SAME 16px root,
+   independent of the ambient `.sbar`/`.game-container` vw-scaled em chain
+   the ex-mines bare `<b>` used to drift with -- see that rule's own
+   comment). `.sb-turns-count` below is bumped to the identical 1.02rem so
+   the two primary values read as one size, not two independently-tuned
+   ones. */
+.vit.sb-credits {
+  font-size: 1.3077em;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--credits-color, #fbbf24);
+  text-shadow: 0 0 8px rgba(251, 191, 36, 0.35);
+}
+
+.sb-turns-stack {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.04rem;
+  line-height: 1;
+}
+
+.sb-turns-count {
+  font-size: 1.3077em;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* Turns icon (WO-UI-STATUSBAR-VITALS): scopes `.sb-k`'s font-size to match
+   `.sb-turns-count` exactly, compound so LINK/BOUNTY's OWN `.sb-k` (a text
+   caption, not an icon slot -- see StatusBar.tsx) is untouched. TurnsIcon
+   is unsized in the JSX now (defaults to `size="1em"`, its own documented
+   usage), so the icon's box -- AND its baked-in `vertical-align:-0.125em`
+   baseline correction, itself font-size-relative -- both scale off this
+   rule instead of a hardcoded rem that couldn't track a value-size change. */
+.vit.sb-turns .sb-k {
+  font-size: 1.3077em;
+}
+
+/* WO-PROG-TURN-VISIBILITY canon threshold (<50) — carried over from
+   PlayerVitalsHud so the scarcity warning isn't silently dropped. */
+.sb-turns-low .sb-k,
+.sb-turns-low .sb-v {
+  color: var(--health-warning, #f59e0b);
+}
+
+.sb-regen {
+  font-size: 0.7051em;
+  font-weight: 700;
+  color: var(--health-good, #10b981);
+  opacity: 0.85;
+}
+
+/* No more "DRONES" .sb-k label wrapper (artifact target has none — just
+   the two glyph+value pairs) -- the layout properties `.sb-drones .sb-v`
+   used to provide move onto this element directly. */
+.sb-drones {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  border: 1px solid rgba(0, 217, 255, 0.3);
+  border-radius: 3px;
+  padding: 0.1rem 0.45rem;
+  background: rgba(0, 217, 255, 0.05);
+}
+
+.sb-drone {
+  white-space: nowrap;
+  font-size: 1.2821em;
+}
+
+/* Mines value (WO-UI-STATUSBAR-VITALS): the `<b>` here previously had NO
+   dedicated rule -- it fell through to `.vit b`'s bare color/weight
+   (cockpit-shell.css) and, for font-size, all the way to the ambient
+   `.sbar`/`.game-container` chain (the vw-scaled em-root, `.stage,
+   .game-container { font-size: calc(clamp(10px,1.05vw,15px) *
+   var(--uiscale)) }`), which is why it read LARGER than credits/turns'
+   own fixed-rem values at some viewport widths and was the literal
+   complaint (Max playtest #27: "smaller than the number of mines"). Given
+   an explicit rem matching the OTHER established vital-value rules
+   (`.vit.sb-credits`, `.sb-turns-count`, `.sb-v`, `.sb-drone` — all
+   rem-based, none vw-drifting) rather than resized: 0.88rem reproduces the
+   PRE-existing ~14.11px reading at the reference 1440x900 viewport almost
+   exactly (0.88rem = 14.08px) -- "stays at current scale" per the WO, just
+   off a stable root-rem instead of an accidental vw-scaled inheritance.
+   `line-height: 1` matches every other vital-value rule (`.vit.sb-credits`,
+   `.sb-turns-count`, `.sb-v`) -- absent here before, so the box height
+   used to run ~1.13x the font-size, throwing off the icon/numeral height
+   match below. */
+.vit.sb-mines b {
+  font-size: 1.1282em;
+  line-height: 1;
+}
+
+/* Mines icon: same `.sb-k` font-size-scoping idiom as `.vit.sb-turns .sb-k`
+   above -- MineIcon is unsized in the JSX (defaults to `size="1em"`),
+   inheriting this so its box (and font-size-relative baseline correction)
+   track the mines value's own 0.88rem. */
+.vit.sb-mines .sb-k {
+  font-size: 1.1282em;
+}
+
+.sb-bounty .sb-v {
+  color: var(--health-danger, #ef4444);
+  text-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+}
+
+.sb-link .sb-v {
+  display: inline-block;
+  min-width: 3.2rem;
+  text-align: left;
+}
+
+.sb-link--up .sb-v {
+  color: var(--health-good, #10b981);
+}
+
+.sb-link--reconnecting .sb-v {
+  color: var(--health-warning, #f59e0b);
+  animation: sb-link-pulse 1.2s ease-in-out infinite;
+}
+
+.sb-link--down .sb-v {
+  color: var(--health-danger, #ef4444);
+  text-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+}
+
+@keyframes sb-link-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sb-link--reconnecting .sb-v {
+    animation: none;
+  }
+}
+
+/* REP badge (DECISIONS #9) — WO-UI5-RETIREMENT+GLASS rep-lane: RESTORES
+   per-tier color-grading. WO-UI0-SHELL-TRANSPLANT Leaf L1 nit (a) had
+   re-classed this onto plain `.vit.repb` (cockpit-shell.css: fixed
+   `color: var(--grn)`), dropping the per-tier `--rep-color` grading the
+   badge carried pre-transplant (`.sb-rep-badge`, 0b444585) — flagged in
+   that leaf's own report as a visible behavior change worth a second look,
+   not a silent regression, and now confirmed against canon: §05 L614
+   mandates "reputation visible at all times, color-graded (blue/gray/red
+   grammar)", so a flat color was a real gap, not a design call. Restored
+   via the SAME `--rep-color` CSS-var indirection the pre-transplant badge
+   used, now fed the artifact's OWN blue/gray/red triad (source
+   cockpit-redesign-v10-RATIFIED.html:538 — "red is dead" #FF5A6A /
+   "gray struck the lawful" #9AA6B5 / "blue in good standing" #5FB8FF)
+   bucketed off `reputation_tier` in StatusBar.tsx's REP_TIER_COLORS, not
+   the old raw `name_color` passthrough (that was the demo's 8-hue ramp,
+   a different grammar than L614's 3-band one). LAWFUL keeps the artifact's
+   own fixed green (`--grn`) — also the var()'s fallback, so the common
+   lawful-player case still reads green even if a tier is unrecognized. */
+
+/* REP badge uppercase (WO-UI0-SHELL-TRANSPLANT integration cleanup item 5)
+   — the artifact shows the tier in caps ("LAWFUL +300"); StatusBar.tsx
+   renders the raw `reputation_tier` string Title-case ("Trusted +250") for
+   app-wide consistency with how tier names read elsewhere. Visual-only
+   CSS transform, NOT a data/string change — compound `.vit.repb` (2
+   classes) so it doesn't leak onto any other `.vit` badge; same compound
+   selector also outranks cockpit-shell.css's bare `.repb` on specificity
+   for the color rule below, regardless of CSS load order. */
+.vit.repb {
+  color: var(--rep-color, var(--grn));
+  text-transform: uppercase;
+}
+
+/* ── Settings popover ([⚙] — WO-UI1-CHROME-COMPLETE) ─────────────────────── */
+/* Same shell idiom as `.sb-dossier`/`.sb-location` above (position:relative
+   anchor for an absolutely-positioned `.sb-dropdown` child). */
+.sb-settings-popover {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+/* Right-anchored — overrides `.sb-dropdown`'s default `left:0`. This
+   trigger sits at the row's far-right edge (last icon before [⏻]); a
+   left-anchored panel would run off the viewport. Content is short and
+   fixed (one slider + a subscription stub + a link), so unlike
+   `.sb-dossier-panel` this doesn't need the teleprinter-height clamp —
+   simplicity over matching a pattern that doesn't apply here. */
+.sb-settings-popup {
+  right: 0;
+  left: auto;
+  width: 16rem;
+  max-width: calc(100vw - 2rem);
+  padding: 0.7rem;
+}
+
+/* ── Right-hand icon controls ────────────────────────────────────────────── */
+/* [⚙]/[⏻] are now plain `.chip` (artifact: `<button class="chip">⚙
+   </button>` / `<button class="chip">⏻</button>`) -- the fixed-size square
+   `.sb-icon-btn` skin these used to share is RETIRED, superseded by
+   `.chip`'s own box-model. `sb-settings-btn`/`sb-logout-chip` stay as bare
+   identifier hooks (tests target them) with zero rules of their own now.
+
+   [⏻] logout is ALSO no longer LogoutButton.tsx's shared `.logout-button`
+   strip (nit c) -- StatusBar.tsx now calls the same logout()+navigate('/')
+   directly from a plain `.chip` button, so the width-explosion defect this
+   file used to carry a whole fix+regression-pin for (LogoutButton's
+   `.logout-button` rule sets `width: 100%`, built for UserProfile.tsx's
+   sidebar context, leaking into this row) cannot recur here -- that class
+   is simply never rendered in this component any more. See git history
+   for that incident's own detail; StatusBar.vitalsDistribution.test.ts's
+   pin was rewritten accordingly rather than left asserting dead CSS. */

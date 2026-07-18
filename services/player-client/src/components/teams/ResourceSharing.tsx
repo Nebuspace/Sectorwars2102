@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { teamAPI } from '../../services/api';
 import type { TeamMember, TreasuryBalanceApiResponse, TreasuryTransactionApiResponse } from '../../types/team';
+import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import './resource-sharing.css';
 
 interface ResourceSharingProps {
@@ -18,26 +19,20 @@ interface ResourceSharingProps {
 
 // Backend whitelist: PLAYER_TRANSFERABLE_RESOURCES = {credits, quantum_crystals}.
 // Other treasury columns exist but are server-fed; players can't move them.
-const TRANSFERABLE: Array<{ key: 'credits' | 'quantum_crystals'; label: string }> = [
-  { key: 'credits', label: 'Credits' },
-  { key: 'quantum_crystals', label: 'Quantum Crystals' }
-];
+const TRANSFERABLE: Array<'credits' | 'quantum_crystals'> = ['credits', 'quantum_crystals'];
 
-// Read-only resources surfaced when the treasury holds them (loot, etc.).
+// Read-only resources surfaced when the treasury holds them (loot, etc.). The
+// Team treasury is its OWN column schema (models/team.py treasury_*), not the
+// resource registry — most of these keys (technology, luxury_items,
+// precious_metals, raw_materials, plasma, bio_samples, dark_matter) have no
+// registry row at all; `fuel`/`organics`/`equipment`/`quantum_crystals` do.
+// Every label below is sourced through useResourceCatalog().getLabel, which
+// returns the registry label where one exists and otherwise prettifies the
+// key — verified byte-identical to this file's old local label table.
 const READ_ONLY_KEYS: Array<keyof TreasuryBalanceApiResponse> = [
   'fuel', 'organics', 'equipment', 'technology', 'luxury_items',
   'precious_metals', 'raw_materials', 'plasma', 'bio_samples', 'dark_matter'
 ];
-
-const LABELS: Record<string, string> = {
-  fuel: 'Fuel', organics: 'Organics', equipment: 'Equipment', technology: 'Technology',
-  luxury_items: 'Luxury Items', precious_metals: 'Precious Metals', raw_materials: 'Raw Materials',
-  plasma: 'Plasma', bio_samples: 'Bio Samples', dark_matter: 'Dark Matter'
-};
-
-const RESOURCE_LABELS: Record<string, string> = {
-  credits: 'Credits', quantum_crystals: 'Quantum Crystals', ...LABELS
-};
 
 // How each ledger kind reads + which sign to show on the amount.
 const KIND_META: Record<string, { label: string; sign: '+' | '−' | '' }> = {
@@ -58,6 +53,7 @@ export const ResourceSharing: React.FC<ResourceSharingProps> = ({
   canManageTreasury,
   onChanged
 }) => {
+  const { getLabel } = useResourceCatalog();
   const [balance, setBalance] = useState<TreasuryBalanceApiResponse | null>(null);
   const [operation, setOperation] = useState<Operation>('deposit');
   const [resource, setResource] = useState<'credits' | 'quantum_crystals'>('credits');
@@ -123,7 +119,7 @@ export const ResourceSharing: React.FC<ResourceSharingProps> = ({
 
     setLoading(true);
     try {
-      const label = TRANSFERABLE.find(t => t.key === resource)!.label;
+      const label = getLabel(resource);
       if (operation === 'deposit') {
         await teamAPI.depositToTreasury(teamId, resource, amt);
         setStatus({ kind: 'ok', text: `Deposited ${amt.toLocaleString()} ${label} to the treasury.` });
@@ -155,15 +151,15 @@ export const ResourceSharing: React.FC<ResourceSharingProps> = ({
       </div>
 
       <div className="treasury-balance">
-        {TRANSFERABLE.map(t => (
-          <div key={t.key} className="resource-item">
-            <label>{t.label}</label>
-            <span className="amount">{balance ? balance[t.key].toLocaleString() : '—'}</span>
+        {TRANSFERABLE.map(key => (
+          <div key={key} className="resource-item">
+            <label>{getLabel(key)}</label>
+            <span className="amount">{balance ? balance[key].toLocaleString() : '—'}</span>
           </div>
         ))}
         {balance && READ_ONLY_KEYS.filter(k => typeof balance[k] === 'number' && (balance[k] as number) > 0).map(k => (
           <div key={k} className="resource-item readonly">
-            <label>{LABELS[k as string] ?? String(k)}</label>
+            <label>{getLabel(k as string)}</label>
             <span className="amount">{(balance[k] as number).toLocaleString()}</span>
           </div>
         ))}
@@ -193,6 +189,15 @@ export const ResourceSharing: React.FC<ResourceSharingProps> = ({
                   key={member.id}
                   className={`member-option ${recipient === member.playerName ? 'selected' : ''}`}
                   onClick={() => setRecipient(member.playerName)}
+                  role="button"
+                  tabIndex={0}
+                  aria-pressed={recipient === member.playerName}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setRecipient(member.playerName);
+                    }
+                  }}
                 >
                   <span className="member-name">{member.playerName}</span>
                   <span className={`role-badge ${member.role}`}>{member.role}</span>
@@ -208,7 +213,7 @@ export const ResourceSharing: React.FC<ResourceSharingProps> = ({
           <div className="resource-input">
             <label>Resource</label>
             <select value={resource} onChange={(e) => setResource(e.target.value as 'credits' | 'quantum_crystals')}>
-              {TRANSFERABLE.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
+              {TRANSFERABLE.map(key => <option key={key} value={key}>{getLabel(key)}</option>)}
             </select>
           </div>
           <div className="resource-input">
@@ -269,7 +274,7 @@ export const ResourceSharing: React.FC<ResourceSharingProps> = ({
                   <tr key={tx.id}>
                     <td className="when">{tx.created_at ? new Date(tx.created_at).toLocaleString() : '—'}</td>
                     <td><span className={`kind-badge ${tx.kind}`}>{meta.label}</span></td>
-                    <td>{RESOURCE_LABELS[tx.resource_type] ?? tx.resource_type}</td>
+                    <td>{getLabel(tx.resource_type)}</td>
                     <td className={`num ${meta.sign === '+' ? 'credit' : 'debit'}`}>
                       {meta.sign}{tx.amount.toLocaleString()}
                     </td>

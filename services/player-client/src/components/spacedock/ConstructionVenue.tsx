@@ -1,6 +1,9 @@
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { useGame } from '../../contexts/GameContext';
 import { formatCredits } from '../../utils/formatters';
+import { useResourceCatalog } from '../../hooks/useResourceCatalog';
+import { resourceIcon } from '../../services/resourceCatalog';
+import DeckPageTabs from '../cockpit/DeckPageTabs';
 import './construction-venue.css';
 
 // Use same API URL logic as GameContext for Codespaces compatibility
@@ -67,6 +70,7 @@ interface ConstructionReservation {
   ship_name?: string | null;
   total_cost?: number;
   credits_paid?: number;
+  queue_bonus_credit: number;
   paused?: boolean;
   needs?: string[];
   queue_position?: number | null;
@@ -123,20 +127,20 @@ const PHASE_LABELS: Record<BuildPhase, string> = {
   final: 'Final Assembly'
 };
 
+// Ship construction's resource_cost is a fixed 3-key contract (ResourceBundle),
+// not an open catalog — so the SET stays a literal array. Icon/label for each
+// key now come from the shared resource catalog (WO-ARCH-RES-3-FE-CATALOG,
+// see resourceIcon() below + useResourceCatalog().getLabel in the component)
+// instead of a locally-duplicated dict.
 const RESOURCES = ['ore', 'equipment', 'organics'] as const;
 type ConstructionResource = typeof RESOURCES[number];
 
-const RESOURCE_ICONS: Record<ConstructionResource, string> = {
-  ore: '⛏️',
-  equipment: '🔩',
-  organics: '🌿'
-};
-
-const RESOURCE_LABELS: Record<ConstructionResource, string> = {
-  ore: 'Ore',
-  equipment: 'Equipment',
-  organics: 'Organics'
-};
+// Construction/shipyard context uses a bolt glyph for equipment (vs. the gear
+// glyph the catalog default gives planetary equipment production elsewhere)
+// — preserved as a local override so this UI's look doesn't shift under the
+// catalog swap; every other key defers to the shared default.
+const iconFor = (resource: ConstructionResource): string =>
+  resource === 'equipment' ? '🔩' : resourceIcon(resource);
 
 // Reservation state buckets (server is the source of truth; we just classify).
 // The build-phase states ARE the phases: frame_assembly → systems_integration
@@ -448,6 +452,7 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
   onBack
 }) => {
   const { currentShip, refreshPlayerState, loadShips } = useGame();
+  const { getLabel } = useResourceCatalog();
 
   const getToken = () => localStorage.getItem('accessToken');
 
@@ -484,6 +489,28 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
 
   // Claim ceremony
   const [ceremony, setCeremony] = useState<{ name: string; shipType: string } | null>(null);
+
+  // QUEUE-UX-OVERLAY-CONSISTENCY REVISE: light focus-hygiene helper (NOT a
+  // focus-trap system), same pattern as GameDashboard.tsx's dismissOverlay.
+  // A keyboard user focused on the overlay's dismiss button loses focus to
+  // nowhere the instant it unmounts -- restore it to document.body (the
+  // floor; no stable landmark ref is guaranteed mounted here) right before
+  // the dismissing setState, on every path.
+  const dismissCeremony = () => {
+    document.body.focus();
+    setCeremony(null);
+  };
+
+  // QUEUE-UX-OVERLAY-CONSISTENCY: auto-dismiss, matching the exact idiom its
+  // closest sibling (GameDashboard.tsx's claimCelebration -- "sister of
+  // COLONY ESTABLISHED" per the JSX comment below) already uses. 10s to
+  // match that sibling's duration exactly (both are full-screen "ceremony"
+  // dialogs, not the smaller corner toasts, which run shorter at 6-7s).
+  useEffect(() => {
+    if (!ceremony) return;
+    const timer = setTimeout(dismissCeremony, 10000);
+    return () => clearTimeout(timer);
+  }, [ceremony]);
 
   // 1s clock for countdowns
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -802,8 +829,8 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
         const amount = Number(bundle?.[resource] ?? 0);
         if (amount <= 0) return null;
         return (
-          <span key={resource} className="cq-resource-chip" title={RESOURCE_LABELS[resource]}>
-            {RESOURCE_ICONS[resource]} {amount.toLocaleString()}
+          <span key={resource} className="cq-resource-chip" title={getLabel(resource)}>
+            {iconFor(resource)} {amount.toLocaleString()}
           </span>
         );
       })}
@@ -908,7 +935,7 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
           return (
             <div key={resource} className="cr-deliver-row">
               <span className="cr-deliver-resource">
-                {RESOURCE_ICONS[resource]} {RESOURCE_LABELS[resource]}
+                {iconFor(resource)} {getLabel(resource)}
               </span>
               <span className="cr-deliver-meta">
                 need {need.toLocaleString()} · aboard {aboard.toLocaleString()}
@@ -923,7 +950,7 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
                   setDeliverAmounts(prev => ({ ...prev, [resource]: next }));
                 }}
                 disabled={max === 0 || Boolean(busyAction)}
-                aria-label={`${RESOURCE_LABELS[resource]} to deliver`}
+                aria-label={`${getLabel(resource)} to deliver`}
               />
               <button
                 className="cr-max-btn"
@@ -1182,7 +1209,7 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
               return (
                 <div key={resource} className="cr-resource-bar">
                   <span className="cr-resource-bar-label">
-                    {RESOURCE_ICONS[resource]} {RESOURCE_LABELS[resource]}
+                    {iconFor(resource)} {getLabel(resource)}
                   </span>
                   <div className="cr-resource-bar-track">
                     <div className="cr-resource-bar-fill" style={{ width: `${pct}%` }} />
@@ -1318,24 +1345,21 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
           </p>
         </div>
 
-        <div className="construction-tabs" role="tablist">
-          <button
-            role="tab"
-            aria-selected={activeTab === 'orders'}
-            className={`construction-tab${activeTab === 'orders' ? ' active' : ''}`}
-            onClick={() => setActiveTab('orders')}
-          >
-            📜 Ship Order Book
-          </button>
-          <button
-            role="tab"
-            aria-selected={activeTab === 'builds'}
-            className={`construction-tab${activeTab === 'builds' ? ' active' : ''}`}
-            onClick={() => setActiveTab('builds')}
-          >
-            🛠️ My Builds{activeBuildCount > 0 ? ` (${activeBuildCount})` : ''}
-          </button>
-        </div>
+        <DeckPageTabs
+          pages={[
+            { id: 'orders', label: '📜 Ship Order Book' },
+            {
+              id: 'builds',
+              label: `🛠️ My Builds${activeBuildCount > 0 ? ` (${activeBuildCount})` : ''}`
+            }
+          ]}
+          activeId={activeTab}
+          onSelect={(id) => setActiveTab(id as 'orders' | 'builds')}
+          ariaLabel="Construction view"
+          accent="#00d9ff"
+          idBase="construction"
+          className="construction-tabs"
+        />
 
         {reserveSuccess && (
           <div className="genesis-success-message">
@@ -1344,70 +1368,76 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
           </div>
         )}
 
-        {activeTab === 'orders' && (
-          <div className="construction-orders">
-            {quotesMeta && (quotesMeta.slips || typeof quotesMeta.queue_length === 'number') && (
-              <div className="construction-slip-status">
-                {quotesMeta.slips?.standard && (
-                  <span className="cq-slip-stat">
-                    🛠️ Standard slips: {quotesMeta.slips.standard.in_use}/{quotesMeta.slips.standard.capacity} in use
-                  </span>
-                )}
-                {quotesMeta.slips?.specialized && quotesMeta.slips.specialized.capacity > 0 && (
-                  <span className="cq-slip-stat">
-                    🛸 Specialized slips: {quotesMeta.slips.specialized.in_use}/{quotesMeta.slips.specialized.capacity} in use
-                  </span>
-                )}
-                {typeof quotesMeta.queue_length === 'number' && quotesMeta.queue_length > 0 && (
-                  <span className="cq-slip-stat">⏳ Queue: {quotesMeta.queue_length}</span>
-                )}
-              </div>
-            )}
-            {quotesLoading && !quotes && (
-              <div className="catalog-loading">Pulling slips schedule from the dockmaster...</div>
-            )}
-            {quotesError && !quotesLoading && (
-              <div className="genesis-error-message">
-                <span className="error-icon">❌</span>
-                {quotesError}
-                <button className="action-button" onClick={fetchQuotes}>Retry</button>
-              </div>
-            )}
-            {!quotesError && quotes && (
-              <div className="cq-grid">
-                {quotes.map(renderQuoteCard)}
-                {quotes.length === 0 && (
-                  <p className="section-description">No hulls are quoted at this facility right now.</p>
-                )}
-              </div>
-            )}
-          </div>
-        )}
+        <div
+          role="tabpanel"
+          id={`construction-panel-${activeTab}`}
+          aria-labelledby={`construction-tab-${activeTab}`}
+        >
+          {activeTab === 'orders' && (
+            <div className="construction-orders">
+              {quotesMeta && (quotesMeta.slips || typeof quotesMeta.queue_length === 'number') && (
+                <div className="construction-slip-status">
+                  {quotesMeta.slips?.standard && (
+                    <span className="cq-slip-stat">
+                      🛠️ Standard slips: {quotesMeta.slips.standard.in_use}/{quotesMeta.slips.standard.capacity} in use
+                    </span>
+                  )}
+                  {quotesMeta.slips?.specialized && quotesMeta.slips.specialized.capacity > 0 && (
+                    <span className="cq-slip-stat">
+                      🛸 Specialized slips: {quotesMeta.slips.specialized.in_use}/{quotesMeta.slips.specialized.capacity} in use
+                    </span>
+                  )}
+                  {typeof quotesMeta.queue_length === 'number' && quotesMeta.queue_length > 0 && (
+                    <span className="cq-slip-stat">⏳ Queue: {quotesMeta.queue_length}</span>
+                  )}
+                </div>
+              )}
+              {quotesLoading && !quotes && (
+                <div className="catalog-loading">Pulling slips schedule from the dockmaster...</div>
+              )}
+              {quotesError && !quotesLoading && (
+                <div className="genesis-error-message">
+                  <span className="error-icon">❌</span>
+                  {quotesError}
+                  <button className="action-button" onClick={fetchQuotes}>Retry</button>
+                </div>
+              )}
+              {!quotesError && quotes && (
+                <div className="cq-grid">
+                  {quotes.map(renderQuoteCard)}
+                  {quotes.length === 0 && (
+                    <p className="section-description">No hulls are quoted at this facility right now.</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
-        {activeTab === 'builds' && (
-          <div className="construction-builds">
-            {reservationsLoading && !reservations && (
-              <div className="catalog-loading">Checking the slips for your keels...</div>
-            )}
-            {reservationsError && (
-              <div className="genesis-error-message">
-                <span className="error-icon">❌</span>
-                {reservationsError}
-                <button className="action-button" onClick={fetchReservations}>Retry</button>
-              </div>
-            )}
-            {!reservationsError && reservations && (
-              <>
-                {sortedReservations.map(renderReservationCard)}
-                {reservations.length === 0 && (
-                  <p className="section-description">
-                    No builds on the slips. Reserve a hull from the Ship Order Book to lay your first keel.
-                  </p>
-                )}
-              </>
-            )}
-          </div>
-        )}
+          {activeTab === 'builds' && (
+            <div className="construction-builds">
+              {reservationsLoading && !reservations && (
+                <div className="catalog-loading">Checking the slips for your keels...</div>
+              )}
+              {reservationsError && (
+                <div className="genesis-error-message">
+                  <span className="error-icon">❌</span>
+                  {reservationsError}
+                  <button className="action-button" onClick={fetchReservations}>Retry</button>
+                </div>
+              )}
+              {!reservationsError && reservations && (
+                <>
+                  {sortedReservations.map(renderReservationCard)}
+                  {reservations.length === 0 && (
+                    <p className="section-description">
+                      No builds on the slips. Reserve a hull from the Ship Order Book to lay your first keel.
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Reserve confirmation — balance preview like the shipyard purchase panel */}
@@ -1555,11 +1585,35 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
       {ceremony && (
         <div
           className="keel-ceremony-overlay"
-          role="dialog"
+          /* role="status" (not "dialog"/"alert"): this overlay auto-dismisses
+             on a timer AND dismisses on click-anywhere -- both prove it's a
+             non-modal transient announcement, not a blocking dialog. No
+             aria-modal (the background isn't inert -- the game keeps
+             running) and no focus trap (trapping a user inside something
+             that vanishes on its own in 10s would be hostile). Not "alert"
+             either -- a ship-delivered celebration is positive, not an
+             assertive interruption. Matches its sister claimCelebration and
+             the 3 cockpit-alert toasts' own role="status"
+             (QUEUE-UX-OVERLAY-CONSISTENCY REVISE). */
+          role="status"
           aria-label="Ship delivered"
-          onClick={() => setCeremony(null)}
+          onClick={dismissCeremony}
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              dismissCeremony();
+            }
+          }}
         >
           <div className="keel-ceremony-card">
+            <button
+              className="keel-ceremony-dismiss"
+              onClick={(e) => { e.stopPropagation(); dismissCeremony(); }}
+              aria-label="Dismiss ship delivered notice"
+            >
+              ×
+            </button>
             <div className="keel-scanline" aria-hidden="true"></div>
             <div className="keel-banner">⭐ KEEL TO STARS</div>
             <div className="keel-ship-icon">🚀</div>

@@ -1,6 +1,5 @@
 import React from 'react';
 import { useGame } from '../../contexts/GameContext';
-import GameLayout from '../layouts/GameLayout';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import RankDisplay from '../ranking/RankDisplay';
 import RankProgress from '../ranking/RankProgress';
@@ -19,7 +18,6 @@ const RankingPage: React.FC = () => {
   const { playerState } = useGame();
 
   return (
-    <GameLayout>
       <CockpitInstrument
         title="SERVICE RECORD"
         accent="#FFD700"
@@ -63,7 +61,6 @@ const RankingPage: React.FC = () => {
         </div>
       </div>
       </CockpitInstrument>
-    </GameLayout>
   );
 };
 

@@ -7,6 +7,62 @@
   background: radial-gradient(ellipse at center, #1a1a2e 0%, #16213e 50%, #0f0f23 100%);
 }
 
+/* R3F's root + <canvas> must be ABSOLUTE fills of a sized host. If they
+   participate in normal flow with height:100% of an auto-height flex
+   .mbody, ResizeObserver + canvas pixel size form a feedback loop that
+   grows the NAV panel (and the whole page) a few lines per second. */
+.galaxy-3d-container > div {
+  position: absolute !important;
+  inset: 0;
+  width: 100% !important;
+  height: 100% !important;
+}
+.galaxy-3d-container canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* NAV monitor CHART tab — match NavigationMap's fixed 300px height so the
+   3D view never expands .mbody. GalaxyMap's full-bleed mount keeps height:100%. */
+.galaxy-3d-container.nav-3d-view {
+  height: 300px;
+  min-height: 300px;
+  max-height: 300px;
+  flex: 0 0 300px;
+}
+
+/* Screen-space sector labels (Html transform=false) — readable at any zoom. */
+.sector-node-label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  font-family: "IBM Plex Mono", "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: 0.02em;
+  text-shadow:
+    0 0 6px rgba(0, 0, 0, 0.95),
+    0 1px 2px rgba(0, 0, 0, 1),
+    1px 0 2px rgba(0, 0, 0, 0.8);
+  white-space: nowrap;
+  user-select: none;
+  pointer-events: none;
+}
+.sector-node-label__name {
+  font-size: 12px;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sector-node-label--fog {
+  font-size: 11px;
+  opacity: 0.85;
+  letter-spacing: 0.12em;
+}
+
 /* Performance indicator */
 .performance-indicator {
   position: absolute;
@@ -64,6 +120,61 @@
   pointer-events: auto;
 }
 
+/* Compact strip for the 300px NAV CHART 3D panel. */
+.galaxy-controls--nav {
+  bottom: 0.4rem;
+  left: 0.4rem;
+  gap: 0.35rem;
+  z-index: 20;
+  pointer-events: auto;
+}
+
+/* Autopilot / plotted-course HUD strip on the 3D chart. */
+.galaxy-autopilot-hud {
+  position: absolute;
+  top: 0.35rem;
+  left: 0.4rem;
+  right: 0.4rem;
+  z-index: 6;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.55rem;
+  padding: 0.28rem 0.45rem;
+  font-family: "IBM Plex Mono", "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: #b8d4ff;
+  background: rgba(0, 8, 24, 0.82);
+  border: 1px solid rgba(126, 200, 255, 0.35);
+  border-radius: 2px;
+  pointer-events: none;
+}
+.galaxy-autopilot-hud.is-engaged {
+  color: #ffc23d;
+  border-color: rgba(255, 194, 61, 0.55);
+  box-shadow: 0 0 12px rgba(255, 194, 61, 0.15);
+}
+.galaxy-autopilot-hud.is-paused {
+  color: #ff8a65;
+  border-color: rgba(255, 138, 101, 0.5);
+}
+.galaxy-autopilot-hud__mode {
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+.galaxy-autopilot-hud__dest {
+  font-weight: 600;
+}
+.galaxy-autopilot-hud__hops {
+  opacity: 0.9;
+}
+.galaxy-autopilot-hud__leg,
+.galaxy-autopilot-hud__here {
+  opacity: 0.75;
+  text-transform: uppercase;
+}
+
 .control-button {
   padding: 0.75rem 1rem;
   background: rgba(0, 0, 0, 0.7);
@@ -74,6 +185,279 @@
   cursor: pointer;
   transition: all 0.2s ease;
   backdrop-filter: blur(10px);
+}
+
+.galaxy-controls--nav .control-button {
+  padding: 0.28rem 0.55rem;
+  font-size: 0.68rem;
+  font-family: "IBM Plex Mono", "JetBrains Mono", ui-monospace, monospace;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-radius: 0.25rem;
+  background: rgba(4, 10, 22, 0.82);
+  border-color: rgba(0, 217, 255, 0.35);
+  color: #b8e8ff;
+}
+
+.galaxy-controls--nav .control-button:hover {
+  background: rgba(0, 40, 60, 0.9);
+  border-color: rgba(0, 217, 255, 0.7);
+  color: #e8faff;
+  transform: none;
+}
+
+.galaxy-controls--nav .control-button--active {
+  background: rgba(255, 176, 35, 0.22);
+  border-color: rgba(255, 176, 35, 0.75);
+  color: #ffc23d;
+}
+
+/* Multi-hop course confirmation (ARIA Multi-Sector Warp).
+   Must sit ABOVE drei <Html> sector labels (zIndexRange ~1–8) and the
+   R3F root — otherwise labels bleed through the dialog. */
+.course-confirm-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.4rem;
+  pointer-events: auto;
+  background: rgba(0, 4, 12, 0.72);
+  isolation: isolate;
+}
+
+.course-confirm {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 320px);
+  max-height: calc(100% - 0.5rem);
+  overflow: auto;
+  background: rgba(4, 10, 22, 0.98);
+  border: 1px solid rgba(0, 217, 255, 0.45);
+  border-radius: 0.3rem;
+  box-shadow: 0 0 18px rgba(0, 80, 120, 0.35);
+  padding: 0.55rem 0.65rem 0.6rem;
+  font-family: "IBM Plex Mono", "JetBrains Mono", ui-monospace, monospace;
+  color: #cfefff;
+}
+
+.course-confirm--status {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: stretch;
+  padding: 0.75rem;
+}
+
+.course-confirm__status-msg {
+  margin: 0;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: #b8e8ff;
+}
+
+.course-confirm__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.35rem;
+}
+
+.course-confirm__title {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #00d9ff;
+}
+
+.course-confirm__close {
+  background: transparent;
+  border: none;
+  color: #7aa0b8;
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.1rem 0.25rem;
+}
+
+.course-confirm__close:hover {
+  color: #e8faff;
+}
+
+.course-confirm__dest-label {
+  display: block;
+  font-size: 0.55rem;
+  letter-spacing: 0.06em;
+  color: #6a889e;
+  margin-bottom: 0.1rem;
+}
+
+.course-confirm__dest-value {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #e8faff;
+}
+
+.course-confirm__dest-id {
+  margin-left: 0.35rem;
+  font-size: 0.7rem;
+  color: #7aa0b8;
+  font-weight: 500;
+}
+
+.course-confirm__meta {
+  margin-top: 0.3rem;
+  font-size: 0.65rem;
+  color: #9ad8ff;
+  letter-spacing: 0.04em;
+}
+
+.course-confirm__meta-sep {
+  margin: 0 0.3rem;
+  opacity: 0.5;
+}
+
+.course-confirm__risk {
+  margin-top: 0.4rem;
+  padding: 0.28rem 0.4rem;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  border-radius: 0.2rem;
+  border: 1px solid;
+}
+
+.course-confirm__risk--safe {
+  color: #5dff8a;
+  border-color: rgba(93, 255, 138, 0.4);
+  background: rgba(20, 80, 40, 0.25);
+}
+
+.course-confirm__risk--caution {
+  color: #ffc23d;
+  border-color: rgba(255, 194, 61, 0.45);
+  background: rgba(80, 55, 10, 0.3);
+}
+
+.course-confirm__risk--hostile {
+  color: #ff6b6b;
+  border-color: rgba(255, 107, 107, 0.5);
+  background: rgba(90, 20, 20, 0.35);
+}
+
+.course-confirm__risk--unknown {
+  color: #a88cff;
+  border-color: rgba(168, 140, 255, 0.45);
+  background: rgba(50, 30, 90, 0.35);
+}
+
+.course-confirm__risk-detail {
+  font-weight: 500;
+  opacity: 0.85;
+}
+
+.course-confirm__hops {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  max-height: 7.5rem;
+  overflow: auto;
+  border-top: 1px solid rgba(0, 217, 255, 0.15);
+}
+
+.course-confirm__hop {
+  display: grid;
+  grid-template-columns: 1.1rem 1fr auto auto;
+  gap: 0.3rem;
+  align-items: center;
+  padding: 0.22rem 0;
+  font-size: 0.62rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.course-confirm__hop-n {
+  color: #5a7a90;
+}
+
+.course-confirm__hop-name {
+  color: #d0e8f8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.course-confirm__hop-band {
+  font-size: 0.55rem;
+  letter-spacing: 0.03em;
+  font-weight: 600;
+}
+
+.course-confirm__hop-band--safe { color: #5dff8a; }
+.course-confirm__hop-band--caution { color: #ffc23d; }
+.course-confirm__hop-band--hostile { color: #ff6b6b; }
+.course-confirm__hop-band--unknown { color: #a88cff; }
+
+.course-confirm__hop-turns {
+  color: #7aa0b8;
+  min-width: 1.6rem;
+  text-align: right;
+}
+
+.course-confirm__actions {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+
+.course-confirm__cancel,
+.course-confirm__commit {
+  font-family: inherit;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: 0.2rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid;
+}
+
+.course-confirm__cancel {
+  flex: 0 0 auto;
+  background: transparent;
+  border-color: rgba(122, 160, 184, 0.4);
+  color: #9ab4c8;
+}
+
+.course-confirm__cancel:hover {
+  border-color: #9ab4c8;
+  color: #e8faff;
+}
+
+.course-confirm__commit {
+  flex: 1 1 auto;
+  background: rgba(255, 176, 35, 0.18);
+  border-color: rgba(255, 176, 35, 0.7);
+  color: #ffc23d;
+}
+
+.course-confirm__commit:hover:not(:disabled) {
+  background: rgba(255, 176, 35, 0.32);
+}
+
+.course-confirm__commit:disabled,
+.course-confirm__cancel:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .course-confirm-layer {
+    transition: none;
+  }
 }
 
 .control-button:hover {

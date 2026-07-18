@@ -611,6 +611,29 @@
   font-weight: 600;
 }
 
+/* WO-RT-MARKET-STREAM-CLIENT — brief highlight when a live price update
+   lands on this commodity. Duration/palette mirrors the trend glyph's own
+   up/down colors (#22c55e / #ef4444); NO-CANON, propose+flag. */
+.resource-prices.price-flash-up {
+  animation: price-flash-up 0.9s ease-out;
+  border-radius: 4px;
+}
+
+.resource-prices.price-flash-down {
+  animation: price-flash-down 0.9s ease-out;
+  border-radius: 4px;
+}
+
+@keyframes price-flash-up {
+  0% { background-color: rgba(34, 197, 94, 0.35); }
+  100% { background-color: transparent; }
+}
+
+@keyframes price-flash-down {
+  0% { background-color: rgba(239, 68, 68, 0.35); }
+  100% { background-color: transparent; }
+}
+
 .resource-quantity {
   text-align: center;
   font-size: var(--text-sm);
@@ -622,6 +645,96 @@
   font-size: var(--text-sm);
   opacity: 0.7;
   letter-spacing: 0.04em;
+}
+
+/* WO-ECON-MKT-TIMESERIES — trend glyph + sparkline toggle */
+.resource-trend-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs, 4px);
+  margin-bottom: var(--space-sm);
+}
+
+.trend-glyph {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.trend-glyph.up {
+  color: #22c55e;
+}
+
+.trend-glyph.down {
+  color: #ef4444;
+}
+
+.trend-glyph.flat {
+  color: var(--text-color);
+  opacity: 0.5;
+}
+
+.sparkline-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: var(--text-sm);
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+  opacity: 0.7;
+  transition: opacity var(--transition-normal), background var(--transition-normal);
+}
+
+.sparkline-toggle:hover,
+.sparkline-toggle:focus-visible {
+  opacity: 1;
+  background: var(--bg-color);
+}
+
+.price-sparkline-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  margin-bottom: var(--space-sm);
+  padding: var(--space-xs, 4px) 0;
+  border-top: 1px dashed var(--border-color);
+  border-bottom: 1px dashed var(--border-color);
+  /* Keep the toggle/panel from also opening the trade modal via the card's
+     own onClick — the panel is informational, not a trade trigger. */
+  cursor: default;
+}
+
+.price-sparkline-svg {
+  width: 100%;
+  height: 28px;
+}
+
+.sparkline-line {
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.sparkline-line.up {
+  stroke: #22c55e;
+}
+
+.sparkline-line.down {
+  stroke: #ef4444;
+}
+
+.sparkline-status {
+  font-size: var(--text-xs, 0.75rem);
+  opacity: 0.7;
+  text-align: center;
+}
+
+.sparkline-status.error {
+  color: #ef4444;
+  opacity: 1;
 }
 
 .resource-trade-hint {
@@ -1058,6 +1171,11 @@
   .dock-full-panel {
     animation: none;
   }
+
+  .resource-prices.price-flash-up,
+  .resource-prices.price-flash-down {
+    animation: none;
+  }
 }
 
 @media (prefers-contrast: high) {
@@ -1393,6 +1511,47 @@
   border-radius: 12px;
   padding: var(--space-lg);
   border: 1px solid var(--border-color);
+  transition: opacity 0.15s ease;
+}
+
+/* WO-API-B1: a server /trading/quote fetch is in flight (debounce or
+   network) for the params currently on screen — the numbers shown are
+   either the previous quote or a 0 placeholder, never a locally-computed
+   guess, so this is purely a "hang on" signal, not a stale-data warning. */
+.trade-summary-card.pending {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+/* mack LOW: quote-fetch failure banner — mirrors the existing
+   .error-message palette/spacing so it reads as the same "something's
+   wrong" language as the rest of the modal, not a one-off. */
+.quote-error-banner {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid #ef4444;
+  border-radius: 8px;
+  padding: var(--space-md);
+  margin-bottom: var(--space-md);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  color: #ef4444;
+}
+
+.quote-retry-btn {
+  background: transparent;
+  border: 1px solid #ef4444;
+  border-radius: 6px;
+  padding: var(--space-xs) var(--space-md);
+  color: #ef4444;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.quote-retry-btn:hover {
+  background: rgba(239, 68, 68, 0.15);
 }
 
 .summary-row {

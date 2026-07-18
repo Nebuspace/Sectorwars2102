@@ -67,10 +67,21 @@ export const AllianceManager: React.FC<AllianceManagerProps> = ({
         .filter(term => term.length > 0);
 
       if (proposalType === 'alliance') {
-        await gameAPI.team.proposeAlliance(team.id, selectedTeamId, allianceType, sanitizedTerms);
+        // proposeAlliance/proposeTreaty take (teamId, data) — bundle the
+        // target/type/terms into the data payload (WO-PUX-FE-ORPHANS parks
+        // whether this dead-code call site survives disposition).
+        await gameAPI.team.proposeAlliance(team.id, {
+          target_team_id: selectedTeamId,
+          type: allianceType,
+          terms: sanitizedTerms
+        });
         setMessage('Alliance proposal sent successfully');
       } else {
-        await gameAPI.team.proposeTreaty(team.id, selectedTeamId, treatyType, sanitizedTerms);
+        await gameAPI.team.proposeTreaty(team.id, {
+          target_team_id: selectedTeamId,
+          type: treatyType,
+          terms: sanitizedTerms
+        });
         setMessage('Treaty proposal sent successfully');
       }
       

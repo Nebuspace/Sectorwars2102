@@ -13,23 +13,40 @@ import './empire-research-panel.css';
  * done/uncontested world raises no offer, so a finished empire's offer list is
  * simply empty.
  *
- * Three read surfaces (§5.4/§5.5/§5.7), no graphs:
+ * Four read surfaces (§5.4/§5.5/§5.7 + the WO-PLN-UNLOCK-1 tech tree), no graphs:
  *   1. §5.4 R&D summary  — four numbers, one line each: RP/day in → spent/banked
  *      → contracts active → worlds frontier vs done. GET /research/cockpit.
  *   2. §5.5 headroom      — "RP/day: N (throughput X% — finishing worlds lifts
  *      this)". One number + one trend so "bends, never clips" is VISIBLE.
  *      Copy is day-one TRUE: it names no non-existent lever (no "Doctrine" — the
  *      GOV_DOCTRINE_LIFT lever does not exist in T1.5, §5.5-A/§5.10).
- *   3. §5.7 offers        — the GENERATED, perishable Research-Directive offers
+ *   3. Tech tree           — per-node locked/affordable/unlocked state (the
+ *      cockpit payload's additive ``techTree`` array) with an Unlock action that
+ *      spends banked RP (POST /research/tech/{node_id}/unlock). This is what
+ *      makes rail_gun / the planetary defense grid / citadel L4-L5 reachable.
+ *   4. §5.7 offers        — the GENERATED, perishable Research-Directive offers
  *      with accept/ignore. An ignored offer perishes FREE + clears (§5.9 #4).
  *      GET /research/offers; POST /research/contracts/start to accept.
  *
  * Live: a contract_offer / contract_settled / rp_governor_status push bumps the
- * WebSocketContext researchEventSignal, which re-fetches the cockpit + offers so
- * the panel stays current without a poll.
+ * WebSocketContext researchEventSignal, which re-fetches the cockpit + offers
+ * (and therefore techTree, folded into the same cockpit read) so the panel
+ * stays current without a poll.
  */
 
 // ----- FROZEN cross-zone contract types (backend produces, client consumes) -----
+
+interface TechNode {
+  id: string;
+  name: string;
+  branch: string;
+  tier: number;
+  rpCost: number;
+  prereqs: string[];
+  unlocked: boolean;
+  prereqsMet: boolean;
+  affordable: boolean;
+}
 
 interface ResearchCockpit {
   rpPerDay?: number;
@@ -41,6 +58,7 @@ interface ResearchCockpit {
   worldsDone?: number;
   governorHeadroom?: number;
   softCap?: number;
+  techTree?: TechNode[];
 }
 
 interface ResearchOffer {
@@ -112,6 +130,7 @@ const EmpireResearchPanel: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null); // offer id in flight
+  const [nodeActionLoading, setNodeActionLoading] = useState<string | null>(null); // tech node id in flight
   const [actionMessage, setActionMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   // Locally-ignored offer ids — an ignored offer perishes free + clears (§5.9 #4)
   // without a server round-trip (the offer expires on its own server-side).
@@ -187,6 +206,30 @@ const EmpireResearchPanel: React.FC = () => {
     [actionLoading, fetchAll],
   );
 
+  // Unlock a tech node (WO-PLN-UNLOCK-1): spends banked RP via the new route,
+  // then re-polls the cockpit so techTree (locked/affordable/unlocked) and the
+  // banked-RP readout both reflect the deduction — no page reload, same
+  // refresh idiom as handleAccept above.
+  const handleUnlock = useCallback(
+    async (node: TechNode) => {
+      if (actionLoading || nodeActionLoading) return;
+      try {
+        setNodeActionLoading(node.id);
+        setActionMessage(null);
+        await researchCockpitAPI.unlockNode(node.id);
+        setActionMessage({ kind: 'ok', text: `Unlocked ${node.name}.` });
+        await fetchAll(false);
+      } catch (err: any) {
+        // apiRequest surfaces the server's human message (insufficient RP /
+        // unknown node / already unlocked / missing prereqs) verbatim.
+        setActionMessage({ kind: 'err', text: err?.message || 'Could not unlock tech node' });
+      } finally {
+        setNodeActionLoading(null);
+      }
+    },
+    [actionLoading, nodeActionLoading, fetchAll],
+  );
+
   // Ignore = let it perish free. No charge, no RP — purely clears it from view
   // (the offer expires server-side on its own; §5.3 "offers perish free").
   const handleIgnore = useCallback((offerId: string) => {
@@ -210,6 +253,7 @@ const EmpireResearchPanel: React.FC = () => {
   const worldsFrontier = cockpit?.worldsFrontier ?? null;
   const worldsDone = cockpit?.worldsDone ?? null;
   const governorHeadroom = cockpit?.governorHeadroom ?? null;
+  const techTree: TechNode[] = cockpit?.techTree ?? [];
 
   // "bends, never clips" is VISIBLE: a throughput < 100% means the governor's
   // taper is engaged. Below 100 → tapering; at/over 100 → full throughput.
@@ -314,6 +358,78 @@ const EmpireResearchPanel: React.FC = () => {
         </div>
       </div>
 
+      {/* TECH TREE — spend banked RP on permanent nodes (WO-PLN-UNLOCK-1). Per-node
+          locked/affordable/unlocked state reads straight off cockpit.techTree
+          (additive field, no separate catalog fetch). Unlocking rail_gun / the
+          planetary defense grid is what makes citadel L4/L5 buildable. */}
+      <div className="er-tech">
+        <div className="er-tech-head">
+          <span className="er-tech-title">Tech Tree</span>
+          <span
+            className="er-tech-count"
+            title="Nodes unlocked out of the full catalog."
+          >
+            {techTree.filter((n) => n.unlocked).length}/{techTree.length}
+          </span>
+        </div>
+
+        {techTree.length === 0 ? (
+          <div className="er-tech-empty">No tech nodes in the catalog.</div>
+        ) : (
+          <div className="er-tech-list">
+            {techTree.map((node) => {
+              const nodeInFlight = nodeActionLoading === node.id;
+              const nodeState = node.unlocked
+                ? 'unlocked'
+                : !node.prereqsMet
+                ? 'locked'
+                : node.affordable
+                ? 'affordable'
+                : 'expensive';
+              return (
+                <div className={`er-tech-node er-tech-node-${nodeState}`} key={node.id}>
+                  <div className="er-tech-node-body">
+                    <div className="er-tech-node-head">
+                      <span className="er-tech-node-name">{node.name}</span>
+                      {node.unlocked && <span className="er-tech-node-badge">Unlocked</span>}
+                    </div>
+                    <div className="er-tech-node-cost">
+                      <span className="er-cost-rp" title="Research-point cost">
+                        🔬 {compact(node.rpCost)} RP
+                      </span>
+                      {!node.unlocked && !node.prereqsMet && (
+                        <span className="er-tech-node-reason">requires a prerequisite node</span>
+                      )}
+                      {!node.unlocked && node.prereqsMet && !node.affordable && (
+                        <span className="er-tech-node-reason">insufficient banked RP</span>
+                      )}
+                    </div>
+                  </div>
+                  {!node.unlocked && (
+                    <button
+                      className="er-btn unlock-btn"
+                      disabled={
+                        nodeInFlight || !node.affordable || actionLoading !== null || nodeActionLoading !== null
+                      }
+                      onClick={() => handleUnlock(node)}
+                      title={
+                        node.affordable
+                          ? `Unlock ${node.name} for ${node.rpCost} RP`
+                          : !node.prereqsMet
+                          ? 'Unlock its prerequisite node(s) first'
+                          : 'Not enough banked RP yet'
+                      }
+                    >
+                      {nodeInFlight ? 'Unlocking…' : 'Unlock'}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       {/* §5.7 OFFER SURFACE — GENERATED, perishable directives (never a catalogue).
           An ignored offer perishes free + clears; a done empire shows none. */}
       <div className="er-offers">
@@ -375,7 +491,7 @@ const EmpireResearchPanel: React.FC = () => {
                   <div className="er-offer-actions">
                     <button
                       className="er-btn accept-btn"
-                      disabled={inFlight || actionLoading !== null}
+                      disabled={inFlight || actionLoading !== null || nodeActionLoading !== null}
                       onClick={() => handleAccept(offer)}
                       title={`Accept this directive — charges the credit sink + RP gate.`}
                     >

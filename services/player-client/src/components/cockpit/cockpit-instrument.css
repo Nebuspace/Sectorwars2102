@@ -25,6 +25,54 @@
   box-shadow: inset 0 8px 12px rgba(0, 0, 0, 0.6);
 }
 
+/* WO-UIPC-COCKPIT-CONTENT-REGION (supersedes the WO-UIPC-COCKPITINSTRUMENT-
+   OCCLUSION padding hack below, same clearance values, different mechanism).
+   Every standalone /game/* route wraps <GameLayout><CockpitInstrument>,
+   making .instrument-monitor a DIRECT child of .main-viewport
+   (game-layout.css). `.main-viewport` sits inside `.game-content`
+   (WO-UI0-SHELL-TRANSPLANT: a position:absolute box spanning `.stage`'s
+   band+teleprinter+lower rows, full width, BEHIND them in paint/hit-test
+   order — game-layout.css's own doc-comment) — the MFD rail (`.mfdcol`,
+   inside `.lower`) and the status bar aren't reserved space in
+   `.main-viewport`'s own flow, so the frame renders straight underneath
+   both on every standalone route (confirmed live at 1440x900: GalaxyMap,
+   TeamManager, GovernancePanel, CombatInterface, PlanetManager, ShipSelector,
+   TradingInterface, RankingPage, SettingsPage).
+   position:absolute + explicit left/top/right/bottom (NOT padding) carves a
+   GENUINE bounded box -- .instrument-monitor's own border-box now starts at
+   x=19% (the SAME fixed left-column width `.lower{grid-template-columns:
+   19% 81%}`, cockpit-shell.css, gives `.mfdcol` — was `var(--sidebar-w)`,
+   retired along with the rest of the old absolute-sidebar geometry; the
+   post-transplant `.mfdcol` has no player-collapsible width anymore, see
+   game-layout.css's `.mfdcol` doc-comment, so a literal percentage is the
+   correct replacement, not a var-reference to something that no longer
+   varies) -- while staying entirely local to this element: .main-viewport
+   stays position:relative (game-layout.css, UNTOUCHED) as the positioning
+   context.
+   Scoped via the CHILD combinator, not a bare `.instrument-monitor` rule,
+   so EMBEDDED usages are structurally excluded: ShipSelector/PlanetManager
+   render bare (no GameLayout) inside PlayerInfo's HANGAR/COLONIES tabs --
+   nested under .pi-body, which carves its own bounded box (player-info.css) --
+   so re-applying this here would double-offset; TradingInterface's docked/
+   SpaceDockInterface embedding skips CockpitInstrument entirely (bare
+   Fragment, "TradeLedgerShell" doc comment). Only a DIRECT .main-viewport
+   child -- i.e. the GameLayout-wrapped standalone-route case -- matches.
+   Clearance values unchanged from the padding-hack version (proven-live):
+   top is a fixed rem clearance (no shared --hud-h var exists to read --
+   3.4rem measured live against the HUD's ~50px/3.1rem rendered height,
+   +0.3rem margin). Right/bottom flush to the viewport edge; the frame's own
+   0.4rem bezel padding (base rule, untouched) still insets its actual
+   content from this new box's edges. */
+.main-viewport > .instrument-monitor {
+  position: absolute;
+  top: 3.4rem;
+  left: 19%;
+  right: 0;
+  bottom: 0;
+  width: auto;
+  height: auto;
+}
+
 /* Metallic texture overlay — same idiom as .cockpit-console::before */
 .instrument-monitor::before {
   content: '';

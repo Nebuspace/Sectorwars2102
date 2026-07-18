@@ -182,6 +182,15 @@
   box-shadow: 0 0 20px rgba(0, 255, 255, 0.5);
 }
 
+/* T4-K: .ship-card is now a keyboard-focusable role="button" card (see
+   ShipSelector.tsx). Outline + outline-offset only -- no border/box-shadow
+   size change, so mouse-driven geometry is untouched (matches the
+   tactical-monitor.css / solar-system-viewscreen.css focus-visible idiom). */
+.ship-card:focus-visible {
+  outline: 2px solid var(--cockpit-primary);
+  outline-offset: 2px;
+}
+
 .ship-card.flagship {
   border-color: var(--cockpit-warning);
 }

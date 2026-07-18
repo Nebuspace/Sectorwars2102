@@ -9,6 +9,36 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  /* Positioning context for .station-face-undock (WO-UI3-STATION-MODE) — a
+     fixed corner anchor, independent of whichever venue's own scroll/layout
+     is active underneath. */
+  position: relative;
+}
+
+/* Persistent UNDOCK (WO-UI3-STATION-MODE) — reuses .hub-undock-btn's visual
+   treatment (color/border/font), only adds fixed placement so it survives
+   venue switches (renderActiveVenue swaps its sibling, never this button).
+   z-index sits above ordinary venue content; .black-market-overlay (below,
+   z-index:1000, position:fixed) intentionally still outranks it while that
+   modal is open. */
+.station-face-undock {
+  position: absolute;
+  top: 0.6rem;
+  right: 0.6rem;
+  z-index: 30;
+}
+
+/* The undock button is absolutely pinned (so it survives venue switches), but
+   that means it paints ON TOP of whatever lives in the top-right of the hub
+   header — at Stardock that is the "Services" status chip + icon row. When the
+   outer frame mounts the button (`.has-station-undock`), reserve its footprint
+   on both the hub header and every venue header so chrome never collides. */
+.spacedock-interface.has-station-undock {
+  --station-undock-reserve: 11.5rem;
+}
+.spacedock-interface.has-station-undock .hub-header,
+.spacedock-interface.has-station-undock .venue-header {
+  padding-right: var(--station-undock-reserve);
 }
 
 /* ========================================
@@ -126,8 +156,13 @@
   font-size: 0.8em;
 }
 
+/* Per-station-class greeter line (WO-UI3-CONCIERGE) is in-character trader
+   dialogue, quoted in the greeter map itself — italic matches the codebase's
+   existing flavor-text convention (e.g. .bm-registry-desc, .bm-warning-text
+   in this same file). */
 .hub-welcome p {
   margin: 0;
+  font-style: italic;
 }
 
 /* On short viewports (e.g. 1440x900) the hub's fixed chrome leaves the
@@ -205,6 +240,15 @@
 .venue-card.unavailable:hover {
   transform: none;
   box-shadow: none;
+}
+
+/* T4-K: .venue-card is now a keyboard-focusable role="button" card (see
+   SpaceDockInterface.tsx), tabIndex=-1 when unavailable so only genuinely
+   openable venues can ever match :focus-visible. Outline + outline-offset
+   only -- no border/box-shadow size change. */
+.venue-card:focus-visible {
+  outline: 2px solid rgba(0, 217, 255, 0.5);
+  outline-offset: 2px;
 }
 
 .venue-icon {
@@ -471,6 +515,10 @@
 
 .device-specs li {
   padding: 4px 0;
+}
+
+.genesis-rep-gate-note {
+  color: #ffc107;
 }
 
 .device-footer {
@@ -838,7 +886,8 @@
   font-size: 0.75em;
   color: rgba(255, 255, 255, 0.5);
   display: flex;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 4px 12px;
   margin-top: 4px;
 }
 
@@ -966,18 +1015,22 @@
 
 .qty-controls {
   display: flex;
-  gap: 4px;
+  align-items: center;
+  gap: 8px;
 }
 
-.qty-controls input {
-  width: 50px;
-  padding: 4px;
-  background: rgba(0, 0, 0, 0.5);
-  border: 1px solid rgba(0, 217, 255, 0.3);
-  border-radius: 4px;
-  color: #ffffff;
+.qty-controls input[type="range"] {
+  width: 90px;
+  accent-color: #00d9ff;
+  cursor: pointer;
+}
+
+.qty-readout {
+  min-width: 1.5em;
   text-align: center;
   font-size: 0.85em;
+  font-weight: bold;
+  color: #ffffff;
 }
 
 .buy-btn {
@@ -995,10 +1048,12 @@
 }
 
 .current-loadout {
-  margin-top: 20px;
+  margin: 0 auto 20px;
   padding: 16px;
+  max-width: 480px;
   background: rgba(0, 0, 0, 0.3);
   border-radius: 8px;
+  text-align: center;
 }
 
 .current-loadout h4 {
@@ -1008,12 +1063,15 @@
 
 .loadout-stats {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 24px;
 }
 
 .loadout-item {
   display: flex;
   flex-direction: column;
+  align-items: center;
 }
 
 .item-label {
@@ -1031,24 +1089,29 @@
    SERVICES
    ======================================== */
 
+/* SCROLL LAW: the five service cards (Repair / Maintenance / Cargo / Upgrades
+   / Insurance) must all fit in the SpaceDock terminal without scrolling at
+   1440x900. The old minmax(250px) fit only 4 across the ~1073px venue, wrapping
+   Hull Insurance to a second row that overflowed. A 175px floor lands all five
+   on one row here and degrades to 4/3 gracefully on a narrower venue. */
 .services-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+  gap: 12px;
 }
 
 .service-card {
   background: rgba(20, 30, 48, 0.8);
   border: 1px solid rgba(0, 217, 255, 0.2);
   border-radius: 8px;
-  padding: 16px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
 }
 
 .service-icon {
-  font-size: 2.5em;
+  font-size: 1.9em;
   text-align: center;
 }
 
@@ -1072,7 +1135,12 @@
   gap: 8px;
 }
 
-.status-bar {
+/* WO-UI5-CANON-PASS(C): scoped to `.service-status` (ServicesVenue.tsx's
+   real, direct-child ancestor of each `.status-bar` service-readout row) so
+   this rule stops colliding at the top level with the unrelated real
+   `.status-bar` components in App.css/statusbar.css/siege-status-monitor.css
+   — see statusbar.css's doc-comment for the full collision history. */
+.service-status .status-bar {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1107,6 +1175,15 @@
   color: #00ff41;
   width: 40px;
   text-align: right;
+}
+
+.coverage-row {
+  font-size: 0.75em;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.coverage-row strong {
+  color: #00d9ff;
 }
 
 .upgrade-tiers {
@@ -1319,6 +1396,16 @@
   border-color: rgba(255, 0, 255, 0.6);
   transform: translateY(-4px);
   box-shadow: 0 8px 25px rgba(255, 0, 255, 0.3);
+}
+
+/* T4-K: .game-card is now a keyboard-focusable role="button" card (see
+   GamblingVenue.tsx). Outline + outline-offset only -- no border/box-shadow
+   size change. Matches the per-variant hover accent (magenta base, green for
+   .blackjack -- see the .game-card.blackjack:focus-visible override below,
+   next to its own :hover override). */
+.game-card:focus-visible {
+  outline: 2px solid rgba(255, 0, 255, 0.6);
+  outline-offset: 2px;
 }
 
 .game-card .game-icon {
@@ -2215,6 +2302,10 @@
     grid-template-columns: 1fr;
   }
 
+  .loadout-stats {
+    gap: 12px;
+  }
+
   .services-grid {
     grid-template-columns: 1fr;
   }
@@ -2806,6 +2897,12 @@
   box-shadow: 0 8px 25px rgba(0, 200, 100, 0.25);
 }
 
+/* T4-K: mirrors the :hover override above -- blackjack's focus ring matches
+   its own green accent instead of the base magenta. */
+.game-card.blackjack:focus-visible {
+  outline-color: rgba(0, 200, 100, 0.6);
+}
+
 .game-card.blackjack .game-icon {
   filter: drop-shadow(0 0 10px rgba(0, 200, 100, 0.5));
 }
@@ -3004,6 +3101,13 @@
 .eq-total {
   font-size: 0.7em;
   color: rgba(255, 255, 255, 0.6);
+}
+
+.qty-disabled-reason {
+  font-size: 0.7em;
+  color: #ffc107;
+  font-style: italic;
+  text-align: right;
 }
 
 .buy-btn:disabled {

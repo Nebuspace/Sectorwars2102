@@ -11,242 +11,426 @@
   z-index: 1;
 }
 
-.sidebar-toggle {
-  width: 50px;
-  height: 50px;
-  background: linear-gradient(145deg, #1A1A22, #151519);
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  color: var(--color-primary);
-  cursor: pointer;
-  transition: all var(--transition-normal);
+/* Game container — WO-UI0-SHELL-TRANSPLANT (supersedes WO-INVERTED-L's
+   absolute-overlay geometry below). `.game-container` IS the `.stage` grid
+   host now: cockpit-shell.css's `.stage, .game-container` dual-selector
+   (an ALSO-selector, not a rename — see that file's own ADAPTATION(a)
+   comment) supplies `display:grid`, the 4-row `auto auto auto 1fr` track
+   list, `position:relative`, `overflow:hidden` and the viewport-height
+   sizing. This file (an untouched-baseline sibling) only adds what that
+   shared rule can't: flex-growth inside `.game-layout`'s flex column, the
+   `.mode-station`/`.mode-surface` band-height overrides (trap i), the
+   em-root SCALE-LAW retarget (below), the PANEL BAND CORRECTION comment
+   (below — `.band` is deliberately left un-overridden in PANEL,
+   WO-UI-MAX-BATCH-1) + the `--tp-log-h` LOG OVERLAY GEOMETRY tokens right
+   after it, and the `.game-content`/`.lower`/`.deck`/`.mfdcol` geometry
+   the portal-based transplant needs but the artifact's own bare markup
+   never had to solve (traps ii/iv — see each rule's own comment below). */
+.game-container {
+  flex: 1;
+}
+
+/* EM-ROOT SCALE-LAW RETARGET (WO-UI0-VERTICAL-COMPOSITION) — cockpit-
+   shell.css's own em-root rule (`.stage, .game-container { font-size:
+   calc(clamp(10px,1.05vw,15px) * var(--uiscale)) }`, untouched diff
+   baseline, do not edit there) is WIDTH-ONLY: the source artifact self-caps
+   its total height at `min(72vh,760px)` so a width-only clamp still reads
+   as proportional at the artifact's own reference height; this host instead
+   retargets `.stage`'s total height to the full `100vh`/`100dvh` (see that
+   file's ADAPTATION(a) comment) — with NO height term in the font-size, the
+   fixed-em rows (`.band` etc.) stop scaling as the viewport gets taller,
+   dumping 100% of the surplus into the lone `1fr` row and leaving the
+   band/teleprinter/MFD stack looking squat well before it actually is (a
+   real player-reported symptom: `.band` measured ~26% of shell height at
+   1440x900 instead of the artifact's own ~30.5% design ratio, and drops
+   further — ~21% — at 1440x1100 with zero code change, since nothing here
+   responds to height at all).
+   FIX: blend a `vh` term into the clamp's preferred value so the em-root
+   scales with viewport HEIGHT too, not just width. Derivation (band =
+   15.5em is the artifact's own flight-mode rest height, target ratio =
+   30.5% per the artifact's own `min(...,760px)` cap: 15.5em * 15px(the
+   artifact's own width-clamped max) / 760px = 30.59%, confirming 30.5% is
+   the artifact's intended design ratio, not an arbitrary number):
+     ratio(H) = 15.5 * (0.3*(1440/100) + 1.53*(H/100)) / H
+   solves to ratio(900)≈31.16%, ratio(1100)≈29.80% — both inside the ±1%
+   band around 30.5% (verified empirically, see the WO's STATUS proof) —
+   the `0.3vw` term is deliberately small (kept only for continuity toward
+   the old formula's width response on narrower viewports; a much bigger
+   `vw` coefficient reintroduces the same "flat regardless of height" bug
+   this rule exists to fix, since the two reference viewports share one
+   width). Upper-bounded at 24px (well above the ~21px this formula reaches
+   at 1440x1100) so a pathologically tall window can't runaway; still
+   `* var(--uiscale)` OUTSIDE the clamp, same as cockpit-shell.css's own
+   rule, so 60–120% uiscale keeps scaling the whole shell uniformly
+   (SCALE-LAW intact) and `--svh`'s zoom compensation (index.css) is
+   untouched — this only changes em PROPORTIONS inside the shell, never its
+   total (already-correct, non-scrolling) height.
+   Specificity: cockpit-shell.css's rule is `.stage, .game-container`
+   (0,1,0 per selector in the list). `div.game-container` (0,1,1) beats it
+   deterministically regardless of CSS import/cascade order — same
+   "compound for a guaranteed win" idiom the `.mode-station`/`.mode-surface`
+   band rules below already use, chosen here (an element+class compound)
+   because font-size must apply unconditionally, with no second class
+   available to compound against. */
+div.game-container {
+  font-size: calc(clamp(10px, 0.3vw + 1.53vh, 24px) * var(--uiscale));
+}
+
+/* Band height per mode (trap i) — GameLayout applies the CLASS
+   `.mode-station`/`.mode-surface` to `.game-container` (GameLayout.tsx, the
+   `mode` const), never a `[data-mode]` attribute. cockpit-shell.css's own
+   `.stage[data-mode=station] .band`/`[data-mode=surface] .band` rules
+   (ported verbatim from the source artifact's vanilla-JS demo, which DID
+   set a real `data-mode` attribute) therefore never match here and stay
+   permanently inert — these class-selector equivalents are what actually
+   apply. Higher specificity (0,3,0 — two classes + a descendant) than
+   cockpit-shell.css's base `.band { height: var(--band-h-flight) }`
+   (0,1,0 -- 18.5em as of WO-UI-MAX-BATCH-1's Max-ruled override, was
+   15.5em) so they win regardless of import/cascade order. */
+.game-container.mode-station .band {
+  height: 8.5em;
+}
+
+.game-container.mode-surface .band {
+  height: 16em;
+}
+
+/* PANEL BAND CORRECTION (WO-UI-MAX-BATCH-1, Max's authoritative ruling
+   #11/12) — SUPERSEDES WO-UI0-VERTICAL-COMPOSITION's own "MID-PANEL
+   BAND-SHRINK HOOK", which billed panel mode a flat 3em tithe off
+   `.band`'s rest height (artifact parity, cockpit-redesign-v10-
+   RATIFIED.html L306-318: `.stage[data-aria="2"] .band { height:12.5em }`
+   — flight 15.5em→12.5em, station 8.5em→5.5em, surface 16em→13em, via
+   `.game-container.tp-mid-panel .band` + two mode-scoped 4-class
+   compounds). Max's correction: "THE BAND PAYS NOTHING" — PANEL mode
+   ("squishes the LOWER PANELS downward", ~4 ARIA lines + input) must
+   leave `.band`'s rect at EXACTLY its per-mode rest height whether the
+   teleprinter is in TICKER or PANEL form; the ENTIRE cost of PANEL's
+   growth must land on `.lower`'s `1fr` row instead. Re-confirmed live
+   under WO-UI-MAX-BATCH-1 REVISE (Max #22-24, the TWO INDEPENDENT
+   TOGGLES rebuild, teleprinter.css's own header) — PANEL's own growth
+   mechanic is UNCHANGED by that REVISE, only the toggle that drives it
+   (`bodyPanel`, was `teleprinterDisplayMode==='mid-panel'`) was renamed.
+   FIX: the three tithe rules are DELETED — `.band` now falls straight
+   through to the untouched `.mode-station .band`/`.mode-surface .band`
+   rules above (or cockpit-shell.css's bare `.band` base for flight),
+   unconditionally, regardless of PANEL/`.tp-panel`. No new CSS is needed
+   to make `.lower` absorb the growth: `.game-container`'s own
+   `auto auto auto 1fr` track list (StatusBar/`.band`/Teleprinter/
+   `.lower`, cockpit-shell.css) already guarantees it structurally — CSS
+   Grid sizes every `auto` track to its own max-content contribution
+   FIRST (the teleprinter's row grows from the persistent control row's
+   single compact line to that row PLUS the PANEL body: tabs + ~4-line
+   log + input, stacked above it), THEN hands 100% of whatever height
+   remains to the lone `1fr` track. This is exactly the
+   PRE-WO-UI0-VERTICAL-COMPOSITION behavior that WO's own comment (now
+   removed) documented as the "bug" it was fixing — Max's ruling here is
+   that behavior was actually the intended design; the artifact's own
+   flat-tithe demo was not. */
+
+/* LOG OVERLAY GEOMETRY (WO-UI-MAX-BATCH-1 REVISE, Max #22-24 bullet 2 —
+   "LOG covers the ENTIRE band, top of band → the teleprinter row") —
+   `--tp-log-h` is the single source of truth teleprinter.css's
+   `.teleprinter.tp-log-open .telelog { height: var(--tp-log-h) }` rule
+   reads (see that file's own header). It mirrors the SAME three values
+   `.band`'s own height rules above (and cockpit-shell.css's flight-mode
+   base, `--band-h-flight`) use, per mode — declared here rather than
+   inherited from `.band` itself because `.telelog` is a SIBLING of
+   `.band` (both direct `.game-container` children), and a CSS custom
+   property set on one element is never visible to its siblings, only its
+   own descendants; `.game-container` is the nearest common ancestor both
+   can read from. This is the SAME "class-selector equivalent, numbers
+   mirrored with a doc-comment" duplication already accepted immediately
+   above for `.mode-station .band`/`.mode-surface .band` themselves
+   (trap i) — if either `.band` height ever changes, update the matching
+   value here in the same edit; a drift-detector test
+   (Teleprinter.logGeometryAndUniformity.test.ts) pins the two staying in
+   lockstep. */
+.game-container {
+  --tp-log-h: 18.5em; /* flight rest height — mirrors cockpit-shell.css's
+                          `.band { height: var(--band-h-flight) }`, 18.5em
+                          as of this same REVISE (Max-ruled override,
+                          cockpit-shell.css's own comment). */
+}
+
+.game-container.mode-station {
+  --tp-log-h: 8.5em; /* mirrors `.mode-station .band` above. */
+}
+
+.game-container.mode-surface {
+  --tp-log-h: 16em; /* mirrors `.mode-surface .band` above. */
+}
+
+/* Annunciator station/surface flip (WO-UI0-SHELL-TRANSPLANT integration
+   cleanup, item 3) — same trap i as the `.band` rules just above:
+   cockpit-shell.css's `.stage[data-mode=station] .annun`/`[data-mode=
+   surface] .annun` rule (top:auto; bottom:8%, ported verbatim from the
+   source artifact's vanilla-JS demo) never matches here because GameLayout
+   applies the CLASS `.mode-station`/`.mode-surface` to `.game-container`,
+   never a `[data-mode]` attribute — it stays permanently inert. This
+   class-selector equivalent is what actually flips the annunciator to the
+   bottom on docking/landing (artifact-parity). */
+.game-container.mode-station .annun,
+.game-container.mode-surface .annun {
+  top: auto;
+  bottom: 8%;
+}
+
+/* `.band`/`.deck` are ALWAYS-PRESENT slots (GameLayout) that GameDashboard
+   conditionally portals its real content into (ShellContext.ts); every
+   OTHER /game/* route leaves both empty. pointer-events:none so an empty
+   stretch of either doesn't swallow clicks meant for `.game-content`
+   underneath it (same click-through-by-default, opt-back-in-per-real-
+   control idiom the retired `.windshield-hud-anchor` used for Annunciator)
+   — the portaled `.cockpit-windshield`/`.cockpit-console` (cockpit.css)
+   each opt back into `pointer-events: auto` on themselves, same as
+   Annunciator's own lamps already do. */
+.game-container .band {
+  pointer-events: none;
+}
+
+/* `.lower` needs two things cockpit-shell.css's untouched rule doesn't
+   supply: (a) an explicit `1fr` row — with NO `grid-template-rows` a grid
+   container only gets an implicit `auto` track, which sizes to its
+   children's natural content height rather than filling the `.stage` row's
+   own (definite, via the `1fr` track two levels up) height, so `.mfdcol`'s
+   `1fr 1fr` rows and `.deck`'s content would otherwise collapse toward
+   min-content instead of filling the viewport (CSS Grid's "Maximize
+   Tracks" step is not guaranteed to hand a lone auto/implicit row the
+   container's full leftover space); (b) `position: relative`, so it (and
+   its `.mfdcol`/`.deck` children) join the same CSS stacking layer as
+   `.game-content` (position:absolute) and — being LATER in GameLayout's
+   JSX — paint and hit-test ABOVE it, instead of an abspos box always
+   winning over a plain static box regardless of source order (CSS
+   Appendix E: positioned descendants paint after non-positioned ones,
+   full stop). Without this, `.game-content`'s box (deliberately NOT
+   pointer-events:none — the index route's residual chrome, see the
+   `.game-content` doc-comment below, needs full interactivity) would sit
+   in front of the MFD rail on every route. */
+.game-container .lower {
+  position: relative;
+  grid-template-rows: 1fr;
+}
+
+/* `.deck` — the same "implicit row doesn't fill" gap as `.lower`, one level
+   deeper. cockpit-shell.css's `.deck` rule sets no template at all (the
+   artifact's own JS toggled `.flight`/`.single` per mode onto `#deck`
+   itself); this transplant applies neither modifier — GameDashboard portals
+   exactly ONE child, `.cockpit-console`, which keeps its own internal
+   3-monitor grid unchanged (cockpit.css) — so `.deck` just needs to hand
+   that one child the full cell in both axes. pointer-events:none per the
+   `.band` comment above; `.cockpit-console` (cockpit.css) opts back into
+   `auto`. */
+.game-container .deck {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+  pointer-events: none;
+}
+
+/* `.mfdcol` — cockpit-shell.css's untouched `1fr 1fr` 2-row template
+   already assumes exactly 2 children (the source artifact's own markup:
+   two bare `.mfd` boxes, no nav rail) — RouteRail's retirement
+   (WO-UI5-RETIREMENT+GLASS) restored that exact shape, so no override is
+   needed for the un-folded case any more (the old `auto 1fr 1fr` override
+   that gave RouteRail its own auto-sized row above the MFD pair is gone
+   with it). `.folded` (GameLayout: teleprinter PANEL, only ONE
+   MFDScreen renders) still needs its own override — a bare single-row
+   `1fr` so that one screen gets the full cell height, since cockpit-
+   shell.css's base assumes 2 rows unconditionally. Higher specificity
+   (0,2,0) than cockpit-shell.css's bare `.mfdcol` (0,1,0) so this always
+   wins regardless of cascade order. */
+.game-container .mfdcol.folded {
+  grid-template-rows: 1fr;
+}
+
+/* The sidebar-collapse mechanism (manual edge-toggle + WO-129-B landing
+   auto-collapse, `.console-collapsed` on `.game-container`, and the
+   `.mfdcol` column/overflow rules that used to key off it) is RETIRED
+   (WO-UI5-RETIREMENT+GLASS) — the v10 artifact's own shell has no collapse
+   affordance at all: `.lower` stays fixed at cockpit-shell.css's base
+   19%/81% split at ALL times now. */
+
+/* STATION FACE (WO-UI3-STATION-MODE): docked stops looking like the cockpit.
+   `mode-station` (GameLayout.tsx) was a real-but-empty hook — this is its
+   first styling. Band-height (WO-UI0-SHELL-TRANSPLANT: `.mode-station .band`,
+   above) is SHARED with landed's own override and stays untouched here —
+   only WHAT RENDERS inside `.band`/`.deck` changes for docked. GameDashboard's
+   DOCKED branch swaps the 3D bay scene
+   (SolarSystemViewscreen scene="docked" + its windshield-frame vignette) for
+   a flat `.station-face-bay-band` identity strip (no canvas — see the
+   invariant proof: docked mounts zero solar-viewscreen nodes), and swaps the
+   flight-monitor bezel wrapper (`.console-monitor.trading-monitor.full-width`
+   + `.monitor-bezel` rivets, cockpit.css) for `.station-face-workspace`.
+   `.station-face-workspace` reproduces ONLY the load-bearing placement math
+   those classes provided inside `.cockpit-console`'s grid (full-width span,
+   flex-column fill) — not their decorative CRT bezel/tint (cockpit.css is
+   out of this WO's file scope) — so `.monitor-screen`/`.screen-hud-header`/
+   `.screen-hud-content`/the venue content inside are UNCHANGED and keep
+   working off their own base (non-`.trading-monitor`-scoped) cockpit.css
+   rules; only the amber cockpit-monitor accent is lost, which is the point.
+   Both rules are scoped under `.game-container.mode-station` so flight/
+   landed are structurally unreachable by them. */
+.game-container.mode-station .station-face-bay-band {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
   display: flex;
   align-items: center;
-  justify-content: center;
-  font-size: 1.2rem;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0 1rem;
+  box-sizing: border-box;
+  background: linear-gradient(180deg, rgba(10, 16, 26, 0.96), rgba(6, 10, 16, 0.96));
+}
+
+.game-container.mode-station .station-face-bay-band-name {
+  color: var(--color-primary, #00d9ff);
+  font-family: var(--font-secondary, 'Courier New', monospace);
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-shadow: 0 0 8px rgba(0, 217, 255, 0.5);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.game-container.mode-station .station-face-workspace {
   position: relative;
-  overflow: hidden;
-}
-
-.sidebar-toggle:hover {
-  border-color: var(--color-primary);
-  box-shadow: var(--glow-primary);
-  transform: scale(1.05);
-}
-
-.toggle-icon {
-  transition: transform var(--transition-normal);
-}
-
-.sidebar-toggle:hover .toggle-icon {
-  transform: scale(1.2);
-}
-
-/* Edge-anchored variant — the toggle moved out of the deleted top header
-   onto the left edge of the viewport. Reuses the .sidebar-toggle chrome
-   (gradient/border/hover) and overrides only position + size so it sits
-   compactly at the viewport's left, vertically centered, above content. */
-/* Two-class selector so `position:absolute` outranks `.cockpit-btn{position:relative}`
-   (cockpit-components.css, same specificity but imported later) — otherwise the
-   toggle stays in-flow at the top of .game-content and (with main{gap:4rem})
-   pushes the viewport down ~102px, leaving an empty band above it. */
-/* Slim flush-edge tab (id=139 item 2): a 38x38 square inset 0.5rem at the
-   viewport's left-center stole scene clicks there. Shrunk to a 14x44 vertical
-   tab pinned FLUSH to the left edge (left:0) and rounded only on its inner
-   (right) corners, so its click-stealing footprint drops from 38x38=1444px^2
-   to 14x44=616px^2 and sits against the rail seam instead of over the scene. */
-.cockpit-btn.sidebar-edge-toggle {
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 40;
-  width: 14px;
-  height: 44px;
-  min-width: 0; /* override .cockpit-btn min sizing so the slim width holds */
-  padding: 0;
-  border-radius: 0 6px 6px 0;
-}
-
-.sidebar-edge-toggle:hover {
-  /* keep the base translateY centering while applying the hover scale */
-  transform: translateY(-50%) scale(1.05);
-}
-
-/* Game container — inverted-L contract (WO-INVERTED-L).
-   Positioning context for a SINGLE full-bleed scene layer (.game-content)
-   behind everything, with an OPAQUE console (sidebar rail+MFD stacked with
-   .cockpit-console) overlaying the bottom-left. The scene shows through ONLY
-   the full-width top band + the right column → visible scene = inverted-L (⌐);
-   never behind the console (Max: "solid console block, no scene behind").
-   Magnitudes (--band-h / --console-w / the rail-vs-console split) are starting
-   values for the Orchestrator's browser-prove tuning. */
-.game-container {
-  display: block;
-  flex: 1;
-  overflow: hidden;
-  position: relative;
-  /* Max's exact in-flight inverted-L (id=149 REDEFINED): a full-width band on
-     top, a NARROW full-height sidebar on the left below it, and the instrument
-     DECK (the 3 console monitors) as a bottom strip spanning the FULL width
-     RIGHT of the sidebar. The scene shows through the band + the right-of-sidebar
-     area ABOVE the deck = the ⌐. (% of the already scale-correct container.) */
-  --band-h: 20%;
-  /* NARROW natural sidebar (MFD-A/B), NOT half the screen.
-     WO-COCKPIT-ADJ-0628: slimmed ~12% (300-420 → 260-370) to reclaim
-     deck width. */
-  --sidebar-w: clamp(260px, 22%, 370px);
-  /* Deck height — the bottom instrument strip, right of the sidebar.
-     WO-COCKPIT-ADJ-0628: raised ~26% (38% → 48%) so the bottom panels
-     have room to surface primary actions without internal scrolling. */
-  --deck-h: 48%;
-}
-
-/* DOCKED / LANDED: the deck fills the FULL right-of-sidebar height (the trade /
-   planetary terminal needs the room); the upper-right scene collapses. GameLayout
-   sets .console-expand on the container from playerState (is_docked||is_landed). */
-.game-container.console-expand {
-  --deck-h: calc(100% - var(--band-h));
-}
-
-/* SIDEBAR — narrow, full-height left column (id=149 REDEFINED, Max's exact
-   layout). MFD-A + MFD-B at a NATURAL width (--sidebar-w, ~320–420px,
-   NOT half the screen), inset below the band and spanning to the
-   screen bottom. Opaque CRT backing. Scrolling stays INSIDE each MFD page body
-   (mfd.css), never at this level.
-   Selector is `.game-container .game-sidebar` (0,2,0) so `position:absolute` +
-   the full-height geometry beat `.hud-panel { position:relative }` (0,1,0,
-   imported AFTER game-layout.css) — otherwise the sidebar fell back to relative,
-   sized to content, rendered SHORT and left a bottom-left gap (id=149 re-prove). */
-.game-container .game-sidebar {
-  position: absolute;
-  top: var(--band-h);
-  left: 0;
-  bottom: 0;
-  width: var(--sidebar-w);
-  z-index: 20;
-  transition: width 0.3s ease;
-  overflow: hidden;
+  grid-column: 1 / -1;
+  grid-row: 1 / -1;
+  min-width: 0;
+  min-height: 0;
+  max-height: 100%;
+  padding: 0.25rem;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  padding: 0.75rem;
-  /* OPAQUE CRT backing — solid, no scene behind the sidebar. */
-  background: linear-gradient(180deg, #131b2c 0%, #0f1620 100%);
-  /* WO-PANEL-3D-EDGE: right edge (viewport-facing) gets a subtle raised/proud
-     bevel — inset inner highlight on the right inner wall + existing outer
-     rightward shadow. CRT line-style, not heavy chrome. */
-  border-right: 2px solid rgba(77, 132, 253, 0.28);
-  box-shadow:
-    4px 0 24px rgba(0, 0, 0, 0.55),
-    inset -2px 0 4px rgba(255, 255, 255, 0.06);
+  background-color: #1a1d24;
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.015) 0%, rgba(0, 0, 0, 0.22) 100%);
+}
+
+/* SURFACE FACE (WO-UI4-SURFACE-MODE): unlike DOCKED, the WINDSHIELD RULING
+   (orchestrator-LOCKED) keeps the landed vista — `SolarSystemViewscreen
+   scene="landed"` is real type/habitability/citadel-aware content, shown at
+   the fixed 16em `.mode-surface .band` height (WO-UI0-SHELL-TRANSPLANT,
+   above — supersedes the old `.landed-expanded`/`.windshield-min` toggle,
+   retired along with `--band-h`), so it is NEVER stripped here. Only the
+   surrounding chrome (frame vignette + HUD-chip skin, below) and the deck
+   bezel change.
+
+   Deck: `.surface-face-workspace` is the mechanical bezel-swap sibling of
+   `.station-face-workspace` above — identical load-bearing grid-column/
+   grid-row placement math, same flat panel background, none of the CRT
+   `.monitor-bezel` rivets. Two landed branches converge on it:
+     - owned-colony (GameDashboard.tsx): the `.console-monitor.planetary-ops-
+       monitor.full-width` + `.monitor-bezel` wrapper is replaced by this
+       class directly (same mechanical swap DOCKED already got) — its
+       `.monitor-screen` child is salvaged verbatim.
+     - population-hub (GameDashboard.tsx wraps <PopulationCenterInterface/>
+       in this class): that component owns its own `.console-monitor
+       .population-center-monitor.full-width` + `.monitor-bezel` markup
+       internally (../planetary/population-center.css, out of this WO's file
+       scope) — the two rules below neutralize its inner bezel and stretch
+       it to fill the workspace PURELY IN CSS, so no other file needs
+       touching. Both converge on one visual result. */
+.game-container.mode-surface .surface-face-workspace {
+  position: relative;
+  grid-column: 1 / -1;
+  grid-row: 1 / -1;
+  min-width: 0;
+  min-height: 0;
+  max-height: 100%;
+  padding: 0.25rem;
   box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  background-color: #1a1d24;
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.015) 0%, rgba(0, 0, 0, 0.22) 100%);
 }
 
-/* The edge-toggle collapses the sidebar (width 0) to reclaim the left column
-   for scene + deck — logout/settings now live in the always-on HUD, so a clean
-   collapse is safe. The deck's left edge follows --sidebar-w. GameLayout sets
-   .console-collapsed on the container from !sidebarOpen. */
-.game-container.console-collapsed {
-  --sidebar-w: 0px;
+/* PopulationCenterInterface's OWN `.console-monitor` wrapper carries no
+   flex-grow of its own (base rule: display:flex; flex-direction:column;,
+   cockpit.css) — stretch it to fill `.surface-face-workspace`. No-op for
+   the owned-colony branch, which no longer renders a `.console-monitor` at
+   all (see GameDashboard.tsx). */
+.game-container.mode-surface .surface-face-workspace > .console-monitor {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
-/* WINDSHIELD MINIMIZE (id=151): docked/landed shrink the band to a thin bar so
-   the station/colony console gets the reclaimed room. Shrinking --band-h raises
-   the helm + sidebar + deck; with .console-expand the deck (terminal) grows to
-   fill it. The HUD stays readable in the thin band; the toggle restores it. */
-.game-container.windshield-min {
-  /* A touch taller so the always-on HUD (top) and the centered "Expand
-     Viewport" button (id=151b) both fit in the thin band. */
-  --band-h: 60px;
+/* `.monitor-bezel` is a position:absolute, pointer-events:none decorative
+   overlay (cockpit.css) — safe to drop with zero layout impact and no
+   markup access, for the same reason DOCKED's bezel-swap could drop it
+   outright in JSX. */
+.game-container.mode-surface .surface-face-workspace .monitor-bezel {
+  display: none;
 }
 
-/* LANDED + EXPANDED (id=151c): open the windshield LARGE so the planet-surface
-   scene (the LANDMASS, not just sky) is visible — a short band crops the
-   full-bleed scene to its top (sky). The colony console is pushed down (still
-   present below). Minimized falls back to windshield-min's thin bar (console
-   gets the room). Mutually exclusive with .windshield-min (that is the
-   minimized state). [P] tune the % if Max wants more/less scene. */
-.game-container.landed-expanded {
-  --band-h: 65%;
+/* Windshield chrome restyle — frame vignette + HUD-chip skin swap to a warm
+   "surface" grammar (amber), distinct from the flight cockpit's cyan and
+   DOCKED's flat untinted panel. Scoped under `.game-container.mode-surface`
+   so FLIGHT's (and DOCKED's, though it never renders these) own `.windshield-
+   frame`/`.hud-overlay` skin is structurally unreachable — same class names,
+   different ancestor mode. Only the frame/chip CONTAINER is retinted; HUD
+   typography (`.hud-value`/`.hud-label`) is untouched — restyling the glass,
+   not the data readouts. */
+.game-container.mode-surface .windshield-frame::before {
+  background: radial-gradient(
+    ellipse at center,
+    transparent 55%,
+    rgba(60, 30, 0, 0.18) 82%,
+    rgba(40, 20, 0, 0.32) 100%
+  );
 }
 
-/* CENTERED, prominent "Minimize Viewport" button — symmetric to
-   .windshield-expand; shown only while the viewport is EXPANDED (grounded +
-   windshieldMin=false). Anchored to the BOTTOM of the visual scene band using
-   `--band-h` (set on .game-container and inherited). Formula:
-     bottom = 100% (full .main-viewport height) − var(--band-h) + 0.7rem
-   places the button's bottom edge 0.7rem inside the band from its lower border
-   for any --band-h value (20% docked, 65% landed-expanded). */
-.windshield-minimize {
-  position: absolute;
-  bottom: calc(100% - var(--band-h) + 0.7rem);
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 37;
-  pointer-events: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.28rem 0.95rem;
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  color: var(--color-primary, #00d9ff);
-  background: rgba(0, 12, 20, 0.82);
-  border: 1px solid rgba(0, 217, 255, 0.5);
-  border-radius: 4px;
-  cursor: pointer;
-  box-shadow: 0 0 12px rgba(0, 217, 255, 0.3);
+.game-container.mode-surface .frame-corner {
+  border-color: rgba(232, 163, 61, 0.35);
 }
 
-.windshield-minimize:hover {
-  background: rgba(0, 217, 255, 0.18);
-  box-shadow: 0 0 16px rgba(0, 217, 255, 0.5);
+.game-container.mode-surface .hud-overlay {
+  background: rgba(20, 12, 4, 0.4);
+  border-color: rgba(232, 163, 61, 0.3);
+  box-shadow:
+    0 0 14px rgba(232, 163, 61, 0.14),
+    inset 0 1px 0 rgba(232, 163, 61, 0.08);
 }
 
-/* CENTERED, prominent "Expand Viewport" button shown only while MINIMIZED
-   (id=151b — Max couldn't find the corner glyph). Horizontally centered in the
-   thin band, just below the always-on HUD; a real labeled button. */
-.windshield-expand {
-  position: absolute;
-  top: 1.9rem;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 37;
-  pointer-events: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.28rem 0.95rem;
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  color: var(--color-primary, #00d9ff);
-  background: rgba(0, 12, 20, 0.82);
-  border: 1px solid rgba(0, 217, 255, 0.5);
-  border-radius: 4px;
-  cursor: pointer;
-  box-shadow: 0 0 12px rgba(0, 217, 255, 0.3);
+.game-container.mode-surface .hud-chip-tab {
+  border-color: rgba(232, 163, 61, 0.4);
+  color: rgba(232, 163, 61, 0.85);
+  /* Guaranteed legibility over the variable landform/sky/water backdrop —
+     the base .hud-chip-tab (cockpit.css) has no text-shadow to match, so
+     this is a dark drop-shadow, not a glow. Flight-cyan .hud-chip-tab
+     (cockpit.css:654) doesn't sit over a variable scene the same way and
+     is left untouched — a WO-UI4-SURFACE-MODE follow-up if it ever needs
+     one. */
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
 }
 
-.windshield-expand:hover {
-  background: rgba(0, 217, 255, 0.18);
-  box-shadow: 0 0 16px rgba(0, 217, 255, 0.5);
+.game-container.mode-surface .hud-chip-tab:hover {
+  background: rgba(232, 163, 61, 0.18);
+  color: #e8a33d;
 }
 
-/* MFD console layout: rail fixed top, screens share the leftover height.
-   Descendant (not child) selectors so an extra provider wrapper between
-   the aside and the screens can never silently break the split. */
-.game-sidebar .route-rail {
-  flex: 0 0 auto;
-}
+/* The manual windshield-minimize/expand toggle (id=151/151b) that used to
+   live here is RETIRED (WO-UI0-SHELL-TRANSPLANT — see the `mode` doc-comment
+   above) along with `--band-h` and the JSX buttons that toggled it: the band
+   is now a fixed-height row per mode, not a player-resizable one, so there
+   is nothing left for a minimize/expand affordance to do. */
 
-.game-sidebar .mfd-screen {
+/* MFD console layout: screens share the available height. Descendant (not
+   child) selectors so an extra provider wrapper between the aside and the
+   screens can never silently break the split. `.mfdcol`
+   (WO-UI0-SHELL-TRANSPLANT) supersedes the old absolute `.game-sidebar` as
+   MFDScreen's ancestor (RouteRail, its other former child, is retired —
+   WO-UI5-RETIREMENT+GLASS; see the `.game-container .mfdcol.folded`
+   row-template rule above) — `min-height: 0` still matters even though
+   `.mfdcol` is a grid (not flex) parent now, for the same reason it always
+   did: without it a grid/flex item refuses to shrink below its content's
+   natural height. */
+.mfdcol .mfd-screen {
   flex: 1 1 0;
   min-height: 0;
 }
@@ -360,23 +544,43 @@
   display: inline-block;
 }
 
-/* Main content area = the SINGLE full-bleed scene layer (WO-INVERTED-L).
-   Absolutely fills the whole container so the windshield canvas spans the full
-   width (top band) and shows through the right column; the opaque console
-   overlays the bottom-left above it. Transparent so the canvas reads through;
-   the document never scrolls (Law 2 — overflow:hidden holds). */
+/* Main content area = the mount point for `{children}` — every /game/*
+   route (WO-UI0-SHELL-TRANSPLANT, supersedes WO-INVERTED-L's full-bleed
+   scene layer). Sized via CSS Grid LINE placement, not the retired
+   --statusbar-h/--teleprinter-h vars: an abspos grid item with an explicit
+   `grid-row` is excluded from `.stage`'s row auto-placement entirely (it
+   doesn't consume/shift StatusBar/band/Teleprinter/lower off rows 1-2-3-4),
+   while its OWN containing block becomes exactly that line span —
+   `2 / -1` = band + teleprinter + lower combined (everything BELOW the
+   status bar, never above or behind it); `inset: 0` then fills that
+   containing block exactly. Deliberately left pointer-events:auto
+   (default) — unlike `.band`/`.deck` (which opt OUT of hit-testing when
+   empty, see above), THIS box needs to be fully interactive.
+   WO-UI5-RETIREMENT+GLASS: of the 11 nested /game/* routes (App.tsx), only
+   the INDEX route (GameDashboard) still mounts real content here — its real
+   content (the windshield scene + the 3 deck monitors) is portaled OUT of
+   this box into `.band`/`.deck` (ShellContext.ts), so what's left here for
+   it is residual alert/modal chrome, all `position: fixed` or portaled
+   straight to `document.body`, indifferent to where this box sits. The
+   other 10 legacy paths (map/team/governance/combat/planets/ships/player/
+   trading/ranking/settings) are now bare client-side <Navigate> redirects
+   back onto `/game` (GameRouteRedirects.tsx) — they never render real page
+   content into this box. */
 .game-content {
   position: absolute;
+  grid-row: 2 / -1;
+  grid-column: 1 / -1;
   inset: 0;
-  /* NO z-index here: a positive z-index would make .game-content a stacking
-     context and trap its descendants (console z:20, HUD z:30, edge-toggle z:40)
-     beneath the container-level .game-sidebar (z:20). With z:auto the scene's
-     own z:1 layers it behind the console while the console/HUD/toggle stay
-     coplanar with the sidebar in the root context. */
+  /* NO z-index here (unchanged rationale): a positive z-index would make
+     .game-content a stacking context and trap its descendants beneath
+     later-DOM-order siblings that also need it. With z:auto this box's own
+     DOM position (FIRST child of .game-container, see GameLayout.tsx)
+     keeps it painting/hit-testing BEHIND `.lower` (both position:relative,
+     stacking-layer tie broken by source order — see the `.lower` comment
+     above) exactly as intended. */
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  min-height: 0;
   background: transparent;
 }
 
@@ -495,27 +699,12 @@
   }
 }
 
-/* Responsive design — the console width is --console-w (clamp ~half with a min
-   so controls never crush), so the old fixed sidebar-width breakpoints are gone.
-   On narrow viewports drop the console min so it doesn't swallow the scene; only
-   the edge-toggle hit-target is also tuned by viewport. */
-@media (max-width: 768px) {
-  .game-container {
-    /* Narrower sidebar + shorter deck so the scene/viewport keeps room. */
-    --sidebar-w: clamp(220px, 40%, 300px);
-    --deck-h: 34%;
-  }
-
-  .sidebar-toggle {
-    width: 45px;
-    height: 45px;
-  }
-}
-
-@media (max-width: 480px) {
-  .sidebar-toggle {
-    width: 40px;
-    height: 40px;
-    font-size: 1rem;
-  }
-}
+/* Responsive design — the `--sidebar-w`/`--deck-h` narrow-viewport overrides
+   that used to live here are retired along with the vars themselves
+   (WO-UI0-SHELL-TRANSPLANT: `.mfdcol`/`.deck` are sized by cockpit-shell.css's
+   fixed `.lower{grid-template-columns:19% 81%}` now, not a var). This WO is
+   scoped to the 1440×900 reference resolution (Scroll Law) — a real
+   sub-768px `.mfdcol`/`.deck` breakpoint, if wanted, is a follow-up, not a
+   structure-only carry-forward of dead numbers. The edge-toggle hit-target
+   sizing that used to survive here is retired along with the toggle itself
+   (WO-UI5-RETIREMENT+GLASS). */

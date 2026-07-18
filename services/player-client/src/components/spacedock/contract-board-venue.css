@@ -1,0 +1,387 @@
+/* ========================================
+   CONTRACT BOARD VENUE
+   (SYSTEMS/contracts.md, /api/v1/contracts/*)
+
+   SCROLL LAW: `.venue-content-area` is overridden here to NOT scroll
+   itself (overflow: hidden) — only `.cb-list` (board rows / my-contracts
+   rows) scrolls, in its own bounded container. The tab bar, toolbar, and
+   every row's own inline action button stay reachable without a
+   page-level scroll at 1440x900.
+   ======================================== */
+
+.venue-container.contracts .venue-content-area {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+
+/* Both tablists render via the shared DeckPageTabs (components/cockpit/
+   DeckPageTabs.tsx) — root gets 'deck-tab-rail' PLUS this venue's own
+   class (cb-tabs / cb-mine-subtabs), tab buttons get 'deck-tab-btn'.
+   Every rule below is compounded onto .deck-tab-rail/.deck-tab-btn (never
+   a bare .cb-tabs/.cb-mine-subtabs descendant-only selector for the
+   CONTAINER) so it wins deterministically over cockpit.css's base rail
+   styling regardless of CSS import/bundle order — a plain same-specificity
+   .cb-tabs vs .deck-tab-rail tie would otherwise depend on load order.
+   The button/hover/active rules also explicitly reset font-weight/
+   text-transform/letter-spacing/font-family, which DeckPageTabs' base
+   .deck-tab-btn sets to a bold/uppercase/letter-spaced HUD look this
+   venue never had — left alone, the outer/nested tab labels would render
+   BOARD/MY CONTRACTS in caps instead of the original mixed-case skin. */
+
+.cb-tabs.deck-tab-rail {
+  display: flex;
+  gap: 4px;
+  padding: 10px 16px 0;
+  border: none;
+  border-bottom: 1px solid rgba(0, 217, 255, 0.15);
+  border-radius: 0;
+  background: transparent;
+  flex-shrink: 0;
+}
+
+.cb-mine-subtabs.deck-tab-rail {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+  border: none;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.cb-tabs .deck-tab-btn,
+.cb-mine-subtabs .deck-tab-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  color: rgba(255, 255, 255, 0.6);
+  padding: 8px 14px;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+  font-size: 0.85em;
+  font-family: revert;
+  font-weight: normal;
+  text-transform: none;
+  letter-spacing: normal;
+  transition: all 0.2s ease;
+}
+
+.cb-tabs .deck-tab-btn:hover,
+.cb-mine-subtabs .deck-tab-btn:hover {
+  color: #00d9ff;
+  background: rgba(0, 217, 255, 0.08);
+}
+
+.cb-tabs .deck-tab-btn.active,
+.cb-mine-subtabs .deck-tab-btn.active {
+  color: #00d9ff;
+  background: rgba(0, 217, 255, 0.15);
+  border-color: rgba(0, 217, 255, 0.3);
+  text-shadow: none;
+}
+
+/* Each tab's own content wrapper fills the (now non-scrolling)
+   .venue-content-area exactly — min-height: 0 is required for the
+   flex-child .cb-list below to be allowed to shrink and scroll instead
+   of pushing the container taller than its parent. */
+.cb-tab-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: 16px;
+}
+
+.cb-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+
+.cb-toolbar-count {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 0.85em;
+}
+
+/* The ONLY scrolling element in the Board / My Contracts tabs. */
+.cb-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cb-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(0, 217, 255, 0.15);
+  border-radius: 6px;
+  flex-wrap: wrap;
+}
+
+.cb-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 160px;
+}
+
+.cb-commodity {
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.95em;
+}
+
+.cb-route {
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 0.8em;
+}
+
+.cb-status {
+  font-size: 0.7em;
+  letter-spacing: 0.05em;
+  align-self: flex-start;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(0, 217, 255, 0.15);
+  color: #00d9ff;
+}
+
+.cb-status-completed {
+  background: rgba(80, 220, 120, 0.15);
+  color: #50dc78;
+}
+
+.cb-status-cancelled,
+.cb-status-expired {
+  background: rgba(220, 80, 80, 0.15);
+  color: #dc5050;
+}
+
+.cb-status-disputed {
+  background: rgba(220, 180, 80, 0.15);
+  color: #e8b04a;
+}
+
+/* Read-only fallback for in_progress/partial_fulfilled/disputed/expired
+   rows (WO-CONTRACT-5-CLIENT-SURFACE P4) — same slot the action buttons
+   occupy, so a status with no action still lands in the row's action
+   column rather than leaving it visually empty. */
+.cb-status-note {
+  font-size: 0.8em;
+  color: rgba(255, 255, 255, 0.6);
+  text-align: right;
+}
+
+.cb-row-terms {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 0.85em;
+}
+
+.cb-payment {
+  color: #50dc78;
+  font-weight: 600;
+}
+
+.cb-penalty {
+  color: rgba(220, 140, 80, 0.85);
+}
+
+/* Board row's acceptance-fee preview (P6) + claimable-locker rent figures
+   (P2) — same muted-amber treatment as the insurance premium preview. */
+.cb-fee {
+  color: rgba(255, 210, 100, 0.9);
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+.cb-countdown {
+  color: rgba(255, 255, 255, 0.6);
+  font-variant-numeric: tabular-nums;
+}
+
+.cb-countdown.urgent {
+  color: #e8b04a;
+}
+
+.cb-countdown.expired {
+  color: #dc5050;
+  font-weight: 600;
+}
+
+.cb-row-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.cb-deposit-group {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.cb-deposit-qty {
+  width: 4.5rem;
+  padding: 0.35rem 0.4rem;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(0, 217, 255, 0.35);
+  border-radius: 4px;
+  color: #e0e0e0;
+  font-family: inherit;
+  font-size: 0.8em;
+}
+
+.cb-deposit-qty:focus {
+  outline: none;
+  border-color: #00d9ff;
+}
+
+.cb-locker-progress {
+  font-size: 0.75em;
+  color: rgba(0, 217, 255, 0.85);
+  white-space: nowrap;
+}
+
+/* WO-CONTRACT-1-INSURANCE — tier picker + premium preview, mirrors
+   .cb-deposit-group's compact inline-group shape. */
+.cb-insure-group {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.cb-insure-tier {
+  padding: 0.35rem 0.4rem;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(0, 217, 255, 0.35);
+  border-radius: 4px;
+  color: #e0e0e0;
+  font-family: inherit;
+  font-size: 0.8em;
+}
+
+.cb-insure-tier:focus {
+  outline: none;
+  border-color: #00d9ff;
+}
+
+.cb-insure-premium-preview {
+  font-size: 0.75em;
+  color: rgba(255, 210, 100, 0.9);
+  white-space: nowrap;
+}
+
+.cb-insured-badge {
+  font-size: 0.8em;
+  color: rgba(0, 217, 255, 0.9);
+  white-space: nowrap;
+}
+
+/* Danger variant (Abandon / Cancel) — scoped to this venue only, the
+   shared .action-button has no built-in danger tone. */
+.venue-container.contracts .action-button.danger {
+  border-color: rgba(220, 80, 80, 0.5);
+  color: #dc5050;
+}
+
+.venue-container.contracts .action-button.danger:hover {
+  background: rgba(220, 80, 80, 0.15);
+  border-color: #dc5050;
+}
+
+/* --- Post Contract tab --- */
+
+.cb-post-tab {
+  align-items: center;
+}
+
+.cb-post-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 480px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+/* Two fields per row (WO-CONTRACT-5-CLIENT-SURFACE added a 6th field,
+   Contract Type -- pairing fields keeps the form to 3 rows instead of 6,
+   under the SAME vertical budget the old single-column 5-field form used,
+   so the Post button stays above the fold at 1440x900 without the
+   `.cb-post-form` overflow fallback ever engaging). */
+.cb-field-row {
+  display: flex;
+  gap: 12px;
+}
+
+.cb-field-row .cb-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.cb-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.85em;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.cb-field select,
+.cb-field input {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(0, 217, 255, 0.3);
+  color: #fff;
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 0.95em;
+}
+
+.cb-field select:focus,
+.cb-field input:focus {
+  outline: none;
+  border-color: #00d9ff;
+}
+
+.cb-escrow-preview {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: rgba(0, 217, 255, 0.08);
+  border: 1px solid rgba(0, 217, 255, 0.25);
+  border-radius: 6px;
+  font-size: 0.9em;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.cb-escrow-amount {
+  color: #50dc78;
+  font-weight: 700;
+  font-size: 1.05em;
+}
+
+.cb-post-submit {
+  align-self: flex-start;
+}

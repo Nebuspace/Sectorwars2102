@@ -1,0 +1,367 @@
+/* Teleprinter — ARIA narration/dialogue/command box, auto-placed into the
+   `.stage`/`.game-container` shell grid's 3rd row (WO-UI0-SHELL-TRANSPLANT
+   moved the shell off named grid-template-areas to DOM-order auto-
+   placement — GameLayout.tsx owns that placement now, not this file; see
+   its own comment).
+
+   SKIN OWNERSHIP (WO-UI0-SHELL-TRANSPLANT leaf L4): the persistent control
+   row's warm olive-black identity — `.tele` (root, background/border/
+   padding/font-size), `.glyph` (▸ ARIA), `.tline` (latest line), `.telerow`
+   (input+keys wrapper), `.tin` (phosphor-green input), `.tkey` (brass
+   button) — is OWNED by cockpit-shell.css (the v10 artifact's own CSS,
+   transplanted verbatim). This file supplies only what that shell CSS
+   can't reach without touching GameLayout.tsx/cockpit-shell.css (out of
+   this leaf's file lane): layout-critical overrides, the two independent
+   toggles' state deltas, and the PANEL body's own richer tabs/log/input
+   (WAVE-2's own addition, absent from the artifact).
+
+   TWO INDEPENDENT BINARY TOGGLES (WO-UI-MAX-BATCH-1 REVISE, Max #22-24 —
+   supersedes the single 3-state cycle this file used to document):
+     - `bodyPanel`      — PANEL vs TICKER: which form the INPUT AREA takes.
+                          Root modifier `tp-panel`/`tp-ticker`.
+     - `transcriptOpen` — LOG open/closed: the read-only transcript overlay.
+                          Root modifier `tp-log-open` (additive — co-exists
+                          with either body form; see `.telelog` below).
+   They are ORTHOGONAL — LOG can open over EITHER body form, matching the
+   artifact's own model (cockpit-redesign-v10-RATIFIED.html L91-104/
+   L455-465: one persistent `.tele` row + an optional `.midlog` panel that
+   opens ABOVE it (order:-1, L129) + an optional `.telelog` overlay that
+   opens further above everything). The persistent control row below (glyph
+   + latest-line + the ticker's own compact input + both toggle buttons) is
+   ALWAYS in the DOM and ALWAYS visible — never CSS display-toggled away as
+   a whole, only its own input+XMIT pair hides while PANEL supplies its own
+   input instead (`.tp-ticker-input-group` below). This is why the two
+   toggle buttons need no focus-instance-swap machinery any more (contrast
+   the retired single-3-state-toggle design's displayToggleRefs/
+   focusToggleOnModeChangeRef, Teleprinter.tsx git history): each is now
+   exactly ONE persistent DOM node, never unmounted or display:none'd, so
+   activating one can never strand keyboard focus on a now-invisible
+   sibling instance — there is no sibling instance any more.
+
+   ONE SHARED TYPE + BUTTON TREATMENT (WO-UI-MAX-BATCH-1 REVISE bullet 3 —
+   kills the per-mode font/size/color DRIFT the prior three build passes
+   left behind): EVERY teleprinter button — ticker XMIT/PANEL-toggle/
+   LOG-toggle, PANEL's own XMIT + 3 mode tabs — now carries cockpit-shell.
+   css's `.tkey` class directly (added in Teleprinter.tsx's JSX), so their
+   base font-family/size/letter-spacing/color/background/border/box-shadow
+   is the SAME declaration, not hand-copied values that can drift apart.
+   Likewise PANEL's own input now also carries `.tin` directly (byte-
+   identical to the ticker's own input), and PANEL's log-line/prefix colors
+   and the LOG overlay's `.a`/`.p` (cockpit-shell.css) now share the SAME
+   amber2/phosphor-green token pair `.tline` already used. The OLD "shipped
+   ARIA convention" (mfd/pages-ops.css cyan/violet, narration=violet/
+   dialogue=cyan/command-echo=amber) is RETIRED here — the teleprinter's
+   3 views (ticker/panel/log) are now visually ONE instrument, not three
+   differently-skinned ones; the mode TABS still distinguish narration/
+   dialogue/CMD by an `.active` accent (amber2 glow), not by three
+   different base hues.
+
+   Prominent but NOT a tall deck monitor: PANEL's log is height-clamped and
+   scrolls WITHIN itself — the document/page never scrolls, and PANEL never
+   grows tall enough to compete with the deck. LOG is the deliberate
+   exception — it visually expands UPWARD over the band, but via a
+   position:absolute overlay (`.telelog`, cockpit-shell.css) that the grid
+   track-sizing algorithm never sees: the teleprinter grid ROW's own
+   footprint stays pinned to the persistent row (+ PANEL, if also open) in
+   every state, so opening/closing LOG never reflows the band/deck/sidebar
+   (canon constraint: "overlay mode never reflows siblings"). PANEL, by
+   contrast, DELIBERATELY grows the grid row (the PANEL BAND CORRECTION
+   ruling, game-layout.css — `.band` pays nothing, `.lower`'s `1fr` row
+   absorbs 100% of it) — that reflow is the intended design. */
+
+.teleprinter {
+  --tp-cyan: #00d9ff;
+  --tp-violet: #7b2fff;
+  --tp-amber: #ffb000;
+  position: relative;
+  z-index: 22;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  overflow: hidden; /* overridden for tp-log-open below */
+}
+
+/* `.tele` (cockpit-shell.css) supplies the warm olive-black shell identity:
+   background #0A0D08, border-top/bottom, padding, font-size, gap, and
+   align-items:center. align-items:center is written for the artifact's
+   flat single-row `#tele`; this root stays a COLUMN (the persistent
+   control row / PANEL body / LOG overlay are independently positioned,
+   not a single flat row) and needs align-items:stretch so PANEL keeps
+   filling the full width — overridden here deterministically (2-class
+   compound beats the bare `.tele` rule's specificity regardless of CSS
+   import order). */
+.teleprinter.tele {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+/* Non-interactive here — WAVE-2 never wired the artifact's click-to-expand
+   gesture onto glyph/tline (out of this classname-re-emit leaf's scope),
+   so don't advertise one via `.tele .glyph`'s inherited cursor:pointer. */
+.teleprinter.tele .glyph {
+  cursor: default;
+}
+
+/* ── Persistent control row — ALWAYS rendered and ALWAYS visible: glyph +
+   latest-line summary + the ticker's own compact input/XMIT (hidden, not
+   unmounted, while PANEL supplies its own richer input row below) + both
+   toggle buttons (see the header's TWO INDEPENDENT BINARY TOGGLES note).
+   cockpit-shell.css owns .glyph/.tline/.telerow/.tin/.tkey's own skin
+   (color/background/border/font/spacing) — this file supplies only layout
+   (row sizing, offline badge, ellipsis min-width, disabled affordance)
+   that class inventory doesn't cover. ── */
+.tp-ticker-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  min-height: 34px;
+  box-sizing: border-box;
+}
+
+.tline {
+  min-width: 0; /* required for flex:1 + overflow:hidden + text-overflow:
+                   ellipsis to actually truncate inside a flex row — flex
+                   items default to min-width:auto (never shrink below
+                   content size), which silently defeats the ellipsis
+                   cockpit-shell.css's .tline already sets without this. */
+}
+
+/* Ticker mode only: denser type so the single-line summary shows more of
+   each message before ellipsis clips it. PANEL/LOG keep the shell cascade. */
+.teleprinter.tp-ticker .tline {
+  font-size: 0.62rem;
+  letter-spacing: 0.01em;
+}
+
+.tp-ticker-offline {
+  flex-shrink: 0;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: #ff4d6d;
+}
+
+/* Ticker's own compact input+XMIT — a sub-group that hides as a UNIT while
+   PANEL is open (its own input row takes over, see `.tp-body` below).
+   `.telerow` (cockpit-shell.css) is `display:contents` outside the
+   artifact's own aria=2 mode, unwrapping its children onto `.tele`'s own
+   flex row — this wrapper must be `display:contents` too in its visible
+   state, for the same reason, so `.tin`/`.tp-ticker-xmit` stay direct flex
+   items exactly as before this REVISE; switching to `display:none` still
+   correctly hides both as a group (valid regardless of the FROM value). */
+.tp-ticker-input-group {
+  display: contents;
+}
+
+.teleprinter.tp-panel .tp-ticker-input-group {
+  display: none;
+}
+
+.tin {
+  flex: 1 1 220px;
+  min-width: 120px;
+  box-sizing: border-box;
+  /* color/background/border/padding/border-radius/font: cockpit-shell.css's
+     .tin (phosphor green #7CE6A0) — do NOT re-add an amber override here
+     (n4, WO-UI0-SHELL-TRANSPLANT leaf L4). PANEL's own input now carries
+     this SAME class (Teleprinter.tsx) for byte-identical styling — see
+     `.tp-input` below for its own focus-expand delta. */
+}
+
+.tin:focus {
+  outline: none;
+  border-color: var(--tp-amber);
+  box-shadow: 0 0 8px rgba(255, 176, 0, 0.35);
+}
+
+/* `.tkey` (cockpit-shell.css) supplies the shared brass button base for
+   every teleprinter button now (see the header note) — this file only
+   layers state deltas: disabled affordance (the artifact's static demo
+   never needed one), a shared hover glow, and the pressed/active accents
+   below. */
+.tkey {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.tkey:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.tkey:hover:not(:disabled) {
+  border-color: var(--amber2, #ffc64d);
+  box-shadow: 0 0 8px rgba(255, 198, 77, 0.35);
+}
+
+/* Pressed-state accent for the two persistent, genuinely-binary toggles
+   (WO-UI-MAX-BATCH-1 REVISE — aria-pressed IS correct now, each toggle
+   really is a 2-state control). amber2 glow, matching the teleprinter's
+   own palette — replaces the old cyan MFD accent the retired
+   `.tp-display-btn.tp-mode-toggle[aria-pressed='true']` rule used. */
+.tkey[aria-pressed='true'] {
+  border-color: var(--amber2, #ffc64d);
+  color: var(--amber2, #ffc64d);
+  box-shadow: 0 0 6px rgba(255, 198, 77, 0.35);
+}
+
+/* ── PANEL body — mode tabs + clamped log + its own input row. CSS
+   display-toggled off the root's `tp-panel` modifier (never a conditional
+   unmount, so mode/input draft/scroll state survive a TICKER<->PANEL
+   switch). Renders ABOVE the persistent control row via `order:-1`,
+   matching the artifact's own `.midlog` (cockpit-redesign-v10-
+   RATIFIED.html L129: `order:-1`) rather than replacing it — the
+   structural reason PANEL/LOG's two toggle buttons can stay in that one
+   never-hidden row. ── */
+.tp-body {
+  display: none;
+  flex-direction: column;
+  padding: 0 0.8rem 0.6rem;
+  min-height: 0;
+  order: -1;
+}
+
+.teleprinter.tp-panel .tp-body {
+  display: flex;
+}
+
+.tp-body-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+
+/* ── Mode tabs — three switchable content channels (WAVE-2's own richer
+   design, absent from the artifact — kept, only the toggle mechanics
+   around it changed). `.tkey` (added in JSX) supplies the shared base;
+   only the ACTIVE accent is this file's own, and it's now ONE shared
+   amber2 glow for all three tabs (was violet/cyan/amber per tab — see the
+   header's ONE SHARED TYPE note), not three per-content-type hues. ── */
+.tp-modes {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.tp-mode-btn.active {
+  border-color: var(--amber2, #ffc64d);
+  color: var(--amber2, #ffc64d);
+  background: rgba(255, 176, 0, 0.12);
+  box-shadow: 0 0 8px rgba(255, 176, 0, 0.3);
+}
+
+/* ── Log — scrolls WITHIN this panel only; the page never scrolls. Height-
+   clamped so PANEL stays "prominent, not a tall deck monitor" (LOG, the
+   independent overlay below, is the deliberate exception). ── */
+.tp-log {
+  display: flex;
+  flex-direction: column;
+  max-height: clamp(120px, 16vh, 220px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.3rem 0.1rem;
+  border-top: 1px solid rgba(255, 176, 0, 0.25);
+}
+
+.tp-line {
+  font-size: 0.95em; /* matches .telelog .lines' own .95em (cockpit-
+                         shell.css) — was .68rem, an absolute page-root
+                         unit that silently drifted from the local .tele
+                         em-cascade every other teleprinter element scales
+                         off; see the header's ONE SHARED TYPE note. */
+  line-height: 1.5;
+  margin-bottom: 0.3rem;
+  word-break: break-word;
+}
+
+.tp-prefix {
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  margin-right: 0.4rem;
+}
+
+/* AI/user line color — amber2/phosphor-green, matching `.tline` and
+   `.telelog`'s own `.a`/`.p` (cockpit-shell.css) exactly, applied to the
+   WHOLE line (not just the prefix) for true token parity with `.a`/`.p`'s
+   own whole-line treatment. Replaces the old violet(ai)/cyan(dialogue,
+   prefix-only)/amber(nav echo, prefix-only) palette this file's header
+   used to document as "the shipped ARIA convention" — that convention is
+   retired (see the header note). */
+.tp-line.ai .tp-prefix,
+.tp-line.ai .tp-text {
+  color: var(--amber2, #ffc64d);
+  text-shadow: 0 0 6px rgba(255, 198, 77, 0.5);
+}
+
+.tp-line.user .tp-prefix,
+.tp-line.user .tp-text {
+  color: #7ce6a0;
+  text-shadow: 0 0 6px rgba(124, 230, 160, 0.5);
+}
+
+.tp-line.tp-empty .tp-text {
+  color: rgba(180, 220, 240, 0.5);
+  font-style: italic;
+}
+
+/* ── Input — expands on focus, sits pinned below the log. Now shares `.tin`
+   directly (added in Teleprinter.tsx's JSX) for byte-identical base
+   styling with the ticker's own input; only the focus-expand behavior
+   (unique to this richer input) is this file's own delta. ── */
+.tp-input-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.35rem;
+}
+
+.tp-prompt {
+  flex-shrink: 0;
+  color: var(--amber2, #ffc64d);
+  font-weight: 700;
+  font-size: 1em;
+}
+
+.tp-input {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 1.5rem;
+  box-sizing: border-box;
+  transition: min-height 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.tp-input-focused {
+  min-height: 2.2rem;
+  border-color: var(--tp-amber);
+  box-shadow: 0 0 8px rgba(255, 176, 0, 0.35);
+  outline: none;
+}
+
+/* ── LOG overlay — the artifact's own flat, read-only transcript
+   (cockpit-redesign-v10-RATIFIED.html L455-465 / L99-104's `.telelog`/
+   `.lines`/`.a`/`.p`), independent of PANEL (see the header's TWO
+   INDEPENDENT BINARY TOGGLES note). `.telelog`/`.lines`/`.a`/`.p` are
+   fully owned by cockpit-shell.css (position:absolute/bottom:100%/
+   background/border-top/transition/z-index + the amber2/phosphor-green
+   line colors) — this file supplies only the OPEN-height override + the
+   root's overflow escape, the same split `.tin`/`.tkey` above use.
+
+   HEIGHT: driven by `--tp-log-h` (game-layout.css), the SAME per-mode
+   source of truth `.band`'s own height uses — see that file's own comment.
+   This PINS the LOG rect to the band's rect by construction (both read the
+   same token in every mode), not by a live measurement that could drift
+   out of sync if either height changes independently. ── */
+.teleprinter.tp-log-open {
+  overflow: visible;
+}
+
+.teleprinter.tp-log-open .telelog {
+  height: var(--tp-log-h, 18.5em);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tp-input {
+    transition: none;
+  }
+}

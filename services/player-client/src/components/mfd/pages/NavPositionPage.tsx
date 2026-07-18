@@ -39,7 +39,7 @@ const NavPositionPage: React.FC = () => {
 
   return (
     <div className="mfd-page-ops">
-      <MFDPageHeader title="NAV / POSITION" accent={ACCENT} status="shipped" />
+      <MFDPageHeader title="NAV / POSITION" accent={ACCENT} status="shipped" showTitle={false} />
       <MFDPageBody scrollKey="nav-position">
         {!currentSector ? (
           <MFDInsufficient text="NO POSITION FIX" />

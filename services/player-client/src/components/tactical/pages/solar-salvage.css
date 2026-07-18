@@ -1,0 +1,162 @@
+/* ============================================
+   SOLAR SYSTEM MONITOR — SALVAGE page (WO-UI2-DECK-RECONCILE, §05)
+   ============================================ */
+
+.solar-salvage-wreck-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.solar-salvage-wreck-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.5rem;
+  background: rgba(147, 51, 234, 0.05);
+  border: 1px solid rgba(147, 51, 234, 0.2);
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+  font-family: 'Courier New', monospace;
+  color: #eaf6ff;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.solar-salvage-wreck-row:hover {
+  background: rgba(147, 51, 234, 0.1);
+  border-color: rgba(147, 51, 234, 0.4);
+}
+
+.solar-salvage-wreck-row.selected {
+  background: rgba(147, 51, 234, 0.18);
+  border-color: rgba(147, 51, 234, 0.6);
+}
+
+.solar-salvage-wreck-ship {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.7rem;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.solar-salvage-wreck-owner {
+  font-size: 0.6rem;
+  color: rgba(255, 255, 255, 0.55);
+  white-space: nowrap;
+}
+
+.solar-salvage-wreck-age {
+  font-size: 0.6rem;
+  color: rgba(255, 255, 255, 0.4);
+  white-space: nowrap;
+}
+
+.solar-salvage-wreck-risk {
+  color: #ffb000;
+}
+
+.solar-salvage-detail {
+  margin-top: 0.6rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid rgba(147, 51, 234, 0.25);
+}
+
+.solar-salvage-detail-title {
+  font-family: 'Courier New', monospace;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #c084fc;
+  margin-bottom: 0.4rem;
+}
+
+.solar-salvage-cargo-list {
+  list-style: none;
+  margin: 0 0 0.5rem 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.solar-salvage-cargo-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.65rem;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.solar-salvage-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.solar-salvage-input {
+  width: 70px;
+  height: 22px;
+  padding: 0 0.4rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.65rem;
+  background: rgba(0, 5, 12, 0.85);
+  border: 1px solid rgba(147, 51, 234, 0.4);
+  border-radius: 3px;
+  color: #c084fc;
+  outline: none;
+}
+
+.solar-salvage-preview {
+  font-size: 0.6rem;
+  color: rgba(255, 255, 255, 0.5);
+  white-space: nowrap;
+}
+
+.solar-salvage-btn {
+  font-family: 'Courier New', monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 0.25rem 0.6rem;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+  background: rgba(147, 51, 234, 0.15);
+  border: 1px solid rgba(147, 51, 234, 0.5);
+  color: #c084fc;
+}
+
+.solar-salvage-btn:hover:not(:disabled) {
+  background: rgba(147, 51, 234, 0.25);
+}
+
+.solar-salvage-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.solar-salvage-warnline {
+  margin-top: 0.4rem;
+  font-size: 0.6rem;
+  color: #ffb000;
+}
+
+.solar-salvage-msg {
+  margin-top: 0.4rem;
+  font-size: 0.6rem;
+}
+
+.solar-salvage-msg.ok {
+  color: #00ff41;
+}
+
+.solar-salvage-msg.err {
+  color: #ff5a6a;
+}

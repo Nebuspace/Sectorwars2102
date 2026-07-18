@@ -654,6 +654,111 @@
   font-style: italic;
 }
 
+/* ---- Abandon block (BEACON_DEPLOYED) ---- */
+
+.gw-abandon-block {
+  margin-top: 0.5rem;
+  border-top: 1px dashed var(--gw-violet-dim);
+  padding-top: 0.5rem;
+}
+
+/* ---- Construction-site staging block (ADR-0078) ---- */
+
+.gw-staging-block {
+  margin-top: 0.5rem;
+  border-top: 1px dashed var(--gw-violet-dim);
+  padding-top: 0.5rem;
+}
+
+.gw-staging-title {
+  font-family: var(--font-heading, 'Courier New', monospace);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--gw-violet);
+  text-shadow: 0 0 6px rgba(123, 47, 255, 0.5);
+  margin-bottom: 0.4rem;
+}
+
+.gw-staging-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.gw-staging-row-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 0.64rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.75);
+  margin-bottom: 0.2rem;
+}
+
+.gw-staging-bar-track {
+  height: 0.4rem;
+  border-radius: 2px;
+  background: rgba(123, 47, 255, 0.1);
+  border: 1px solid rgba(123, 47, 255, 0.2);
+  overflow: hidden;
+}
+
+.gw-staging-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--gw-violet-dim), var(--gw-violet));
+  box-shadow: 0 0 6px var(--gw-violet-glow);
+  transition: width 0.25s ease;
+}
+
+.gw-staging-bar-fill.full {
+  background: linear-gradient(90deg, rgba(0, 217, 255, 0.5), var(--gw-cyan));
+  box-shadow: 0 0 8px rgba(0, 217, 255, 0.5);
+}
+
+.gw-staging-input-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.3rem;
+}
+
+.gw-staging-input {
+  width: 5.5rem;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--gw-violet-soft);
+  border-radius: 3px;
+  color: var(--gw-violet);
+  font-family: var(--font-heading, 'Courier New', monospace);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-align: center;
+  padding: 0.2rem 0.3rem;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.gw-staging-input::-webkit-outer-spin-button,
+.gw-staging-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.gw-staging-input:focus {
+  outline: none;
+  box-shadow: 0 0 8px var(--gw-violet-glow);
+}
+
+.gw-btn.small {
+  padding: 0.28rem 0.55rem;
+  font-size: 0.56rem;
+}
+
 /* ---- Anchor block (D3) ---- */
 
 .gw-anchor-block {

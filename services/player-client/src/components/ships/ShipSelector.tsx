@@ -10,7 +10,6 @@ import { useGame } from '../../contexts/GameContext';
 import { Ship } from '../../types/game';
 import { InputValidator, SecurityAudit } from '../../utils/security/inputValidation';
 import { formatShipType } from '../../utils/formatters';
-import GameLayout from '../layouts/GameLayout';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import { useEmbedded } from '../cockpit/EmbeddedContext';
 import './ship-selector.css';
@@ -22,8 +21,9 @@ interface ShipSelectorProps {
 
 /* HANGAR console shell (Law 3) — module-level so React never remounts the
    frame (or the children) when the component re-renders between states.
-   When EMBEDDED (id=144, inside PlayerInfo) it renders just the framed
-   instrument and skips GameLayout so two cockpit shells never nest. */
+   Renders just the framed instrument — no GameLayout wrapper (removed
+   WO-UI0-PERSISTENT-SHELL lane C1; the persistent shell already wraps
+   every /game/* route, so a second cockpit shell here would nest). */
 const HangarShell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const embedded = useEmbedded();
   const instrument = (
@@ -31,7 +31,7 @@ const HangarShell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
       {children}
     </CockpitInstrument>
   );
-  return embedded ? instrument : <GameLayout>{instrument}</GameLayout>;
+  return embedded ? instrument : instrument;
 };
 
 export const ShipSelector: React.FC<ShipSelectorProps> = ({
@@ -88,10 +88,46 @@ export const ShipSelector: React.FC<ShipSelectorProps> = ({
     setError(null);
   };
   
+  // WO-UI5-DOSSIER FLEET location-gate: mirrors the server's OWN gate on
+  // POST /api/v1/ships/{id}/set-active (ship_upgrades.py set_active_ship) --
+  // "the target ship must be in the player's current sector" and "lift off
+  // before switching ships" (locked_player.is_landed). Both server checks
+  // are re-derived client-side here so the button disables BEFORE a doomed
+  // request round-trips, rather than only surfacing the 400 after the fact.
+  // (The other two server checks -- ship.is_destroyed / ShipStatus.
+  // HARMONIZING -- aren't in the client's Ship type; a destroyed/
+  // harmonizing ship never appears in gameShips in the first place, so
+  // there is nothing to gate on client-side for those.)
+  const selectedShip = selectedShipId ? gameShips.find(s => s.id === selectedShipId) ?? null : null;
+  const targetOutOfSector =
+    !!selectedShip &&
+    playerState?.current_sector_id != null &&
+    selectedShip.sector_id !== playerState.current_sector_id;
+  const blockedByLanding = !!playerState?.is_landed;
+
+  // Pixel a11y fix (WO-UI5-DOSSIER gate review) -- single source of truth
+  // for the disable reason, consumed by BOTH `title` (hover) and
+  // `aria-label` (screen reader) below. `title` alone isn't reliably
+  // announced by screen readers, so the reason must also live in the
+  // accessible name.
+  const switchDisabledReason = blockedByLanding
+    ? 'Lift off before switching ships'
+    : targetOutOfSector && selectedShip
+      ? `${selectedShip.name} is in sector ${selectedShip.sector_id}; travel there to board it`
+      : null;
+
   // Change active ship
   const handleChangeShip = async () => {
     if (!selectedShipId || selectedShipId === currentShip?.id || !playerState) return;
-    
+    if (blockedByLanding) {
+      setError('Lift off before switching ships.');
+      return;
+    }
+    if (targetOutOfSector && selectedShip) {
+      setError(`${selectedShip.name} is in sector ${selectedShip.sector_id}; travel there to board it.`);
+      return;
+    }
+
     // Rate limiting
     if (!InputValidator.checkRateLimit(`ship_change_${playerState.id}`, 5, 300000)) {
       setError('Too many ship changes. Please wait before switching again.');
@@ -226,10 +262,19 @@ export const ShipSelector: React.FC<ShipSelectorProps> = ({
       
       <div className="ships-grid">
         {sortedShips.map(ship => (
-          <div 
+          <div
             key={ship.id}
             className={`ship-card ${selectedShipId === ship.id ? 'selected' : ''} ${ship.is_flagship ? 'flagship' : ''}`}
             onClick={() => handleShipSelect(ship)}
+            role="button"
+            tabIndex={0}
+            aria-pressed={selectedShipId === ship.id}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                handleShipSelect(ship);
+              }
+            }}
           >
             <div className="ship-header">
               <h3>{ship.name}</h3>
@@ -315,7 +360,15 @@ export const ShipSelector: React.FC<ShipSelectorProps> = ({
         <button
           className="cockpit-btn primary"
           onClick={handleChangeShip}
-          disabled={!selectedShipId || selectedShipId === currentShip?.id || isChangingShip}
+          disabled={
+            !selectedShipId ||
+            selectedShipId === currentShip?.id ||
+            isChangingShip ||
+            blockedByLanding ||
+            targetOutOfSector
+          }
+          title={switchDisabledReason ?? undefined}
+          aria-label={switchDisabledReason ? `Make Active Ship – ${switchDisabledReason}` : undefined}
         >
           {isChangingShip ? 'Changing Ship...' : 'Make Active Ship'}
         </button>

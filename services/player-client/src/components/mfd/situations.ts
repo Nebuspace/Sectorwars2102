@@ -20,9 +20,13 @@ export const deriveInitialPage = (
   screenId: MFDScreenConfig['screenId'],
   snapshot: MFDSnapshot,
 ): MFDPageId => {
-  if (screenId === 'sidebar-a') {
+  // 'sidebar-a-folded' (WO-UI1-CHROME-COMPLETE mid-panel fold) is the
+  // same physical MFD-A screen wearing a wider pageIds list — same
+  // docked/landed-aware default as 'sidebar-a'.
+  if (screenId === 'sidebar-a' || screenId === 'sidebar-a-folded') {
     return isDockedOrLanded(snapshot.playerState) ? 'cargo' : 'vessel-status';
   }
-  // sidebar-b: ARIA presence survives the bottom-strip removal
-  return 'aria-terminal';
+  // sidebar-b: ARIA is absorbed into the teleprinter (no longer an MFD-B
+  // page — WO-UI1-CHROME-COMPLETE), so POS is the natural default.
+  return 'nav-position';
 };

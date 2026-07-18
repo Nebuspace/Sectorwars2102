@@ -3,8 +3,18 @@ import { useFirstLogin } from '../../contexts/FirstLoginContext';
 import ShipSelection from './ShipSelection';
 import DialogueExchange from './DialogueExchange';
 import OutcomeDisplay from './OutcomeDisplay';
-import { getGuardForSession, GuardPersonality } from '../../utils/guardPersonalities';
 import './first-login.css';
+
+// Guard identity is now sourced from the server (persisted guard_* columns,
+// src/utils/guard_personalities.py) instead of a client-side hash mirror —
+// WO-PUX-FLOGIN-RESUME retired src/utils/guardPersonalities.ts.
+interface GuardPersonality {
+  name: string;
+  title: string;
+  trait: string;
+  baseSuspicion: number;
+  description: string;
+}
 
 /**
  * FirstLoginContainer - Interrogation Booth UI
@@ -92,9 +102,16 @@ const FirstLoginContainer: React.FC = () => {
     if (session) {
       setCurrentStep(session.current_step);
 
-      // Generate guard personality for this session (deterministic based on session ID)
-      if (!guardPersonality && session.session_id) {
-        const guard = getGuardForSession(session.session_id);
+      // Guard personality is persisted server-side per session — read it
+      // straight off the session response instead of re-deriving it.
+      if (!guardPersonality && session.guard_name) {
+        const guard: GuardPersonality = {
+          name: session.guard_name,
+          title: session.guard_title || '',
+          trait: session.guard_trait || '',
+          baseSuspicion: session.guard_base_suspicion ?? 0.5,
+          description: session.guard_description || '',
+        };
         setGuardPersonality(guard);
         // Set initial trust based on guard's base suspicion (inverted)
         setCurrentTrust(1 - guard.baseSuspicion);
@@ -165,8 +182,16 @@ const FirstLoginContainer: React.FC = () => {
     const circumference = 2 * Math.PI * radius;
     const strokeDashoffset = circumference - (currentTrust * circumference);
 
-    // Calculate threshold marker rotation (example: 60% threshold = 216 degrees)
-    const thresholdPercent = session?.ship_choice ? 0.6 : 0.5; // Example threshold
+    // WO-PUX-TRUST-METER (Max ruling #3, 2026-07-10): the marker responds to
+    // ship_claimed -- the server already serializes it correctly on both the
+    // /session and /claim-ship payloads (verified; no server change needed).
+    // Before a ship is claimed the threshold sits at the baseline 50%; once
+    // claimed, the guard's bar rises to the canon-confirmed 60% for the rest
+    // of the interrogation. This is a deliberate UI simplification, not the
+    // full per-ship-rarity Weak/Avg/Strong threshold table (first-login.md) --
+    // that table drives the actual pass/fail scoring server-side; this ring
+    // is a single at-a-glance number, pinned per the ruling.
+    const thresholdPercent = session?.ship_claimed ? 0.6 : 0.5;
     const thresholdRotation = (thresholdPercent * 360) - 90;
 
     return (
