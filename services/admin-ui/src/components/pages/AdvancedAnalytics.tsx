@@ -283,7 +283,7 @@ export const AdvancedAnalytics: React.FC = () => {
               <h3>Select Export Format</h3>
               <p style={{ fontSize: '13px', opacity: 0.85, marginBottom: '12px' }}>
                 Server supports <strong>CSV</strong> and <strong>JSON</strong> only.
-                Excel/PDF are not generated server-side (would 400).
+                Excel/PDF are not offered here — no server generator exists for them.
               </p>
               <div className="format-options">
                 <label className={`format-option ${exportFormat === 'csv' ? 'selected' : ''}`}>
@@ -307,18 +307,6 @@ export const AdvancedAnalytics: React.FC = () => {
                   <i className="fas fa-file-code"></i>
                   <span>JSON</span>
                   <small>JavaScript Object Notation</small>
-                </label>
-                <label className="format-option" style={{ opacity: 0.45, cursor: 'not-allowed' }} title="Not supported by the gameserver">
-                  <input type="radio" value="excel" disabled />
-                  <i className="fas fa-file-excel"></i>
-                  <span>Excel</span>
-                  <small>Unavailable — no server generator</small>
-                </label>
-                <label className="format-option" style={{ opacity: 0.45, cursor: 'not-allowed' }} title="Not supported by the gameserver">
-                  <input type="radio" value="pdf" disabled />
-                  <i className="fas fa-file-pdf"></i>
-                  <span>PDF</span>
-                  <small>Unavailable — no server generator</small>
                 </label>
               </div>
             </div>
