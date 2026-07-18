@@ -240,49 +240,6 @@ export const MultiAccountReview: React.FC = () => {
               <span>{new Date(selected.created_at).toLocaleString()}</span>
             </div>
 
-            {/* Signal summary */}
-            <div className="mar-detail-section">
-              <label>Signal Summary</label>
-              <pre className="mar-signal-pre">
-                {JSON.stringify(selected.signal_summary, null, 2)}
-              </pre>
-            </div>
-
-            {/* Member flags */}
-            {selected.flags && selected.flags.length > 0 && (
-              <div className="mar-flags">
-                <label>Member Flags ({selected.flags.length})</label>
-                <table className="mar-flags-table">
-                  <thead>
-                    <tr>
-                      <th>Player ID</th>
-                      <th>Signal</th>
-                      <th>Severity</th>
-                      <th>Detected</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {selected.flags.map((f) => (
-                      <tr key={f.id}>
-                        <td className="mar-mono">{f.player_id}</td>
-                        <td>{f.signal}</td>
-                        <td>
-                          <span className={`mar-severity mar-severity-${f.severity}`}>
-                            {f.severity}
-                          </span>
-                        </td>
-                        <td>
-                          {f.created_at
-                            ? new Date(f.created_at).toLocaleDateString()
-                            : '—'}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
             {/* Ruling form — only show for pending clusters */}
             {selected.admin_decision === 'pending' && (
               <div className="mar-ruling-form">
@@ -345,6 +302,50 @@ export const MultiAccountReview: React.FC = () => {
                 </div>
               </div>
             )}
+
+            {/* Signal summary */}
+            <div className="mar-detail-section">
+              <label>Signal Summary</label>
+              <pre className="mar-signal-pre">
+                {JSON.stringify(selected.signal_summary, null, 2)}
+              </pre>
+            </div>
+
+            {/* Member flags */}
+            {selected.flags && selected.flags.length > 0 && (
+              <div className="mar-flags">
+                <label>Member Flags ({selected.flags.length})</label>
+                <table className="mar-flags-table">
+                  <thead>
+                    <tr>
+                      <th>Player ID</th>
+                      <th>Signal</th>
+                      <th>Severity</th>
+                      <th>Detected</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selected.flags.map((f) => (
+                      <tr key={f.id}>
+                        <td className="mar-mono">{f.player_id}</td>
+                        <td>{f.signal}</td>
+                        <td>
+                          <span className={`mar-severity mar-severity-${f.severity}`}>
+                            {f.severity}
+                          </span>
+                        </td>
+                        <td>
+                          {f.created_at
+                            ? new Date(f.created_at).toLocaleDateString()
+                            : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
           </div>
         )}
       </div>
