@@ -182,39 +182,6 @@ const AITradingDashboard: React.FC = () => {
         </div>
       )}
 
-      {/* System Overview */}
-      {metrics && (
-        <div className="system-overview">
-          <div className="metric-card">
-            <h3>Total Predictions</h3>
-            <div className="metric-value">{metrics.totalPredictions != null ? metrics.totalPredictions.toLocaleString() : '—'}</div>
-            <div className="metric-label">Lifetime</div>
-          </div>
-          <div className="metric-card">
-            <h3>Average Accuracy</h3>
-            <div className="metric-value">{metrics.avgAccuracy != null ? `${metrics.avgAccuracy.toFixed(1)}%` : '—'}</div>
-            <div className="metric-trend">Model Performance</div>
-          </div>
-          <div className="metric-card">
-            <h3>Active Profiles</h3>
-            <div className="metric-value">{metrics.activeProfiles.toLocaleString()}</div>
-            <div className="metric-label">Players Using AI</div>
-          </div>
-          <div className="metric-card">
-            <h3>Acceptance Rate</h3>
-            <div className="metric-value">{metrics.recommendationAcceptance != null ? `${metrics.recommendationAcceptance.toFixed(1)}%` : '—'}</div>
-            <div className="metric-label">Recommendations Followed</div>
-          </div>
-          <div className={`metric-card ${getStatusColor(metrics.modelHealth)}`}>
-            <h3>System Health</h3>
-            <div className="metric-value">{metrics.modelHealth != null ? metrics.modelHealth.toUpperCase() : '—'}</div>
-            <div className="metric-label">
-              {metrics.queuedJobs != null && metrics.processingRate != null ? `${metrics.queuedJobs} jobs queued • ${metrics.processingRate}/min` : 'no job queue exists'}
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Tab Navigation */}
       <div className="tab-navigation">
         <button 
@@ -458,6 +425,40 @@ const AITradingDashboard: React.FC = () => {
           </div>
         )}
       </div>
+      {/* System Overview */}
+      {metrics && (
+        <div className="system-overview">
+          <div className="metric-card">
+            <h3>Total Predictions</h3>
+            <div className="metric-value">{metrics.totalPredictions != null ? metrics.totalPredictions.toLocaleString() : '—'}</div>
+            <div className="metric-label">Lifetime</div>
+          </div>
+          <div className="metric-card">
+            <h3>Average Accuracy</h3>
+            <div className="metric-value">{metrics.avgAccuracy != null ? `${metrics.avgAccuracy.toFixed(1)}%` : '—'}</div>
+            <div className="metric-trend">Model Performance</div>
+          </div>
+          <div className="metric-card">
+            <h3>Active Profiles</h3>
+            <div className="metric-value">{metrics.activeProfiles.toLocaleString()}</div>
+            <div className="metric-label">Players Using AI</div>
+          </div>
+          <div className="metric-card">
+            <h3>Acceptance Rate</h3>
+            <div className="metric-value">{metrics.recommendationAcceptance != null ? `${metrics.recommendationAcceptance.toFixed(1)}%` : '—'}</div>
+            <div className="metric-label">Recommendations Followed</div>
+          </div>
+          <div className={`metric-card ${getStatusColor(metrics.modelHealth)}`}>
+            <h3>System Health</h3>
+            <div className="metric-value">{metrics.modelHealth != null ? metrics.modelHealth.toUpperCase() : '—'}</div>
+            <div className="metric-label">
+              {metrics.queuedJobs != null && metrics.processingRate != null ? `${metrics.queuedJobs} jobs queued • ${metrics.processingRate}/min` : 'no job queue exists'}
+            </div>
+          </div>
+        </div>
+      )}
+
+
     </div>
   );
 };
