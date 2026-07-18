@@ -254,6 +254,65 @@ const Dashboard: React.FC = () => {
       <PageHeader title="Dashboard" subtitle="Game Galaxy Overview" />
 
       <div className="page-content">
+        {/* Quick Access Section */}
+        <section className="section">
+          <div className="section-header">
+            <div>
+              <h3 className="section-title">Quick Access</h3>
+              <p className="section-subtitle">Commonly used administrative functions</p>
+            </div>
+          </div>
+          <div className="grid grid-auto-fit gap-6">
+            <Link to="/users" className="card card-interactive">
+              <div className="card-body">
+                <div className="flex items-center gap-4">
+                  <div className="text-3xl">👥</div>
+                  <div className="flex-1">
+                    <h4 className="font-semibold text-primary mb-1">Users</h4>
+                    <p className="text-sm text-tertiary">Manage player accounts and permissions</p>
+                  </div>
+                </div>
+              </div>
+            </Link>
+            
+            <Link to="/universe" className="card card-interactive">
+              <div className="card-body">
+                <div className="flex items-center gap-4">
+                  <div className="text-3xl">🌌</div>
+                  <div className="flex-1">
+                    <h4 className="font-semibold text-primary mb-1">Universe</h4>
+                    <p className="text-sm text-tertiary">Generate and manage the game universe</p>
+                  </div>
+                </div>
+              </div>
+            </Link>
+            
+            <Link to="/sectors" className="card card-interactive">
+              <div className="card-body">
+                <div className="flex items-center gap-4">
+                  <div className="text-3xl">🔳</div>
+                  <div className="flex-1">
+                    <h4 className="font-semibold text-primary mb-1">Sectors</h4>
+                    <p className="text-sm text-tertiary">Configure sectors, planets and stations</p>
+                  </div>
+                </div>
+              </div>
+            </Link>
+            
+            <Link to="/analytics" className="card card-interactive">
+              <div className="card-body">
+                <div className="flex items-center gap-4">
+                  <div className="text-3xl">📊</div>
+                  <div className="flex-1">
+                    <h4 className="font-semibold text-primary mb-1">Analytics</h4>
+                    <p className="text-sm text-tertiary">View detailed reports and metrics</p>
+                  </div>
+                </div>
+              </div>
+            </Link>
+          </div>
+        </section>
+
         {/* System Health Overview */}
         <section className="section">
           <div className="section-header">
@@ -519,64 +578,6 @@ const Dashboard: React.FC = () => {
           </div>
         </section>
 
-        {/* Quick Access Section */}
-        <section className="section">
-          <div className="section-header">
-            <div>
-              <h3 className="section-title">Quick Access</h3>
-              <p className="section-subtitle">Commonly used administrative functions</p>
-            </div>
-          </div>
-          <div className="grid grid-auto-fit gap-6">
-            <Link to="/users" className="card card-interactive">
-              <div className="card-body">
-                <div className="flex items-center gap-4">
-                  <div className="text-3xl">👥</div>
-                  <div className="flex-1">
-                    <h4 className="font-semibold text-primary mb-1">Users</h4>
-                    <p className="text-sm text-tertiary">Manage player accounts and permissions</p>
-                  </div>
-                </div>
-              </div>
-            </Link>
-            
-            <Link to="/universe" className="card card-interactive">
-              <div className="card-body">
-                <div className="flex items-center gap-4">
-                  <div className="text-3xl">🌌</div>
-                  <div className="flex-1">
-                    <h4 className="font-semibold text-primary mb-1">Universe</h4>
-                    <p className="text-sm text-tertiary">Generate and manage the game universe</p>
-                  </div>
-                </div>
-              </div>
-            </Link>
-            
-            <Link to="/sectors" className="card card-interactive">
-              <div className="card-body">
-                <div className="flex items-center gap-4">
-                  <div className="text-3xl">🔳</div>
-                  <div className="flex-1">
-                    <h4 className="font-semibold text-primary mb-1">Sectors</h4>
-                    <p className="text-sm text-tertiary">Configure sectors, planets and stations</p>
-                  </div>
-                </div>
-              </div>
-            </Link>
-            
-            <Link to="/analytics" className="card card-interactive">
-              <div className="card-body">
-                <div className="flex items-center gap-4">
-                  <div className="text-3xl">📊</div>
-                  <div className="flex-1">
-                    <h4 className="font-semibold text-primary mb-1">Analytics</h4>
-                    <p className="text-sm text-tertiary">View detailed reports and metrics</p>
-                  </div>
-                </div>
-              </div>
-            </Link>
-          </div>
-        </section>
       </div>
     </div>
   );
