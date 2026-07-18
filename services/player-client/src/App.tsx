@@ -41,6 +41,15 @@ const VistaParity = import.meta.env.DEV ? lazy(() => import('./vista/lab/VistaPa
 // WO-UI0-PERSISTENT-SHELL lane B — dev-only geometry harness, same
 // DEV-gated dead-code-elimination as the Vista lab routes above.
 const LabShell    = import.meta.env.DEV ? lazy(() => import('./components/layouts/LabShell')) : null;
+// PERMANENT regression harness — real-Chromium guard for the mount-relative-
+// clock rule (a raw-epoch `t` fed into rotation/animation math silently
+// freezes on screen once it reaches Skia's float32 Canvas2D transform, or a
+// GLSL float32 uniform, even though the JS double keeps advancing correctly
+// underneath; every t-driven draw callback must subtract a mount-time `t0`
+// first — see StarDisc.tsx:204-229 and drawPlanetTableau.tsx's own PlanetTa-
+// bleauLayer registration effect for the two fixed instances of this bug).
+// Same DEV-gated dead-code-elimination pattern as the Vista lab routes above.
+const TableauFreezeRepro = import.meta.env.DEV ? lazy(() => import('./components/tactical/lab/TableauFreezeRepro')) : null;
 
 interface ApiResponse {
   message?: string;
@@ -296,6 +305,9 @@ function App() {
               )}
               {import.meta.env.DEV && LabShell && (
                 <Route path="/lab/shell" element={<Suspense fallback={<div>Loading…</div>}><LabShell /></Suspense>} />
+              )}
+              {import.meta.env.DEV && TableauFreezeRepro && (
+                <Route path="/lab/tableau-freeze-repro" element={<Suspense fallback={<div>Loading…</div>}><TableauFreezeRepro /></Suspense>} />
               )}
               <Route path="*" element={<MainApp />} />
                 </Routes>

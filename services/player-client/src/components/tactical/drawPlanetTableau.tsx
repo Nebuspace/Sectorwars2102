@@ -685,6 +685,37 @@ export function PlanetTableauLayer({
   useEffect(() => {
     if (!harness || !canvasRef.current) return;
     const canvas = canvasRef.current;
+
+    // Time origin -- captured via the SAME clock source the harness itself
+    // uses (Date.now()/1000), measured HERE at mount rather than from the
+    // first `t` the draw callback receives. Mirrors StarDisc.tsx:204-229's
+    // own `uTime` fix EXACTLY, same bug class: the harness feeds
+    // `t = Date.now()/1000` (epoch seconds, ~1.78e9 magnitude) straight
+    // through, and this module's `spin` (drawPlanetSurfaceTableau, derived
+    // from raw `t`) feeds that epoch-scale value into `ctx.rotate()` --
+    // Chromium's Skia Canvas2D backend represents its transform-matrix trig
+    // in float32 internally (same precision class as a GLSL float uniform),
+    // so a frame-to-frame delta well under the float32 ULP at that magnitude
+    // silently rounds to the SAME value and the rotation goes static even
+    // though the JS double keeps advancing correctly underneath -- proven
+    // empirically (byte-identical canvas over 5s+ of confirmed-live,
+    // correctly-advancing `spin`; see `.claude/agent-memory/monk/
+    // canvas2d-skia-float32-rotation-collapse.md`). Subtracting `t0` keeps
+    // every t-driven value small (starts ~0, grows by real elapsed seconds)
+    // so frame-to-frame deltas stay comfortably float32-representable.
+    // Capturing `t0` from `Date.now()/1000` HERE (not from the harness's
+    // first `t`) instead of lazily on first callback matters for the same
+    // reduced-motion edge case StarDisc's own comment calls out: a
+    // first-callback-captured `t0` of 0 (reduced-motion pins `t` at exactly
+    // 0) would silently reintroduce the epoch-magnitude bug the moment real
+    // epoch values start flowing if reduced-motion later toggles off
+    // mid-session. With a mount-time origin, `t - t0` stays small/precise
+    // whenever the harness feeds a real epoch time, and stays a fixed (if
+    // large-magnitude) CONSTANT whenever `t` is pinned at 0 for
+    // reduced-motion -- a constant needs no frame-to-frame precision, only
+    // to be the same value every call, which it trivially is.
+    const t0 = Date.now() / 1000;
+
     return harness.register(canvas, (t, mapper, size) => {
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
@@ -700,7 +731,7 @@ export function PlanetTableauLayer({
         const pos = bodyPosition(live.star, body, live.safeRadii);
         return { body, xPct: pos.xPct, yPct: pos.yPct, rPx: (bodySizeEm(body) / 2) * (live.remPx as number) };
       });
-      drawPlanetTableau(ctx, live.sectorId, planets, t, mapper, live.star);
+      drawPlanetTableau(ctx, live.sectorId, planets, t - t0, mapper, live.star);
     });
   }, [harness]);
 
