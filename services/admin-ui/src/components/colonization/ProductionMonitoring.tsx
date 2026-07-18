@@ -230,6 +230,29 @@ export const ProductionMonitoring: React.FC = () => {
       </div>
 
       <div className="monitoring-grid">
+        <div className="alerts-container">
+          <h3>Production Alerts</h3>
+          <div className="alerts-list">
+            {alerts.map(alert => (
+              <div
+                key={alert.id}
+                className={`alert-item ${alert.severity}`}
+                style={{ borderLeftColor: getSeverityColor(alert.severity) }}
+              >
+                <div className="alert-header">
+                  <span className="alert-icon">{getAlertIcon(alert.type)}</span>
+                  <span className="alert-colony">{alert.colony}</span>
+                  <span className="alert-time">
+                    {new Date(alert.timestamp).toLocaleTimeString()}
+                  </span>
+                </div>
+                <div className="alert-message">{alert.message}</div>
+                <div className="alert-resource">Resource: {alert.resource}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
         <div className="chart-container production-chart">
           <h3>Production Over Time</h3>
           <div style={{ position: 'relative', height: '300px', width: '100%' }}>
@@ -312,29 +335,6 @@ export const ProductionMonitoring: React.FC = () => {
                 },
               }}
             />
-          </div>
-        </div>
-
-        <div className="alerts-container">
-          <h3>Production Alerts</h3>
-          <div className="alerts-list">
-            {alerts.map(alert => (
-              <div
-                key={alert.id}
-                className={`alert-item ${alert.severity}`}
-                style={{ borderLeftColor: getSeverityColor(alert.severity) }}
-              >
-                <div className="alert-header">
-                  <span className="alert-icon">{getAlertIcon(alert.type)}</span>
-                  <span className="alert-colony">{alert.colony}</span>
-                  <span className="alert-time">
-                    {new Date(alert.timestamp).toLocaleTimeString()}
-                  </span>
-                </div>
-                <div className="alert-message">{alert.message}</div>
-                <div className="alert-resource">Resource: {alert.resource}</div>
-              </div>
-            ))}
           </div>
         </div>
 
