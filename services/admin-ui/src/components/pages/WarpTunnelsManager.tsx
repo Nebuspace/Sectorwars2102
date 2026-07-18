@@ -402,7 +402,6 @@ const WarpTunnelModal: React.FC<WarpTunnelModalProps> = ({ tunnel, mode, onClose
   const [formData, setFormData] = useState({
     stability: tunnel.stability || 0,
     energy_cost: tunnel.energy_cost || 0,
-    max_ship_size: tunnel.max_ship_size || 'Unknown',
     is_active: tunnel.is_active ?? true,
     is_bidirectional: tunnel.is_bidirectional ?? false,
   });
@@ -474,13 +473,12 @@ const WarpTunnelModal: React.FC<WarpTunnelModalProps> = ({ tunnel, mode, onClose
 
             <div className="form-group">
               <label>Max Ship Size</label>
-              {/* Always read-only: backend WarpTunnelUpdateRequest has no max_ship_size field */}
+              {/* Display-only: WarpTunnelUpdateRequest has no max_ship_size */}
               <input
                 type="text"
-                value={formData.max_ship_size}
+                value={tunnel.max_ship_size || 'Unknown'}
                 readOnly
-                disabled
-                title="Read-only — backend does not accept this field yet"
+                title="Not editable — backend update contract omits this field"
               />
             </div>
 
