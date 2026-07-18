@@ -103,7 +103,7 @@ export const PermissionsDashboard: React.FC = () => {
         {activeTab === 'users' && (
           <div className="user-permissions">
             <div className="user-permissions-header">
-              <h2>User Permission Management</h2>
+              <h2>User permissions (read-only)</h2>
               <div className="search-box">
                 <i className="fas fa-search"></i>
                 <input
