@@ -250,8 +250,15 @@ export const CombatOverview: React.FC = () => {
   const handleIntervention = async (action: string) => {
     if (selectedCombatId) {
       try {
+        const intervention_type =
+          action === 'end' ? 'stop_combat' : action === 'restore' ? 'restore_shields' : null;
+        if (!intervention_type) {
+          setError('Unsupported intervention action');
+          setShowInterventionModal(false);
+          return;
+        }
         await api.post(`/api/v1/admin/combat/${selectedCombatId}/intervene`, {
-          intervention_type: action === 'end' ? 'stop_combat' : action === 'restore' ? 'restore_shields' : action,
+          intervention_type,
           parameters: {
             reason: `Admin intervention: ${action}`
           }
@@ -473,8 +480,9 @@ export const CombatOverview: React.FC = () => {
                 lineHeight: 1.4,
               }}
             >
-              Pause / Reset are unavailable — intervene accepts stop_combat, adjust_damage,
-              restore_shields, and declare_winner only. This modal does not invent those controls.
+              This modal offers Force End (stop_combat) and Restore Ships (restore_shields)
+              only. Pause, Reset, adjust_damage, and declare_winner controls are not shown —
+              do not invent them here.
             </p>
             
             <button 
