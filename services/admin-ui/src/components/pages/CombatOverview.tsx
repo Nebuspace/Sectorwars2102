@@ -307,55 +307,6 @@ export const CombatOverview: React.FC = () => {
         </div>
       )}
       
-      {/* Combat Statistics Dashboard */}
-      {/* Page-unique .combat-stat-* class names: generic .stat-card/.stat-value
-          names get clobbered by team-management-override.css's unscoped
-          !important globals, which nullified the alarm styling. */}
-      <div className="combat-stats-grid">
-        {/* Alarm styling only when there are live battles needing intervention;
-            a quiet battlefield is neutral, not red. */}
-        <div className={`combat-stat-card${activeBattlesAlarm ? ' alarm' : ''}`}>
-          <h3>Active Battles</h3>
-          <div className="combat-stat-value">{activeBattles.toLocaleString()}</div>
-          <div className="combat-stat-change">{needingIntervention.toLocaleString()} need intervention</div>
-        </div>
-
-        <div className="combat-stat-card">
-          <h3>24h Battles</h3>
-          <div className="combat-stat-value">{combatStats?.balance_summary?.total_combats_24h?.toLocaleString() || 0}</div>
-          <div className="combat-stat-label">battles today</div>
-        </div>
-
-        <div className="combat-stat-card">
-          <h3>Balance Score</h3>
-          <div className="combat-stat-value">{combatStats?.balance_summary?.score?.toFixed(0) || 0}%</div>
-          <div className="combat-stat-label">system balance</div>
-        </div>
-
-        <div className="combat-stat-card">
-          <h3>Total Disputes</h3>
-          <div className="combat-stat-value">{combatStats?.dispute_summary?.total_disputes?.toLocaleString() || 0}</div>
-          <div className="combat-stat-label">pending review</div>
-        </div>
-
-        <div className="combat-stat-card highlight">
-          <h3>Critical Disputes</h3>
-          <div className="combat-stat-value">{combatStats?.dispute_summary?.by_severity?.critical || 0}</div>
-          <div className="combat-stat-label">need attention</div>
-        </div>
-
-        <div className="combat-stat-card highlight">
-          <h3>Balance Outliers</h3>
-          <div className="combat-stat-value">{combatStats?.balance_summary?.outliers_count || 0}</div>
-          <div className="combat-stat-label">imbalanced</div>
-        </div>
-      </div>
-
-      {/* Combat Activity Chart */}
-      <div className="combat-chart-section">
-        <CombatActivityChart events={combatEvents} width={1200} height={300} />
-      </div>
-
       {/* View Selector */}
       <div className="view-selector">
         <button 
@@ -436,6 +387,55 @@ export const CombatOverview: React.FC = () => {
             </table>
           </div>
         )}
+      </div>
+
+      {/* Combat Statistics Dashboard */}
+      {/* Page-unique .combat-stat-* class names: generic .stat-card/.stat-value
+          names get clobbered by team-management-override.css's unscoped
+          !important globals, which nullified the alarm styling. */}
+      <div className="combat-stats-grid">
+        {/* Alarm styling only when there are live battles needing intervention;
+            a quiet battlefield is neutral, not red. */}
+        <div className={`combat-stat-card${activeBattlesAlarm ? ' alarm' : ''}`}>
+          <h3>Active Battles</h3>
+          <div className="combat-stat-value">{activeBattles.toLocaleString()}</div>
+          <div className="combat-stat-change">{needingIntervention.toLocaleString()} need intervention</div>
+        </div>
+
+        <div className="combat-stat-card">
+          <h3>24h Battles</h3>
+          <div className="combat-stat-value">{combatStats?.balance_summary?.total_combats_24h?.toLocaleString() || 0}</div>
+          <div className="combat-stat-label">battles today</div>
+        </div>
+
+        <div className="combat-stat-card">
+          <h3>Balance Score</h3>
+          <div className="combat-stat-value">{combatStats?.balance_summary?.score?.toFixed(0) || 0}%</div>
+          <div className="combat-stat-label">system balance</div>
+        </div>
+
+        <div className="combat-stat-card">
+          <h3>Total Disputes</h3>
+          <div className="combat-stat-value">{combatStats?.dispute_summary?.total_disputes?.toLocaleString() || 0}</div>
+          <div className="combat-stat-label">pending review</div>
+        </div>
+
+        <div className="combat-stat-card highlight">
+          <h3>Critical Disputes</h3>
+          <div className="combat-stat-value">{combatStats?.dispute_summary?.by_severity?.critical || 0}</div>
+          <div className="combat-stat-label">need attention</div>
+        </div>
+
+        <div className="combat-stat-card highlight">
+          <h3>Balance Outliers</h3>
+          <div className="combat-stat-value">{combatStats?.balance_summary?.outliers_count || 0}</div>
+          <div className="combat-stat-label">imbalanced</div>
+        </div>
+      </div>
+
+      {/* Combat Activity Chart */}
+      <div className="combat-chart-section">
+        <CombatActivityChart events={combatEvents} width={1200} height={300} />
       </div>
 
       {/* Intervention Modal */}
