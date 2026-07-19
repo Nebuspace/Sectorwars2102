@@ -436,19 +436,23 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
           <div className="assets-readonly">
             <div className="asset-item">
               <span className="asset-label">Ships Owned:</span>
-              <span className="asset-value">{player.assets.ships_count}</span>
+              <span className="asset-value">{player.assets.ships_count ?? '—'}</span>
             </div>
             <div className="asset-item">
               <span className="asset-label">Planets Owned:</span>
-              <span className="asset-value">{player.assets.planets_count}</span>
+              <span className="asset-value">{player.assets.planets_count ?? '—'}</span>
             </div>
             <div className="asset-item">
               <span className="asset-label">Ports Owned:</span>
-              <span className="asset-value">{player.assets.stations_count}</span>
+              <span className="asset-value">{player.assets.stations_count ?? '—'}</span>
             </div>
             <div className="asset-item">
               <span className="asset-label">Total Asset Value:</span>
-              <span className="asset-value credits">{player.assets.total_value.toLocaleString()}</span>
+              <span className="asset-value credits">
+                {player.assets.total_value != null
+                  ? player.assets.total_value.toLocaleString()
+                  : '—'}
+              </span>
             </div>
           </div>
         </div>
