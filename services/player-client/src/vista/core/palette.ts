@@ -142,13 +142,25 @@ export function derivePalette(
   // Stage 4: atmosphere absent → vacuum sky (near-black, faint blue tint).
   // The 0.15 factor keeps the sky from being fully black on dark monitor
   // calibrations while reading unmistakably as "no atmosphere."
-  const skyTop: RGB = atmoPresent
+  const skyTopBase: RGB = atmoPresent
     ? jitterRgb(rng, bp.skyTop, env * 0.6)
     : [
         Math.round(bp.skyTop[0] * 0.15),
         Math.round(bp.skyTop[1] * 0.15),
         Math.round(bp.skyTop[2] * 0.18),
       ];
+
+  // Temperature tint: cold (temp ≤ −1) shifts skyTop toward icy blue;
+  // hot (temp ≥ +1) shifts toward amber/orange.  Vacuum sky unchanged — its
+  // near-black hue already reads as extreme environment.
+  const temp01: number = clamp01((input.planet.temperature + 1) / 2);  // −1..+1 → 0..1
+  const ICY_BLUE:  RGB = [120, 160, 220];
+  const AMBER_HOT: RGB = [210, 130,  60];
+  const skyTop: RGB = atmoPresent
+    ? (temp01 < 0.5
+        ? lerpRgb(skyTopBase, ICY_BLUE,  (0.5 - temp01) * 0.55)   // up to 27% blue push at temp=−1
+        : lerpRgb(skyTopBase, AMBER_HOT, (temp01 - 0.5) * 0.44))  // up to 22% amber push at temp=+1
+    : skyTopBase;
 
   // Stage 4b: scatter band disappears completely in vacuum (no Rayleigh).
   const scatterBand: RGB = atmoPresent
@@ -184,6 +196,11 @@ export function derivePalette(
   // Stage 7: accent.
   const accent = deriveAccent(profile, input);
 
+  // Stage 8: warm secondary accent — passed through without jitter (it is a
+  // designed engineering constant, not a natural palette sample).
+  // Present only when the profile sets it (currently: ARTIFICIAL only).
+  const accentWarm: RGB | undefined = bp.accentWarm;
+
   return {
     skyTop,
     skyHorizon,
@@ -192,8 +209,9 @@ export function derivePalette(
     surface,
     geologyBands,
     flora,
-    ...(water !== undefined ? { water } : {}),
-    ...(foam  !== undefined ? { foam  } : {}),
+    ...(water      !== undefined ? { water }      : {}),
+    ...(foam       !== undefined ? { foam  }      : {}),
     accent,
+    ...(accentWarm !== undefined ? { accentWarm } : {}),
   };
 }

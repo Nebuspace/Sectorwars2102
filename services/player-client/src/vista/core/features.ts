@@ -121,6 +121,13 @@ export function poissonDiskScatter(
  * RNG contract per instance:
  *   always draws 2 floats (scale, tint-mix);
  *   draws 1 additional float for glow variance when glowBase is defined.
+ *
+ * depthBand (optional): when supplied, flora scale is derived from the
+ *   instance's normalized depth in [horizonY..groundY1].
+ *   FAR (depthFrac≈0) → base ≈ 0.025; NEAR (depthFrac≈1) → base ≈ 0.080.
+ *   The single `scale` rng draw becomes a jitter on top of the depth base —
+ *   draw count is unchanged (still 1 float for scale).
+ *   When absent (rocks, glitter), the previous flat-uniform range is used.
  */
 function buildScatterKind(
   rng: SeededRng,
@@ -129,10 +136,22 @@ function buildScatterKind(
   baseColor: RGB,
   highlightColor: RGB,
   glowBase?: number,
+  depthBand?: { horizonY: number; groundY1: number },
 ): VistaModel['layers']['features']['scatters'][number] {
   const instances: VistaModel['layers']['features']['scatters'][number]['instances'] = [];
   for (const pos of positions) {
-    const scale   = 0.018 + rng.next01() * 0.040;
+    let scale: number;
+    if (depthBand && depthBand.groundY1 > depthBand.horizonY) {
+      // depthFrac 0 = at horizon (far/small), 1 = at groundY1 (near/large).
+      const depthFrac = clamp01(
+        (pos[1] - depthBand.horizonY) / (depthBand.groundY1 - depthBand.horizonY),
+      );
+      // FAR: base≈0.025  NEAR: base≈0.080 — rng jitter is the same 1 draw.
+      const baseScale = lerp(0.025, 0.080, depthFrac);
+      scale = baseScale + rng.next01() * 0.030;
+    } else {
+      scale = 0.018 + rng.next01() * 0.040;
+    }
     const tintMix = rng.next01() * 0.22;
     const tint    = lerpRgb(baseColor, highlightColor, tintMix);
     if (glowBase !== undefined) {
@@ -164,6 +183,13 @@ function buildScatterKind(
  *
  * Glitter uses the 'glitter-spark' scatter kind with additive glow set to
  * palette.accent, so each planet type's energy signature shows through.
+ *
+ * waterlineY (optional): when the planet has a water body, pass the computed
+ * waterlineY so every scatter is bounded to [horizonY..waterlineY].  Without
+ * this, the Y1 extends past the shoreline and the scatter budget is wasted on
+ * under-water positions that the renderer never shows, which starves the visible
+ * land band — especially the upper/distant strip near horizonY.  Dry worlds
+ * (no water layer) leave waterlineY undefined and use the previous fixed limits.
  */
 export function placeFloraScatters(
   rng: SeededRng,
@@ -172,45 +198,70 @@ export function placeFloraScatters(
   horizonY: number,
   hab01: number,
   desirability: number,
+  waterlineY?: number,
+  floraKindWeights?: readonly number[],
 ): VistaModel['layers']['features']['scatters'] {
   const scatters: VistaModel['layers']['features']['scatters'] = [];
   if (floraKinds.length === 0) return scatters;
 
-  const white: RGB    = [255, 255, 255];
-  const groundY1      = horizonY + (1 - horizonY) * 0.85;
+  const white: RGB = [255, 255, 255];
+
+  // Derive the upper Y bound for each scatter pass.  When water is present,
+  // stop at waterlineY so all placed points land in the visible land band.
+  // Clamp against the type-specific percentage limits so nothing invades the
+  // very bottom sliver of the canvas on dry worlds.
+  const rawY1         = horizonY + (1 - horizonY) * 0.85;
+  const groundY1      = waterlineY !== undefined ? Math.min(waterlineY, rawY1)         : rawY1;
+  const rawY1b        = horizonY + (1 - horizonY) * 0.80;
+  const groundY1b     = waterlineY !== undefined ? Math.min(waterlineY, rawY1b)        : rawY1b;
+  const rawGlitterY1  = horizonY + (1 - horizonY) * 0.60;
+  const glitterY1     = waterlineY !== undefined ? Math.min(waterlineY, rawGlitterY1)  : rawGlitterY1;
+
+  // Kind selection helpers: when floraKindWeights is provided and matches the
+  // floraKinds array length, use weighted pick; otherwise fall back to equal-weight.
+  const validWeights = (
+    floraKindWeights &&
+    floraKindWeights.length === floraKinds.length
+  ) ? floraKindWeights : undefined;
+  const pickKind = () => validWeights
+    ? rng.pickWeighted(floraKinds, validWeights)
+    : rng.pick(floraKinds);
+
+  // Depth band bounds for scale gradient: far (near horizonY) → small scale;
+  // near (near groundY1) → larger scale.
+  const primaryDepthBand  = { horizonY, groundY1 };
+  const secondaryDepthBand = { horizonY, groundY1: groundY1b };
 
   // Primary flora: count cap scales with desirability (more lush at high beauty).
   const maxPrimary   = Math.round(lerp(8, 22, desirability));
   const primaryCount = Math.round(lerp(0, maxPrimary, hab01));
   if (primaryCount > 0) {
-    const kind    = rng.pick(floraKinds);
+    const kind    = pickKind();
     // Tighter minimum spacing on high-desirability worlds (denser carpet).
     const minDist = lerp(0.07, 0.04, desirability);
     const pos     = poissonDiskScatter(rng, primaryCount, 0.02, horizonY, 0.98, groundY1, minDist);
-    scatters.push(buildScatterKind(rng, kind, pos, palette.flora, white));
+    scatters.push(buildScatterKind(rng, kind, pos, palette.flora, white, undefined, primaryDepthBand));
   }
 
   // Second flora variety: moderate-to-high hab + meaningful desirability unlocks it.
   if (floraKinds.length > 1 && hab01 > 0.55 && desirability > 0.45) {
-    const secondKind  = rng.pick(floraKinds);
+    const secondKind  = pickKind();
     const maxSecond   = Math.round(lerp(3, 10, desirability));
     const secondCount = Math.round(lerp(0, maxSecond, (hab01 - 0.55) / 0.45));
     if (secondCount > 0) {
-      const groundY1b = horizonY + (1 - horizonY) * 0.80;
       const pos = poissonDiskScatter(rng, secondCount, 0.05, horizonY, 0.95, groundY1b, 0.06);
-      scatters.push(buildScatterKind(rng, secondKind, pos, palette.flora, white));
+      scatters.push(buildScatterKind(rng, secondKind, pos, palette.flora, white, undefined, secondaryDepthBand));
     }
   }
 
   // Glitter / sparkle accent: a visual beauty-budget signal at high desirability.
   // Uses palette.accent as the base so energy signatures show (thermal glow,
-  // tidal surf, solar flash, wind shimmer).
+  // tidal surf, solar flash, wind shimmer).  No depthBand — flat glow, not trees.
   if (desirability > 0.55) {
     const glitterCount = Math.round(lerp(0, 8, (desirability - 0.55) / 0.45));
     if (glitterCount > 0) {
-      const glitterY1 = horizonY + (1 - horizonY) * 0.60;
-      const pos       = poissonDiskScatter(rng, glitterCount, 0.03, horizonY, 0.97, glitterY1, 0.08);
-      const glowBase  = clamp01(desirability * 0.9);
+      const pos      = poissonDiskScatter(rng, glitterCount, 0.03, horizonY, 0.97, glitterY1, 0.08);
+      const glowBase = clamp01(desirability * 0.9);
       const accentHi: RGB = [255, 255, 200];
       scatters.push(buildScatterKind(rng, 'glitter-spark', pos, palette.accent, accentHi, glowBase));
     }

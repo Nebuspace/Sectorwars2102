@@ -13,6 +13,7 @@
  *   Atmosphere    — ON/OFF toggle, overrides input.planet.atmosphere.present live
  *   Planet type   — 12-tile picker (all PlanetType values from contract.ts)
  *   Inspector     — live generateVista() JSON + invariants.ok + Copy-Seed button
+ *   Clock         — LIVE (RAF-driven) or SCRUBBED (slider 0–1 → deterministic phase)
  *
  * Controls (P1 — Environment accordion):
  *   Atmosphere Density — 0–1 slider → input.planet.atmosphere.density
@@ -31,7 +32,7 @@
  *   Energy Magnitude — 0–1 slider → input.site.energy.magnitude
  *   Defensibility   — 0–1 slider → input.site.defensibility
  *   Deposits        — 6 preset kinds; richness slider 0–1 (0 = absent)
- *   Hazards         — 5 preset kinds; severity slider 0–1 (0 = absent) + named toggle
+ *   Hazards         — 9 preset kinds covering all 9 distinct hazard visuals; severity 0–1 + named toggle
  *
  * Architecture:
  *   `randomVistaInput(seed, type)` builds the canonical base input.
@@ -40,7 +41,8 @@
  *   randomize (when unlocked) so the visible scene matches the full roll.
  *   Existing habitability + atmospherePresent retain their independent behavior.
  *   A requestAnimationFrame clock drives the day-cycle animation via the `clock`
- *   prop passed to <VistaCanvas>.
+ *   prop passed to <VistaCanvas>.  The Clock control can override it with a
+ *   deterministic scrubber value: phase (0–1) × DAY_CYCLE_SECONDS (360 s).
  *
  * Cross-lane imports (Lanes B + C — EXPECTED "cannot find module" until they land):
  *   generateVista  ← Lane B  src/vista/core/pipeline.ts
@@ -54,6 +56,9 @@ import { randomVistaInput } from '../core/validate';
 import VistaCanvas from '../react';
 // Lane B — will resolve once pipeline.ts lands; expected tsc gap until integrate
 import { generateVista } from '../core/pipeline';
+// PERF-HARNESS sub-part (c) — reads sub-part (b)'s collector; expected tsc
+// gap until that lane lands (see PerfOverlay.tsx's own doc comment).
+import PerfOverlay from '../perf/PerfOverlay';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -75,6 +80,24 @@ const ALL_GRID_SHAPES: GridShape[] = [
 ];
 
 const ALL_ENERGY_SOURCES: EnergySource[] = ['GEOTHERMAL', 'TIDAL', 'SOLAR', 'WIND'];
+
+/**
+ * Weather override options for the lab dropdown.
+ * Values match view.weatherOverride in the contract (string | null).
+ * null = let the pipeline/renderer pick based on atmosphere/type.
+ * These cover all 7 particle kinds so every draw path is reachable in the lab.
+ */
+const WEATHER_OVERRIDE_OPTIONS: Array<{ value: string | null; label: string }> = [
+  { value: null,    label: 'Auto' },
+  { value: 'clear', label: 'Clear' },
+  { value: 'rain',  label: 'Rain' },
+  { value: 'storm', label: 'Storm' },
+  { value: 'snow',  label: 'Snow' },
+  { value: 'ash',   label: 'Ash' },
+  { value: 'dust',  label: 'Dust' },
+  { value: 'spore', label: 'Spore' },
+  { value: 'ember', label: 'Ember' },
+];
 
 /**
  * Canonical hex colors per StarKind.
@@ -100,9 +123,54 @@ const STAR_COLORS: Record<StarKind, string> = {
 const DEPOSIT_PRESETS = ['ore', 'gas', 'thermal', 'hydrocarbon', 'crystal', 'biolumin'] as const;
 type DepositKind = typeof DEPOSIT_PRESETS[number];
 
-/** Preset hazard kinds for the Site panel (matches VistaModel hazard overlay visuals). */
-const HAZARD_PRESETS = ['lava-flow', 'storm-cell', 'radiation-haze', 'flood-zone', 'megafauna'] as const;
+/**
+ * Preset hazard kinds for the Site panel.
+ * These are semantic hazard KIND strings, not visual names.  They match the keys
+ * in each PlanetProfile's hazardVisuals map (profiles.ts).
+ *
+ * The set below covers every distinct hazard visual the engine can draw:
+ *
+ *   storm        → storm-cell        (TERRAN, OCEANIC, TROPICAL, GAS_GIANT)
+ *   flood        → flood-zone        (TERRAN, OCEANIC, JUNGLE, TROPICAL)
+ *   megafauna    → megafauna-marker  (TERRAN, JUNGLE, TROPICAL)
+ *   radiation    → radiation-haze    (all types)
+ *   seismic      → fault-line        (VOLCANIC, OCEANIC, MOUNTAINOUS, BARREN)
+ *   magma-surge  → lava-flow         (VOLCANIC only)
+ *   dust-storm   → dust-front        (DESERT only)
+ *   micrometeor  → impact-scar       (DESERT, BARREN)
+ *   blizzard     → snow-band         (ICE, ARCTIC, MOUNTAINOUS)
+ *
+ * To reach a type-specific visual, select the matching planet type first; then
+ * enable the corresponding hazard kind.  Kinds absent from a type's hazardVisuals
+ * map fall back to 'impact-scar' (engine default for unknown kinds).
+ */
+const HAZARD_PRESETS = [
+  'storm', 'flood', 'megafauna', 'radiation',
+  'seismic', 'magma-surge', 'dust-storm', 'micrometeor', 'blizzard',
+] as const;
 type HazardKind = typeof HAZARD_PRESETS[number];
+
+/** Human-readable label for each hazard preset kind shown in the Site panel. */
+const HAZARD_KIND_LABELS: Record<HazardKind, string> = {
+  storm:          'Storm',
+  flood:          'Flood',
+  megafauna:      'Megafauna',
+  radiation:      'Radiation',
+  seismic:        'Seismic',
+  'magma-surge':  'Magma Surge',
+  'dust-storm':   'Dust Storm',
+  micrometeor:    'Micrometeor',
+  blizzard:       'Blizzard',
+};
+
+/**
+ * Duration of one full day cycle in seconds — mirrors the engine constant
+ * DAY_CYCLE_SECONDS exported from render/canvas2d/backend.ts.
+ * The scrubber maps its 0–1 phase range to [0, DAY_CYCLE_SECONDS) so it
+ * speaks the same elapsed-seconds domain that VistaCanvas.setTime() expects.
+ * dayPhase inside the engine: 0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset.
+ */
+const DAY_CYCLE_SECONDS = 360;
 
 /** Generate a unique non-guessable seed string. */
 function makeSeed(): string {
@@ -121,6 +189,11 @@ export default function VistaLab() {
   const [habitability, setHabitability] = useState<number>(50);
   const [atmospherePresent, setAtmospherePresent] = useState<boolean>(true);
   const [clock, setClock] = useState<number>(0);
+  // Clock mode: LIVE uses the RAF-driven elapsed seconds; SCRUBBED overrides
+  // with clockPhase × DAY_CYCLE_SECONDS so a given slider value always
+  // produces the same frame regardless of when the component mounted.
+  const [clockMode, setClockMode] = useState<'live' | 'scrubbed'>('live');
+  const [clockPhase, setClockPhase] = useState<number>(0.5);    // 0.5 ≈ noon
   const [copied, setCopied] = useState<boolean>(false);
 
   // ── Environment overrides (P1) — sync from baseInput on randomize ────────
@@ -130,6 +203,7 @@ export default function VistaLab() {
   const [nativeLife, setNativeLife] = useState<number>(0.1);        // 0..1
   const [atmosphereDensity, setAtmosphereDensity] = useState<number>(0.7); // 0..1
   const [starKind, setStarKind] = useState<StarKind>('G_YELLOW');
+  const [weatherOverride, setWeatherOverride] = useState<string | null>(null);
 
   // ── Site controls (absent = P0 behavior) ────────────────────────────────
   const [siteOpen, setSiteOpen] = useState<boolean>(false);
@@ -235,6 +309,8 @@ export default function VistaLab() {
           color: STAR_COLORS[starKind],
         },
       },
+      // view is renderer-only — excluded from generate() determinism
+      view: { weatherOverride },
     };
   }, [
     baseInput, habitability, atmospherePresent, atmosphereDensity,
@@ -242,6 +318,7 @@ export default function VistaLab() {
     siteEnabled, siteShape, siteUsableSlots, siteCitadelCeiling,
     siteEnergySource, siteEnergyTier, siteEnergyMagnitude,
     siteDefensibility, depositRichness, hazardSeverity, hazardNamed,
+    weatherOverride,
   ]);
 
   // Inspector model — pure derivation, memoised so it doesn't rerun on clock ticks
@@ -305,6 +382,11 @@ export default function VistaLab() {
     (e: React.ChangeEvent<HTMLSelectElement>) => setStarKind(e.target.value as StarKind),
     [],
   );
+  const handleWeatherOverrideChange = useCallback(
+    (e: React.ChangeEvent<HTMLSelectElement>) =>
+      setWeatherOverride(e.target.value === '' ? null : e.target.value),
+    [],
+  );
 
   // Site handlers
   const handleSiteEnergyTierChange = useCallback(
@@ -333,6 +415,16 @@ export default function VistaLab() {
     [],
   );
 
+  // Clock handlers
+  const handleClockModeToggle = useCallback(
+    (mode: 'live' | 'scrubbed') => () => setClockMode(mode),
+    [],
+  );
+  const handleClockPhaseChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => setClockPhase(Number(e.target.value)),
+    [],
+  );
+
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
@@ -351,6 +443,7 @@ export default function VistaLab() {
             {ALL_PLANET_TYPES.map(t => (
               <button
                 key={t}
+                data-testid={`vista-lab-type-${t}`}
                 onClick={() => handleTypeSelect(t)}
                 style={planetType === t ? styles.typeTileActive : styles.typeTile}
               >
@@ -364,6 +457,7 @@ export default function VistaLab() {
         <section style={styles.section}>
           <div style={styles.row}>
             <button
+              data-testid="vista-lab-reseed"
               onClick={handleRandomize}
               disabled={locked}
               style={locked ? styles.btnDisabled : styles.btnPrimary}
@@ -396,6 +490,7 @@ export default function VistaLab() {
         <section style={styles.section}>
           <label style={styles.label}>Habitability — {habitability}</label>
           <input
+            data-testid="vista-lab-habitability"
             type="range"
             min={0}
             max={100}
@@ -414,6 +509,44 @@ export default function VistaLab() {
           >
             {atmospherePresent ? 'ON' : 'OFF'}
           </button>
+        </section>
+
+        {/* ── Clock mode + day-phase scrubber ─────────────────────────── */}
+        <section style={styles.section}>
+          <label style={styles.label}>Clock</label>
+          <div style={styles.row}>
+            <button
+              onClick={handleClockModeToggle('live')}
+              style={clockMode === 'live' ? styles.btnOn : styles.btnSecondary}
+              title="Use RAF-driven elapsed time (animated)"
+            >
+              Live
+            </button>
+            <button
+              onClick={handleClockModeToggle('scrubbed')}
+              style={clockMode === 'scrubbed' ? styles.btnLocked : styles.btnSecondary}
+              title="Override clock with slider — stable frame for screenshots"
+            >
+              Scrub
+            </button>
+          </div>
+          {clockMode === 'scrubbed' && (
+            <>
+              <label style={{ ...styles.subLabel, marginTop: 6 }}>
+                Day phase — {clockPhase.toFixed(3)}
+                <span style={styles.clockHint}> (0=mid·0.25=rise·0.5=noon·0.75=set)</span>
+              </label>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.001}
+                value={clockPhase}
+                onChange={handleClockPhaseChange}
+                style={styles.slider}
+              />
+            </>
+          )}
         </section>
 
         {/* ── Environment accordion ────────────────────────────────────── */}
@@ -498,6 +631,17 @@ export default function VistaLab() {
                   ))}
                 </select>
               </div>
+
+              <label style={styles.subLabel}>Weather</label>
+              <select
+                value={weatherOverride ?? ''}
+                onChange={handleWeatherOverrideChange}
+                style={styles.select}
+              >
+                {WEATHER_OVERRIDE_OPTIONS.map(({ value, label }) => (
+                  <option key={value ?? '__null'} value={value ?? ''}>{label}</option>
+                ))}
+              </select>
 
             </div>
           )}
@@ -635,7 +779,7 @@ export default function VistaLab() {
                   <label style={styles.subLabel}>Hazards (0 = absent)</label>
                   {HAZARD_PRESETS.map(k => (
                     <div key={k} style={styles.presetRow}>
-                      <span style={styles.presetName}>{k}</span>
+                      <span style={styles.presetName}>{HAZARD_KIND_LABELS[k]}</span>
                       <input
                         type="range"
                         min={0}
@@ -665,8 +809,12 @@ export default function VistaLab() {
 
       {/* ── Centre: 16:9 canvas ──────────────────────────────────────────── */}
       <main style={styles.canvasArea}>
-        <div style={styles.canvasBox}>
-          <VistaCanvas input={vistaInput} clock={clock} />
+        <div data-testid="vista-lab-canvas-box" style={styles.canvasBox}>
+          <VistaCanvas
+            input={vistaInput}
+            clock={clockMode === 'live' ? clock : clockPhase * DAY_CYCLE_SECONDS}
+          />
+          <PerfOverlay />
         </div>
       </main>
 
@@ -843,6 +991,14 @@ const styles: Record<string, React.CSSProperties> = {
   },
   slider: {
     width: '100%',
+  },
+  // Dim annotation text inside a label (clock phase guide, etc.)
+  clockHint: {
+    fontSize: 9,
+    color: '#404860',
+    letterSpacing: 0,
+    textTransform: 'none' as const,
+    fontWeight: 400,
   },
 
   // ── Accordions ──────────────────────────────────────────────────────────

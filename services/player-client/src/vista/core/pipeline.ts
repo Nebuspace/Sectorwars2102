@@ -28,9 +28,8 @@
  */
 
 import { VistaInput, VistaModel, RGB } from '../contract';
-import { SeedBus } from './rng';
-import { SeededRng } from './rng';
-import { getProfile, isProfiledType, ArchetypeEntry, LandmarkKind, WaterType } from './profiles';
+import { SeedBus, SeededRng, deriveChildSeed } from './rng';
+import { getProfile, isProfiledType, ArchetypeEntry, LandmarkKind, WaterType, PlanetProfile } from './profiles';
 import { derivePalette, hexToRgb } from './palette';
 import {
   placeFloraScatters,
@@ -38,6 +37,7 @@ import {
   placeDepositMarkers,
   placeEnergyMarker,
   placeHazardOverlays,
+  poissonDiskScatter,
 } from './features';
 
 // TerrainMode: declared in contract.ts + profiles.ts by Lane 1
@@ -127,6 +127,8 @@ function deriveLighting(
   desirability: number,
   sunAzimuth: number,
   sunElevation: number,
+  profile: PlanetProfile,
+  emissiveRng: SeededRng,
 ): VistaModel['lighting'] {
   const starKind  = input.celestial.star.kind;
   const starColor = hexToRgb(input.celestial.star.color);
@@ -139,9 +141,15 @@ function deriveLighting(
   // bloom: rises with desirability (drives god-rays, saturation boost)
   const bloom = clamp01(desirability * 0.9 + 0.05);
 
-  // colorGradeWarmth: warm at high habitability/desirability; cool/blue at low
-  const hab01 = clamp01(input.planet.habitability / 100);
-  const colorGradeWarmth = clamp(lerp(-0.4, 0.6, desirability * 0.7 + hab01 * 0.3), -1, 1);
+  // colorGradeWarmth: temperature is the primary thermal signal (−1=frozen → +1=molten).
+  // Cold worlds grade blue/cool; hot worlds grade amber/warm.
+  // Desirability + habitability add a secondary warmth boost on beautiful worlds.
+  const hab01  = clamp01(input.planet.habitability / 100);
+  const temp01 = clamp01((input.planet.temperature + 1) / 2);   // −1..+1 → 0..1
+  const colorGradeWarmth = clamp(
+    lerp(-0.7, 0.9, temp01 * 0.65 + desirability * 0.25 + hab01 * 0.10),
+    -1, 1,
+  );
 
   // ambient: soft tint from sky horizon color (light bounces off atmosphere)
   const atmoFactor = input.planet.atmosphere.present ? 0.35 : 0.10;
@@ -162,6 +170,30 @@ function deriveLighting(
   const warm: RGB = [255, 240, 210];
   const keyColor = lerpRgb(starColor, warm, desirability * 0.4);
 
+  // [TK-2] Emissive light source — ONLY drawn from emissiveRng when the
+  // profile actually configures one, so every profile WITHOUT emissiveSource
+  // never touches this stream: their models stay byte-identical (both in
+  // pixel output AND in downstream rng-draw sequence) to before this field
+  // existed. Color: 'alpenglow' uses keyColor (the sun's own color — alpenglow
+  // IS sunlight); 'lava'/'aurora' use palette.accent (already the type's
+  // documented "glow" color — see profiles.ts's per-profile comments).
+  let emissiveSource: VistaModel['lighting']['emissiveSource'];
+  if (profile.emissiveSource) {
+    const base = profile.emissiveSource;
+    const jitterX  = (emissiveRng.next01() - 0.5) * 0.10; // ±0.05
+    const jitterY  = (emissiveRng.next01() - 0.5) * 0.06; // ±0.03
+    const jitterI  = 0.85 + emissiveRng.next01() * 0.30;  // ×0.85–1.15
+    const jitterR  = 0.90 + emissiveRng.next01() * 0.20;  // ×0.90–1.10
+    const color: RGB = base.kind === 'alpenglow' ? keyColor : palette.accent;
+    emissiveSource = {
+      kind:      base.kind,
+      pos:       [clamp01(base.pos[0] + jitterX), clamp01(base.pos[1] + jitterY)],
+      color,
+      intensity: clamp01(base.intensity * jitterI),
+      radius:    Math.max(0.05, base.radius * jitterR),
+    };
+  }
+
   return {
     keyDir:           [sunAzimuth, sunElevation],
     keyColor,
@@ -170,6 +202,7 @@ function deriveLighting(
     fill,
     bloom,
     colorGradeWarmth,
+    ...(emissiveSource ? { emissiveSource } : {}),
   };
 }
 
@@ -207,14 +240,18 @@ function buildSky(
       scatterBands.push({
         y:     0.78 - rng.next01() * 0.15,  // just above horizon
         color: palette.scatterBand,
-        width: 0.04 + rng.next01() * 0.08,
+        // Width scales with density: sparse at low density, full band at high density.
+        // The rng draw is preserved (same sequence); only the output scaling changes.
+        width: (0.04 + rng.next01() * 0.08) * clamp01(0.3 + atmoDensity * 0.7),
       });
     }
   }
 
-  // Haze: density 0 in vacuum; proportional to atmoDensity otherwise
+  // Haze: quadratic density curve for dramatic aerial-perspective at high density
+  // and near-vacuum clarity approaching zero.  Vacuum → exactly 0 (no haze).
+  const hazeDensityRaw = atmoPresent ? atmoDensity : 0;
   const haze: { density: number; color: RGB } = {
-    density: atmoPresent ? clamp01(atmoDensity) : 0,
+    density: clamp01(hazeDensityRaw * (0.3 + hazeDensityRaw * 0.7)),
     color:   palette.scatterBand,
   };
 
@@ -347,7 +384,156 @@ function buildCelestial(
   // Stable starfield key: deterministic from seed, cached by renderer
   const starfieldSeedKey = `${input.seed}:starfield`;
 
-  return { suns, moons, distant, starfieldSeedKey, ...(ringArc ? { ringArc } : {}) };
+  return {
+    suns,
+    moons,
+    distant,
+    starfieldSeedKey,
+    ...(ringArc                  ? { ringArc }                           : {}),
+    ...(input.celestial.nebula   ? { nebula: input.celestial.nebula }    : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Stage 6 helpers — deriveParticles / deriveEvents
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive atmosphere particle emitters from the planet's physical attributes.
+ *
+ * Priority order (first match wins):
+ *   no atmosphere   → []  (BARREN / vacuum)
+ *   plating mode    → spark  (ARTIFICIAL tech signature)
+ *   cloud-deck mode → dust   (GAS_GIANT band turbulence)
+ *   temp ≥ 0.65     → ember + ash  (VOLCANIC)
+ *   temp ≤ −0.25    → snow   (ICE, ARCTIC)
+ *   wet + temperate → rain [+ spore at nativeLife ≥ 0.4]  (TERRAN, OCEANIC, JUNGLE, TROPICAL…)
+ *   dry + warm      → dust   (DESERT)
+ *   nativeLife ≥ 0.5 → spore  (exotic life-heavy mild worlds)
+ *   default         → faint dust
+ *
+ * Fully deterministic: rates are derived from stable planet attributes
+ * (temperature, waterCoverage, nativeLife), not from rng draws.
+ * Colors are taken from the already-derived palette.
+ */
+function deriveParticles(
+  input: VistaInput,
+  profile: ReturnType<typeof getProfile>,
+  palette: VistaModel['palette'],
+): VistaModel['layers']['atmosphere']['particles'] {
+  if (!input.planet.atmosphere.present) return [];
+
+  const temp     = input.planet.temperature;    // −1..+1
+  const water    = input.planet.waterCoverage;  //  0..1
+  const life     = input.planet.nativeLife;     //  0..1
+  const atmoKind = (input.planet.atmosphere.kind ?? '').toLowerCase();
+
+  type P = VistaModel['layers']['atmosphere']['particles'][number];
+  const out: P[] = [];
+
+  // ARTIFICIAL — engineered substrate; sparks from active circuitry
+  if (profile.terrainMode === 'plating') {
+    out.push({ kind: 'spark', rate: clamp01(0.25 + life * 0.10), color: palette.accent });
+    return out;
+  }
+
+  // GAS_GIANT cloud-deck — band-turbulence dust; not rain/snow (no surface)
+  if (profile.terrainMode === 'cloud-deck') {
+    out.push({ kind: 'dust', rate: clamp01(0.20 + Math.abs(temp) * 0.15), color: palette.skyHorizon });
+    return out;
+  }
+
+  // Very hot / volcanic atmosphere — ember (primary) + ash (secondary)
+  if (temp >= 0.65 || atmoKind.includes('volcanic') || atmoKind.includes('sulfur')) {
+    out.push({ kind: 'ember', rate: clamp01(0.45 + temp * 0.30), color: palette.accent });
+    out.push({ kind: 'ash',   rate: 0.40,                         color: [120, 110, 100] as RGB });
+    return out;
+  }
+
+  // Cold / frozen atmosphere — snow
+  if (temp <= -0.25 || atmoKind.includes('frozen') || atmoKind.includes('cryo')) {
+    const snowRate = clamp01(0.40 + Math.max(0, -temp - 0.25) * 0.55);
+    out.push({ kind: 'snow', rate: snowRate, color: [235, 246, 255] as RGB });
+    return out;
+  }
+
+  // Wet + temperate — rain (primary); spore secondary at high nativeLife
+  if (water >= 0.25 && temp > -0.25 && temp < 0.65) {
+    out.push({ kind: 'rain',  rate: clamp01(0.30 + water * 0.50), color: [200, 220, 240] as RGB });
+    if (life >= 0.40) {
+      out.push({ kind: 'spore', rate: clamp01(life * 0.50), color: palette.flora });
+    }
+    return out;
+  }
+
+  // Dry + warm — dust (DESERT and similar arid worlds)
+  if (water < 0.25 && temp > -0.15) {
+    out.push({ kind: 'dust', rate: clamp01(0.30 + (1 - water) * 0.25), color: palette.scatterBand });
+    return out;
+  }
+
+  // High nativeLife in mild dry conditions — spore dominates
+  if (life >= 0.50) {
+    out.push({ kind: 'spore', rate: clamp01(life * 0.55), color: palette.flora });
+    return out;
+  }
+
+  // Default — faint ambient dust for any remaining atmospheric world
+  out.push({ kind: 'dust', rate: clamp01(0.15 + water * 0.10), color: palette.scatterBand });
+  return out;
+}
+
+/**
+ * Derive weather/storm events from site hazards and atmosphere state.
+ *
+ * Matches the kind strings the renderer's skyDarken path consumes:
+ *   'storm' | 'overcast' | 'ash-storm' → heavy darken (×0.6)
+ *   'rain'  | 'snow'                   → light darken (×0.3)
+ *
+ * §3.3 cap: at most one primary + one ambient event active at once.
+ * Volcanic atmosphere type always contributes an ambient 'ash-storm' event.
+ */
+function deriveEvents(
+  input: VistaInput,
+): VistaModel['layers']['atmosphere']['events'] {
+  if (!input.planet.atmosphere.present) return [];
+
+  const temp     = input.planet.temperature;
+  const atmoKind = (input.planet.atmosphere.kind ?? '').toLowerCase();
+
+  type E = VistaModel['layers']['atmosphere']['events'][number];
+  const out: E[] = [];
+
+  // Volcanic ambient: permanently active ash-storm event
+  if (temp >= 0.65 || atmoKind.includes('volcanic') || atmoKind.includes('sulfur')) {
+    out.push({
+      kind:      'ash-storm',
+      intensity: clamp01(0.30 + temp * 0.35),
+      tint:      [180, 120, 80] as RGB,
+    });
+  }
+
+  // Hazard-driven events; respect the §3.3 two-event cap
+  if (input.site) {
+    for (const h of input.site.hazards) {
+      if (out.length >= 2) break;
+      const k = h.kind.toLowerCase();
+      if (k.includes('storm') || k.includes('lightning') || k.includes('hurricane') || k.includes('flood')) {
+        out.push({ kind: 'storm',    intensity: h.severity,       tint: [140, 150, 170] as RGB });
+      } else if ((k.includes('ash') || k.includes('erupt') || k.includes('smoke')) &&
+                 !out.some(e => e.kind === 'ash-storm')) {
+        out.push({ kind: 'ash-storm', intensity: h.severity,      tint: [160, 140, 120] as RGB });
+      } else if (k.includes('blizzard') || k.includes('snowsquall')) {
+        out.push({ kind: 'snow',     intensity: h.severity,       tint: [220, 235, 250] as RGB });
+      } else if (k.includes('rain') || k.includes('precipit') || k.includes('monsoon')) {
+        out.push({ kind: 'rain',     intensity: h.severity,       tint: [180, 200, 230] as RGB });
+      } else if (k.includes('dust') || k.includes('sandstorm')) {
+        out.push({ kind: 'overcast', intensity: h.severity * 0.6, tint: [190, 170, 130] as RGB });
+      }
+    }
+  }
+
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -385,8 +571,8 @@ function buildAtmosphere(
       color:    cloudColor,
       drift:    cloudDrift,
     },
-    events:    [],  // P2: weather-clock event table
-    particles: [],  // P2: per-event particle emitters
+    events:    deriveEvents(input),
+    particles: deriveParticles(input, profile, palette),
   };
 }
 
@@ -532,6 +718,45 @@ function buildTerrain(
 }
 
 // ---------------------------------------------------------------------------
+// Stage 7a — buildHero  (WO-VISTA-TK1; 6 types only)
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate the hero-landform descriptor for this world — the single
+ * dominant midground focal feature (WO-VISTA-TK1). Only emitted when the
+ * profile assigns a shape (profiles.ts's PlanetProfile.heroLandform:
+ * VOLCANIC=cone, ICE=glacier, OCEANIC=sea-stack, BARREN=mesa,
+ * MOUNTAINOUS=massif, TERRAN=delta-bluff). Absent for all other types →
+ * `undefined`, so their models are byte-identical to before this stage
+ * existed and no rng is drawn for them.
+ *
+ * ISOLATION: drawn from an independent 'hero-landform' child seed — NOT one
+ * of the 10 SeedBus streams — so adding this stage never shifts any other
+ * stream's draw sequence (same isolation pattern as buildFeatures's
+ * 'hero-flora' / 'citadel-anchor' / 'dense-flora' streams above).
+ */
+function buildHero(
+  input: VistaInput,
+  profile: PlanetProfile,
+  horizonY: number,
+): VistaModel['layers']['hero'] {
+  const cfg = profile.heroLandform;
+  if (!cfg) return undefined;
+
+  const heroRng = new SeededRng(deriveChildSeed(input.seed, 'hero-landform'));
+
+  // Center-biased X so the hero reads as the dominant midground feature
+  // without ever crowding the canvas edges.
+  const x = 0.30 + heroRng.next01() * 0.40;   // [0.30 .. 0.70]
+  // Base sits ON the ground line, exactly like a terrain.landmarks entry.
+  const y = horizonY;
+  // ±12% seeded jitter around the profile's base size.
+  const scale = cfg.baseScale * (0.88 + heroRng.next01() * 0.24);
+
+  return { shape: cfg.shape, pos: [x, y], scale };
+}
+
+// ---------------------------------------------------------------------------
 // Stage 8 — buildWater  (aquatic profiles only)
 // ---------------------------------------------------------------------------
 
@@ -539,15 +764,35 @@ function buildWater(
   profile: ReturnType<typeof getProfile>,
   palette: VistaModel['palette'],
   horizonY: number,
+  waterCoverage: number,
   rng: SeededRng,
 ): VistaModel['layers']['water'] | undefined {
   if (profile.water === 'none') return undefined;
   // Verify this type allows this water type (coherence guard)
   if (!profile.coherence.waterAllowList.includes(profile.water as WaterType)) return undefined;
 
-  const waterlineY = horizonY + sampleRange(rng, 0.06, 0.18);
-  const waveAmp    = sampleRange(rng, 0.004, 0.018);
-  const chop       = sampleRange(rng, 0.1, 0.75);
+  // waterCoverage drives where the shoreline falls on the canvas (0=top, 1=bottom).
+  // HIGH coverage (e.g. OCEANIC ~0.85) → thin land strip → waterlineY close to horizonY.
+  // LOW  coverage (e.g. MOUNTAINOUS ~0.30) → wide land strip → waterlineY well below.
+  // One seeded jitter draw (±0.03) adds per-seed variation while preserving the signal.
+  //
+  // profile.waterFootprint (WO-VISTA-MOUNTAINOUS-IDENTITY) overrides coverageBase
+  // and the waveAmp/chop sample ranges below — present only on MOUNTAINOUS, so
+  // every other profile's formula and rng-draw sequence is byte-identical to
+  // before (same number of sampleRange/next01 calls either way, only the
+  // bounds passed to them differ when the override is present).
+  const wf = profile.waterFootprint;
+  const coverageBase = wf?.coverageBase ?? lerp(0.45, 0.05, clamp01(waterCoverage));
+  const jitter       = (rng.next01() - 0.5) * 0.06;  // same 1 rng draw consumed as before
+  const waterlineY   = clamp(
+    horizonY + coverageBase + jitter,
+    horizonY + 0.04,                          // minimum: always a visible land strip above water
+    Math.min(horizonY + 0.55, 0.97),          // maximum: enough water visible + canvas guard
+  );
+  const [waveAmpMin, waveAmpMax] = wf?.waveAmpRange ?? [0.004, 0.018];
+  const [chopMin, chopMax]       = wf?.chopRange     ?? [0.1, 0.75];
+  const waveAmp    = sampleRange(rng, waveAmpMin, waveAmpMax);
+  const chop       = sampleRange(rng, chopMin, chopMax);
   const foamMul    = sampleRange(rng, 1.0, 2.4);
   const spraySpeedMul = sampleRange(rng, 0.8, 1.5);
 
@@ -613,17 +858,250 @@ function buildFeatures(
   horizonY: number,
   desirability: number,
   rng: SeededRng,
+  waterlineY?: number,
 ): VistaModel['layers']['features'] {
   const hab01 = clamp01(input.planet.habitability / 100);
+
+  // ── floraBandY1 — computed early (needed by citadel anchor + dense-flora loop) ──
+  // Dry worlds use 90% of the ground height; aquatic worlds cap at the waterline.
+  const groundY1    = horizonY + (1 - horizonY) * 0.90;
+  const floraBandY1 = waterlineY !== undefined
+    ? Math.min(waterlineY, groundY1)
+    : groundY1;
+
+  // ── Citadel clearing — site-gated; NO-OP when site absent or citadelCeiling=0 ──
+  //
+  // Derives a deterministic anchor position from an isolated 'citadel-anchor' child
+  // seed so no other named RNG stream is shifted.  The anchor is the ground-level
+  // base of the citadel structure in model space [0..1 × horizonY..1].
+  //
+  // Flora within clearingR of the anchor is dropped (after Poisson positions are
+  // placed so RNG draw counts stay fixed).  Dense-flora draws (scale/tintMix/kind)
+  // are always consumed regardless of acceptance to preserve the downstream sequence.
+  //
+  // Scale: citadelClearR grows with level so a larger base gets a wider clearing.
+  //   L1 → 0.085  L2 → 0.100  L3 → 0.115  L4 → 0.130  L5 → 0.145
+  const citadelLevel   = (input.site?.citadelCeiling ?? 0) as number;
+  const planetType     = input.planet.type;
+  // River mode: TERRAN + JUNGLE with water use a river corridor as the primary
+  // citadel-prominence mechanism.  All other types (TROPICAL etc.) use the circular
+  // clearing fallback — a river would look forced in those visual languages.
+  const riverMode      = citadelLevel > 0 && waterlineY !== undefined
+    && (planetType === 'TERRAN' || planetType === 'JUNGLE');
+  let   citadelAnchorX = 0;
+  let   citadelAnchorY = horizonY;
+  let   citadelClearR2 = 0;
+  // Corridor clearing in model space [0..1] — sized slightly WIDER than the backend's
+  // visual water channel so no flora stands inside the rendered river strip.
+  //   corridorHalfTop    : half-width at citadelAnchorY (narrow, far/horizon end).
+  //   corridorHalfBottom : half-width at waterlineY      (wide,   near/viewer end).
+  let   corridorHalfTop    = 0;
+  let   corridorHalfBottom = 0;
+  if (citadelLevel > 0) {
+    const citRng      = new SeededRng(deriveChildSeed(input.seed, 'citadel-anchor'));
+    // X: center-biased [0.38..0.62] — never clipped at canvas edges.
+    citadelAnchorX    = 0.38 + citRng.next01() * 0.24;
+    // Y: upper 18% of the visible land band — appears mid-ground, just past the horizon.
+    citadelAnchorY    = horizonY + (floraBandY1 - horizonY) * 0.18;
+    const clearR      = 0.07 + citadelLevel * 0.015;
+    citadelClearR2    = clearR * clearR;
+    if (riverMode) {
+      corridorHalfTop    = 0.042 + citadelLevel * 0.008;  // narrow at citadel (far end)
+      corridorHalfBottom = 0.072 + citadelLevel * 0.010;  // wide at waterline (near viewer)
+    }
+  }
+  // River meander arm in MODEL space — mirrors the backend exactly so the flora
+  // corridor tracks the rendered channel at every Y rather than padding an envelope.
+  //
+  // Both this pipeline code and backend.ts drawRiverCorridor use the SplitMix32
+  // algorithm (SeededRng = splitmix32 — identical byte output for the same seed).
+  // The same deriveChildSeed key ('river-meander') and the same coefficient (1.6)
+  // mean riverRandV and mrng() in the backend produce the IDENTICAL float, so
+  // mAmpFrac (model space) === mAmp / minDim (backend pixel space) exactly.
+  //
+  // Curve: sin(2π·tf) completes one full oscillation between citadel (tf=0) and
+  // waterline (tf=1) — curves right then left (or vice versa), returning to the
+  // citadel X at both ends.  This is the same formula used in backend.ts.
+  //
+  // NO-OP (mAmpFrac=0) when riverMode is false.
+  let mAmpFrac = 0;
+  if (riverMode) {
+    const riverRng   = new SeededRng(deriveChildSeed(input.seed, 'river-meander'));
+    const riverRandV = riverRng.next01();                           // mirrors mrng() in backend
+    const hwTopFrac  = 0.032 + citadelLevel * 0.006;               // matches backend hwTopPx / minDim
+    mAmpFrac = (riverRandV - 0.5) * hwTopFrac * 1.6;              // max ±0.8 × hwTopFrac
+  }
 
   // Flora + rock: Poisson-disk placement via features.ts helpers.
   // Flora density scales with both habitability and desirability (beauty budget)
   // so the lab's habitability slider alone produces visibly different scenes.
-  const floraScatters = placeFloraScatters(
-    rng, profile.floraKinds, palette, horizonY, hab01, desirability,
+  // Pass waterlineY so the regular scatter is also bounded to the visible land band.
+  const rawFloraScatters = placeFloraScatters(
+    rng, profile.floraKinds, palette, horizonY, hab01, desirability, waterlineY,
+    profile.floraKindWeights,
   );
+  // Citadel clearing for primary flora: post-filter (no RNG draws at filter time).
+  // Circular footprint + river corridor (riverMode) — flora absent from both zones.
+  const floraScatters = citadelLevel > 0
+    ? rawFloraScatters.map(g => ({
+        ...g,
+        instances: g.instances.filter(inst => {
+          const [px, py] = inst.pos;
+          // Circular clearing around the citadel base.
+          const dx = px - citadelAnchorX;
+          const dy = py - citadelAnchorY;
+          if (dx * dx + dy * dy < citadelClearR2) return false;
+          // River corridor: tapered channel from citadelAnchorY down to waterlineY.
+          if (riverMode && py >= citadelAnchorY && py <= waterlineY!) {
+            const tf = (py - citadelAnchorY) / Math.max(waterlineY! - citadelAnchorY, 1e-6);
+            const hw          = corridorHalfTop + (corridorHalfBottom - corridorHalfTop) * tf;
+            const centerOff   = mAmpFrac * Math.sin(2 * Math.PI * tf);
+            if (Math.abs(px - citadelAnchorX - centerOff) < hw) return false;
+          }
+          return true;
+        }),
+      }))
+    : rawFloraScatters;
   const rockScatters  = placeRockScatters(rng, profile.rockKinds, palette, horizonY);
   const scatters      = [...floraScatters, ...rockScatters];
+
+  // Dense life scatter: nativeLife × hab01 drives count up to ~200 additional instances.
+  // Both must be high ("lush") for full density — the multiplicative interaction keeps
+  // barren worlds (nativeLife≈0 or hab≈0) near zero regardless of the other value.
+  //
+  // denseFloraFactor gates the maximum per planet type: 0.0 for engineered / airless /
+  // gassy worlds (ARTIFICIAL, BARREN, GAS_GIANT, VOLCANIC) so nativeLife can never
+  // grow a forest on a station hull or an airless rock.  Lush natural types stay at 1.0.
+  //
+  // Y-band: scatter is bounded to [horizonY .. floraBandY1] where floraBandY1 is
+  // waterlineY when water is present — so every point in the budget lands in the
+  // VISIBLE land band, not under water.  Dry worlds fall back to 90% of the ground
+  // height (the previous behaviour).
+  //
+  // ISOLATION: drawn from an independent child seed ('dense-flora') so that changing
+  // nativeLife never shifts the deposit/energyMarker rng positions downstream.
+  //
+  // KIND MIX: instances are distributed across floraKinds using per-type weights
+  // (profile.floraKindWeights) rather than a single uniformly-picked kind for the
+  // whole batch.  This corrects the TERRAN 8:1 grass:tree ratio and makes JUNGLE
+  // canopy-tree dominant.  Each instance draws 3 floats: scale + tintMix + kind.
+  //
+  // DEPTH GRADIENT: scale rises with pos[1] — FAR instances (near horizonY) are
+  // small (~0.03–0.07); NEAR instances (near floraBandY1) are larger (~0.12–0.16).
+  const nativeLife     = clamp01(input.planet.nativeLife);
+  const lifeHab        = clamp01(nativeLife * hab01);
+  const rawDenseCount  = Math.round(lerp(0, 200, lifeHab * lifeHab));
+  // floraBandY1 is computed above (early, before primary scatter) — do not recompute.
+  // Shore-height multiplier: scale dense-flora count proportionally to the
+  // available land band so thin-shore worlds (OCEANIC, shoreH≈0.11) get fewer
+  // plants and avoid the over-packed spindly-band look.
+  // referenceShoreH=0.20 is chosen so TERRAN (shoreH≈0.26–0.32) and JUNGLE
+  // (shoreH≈0.20–0.26, jitter ±0.03) both clamp to 1.0 — byte-identical output.
+  // OCEANIC (shoreH≈0.08–0.14) lands at ~0.40–0.70 × count, a meaningful drop.
+  // minFrac=0.25 ensures even the thinnest possible shore keeps some native life.
+  // DETERMINISM: poissonDiskScatter draws the same RNG sequence from the front,
+  // so wide shores where shoreFrac=1.0 produce byte-identical output to before.
+  const shoreH          = floraBandY1 - horizonY;
+  const referenceShoreH = 0.20;
+  const shoreFrac       = clamp(shoreH / referenceShoreH, 0.25, 1.0);
+  // Canopy ease (WO-VISTA-CANOPY-POLISH): on the river-primary layout the full-density
+  // dense-flora band read as wall-to-wall canopy off to the flanks of the corridor,
+  // crowding the breathing room the citadel + river are meant to open up.  Ease the
+  // count and open the spacing a touch — gated strictly on riverMode (forest world +
+  // citadel + water) so citadelLevel=0 and non-river worlds stay byte-identical.
+  const canopyEaseCount  = riverMode ? 0.80 : 1.0;
+  const canopyEaseSpread = riverMode ? 1.15 : 1.0;
+  const lifeDenseCount   = Math.round(rawDenseCount * profile.denseFloraFactor * shoreFrac * canopyEaseCount);
+  if (lifeDenseCount > 0 && profile.floraKinds.length > 0) {
+    const denseRng  = new SeededRng(deriveChildSeed(input.seed, 'dense-flora'));
+    // Tighter minimum spacing at high density so instances pack without z-fighting.
+    const minDist   = lerp(0.035, 0.008, lifeHab) * canopyEaseSpread;
+    const positions = poissonDiskScatter(denseRng, lifeDenseCount, 0.01, horizonY, 0.99, floraBandY1, minDist);
+    if (positions.length > 0) {
+      const white: RGB = [255, 255, 255];
+      const floraKindArr = profile.floraKinds as readonly string[];
+      // Kind weights: per-type bias (e.g. tree-heavy for forest archetypes) or
+      // equal-weight fallback when floraKindWeights is absent / length-mismatched.
+      const kindWeights = (
+        profile.floraKindWeights &&
+        profile.floraKindWeights.length === floraKindArr.length
+      ) ? [...profile.floraKindWeights]
+        : floraKindArr.map(() => 1);
+
+      // Accumulate instances per kind → separate scatter groups so the renderer
+      // can treat each kind independently (LOD, sprite set, etc.).
+      const kindMap = new Map<string, VistaModel['layers']['features']['scatters'][number]['instances']>();
+      const bandHeight = Math.max(floraBandY1 - horizonY, 1e-6);
+      for (const pos of positions) {
+        // Always consume the 3 per-instance draws (scale, tintMix, kind) before the
+        // citadel check so that clearing does not shift the denseRng sequence for
+        // subsequent un-cleared instances — same principle as poissonDiskScatter's
+        // fixed-draw-count contract.
+        const depthFrac = clamp01((pos[1] - horizonY) / bandHeight);
+        const baseScale = lerp(0.030, 0.120, depthFrac);
+        const scale     = baseScale + denseRng.next01() * 0.040;  // draw 1
+        const tintMix   = denseRng.next01() * 0.25;                // draw 2
+        const kind      = denseRng.pickWeighted(floraKindArr, kindWeights);  // draw 3
+        // Citadel clearing: circular footprint + river corridor (riverMode).
+        if (citadelLevel > 0) {
+          const [px, py] = pos;
+          const dx = px - citadelAnchorX;
+          const dy = py - citadelAnchorY;
+          if (dx * dx + dy * dy < citadelClearR2) continue;
+          if (riverMode && py >= citadelAnchorY && py <= waterlineY!) {
+            const tf = (py - citadelAnchorY) / Math.max(waterlineY! - citadelAnchorY, 1e-6);
+            const hw          = corridorHalfTop + (corridorHalfBottom - corridorHalfTop) * tf;
+            const centerOff   = mAmpFrac * Math.sin(2 * Math.PI * tf);
+            if (Math.abs(px - citadelAnchorX - centerOff) < hw) continue;
+          }
+        }
+        if (!kindMap.has(kind)) kindMap.set(kind, []);
+        kindMap.get(kind)!.push({ pos, scale, tint: lerpRgb(palette.flora, white, tintMix) });
+      }
+      for (const [kind, instances] of kindMap) {
+        scatters.push({ kind, instances });
+      }
+    }
+  }
+
+  // Hero foreground trees: 2–5 extra-large instances anchored near the bottom of
+  // the visible land band to give a towering-canopy ceiling for forested worlds.
+  // Gated on profile.heroFloraKind (only TERRAN + JUNGLE) and lifeDenseCount > 0
+  // (minimum lushness required for the forest to have a ceiling at all).
+  // Uses its own isolated child seed ('hero-flora') — never shifts dense-flora
+  // or features streams.
+  if (profile.heroFloraKind && lifeDenseCount > 0) {
+    const heroRng   = new SeededRng(deriveChildSeed(input.seed, 'hero-flora'));
+    const heroCount = heroRng.int(2, 5);
+    // Near band: bottom 20% of the visible ground — unambiguously foreground.
+    const heroY0  = floraBandY1 - (floraBandY1 - horizonY) * 0.20;
+    const heroPos = poissonDiskScatter(heroRng, heroCount, 0.05, heroY0, 0.95, floraBandY1, 0.12);
+    if (heroPos.length > 0) {
+      const white: RGB = [255, 255, 255];
+      const heroInstances: VistaModel['layers']['features']['scatters'][number]['instances'] = [];
+      for (const pos of heroPos) {
+        // Always draw scale + tintMix before the citadel check so the heroRng
+        // sequence stays fixed for any un-cleared trees downstream.
+        const scale   = 0.160 + heroRng.next01() * 0.060;  // 0.16..0.22
+        const tintMix = heroRng.next01() * 0.15;
+        // Citadel clearing: circular footprint + river corridor (riverMode).
+        if (citadelLevel > 0) {
+          const [px, py] = pos;
+          const dx = px - citadelAnchorX;
+          const dy = py - citadelAnchorY;
+          if (dx * dx + dy * dy < citadelClearR2) continue;
+          if (riverMode && py >= citadelAnchorY && py <= waterlineY!) {
+            const tf = (py - citadelAnchorY) / Math.max(waterlineY! - citadelAnchorY, 1e-6);
+            const hw          = corridorHalfTop + (corridorHalfBottom - corridorHalfTop) * tf;
+            const centerOff   = mAmpFrac * Math.sin(2 * Math.PI * tf);
+            if (Math.abs(px - citadelAnchorX - centerOff) < hw) continue;
+          }
+        }
+        heroInstances.push({ pos, scale, tint: lerpRgb(palette.flora, white, tintMix) });
+      }
+      scatters.push({ kind: profile.heroFloraKind, instances: heroInstances });
+    }
+  }
 
   // Deposit markers and energy marker: site-gated (BRIEF §2.2 degradation).
   const depositMarkers = input.site
@@ -633,6 +1111,26 @@ function buildFeatures(
   const energyMarker = input.site
     ? placeEnergyMarker(rng, input.site.energy, horizonY)
     : undefined;
+
+  // Citadel anchor scatter — site-gated; NO-OP when citadelLevel=0.
+  //
+  // The 'citadel' kind is a single-instance sentinel that carries the model-space
+  // anchor position and level-derived scale.  It is NEVER drawn by drawScatterInstances;
+  // instead the backend picks it up in step 5g (drawCitadelStructure) and draws it
+  // AFTER flora so the structure always occludes the canopy at its footprint.
+  //
+  // Scale: (0.08 + level × 0.04) — at h=900 and scaleFactor=0.85:
+  //   L1 → 0.12 × 900 × 0.85 = 92 px   L2 → 122 px   L3 → 153 px   L5 → 214 px
+  // Tint: neutral structural gray-white ([210, 215, 220]) — contrasts with any
+  //   organic flora tints; backend overrides body/shadow/glow from model.palette.
+  if (citadelLevel > 0) {
+    const citScale = 0.08 + citadelLevel * 0.04;
+    const citTint: RGB = [210, 215, 220];
+    scatters.push({
+      kind: 'citadel',
+      instances: [{ pos: [citadelAnchorX, citadelAnchorY], scale: citScale, tint: citTint }],
+    });
+  }
 
   return {
     scatters,
@@ -708,6 +1206,26 @@ function buildGrid(
 // Stage 12 — validate + assemble invariants
 // ---------------------------------------------------------------------------
 
+/**
+ * Checks a named set of critical numeric model scalars for non-finite values
+ * (NaN / Infinity / -Infinity).  Any offending field name is appended to `notes`
+ * so that `assembleInvariants` will flip `ok` to false.
+ *
+ * Exported for direct unit-testing.  Callers pass a flat Record<name, value>
+ * where the key is the dotted model path (e.g. 'lighting.bloom') so that the
+ * note is readable without inspecting the pipeline internals.
+ */
+export function checkFiniteFields(
+  notes: string[],
+  fields: Record<string, number>,
+): void {
+  for (const [name, value] of Object.entries(fields)) {
+    if (!Number.isFinite(value)) {
+      notes.push(`non-finite field: ${name}`);
+    }
+  }
+}
+
 function assembleInvariants(notes: string[]): VistaModel['invariants'] {
   return { ok: notes.length === 0, notes };
 }
@@ -752,7 +1270,15 @@ export function generateVista(input: VistaInput): VistaModel {
   const sunAzimuth   = bus.celestial.int(30, 330);
   const sunElevation = bus.celestial.int(20, 70);
 
-  const lighting = deriveLighting(input, palette, desirability, sunAzimuth, sunElevation);
+  // bus.palette's own draws (derivePalette above) are complete by this point
+  // and nothing else in the pipeline reads bus.palette afterward, so reusing
+  // it here for emissiveSource jitter (TK-2) cannot shift any OTHER stage's
+  // draw sequence — see deriveLighting's own comment for the byte-identical
+  // guarantee this depends on (the draw only happens when profile.emissiveSource
+  // is set).
+  const lighting = deriveLighting(
+    input, palette, desirability, sunAzimuth, sunElevation, profile, bus.palette,
+  );
 
   // ── Stage 5: sky + celestial ─────────────────────────────────────────────
   const sky       = buildSky(input, palette, bus.sky, desirability);
@@ -789,13 +1315,25 @@ export function generateVista(input: VistaInput): VistaModel {
       : terrainBase;
 
   // Attach terrain.mode for the renderer (VistaModel.layers.terrain.mode, contract.ts).
-  const terrain: VistaModel['layers']['terrain'] = { ...terrainLayer, mode: terrainMode };
+  // Also thread the profile's emissive params when present (currently: ARTIFICIAL only);
+  // absent for all 11 natural types so their models are byte-identical to before.
+  const terrain: VistaModel['layers']['terrain'] = {
+    ...terrainLayer,
+    mode: terrainMode,
+    ...(profile.emissive ? { emissive: profile.emissive } : {}),
+  };
+
+  // ── Stage 7a: hero landform (WO-VISTA-TK1; 6 types only) ────────────────
+  const hero = buildHero(input, profile, terrain.horizonY);
 
   // ── Stage 8: water / lava (aquatic profiles only) ───────────────────────
-  const water = buildWater(profile, palette, terrain.horizonY, bus.water);
+  const water = buildWater(profile, palette, terrain.horizonY, input.planet.waterCoverage, bus.water);
 
   // ── Stage 9: features ────────────────────────────────────────────────────
-  const features = buildFeatures(input, profile, palette, terrain.horizonY, desirability, bus.features);
+  // Pass waterlineY so dense-flora scatter fills the visible land band only.
+  const features = buildFeatures(
+    input, profile, palette, terrain.horizonY, desirability, bus.features, water?.waterlineY,
+  );
 
   // ── Stage 10: hazards (site-gated) ──────────────────────────────────────
   const hazards = buildHazards(input, profile, terrain.horizonY, bus.hazard);
@@ -805,6 +1343,17 @@ export function generateVista(input: VistaInput): VistaModel {
   const grid = buildGrid(input, bus.grid);
 
   // ── Stage 12: assemble + validate ───────────────────────────────────────
+  // Guard: any non-finite value in a critical numeric model field silently
+  // corrupts the renderer.  Check the known scalar outputs here where all
+  // pipeline stages have run; a single bad value flips ok=false.
+  checkFiniteFields(notes, {
+    desirability,
+    'lighting.keyIntensity':     lighting.keyIntensity,
+    'lighting.bloom':            lighting.bloom,
+    'lighting.colorGradeWarmth': lighting.colorGradeWarmth,
+    'layers.sky.starCount':      sky.starCount,
+    'layers.sky.haze.density':   sky.haze.density,
+  });
   const invariants = assembleInvariants(notes);
 
   // Animation: dayCycleSeconds fixed at 360s for P0 (P1 wires rotationPeriodHours)
@@ -826,6 +1375,7 @@ export function generateVista(input: VistaInput): VistaModel {
       celestial,
       atmosphere,
       terrain,
+      ...(hero     ? { hero }     : {}),
       ...(water    ? { water }    : {}),
       features,
       hazards,
