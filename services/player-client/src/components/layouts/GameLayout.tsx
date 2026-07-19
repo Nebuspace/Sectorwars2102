@@ -1,18 +1,27 @@
-import React, { useState } from 'react';
+import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useGame } from '../../contexts/GameContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useAutopilot } from '../../contexts/AutopilotContext';
 // import { useTheme } from '../../themes/ThemeProvider'; // Available for future use
-import PlayerVitalsHud from './PlayerVitalsHud';
+import StatusBar from './StatusBar';
+import Teleprinter from '../aria/Teleprinter';
+import Annunciator from '../hud/Annunciator';
 import { MFDProvider, useMFD } from '../mfd/MFDContext';
 import MFDScreen from '../mfd/MFDScreen';
-import { SIDEBAR_A, SIDEBAR_B } from '../mfd/sidebarScreens';
+import { SIDEBAR_A, SIDEBAR_B, SIDEBAR_A_FOLDED } from '../mfd/sidebarScreens';
 import { ariaFeed } from '../mfd/ariaFeedStore';
-import RouteRail from '../mfd/RouteRail';
+import { subscribeTeleprinterPanelRequest } from '../../services/teleprinterBus';
 import MedalToast from '../ranking/MedalToast';
 import PriorityHailConsumer from '../comms/PriorityHailConsumer';
+import WelcomeBackToast from '../auth/WelcomeBackToast';
+import NpcCombatBanner from '../combat/NpcCombatBanner';
+import FirstSessionObjectives from '../onboarding/FirstSessionObjectives';
+import { useFirstSession } from '../onboarding/useFirstSession';
+import { ShellPresenceContext, useShellPresent, ShellSlotsContext } from './ShellContext';
 import './game-layout.css';
+import './cockpit-shell.css';
 import '../../styles/themes/cockpit-animations.css';
 import '../../styles/themes/cockpit-components.css';
 
@@ -29,8 +38,8 @@ interface GameLayoutProps {
 const MFDAlertWiring: React.FC = () => {
   const { raiseAlert } = useMFD();
   const { ariaMessages } = useWebSocket();
-  const { status, course, pauseReason } = useAutopilot();
-  const { unreadMessageCount } = useGame();
+  const { status, course, pauseReason, lastPlot } = useAutopilot();
+  const { unreadMessageCount, playerState, currentSector, stationsInSector } = useGame();
 
   const prevAriaCount = React.useRef(ariaMessages.length);
   React.useEffect(() => {
@@ -66,6 +75,58 @@ const MFDAlertWiring: React.FC = () => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, raiseAlert]);
 
+  // WO-UI1-CHROME-COMPLETE: plot-result narration (ADR-0072 §B3), ported
+  // from the retired AriaTerminalPage.tsx's pendingPlotRef/lastPlot effect
+  // but WIDENED to fire on every lastPlot transition rather than only ones
+  // the teleprinter itself issued — `plotCourse` is a shared AutopilotContext
+  // call with multiple callers (Teleprinter's "set course to N" grammar,
+  // the NAV deck's COURSE tab, GalaxyMap.tsx), and this effect lives in the
+  // ALWAYS-mounted MFDAlertWiring (same reasoning as the status-transition
+  // effect above it: transitions must never be lost to softkey/page state).
+  // ref-diffed so it fires on TRANSITIONS only, never on mount/remount.
+  const prevLastPlotRef = React.useRef(lastPlot);
+  React.useEffect(() => {
+    const prev = prevLastPlotRef.current;
+    prevLastPlotRef.current = lastPlot;
+    if (lastPlot === prev || lastPlot === null || lastPlot === undefined) return;
+
+    if (lastPlot.reachable) {
+      const hopCount = lastPlot.hops?.length ?? 0;
+      ariaFeed.appendNav(
+        `Course laid in for Sector ${lastPlot.target_sector_id} — ${hopCount} charted hop${hopCount !== 1 ? 's' : ''}, ${lastPlot.total_turns} turns. Say engage, or use the helm.`
+      );
+    } else if (lastPlot.reachable === false) {
+      const reason = lastPlot.reason
+        ?? (lastPlot.error === 'unknown sector' ? 'unknown_sector' : undefined);
+      const nearestId = lastPlot.nearest_known?.sector_id;
+      const nearestHint = nearestId != null && nearestId !== lastPlot.target_sector_id
+        ? ` Nearest approach you can reach is Sector ${nearestId}.`
+        : '';
+
+      if (reason === 'no_route') {
+        ariaFeed.appendNav(
+          `Sector ${lastPlot.target_sector_id} is on the chart, but I have no directed route from here — one-way warps or gaps in known space.${nearestHint}`
+        );
+      } else if (reason === 'unknown_sector') {
+        ariaFeed.appendNav('No such sector on any chart I can read.');
+      } else if (lastPlot.nearest_known) {
+        // Legacy servers without `reason`: if nearest === target, the sector
+        // was charted-but-unreachable (old euclidean-to-self bug).
+        if (nearestId === lastPlot.target_sector_id) {
+          ariaFeed.appendNav(
+            `Sector ${lastPlot.target_sector_id} is on the chart, but I have no directed route from here — one-way warps or gaps in known space.`
+          );
+        } else {
+          ariaFeed.appendNav(
+            `Sector ${lastPlot.target_sector_id} is beyond my charts. Nearest charted approach is Sector ${nearestId}. Fly the frontier and I will learn the route.`
+          );
+        }
+      } else {
+        ariaFeed.appendNav('No such sector on any chart I can read.');
+      }
+    }
+  }, [lastPlot]);
+
   const prevUnread = React.useRef(unreadMessageCount);
   React.useEffect(() => {
     if (unreadMessageCount > prevUnread.current) {
@@ -74,14 +135,126 @@ const MFDAlertWiring: React.FC = () => {
     prevUnread.current = unreadMessageCount;
   }, [unreadMessageCount, raiseAlert]);
 
+  // WO-PUX-ONBOARD: first-session orientation narration, into the SAME
+  // ariaFeed.appendNav channel the autopilot transitions above use. One
+  // effect, ref-diffed exactly like those (fires on TRANSITIONS only, never
+  // replays on a later re-render/remount). Lines are deterministic, built
+  // from real state (turn count / current sector name / port presence) --
+  // NO-CANON copy, see useFirstSession's doc-comment.
+  const { visible: firstSessionArmed, progress: firstSessionProgress, allComplete: firstSessionComplete } =
+    useFirstSession();
+  const prevFirstSession = React.useRef({ armed: false, dock: false, trade: false, travel: false, complete: false });
+  React.useEffect(() => {
+    const prev = prevFirstSession.current;
+    const turns = playerState?.turns ?? 0;
+    const sectorName = currentSector?.name || `Sector ${playerState?.current_sector_id ?? '?'}`;
+
+    if (firstSessionArmed && !prev.armed) {
+      const hasPort = stationsInSector.length > 0;
+      ariaFeed.appendNav(
+        `Orientation started, Commander. ${turns} turn${turns === 1 ? '' : 's'} banked in ${sectorName}` +
+        `${hasPort ? ' — a station is right here.' : '.'} Three objectives ahead: dock, trade, travel.`
+      );
+    }
+    if (firstSessionProgress.dock && !prev.dock) {
+      ariaFeed.appendNav('Docking confirmed. Objective cleared — dock at a station.');
+    }
+    if (firstSessionProgress.trade && !prev.trade) {
+      ariaFeed.appendNav('First trade logged. Objective cleared — make a trade.');
+    }
+    if (firstSessionProgress.travel && !prev.travel) {
+      ariaFeed.appendNav(`Arrived in ${sectorName}. Objective cleared — travel to a new sector.`);
+    }
+    if (firstSessionComplete && !prev.complete) {
+      ariaFeed.appendNav(
+        `Orientation complete, Commander — all three objectives cleared in ${turns} turn${turns === 1 ? '' : 's'}. ` +
+        `You're clear for open operations.`
+      );
+    }
+
+    prevFirstSession.current = {
+      armed: firstSessionArmed,
+      dock: firstSessionProgress.dock,
+      trade: firstSessionProgress.trade,
+      travel: firstSessionProgress.travel,
+      complete: firstSessionComplete,
+    };
+  }, [firstSessionArmed, firstSessionProgress, firstSessionComplete, playerState?.turns, playerState?.current_sector_id, currentSector?.name, stationsInSector.length]);
+
   return null;
 };
 
+/* eslint-disable react-hooks/rules-of-hooks -- QUEUE-ESLINT-FLATCONFIG
+   (2026-07-16, resurrecting the dead lint gate) surfaced 24 findings here:
+   every hook below the `if (shellPresent) return` early-return (line ~198)
+   IS genuinely called conditionally by React's rules. KNOWN, currently
+   DORMANT: shellPresent stays false everywhere until Lane A lands the
+   persistent shell provider (see the comment on that line), so this branch
+   never actually diverges between renders today -- no live bug, but a real
+   one waiting the moment Lane A makes shellPresent conditionally true. Real
+   fix (move every hook in this component above the early return) belongs to
+   whoever lands Lane A -- they're the one making shellPresent live and can
+   verify the reorder doesn't change any behavior; flagged here, not fixed,
+   to avoid a large speculative refactor of this component for a lint-gate-
+   migration ticket. Do not let this disable silently expand -- it covers
+   ONLY this pre-existing pattern; a NEW conditional-hook violation
+   introduced elsewhere in this file should still be caught (re-enable
+   locally around just the early-return block if that ever becomes a
+   concern in practice). */
 const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
+  // ── Persistent-shell passthrough (WO-UI0-PERSISTENT-SHELL lane B) ────────
+  // If an ancestor shell already provides the cockpit chrome (shellPresent),
+  // a nested <GameLayout> call becomes a no-op — mirrors EmbeddedContext's
+  // HangarShell/ColonialShell pattern so two shells never nest. Dormant:
+  // shellPresent stays false everywhere until Lane A lands the persistent
+  // shell provider, so this early return never fires yet.
+  const shellPresent = useShellPresent();
+  if (shellPresent) return <>{children}</>;
+
   const { user } = useAuth();
   const { playerState, isLoading, isRefreshing, refreshPlayerState } = useGame();
   // const { currentTheme } = useTheme(); // Available for future use
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+
+  // ── Teleprinter display toggles (WO-UI1-CHROME-COMPLETE; WO-UI-MAX-
+  // BATCH-1 REVISE — Max #22-24 retracted the shipped single 3-state cycle
+  // back to the artifact's own TWO INDEPENDENT BINARY TOGGLES) ───────────
+  // Owned here (not inside Teleprinter), same rationale as before: PANEL
+  // still drives which MFD-A config the sidebar renders (the MFD-B→MFD-A
+  // fold, below) — a decision GameLayout must see. `transcriptOpen` (LOG
+  // open/closed) has no cross-component consumer, but is kept alongside
+  // `teleprinterBodyPanel` for symmetry (both are "the teleprinter mode
+  // state" this WO's file lane assigns to GameLayout, not Teleprinter) and
+  // so a future consumer never needs to hunt for it in two places.
+  const [teleprinterBodyPanel, setTeleprinterBodyPanel] = useState(false);
+  const [teleprinterTranscriptOpen, setTeleprinterTranscriptOpen] = useState(false);
+
+  // NAV 3D multi-hop confirm (and future callers) can request PANEL via
+  // teleprinterBus without coupling to this useState.
+  React.useEffect(() => {
+    return subscribeTeleprinterPanelRequest((req) => {
+      setTeleprinterBodyPanel(req.open);
+    });
+  }, []);
+
+  // ── Redirect focus management (WCAG 2.4.3, Pixel a11y gate) ───────────
+  // GameShellRoute/GameLayout mount ONCE and persist across every /game/*
+  // navigation (see GameShellRoute's doc-comment) -- a legacy /game/<path>
+  // URL (GameRouteRedirects.tsx) lands here via a client-side <Navigate>,
+  // which drops focus onto <body> with nothing announced. On every
+  // location.pathname TRANSITION within this persistent shell, move focus
+  // to the cockpit's own <main> landmark below. Ref-tracked previous value
+  // mirrors LocationDropdown's wasOpenRef idiom so it never steals focus on
+  // the FIRST mount (fresh login landing on /game) -- only on a genuine
+  // route change while the shell is already up.
+  const location = useLocation();
+  const mainLandmarkRef = useRef<HTMLElement>(null);
+  const prevPathnameRef = useRef(location.pathname);
+  React.useEffect(() => {
+    if (location.pathname !== prevPathnameRef.current) {
+      mainLandmarkRef.current?.focus();
+    }
+    prevPathnameRef.current = location.pathname;
+  }, [location.pathname]);
 
   // ── Scroll contract (Law 2) ──────────────────────────────────────────
   // On /game routes the DOCUMENT never scrolls: the shell locks html/body
@@ -146,49 +319,75 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, playerState, isLoading]); // Remove refreshPlayerState from deps to prevent loop
-  
-  const toggleSidebar = () => {
-    setSidebarOpen(!sidebarOpen);
-  };
 
-  // ── Auto-collapse the sidebar on landing (WO 129-B) ──────────────────
-  // Landing hands the full band to the planetary console, so the nav rail
-  // is dead weight; auto-collapse it on the landing TRANSITION and restore
-  // it on lift-off. Mirrors the windshield landed-min auto-behavior. We key
-  // off the is_landed edge (tracked via a ref) — not every render — so the
-  // manual ◀/▶ toggle is never fought while the player stays landed.
-  const prevIsLandedRef = React.useRef<boolean>(!!playerState?.is_landed);
-  React.useEffect(() => {
-    const isLanded = !!playerState?.is_landed;
-    if (isLanded !== prevIsLandedRef.current) {
-      // close on the false→true (land) edge, open on the true→false (lift-off) edge
-      setSidebarOpen(!isLanded);
-      prevIsLandedRef.current = isLanded;
-    }
-  }, [playerState?.is_landed]);
+  // ── Shell slots (WO-UI0-SHELL-TRANSPLANT) — `.band`/`.deck` portal targets ─
+  // REVISION (adversarial-review catch, Mack): a callback-ref-driven
+  // `useState<HTMLDivElement | null>(null)` makes `bandEl` null on GameLayout's
+  // OWN first render, non-null from the second. A consumer that does
+  // `bandEl ? createPortal(node, bandEl) : node` at ONE JSX position sees the
+  // element TYPE at that position flip (a plain host element -> a
+  // ReactPortal) across that transition — React does not preserve identity
+  // across a type change, so it unmounts the whole inline subtree and mounts
+  // a fresh one through the portal. Empirically reproduced in plain React
+  // (mount count 1->2, unmount 0->1, no StrictMode needed) — for
+  // GameDashboard's `.cockpit-console` this meant NavigationMap/
+  // TacticalMonitor (both carry real mount-effects) mounted inline once,
+  // then got torn down and rebuilt through the portal, on EVERY session
+  // start.
+  // FIX: create the target nodes EAGERLY via a `useState` LAZY INITIALIZER
+  // (`document.createElement`), which runs synchronously during THIS
+  // component's very first render, before any descendant (including
+  // `{children}`) has rendered at all. `bandEl`/`deckEl` are therefore
+  // non-null from the FIRST render everywhere down the tree — a consumer's
+  // `bandEl ? createPortal(...) : ...` ternary sees the SAME branch (the
+  // portal one) on every render, in production, with the type at that JSX
+  // position never changing -- no remount. The nodes aren't yet attached to
+  // the visible DOM at creation time; a `useLayoutEffect` below appends each
+  // into its real grid slot exactly once, in the SAME synchronous pre-paint
+  // window React already uses to build any portaled content into them (a
+  // portal's children are constructed during the normal commit regardless
+  // of whether the target itself is yet attached to `document`), so there is
+  // no visible flash either. The inline fallback in GameDashboard.tsx stays
+  // — it's still correct and necessary for the case these vars are
+  // genuinely, permanently null (every GameDashboard.*.test.tsx mocks
+  // GameLayout out entirely, so `useShellSlots()` there returns
+  // ShellSlotsContext's `{bandEl: null, deckEl: null}` default and NEVER
+  // transitions — no flip risk in that case either, by construction).
+  const [bandEl] = useState<HTMLDivElement>(() => document.createElement('div'));
+  const [deckEl] = useState<HTMLDivElement>(() => document.createElement('div'));
+  const bandSlotRef = useRef<HTMLDivElement>(null);
+  const deckSlotRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const slot = bandSlotRef.current;
+    if (!slot) return undefined;
+    slot.appendChild(bandEl);
+    return () => { slot.removeChild(bandEl); };
+  }, [bandEl]);
+  useLayoutEffect(() => {
+    const slot = deckSlotRef.current;
+    if (!slot) return undefined;
+    slot.appendChild(deckEl);
+    return () => { slot.removeChild(deckEl); };
+  }, [deckEl]);
+  const shellSlots = useMemo(() => ({ bandEl, deckEl }), [bandEl, deckEl]);
 
-  // ── Windshield minimize / expand (id=151) ────────────────────────────
-  // Docked/landed hand the lower area to the station/colony console, so AUTO-
-  // minimize the windshield band on the dock/land EDGE — shrinking --band-h at
-  // the container so the helm + sidebar + deck rise and the console gets the
-  // reclaimed vertical space (SCROLL LAW) — and restore it on the undock/
-  // lift-off edge. A manual toggle (button in the band) lets the player expand
-  // the scene back at will. Keyed off the edge (ref), not every render, so the
-  // manual toggle isn't fought while the player stays grounded. (Restores the
-  // retired green-bar minimize, recomposed for the inverted-L.)
-  const grounded = !!(playerState?.is_docked || playerState?.is_landed);
-  const [windshieldMin, setWindshieldMin] = useState(false);
-  const prevGroundedRef = React.useRef<boolean>(grounded);
-  React.useEffect(() => {
-    const g = !!(playerState?.is_docked || playerState?.is_landed);
-    if (g !== prevGroundedRef.current) {
-      setWindshieldMin(g); // minimize on dock/land, restore on undock/lift-off
-      prevGroundedRef.current = g;
-    }
-  }, [playerState?.is_docked, playerState?.is_landed]);
-  const toggleWindshield = () => setWindshieldMin((m) => !m);
+  // ── Mode classes (WO-UI0-PERSISTENT-SHELL lane B, ADDITIVE per ruling D3;
+  // WO-UI0-SHELL-TRANSPLANT: `.mode-station`/`.mode-surface` are now ALSO
+  // the band-height selector cockpit-shell.css's `.band` rules key off —
+  // see game-layout.css's `.mode-station .band`/`.mode-surface .band`) ────
+  // `mode-station` carries real styling (WO-UI3-STATION-MODE, game-layout.css)
+  // — it drives the DOCKED "station face": GameDashboard renders no windshield
+  // scene / deck-monitor bezel in this mode, and the descendant rules there
+  // are scoped under `.game-container.mode-station` so `mode-flight`/
+  // `mode-surface` are structurally untouched. Landed wins over docked
+  // (unchanged precedence). The old manual windshield-minimize/expand toggle
+  // (id=151) is RETIRED here — the guardrail it served (narrow-preserving a
+  // full-bleed scene) is retired too; the band is now a fixed-height row per
+  // mode (cockpit-shell.css), not a player-resizable one.
+  const mode = playerState?.is_landed ? 'mode-surface' : playerState?.is_docked ? 'mode-station' : 'mode-flight';
 
   return (
+    <ShellPresenceContext.Provider value={true}>
     <div className="game-layout-wrapper">
       {/* Cockpit-wide realtime medal toast: consumes the medal_awarded WS event
           so a freshly-earned decoration pops on any /game route. */}
@@ -197,84 +396,82 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
           stack (normal/high messages + other WS toasts) and the urgent
           action-interrupting modal — per messaging.md "Priority levels". */}
       <PriorityHailConsumer />
+      <WelcomeBackToast />
+      {/* NPC-initiated combat alert (WO-CMB-NPC-INITIATED-1 lane D): the
+          npc_combat_initiated WS event's defender-side banner. */}
+      <NpcCombatBanner />
+      {/* First-session orientation chip (WO-PUX-ONBOARD) -- renders nothing
+          unless this tab just landed here from first-login completion. */}
+      <FirstSessionObjectives />
       <div className="game-layout">
         {/* WO-INVERTED-L: .console-expand → docked/landed make the opaque
-            console fill the lower area (right viewport column collapses);
-            .console-collapsed → the edge-toggle hides the console for an
-            unobstructed scene (rail-peek retired; logout lives in the HUD). */}
+            console fill the lower area (right viewport column collapses).
+            The companion .console-collapsed edge-toggle (manual hide-console
+            + the WO-129-B landing auto-collapse) is RETIRED
+            (WO-UI5-RETIREMENT+GLASS) — the v10 artifact's own shell has no
+            collapse affordance at all (fixed rail, always); rail-peek was
+            already retired earlier and logout lives in the HUD. */}
+        {/* WO-UI0-SHELL-TRANSPLANT: `.game-container` IS the `.stage` grid
+            host now (cockpit-shell.css targets `.stage, .game-container`
+            with the same rule — an ALSO-selector, not a rename, see that
+            file's own ADAPTATION(a) comment). Single-column grid, 4 rows
+            (auto/auto/auto/1fr): StatusBar / `.band` / Teleprinter / `.lower`
+            — SLOT DESIGN: none of these carry a `.sbar`/`.tele` classname
+            themselves (that's the leaf lanes' reclass, per the WO — the
+            shell CSS's `.sbar`/`.tele` rules stay inert until then); they
+            land in their rows purely by DOM-order auto-placement. `.band`/
+            `.lower > .deck` are real, empty, ref-published grid slots
+            GameDashboard portals its windshield/console into (ShellSlots
+            below); `.main-viewport`'s `{children}` (every /game/* route)
+            stays a DIRECT, position:absolute grid child sized to rows 2-4
+            via explicit `grid-row` (game-layout.css) — excluded from the
+            auto-placement count (an abspos grid item with an explicit
+            grid-row never consumes an auto-placed row), so it does NOT
+            shift StatusBar/band/Teleprinter/lower off their intended rows
+            despite being first in this JSX. */}
         <div
-          className={`game-container${
+          className={`game-container ${mode}${
             playerState?.is_docked || playerState?.is_landed ? ' console-expand' : ''
-          }${sidebarOpen ? '' : ' console-collapsed'}${
-            windshieldMin && grounded ? ' windshield-min' : ''
-          }${
-            playerState?.is_landed && !windshieldMin ? ' landed-expanded' : ''
-          }`}
+          }${teleprinterBodyPanel ? ' tp-panel' : ''}`}
         >
-          {/* Left console (NEON15): route rail on top, then two MFD
-              screens splitting the remaining height. MFDProvider hosts
-              page selection/alert state plus the alert wiring effects. */}
-          <aside className={`game-sidebar hud-panel ${sidebarOpen ? 'open' : 'closed'}`}>
-            <MFDProvider>
-              <RouteRail />
-              <MFDScreen config={SIDEBAR_A} />
-              <MFDScreen config={SIDEBAR_B} />
-              <MFDAlertWiring />
-            </MFDProvider>
-          </aside>
+          {/* MFDProvider (WO-UI1-CHROME-COMPLETE, widened again here) wraps
+              the ENTIRE `.stage` content now — Annunciator (inside `.band`)
+              and the MFD screens (inside `.lower .mfdcol`) both still need
+              useMFD(), and MFDProvider renders ZERO DOM of its own (a bare
+              context-provider pair), so widening its scope changes NOTHING
+              about the grid: every one of these stays exactly the same
+              direct `.game-container` grid-item child it would be without
+              the provider wrapping it — same precedent as the last widening
+              (see git history). ShellSlotsContext publishes the band/deck
+              portal targets to whatever renders as `{children}`. */}
+          <MFDProvider>
+          <ShellSlotsContext.Provider value={shellSlots}>
 
-          <main className="game-content" aria-busy={isInitialLoad}>
-            {/* Sidebar toggle, relocated from the deleted top header to the
-                left edge of the viewport (the rail still owns the commander
-                name). Keeps the original handler + ◀/▶ icon. */}
-            <button
-              className="cockpit-btn sidebar-toggle sidebar-edge-toggle"
-              onClick={toggleSidebar}
-              aria-label={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
-              title={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
-            >
-              <span className="toggle-icon">{sidebarOpen ? '◀' : '▶'}</span>
-            </button>
+          <main
+            className="game-content"
+            aria-busy={isInitialLoad}
+            ref={mainLandmarkRef}
+            tabIndex={-1}
+          >
             {/* Children render UNCONDITIONALLY — never unmounted by a
                 background refresh (see cockpit-stability note above).
                 During the initial-load overlay the viewport is `inert`
-                so its controls can't be tab-focused underneath. */}
+                so its controls can't be tab-focused underneath.
+                WO-UI5-RETIREMENT+GLASS: of the 11 nested /game/* routes
+                (App.tsx), only the INDEX route (GameDashboard) still mounts
+                real content here — its real content is portaled out of this
+                box into `.band`/`.deck` below (ShellSlots), so what renders
+                HERE for it is residual chrome only (alerts/modals, all
+                position:fixed/portaled-to-body, indifferent to where this
+                box sits). The other 10 legacy paths (map/team/governance/
+                combat/planets/ships/player/trading/ranking/settings) are
+                now bare client-side <Navigate> redirects back onto `/game`
+                (GameRouteRedirects.tsx) — they flash through this box for a
+                tick and never render real page content into it. */}
             <div
               className="main-viewport"
-              // `inert` isn't in the installed @types/react (18.x) surface yet,
-              // but the DOM supports it and React passes unknown lowercase
-              // attrs through. Spread it so hidden controls under the
-              // initial-load overlay can't be tab-focused.
-              {...(isInitialLoad ? { inert: '' } : {})}
+              inert={isInitialLoad}
             >
-              <PlayerVitalsHud />
-              {/* Windshield minimize/expand (id=151 + id=151b) — only while
-                  docked/landed. Both states show a CENTERED, labeled button.
-                  MINIMIZED: "Expand Viewport" near top of the thin 60px band.
-                  EXPANDED: "Minimize Viewport" centered-bottom of the scene
-                  band (uses --band-h via .windshield-minimize). */}
-              {grounded && windshieldMin && (
-                <button
-                  type="button"
-                  className="windshield-expand"
-                  onClick={toggleWindshield}
-                  aria-label="Expand viewport"
-                  title="Expand the viewport"
-                >
-                  ⤢ Expand Viewport
-                </button>
-              )}
-              {grounded && !windshieldMin && (
-                <button
-                  type="button"
-                  className="windshield-minimize"
-                  onClick={toggleWindshield}
-                  aria-label="Minimize viewport"
-                  title="Minimize viewport — give the console more room"
-                >
-                  ▾ MINIMIZE VIEWPORT
-                </button>
-              )}
               {children}
             </div>
             {isInitialLoad && (
@@ -290,9 +487,93 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
               </div>
             )}
           </main>
+
+          {/* StatusBar (WO-UI0-STATUSBAR) — a DIRECT, non-absolute child of
+              .game-container/.stage, auto-placed into grid row 1. Supersedes
+              PlayerVitalsHud (removed — WO-CLEANUP-PLAYERVITALSHUD). */}
+          <StatusBar />
+
+          {/* `.band` (WO-UI0-SHELL-TRANSPLANT) — the ambient scene row,
+              auto-placed into grid row 2. Height is a fixed em value per
+              mode (cockpit-shell.css `.band` base + game-layout.css's
+              `.mode-station .band`/`.mode-surface .band`) — no longer
+              player-resizable (the old windshield-minimize/expand toggle
+              is retired, see the `mode` doc-comment above). Annunciator
+              (WO-UI1-ANNUNCIATOR) mounts directly inside it as a NORMAL React
+              child (unaffected by the eager-portal-target fix below — it's
+              never conditionally portaled, so it never hits the type-flip
+              bug that motivated it) — `.band` is already `position:relative`
+              (cockpit-shell.css), exactly the ancestor Annunciator's own
+              `position:absolute; inset:0` overlay needs; retires the old
+              `.windshield-hud-anchor` wrapper. `bandSlotRef` is this row's
+              OWN grid-cell node — the eagerly-created `bandEl` (above) is
+              appended into it via `useLayoutEffect`, not rendered as a
+              normal JSX child, so it sits alongside Annunciator without
+              React ever trying to reconcile it (React only manages nodes it
+              itself rendered; a manually-`appendChild`'d node is invisible
+              to that reconciliation and is never touched by it as long as
+              this row's OWN JSX children list — just `<Annunciator/>` —
+              stays stable, which it does). */}
+          <div className="band" ref={bandSlotRef}>
+            <Annunciator />
+          </div>
+
+          {/* Teleprinter (WO-UI1-TELEPRINTER stitch) — a DIRECT, non-
+              absolute child of .game-container/.stage, auto-placed into
+              grid row 3. Both display toggles are CONTROLLED from here
+              (WO-UI1-CHROME-COMPLETE; WO-UI-MAX-BATCH-1 REVISE) — see
+              teleprinterBodyPanel's own doc-comment for why bodyPanel is
+              owned here (the MFD-B fold below needs to see it). */}
+          <Teleprinter
+            bodyPanel={teleprinterBodyPanel}
+            onBodyPanelChange={setTeleprinterBodyPanel}
+            transcriptOpen={teleprinterTranscriptOpen}
+            onTranscriptOpenChange={setTeleprinterTranscriptOpen}
+          />
+
+          {/* `.lower` (WO-UI0-SHELL-TRANSPLANT) — MFD column + instrument
+              deck, auto-placed into grid row 4 (the `1fr` row — everything
+              else is a fixed/content-sized row, this one absorbs whatever
+              height is left). `.mfdcol` RELOCATES the old absolute
+              `<aside>` sidebar's content here: RouteRail (the old
+              ship-systems nav rail that used to top it) is RETIRED
+              (WO-UI5-RETIREMENT+GLASS — its 9 nav keys are superseded by
+              the 10 client-side legacy-route redirects in App.tsx, see
+              GameRouteRedirects.tsx) — `.mfdcol` now holds ONLY the MFD
+              screen(s), matching the v10 artifact anatomy (cockpit-
+              shell.css's own untouched `.mfdcol { grid-template-rows: 1fr
+              1fr }` base, no override needed for exactly 2 children). The
+              `.folded` modifier switches `.mfdcol`'s row template
+              (game-layout.css) between hosting 2 screens vs. the single
+              mid-panel-folded config, same branch as before. `deckSlotRef`
+              is this cell's OWN grid node — the eagerly-created `deckEl`
+              (above) is appended into it via `useLayoutEffect`, the same
+              manually-attached-node pattern `.band`/`bandEl` uses (this
+              cell has zero normal JSX children of its own, so there's
+              nothing for React to ever conflict with). GameDashboard's
+              console portals its 3-monitor/station-face/surface-face
+              content into `deckEl`. */}
+          <div className="lower">
+            <aside className={teleprinterBodyPanel ? 'mfdcol folded' : 'mfdcol'}>
+              {teleprinterBodyPanel ? (
+                <MFDScreen config={SIDEBAR_A_FOLDED} />
+              ) : (
+                <>
+                  <MFDScreen config={SIDEBAR_A} />
+                  <MFDScreen config={SIDEBAR_B} />
+                </>
+              )}
+              <MFDAlertWiring />
+            </aside>
+            <div className="deck" ref={deckSlotRef} />
+          </div>
+
+          </ShellSlotsContext.Provider>
+          </MFDProvider>
         </div>
       </div>
     </div>
+    </ShellPresenceContext.Provider>
   );
 };
 

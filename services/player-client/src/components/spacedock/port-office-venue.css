@@ -26,15 +26,33 @@
   line-height: 1.5;
 }
 
-.po-tabs {
+/* WO-UI2-CANON-A-PORTOFFICE: migrated off the hand-rolled .po-tab tablist
+   onto the shared DeckPageTabs rail (cockpit.css's .deck-tab-rail /
+   .deck-tab-btn). The rail root renders BOTH `deck-tab-rail` and the
+   `po-tabs` className passed in additively, so `.po-tabs` alone ties
+   cockpit.css's `.deck-tab-rail` on specificity (0,1,0) — a tie whose
+   winner depends on CSS import order, which is NOT guaranteed here
+   (PortOfficeVenue's own stylesheet loads ahead of cockpit.css in this
+   venue's import graph). Chaining `.po-tabs.deck-tab-rail` bumps this to
+   (0,2,0), which deterministically beats the bare `.deck-tab-rail` base
+   regardless of load order. Tab buttons use the plain descendant form
+   `.po-tabs .deck-tab-btn` — already (0,2,0) vs the base's (0,1,0), so no
+   chaining needed there. Every property the shared base sets that the old
+   `.po-tab` skin didn't (border, background, padding, font-size,
+   font-weight, text-transform, letter-spacing, text-shadow) is explicitly
+   reset below so the rendered look is byte-identical to pre-migration. */
+.po-tabs.deck-tab-rail {
   display: flex;
   gap: 8px;
   margin-bottom: 16px;
+  border: none;
   border-bottom: 1px solid rgba(0, 217, 255, 0.2);
-  padding-bottom: 8px;
+  border-radius: 0;
+  padding: 0 0 8px;
+  background: transparent;
 }
 
-.po-tab {
+.po-tabs .deck-tab-btn {
   background: transparent;
   border: 1px solid rgba(0, 217, 255, 0.25);
   color: rgba(255, 255, 255, 0.7);
@@ -42,19 +60,23 @@
   border-radius: 4px;
   cursor: pointer;
   font-size: 0.85em;
+  font-weight: normal;
+  letter-spacing: normal;
+  text-transform: none;
   transition: all 0.2s ease;
 }
 
-.po-tab:hover {
+.po-tabs .deck-tab-btn:hover {
   border-color: rgba(0, 217, 255, 0.5);
   color: #00d9ff;
 }
 
-.po-tab.active {
+.po-tabs .deck-tab-btn.active {
   background: rgba(0, 217, 255, 0.12);
   border-color: rgba(0, 217, 255, 0.6);
   color: #00d9ff;
   font-weight: bold;
+  text-shadow: none;
 }
 
 /* ========================================
