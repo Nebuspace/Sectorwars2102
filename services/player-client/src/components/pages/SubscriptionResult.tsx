@@ -1,7 +1,22 @@
 import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
+import apiClient from '../../services/apiClient';
 import './subscription-result.css';
+
+// Pull the backend's verbatim detail string out of an axios error (mirrors
+// the established FETCH-CONVERGE idiom, e.g. GatewrightPanel.tsx's errDetail).
+const errDetail = (e: unknown, fallback: string): string => {
+  if (e && typeof e === 'object') {
+    const resp = (e as { response?: { data?: unknown } }).response;
+    const data = resp?.data;
+    if (data && typeof data === 'object') {
+      const detail = (data as Record<string, unknown>).detail;
+      if (typeof detail === 'string' && detail) return detail;
+    }
+  }
+  return fallback;
+};
 
 interface SubscriptionDetails {
   subscription_id: string;
@@ -14,7 +29,7 @@ interface SubscriptionDetails {
 const SubscriptionResult: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { token } = useAuth();
+  const { isAuthenticated } = useAuth();
   const [loading, setLoading] = useState(true);
   const [subscriptionDetails, setSubscriptionDetails] = useState<SubscriptionDetails | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -24,11 +39,11 @@ const SubscriptionResult: React.FC = () => {
     const subscriptionId = urlParams.get('subscription_id');
     const token_param = urlParams.get('token');
     const ba_token = urlParams.get('ba_token');
-    
+
     // PayPal can return subscription_id, token, or ba_token depending on flow
     const paypalSubscriptionId = subscriptionId || token_param || ba_token;
 
-    if (paypalSubscriptionId && token) {
+    if (paypalSubscriptionId && isAuthenticated) {
       fetchSubscriptionDetails(paypalSubscriptionId);
     } else if (location.pathname.includes('cancelled')) {
       setLoading(false);
@@ -36,24 +51,17 @@ const SubscriptionResult: React.FC = () => {
       setError('Invalid subscription response');
       setLoading(false);
     }
-  }, [location, token]);
+  }, [location, isAuthenticated]);
 
   const fetchSubscriptionDetails = async (subscriptionId: string) => {
     try {
-      const response = await fetch(`/api/v1/paypal/subscriptions/${subscriptionId}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-
-      if (response.ok) {
-        const details = await response.json();
-        setSubscriptionDetails(details);
-      } else {
-        setError('Failed to retrieve subscription details');
-      }
+      // apiClient's request interceptor attaches the current access token
+      // (and its response interceptor handles 401 refresh-and-retry) —
+      // no manual Authorization header needed.
+      const response = await apiClient.get(`/api/v1/paypal/subscriptions/${subscriptionId}`);
+      setSubscriptionDetails(response.data);
     } catch (err) {
-      setError('Network error occurred');
+      setError(errDetail(err, 'Failed to retrieve subscription details'));
       console.error('Error fetching subscription details:', err);
     } finally {
       setLoading(false);

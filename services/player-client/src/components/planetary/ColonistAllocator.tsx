@@ -1,6 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { gameAPI } from '../../services/api';
 import type { Planet } from '../../types/planetary';
+import { resourceIcon, resourceColor } from '../../services/resourceCatalog';
 import './colonist-allocator.css';
 
 interface ColonistAllocatorProps {
@@ -36,9 +37,9 @@ const getTypeEfficiency = (planetType: string, role: RoleKey): number => {
 };
 
 const ROLE_META: Array<{ key: RoleKey; icon: string; label: string; cssClass: string; color: string }> = [
-  { key: 'fuel', icon: '⛽', label: 'Fuel Production', cssClass: 'fuel', color: '#ff6b6b' },
-  { key: 'organics', icon: '🌿', label: 'Organics Production', cssClass: 'organics', color: '#51cf66' },
-  { key: 'equipment', icon: '⚙️', label: 'Equipment Production', cssClass: 'equipment', color: '#339af0' },
+  { key: 'fuel', icon: resourceIcon('fuel'), label: 'Fuel Production', cssClass: 'fuel', color: resourceColor('fuel') },
+  { key: 'organics', icon: resourceIcon('organics'), label: 'Organics Production', cssClass: 'organics', color: resourceColor('organics') },
+  { key: 'equipment', icon: resourceIcon('equipment'), label: 'Equipment Production', cssClass: 'equipment', color: resourceColor('equipment') },
 ];
 
 export const ColonistAllocator: React.FC<ColonistAllocatorProps> = ({

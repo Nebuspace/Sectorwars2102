@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { gameAPI } from '../../services/api';
 import { useGame } from '../../contexts/GameContext';
-import type { PlanetType, GenesisDeployment as GenesisDeploymentType } from '../../types/planetary';
+import type { PlanetType, GenesisDeployment as GenesisDeploymentType, GenesisQuoteResponse } from '../../types/planetary';
 import './genesis-deployment.css';
 
 interface GenesisDeploymentProps {
@@ -108,6 +108,9 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
   const currentSectorId = currentSector?.sector_id != null ? String(currentSector.sector_id) : '';
   const [selectedSectorId, setSelectedSectorId] = useState(currentSectorId);
   const [deploying, setDeploying] = useState(false);
+  // Re-verifying the selected quote right before the charge fires (see
+  // handleDeploy's pre-submit re-confirm below).
+  const [checkingPrice, setCheckingPrice] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   // Tier: basic fuses 1 device, enhanced fuses 3, advanced sacrifices the
@@ -127,47 +130,93 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
 
   // Canon tiers (genesis-devices.md): basic fuses 1 device, enhanced fuses 3,
   // advanced spends 1 device + sacrifices the Colony Ship for an instant colony.
+  // Device costs live server-side only (GENESIS_TIERS) — see the `quotes` map below.
   const TIERS = [
-    { id: 'basic' as const, label: 'Basic', devices: 1, cost: 25000, hab: '40–60', blurb: 'One device · a starter world (forms ~48h)', sacrifice: false },
-    { id: 'enhanced' as const, label: 'Enhanced', devices: 3, cost: 75000, hab: '55–75', blurb: 'Three devices fused · a richer world (forms ~48h)', sacrifice: false },
-    { id: 'advanced' as const, label: 'Advanced', devices: 1, cost: 250000, hab: '70–90', blurb: 'Sacrifices your Colony Ship · INSTANT Settlement colony (5,000 colonists, L2 citadel, 4 turrets)', sacrifice: true },
+    { id: 'basic' as const, label: 'Basic', devices: 1, hab: '40–60', blurb: 'One device · a starter world (forms ~48h)', sacrifice: false },
+    { id: 'enhanced' as const, label: 'Enhanced', devices: 3, hab: '55–75', blurb: 'Three devices fused · a richer world (forms ~48h)', sacrifice: false },
+    { id: 'advanced' as const, label: 'Advanced', devices: 1, hab: '70–90', blurb: 'Sacrifices your Colony Ship · INSTANT Settlement colony (5,000 colonists, L2 citadel, 4 turrets)', sacrifice: true },
   ];
   const tierInfo = TIERS.find(t => t.id === tier)!;
   const tierEligible = (t: typeof TIERS[number]) =>
     genesisDevices >= t.devices && (!t.sacrifice || isColonyShip);
 
-  // Registration fees (the server is authoritative; these mirror the fee contract
-  // so the player sees the cost before committing).
-  //   Registered  = 10,000
-  //   Clandestine = 60,000
-  //   Chartered   = 10,000 + 40,000 * (1 - clamp(rep/1000, 0, 1) * 0.75)
-  // Chartered scales DOWN with reputation: high standing earns a cheaper charter.
+  // Registration visibility/legal-status options. Fees (Registered fixed,
+  // Clandestine fixed, Chartered scaling DOWN with reputation) are FROZEN
+  // registry contract but are priced server-side only — see the `quotes` map.
   const personalReputation = playerState?.personal_reputation ?? 0;
-  const charteredFee = Math.round(
-    10000 + 40000 * (1 - Math.max(0, Math.min(1, personalReputation / 1000)) * 0.75)
-  );
   const REGISTRATIONS = [
     {
       id: 'clandestine' as const,
       label: 'Clandestine',
-      fee: 60000,
       blurb: 'Off the registry — no Federation protection. Stays hidden from lookups.',
     },
     {
       id: 'registered' as const,
       label: 'Registered',
-      fee: 10000,
       blurb: 'On the charts in your name — no Federation protection.',
     },
     {
       id: 'chartered' as const,
       label: 'Chartered',
-      fee: charteredFee,
       blurb: 'Federation legal protection — fee scales down with your reputation.',
     },
   ];
   const registrationInfo = REGISTRATIONS.find(r => r.id === registration)!;
-  const totalCost = tierInfo.cost + registrationInfo.fee;
+
+  // Server-authoritative pricing (WO-API-B2): GET /genesis/quote is the SAME
+  // cost function POST /planets/genesis/deploy charges from, so there is no
+  // local cost/fee formula here to drift from what deploy actually charges.
+  // All 9 (tier x registration) combinations are quoted up front so every
+  // tier/registration card can show its own price without a fetch per click;
+  // device_cost is registration-independent and registration_fee is
+  // tier-independent, so each card's number is read off a stable key
+  // (`<tier>:registered` / `basic:<registration>`) regardless of the current
+  // selection.
+  const [quotes, setQuotes] = useState<Record<string, GenesisQuoteResponse>>({});
+  const [quotesError, setQuotesError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const tierIds: Array<'basic' | 'enhanced' | 'advanced'> = ['basic', 'enhanced', 'advanced'];
+    const regIds: Array<'clandestine' | 'registered' | 'chartered'> = ['clandestine', 'registered', 'chartered'];
+    const pairs = tierIds.flatMap(t => regIds.map(r => [t, r] as const));
+
+    (async () => {
+      try {
+        const results = await Promise.all(
+          pairs.map(([t, r]) => gameAPI.planetary.getGenesisQuote(t, r))
+        );
+        if (cancelled) return;
+        const next: Record<string, GenesisQuoteResponse> = {};
+        pairs.forEach(([t, r], i) => { next[`${t}:${r}`] = results[i]; });
+        setQuotes(next);
+        setQuotesError(null);
+      } catch (err) {
+        if (cancelled) return;
+        // Promise.all rejects on the first failure without telling us which
+        // of the 9 combos succeeded -- never leave a possibly-stale price
+        // displayed/clickable, so drop the whole batch and re-disable Deploy
+        // (selectedQuote becomes undefined) until the next successful fetch.
+        setQuotes({});
+        setQuotesError(err instanceof Error ? err.message : 'Failed to load genesis pricing');
+      }
+    })();
+
+    return () => { cancelled = true; };
+    // Re-quote if the player's reputation changes (the Chartered fee scales with it).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [personalReputation]);
+
+  const deviceCostFor = (t: 'basic' | 'enhanced' | 'advanced') => quotes[`${t}:registered`]?.device_cost;
+  const registrationFeeFor = (r: 'clandestine' | 'registered' | 'chartered') => quotes[`basic:${r}`]?.registration_fee;
+  const selectedQuote = quotes[`${tier}:${registration}`];
+  const totalCost = selectedQuote?.total_cost;
+  // reputation_gate is player-level (identical across all 9 quoted combos) --
+  // an under-rep player can't complete ANY genesis deploy, so surface + gate
+  // on it here instead of only letting the destructive advanced flow get
+  // armed and rejected at the last server step.
+  const reputationGate = selectedQuote?.reputation_gate;
+  const reputationGateBlocked = reputationGate ? !reputationGate.met : false;
 
   // Fall back to basic if the selected tier becomes ineligible.
   useEffect(() => {
@@ -189,6 +238,12 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
   };
 
   const handleDeploy = async () => {
+    // Synchronous reentrancy guard -- the disabled attrs on the buttons cover
+    // the normal click path, but this makes it robust to any FUTURE duplicate
+    // entry point (a form wrapper's submit, an Enter-key handler) without
+    // re-deriving the "no await between state-sets" timing argument.
+    if (checkingPrice || deploying) return;
+
     // Validation
     if (!planetName.trim()) {
       setError('Please enter a planet name');
@@ -218,6 +273,58 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
     // Two-step confirm for the destructive advanced (ship-sacrifice) tier.
     if (tierInfo.sacrifice && !advancedArmed) {
       setAdvancedArmed(true);
+      return;
+    }
+
+    if (reputationGateBlocked && reputationGate) {
+      setError(`Requires Federation reputation ${reputationGate.required} or higher (yours: ${reputationGate.current}).`);
+      return;
+    }
+
+    // Pre-submit price re-confirm: GameContext has no live reputation push
+    // (no poll, no WS), so the Chartered total on screen can go stale if the
+    // player's reputation changed elsewhere (combat/bounty/another tab) since
+    // the last quote fetch. Re-fetch the SELECTED quote fresh right here,
+    // right before the charge fires, and compare it to what's displayed --
+    // never let a stale number silently become the real charge.
+    const displayedTotal = selectedQuote?.total_cost;
+    setCheckingPrice(true);
+    setError(null);
+    let freshQuote: GenesisQuoteResponse;
+    try {
+      freshQuote = await gameAPI.planetary.getGenesisQuote(tier, registration);
+    } catch (err) {
+      // Can't verify the price -- never deploy against an unverified number.
+      // Invalidate the (possibly stale) cached quote so Deploy re-disables.
+      setQuotes(prev => {
+        const next = { ...prev };
+        delete next[`${tier}:${registration}`];
+        return next;
+      });
+      setQuotesError(err instanceof Error ? err.message : 'Failed to verify genesis pricing');
+      setCheckingPrice(false);
+      return;
+    }
+    setCheckingPrice(false);
+    setQuotes(prev => ({ ...prev, [`${tier}:${registration}`]: freshQuote }));
+
+    // Re-check the reputation gate against the FRESH quote too -- the render-
+    // time `reputationGateBlocked` check above ran against the possibly-stale
+    // `selectedQuote`. The server still enforces this regardless; this just
+    // surfaces the friendly client-side message instead of letting the POST
+    // fire and bounce off the generic server rejection, for the narrow window
+    // where reputation crosses the gate mid-flow.
+    if (!freshQuote.reputation_gate.met) {
+      setError(`Requires Federation reputation ${freshQuote.reputation_gate.required} or higher (yours: ${freshQuote.reputation_gate.current}).`);
+      return;
+    }
+
+    if (displayedTotal === undefined || freshQuote.total_cost !== displayedTotal) {
+      setError(
+        displayedTotal === undefined
+          ? null
+          : `Price changed to ${freshQuote.total_cost.toLocaleString()} cr (was ${displayedTotal.toLocaleString()} cr) — review the new total and click Deploy again to confirm.`
+      );
       return;
     }
 
@@ -321,6 +428,13 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
           </div>
         )}
 
+        {quotesError && (
+          <div className="error-message">
+            <span className="error-icon">⚠️</span>
+            Could not load genesis pricing: {quotesError}
+          </div>
+        )}
+
         {successMessage && (
           <div className="success-message">
             <span className="success-icon">✅</span>
@@ -369,7 +483,7 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
                       >
                         <span className="tier-name">{t.label}</span>
                         <span className="tier-devices">{t.sacrifice ? '1 device + ship' : `${t.devices} device${t.devices !== 1 ? 's' : ''}`}</span>
-                        <span className="tier-meta">{t.cost.toLocaleString()} cr · hab {t.hab}</span>
+                        <span className="tier-meta">{deviceCostFor(t.id)?.toLocaleString() ?? '…'} cr · hab {t.hab}</span>
                       </button>
                     );
                   })}
@@ -393,7 +507,7 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
                       onClick={() => setRegistration(r.id)}
                     >
                       <span className="tier-name">{r.label}</span>
-                      <span className="tier-meta">{r.fee.toLocaleString()} cr</span>
+                      <span className="tier-meta">{registrationFeeFor(r.id)?.toLocaleString() ?? '…'} cr</span>
                       <span className="registration-blurb">{r.blurb}</span>
                     </button>
                   ))}
@@ -439,11 +553,11 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
                 </div>
                 <div className="summary-item">
                   <span className="summary-label">Sequence:</span>
-                  <span className="summary-value">{tierInfo.label} — {tierInfo.devices} device{tierInfo.devices !== 1 ? 's' : ''} · {tierInfo.cost.toLocaleString()} cr</span>
+                  <span className="summary-value">{tierInfo.label} — {tierInfo.devices} device{tierInfo.devices !== 1 ? 's' : ''} · {deviceCostFor(tier)?.toLocaleString() ?? '…'} cr</span>
                 </div>
                 <div className="summary-item">
                   <span className="summary-label">Registration:</span>
-                  <span className="summary-value">{registrationInfo.label} · {registrationInfo.fee.toLocaleString()} cr</span>
+                  <span className="summary-value">{registrationInfo.label} · {registrationFeeFor(registration)?.toLocaleString() ?? '…'} cr</span>
                 </div>
                 <div className="summary-item">
                   <span className="summary-label">Biome:</span>
@@ -461,29 +575,40 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
                 </div>
                 <div className="summary-item summary-total">
                   <span className="summary-label">Total Cost:</span>
-                  <span className="summary-value">{totalCost.toLocaleString()} cr</span>
+                  <span className="summary-value">{totalCost !== undefined ? `${totalCost.toLocaleString()} cr` : 'Loading price…'}</span>
                 </div>
               </div>
             </div>
+
+            {reputationGateBlocked && reputationGate && (
+              <span className="input-hint genesis-sacrifice-warn">
+                ⚠️ Requires Federation reputation {reputationGate.required} or higher (yours: {reputationGate.current}).
+              </span>
+            )}
 
             <div className="action-buttons">
               <button
                 className="button secondary"
                 onClick={() => { if (advancedArmed) { setAdvancedArmed(false); } else { onClose && onClose(); } }}
-                disabled={deploying}
+                disabled={deploying || checkingPrice}
               >
                 {advancedArmed ? 'Back' : 'Cancel'}
               </button>
               <button
                 className={`button primary ${tierInfo.sacrifice && advancedArmed ? 'danger' : ''}`}
                 onClick={handleDeploy}
-                disabled={deploying || !!deployAnim || !planetName || !selectedSectorId || !tierEligible(tierInfo)}
+                disabled={
+                  deploying || checkingPrice || !!deployAnim || !planetName || !selectedSectorId ||
+                  !tierEligible(tierInfo) || !selectedQuote || reputationGateBlocked
+                }
               >
-                {deploying
-                  ? 'Deploying...'
-                  : tierInfo.sacrifice
-                    ? (advancedArmed ? `⚠️ Confirm — sacrifice ${currentShip?.name || 'Colony Ship'}` : 'Deploy Advanced (sacrifices ship)')
-                    : `Deploy ${tierInfo.label} (${tierInfo.devices} device${tierInfo.devices !== 1 ? 's' : ''})`}
+                {checkingPrice
+                  ? 'Verifying price...'
+                  : deploying
+                    ? 'Deploying...'
+                    : tierInfo.sacrifice
+                      ? (advancedArmed ? `⚠️ Confirm — sacrifice ${currentShip?.name || 'Colony Ship'}` : 'Deploy Advanced (sacrifices ship)')
+                      : `Deploy ${tierInfo.label} (${tierInfo.devices} device${tierInfo.devices !== 1 ? 's' : ''})`}
               </button>
             </div>
           </>
