@@ -44,8 +44,27 @@ interface PlanetPortPairProps {
   onLandOnPlanet: (planetId: string) => void;
   onClaimPlanet?: (planetId: string) => void;
   onDockAtStation?: (stationId: string) => void;
+  /** True when the player's CURRENT position matches THIS planet specifically
+   *  (not a sector-wide broadcast — see WO-UI2-WINDSHIELD-TABLEAU item 3). */
   isLanded?: boolean;
+  /** True when the player's CURRENT position matches THIS station specifically. */
   isDocked?: boolean;
+  /** True when the windshield has completed an approach glide to THIS body
+   *  (parked at the approach point, not yet server-landed/docked). Flips the
+   *  row from APPROACH → LAND/DOCK so the confirm dialog only opens then. */
+  atDestination?: boolean;
+  /** True while autopilot is under burn (`autopilot.status === 'engaged'`) —
+   *  mirrors the demo's row state machine (cockpit-redesign-v10 L1349-1352):
+   *  here ? DOCK/LAND/HARVEST : (flying ? HALT : APPROACH). */
+  flying?: boolean;
+  /** Aborts the in-progress course — same autopilot.abort('all stop') the
+   *  glass locrow's 🛑 ALL STOP chip already calls. */
+  onHalt?: () => void;
+  /** Fired (with the planet/station id) when "APPROACH ▸" is clicked —
+   *  starts the windshield glide ONLY. Does not open a land/dock confirm;
+   *  that waits until the ship has arrived (atDestination / isLanded /
+   *  isDocked) and the player clicks LAND/DOCK. */
+  onApproach?: (objectId: string) => void;
 }
 
 const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
@@ -55,7 +74,11 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
   onClaimPlanet,
   onDockAtStation,
   isLanded = false,
-  isDocked = false
+  isDocked = false,
+  atDestination = false,
+  flying = false,
+  onHalt,
+  onApproach
 }) => {
   // Planet type icons
   const planetTypeIcons: { [key: string]: string } = {
@@ -102,13 +125,19 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
   // In-fiction confirmation dialog state (replaces native confirm())
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
 
-  const handlePlanetClick = () => {
-    if (!planet || isLanded) return;
-    // Capture narrowed values for the deferred onConfirm closure
+  /** APPROACH only — start the windshield glide. No land/dock confirm yet. */
+  const handlePlanetApproach = () => {
+    if (!planet || isLanded || flying) return;
+    onApproach?.(planet.id);
+  };
+
+  /** LAND / CLAIM — confirm dialog only. Ready when already landed or after
+   *  a completed approach glide to this planet. */
+  const handlePlanetLandOrClaim = () => {
+    if (!planet || flying) return;
     const targetPlanet = planet;
 
     if (isPlanetUnclaimed) {
-      // Unclaimed, claimable planet — claim it (claiming auto-lands).
       if (!onClaimPlanet) return;
       const claimPlanet = onClaimPlanet;
       setPendingConfirm({
@@ -117,24 +146,28 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
         confirmLabel: 'Claim',
         onConfirm: () => claimPlanet(targetPlanet.id)
       });
-    } else {
-      // Owned planet OR a public population hub (e.g. New Earth) — both are
-      // landable (you land on a hub to recruit colonists); hubs simply can't be
-      // claimed. Route straight to the Land confirm, same as the helm-rail
-      // LAND button (onLandOnPlanet -> handleLand -> landOnPlanet).
-      setPendingConfirm({
-        title: 'Landing Request',
-        message: `Land on ${targetPlanet.name}?`,
-        confirmLabel: 'Land',
-        onConfirm: () => onLandOnPlanet(targetPlanet.id)
-      });
+      return;
     }
+
+    setPendingConfirm({
+      title: 'Landing Request',
+      message: `Land on ${targetPlanet.name}?`,
+      confirmLabel: 'Land',
+      onConfirm: () => onLandOnPlanet(targetPlanet.id)
+    });
   };
 
-  const handleStationClick = (e: React.MouseEvent) => {
-    e.stopPropagation(); // Prevent planet click
-    if (!station || !onDockAtStation || isDocked) return;
-    // Capture narrowed values for the deferred onConfirm closure
+  /** APPROACH only — start the windshield glide. No dock confirm yet. */
+  const handleStationApproach = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!station || !onDockAtStation || isDocked || flying) return;
+    onApproach?.(station.id);
+  };
+
+  /** DOCK — confirm dialog only, after arrival (or when already docked). */
+  const handleStationDock = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!station || !onDockAtStation || flying) return;
     const targetStation = station;
     const dockAtStation = onDockAtStation;
     setPendingConfirm({
@@ -147,92 +180,173 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
 
   const ownerDisplay = planet ? (planet.owner_name || (planet.owner_id ? 'Claimed' : null)) : null;
 
+  const handleHalt = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onHalt?.();
+  };
+
+  // here = server-landed/docked OR windshield finished approaching this body.
+  const planetHere = isLanded || atDestination;
+  const stationHere = isDocked || atDestination;
+
+  // Row action: here ? LAND/CLAIM : (flying ? HALT : APPROACH). CLAIM is
+  // gated behind `planetHere` exactly like LAND -- the server now enforces
+  // the same DOCK_LAND_PROXIMITY_RANGE_EM range on claim (WO-CLAIM-
+  // PROXIMITY, Max 2026-07-17: "a claim that lands is a landing"), so a
+  // CLAIM button reachable before arrival would dangle a click that 400s.
+  const planetAction: { label: string; onClick: (e: React.MouseEvent) => void; armed: boolean; ariaLabel: string } | null =
+    !planet ? null : flying
+      ? { label: '🛑 HALT ▸', onClick: handleHalt, armed: true, ariaLabel: 'Halt — abort approach and bleed momentum' }
+      : planetHere
+        ? isPlanetUnclaimed && onClaimPlanet && !isLanded
+          ? { label: '🚩 CLAIM ▸', onClick: (e) => { e.stopPropagation(); handlePlanetLandOrClaim(); }, armed: false, ariaLabel: `Claim ${planet.name}` }
+          : { label: '🛬 LAND ▸', onClick: (e) => { e.stopPropagation(); handlePlanetLandOrClaim(); }, armed: false, ariaLabel: `Land on ${planet.name}` }
+        : { label: '🧭 APPROACH ▸', onClick: (e) => { e.stopPropagation(); handlePlanetApproach(); }, armed: false, ariaLabel: `Approach ${planet.name}` };
+
+  const stationOperational = station?.status?.toLowerCase() === 'operational';
+  const stationAction: { label: string; onClick: (e: React.MouseEvent) => void; armed: boolean; ariaLabel: string } | null =
+    !station || !onDockAtStation ? null : flying
+      ? { label: '🛑 HALT ▸', onClick: handleHalt, armed: true, ariaLabel: 'Halt — abort approach and bleed momentum' }
+      : !stationOperational
+        ? null
+        : stationHere
+          ? { label: '⚓ DOCK ▸', onClick: handleStationDock, armed: false, ariaLabel: `Dock at ${station.name}` }
+          : { label: '🧭 APPROACH ▸', onClick: handleStationApproach, armed: false, ariaLabel: `Approach ${station.name}` };
+
+  // Dense one-line qualifiers (WO-UI-MAX-BATCH-1 item 7: "EVERY object = ONE
+  // DENSE .row line ... secondary stats go DIM-INLINE after the name ...
+  // NOT stacked multi-line — the tall claimable-planet card → one dense
+  // line"). Ownership/hub/unclaimed are mutually exclusive (same precedence
+  // the old stacked `.planet-meta` block already used); `planet.status` is
+  // the real backend PlanetStatus value (HABITABLE/UNINHABITABLE/COLONIZED/
+  // DEVELOPED/TERRAFORMING — models/planet.py), not a guessed threshold.
+  const planetQualifiers: Array<{ key: string; text: string; cls: string }> = [];
+  if (planet) {
+    if (isPopulationHub) {
+      planetQualifiers.push({ key: 'hub', text: 'POPULATION HUB', cls: 'pq-hub' });
+    } else if (isPlanetUnclaimed && onClaimPlanet) {
+      planetQualifiers.push({ key: 'unclaimed', text: 'UNCLAIMED', cls: 'pq-unclaimed' });
+    } else if (ownerDisplay) {
+      planetQualifiers.push({ key: 'owner', text: ownerDisplay.toUpperCase(), cls: 'pq-owner' });
+    }
+    if (planet.status) {
+      planetQualifiers.push({ key: 'status', text: planet.status.toUpperCase(), cls: 'pq-status' });
+    }
+    if (isPlanetUnclaimed && onClaimPlanet) {
+      planetQualifiers.push({ key: 'reqs', text: '💰10,000cr · 👥100+', cls: 'pq-reqs' });
+    }
+    if (planet.habitability_score !== undefined) {
+      planetQualifiers.push({ key: 'temp', text: `🌡️${planet.habitability_score}%`, cls: 'pq-stat' });
+    }
+    if (planet.population !== undefined) {
+      planetQualifiers.push({ key: 'pop', text: `👥${formatPopulation(planet.population)}`, cls: 'pq-stat' });
+    }
+  }
+
+  const stationQualifiers: Array<{ key: string; text: string; cls: string }> = [];
+  if (station) {
+    if (stationOwnerDisplay) {
+      stationQualifiers.push({ key: 'owner', text: stationOwnerDisplay.toUpperCase(), cls: 'pq-owner' });
+    }
+    stationQualifiers.push({
+      key: 'class',
+      text: stationClassInfo
+        ? `CLASS ${stationClassInfo.classNumber} · ${stationClassInfo.name.toUpperCase()}`
+        : station.port_class !== undefined
+          ? `CLASS ${station.port_class}`
+          : station.type.replace(/_/g, ' ').toUpperCase(),
+      cls: 'pq-status',
+    });
+  }
+
   return (
     <div className="planet-port-pair">
-      {/* Planet Section - Clickable (only show if planet exists) */}
+      {/* Planet Section - Clickable (only show if planet exists). One dense
+          line: icon + name + inline dim qualifiers on the left, the row
+          action on the right (`justify-content:space-between`, planet-port-
+          pair.css) — replaces the old stacked icon/name + meta-badges +
+          stats layout. */}
       {planet && (
         <div
-          className={`planet-section ${!isLanded ? 'clickable' : 'landed'} ${isPlanetUnclaimed ? 'unclaimed' : ''}`}
-          onClick={handlePlanetClick}
+          className={`planet-section ${flying ? 'inactive' : !planetHere ? 'clickable' : 'landed'} ${isPlanetUnclaimed ? 'unclaimed' : ''}`}
+          aria-disabled={flying}
+          onClick={flying ? undefined : (planetHere ? handlePlanetLandOrClaim : handlePlanetApproach)}
         >
-          <div className="planet-details">
-            {/* icon + name always on ONE line — icon scaled to line-height */}
-            <div className="planet-name-line">
-              <span className="planet-icon">{planetIcon}</span>
-              <span className="planet-name">{planet.name}</span>
-            </div>
-            {/* badges: claim/hub/owner — rendered only when present */}
-            {((isPlanetUnclaimed && !!onClaimPlanet) || isPopulationHub || !!ownerDisplay) && (
-              <div className="planet-meta">
-                {isPlanetUnclaimed && onClaimPlanet ? (
-                  <>
-                    <span className="planet-claim-hint">Click to Claim</span>
-                    <span className="planet-claim-reqs">💰 10,000cr · 👥 100+ colonists aboard</span>
-                  </>
-                ) : isPopulationHub ? (
-                  <span className="planet-hub-tag">POPULATION HUB · REGIONAL ADMINISTRATION</span>
-                ) : (
-                  ownerDisplay && <span className="planet-owner">{ownerDisplay}</span>
-                )}
-              </div>
+          <div className="planet-info">
+            <span className="planet-icon">{planetIcon}</span>
+            <span className="planet-name">{planet.name}</span>
+            {planetQualifiers.length > 0 && (
+              <span className="planet-quals">
+                {planetQualifiers.map((q) => (
+                  <span key={q.key} className={q.cls}>{q.text}</span>
+                ))}
+              </span>
             )}
-            <div className="planet-stats">
-              {planet.habitability_score !== undefined && (
-                <span className="stat">🌡️ {planet.habitability_score}%</span>
-              )}
-              {planet.population !== undefined && (
-                <span className="stat">👥 {formatPopulation(planet.population)}</span>
-              )}
-            </div>
           </div>
+          {/* Row action (WO-UI2-WINDSHIELD-TABLEAU item 3, demo L1350) —
+              here?LAND/CLAIM:(flying?HALT:APPROACH). Reuses the shared
+              `.act`/`.act.armed` idiom (cockpit-shell.css) already used by
+              the SENSOR SWEEP + hazard-analysis rows on this same monitor. */}
+          {planetAction && (
+            <button
+              type="button"
+              className={`act${planetAction.armed ? ' armed' : ''}`}
+              onClick={planetAction.onClick}
+              aria-label={planetAction.ariaLabel}
+              title={planetAction.ariaLabel}
+            >
+              {planetAction.label}
+            </button>
+          )}
         </div>
       )}
 
-      {/* Orbital Connector - only show if both planet and station exist */}
-      {planet && station && <div className="orbital-connector">→</div>}
-
-      {/* Station Section - Clickable if exists */}
+      {/* Station Section - Clickable if exists. Same dense one-line grammar
+          as the planet section above — no more `.orbital-connector` arrow
+          pairing them side by side (WO-UI-MAX-BATCH-1 item 7: every object
+          is its own full-width row, matching the target screenshot's flat
+          object list, not a paired orbit card). */}
       {station && (
         <div
-          className={`station-section ${!isDocked && station.status.toLowerCase() === 'operational' ? 'clickable' : 'inactive'}`}
-          onClick={handleStationClick}
+          className={`station-section ${!stationHere && !flying && stationOperational ? 'clickable' : 'inactive'}`}
+          aria-disabled={flying}
+          onClick={flying ? undefined : (stationHere ? handleStationDock : handleStationApproach)}
         >
-          <div className="station-details">
-            <div className="station-name-line">
-              {/* icon + name + status on ONE line */}
-              <div className="station-name-status">
-                <span
-                  className="station-icon"
-                  style={stationClassInfo ? { color: stationClassInfo.accent } : undefined}
-                >
-                  {stationClassInfo ? (
-                    <StationClassMark group={stationClassInfo.group} size={16} />
-                  ) : (
-                    '🛰️'
-                  )}
-                </span>
-                <span className="station-name">{station.name}</span>
-                <span className="station-status">
-                  {station.status.toLowerCase() === 'operational' ? '🟢' : '🔴'}
-                </span>
-              </div>
-              {stationOwnerDisplay && <span className="station-owner">{stationOwnerDisplay}</span>}
+          <div className="station-info">
+            <span
+              className="station-icon"
+              style={stationClassInfo ? { color: stationClassInfo.accent } : undefined}
+            >
               {stationClassInfo ? (
-                <span
-                  className="station-class"
-                  style={{ color: stationClassInfo.accent }}
-                  title={stationClassInfo.blurb}
-                >
-                  Class {stationClassInfo.classNumber} · {stationClassInfo.name}
-                </span>
+                <StationClassMark group={stationClassInfo.group} size={16} />
               ) : (
-                station.port_class !== undefined && (
-                  <span className="station-class">Class {station.port_class}</span>
-                )
+                '🛰️'
               )}
-              <span className="station-type">{station.type.replace(/_/g, ' ')}</span>
-            </div>
+            </span>
+            <span className="station-name">{station.name}</span>
+            <span className="station-status">{stationOperational ? '🟢' : '🔴'}</span>
+            {stationQualifiers.length > 0 && (
+              <span className="planet-quals" title={stationClassInfo?.blurb}>
+                {stationQualifiers.map((q) => (
+                  <span key={q.key} className={q.cls}>{q.text}</span>
+                ))}
+              </span>
+            )}
           </div>
+          {/* Row action (WO-UI2-WINDSHIELD-TABLEAU item 3, demo L1349) —
+              here?DOCK:(flying?HALT:APPROACH). null while non-operational
+              AND not flying (nothing to approach/halt at a dead station). */}
+          {stationAction && (
+            <button
+              type="button"
+              className={`act${stationAction.armed ? ' armed' : ''}`}
+              onClick={stationAction.onClick}
+              aria-label={stationAction.ariaLabel}
+              title={stationAction.ariaLabel}
+            >
+              {stationAction.label}
+            </button>
+          )}
         </div>
       )}
 

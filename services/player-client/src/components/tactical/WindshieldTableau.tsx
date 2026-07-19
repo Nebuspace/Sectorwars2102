@@ -1,0 +1,1492 @@
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import apiClient from '../../services/apiClient';
+import { arrivalBearingForWarp, WARP_TURN_MS, WARP_MIN_CHARGE_MS, WARP_ARRIVE_MS, WARP_CHARGE_TIMEOUT_MS } from '../../services/warpCinematicBus';
+import { useAutopilot } from '../../contexts/AutopilotContext';
+import { useWindshieldFlight } from '../../contexts/WindshieldFlightContext';
+import type { SectorWreck } from '../../services/api';
+import type { SpecialFormationSummary } from '../../contexts/GameContext';
+import type {
+  HitMeta,
+  ShipPresence,
+  SystemStation,
+} from './SolarSystemViewscreen';
+import { shipFaction } from './SolarSystemViewscreen';
+import {
+  deriveIspPose,
+  parseIspTime,
+  type IspPose,
+} from '../../services/intrasystemFlight';
+import {
+  beltStyle,
+  bodyPosition,
+  bodySizeEm,
+  debrisArc,
+  headingDeg,
+  labelEdgeLean,
+  moonOrbits,
+  nebulaArcs,
+  pltagLabelHalfWidthEm,
+  safeOrbitRadii,
+  selfRestingAnchor,
+  starAnchor,
+  stationPosition,
+  type BandGeometry,
+  type ContactDock,
+  type PctPoint,
+} from './windshieldTableauLayout';
+import StarDisc from './StarDisc';
+import { PlanetTableauLayer } from './drawPlanetTableau';
+import { useTableauFx } from './tableauFxHarness';
+import {
+  CTXMENU_H,
+  CTXMENU_W,
+  DEFAULT_REM_PX,
+  DOCK_RANGE_EM,
+  ENGAGE_RANGE_EM,
+  PLANET_FOOTPRINT_EM_MAX,
+  POPUP_H,
+  POPUP_W,
+  REFERENCE_BAND,
+  STATION_FOOTPRINT_EM_HEIGHT_MAX,
+  STATION_FOOTPRINT_EM_WIDTH_MAX,
+  TRAVEL_ACCEL_MS,
+  TRAVEL_COAST_MS,
+  TRAVEL_DECEL_MS,
+  TRAVEL_FLIP_MS,
+  TRAVEL_HALT_BRAKE_MS,
+  TRAVEL_HALT_COAST_FRAC,
+  TRAVEL_HALT_FLIP_MS,
+  TRAVEL_MOVE_MS,
+  TRAVEL_ORIENT_MS,
+  TRAVEL_REDIRECT_TURN_MS,
+  TRAVEL_SETTLE_MS,
+  chooseWarpArrivalAnchor,
+  clampPct,
+  distancePx,
+  isInFlightPhase,
+  orbitEllipse,
+  redirectArcWaypoint,
+  resolveShipPose,
+  shortestAngleDelta,
+  stationApproachPoint,
+  toStaticSystem,
+  type CtxMenuState,
+  type PopupState,
+  type StaticSystem,
+  type TravelPhase,
+} from './windshieldTableauHelpers';
+import { renderTableauPopupContent } from './windshieldTableauPopupContent';
+import { HazardArcsLayer, PlayerShipAndWarpLayer, ScanLayer } from './windshieldTableauChrome';
+import './solar-system-viewscreen.css';
+
+// Re-exported for existing external consumers (TacticalTargetPage.tsx's own
+// `from '../WindshieldTableau'` import, WindshieldTableau.test.tsx's own
+// `chooseWarpArrivalAnchor` import) -- these now live in
+// windshieldTableauHelpers.tsx (WO-AAA-SOLAR-TABLEAU phase 3 module split,
+// see this file's own header doc-comment below), re-exported here so no
+// external import path had to change.
+export { distancePx, chooseWarpArrivalAnchor, REFERENCE_BAND, ENGAGE_RANGE_EM };
+
+/**
+ * WindshieldTableau — the flight-mode windshield-band scene
+ * (WO-UI2-WINDSHIELD-TABLEAU), replacing SolarSystemViewscreen's canvas
+ * orrery with the ratified demo's STATIC DOM "sliver" composition (Max,
+ * live-playtest #4: "a sliver of the solar system with all objects in it,
+ * no rotating around the sun").
+ *
+ * SolarSystemViewscreen.tsx is intentionally left byte-for-byte untouched
+ * for its 'flight' scene path (this WO stops MOUNTING it there, in
+ * GameDashboard.tsx, rather than editing its canvas/orbital-closeup/popup
+ * code) — see this component's own file-header verify-first note below for
+ * why. It still owns 'docked' and 'landed' scenes unchanged, and CHART
+ * 2D/3D (NavigationMap/Galaxy3DRenderer) is a wholly separate component,
+ * also untouched.
+ *
+ * VERIFY-FIRST FINDING (orbital closeup): the WO's brief asked to leave
+ * "orbital closeup" alone as a co-existing canvas painter, believing it was
+ * a separate mount (like CHART). It is not — SolarSystemViewscreen.tsx's
+ * `enterOrbit`/`drawOrbitCloseup` only ever triggers from a click inside the
+ * SAME 'flight' canvas this WO replaces, via `handleClick`'s
+ * `target.kind === 'planet'` branch (SolarSystemViewscreen.tsx, "Clicking a
+ * planet zooms the windshield to an orbital closeup of it"). Since that
+ * canvas is no longer mounted for flight, closeup becomes unreachable dead
+ * code (harmless — the file is untouched, so nothing breaks; it simply has
+ * no live entry point anymore). This tableau instead reuses the OTHER path
+ * that file's own comment calls out as the deliberate LAND fallback:
+ * "clicking a real planet now enters the orbital closeup... this popup
+ * branch is a fallback only — kept for the LAND action if a planet popup is
+ * ever opened by another path." That "another path" is this component's
+ * click→popup→LAND flow (ssv-popup, reused verbatim) — the demo's own
+ * idiom is exactly this simpler click-to-inspect model, not a full-screen
+ * zoom.
+ *
+ * DATA: fetches GET /api/v1/sectors/{id}/contents (WO-UI2-INTRASYSTEM-MODEL,
+ * ec21a3eb) once per sectorId change for the STATIC celestial composition
+ * (star/bodies/stations/nebula/belt/debris/habitable_zone — the same fields
+ * SolarSystemViewscreen.tsx's own GET /sectors/{id}/system already served,
+ * unioned into the one consolidated read-only endpoint the backend shipped
+ * specifically anticipating this FE pass). Live, WS-reactive data
+ * (ships/wrecks/formations) stays on PROPS from GameDashboard exactly as
+ * today, deliberately — /contents is a plain poll-once GET with no WS
+ * push, and switching those three feeds to it would trade away the
+ * liveness GameDashboard's currentSector context already provides for no
+ * WO-required benefit.
+ *
+ * FLIGHT (WO-UI2-FLIGHT-FEEL): this component OWNS the actual click→glide
+ * (`travelTo`, below) — it alone has the /contents system data needed to
+ * resolve a planet/station id to a %-position and is the only thing that
+ * renders/animates `.shipmk`. It publishes that state into the shared
+ * WindshieldFlightContext (contexts/WindshieldFlightContext.tsx) so the
+ * SOLAR SYSTEM monitor's per-row APPROACH/HALT and the locrow's ALL STOP
+ * chip — previously wired to the unrelated inter-sector AutopilotContext —
+ * read and drive the SAME real flight state a band-object click does.
+ *
+ * AAA TABLEAU (WO-AAA-SOLAR-TABLEAU phase 3): mounts the shared
+ * `tableauFxHarness` (one rAF/clock, see tableauFxHarness.ts's own header)
+ * against `sceneSpaceRef` (the `.scene.space` box every `.sun`/`.pl` %-anchor
+ * is positioned against) and hands the SAME harness instance to both
+ * `StarDisc` (the sun's WebGL disc) and `PlanetTableauLayer` (the planets'
+ * Canvas-2D layer) — ONE shared clock keeps the sun's implied light
+ * direction and the planets' terminator/rim frame-coherent; two independent
+ * `useTableauFx` calls would phase-drift. Both canvases are `pointer-
+ * events:none` and layered UNDER the existing `.sun`/`.pl` DOM buttons
+ * (unchanged hit-test/label/focus/popup/a11y — see this WO's own report) —
+ * only their CSS fill went transparent so the canvas shows through.
+ *
+ * MODULE SPLIT (this same phase): this file's own former module-scope pure
+ * helpers (travel-phase math, ship-pose resolution, the warp-arrival
+ * placement search, the SVG hazard-arc path builder, the orbit-ellipse
+ * renderer) now live in `windshieldTableauHelpers.tsx`, and the popup info-
+ * card content switch lives in `windshieldTableauPopupContent.tsx` — both
+ * extracted verbatim (mechanical extraction only) to bring this file back
+ * under the 1500-line TS cap; see each file's own header doc-comment.
+ */
+
+// ---------------------------------------------------------------------------
+// Component props
+// ---------------------------------------------------------------------------
+
+export interface WindshieldTableauProps {
+  sectorId: number;
+  /** Cosmetic-only: tints the scene background when the sector is
+   *  dangerous (demo's `sec.hazard>=5` → `.scene.space.hazard`). The
+   *  Annunciator/locrow own the actual hazard READOUT — this is background
+   *  chrome only. */
+  hazardLevel?: number;
+  /** Real DB planet records (owner_name etc.) — /contents' bodies carry
+   *  `owned` but not `owner_name`; this stays a prop exactly as
+   *  SolarSystemViewscreen.tsx already receives it. */
+  planets?: Array<{ id: string; owner_name?: string | null; owner_id?: string | null }>;
+  ships?: ShipPresence[];
+  wrecks?: SectorWreck[];
+  formations?: SpecialFormationSummary[];
+  scanActive?: boolean;
+  onRequestLand?: (planetId: string) => void;
+  onRequestDock?: (stationId: string) => void;
+  selectedShipId?: string | null;
+  onSelectShip?: (id: string) => void;
+  /** Max refinement (5b): "undock emerges at the host's position" — the
+   *  station/planet id the player just left, so the ship's FIRST frame in
+   *  this fresh mount starts there instead of a generic seeded anchor.
+   *  GameDashboard tracks these via a ref that survives the docked/landed
+   *  unmount boundary (this component itself remounts on every
+   *  dock↔flight/land↔flight transition, per the existing conditional
+   *  mount structure — see GameDashboard.tsx). */
+  lastDockedStationId?: string | null;
+  lastLandedPlanetId?: string | null;
+  /** Warp cinematic trigger. GameDashboard bumps `token` (and supplies the
+   *  exit `bearingDeg`) the instant the player commits to an inter-sector
+   *  jump — BEFORE the move resolves — so the buildup ("charging") + warp-away
+   *  ("launch") play over the CURRENT sector, then the sector swaps and the
+   *  arrival flash lands. Null / unchanged token = no cinematic (e.g. autopilot
+   *  hops, which jump silently). */
+  warpDepart?: { token: number; bearingDeg: number; destinationSectorId: number } | null;
+}
+
+// A JS default parameter (`ships = []`) re-evaluates to a FRESH array
+// reference on every render when the caller omits the prop -- fine for the
+// render body (which already recomputes `.map()`/`.find()` derivations
+// every render regardless), but WO-TACTICAL-APPROACH-ENGAGE-SCROLL Part B
+// put `ships` into TWO useEffect dependency arrays whose effects publish
+// into the shared context; an unstable dependency-array entry there means
+// the effect re-fires every render, republishes, triggers a Provider
+// re-render, and re-fires again -- an infinite loop (confirmed by an OOM/
+// hang on this exact suite). ONE stable empty-array sentinel as the
+// default closes it.
+const EMPTY_SHIPS: ShipPresence[] = [];
+
+const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
+  sectorId,
+  hazardLevel = 0,
+  planets = [],
+  ships = EMPTY_SHIPS,
+  wrecks = [],
+  formations = [],
+  scanActive = false,
+  onRequestLand,
+  onRequestDock,
+  selectedShipId = null,
+  onSelectShip,
+  lastDockedStationId = null,
+  lastLandedPlanetId = null,
+  warpDepart = null,
+}) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  // WO-AAA-SOLAR-TABLEAU phase 3: the `.scene.space` box itself -- the SAME
+  // containing block every `.sun`/`.pl` %-anchor (`left:X%; top:Y%`) is
+  // positioned against. ONE shared tableauFxHarness (see tableauFxHarness.ts
+  // -- StarDisc + PlanetTableauLayer both register against this SAME
+  // instance below, not one `useTableauFx` call each, so the sun's implied
+  // light direction and the planets' terminator/rim never phase-drift onto
+  // two independent clocks).
+  const sceneSpaceRef = useRef<HTMLDivElement>(null);
+  const fxHarness = useTableauFx(sceneSpaceRef);
+
+  // T1-A: real measured band geometry (`.ssv-tableau`'s own rect, 100% of
+  // `.band`) — the ONE thing safeOrbitRadii needs that this component alone
+  // can supply (the layout module stays DOM-free). Measured synchronously
+  // via useLayoutEffect (so it's set before the FIRST paint, well before
+  // `system`'s async fetch resolves and bodies actually render) and kept
+  // live via ResizeObserver — flight mode's own band height can change
+  // mid-mount (18.5em rest <-> 12.5em ARIA-2 panel, cockpit-shell.css) even
+  // though WindshieldTableau itself doesn't remount for that.
+  const [bandBox, setBandBox] = useState<BandGeometry | null>(null);
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const measure = () => {
+      const rect = el.getBoundingClientRect();
+      const remPx = parseFloat(getComputedStyle(el).fontSize) || DEFAULT_REM_PX;
+      setBandBox({ widthPx: rect.width, heightPx: rect.height, remPx });
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const [system, setSystem] = useState<StaticSystem | null>(null);
+  const [fetchFailed, setFetchFailed] = useState(false);
+  const [popup, setPopup] = useState<PopupState | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<CtxMenuState | null>(null);
+  const ctxMenuRef = useRef<HTMLDivElement>(null);
+  // WO-API-A1: server-published ENGAGE proximity threshold from THIS
+  // sector's own /contents fetch below -- null until it resolves, so the
+  // report effect (near `flight`, below) can fall back to the local
+  // ENGAGE_RANGE_EM constant for that brief pre-hydration window instead of
+  // publishing a bogus 0/undefined into the shared context.
+  const [engageRangeEmFetched, setEngageRangeEmFetched] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSystem(null);
+    setFetchFailed(false);
+    setPopup(null);
+    apiClient
+      .get(`/api/v1/sectors/${sectorId}/contents`)
+      .then((res) => {
+        if (cancelled) return;
+        setSystem(toStaticSystem(res.data));
+        const em = res.data?.engage_range_em;
+        setEngageRangeEmFetched(typeof em === 'number' && em > 0 ? em : null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        // eslint-disable-next-line no-console
+        console.error('WindshieldTableau: sector contents fetch failed:', err);
+        setFetchFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sectorId]);
+
+  const star = useMemo(
+    () => starAnchor(sectorId, system?.star ?? null, system?.bodies ?? []),
+    [sectorId, system?.star, system?.bodies]
+  );
+  // canonical-%-space: POSITION math always uses REFERENCE_BAND now (a
+  // fixed constant, not `bandBox`), so this no longer needs to wait on a
+  // real measurement — computed from the very first render, no more T1-A
+  // pre-mount gap. Two SEPARATE radii sets — planets don't need the much-
+  // wider station margin (see STATION_FOOTPRINT_EM_WIDTH_MAX's own doc-
+  // comment), so sharing one would needlessly crush the planet sliver's
+  // spread.
+  const safeRadiiPlanets = useMemo(
+    () => safeOrbitRadii(star, REFERENCE_BAND, PLANET_FOOTPRINT_EM_MAX),
+    [star]
+  );
+  const safeRadiiStations = useMemo(
+    () => safeOrbitRadii(star, REFERENCE_BAND, STATION_FOOTPRINT_EM_WIDTH_MAX, STATION_FOOTPRINT_EM_HEIGHT_MAX),
+    [star]
+  );
+  const belt = useMemo(() => (system?.belt ? beltStyle(star) : null), [star, system?.belt]);
+  const hazeArcs = useMemo(() => (system?.nebula ? nebulaArcs(sectorId) : []), [sectorId, system?.nebula]);
+  const debrisRingArc = useMemo(() => (system?.debris ? debrisArc(system.debris) : null), [system?.debris]);
+
+  // Real planet/station anchors contacts fly between (same procedure as .shipmk).
+  // Tag habitable vs barren so cosmetic fallback matches server destination bias.
+  const contactDocks = useMemo((): ContactDock[] => {
+    if (!system) return [];
+    const docks: ContactDock[] = [];
+    const habKinds = new Set(['TERRAN', 'OCEANIC', 'TROPICAL', 'JUNGLE']);
+    for (const body of system.bodies) {
+      const pos = bodyPosition(star, body, safeRadiiPlanets);
+      const kind = String(body.kind || '').toUpperCase().replace(/^PLANETTYPE\./, '');
+      const hab = typeof body.habitability === 'number' ? body.habitability : null;
+      const habitable = habKinds.has(kind) || (hab != null && hab >= 50);
+      docks.push({ ...pos, bucket: habitable ? 'habitable' : 'barren' });
+    }
+    for (const st of system.stations) {
+      docks.push({ ...stationPosition(star, st, safeRadiiStations), bucket: 'habitable' });
+    }
+    return docks;
+  }, [system, star, safeRadiiPlanets, safeRadiiStations]);
+
+  // ---- Player's own ship marker — the ONLY system-level mover. ----
+  const [shipPos, setShipPos] = useState<PctPoint | null>(null);
+  const [heading, setHeading] = useState(0);
+  const headingRef = useRef(heading);
+  headingRef.current = heading;
+  const [localBurn, setLocalBurn] = useState(false);
+  const [travelPhase, setTravelPhase] = useState<TravelPhase>('idle');
+  const travelPhaseRef = useRef<TravelPhase>('idle');
+  travelPhaseRef.current = travelPhase;
+  const travelTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const clearTravelTimers = useCallback(() => {
+    travelTimersRef.current.forEach(clearTimeout);
+    travelTimersRef.current = [];
+  }, []);
+  // The current glide's target planet/station id, or null (star/ship/wreck/
+  // formation clicks, or no glide in progress) — published to the shared
+  // flight context below so a SOLAR row can tell whether IT is the thing
+  // being approached (WO-UI2-FLIGHT-FEEL).
+  const [glideTargetId, setGlideTargetId] = useState<string | null>(null);
+  const shipPosRef = useRef<PctPoint | null>(null);
+  shipPosRef.current = shipPos;
+  const travelOriginRef = useRef<PctPoint | null>(null);
+  const shipMkRef = useRef<HTMLDivElement>(null);
+  const seededSectorRef = useRef<number | null>(null);
+  const autopilot = useAutopilot();
+  const flight = useWindshieldFlight();
+
+  // ---- Warp cinematic (sphere-field jump between sectors) ----
+  //   idle → charging (bubble inflates around the parked hull; HOLDS over the
+  //                    current sector until the jump actually resolves)
+  //        → launch   (field snaps, ship streaks out along the exit bearing)
+  //        → arriving (a warp flash as the destination sector takes over)
+  //        → idle
+  // The buildup is kicked by `warpDepart.token` (fired the instant the jump is
+  // committed); the warp-away is keyed to the sectorId prop actually changing,
+  // so the buildup always precedes the swap without delaying the move itself.
+  // reduced-motion callers never send a token, so the whole thing no-ops.
+  const [warpPhase, setWarpPhase] = useState<'idle' | 'turning' | 'charging' | 'launch' | 'arriving'>('idle');
+  const warpPhaseRef = useRef(warpPhase);
+  warpPhaseRef.current = warpPhase;
+  const warpBearing = warpDepart?.bearingDeg ?? 0;
+  const arrivalBearing = warpDepart
+    ? arrivalBearingForWarp(warpBearing, warpDepart.token)
+    : 0;
+  const warpTokenSeenRef = useRef<number | null>(null);
+  const chargeStartRef = useRef(0);
+  const [preparedArrival, setPreparedArrival] = useState<{
+    token: number;
+    sectorId: number;
+    point: PctPoint;
+  } | null>(null);
+  const warpTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const clearWarpTimers = useCallback(() => {
+    warpTimersRef.current.forEach(clearTimeout);
+    warpTimersRef.current = [];
+  }, []);
+
+  // Prefetch destination geometry while the departure bubble is charging.
+  // That lets us choose an object-safe random point BEFORE the sector swaps,
+  // so the destination's first arrival frame already has ship+bubble centered
+  // together instead of correcting position afterward.
+  useEffect(() => {
+    if (!warpDepart) return;
+    let cancelled = false;
+    const { token, destinationSectorId } = warpDepart;
+    setPreparedArrival((current) => (current?.token === token ? current : null));
+    apiClient
+      .get(`/api/v1/sectors/${destinationSectorId}/contents`)
+      .then((res) => {
+        if (cancelled) return;
+        const snapshot = toStaticSystem(res.data);
+        setPreparedArrival({
+          token,
+          sectorId: destinationSectorId,
+          // canonical-%-space: REFERENCE_BAND, not bandBox -- this anchor's
+          // OWN obstacle-avoidance math must agree with where the bodies it
+          // avoids ACTUALLY render (safeRadiiPlanets/safeRadiiStations
+          // above, also reference-space now), or it could land on/miss an
+          // obstacle that's rendered somewhere else at a non-reference
+          // viewport.
+          point: chooseWarpArrivalAnchor(destinationSectorId, snapshot, REFERENCE_BAND),
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        // Do not invent an unsafe fallback point: the normal destination fetch
+        // can retry after the sector changes, while the launch keeps the old
+        // hull hidden.
+        // eslint-disable-next-line no-console
+        console.error('WindshieldTableau: warp-arrival prefetch failed:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [warpDepart]);
+
+  // If the prefetch lost a race or transiently failed, the normal destination
+  // fetch supplies the same geometry once `sectorId` changes. Still do not
+  // reveal the arrival until an avoidance-checked point exists.
+  useEffect(() => {
+    if (!warpDepart || !system) return;
+    if (warpDepart.destinationSectorId !== sectorId) return;
+    if (preparedArrival?.token === warpDepart.token) return;
+    setPreparedArrival({
+      token: warpDepart.token,
+      sectorId,
+      point: chooseWarpArrivalAnchor(sectorId, system, REFERENCE_BAND),
+    });
+  }, [warpDepart, system, sectorId, preparedArrival?.token]);
+
+  // Buildup: a fresh token starts the bubble inflating over the CURRENT sector,
+  // then the launch streak plays there. Arrival (sectorId effect below) cuts in
+  // when the destination actually lands — snapping the hull to the new anchor.
+  useEffect(() => {
+    if (!warpDepart) return;
+    if (warpTokenSeenRef.current === warpDepart.token) return;
+    warpTokenSeenRef.current = warpDepart.token;
+    clearWarpTimers();
+    clearTravelTimers();
+    setTravelPhase('idle');
+    setLocalBurn(false);
+    setGlideTargetId(null);
+    // Phase 1 — TURN: re-orient the hull toward the exit bearing (RCS jets
+    // puffing) BEFORE anything else. The warp field does not start inflating
+    // until this turn has visibly finished. `bearingDeg` is the real galactic
+    // XYZ vector projected onto this 2D view when coordinates are available
+    // (deterministic fallback otherwise).
+    setHeading(warpDepart.bearingDeg);
+    setWarpPhase('turning');
+    const timers = warpTimersRef.current;
+    // Phase 2 — CHARGE: only after the turn completes does the bubble inflate.
+    timers.push(
+      setTimeout(() => {
+        if (warpPhaseRef.current === 'turning') {
+          chargeStartRef.current = Date.now();
+          setWarpPhase('charging');
+        }
+      }, WARP_TURN_MS)
+    );
+    // Phase 3 — LAUNCH streak, once the field is fully charged.
+    timers.push(
+      setTimeout(() => {
+        if (warpPhaseRef.current === 'charging') setWarpPhase('launch');
+      }, WARP_TURN_MS + WARP_MIN_CHARGE_MS)
+    );
+    timers.push(
+      setTimeout(() => {
+        if (
+          warpPhaseRef.current === 'turning' ||
+          warpPhaseRef.current === 'charging' ||
+          warpPhaseRef.current === 'launch'
+        ) {
+          setWarpPhase('idle');
+        }
+      }, WARP_CHARGE_TIMEOUT_MS)
+    );
+  }, [warpDepart, clearWarpTimers, clearTravelTimers]);
+
+  // Arrival: sector swapped. Never cut the TURN short — if the move resolved
+  // early (or a stale race), hold until the hull has finished re-orienting.
+  // Snap the hull onto the NEW resting anchor IMMEDIATELY (`.shipmk` otherwise
+  // CSS-glides left/top over 11.6s — bubble has no transition, so it jumps
+  // while the ship crawls from the old sector's coordinates). Then play the
+  // collapsing arrival sphere with the ship already centered inside it.
+  useEffect(() => {
+    if (warpPhase === 'turning' || warpPhase === 'idle') return;
+    if (warpPhase !== 'charging' && warpPhase !== 'launch') return;
+    if (!warpDepart || warpDepart.destinationSectorId !== sectorId) return;
+    if (
+      !preparedArrival ||
+      preparedArrival.token !== warpDepart.token ||
+      preparedArrival.sectorId !== sectorId
+    ) return;
+    clearWarpTimers();
+    const arriveAt = preparedArrival.point;
+    seededSectorRef.current = sectorId;
+    shipPosRef.current = arriveAt;
+    setShipPos(arriveAt);
+    // Arrive on a deliberately different angle from departure. The inbound
+    // streak uses this same bearing so hull orientation and motion agree.
+    setHeading(arrivalBearing);
+    setLocalBurn(false);
+    setGlideTargetId(null);
+    setWarpPhase('arriving');
+    warpTimersRef.current = [
+      setTimeout(() => setWarpPhase('idle'), WARP_ARRIVE_MS),
+    ];
+    return () => clearWarpTimers();
+  }, [sectorId, warpDepart, preparedArrival, arrivalBearing, warpPhase, clearWarpTimers]);
+
+  useEffect(() => () => clearWarpTimers(), [clearWarpTimers]);
+
+  useEffect(() => {
+    if (!system) return; // wait for the fetch that resolves dock/land host lookups
+    if (seededSectorRef.current === sectorId) return;
+    // A warp arrival owns this sector's first ship position. Wait for its
+    // prefetched object-safe random anchor instead of applying the old
+    // deterministic `selfRestingAnchor(sectorId)` first.
+    if (
+      warpDepart?.destinationSectorId === sectorId &&
+      (warpPhaseRef.current === 'turning' ||
+        warpPhaseRef.current === 'charging' ||
+        warpPhaseRef.current === 'launch')
+    ) return;
+    seededSectorRef.current = sectorId;
+    let anchor: PctPoint | null = null;
+    if (lastDockedStationId) {
+      const st = system.stations.find((s) => s.station_id === lastDockedStationId);
+      if (st) anchor = stationPosition(star, st, safeRadiiStations);
+    }
+    if (!anchor && lastLandedPlanetId) {
+      const b = system.bodies.find((bb) => bb.planet_id === lastLandedPlanetId);
+      if (b) anchor = bodyPosition(star, b, safeRadiiPlanets);
+    }
+    if (!anchor) anchor = selfRestingAnchor(sectorId);
+    // Sector reseed is a teleport, not a glide — suppress the 11.6s left/top
+    // transition (warp-arriving / warp-launching CSS also forces this).
+    shipPosRef.current = anchor;
+    setShipPos(anchor);
+    setHeading(0);
+    // Emerging at a resting anchor (undock, planet lift-off, or a fresh
+    // sector arrival) is NOT travel — the ship is parked, so the exhaust
+    // flame must be cold. Clear any burn carried in from a prior glide.
+    setLocalBurn(false);
+    setGlideTargetId(null);
+  }, [system, sectorId, lastDockedStationId, lastLandedPlanetId, star, safeRadiiPlanets, safeRadiiStations, warpDepart]);
+
+  // FIX B: real band aspect (heightPx/widthPx) so headingDeg converts %-space
+  // deltas into the same px-equivalent units before computing the angle --
+  // see that function's own doc-comment. Falls back to 1 (square, the old
+  // behavior) before bandBox is measured, matching headingDeg's own default.
+  const bandAspect = useMemo(() => (bandBox ? bandBox.heightPx / bandBox.widthPx : 1), [bandBox]);
+
+  // Contact traffic clock — drives ISP plan interpolation (~20fps).
+  const [contactT, setContactT] = useState(0);
+  const [ispClockSkewMs, setIspClockSkewMs] = useState(0); // server_time - local
+  const [selfIspPose, setSelfIspPose] = useState<IspPose | null>(null);
+  useEffect(() => {
+    if (ships.length === 0 && !selfIspPose?.leg) return;
+    const reduce =
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+    if (reduce) {
+      setContactT(0);
+      return;
+    }
+    let raf = 0;
+    let lastPaint = 0;
+    const tick = (now: number) => {
+      if (now - lastPaint >= 50) {
+        lastPaint = now;
+        setContactT(now / 1000);
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [ships.length, selfIspPose?.leg]);
+
+  // Hydrate authoritative self pose (reload / sector entry).
+  // Must claim `seededSectorRef` when applied — otherwise the resting-anchor
+  // seed (below) races in after /system resolves and snaps the ship back.
+  useEffect(() => {
+    let cancelled = false;
+    apiClient
+      .get('/api/v1/helm/intrasystem/pose')
+      .then((res) => {
+        if (cancelled) return;
+        const data = res.data as IspPose;
+        if (data?.server_time) {
+          setIspClockSkewMs(parseIspTime(data.server_time) - Date.now());
+        }
+        setSelfIspPose(data);
+        const sample = deriveIspPose(data, Date.now() + (data?.server_time ? parseIspTime(data.server_time) - Date.now() : 0));
+        // Undock/land emerge owns the first frame — don't stomp with a prior ISP.
+        if (lastDockedStationId || lastLandedPlanetId) return;
+        // Only teleport onto server pose when not mid local CSS glide.
+        if (travelPhaseRef.current === 'idle') {
+          seededSectorRef.current = sectorId;
+          shipPosRef.current = { xPct: sample.x_pct, yPct: sample.y_pct };
+          setShipPos({ xPct: sample.x_pct, yPct: sample.y_pct });
+          setHeading(sample.heading_deg);
+          setLocalBurn(!!sample.burning);
+        }
+      })
+      .catch(() => { /* pose endpoint may lag deploy — keep local flight */ });
+    return () => { cancelled = true; };
+  }, [sectorId, lastDockedStationId, lastLandedPlanetId]);
+
+  const ispNowMs = () => Date.now() + ispClockSkewMs;
+
+  const commitIspBurn = useCallback((target: PctPoint, objectId: string | null) => {
+    apiClient
+      .post('/api/v1/helm/intrasystem/burn', {
+        x_pct: target.xPct,
+        y_pct: target.yPct,
+        // Kind is informational; coords are authoritative. Free-point = point.
+        target_kind: objectId ? 'object' : 'point',
+        target_id: objectId,
+      })
+      .then((res) => {
+        const data = res.data as IspPose;
+        if (data?.server_time) setIspClockSkewMs(parseIspTime(data.server_time) - Date.now());
+        setSelfIspPose(data);
+      })
+      .catch(() => { /* optimistic local flight still runs */ });
+  }, []);
+
+  const commitIspHalt = useCallback(() => {
+    apiClient
+      .post('/api/v1/helm/intrasystem/halt')
+      .then((res) => {
+        const data = res.data as IspPose;
+        if (data?.server_time) setIspClockSkewMs(parseIspTime(data.server_time) - Date.now());
+        setSelfIspPose(data);
+      })
+      .catch(() => {});
+  }, []);
+
+  const readLiveShipPos = useCallback((): PctPoint | null => {
+    const containerEl = containerRef.current;
+    const shipEl = shipMkRef.current;
+    if (!containerEl || !shipEl) return shipPosRef.current;
+    const containerRect = containerEl.getBoundingClientRect();
+    const shipRect = shipEl.getBoundingClientRect();
+    if (containerRect.width <= 0 || containerRect.height <= 0) return shipPosRef.current;
+    return {
+      xPct: ((shipRect.left + shipRect.width / 2 - containerRect.left) / containerRect.width) * 100,
+      yPct: ((shipRect.top + shipRect.height / 2 - containerRect.top) / containerRect.height) * 100,
+    };
+  }, []);
+
+  /** Schedule coast → flip → brake → face after the burn/glide has already been committed. */
+  const armArrivalProfile = useCallback((prograde: number) => {
+    const retrograde = prograde + 180;
+    const faceDestination = prograde + 360;
+    const timers = travelTimersRef.current;
+    timers.push(setTimeout(() => {
+      setTravelPhase('gliding');
+      setLocalBurn(false);
+    }, TRAVEL_ACCEL_MS));
+    timers.push(setTimeout(() => {
+      setTravelPhase('brake-turn');
+      setHeading(retrograde);
+    }, TRAVEL_ACCEL_MS + TRAVEL_COAST_MS));
+    timers.push(setTimeout(() => {
+      setTravelPhase('braking');
+      setLocalBurn(true);
+    }, TRAVEL_ACCEL_MS + TRAVEL_COAST_MS + TRAVEL_FLIP_MS));
+    timers.push(setTimeout(() => {
+      setTravelPhase('final-orient');
+      setLocalBurn(false);
+      setHeading(faceDestination);
+    }, TRAVEL_MOVE_MS));
+    timers.push(setTimeout(() => {
+      setTravelPhase('idle');
+      setGlideTargetId(null);
+    }, TRAVEL_MOVE_MS + TRAVEL_SETTLE_MS));
+  }, []);
+
+  const travelTo = useCallback((target: PctPoint, objectId: string | null = null) => {
+    clearTravelTimers();
+    const phase = travelPhaseRef.current;
+
+    // ── Mid-course redirect: keep momentum and arc onto the new bearing. ──
+    // Never drop back into parked `orienting` — that freezes left/top and
+    // reads as an instant momentum kill.
+    if (isInFlightPhase(phase)) {
+      const oldDest = shipPosRef.current ?? target;
+      const origin = travelOriginRef.current;
+      let live = readLiveShipPos() ?? oldDest;
+      // jsdom / unsampled transitions report the style end-target; synthesize
+      // a mid-course point from the recorded origin so the arc still has a
+      // forward velocity vector to preserve.
+      if (
+        origin &&
+        Math.hypot(oldDest.xPct - live.xPct, oldDest.yPct - live.yPct) < 0.4
+      ) {
+        live = {
+          xPct: origin.xPct + (oldDest.xPct - origin.xPct) * 0.45,
+          yPct: origin.yPct + (oldDest.yPct - origin.yPct) * 0.45,
+        };
+      }
+      let vx = oldDest.xPct - (origin?.xPct ?? live.xPct);
+      let vy = oldDest.yPct - (origin?.yPct ?? live.yPct);
+      let vLen = Math.hypot(vx, vy);
+      if (vLen < 1e-3) {
+        vx = target.xPct - live.xPct;
+        vy = target.yPct - live.yPct;
+        vLen = Math.hypot(vx, vy);
+      }
+      if (vLen < 1e-3 || Math.hypot(target.xPct - live.xPct, target.yPct - live.yPct) < 0.1) {
+        setLocalBurn(false);
+        setTravelPhase('idle');
+        setGlideTargetId(null);
+        return;
+      }
+      vx /= vLen;
+      vy /= vLen;
+
+      const waypoint = redirectArcWaypoint(live, { x: vx, y: vy }, target);
+      const arcHeading =
+        headingRef.current + shortestAngleDelta(
+          headingRef.current,
+          headingDeg(live, waypoint, bandAspect),
+        );
+      const prograde =
+        headingRef.current + shortestAngleDelta(
+          headingRef.current,
+          headingDeg(waypoint, target, bandAspect),
+        );
+
+      travelOriginRef.current = live;
+      setGlideTargetId(objectId);
+      setLocalBurn(false);
+      setTravelPhase('redirect-turn');
+      setHeading(arcHeading);
+      // Retarget the running glide onto the arc waypoint — browser continues
+      // from the live interpolated position (momentum preserved).
+      setShipPos(waypoint);
+      shipPosRef.current = waypoint;
+
+      const timers = travelTimersRef.current;
+      timers.push(setTimeout(() => {
+        setTravelPhase('accelerating');
+        setLocalBurn(true);
+        setHeading(prograde);
+        setShipPos(target);
+        shipPosRef.current = target;
+        travelOriginRef.current = waypoint;
+        armArrivalProfile(prograde);
+        commitIspBurn(target, objectId);
+      }, TRAVEL_REDIRECT_TURN_MS));
+      return;
+    }
+
+    // ── Cold start from a parked hull. ──
+    const from = shipPosRef.current ?? target;
+    const moving = Math.hypot(target.xPct - from.xPct, target.yPct - from.yPct) > 0.1;
+    if (!moving) {
+      setLocalBurn(false);
+      setTravelPhase('idle');
+      setGlideTargetId(null);
+      return;
+    }
+
+    travelOriginRef.current = from;
+    const prograde =
+      headingRef.current + shortestAngleDelta(headingRef.current, headingDeg(from, target, bandAspect));
+
+    setGlideTargetId(objectId);
+    setLocalBurn(false);
+    setTravelPhase('orienting');
+    setHeading(prograde);
+    commitIspBurn(target, objectId);
+
+    const timers = travelTimersRef.current;
+    timers.push(setTimeout(() => {
+      setTravelPhase('accelerating');
+      setLocalBurn(true);
+      setShipPos(target);
+      shipPosRef.current = target;
+      armArrivalProfile(prograde);
+    }, TRAVEL_ORIENT_MS));
+  }, [bandAspect, clearTravelTimers, readLiveShipPos, armArrivalProfile, commitIspBurn]);
+
+  const approachStation = useCallback((station: SystemStation, stationPos: PctPoint) => {
+    const from = (isInFlightPhase(travelPhaseRef.current) ? readLiveShipPos() : null)
+      ?? shipPosRef.current
+      ?? stationPos;
+    // canonical-%-space: REFERENCE_BAND, not bandBox -- this standoff point
+    // becomes the actual burn-commit target (travelTo -> commitIspBurn).
+    travelTo(stationApproachPoint(from, stationPos, REFERENCE_BAND), station.station_id);
+  }, [travelTo, readLiveShipPos]);
+
+  const localTraveling = travelPhase !== 'idle';
+  const burning = localBurn || autopilot.status === 'engaged';
+
+  // Publish this component's real flight state into the shared context on
+  // every change, so PlanetPortPair rows + the locrow ALL STOP chip
+  // (GameDashboard.tsx) see the SAME glide a band-object click drives.
+  useEffect(() => {
+    flight.reportFlightState(localTraveling || autopilot.status === 'engaged', glideTargetId);
+  }, [localTraveling, autopilot.status, glideTargetId, flight.reportFlightState]);
+
+  // Publish the player's own live position (WO-TACTICAL-APPROACH-ENGAGE-
+  // SCROLL Part B) -- `shipPos` state is the same "good enough" resolution
+  // the DOCK_RANGE_EM proximity gates below already key off (not
+  // readLiveShipPos()'s real DOM read), so a proximity-gated consumer reads
+  // the same position this component already treats as authoritative.
+  useEffect(() => {
+    flight.reportShipPos(shipPos);
+  }, [shipPos, flight.reportShipPos]);
+
+  // Publish the server-authoritative ENGAGE proximity threshold (WO-API-A1)
+  // -- falls back to the local ENGAGE_RANGE_EM constant until this sector's
+  // own /contents fetch resolves, so TACTICAL TARGET's Approach/Engage
+  // split never reads an unset value for that brief pre-hydration window.
+  useEffect(() => {
+    flight.reportEngageRangeEm(engageRangeEmFetched ?? ENGAGE_RANGE_EM);
+  }, [engageRangeEmFetched, flight.reportEngageRangeEm]);
+
+  // Publish every OTHER contact's resolved position, keyed by ship_id,
+  // using the SAME resolveShipPose() the `.other` render loop below draws
+  // its dots from -- one source of truth, see that helper's own doc-comment.
+  // THROTTLED to ~2Hz (contactPublishThrottleRef) rather than firing a real
+  // context state-update on every contactT tick (~20fps): a proximity menu
+  // a player opens by hand doesn't need 20fps freshness, and an unthrottled
+  // publish here means every tick cascades a WindshieldFlightProvider
+  // state-update through every consumer (WindshieldTableau itself included)
+  // -- fine at 20fps in a real browser, but pathological under a test
+  // suite's `vi.advanceTimersByTime()` fast-forwards (thousands of RAF
+  // ticks fired synchronously) -- confirmed by an OOM crash on this exact
+  // suite before this throttle was added.
+  const contactPublishThrottleRef = useRef(0);
+  useEffect(() => {
+    const now = ispNowMs();
+    if (now - contactPublishThrottleRef.current < 500) return;
+    contactPublishThrottleRef.current = now;
+    const positions = new Map<string, PctPoint>();
+    ships.forEach((s) => {
+      if (!s.ship_id) return;
+      const pose = resolveShipPose(s, now, contactT, contactDocks, bandAspect);
+      positions.set(String(s.ship_id), { xPct: pose.xPct, yPct: pose.yPct });
+    });
+    flight.reportContactPositions(positions);
+  }, [ships, contactT, contactDocks, bandAspect, ispClockSkewMs, flight.reportContactPositions]);
+
+  // A SOLAR row's "APPROACH ▸" click records a request on the shared
+  // context (GameDashboard.tsx -> PlanetPortPair's onApproach ->
+  // flight.approach(id)); resolve it against the fetched system data and
+  // run the SAME glide a direct band click performs — reuse, don't fork.
+  useEffect(() => {
+    if (!flight.pendingApproach || !system) return;
+    const { objectId } = flight.pendingApproach;
+    const bodyMatch = system.bodies.find((b) => b.real && b.planet_id === objectId);
+    if (bodyMatch) {
+      travelTo(bodyPosition(star, bodyMatch, safeRadiiPlanets), objectId);
+      return;
+    }
+    const stationMatch = system.stations.find((s) => s.station_id === objectId);
+    if (stationMatch) {
+      const stationPos = stationPosition(star, stationMatch, safeRadiiStations);
+      approachStation(stationMatch, stationPos);
+      return;
+    }
+    // WO-TACTICAL-APPROACH-ENGAGE-SCROLL Part B: a moving ship contact --
+    // resolved with the SAME resolveShipPose() the `.other` render loop
+    // below draws its dot from, so Approach glides toward exactly where the
+    // contact APPEARS (WYSIWYG best-effort, snapshot not pursuit -- see
+    // this file's own verify-first note above on why continuous chase is
+    // out of scope for v1).
+    const shipMatch = ships.find((s) => s.ship_id && String(s.ship_id) === String(objectId));
+    if (shipMatch) {
+      const pose = resolveShipPose(shipMatch, ispNowMs(), contactT, contactDocks, bandAspect);
+      travelTo({ xPct: pose.xPct, yPct: pose.yPct }, objectId);
+      return;
+    }
+    // Unresolvable (stale id from a since-changed sector) — no-op, matches
+    // the context's own documented "no-op if the id can't be resolved".
+  }, [
+    flight.pendingApproach, system, star, safeRadiiPlanets, safeRadiiStations, travelTo, approachStation,
+    ships, contactT, contactDocks, bandAspect,
+  ]);
+
+  // A row/locrow ALL STOP click (flight.allStop()) bumps stopSignal. Instead of
+  // freezing momentum in place, abort the planned destination and run an
+  // emergency flip → retro-burn: the hull keeps coasting a short distance
+  // while it reorients, then burns to a stop. Orienting (not yet moving) just
+  // cancels. Already-halting / already-braking for the destination is a no-op.
+  useEffect(() => {
+    if (flight.stopSignal === 0) return; // 0 = never stopped yet — skip the mount-time run
+    const phase = travelPhaseRef.current;
+    if (
+      phase === 'idle' ||
+      phase === 'halt-turn' ||
+      phase === 'halt-brake' ||
+      phase === 'brake-turn' ||
+      phase === 'braking' ||
+      phase === 'final-orient'
+    ) {
+      return;
+    }
+
+    clearTravelTimers();
+    commitIspHalt();
+
+    // Still parked while aiming — no momentum to bleed; just cancel.
+    if (phase === 'orienting') {
+      setLocalBurn(false);
+      setTravelPhase('idle');
+      setGlideTargetId(null);
+      return;
+    }
+
+    const containerEl = containerRef.current;
+    const shipEl = shipMkRef.current;
+    const dest = shipPosRef.current;
+    if (!containerEl || !shipEl || !dest) {
+      setLocalBurn(false);
+      setTravelPhase('idle');
+      setGlideTargetId(null);
+      return;
+    }
+
+    const containerRect = containerEl.getBoundingClientRect();
+    const shipRect = shipEl.getBoundingClientRect();
+    if (containerRect.width <= 0 || containerRect.height <= 0) {
+      setLocalBurn(false);
+      setTravelPhase('idle');
+      setGlideTargetId(null);
+      return;
+    }
+
+    // Live on-screen position (mid-transition). Do NOT write this back as
+    // style.left first — that would reverse-animate. Changing the end target
+    // below retargets the running CSS transition from the current computed
+    // point, which is what preserves momentum into the halt.
+    let live: PctPoint = {
+      xPct: ((shipRect.left + shipRect.width / 2 - containerRect.left) / containerRect.width) * 100,
+      yPct: ((shipRect.top + shipRect.height / 2 - containerRect.top) / containerRect.height) * 100,
+    };
+
+    let dx = dest.xPct - live.xPct;
+    let dy = dest.yPct - live.yPct;
+    let remaining = Math.hypot(dx, dy);
+    // jsdom (and some instant layout paths) report the ship already at the
+    // style end-target mid-flight. If we're still in a powered/coast phase,
+    // synthesize a mid-course point from the recorded origin so Halt still
+    // has momentum to bleed.
+    const origin = travelOriginRef.current;
+    if (remaining < 0.4 && origin && (phase === 'accelerating' || phase === 'gliding')) {
+      live = {
+        xPct: origin.xPct + (dest.xPct - origin.xPct) * 0.45,
+        yPct: origin.yPct + (dest.yPct - origin.yPct) * 0.45,
+      };
+      dx = dest.xPct - live.xPct;
+      dy = dest.yPct - live.yPct;
+      remaining = Math.hypot(dx, dy);
+    }
+    if (remaining < 0.4) {
+      setLocalBurn(false);
+      setTravelPhase('idle');
+      setGlideTargetId(null);
+      return;
+    }
+
+    const ux = dx / remaining;
+    const uy = dy / remaining;
+    const coastAhead = Math.min(remaining * 0.9, Math.max(2.5, remaining * TRAVEL_HALT_COAST_FRAC));
+    const stopPoint: PctPoint = {
+      xPct: clampPct(live.xPct + ux * coastAhead),
+      yPct: clampPct(live.yPct + uy * coastAhead),
+    };
+
+    const travelHdg = headingDeg(live, stopPoint, bandAspect);
+    const prograde = headingRef.current + shortestAngleDelta(headingRef.current, travelHdg);
+    const retrograde = prograde + 180;
+
+    // Keep glideTargetId so APPROACH→HALT UI stays coherent until we park.
+    setLocalBurn(false);
+    setTravelPhase('halt-turn');
+    setHeading(retrograde);
+    // Retarget the continuous glide to a nearby stop — browser continues from
+    // the live interpolated position with the new (short) halt duration.
+    setShipPos(stopPoint);
+    shipPosRef.current = stopPoint;
+
+    const timers = travelTimersRef.current;
+    timers.push(setTimeout(() => {
+      setTravelPhase('halt-brake');
+      setLocalBurn(true);
+    }, TRAVEL_HALT_FLIP_MS));
+    timers.push(setTimeout(() => {
+      setLocalBurn(false);
+      setTravelPhase('idle');
+      setGlideTargetId(null);
+    }, TRAVEL_HALT_FLIP_MS + TRAVEL_HALT_BRAKE_MS));
+  }, [flight.stopSignal, clearTravelTimers, bandAspect, commitIspHalt]);
+
+  useEffect(() => () => clearTravelTimers(), [clearTravelTimers]);
+
+  // ---- Popups (click → info card, reusing the .ssv-popup glass) ----
+  const openPopup = useCallback((meta: HitMeta, name: string, pos: PctPoint, objectId: string | null = null) => {
+    setCtxMenu(null); // a left-click popup and a right-click menu are mutually exclusive overlays
+    setPopup({ key: `${meta.kind}:${name}`, meta, name, xPct: pos.xPct, yPct: pos.yPct });
+    // Inspecting a station/planet must not silently start movement. Their
+    // popups own the explicit APPROACH → HALT → DOCK/LAND proximity flow.
+    // Other object kinds keep the existing click-to-glide behavior.
+    if (meta.kind !== 'station' && meta.kind !== 'planet') travelTo(pos, objectId);
+  }, [travelTo]);
+
+  // FIX C revise (Max correction: "no longer able to right click anywhere
+  // and travel there" was fixed as DIRECT travel-on-right-click first, but
+  // Max wants it MENU-mediated -- right-click opens a small "Travel To"
+  // menu at the click point and the ship does NOT move until that item is
+  // explicitly chosen). preventDefault still suppresses the native browser
+  // menu; only the STASHED target + the immediate travel are new. Closes
+  // any open left-click popup too (mutually exclusive overlays).
+  const handleContextMenu = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const el = containerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const xPct = Math.min(100, Math.max(0, ((e.clientX - rect.left) / rect.width) * 100));
+    const yPct = Math.min(100, Math.max(0, ((e.clientY - rect.top) / rect.height) * 100));
+    setPopup(null);
+    setCtxMenu({ xPct, yPct });
+  }, []);
+
+  // The menu's own "Travel To" click -- the ONLY place the stashed ctxMenu
+  // target actually turns into a glide. Reuses the SAME travelTo() every
+  // other glide entry point uses (left-click popups, a SOLAR row's
+  // APPROACH, the old direct-travel cut) -- heading/burning/flight-context
+  // wiring stays identical, not forked. `null` objectId matches travelTo's
+  // own "no glide target" idiom (no specific body/station was targeted).
+  const handleTravelToClick = useCallback(() => {
+    if (!ctxMenu) return;
+    travelTo({ xPct: ctxMenu.xPct, yPct: ctxMenu.yPct }, null);
+    setCtxMenu(null);
+  }, [ctxMenu, travelTo]);
+
+  // Dismiss on outside-click or Escape -- standard floating-menu idiom.
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (ctxMenuRef.current && !ctxMenuRef.current.contains(e.target as Node)) {
+        setCtxMenu(null);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setCtxMenu(null);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [ctxMenu]);
+
+  const popupStyle = useMemo((): React.CSSProperties | null => {
+    if (!popup || !containerRef.current) return { left: 8, top: 8 };
+    const rect = containerRef.current.getBoundingClientRect();
+    const px = (popup.xPct / 100) * rect.width;
+    const py = (popup.yPct / 100) * rect.height;
+    const left = Math.min(Math.max(6, px + 14), Math.max(6, rect.width - POPUP_W - 6));
+    const top = Math.min(Math.max(6, py - POPUP_H / 2), Math.max(6, rect.height - POPUP_H - 6));
+    return { left, top };
+  }, [popup]);
+
+  // Same clamped-anchor idiom as popupStyle above, sized for the smaller menu.
+  const ctxMenuStyle = useMemo((): React.CSSProperties | null => {
+    if (!ctxMenu || !containerRef.current) return { left: 8, top: 8 };
+    const rect = containerRef.current.getBoundingClientRect();
+    const px = (ctxMenu.xPct / 100) * rect.width;
+    const py = (ctxMenu.yPct / 100) * rect.height;
+    const left = Math.min(Math.max(6, px), Math.max(6, rect.width - CTXMENU_W - 6));
+    const top = Math.min(Math.max(6, py), Math.max(6, rect.height - CTXMENU_H - 6));
+    return { left, top };
+  }, [ctxMenu]);
+
+  // WO-AAA-SOLAR-TABLEAU phase 3: the popup info-card content switch lives
+  // in windshieldTableauPopupContent.tsx now (mechanical extraction, see its
+  // own header doc-comment) -- every value the original closure read off
+  // component state/props is threaded through explicitly here instead.
+  const renderPopupContent = (): React.ReactNode => {
+    if (!popup) return null;
+    return renderTableauPopupContent({
+      popup, sectorId, planets, system, star, safeRadiiPlanets, safeRadiiStations,
+      shipPos, localTraveling, glideTargetId,
+      onHaltApproach: () => flight.allStop(),
+      onRequestLand, onRequestDock,
+      onClosePopup: () => setPopup(null),
+      onApproachPlanet: (pos, planetId) => travelTo(pos, planetId),
+      onApproachStation: (station, pos) => approachStation(station, pos),
+    });
+  };
+
+  if (fetchFailed) {
+    return (
+      <div ref={containerRef} className="ssv-tableau">
+        <div className="scene space">
+          <div className="stars" />
+          <div style={{
+            position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%,-50%)',
+            color: 'rgba(0,217,255,0.32)', fontSize: '0.75em', letterSpacing: '.06em',
+          }}>
+            SCAN ACQUISITION FAILED
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const hasNebula = !!system?.nebula;
+  const hasHazard = hazardLevel >= 5;
+  const selectedShip = ships.find((s) => s.ship_id && String(s.ship_id) === String(selectedShipId));
+  // resolveShipPose() -- mirrors the `.other` render loop's own resolution
+  // exactly (server pose / NPC cosmetic wander / poseless-human parked
+  // anchor) so a selected contact's reticle never disagrees with where its
+  // own dot actually renders.
+  const selectedPos = selectedShip?.ship_id
+    ? (() => {
+        const pose = resolveShipPose(selectedShip, ispNowMs(), contactT, contactDocks, bandAspect);
+        return { xPct: pose.xPct, yPct: pose.yPct };
+      })()
+    : null;
+
+  return (
+    <div ref={containerRef} className="ssv-tableau" onContextMenu={handleContextMenu}>
+      <div ref={sceneSpaceRef} className={`scene space${hasNebula ? ' nebula' : ''}${hasHazard ? ' hazard' : ''}`}>
+        <div className="stars" />
+
+        {/* WO-AAA-SOLAR-TABLEAU: the AAA sun (WebGL) + planet (Canvas-2D)
+            renderers, registered against the ONE shared fxHarness above.
+            pointer-events:none, z-BELOW the `.sun`/`.pl` DOM buttons below
+            (those keep z-index:1/2 -- see solar-system-viewscreen.css --
+            this pair paints in the z:auto/0 stacking level, so it's under
+            them regardless of DOM order). The buttons themselves stay the
+            hit-test/label/focus/popup surface, unchanged; only their own
+            CSS fill went transparent so this shows through. */}
+        {system?.star && (
+          <StarDisc
+            className="star-disc-fx"
+            harness={fxHarness}
+            star={{ xPct: star.xPct, yPct: star.yPct, sizeEm: star.sizeEm }}
+            kind={system.star.kind}
+            color={system.star.color}
+            remPx={bandBox?.remPx}
+          />
+        )}
+        <PlanetTableauLayer
+          harness={fxHarness}
+          containerRef={sceneSpaceRef}
+          sectorId={sectorId}
+          bodies={system?.bodies ?? []}
+          star={star}
+          safeRadii={safeRadiiPlanets}
+          remPx={bandBox?.remPx}
+        />
+
+        {/* hazard bands — nebula haze + collision-debris ring, blurred SVG
+            arcs along the star's orbital plane (not rings). */}
+        <HazardArcsLayer
+          star={star}
+          hazeArcs={hazeArcs}
+          debrisRingArc={debrisRingArc}
+          nebula={system?.nebula ?? null}
+          debris={system?.debris ?? null}
+        />
+
+        {/* asteroid belt — decorative, mostly off-frame (the "sliver") */}
+        {belt && (
+          <div
+            className="belt"
+            style={{
+              left: `${belt.xPct}%`, top: `${belt.yPct}%`,
+              width: `${belt.wPct}%`, height: `${belt.hPct}%`,
+              transform: 'translate(-50%,-50%)',
+            }}
+          />
+        )}
+
+        {/* the star */}
+        {system?.star && (
+          <>
+            <button
+              type="button"
+              className="sun"
+              style={{
+                left: `${star.xPct}%`, top: `${star.yPct}%`,
+                width: `${star.sizeEm}em`, height: `${star.sizeEm}em`,
+                transform: 'translate(-50%,-50%)',
+                // WO-AAA-SOLAR-TABLEAU: fill is now the StarDisc WebGL canvas
+                // mounted just above (z-BELOW this button, same %-anchor) --
+                // the former radial-gradient disc + box-shadow "corona" are
+                // gone; this stays a transparent hit-area/label/focus target.
+              }}
+              onClick={() =>
+                system.star &&
+                openPopup(
+                  { kind: 'star', label: system.star.label, starClass: system.star.kind.replace(/_/g, ' '), color: system.star.color },
+                  system.star.label || 'PRIMARY STAR',
+                  star
+                )
+              }
+              aria-label={system.star.label || 'Primary star'}
+            />
+            {(() => {
+              // WO-QUEUE-PLTAG-MOVING-STAR: the star's tag is a SIBLING of
+              // `.sun` (not its child, unlike `.pl`'s tag), so it can't use
+              // the shared `.pltag.pltag-lean-*` CSS (that relies on the
+              // tag's CONTAINING BLOCK being the disc's own sized box) --
+              // this computes the equivalent flush-to-disc-edge offset
+              // directly in px (bandBox.remPx * star.sizeEm/2, the SAME
+              // conversion safeOrbitRadii/labelEdgeLean already use
+              // internally) since a `%`+`em` calc() here would resolve the
+              // `em` against THIS div's OWN font-size (.55em of ambient,
+              // solar-system-viewscreen.css), not the ambient scale
+              // star.sizeEm is expressed in -- px sidesteps that mismatch
+              // entirely. Star sits far-LEFT by design (starAnchor:
+              // xPct~9-14%), so 'left' is the realistic case, but computed
+              // generically (matches WindshieldTableau's own "don't
+              // hardcode which edge" convention from the body-tag fix).
+              const starLabel = system.star.kind.replace(/_/g, ' ');
+              const starTagLean = labelEdgeLean(star.xPct, pltagLabelHalfWidthEm(starLabel), bandBox ?? undefined);
+              const starHalfWidthPx = bandBox ? (star.sizeEm / 2) * bandBox.remPx : 0;
+              const left =
+                starTagLean === 'left' ? `calc(${star.xPct}% - ${starHalfWidthPx}px)`
+                  : starTagLean === 'right' ? `calc(${star.xPct}% + ${starHalfWidthPx}px)`
+                    : `${star.xPct}%`;
+              const transform =
+                starTagLean === 'left' ? 'none'
+                  : starTagLean === 'right' ? 'translateX(-100%)'
+                    : 'translateX(-50%)';
+              return (
+                <div className="pltag" style={{ position: 'absolute', left, top: `${star.yPct + 14}%`, transform }}>
+                  {starLabel}
+                </div>
+              );
+            })()}
+          </>
+        )}
+
+        {/* planets + their moons */}
+        {(system?.bodies ?? []).map((body) => {
+          const pos = bodyPosition(star, body, safeRadiiPlanets);
+          const sizeEm = bodySizeEm(body);
+          const moons = moonOrbits(sectorId, body);
+          const isReal = body.real && body.planet_id;
+          // FIX A (Max live-playtest): decorative (non-real) bodies used to
+          // show a fabricated `PROCEDURAL-${sectorId}-${idx}` designation,
+          // discarding the REAL corpus name the server already generates for
+          // every body slot (celestial_service.py's own generate_skeleton/
+          // generate_system: `b["name"] = name_for_body(...)`, only
+          // OVERWRITTEN — never cleared — for slots that get a real planet
+          // merged over them). `name` here already carries that real value
+          // (with a defensive `slot-N` fallback for the never-observed case
+          // it's somehow empty) — use it directly for every body, real or
+          // decorative, instead of fabricating a designation the server
+          // already solved.
+          const name = body.name || `slot-${body.slot}`;
+          // WO-UI-PLTAG-CLAMP: the disc (`.pl`) itself is T1-A-proven
+          // in-band via safeRadiiPlanets above — this only decides whether
+          // the CENTERED name label needs to lean left/right to avoid
+          // crossing the band edge on its own (a wide name can still
+          // overflow even when the disc doesn't, see labelEdgeLean's own
+          // doc-comment). Never feeds back into `pos` — the disc's position
+          // is unaffected either way.
+          const tagLean = labelEdgeLean(pos.xPct, pltagLabelHalfWidthEm(name), bandBox ?? undefined);
+          return (
+            <React.Fragment key={`body-${body.slot}`}>
+              {orbitEllipse(star, pos, `orbit-body-${body.slot}`)}
+              <button
+              type="button"
+              className="pl"
+              style={{
+                left: `${pos.xPct}%`, top: `${pos.yPct}%`,
+                width: `${sizeEm}em`, height: `${sizeEm}em`,
+                // T1-A: the demo (RATIFIED.html L1222) centers `.pl` on its
+                // own %-anchor via this same transform, matching every
+                // sibling object (.sun/.obj/.other below) — WindshieldTableau
+                // had dropped it, so a body's box was anchored by its
+                // TOP-LEFT corner instead of its center, silently biasing
+                // every rendered disc a further half-diameter down-right of
+                // its intended position (compounding the out-of-band overflow
+                // this WO fixes, not just decorative).
+                //
+                // WO-AAA-SOLAR-TABLEAU: fill is now the PlanetTableauLayer
+                // Canvas-2D layer mounted just above (z-BELOW this button,
+                // same %-anchor/size) -- the former flat HSL fill is gone;
+                // this stays a transparent hit-area/label/moons/focus target.
+                transform: 'translate(-50%,-50%)',
+              }}
+              aria-label={name}
+              onClick={() =>
+                isReal
+                  ? openPopup(
+                      { kind: 'planet', planetId: body.planet_id as string, planetKind: body.kind, habitability: body.habitability, owned: body.owned },
+                      name,
+                      pos,
+                      body.planet_id as string
+                    )
+                  : openPopup(
+                      { kind: 'procedural', designation: name, typeName: body.kind.replace(/_/g, ' '), sizeDesc: `SIZE CLASS ${body.size_class}` },
+                      name,
+                      pos
+                    )
+              }
+            >
+              <span className={`pltag${isReal && body.habitability ? '' : ' dim'}${tagLean ? ` pltag-lean-${tagLean}` : ''}`}>
+                {name}{isReal && !body.habitability ? ' ◦' : ''}
+              </span>
+              {moons.map((m, mi) => (
+                <span
+                  key={`moon-${mi}`}
+                  className={`moon-orbit${m.clockwise ? '' : ' ccw'}`}
+                  style={{
+                    animationDuration: `${m.durationS}s`,
+                    // Negative delay = the standard CSS trick for a seeded
+                    // starting phase on a looping animation without a jump
+                    // discontinuity at each loop restart (an inline
+                    // `transform` would fight the keyframe's own `from`).
+                    animationDelay: `${-(m.startDeg / 360) * m.durationS}s`,
+                  }}
+                  aria-hidden="true"
+                >
+                  <span
+                    className="moon-dot"
+                    style={{ left: `${m.radiusEm}em`, top: 0, width: `${m.sizeEm}em`, height: `${m.sizeEm}em` }}
+                  />
+                </span>
+              ))}
+              </button>
+            </React.Fragment>
+          );
+        })}
+
+        {/* stations */}
+        {(system?.stations ?? []).map((st) => {
+          const pos = stationPosition(star, st, safeRadiiStations);
+          return (
+            <React.Fragment key={`station-${st.station_id}`}>
+              {orbitEllipse(star, pos, `orbit-station-${st.station_id}`)}
+              <button
+                type="button"
+                className="obj"
+                style={{ left: `${pos.xPct}%`, top: `${pos.yPct}%`, transform: 'translate(-50%,-50%)' }}
+                aria-label={st.name}
+                onClick={() => openPopup({ kind: 'station', stationId: st.station_id, stationType: st.type }, st.name, pos, st.station_id)}
+              >
+                <span className="glyphbox">🛰</span>
+                <span className="objtag">{st.name}</span>
+              </button>
+            </React.Fragment>
+          );
+        })}
+
+        {/* SCAN layer — wrecks + formations, gated behind scanActive */}
+        <ScanLayer scanActive={scanActive} wrecks={wrecks} formations={formations} star={star} onOpenPopup={openPopup} />
+
+        {/* other ships — prefer server ISP pose/leg; fall back to local flight
+            profile until the sector presence carries pose (Loop A tick). */}
+        {ships.map((s) => {
+          if (!s.ship_id) return null;
+          const resolved = resolveShipPose(s, ispNowMs(), contactT, contactDocks, bandAspect);
+          const xPct = resolved.xPct;
+          const yPct = resolved.yPct;
+          const headingDegVal = resolved.headingDeg;
+          const burningContact = resolved.burning;
+          const phaseClass = resolved.phaseClass;
+          const faction = shipFaction(s);
+          const isPirate = faction.key === 'raider';
+          const contactName = s.ship_name || faction.label;
+          // WO-QUEUE-PLTAG-MOVING-STAR: `.other`'s `.pltag` IS a real DOM
+          // child of `.other` here (same containing-block relationship as
+          // `.pl`'s tag), so it reuses the SAME shared CSS modifier classes
+          // the body-tag fix already defined -- no new CSS needed. Computed
+          // every render (xPct/yPct are fresh every frame/poll for a moving
+          // contact, so this naturally tracks the whole drift path, not a
+          // mount-time snapshot); the function itself is two multiplies and
+          // a compare, negligible next to the pose interpolation this
+          // component already recomputes per render.
+          const contactTagLean = labelEdgeLean(xPct, pltagLabelHalfWidthEm(contactName), bandBox ?? undefined);
+          const turning =
+            phaseClass === 'orienting' ||
+            phaseClass === 'brake-turn' ||
+            phaseClass === 'final-orient' ||
+            phaseClass === 'halt-turn';
+          return (
+            <button
+              key={`ship-${s.ship_id}`}
+              type="button"
+              className={`other${burningContact ? ' burning' : ''}${phaseClass !== 'idle' ? ` travel-${phaseClass}` : ''}`}
+              style={{
+                left: `${xPct}%`,
+                top: `${yPct}%`,
+                color: faction.color,
+                ['--hdg' as string]: `${headingDegVal.toFixed(0)}deg`,
+              }}
+              aria-label={`${s.ship_name || 'Contact'} options`}
+              onClick={() =>
+                openPopup(
+                  {
+                    kind: 'ship', shipId: String(s.ship_id), shipName: s.ship_name || 'UNKNOWN',
+                    shipType: s.ship_type || 'UNKNOWN', captain: s.username || 'UNKNOWN',
+                    isNpc: !!s.is_npc, factionLabel: faction.label, factionColor: faction.color,
+                    lawful: faction.lawful, notoriety: s.notoriety ?? undefined,
+                  },
+                  s.ship_name || 'Contact',
+                  { xPct, yPct }
+                )
+              }
+            >
+              <span className="other-hull" aria-hidden="true">
+                {isPirate ? '☠' : '⊳'}
+                {turning && (
+                  <>
+                    <span className="ssv-rcs ssv-rcs-a" />
+                    <span className="ssv-rcs ssv-rcs-b" />
+                  </>
+                )}
+              </span>
+              <span className={`pltag${contactTagLean ? ` pltag-lean-${contactTagLean}` : ''}`} style={{ color: faction.color }}>{contactName}</span>
+            </button>
+          );
+        })}
+
+        {/* target reticle */}
+        {selectedPos && <div className="reticle" style={{ left: `${selectedPos.xPct}%`, top: `${selectedPos.yPct}%` }} />}
+
+        {/* the player's own ship (+ RCS jets + warp cinematic) — the ONLY
+            system-level mover */}
+        <PlayerShipAndWarpLayer
+          shipPos={shipPos}
+          shipMkRef={shipMkRef}
+          burning={burning}
+          travelPhase={travelPhase}
+          warpPhase={warpPhase}
+          heading={heading}
+          warpBearing={warpBearing}
+          arrivalBearing={arrivalBearing}
+        />
+      </div>
+
+      {popup && popupStyle && (
+        <div className="ssv-popup" style={popupStyle} role="dialog" aria-label={`${popup.name} details`}>
+          <button type="button" className="ssv-popup-close" onClick={() => setPopup(null)} aria-label="Close details">✕</button>
+          {renderPopupContent()}
+        </div>
+      )}
+
+      {ctxMenu && ctxMenuStyle && (
+        <div ref={ctxMenuRef} className="ssv-ctxmenu" style={ctxMenuStyle} role="menu" aria-label="Sector context menu">
+          <button type="button" className="ssv-popup-action" role="menuitem" onClick={handleTravelToClick}>
+            Travel To
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default WindshieldTableau;
