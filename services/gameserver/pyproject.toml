@@ -29,8 +29,13 @@ asyncpg = ">=0.28,<0.32"
 pydantic = {extras = ["email"], version = ">=2.3.0,<2.14.0"}
 pydantic-settings = ">=2.0.3,<2.15.0"
 alembic = "^1.12.0"
-# Explicit pin: CVE needs >=48.0.1; cap at <49 to avoid taking an unreviewed
-# major (48→49) on a package that underpins JWT + argon2 auth paths.
+# Explicit floor: CVE needs >=48.0.1. Reviewed 48->49 under WO-DEPS-86
+# (2026-07-19): PINNED at 48 -- cryptography 49 dropped the macOS x86_64
+# wheel and the dev Mac is Intel, so taking 49 would force a Rust source
+# build on every local install. Otherwise pure version-currency (security
+# 0/0/0: only direct usage is Fernet for ARIA personal-memory encryption,
+# JWT goes through PyJWT HS256 only, fernet.py byte-identical 48<->49).
+# Revisit once the dev Mac is arm64 or a Rust toolchain is provisioned.
 cryptography = ">=48.0.1,<49"
 pyjwt = {extras = ["crypto"], version = "^2.10.0"}
 python-multipart = ">=0.0.18"
@@ -41,7 +46,6 @@ bcrypt = ">=4.0.1,<6.0.0"
 email-validator = "^2.0.0"
 python-dotenv = "^1.0.0"
 redis = {extras = ["hiredis"], version = ">=5.0.1,<9.0.0"}
-aioredis = "^2.0.1"
 scikit-learn = "^1.3.0"
 prophet = "^1.1.4"
 # Not imported anywhere in src/ — pulled in only transitively for prophet/
