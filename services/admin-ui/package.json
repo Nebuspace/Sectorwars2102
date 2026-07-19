@@ -44,5 +44,10 @@
     "test:e2e:docker": "node ./scripts/run-docker-tests.js",
     "i18n:extract": "node ./scripts/extract-strings.js",
     "i18n:validate": "node ./scripts/validate-translations.js"
+  },
+  "overrides": {
+    "ws": "8.21.0",
+    "form-data": "4.0.6",
+    "engine.io-client": "6.6.6"
   }
 }
