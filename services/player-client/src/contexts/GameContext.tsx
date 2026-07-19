@@ -193,6 +193,12 @@ export interface QuantumStatus {
   can_jump: boolean;
   is_warp_jumper: boolean;
   sensor_level: number;
+  // WO-API-PHASE2 Lane B5 -- optional: an older server build (or a cached
+  // response) won't have these yet, so the client falls back to its own
+  // hardcoded constants rather than rendering NaN/undefined.
+  scan_turn_cost?: number;
+  jump_turn_cost?: number;
+  jump_tow_surcharge?: number;
 }
 
 export interface QuantumBearing {
