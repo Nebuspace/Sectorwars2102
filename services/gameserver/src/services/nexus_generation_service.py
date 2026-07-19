@@ -480,13 +480,17 @@ class NexusGenerationService:
             # rather than homogenized; absent keys fall back to the column default.
             if is_resource_rich and sector_num != 1:
                 # +50% asteroid yield: has_asteroids + asteroid_yield ×1.5 off a
-                # sensible base (ore 1000 / precious_metals 400 / radioactives 200).
+                # sensible base (ore 1000 / precious_metals 400 / quantum_shards
+                # 200). Third key is `quantum_shards`, matching WO-ARCH-RES-2I's
+                # ghost-vocabulary purge on Sector.resources.asteroid_yield
+                # (sector.py / mining harvest contract) -- NOT the retired
+                # `radioactives` slug.
                 sector_data["resources"] = {
                     "has_asteroids": True,
                     "asteroid_yield": {
                         "ore": int(1000 * 1.5),
                         "precious_metals": int(400 * 1.5),
-                        "radioactives": int(200 * 1.5),
+                        "quantum_shards": int(200 * 1.5),
                     },
                     "gas_clouds": [],
                     "has_scanned": False,

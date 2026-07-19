@@ -206,14 +206,17 @@ _SECURITY_BY_CLUSTER_TYPE: Dict[ClusterType, int] = {
 #: (generation.md:99 — the RATIO, not the absolute base).
 _GX1_RESOURCE_RICH_YIELD_RATIO: float = 1.5
 
-#: RESOURCE_RICH asteroid base ore/precious_metals/radioactives. INVENTED
+#: RESOURCE_RICH asteroid base ore/precious_metals/quantum_shards. INVENTED
 #: NO-CANON launch base (the +50% above is applied ON TOP of this baseline, then
 #: composed with the zone multiplier). bang carries no per-sector yield to
 #: multiply, so this is the baseline being scaled (master §3.1c / MAX-MEMO N3).
+#: Third key is `quantum_shards`, matching WO-ARCH-RES-2I's ghost-vocabulary
+#: purge on Sector.resources.asteroid_yield (sector.py / mining harvest
+#: contract) -- NOT the retired `radioactives` slug.
 _GX1_RESOURCE_RICH_BASE: Dict[str, int] = {
     "ore": 1000,
     "precious_metals": 400,
-    "radioactives": 200,
+    "quantum_shards": 200,
 }
 
 #: RESOURCE_RICH per-sector asteroid probability (NO-CANON ~0.5). Probabilistic,
@@ -306,8 +309,8 @@ def _gx1_sector_bias(
                     "precious_metals": _compose(
                         _GX1_RESOURCE_RICH_BASE["precious_metals"]
                     ),
-                    "radioactives": _compose(
-                        _GX1_RESOURCE_RICH_BASE["radioactives"]
+                    "quantum_shards": _compose(
+                        _GX1_RESOURCE_RICH_BASE["quantum_shards"]
                     ),
                 },
                 "gas_clouds": [],
