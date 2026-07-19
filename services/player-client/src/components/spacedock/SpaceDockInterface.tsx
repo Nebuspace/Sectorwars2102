@@ -1,10 +1,18 @@
 import React, { useState, useCallback } from 'react';
 import { useGame } from '../../contexts/GameContext';
 import type { Station } from '../../contexts/GameContext';
-import TradingInterface from '../trading/TradingInterface';
 import ConstructionVenue from './ConstructionVenue';
 import PortOfficeVenue from './PortOfficeVenue';
-import { InsuranceManager, MaintenanceManager, ModuleGridInterface } from '../ships';
+import ContractBoardVenue from './ContractBoardVenue';
+import TradingVenue from './TradingVenue';
+import ShipyardVenue from './ShipyardVenue';
+import GenesisVenue from './GenesisVenue';
+import ArmoryVenue from './ArmoryVenue';
+import ServicesVenue from './ServicesVenue';
+import MiningVenue from './MiningVenue';
+import GamblingVenue from './GamblingVenue';
+import { getStationClassInfo } from '../common/stationIdentity';
+import { shipAPI } from '../../services/api';
 import { formatCredits } from '../../utils/formatters';
 import './spacedock.css';
 
@@ -18,7 +26,7 @@ const getApiBaseUrl = () => {
 };
 
 // Venue type definitions
-type VenueType = 'hub' | 'trading' | 'shipyard' | 'construction' | 'portoffice' | 'genesis' | 'armory' | 'services' | 'gambling' | 'mining';
+type VenueType = 'hub' | 'trading' | 'shipyard' | 'construction' | 'portoffice' | 'contracts' | 'genesis' | 'armory' | 'services' | 'gambling' | 'mining';
 type GamblingGame = 'menu' | 'slots' | 'dice' | 'blackjack' | 'lottery';
 
 // Blackjack card types
@@ -70,6 +78,7 @@ interface ShipCatalogEntry {
   hull_points: number;
   attack_rating: number;
   defense_rating: number;
+  max_genesis_devices: number;
   description: string;
   reason?: string | null;
 }
@@ -97,21 +106,48 @@ interface ArmoryLoadout {
   };
 }
 
-// Station class display labels (trading classification 0-11)
-const CLASS_LABELS: Record<number, string> = {
-  0: 'Sol Hub',
-  1: 'Mining Operation',
-  2: 'Agricultural Center',
-  3: 'Industrial Hub',
-  4: 'Distribution Center',
-  5: 'Collection Hub',
-  6: 'Mixed Market',
-  7: 'Resource Exchange',
-  8: 'Black Hole Exchange',
-  9: 'Nova Market',
-  10: 'Luxury Market',
-  11: 'Premium Tech Hub'
+// Per-STATION-CLASS static greeter, keyed by the same numeric class as
+// stationIdentity.tsx's STATION_CLASSES (WO-UI3-CONCIERGE). Tone is drawn
+// from sw2102-docs/FEATURES/economy/haggling.md's "Port personality types"
+// table (Federation/Border/Frontier/Luxury/Black Market archetypes, matched
+// to a class by that table's "Found at" column where it names an exact
+// class, otherwise the closest-fit archetype for that class range) plus the
+// class's own trade-pattern blurb. STATIC text/art only — no LLM, no
+// backend call; narrative haggling (the LLM-driven trader dialogue) is
+// 📐 design-only in canon and explicitly out of scope here.
+const STATION_GREETERS: Record<number, string> = {
+  // Federation core (Class 0-4 per haggling.md) — formal, procedural.
+  0: '"Welcome to Sol Hub, pilot — humanity\'s gateway. Papers in order? Right this way; the manifest desk is ready when you are."',
+  // Border archetype — economic, mutual-benefit framing.
+  1: '"Ore\'s the currency out here. Fill your hold and we\'ll make the trip worth it — organics and equipment waiting on the racks."',
+  2: '"Fresh off the hydro-domes and ready to trade. Bring ore, take organics — fair weight, fair price, same as always."',
+  // Federation-adjacent, procedural.
+  3: '"Fabrication bay\'s running hot. Equipment orders go on the manifest — queue at the desk and we\'ll have your parts crated by shift\'s end."',
+  4: '"We cross-dock exotic tech through here daily — ore, organics, equipment, fuel, all logged and cleared. State your manifest and we\'ll route you through."',
+  // Border archetype continues through the mid classes.
+  5: '"We take in raw and refined alike — ore, organics, equipment, fuel — and pay out in the finer stock. Everyone walks away ahead."',
+  6: '"A little of everything moves through here. Ore and organics in, equipment and fuel out — no fuss, no surprises."',
+  // Frontier archetype (outer rim, low faction control) — personal, blunt.
+  7: '"Out this far you learn to trust the scales, not the flag on your hull. Equipment and fuel for ore and organics — square deal, no questions."',
+  // Black Market archetype — exact match, Class 8 in canon. Risk/discretion.
+  8: '"Everything moves through the Hole at a premium, and nobody asks where it came from. We both walk away with nothing in writing."',
+  // Not in the canon table directly; volatile-market urgency befitting a
+  // stellar-proximity exchange that sells everything at a premium.
+  9: '"Prices run hot this close to the flare, pilot. Everything sells at a premium here — buy now or buy later at a worse rate."',
+  // Luxury archetype — exact match, Class 10 in canon. Exclusive, prestige.
+  10: '"Welcome to the Market, pilot — mind the display cases. Gourmet stock in, luxury goods and exotic tech out. Taste is the only currency that matters here."',
+  // Federation-adjacent, precision/tech formality.
+  11: '"Exotic tech in, precision components out — every unit certified before it leaves this bay. State your order and we\'ll begin calibration."',
 };
+
+// Fallback for stations with no recognized class (legacy/unclassified data) —
+// same tone as the pre-WO generic line.
+const DEFAULT_GREETER = 'Welcome aboard. Choose a destination to access this station’s services.';
+
+function getStationGreeting(stationClass?: number | null): string {
+  if (stationClass == null) return DEFAULT_GREETER;
+  return STATION_GREETERS[stationClass] ?? DEFAULT_GREETER;
+}
 
 // Service flags worth surfacing in the hub header, with display icons
 const SERVICE_ICONS: Array<{ key: string; icon: string; label: string }> = [
@@ -152,33 +188,6 @@ interface BlackMarketCatalog {
 // "stolen_goods" → "Stolen Goods"). Falls back gracefully for new commodities.
 const prettyCommodity = (value: string): string =>
   value.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-
-// Display metadata for known armory items (falls back gracefully for new items)
-const ARMORY_ICONS: Record<string, string> = {
-  attack_drone: '⚔️',
-  defense_drone: '🛡️',
-  limpet_mine: '💥',
-  armored_mine: '☢️'
-};
-
-const ARMORY_CARD_CLASS: Record<string, string> = {
-  attack_drone: 'attack',
-  defense_drone: 'defense',
-  limpet_mine: 'mine',
-  armored_mine: 'mine-heavy'
-};
-
-// Which loadout counter an armory item feeds into
-const loadoutKeyForItem = (itemId: string): 'attack_drones' | 'defense_drones' | 'mines' | null => {
-  if (itemId.includes('attack')) return 'attack_drones';
-  if (itemId.includes('defense')) return 'defense_drones';
-  if (itemId.includes('mine')) return 'mines';
-  return null;
-};
-
-// Normalize ship type strings for comparison (e.g. "Cargo Hauler" vs "CARGO_HAULER")
-const normalizeShipType = (shipType?: string | null): string =>
-  (shipType || '').toUpperCase().replace(/[\s-]+/g, '_');
 
 // Slot machine symbols
 const SLOT_SYMBOLS = ['🌍', '⭐', '🚀', '💳', '🕳️', '💎'];
@@ -290,6 +299,10 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
   // Weekly acquisition limit readout (canon: 3/week).
   const [genesisWeeklyRemaining, setGenesisWeeklyRemaining] = useState<number | null>(null);
   const [genesisWeeklyLimit, setGenesisWeeklyLimit] = useState<number>(3);
+  // Federation reputation gate (ADR-0088). Rides a separate deploy window
+  // from the rest of this response — GRACEFUL-DEGRADE: null (hide the rep
+  // row entirely) unless the server actually sends the field.
+  const [genesisRepGate, setGenesisRepGate] = useState<{ required: number; current: number; met: boolean } | null>(null);
 
   // Local genesis tracking for immediate UI feedback
   const [localGenesisDevices, setLocalGenesisDevices] = useState<number | null>(null);
@@ -309,6 +322,15 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
         if (!data) return;
         if (typeof data.purchases_remaining === 'number') setGenesisWeeklyRemaining(data.purchases_remaining);
         if (typeof data.max_purchases_per_week === 'number') setGenesisWeeklyLimit(data.max_purchases_per_week);
+        const gate = data.reputation_gate;
+        if (gate && typeof gate === 'object'
+          && typeof gate.required === 'number'
+          && typeof gate.current === 'number'
+          && typeof gate.met === 'boolean') {
+          setGenesisRepGate(gate);
+        } else {
+          setGenesisRepGate(null);
+        }
       })
       .catch(() => {});
   }, [activeVenue]);
@@ -395,6 +417,16 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       description: 'Station registry — ownership deeds, sealed-bid sales, tariffs, and takeover filings',
       available: true,
       services: ['Ownership Registry', 'Sealed-Bid Offers', 'Tariff & Treasury', 'Takeover War Room']
+    },
+    // Contract Board is universal — every station keeps a delivery board,
+    // whether or not it has any NPC or player-posted contracts yet
+    {
+      id: 'contracts',
+      name: 'Contract Board',
+      icon: '📋',
+      description: 'Delivery contracts — accept board postings, post your own, track your obligations',
+      available: true,
+      services: ['Delivery Board', 'Player-Posted Contracts', 'Escrow', 'Deadline Tracking']
     },
     {
       id: 'genesis',
@@ -772,35 +804,31 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
     }
   }, [blackjackGame, betAmount, displayCredits, updatePlayerCredits]);
 
-  const renderCard = (card: BlackjackCard, index: number) => {
-    const isRed = card.suit === '♥' || card.suit === '♦';
-    if (card.hidden) {
-      return (
-        <div key={index} className="playing-card hidden">
-          <div className="card-back">🂠</div>
-        </div>
-      );
-    }
-    return (
-      <div key={index} className={`playing-card ${isRed ? 'red' : 'black'}`}>
-        <div className="card-corner top">
-          <span className="card-rank">{card.rank}</span>
-          <span className="card-suit">{card.suit}</span>
-        </div>
-        <div className="card-center">{card.suit}</div>
-        <div className="card-corner bottom">
-          <span className="card-rank">{card.rank}</span>
-          <span className="card-suit">{card.suit}</span>
-        </div>
-      </div>
-    );
-  };
-
   // Genesis Device Purchase function
   // Genesis devices are a single fungible consumable; the tier + credit cost are
   // chosen at deploy. Acquiring one costs a flat GENESIS_DEVICE_PRICE and is
   // rate-limited to 3/week (server-enforced).
   const GENESIS_DEVICE_PRICE = 25000;
+
+  // The raw purchase endpoint uses `fetch` directly (not the apiRequest/apiClient
+  // wrapper), so it doesn't get that layer's detail-extraction for free. A plain
+  // `error.detail || 'Purchase failed'` silently loses the real reason whenever
+  // the gameserver's global error handler wraps it as `{message}` instead, or
+  // renders `[object Object]` when a 422 sends `detail` as FastAPI's validation
+  // array (`[{loc, msg, type}, ...]`) rather than a string.
+  const extractGenesisErrorDetail = (error: unknown, fallback: string): string => {
+    const raw = (error as { detail?: unknown; message?: unknown } | null)?.detail
+      ?? (error as { detail?: unknown; message?: unknown } | null)?.message;
+    if (typeof raw === 'string' && raw) return raw;
+    if (Array.isArray(raw)) {
+      const msgs = raw
+        .map(e => (e && typeof e === 'object' && typeof (e as { msg?: unknown }).msg === 'string' ? (e as { msg: string }).msg : null))
+        .filter((m): m is string => Boolean(m));
+      if (msgs.length) return msgs.join('; ');
+    }
+    return fallback;
+  };
+
   const purchaseGenesisDevice = useCallback(async () => {
     const token = getToken();
     if (!token || genesisPurchasing) return;
@@ -829,8 +857,8 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       });
 
       if (!response.ok) {
-        const error = await response.json();
-        setGenesisError(error.detail || 'Purchase failed');
+        const error = await response.json().catch(() => null);
+        setGenesisError(extractGenesisErrorDetail(error, 'Purchase failed'));
         // Restore credits on error
         setLocalCredits(prev => (prev ?? displayCredits) + price);
         setGenesisPurchasing(false);
@@ -1105,6 +1133,27 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       setRepairSuccess(null);
     }
   }, [activeVenue, fetchShipData]);
+
+  // Hull insurance coverage tier — surfaced inline on the Services venue.
+  // Coverage attaches to the hull for life (station-independent), so it's
+  // shown regardless of whether this station's underwriter desk is open.
+  const [insuranceTier, setInsuranceTier] = useState<string | null>(null);
+
+  const fetchInsuranceStatus = useCallback(async (shipId: string) => {
+    try {
+      const data = await shipAPI.getInsurance(shipId) as { current_tier?: string };
+      setInsuranceTier(typeof data?.current_tier === 'string' ? data.current_tier : null);
+    } catch (error) {
+      console.error('Insurance status error:', error);
+      setInsuranceTier(null);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (activeVenue === 'services' && shipData?.id) {
+      fetchInsuranceStatus(shipData.id);
+    }
+  }, [activeVenue, shipData?.id, fetchInsuranceStatus]);
 
   const repairShip = useCallback(async () => {
     const token = getToken();
@@ -1698,7 +1747,8 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
     const stationClass = currentStation?.station_class;
     const tagline = currentStation?.is_spacedock
       ? 'Premier Trading & Construction Facility'
-      : (stationClass != null && CLASS_LABELS[stationClass]) || 'Orbital Trading Station';
+      : getStationClassInfo(stationClass)?.name || 'Orbital Trading Station';
+    const greeting = getStationGreeting(stationClass);
 
     const status = currentStation?.status;
     const statusLabel = status
@@ -1747,22 +1797,10 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
               </div>
             )}
           </div>
-          {onUndock && (
-            <button
-              className="hub-undock-btn"
-              onClick={onUndock}
-              disabled={helmBusy}
-              aria-disabled={helmBusy}
-              aria-label={helmBusy ? 'Undock unavailable — helm is busy' : 'Undock and launch into space'}
-              title="Undock and launch into space"
-            >
-              {helmBusy ? '🚀 LAUNCHING…' : '🚀 UNDOCK & LAUNCH'}
-            </button>
-          )}
         </div>
 
         <div className="hub-welcome">
-          <p>Welcome aboard. Choose a destination to access this station&apos;s services.</p>
+          <p>{greeting}</p>
         </div>
 
         <div className="venues-grid">
@@ -1771,6 +1809,14 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
               key={venue.id}
               className={`venue-card ${!venue.available ? 'unavailable' : ''}`}
               onClick={() => venue.available && setActiveVenue(venue.id)}
+              role="button"
+              tabIndex={venue.available ? 0 : -1}
+              onKeyDown={(e) => {
+                if ((e.key === 'Enter' || e.key === ' ') && venue.available) {
+                  e.preventDefault();
+                  setActiveVenue(venue.id);
+                }
+              }}
             >
               <div className="venue-icon">{venue.icon}</div>
               <div className="venue-content">
@@ -1798,1431 +1844,45 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
     );
   };
 
-  const renderGamblingHall = () => (
-    <div className="venue-container gambling">
-      <div className="venue-header">
-        <button className="back-button" onClick={() => {
-          if (currentGame === 'menu') {
-            setActiveVenue('hub');
-          } else {
-            setCurrentGame('menu');
-            setLastWin(null);
-          }
-        }}>
-          ← {currentGame === 'menu' ? 'Back to Hub' : 'Back to Games'}
-        </button>
-        <h2>🎰 Gambling Hall</h2>
-      </div>
-
-      <div className="venue-content-area gambling-area">
-        {currentGame === 'menu' && (
-          <div className="gambling-menu">
-            <div className="gambling-welcome">
-              <div className="neon-sign">FORTUNE FAVORS THE BOLD</div>
-              <p>Choose your game and test your luck among the stars...</p>
-            </div>
-
-            <div className="games-grid">
-              <div className="game-card slots" onClick={() => setCurrentGame('slots')}>
-                <div className="game-icon">🎰</div>
-                <h3>Cosmic Slots</h3>
-                <p>Match symbols to win big! Jackpot pays 50x</p>
-                <div className="game-stats">
-                  <span>Min Bet: {formatCredits(10)}</span>
-                  <span>Max Win: 50x</span>
-                </div>
-              </div>
-
-              <div className="game-card dice" onClick={() => setCurrentGame('dice')}>
-                <div className="game-icon">🎲</div>
-                <h3>Nebula Dice</h3>
-                <p>Bet high, low, or exact. Avoid the Void!</p>
-                <div className="game-stats">
-                  <span>Min Bet: {formatCredits(10)}</span>
-                  <span>Max Win: 35x</span>
-                </div>
-              </div>
-
-              <div className="game-card blackjack" onClick={() => setCurrentGame('blackjack')}>
-                <div className="game-icon">🃏</div>
-                <h3>Stellar Blackjack</h3>
-                <p>Beat the dealer to 21 without busting!</p>
-                <div className="game-stats">
-                  <span>Min Bet: {formatCredits(10)}</span>
-                  <span>Blackjack: 3:2</span>
-                </div>
-              </div>
-
-              <div className="game-card lottery" onClick={() => setCurrentGame('lottery')}>
-                <div className="game-icon">🎫</div>
-                <h3>Sector Sweep</h3>
-                <p>Pick sectors, match the draw, win the jackpot!</p>
-                <div className="game-stats">
-                  <span>Ticket: {formatCredits(100)}</span>
-                  <span>Jackpot: {formatCredits(1000000)}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {currentGame === 'slots' && (
-          <div className="game-view slots-game">
-            <div className="slot-machine">
-              <div className="slot-header">
-                <h3>COSMIC SLOTS</h3>
-                <div className="jackpot-display">
-                  JACKPOT: <span className="jackpot-amount">💎💎💎 = 50x</span>
-                </div>
-              </div>
-
-              {gamblingError && (
-                <div className="gambling-error">{gamblingError}</div>
-              )}
-
-              {isJackpot && lastWin !== null && lastWin > 0 && (
-                <div className="jackpot-alert">🎉 JACKPOT! 🎉</div>
-              )}
-
-              <div className="slot-reels">
-                {slotReels.map((symbol, idx) => (
-                  <div key={idx} className={`reel ${isSpinning ? 'spinning' : ''} ${isJackpot ? 'jackpot' : ''}`}>
-                    <span className="symbol">{symbol}</span>
-                  </div>
-                ))}
-              </div>
-
-              <div className="slot-result">
-                {lastWin !== null && (
-                  <div className={`win-display ${lastWin > 0 ? 'winner' : lastWin < 0 ? 'loser' : 'push'}`}>
-                    {lastWin > 0 ? `WIN! +${formatCredits(lastWin)}!` :
-                     lastWin < 0 ? `Lost ${formatCredits(Math.abs(lastWin))}` :
-                     'No match - try again!'}
-                  </div>
-                )}
-              </div>
-
-              <div className="slot-controls">
-                <div className="bet-selector">
-                  <label>Bet Amount:</label>
-                  <div className="bet-buttons">
-                    {[10, 50, 100, 500, 1000].map(amount => (
-                      <button
-                        key={amount}
-                        className={`bet-btn ${betAmount === amount ? 'selected' : ''}`}
-                        onClick={() => setBetAmount(amount)}
-                        disabled={isSpinning}
-                      >
-                        {amount}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <button
-                  className="spin-button"
-                  onClick={spinSlots}
-                  disabled={isSpinning || displayCredits < betAmount}
-                >
-                  {isSpinning ? 'SPINNING...' : 'SPIN'}
-                </button>
-              </div>
-
-              <div className="paytable">
-                <h4>Payouts</h4>
-                <div className="paytable-grid">
-                  <span>💎💎💎 = 50x</span>
-                  <span>🚀🚀🚀 = 10x</span>
-                  <span>⭐⭐⭐ = 8x</span>
-                  <span>🌍🌍🌍 = 5x</span>
-                  <span>💳💳💳 = 3x</span>
-                  <span>2 Match = 0.5x</span>
-                  <span>🕳️ = Lose</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {currentGame === 'dice' && (
-          <div className="game-view dice-game">
-            <div className="dice-table">
-              <div className="dice-header">
-                <h3>NEBULA DICE</h3>
-                <p className="dice-subtitle">Roll the cosmic dice. Beware the Void (7)!</p>
-              </div>
-
-              {gamblingError && (
-                <div className="gambling-error">{gamblingError}</div>
-              )}
-
-              <div className="dice-display">
-                <div className={`die ${diceValues[0] > 0 ? 'rolled' : ''} ${isSupernova ? 'supernova' : ''} ${isVoid ? 'void' : ''}`}>
-                  {diceValues[0] > 0 ? diceValues[0] : '?'}
-                </div>
-                <div className="dice-plus">+</div>
-                <div className={`die ${diceValues[1] > 0 ? 'rolled' : ''} ${isSupernova ? 'supernova' : ''} ${isVoid ? 'void' : ''}`}>
-                  {diceValues[1] > 0 ? diceValues[1] : '?'}
-                </div>
-                <div className="dice-equals">=</div>
-                <div className={`dice-total ${isVoid ? 'void' : ''}`}>
-                  {diceValues[0] + diceValues[1] > 0 ? diceValues[0] + diceValues[1] : '?'}
-                </div>
-              </div>
-
-              {isSupernova && (
-                <div className="supernova-alert">🌟 SUPERNOVA! 🌟</div>
-              )}
-
-              {isVoid && (
-                <div className="void-alert">🕳️ THE VOID 🕳️</div>
-              )}
-
-              <div className="dice-result">
-                {lastWin !== null && (
-                  <div className={`win-display ${lastWin > 0 ? 'winner' : 'loser'}`}>
-                    {lastWin > 0 ? `WIN! +${formatCredits(lastWin)}!` :
-                     `Lost ${formatCredits(Math.abs(lastWin))}`}
-                  </div>
-                )}
-              </div>
-
-              <div className="dice-betting">
-                <div className="bet-type-selector">
-                  <label>Bet Type:</label>
-                  <div className="bet-type-buttons">
-                    <button
-                      className={`type-btn ${diceBetType === 'low' ? 'selected' : ''}`}
-                      onClick={() => setDiceBetType('low')}
-                    >
-                      LOW (2-6) 2x
-                    </button>
-                    <button
-                      className={`type-btn ${diceBetType === 'high' ? 'selected' : ''}`}
-                      onClick={() => setDiceBetType('high')}
-                    >
-                      HIGH (8-12) 2x
-                    </button>
-                    <button
-                      className={`type-btn ${diceBetType === 'exact' ? 'selected' : ''}`}
-                      onClick={() => setDiceBetType('exact')}
-                    >
-                      EXACT (5-35x)
-                    </button>
-                  </div>
-                </div>
-
-                {diceBetType === 'exact' && (
-                  <div className="exact-number-selector">
-                    <label>Pick your number:</label>
-                    <div className="number-buttons">
-                      {[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(num => (
-                        <button
-                          key={num}
-                          className={`num-btn ${diceExactBet === num ? 'selected' : ''} ${num === 7 ? 'void' : ''}`}
-                          onClick={() => setDiceExactBet(num)}
-                        >
-                          {num}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="exact-payout">
-                      Payout: {diceExactBet === 2 || diceExactBet === 12 ? '35x' :
-                               diceExactBet === 3 || diceExactBet === 11 ? '17x' :
-                               diceExactBet === 4 || diceExactBet === 10 ? '11x' :
-                               diceExactBet === 5 || diceExactBet === 9 ? '8x' :
-                               diceExactBet === 6 || diceExactBet === 8 ? '6x' : '5x'}
-                    </div>
-                  </div>
-                )}
-
-                <div className="bet-amount-selector">
-                  <label>Bet Amount:</label>
-                  <div className="bet-buttons">
-                    {[10, 50, 100, 500, 1000].map(amount => (
-                      <button
-                        key={amount}
-                        className={`bet-btn ${betAmount === amount ? 'selected' : ''}`}
-                        onClick={() => setBetAmount(amount)}
-                      >
-                        {amount}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <button
-                  className="roll-button"
-                  onClick={rollDice}
-                  disabled={displayCredits < betAmount}
-                >
-                  ROLL THE DICE
-                </button>
-              </div>
-
-              <div className="dice-rules">
-                <h4>Rules</h4>
-                <ul>
-                  <li><strong>7 = The Void</strong> - House wins on any bet</li>
-                  <li><strong>Double 6s = Supernova</strong> - Pays 35x regardless of bet type!</li>
-                  <li>High/Low bets pay 2x your wager</li>
-                </ul>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {currentGame === 'blackjack' && (
-          <div className="game-view blackjack-game">
-            <div className="blackjack-table">
-              <div className="blackjack-header">
-                <h3>STELLAR BLACKJACK</h3>
-                <div className="blackjack-payout-info">
-                  <span>Blackjack pays 3:2</span>
-                  <span>Dealer stands on 17</span>
-                </div>
-              </div>
-
-              {gamblingError && (
-                <div className="gambling-error">{gamblingError}</div>
-              )}
-
-              {!blackjackGame ? (
-                <div className="blackjack-start">
-                  <div className="blackjack-rules">
-                    <h4>How to Play</h4>
-                    <ul>
-                      <li>Get closer to 21 than the dealer without going over</li>
-                      <li>Face cards (J, Q, K) are worth 10</li>
-                      <li>Aces are worth 11 or 1</li>
-                      <li>Blackjack (Ace + 10-card) pays 3:2</li>
-                      <li>Double down doubles your bet and gives one more card</li>
-                    </ul>
-                  </div>
-
-                  <div className="bet-selector blackjack-bet">
-                    <label>Bet Amount:</label>
-                    <div className="bet-buttons">
-                      {[10, 50, 100, 500, 1000].map(amount => (
-                        <button
-                          key={amount}
-                          className={`bet-btn ${betAmount === amount ? 'selected' : ''}`}
-                          onClick={() => setBetAmount(amount)}
-                          disabled={isBlackjackDealing}
-                        >
-                          {amount}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <button
-                    className="deal-button"
-                    onClick={dealBlackjack}
-                    disabled={isBlackjackDealing || displayCredits < betAmount}
-                  >
-                    {isBlackjackDealing ? 'DEALING...' : 'DEAL CARDS'}
-                  </button>
-                </div>
-              ) : (
-                <div className="blackjack-game-area">
-                  {/* Dealer's Hand */}
-                  <div className="hand dealer-hand">
-                    <div className="hand-label">
-                      Dealer
-                      {blackjackGame.gameOver && (
-                        <span className="hand-total">({blackjackGame.dealerTotal})</span>
-                      )}
-                    </div>
-                    <div className="cards">
-                      {blackjackGame.dealerCards.map((card, idx) => renderCard(card, idx))}
-                    </div>
-                  </div>
-
-                  {/* Result Display */}
-                  {blackjackGame.gameOver && (
-                    <div className={`blackjack-result ${blackjackGame.result}`}>
-                      {blackjackGame.result === 'blackjack' && '🎰 BLACKJACK! 🎰'}
-                      {blackjackGame.result === 'win' && '🎉 YOU WIN! 🎉'}
-                      {blackjackGame.result === 'lose' && '😢 Dealer Wins'}
-                      {blackjackGame.result === 'push' && '🤝 Push - Tie Game'}
-                      {blackjackGame.result === 'bust' && '💥 BUST!'}
-                      {lastWin !== null && (
-                        <div className="result-amount">
-                          {lastWin > 0 ? `+${formatCredits(lastWin)}` : formatCredits(lastWin)}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Player's Hand */}
-                  <div className="hand player-hand">
-                    <div className="hand-label">
-                      Your Hand
-                      <span className="hand-total">({blackjackGame.playerTotal})</span>
-                    </div>
-                    <div className="cards">
-                      {blackjackGame.playerCards.map((card, idx) => renderCard(card, idx))}
-                    </div>
-                  </div>
-
-                  {/* Action Buttons */}
-                  <div className="blackjack-controls">
-                    {!blackjackGame.gameOver ? (
-                      <>
-                        <button
-                          className="action-btn hit"
-                          onClick={() => blackjackAction('hit')}
-                        >
-                          HIT
-                        </button>
-                        <button
-                          className="action-btn stand"
-                          onClick={() => blackjackAction('stand')}
-                        >
-                          STAND
-                        </button>
-                        {blackjackGame.canDouble && displayCredits >= betAmount && (
-                          <button
-                            className="action-btn double"
-                            onClick={() => blackjackAction('double')}
-                          >
-                            DOUBLE DOWN
-                          </button>
-                        )}
-                      </>
-                    ) : (
-                      <button
-                        className="deal-button new-hand"
-                        onClick={() => {
-                          setBlackjackGame(null);
-                          setLastWin(null);
-                        }}
-                      >
-                        NEW HAND
-                      </button>
-                    )}
-                  </div>
-
-                  <div className="current-bet-display">
-                    Current Bet: {formatCredits(betAmount)}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {currentGame === 'lottery' && (
-          <div className="game-view lottery-game">
-            <div className="lottery-booth">
-              <div className="lottery-header">
-                <h3>SECTOR SWEEP</h3>
-                <div className="jackpot-banner">
-                  <span className="jp-label">JACKPOT</span>
-                  <span className="jp-amount">1000x BET</span>
-                </div>
-              </div>
-
-              <div className="lottery-info">
-                <p>Pick 4 sectors from the grid below. Match to win!</p>
-                <div className="prize-table">
-                  <span>1 Match: 1x</span>
-                  <span>2 Match: 5x</span>
-                  <span>3 Match: 50x</span>
-                  <span>4 Match: 1000x!</span>
-                </div>
-              </div>
-
-              {gamblingError && (
-                <div className="gambling-error">{gamblingError}</div>
-              )}
-
-              <div className="lottery-selections">
-                <p>Your Selections ({lotteryNumbers.length}/4):</p>
-                <div className="selected-numbers">
-                  {lotteryNumbers.length > 0 ? (
-                    lotteryNumbers.map(n => (
-                      <span key={n} className="selected-num">{n}</span>
-                    ))
-                  ) : (
-                    <span className="no-selection">Pick 4 sectors below</span>
-                  )}
-                </div>
-              </div>
-
-              <div className="sector-grid">
-                {Array.from({ length: 12 }, (_, i) => (
-                  <button
-                    key={i + 1}
-                    className={`sector-pick ${lotteryNumbers.includes(i + 1) ? 'selected' : ''} ${winningNumbers.includes(i + 1) ? 'winning' : ''}`}
-                    onClick={() => toggleLotteryNumber(i + 1)}
-                    disabled={isLotteryPlaying}
-                  >
-                    {i + 1}
-                  </button>
-                ))}
-              </div>
-
-              {winningNumbers.length > 0 && (
-                <div className="lottery-results">
-                  <div className="winning-numbers-display">
-                    <p>Winning Sectors:</p>
-                    <div className="winning-nums">
-                      {winningNumbers.map(n => (
-                        <span
-                          key={n}
-                          className={`winning-num ${lotteryNumbers.includes(n) ? 'matched' : ''}`}
-                        >
-                          {n}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                  <div className={`lottery-result-text ${lotteryMatches && lotteryMatches > 0 ? 'winner' : 'loser'}`}>
-                    {isJackpot ? (
-                      <div className="jackpot-win">🎉 JACKPOT! 🎉</div>
-                    ) : lotteryMatches && lotteryMatches > 0 ? (
-                      `${lotteryMatches} Match${lotteryMatches > 1 ? 'es' : ''}! +${formatCredits(lastWin)}!`
-                    ) : (
-                      `No matches. Lost ${formatCredits(betAmount)}`
-                    )}
-                  </div>
-                </div>
-              )}
-
-              <div className="lottery-controls">
-                <div className="bet-selector lottery-bet">
-                  <label>Ticket Price:</label>
-                  <div className="bet-buttons">
-                    {[100, 250, 500, 1000, 2500].map(amount => (
-                      <button
-                        key={amount}
-                        className={`bet-btn ${betAmount === amount ? 'selected' : ''}`}
-                        onClick={() => setBetAmount(amount)}
-                        disabled={isLotteryPlaying}
-                      >
-                        {amount}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <button
-                  className="buy-ticket-btn"
-                  onClick={playLottery}
-                  disabled={displayCredits < betAmount || lotteryNumbers.length !== 4 || isLotteryPlaying}
-                >
-                  {isLotteryPlaying ? 'Drawing...' : 'Buy Ticket & Draw'}
-                </button>
-              </div>
-
-              <button
-                className="clear-selection-btn"
-                onClick={() => {
-                  setLotteryNumbers([]);
-                  setWinningNumbers([]);
-                  setLotteryMatches(null);
-                  setLastWin(null);
-                }}
-                disabled={isLotteryPlaying}
-              >
-                Clear Selection
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-      <BlackMarketButton />
-    </div>
-  );
-
-  const renderShipyard = () => {
-    const currentShipType = normalizeShipType(shipData?.type);
-
-    return (
-      <div className="venue-container shipyard">
-        <div className="venue-header">
-          <button className="back-button" onClick={() => setActiveVenue('hub')}>
-            ← Back to Hub
-          </button>
-          <h2>🛠️ Shipyard</h2>
-        </div>
-        <div className="venue-content-area">
-          <div className="shipyard-sections">
-            <div className="shipyard-section">
-              <h3>🏗️ Construction Slips</h3>
-              {tradedockTier ? (
-                <>
-                  <p className="section-description">
-                    This Tier-{tradedockTier} TradeDock runs full construction slips. Ship orders and build tracking live in the Construction venue.
-                  </p>
-                  <button className="action-button" onClick={() => setActiveVenue('construction')}>
-                    Open Construction Venue
-                  </button>
-                </>
-              ) : (
-                <>
-                  <p className="section-description">
-                    Slip construction — coming soon. Custom ship building is not yet available at this facility.
-                  </p>
-                  <button className="action-button" disabled>Reserve Dock Slip</button>
-                </>
-              )}
-            </div>
-
-            {/* WO-SM-5 (reachability gate-fix): the slot-grid module UI lives here
-                in the ACTIVE Shipyard venue (the venue card already advertises
-                "Ship Customization"). It was previously mounted only in the legacy
-                .service-card "Ship Upgrades" overlay, which the venue-card hub no
-                longer renders — so the grid was unreachable in the live UI. */}
-            {shipData && (
-              <div className="shipyard-section">
-                <h3>🔧 Ship Customization</h3>
-                <p className="section-description">
-                  Fit modules into your hull's slot grid — supercharged slots, class locks, and salvage on removal.
-                </p>
-                <ModuleGridInterface
-                  ship={{ id: shipData.id }}
-                  playerCredits={displayCredits}
-                  onChanged={() => { refreshPlayerState(); fetchShipData(); }}
-                />
-              </div>
-            )}
-
-            <div className="shipyard-section">
-              <h3>🚀 Ship Catalog</h3>
-              <p className="section-description">Browse and purchase pre-fabricated vessels</p>
-
-              {shipPurchaseSuccess && (
-                <div className="genesis-success-message">
-                  <span className="success-icon">✅</span>
-                  {shipPurchaseSuccess}
-                </div>
-              )}
-              {shipPurchaseError && !confirmShip && (
-                <div className="genesis-error-message">
-                  <span className="error-icon">❌</span>
-                  {shipPurchaseError}
-                </div>
-              )}
-
-              {shipCatalogLoading && !shipCatalog && (
-                <div className="catalog-loading">Accessing shipyard registry...</div>
-              )}
-              {shipCatalogError && !shipCatalogLoading && (
-                <div className="genesis-error-message">
-                  <span className="error-icon">❌</span>
-                  {shipCatalogError}
-                  <button className="action-button" onClick={fetchShipCatalog}>Retry</button>
-                </div>
-              )}
-              {!shipCatalogError && shipCatalog && (
-                <div className="ship-catalog">
-                  {shipCatalog.map(ship => {
-                    const isCurrent = currentShipType !== '' && normalizeShipType(ship.type) === currentShipType;
-                    return (
-                      <div
-                        key={ship.type}
-                        className={`ship-card${!ship.purchasable ? ' unavailable' : ''}${isCurrent ? ' current-ship' : ''}`}
-                      >
-                        <div className="ship-info">
-                          <span className="ship-name">
-                            {ship.name}
-                            {isCurrent && <span className="current-ship-badge">YOUR SHIP</span>}
-                          </span>
-                          <div className="ship-stats">
-                            <span title="Cargo holds">📦 {ship.max_cargo}</span>
-                            <span title="Speed">⚡ {ship.speed}</span>
-                            <span title="Drone capacity">🤖 {ship.max_drones}</span>
-                            <span title="Shield capacity">🛡️ {ship.max_shields}</span>
-                            <span title="Hull points">🔩 {ship.hull_points}</span>
-                          </div>
-                        </div>
-                        {ship.purchasable ? (
-                          <>
-                            <div className="ship-price">{formatCredits(ship.base_cost)}</div>
-                            <button
-                              className="buy-ship-btn"
-                              onClick={() => {
-                                setConfirmShip(ship);
-                                setNewShipName('');
-                                setShipPurchaseError(null);
-                                setShipPurchaseSuccess(null);
-                              }}
-                              disabled={shipPurchasing || displayCredits < ship.base_cost}
-                              title={displayCredits < ship.base_cost ? 'Insufficient credits' : undefined}
-                            >
-                              Purchase
-                            </button>
-                          </>
-                        ) : (
-                          <div className="ship-unavailable-reason">
-                            {ship.reason || 'Not available for purchase'}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                  {shipCatalog.length === 0 && (
-                    <p className="section-description">No vessels currently listed at this shipyard.</p>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {confirmShip && (
-            <div
-              className="ship-confirm-overlay"
-              onClick={() => !shipPurchasing && setConfirmShip(null)}
-            >
-              <div className="ship-confirm-panel" onClick={e => e.stopPropagation()}>
-                <h3>Confirm Purchase — {confirmShip.name}</h3>
-                {confirmShip.description && (
-                  <p className="section-description">{confirmShip.description}</p>
-                )}
-                <label className="ship-name-label">
-                  Ship name (optional)
-                  <input
-                    type="text"
-                    value={newShipName}
-                    onChange={e => setNewShipName(e.target.value)}
-                    placeholder={confirmShip.name}
-                    maxLength={50}
-                    disabled={shipPurchasing}
-                  />
-                </label>
-                <div className="confirm-cost-rows">
-                  <div className="confirm-cost-row">
-                    <span>Cost</span>
-                    <span>{formatCredits(confirmShip.base_cost)}</span>
-                  </div>
-                  <div className="confirm-cost-row">
-                    <span>Your credits</span>
-                    <span>{formatCredits(displayCredits)}</span>
-                  </div>
-                  <div className={`confirm-cost-row balance${displayCredits - confirmShip.base_cost < 0 ? ' negative' : ''}`}>
-                    <span>After purchase</span>
-                    <span>{formatCredits(displayCredits - confirmShip.base_cost)}</span>
-                  </div>
-                </div>
-                {shipPurchaseError && (
-                  <div className="genesis-error-message">
-                    <span className="error-icon">❌</span>
-                    {shipPurchaseError}
-                  </div>
-                )}
-                <div className="confirm-actions">
-                  <button
-                    className="action-button"
-                    onClick={() => setConfirmShip(null)}
-                    disabled={shipPurchasing}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    className="action-button primary"
-                    onClick={() => purchaseShip(confirmShip, newShipName)}
-                    disabled={shipPurchasing || displayCredits < confirmShip.base_cost}
-                  >
-                    {shipPurchasing ? 'Processing...' : 'Confirm Purchase'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  };
-
-  const renderGenesisStore = () => {
-    const canHoldGenesis = maxGenesisDevices > 0;
-    const hasCapacity = currentGenesisDevices < maxGenesisDevices;
-
-    return (
-      <div className="venue-container genesis">
-        <div className="venue-header">
-          <button className="back-button" onClick={() => setActiveVenue('hub')}>
-            ← Back to Hub
-          </button>
-          <h2>🌍 Genesis Store</h2>
-        </div>
-        <div className="venue-content-area">
-          <div className="genesis-intro">
-            <div className="genesis-banner">
-              <div className="banner-icon">🌍</div>
-              <div className="banner-text">
-                <h3>Create New Worlds</h3>
-                <p>Genesis Devices are advanced terraforming technology that allow you to create new planets in empty sectors.</p>
-              </div>
-            </div>
-          </div>
-
-          {/* Ship Genesis Capacity Display */}
-          <div className={`genesis-ship-status ${canHoldGenesis ? 'capable' : 'incapable'}`}>
-            <div className="ship-genesis-header">
-              <span className="ship-icon">🚀</span>
-              <div className="ship-genesis-info">
-                <h4>Your Ship: {shipData?.name || 'Unknown'}</h4>
-                <span className="ship-type">{shipData?.type || 'Unknown Type'}</span>
-              </div>
-            </div>
-            {canHoldGenesis ? (
-              <div className="genesis-capacity">
-                <div className="capacity-display">
-                  <div className="genesis-orbs">
-                    {Array.from({ length: maxGenesisDevices }, (_, i) => (
-                      <div
-                        key={i}
-                        className={`genesis-orb ${i < currentGenesisDevices ? 'filled' : 'empty'}`}
-                        title={i < currentGenesisDevices ? 'Genesis Device Loaded' : 'Empty Slot'}
-                      >
-                        {i < currentGenesisDevices ? '🌍' : '⭕'}
-                      </div>
-                    ))}
-                  </div>
-                  <div className="capacity-text">
-                    <span className="count">{currentGenesisDevices} / {maxGenesisDevices}</span>
-                    <span className="label">Genesis Devices</span>
-                  </div>
-                </div>
-                {currentGenesisDevices > 0 && (
-                  <div className="genesis-power-indicator">
-                    <span className="power-glow">✨</span>
-                    <span className="power-text">World-Creating Power Ready</span>
-                    <span className="power-glow">✨</span>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="genesis-incapable-warning">
-                <span className="warning-icon">⚠️</span>
-                <span>This ship cannot carry Genesis Devices. You need a Cargo Hauler, Defender, Colony Ship, Carrier, or Warp Jumper.</span>
-              </div>
-            )}
-          </div>
-
-          {/* Success/Error Messages */}
-          {genesisSuccess && (
-            <div className="genesis-success-message">
-              <span className="success-icon">✅</span>
-              {genesisSuccess}
-            </div>
-          )}
-          {genesisError && (
-            <div className="genesis-error-message">
-              <span className="error-icon">❌</span>
-              {genesisError}
-            </div>
-          )}
-
-          <div className="genesis-devices-grid single">
-            <div className="genesis-device-card device">
-              <div className="device-header">
-                <span className="device-tier">Genesis Device</span>
-                <div className="device-icon">🌍</div>
-              </div>
-              <div className="device-details">
-                <h3>Genesis Device</h3>
-                <ul className="device-specs">
-                  <li>🔩 Stored on your ship; fuse 1 (Basic), 3 (Enhanced), or 1 + your Colony Ship (Advanced)</li>
-                  <li>🪐 Tier &amp; biome are chosen when you deploy — not now</li>
-                  <li>💳 Sequence cost (25k / 75k / 250k) is paid at deploy</li>
-                  <li>📅 {genesisWeeklyRemaining !== null ? `${genesisWeeklyRemaining} of ${genesisWeeklyLimit} acquisitions left this week` : `Limited to ${genesisWeeklyLimit} per week`}</li>
-                </ul>
-              </div>
-              <div className="device-footer">
-                <div className="device-price">{formatCredits(GENESIS_DEVICE_PRICE)}</div>
-                <button
-                  className="purchase-device-btn"
-                  onClick={() => purchaseGenesisDevice()}
-                  disabled={genesisPurchasing || displayCredits < GENESIS_DEVICE_PRICE || !canHoldGenesis || !hasCapacity || genesisWeeklyRemaining === 0}
-                >
-                  {genesisPurchasing ? 'Acquiring…'
-                    : !canHoldGenesis ? 'Ship Incompatible'
-                    : !hasCapacity ? 'Ship At Capacity'
-                    : genesisWeeklyRemaining === 0 ? 'Weekly Limit Reached'
-                    : 'Acquire Device'}
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div className="genesis-info">
-            <h4>📋 How it works</h4>
-            <ul>
-              <li>Acquire devices here (max {genesisWeeklyLimit}/week), then fly to an <strong>empty sector</strong> to deploy.</li>
-              <li>Choose the tier at deploy: <strong>Basic</strong> (1 device), <strong>Enhanced</strong> (3 devices), or <strong>Advanced</strong> (1 device + sacrifice a Colony Ship for an instant colony).</li>
-              <li>Carry capacity depends on your hull (Cargo Hauler 2, Defender 3, Colony Ship / Carrier 5, Warp Jumper 1).</li>
-            </ul>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  const renderArmoryItemCard = (item: ArmoryCatalogItem) => {
-    const qty = armoryQuantities[item.item] ?? 1;
-    const totalCost = item.price * qty;
-    const loadoutKey = loadoutKeyForItem(item.item);
-    // Gate on the station's services map via the item's service key —
-    // the catalog doesn't send an 'available' flag
-    const gated = item.available === false ||
-      (item.service ? !stationServices[item.service] && !currentStation?.is_spacedock : false);
-
-    // Determine why purchase is blocked, if anything
-    let blockReason: string | null = null;
-    if (gated) {
-      blockReason = item.reason || 'Service not available at this station';
-    } else if (armoryLoadout && loadoutKey) {
-      const cap = armoryLoadout.caps[loadoutKey];
-      const current = armoryLoadout[loadoutKey];
-      if (current >= cap) {
-        blockReason = 'At capacity';
-      } else if (current + qty > cap) {
-        blockReason = `Exceeds capacity — ${cap - current} slot${cap - current === 1 ? '' : 's'} free`;
-      }
-    }
-    if (!blockReason && displayCredits < totalCost) {
-      blockReason = 'Insufficient credits';
-    }
-
-    const cardClass = ARMORY_CARD_CLASS[item.item];
-    const isBuying = armoryBuying === item.item;
-
-    return (
-      <div
-        key={item.item}
-        className={`equipment-card${cardClass ? ` ${cardClass}` : ''}${gated ? ' unavailable' : ''}`}
-      >
-        <div className="eq-icon">{ARMORY_ICONS[item.item] || '📦'}</div>
-        <div className="eq-info">
-          <h4>{item.name}</h4>
-          {item.description && <p>{item.description}</p>}
-          {gated && (
-            <div className="eq-unavailable-reason">
-              {item.reason || 'Service not available at this station'}
-            </div>
-          )}
-        </div>
-        <div className="eq-purchase">
-          <span className="eq-price">{formatCredits(item.price)}</span>
-          <div className="qty-controls">
-            <input
-              type="number"
-              min={1}
-              max={100}
-              value={qty}
-              onChange={e => {
-                const next = Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 1));
-                setArmoryQuantities(prev => ({ ...prev, [item.item]: next }));
-              }}
-              disabled={gated || Boolean(armoryBuying)}
-              aria-label={`${item.name} quantity`}
-            />
-            <button
-              className="buy-btn"
-              onClick={() => purchaseArmoryItem(item, qty)}
-              disabled={Boolean(armoryBuying) || Boolean(blockReason)}
-              title={blockReason ?? undefined}
-            >
-              {isBuying ? '...' : 'Buy'}
-            </button>
-          </div>
-          {qty > 1 && !gated && (
-            <span className="eq-total">Total: {formatCredits(totalCost)}</span>
-          )}
-        </div>
-      </div>
-    );
-  };
-
-  const renderArmory = () => {
-    const items = armoryCatalog ?? [];
-    const droneItems = items.filter(i => i.item.includes('drone'));
-    const mineItems = items.filter(i => !i.item.includes('drone') && i.item.includes('mine'));
-    const otherItems = items.filter(i => !i.item.includes('drone') && !i.item.includes('mine'));
-
-    return (
-      <div className="venue-container armory">
-        <div className="venue-header">
-          <button className="back-button" onClick={() => setActiveVenue('hub')}>
-            ← Back to Hub
-          </button>
-          <h2>⚔️ Armory</h2>
-        </div>
-        <div className="venue-content-area">
-          {armorySuccess && (
-            <div className="genesis-success-message">
-              <span className="success-icon">✅</span>
-              {armorySuccess}
-            </div>
-          )}
-          {armoryError && (
-            <div className="genesis-error-message">
-              <span className="error-icon">❌</span>
-              {armoryError}
-            </div>
-          )}
-
-          {armoryLoading && !armoryCatalog && (
-            <div className="catalog-loading">Unlocking the weapons lockers...</div>
-          )}
-          {armoryCatalogError && !armoryLoading && (
-            <div className="genesis-error-message">
-              <span className="error-icon">❌</span>
-              {armoryCatalogError}
-              <button className="action-button" onClick={fetchArmoryCatalog}>Retry</button>
-            </div>
-          )}
-
-          {!armoryCatalogError && armoryCatalog && (
-            <div className="armory-categories">
-              {droneItems.length > 0 && (
-                <div className="armory-section">
-                  <h3>🤖 Combat Drones</h3>
-                  <div className="equipment-grid">
-                    {droneItems.map(renderArmoryItemCard)}
-                  </div>
-                </div>
-              )}
-
-              {mineItems.length > 0 && (
-                <div className="armory-section">
-                  <h3>💣 Tactical Mines</h3>
-                  <div className="equipment-grid">
-                    {mineItems.map(renderArmoryItemCard)}
-                  </div>
-                </div>
-              )}
-
-              {otherItems.length > 0 && (
-                <div className="armory-section">
-                  <h3>🎯 Tactical Systems</h3>
-                  <div className="equipment-grid">
-                    {otherItems.map(renderArmoryItemCard)}
-                  </div>
-                </div>
-              )}
-
-              {items.length === 0 && (
-                <p className="section-description">The armory shelves are empty at this station.</p>
-              )}
-            </div>
-          )}
-
-          <div className="current-loadout">
-            <h4>📊 Current Ship Loadout</h4>
-            <div className="loadout-stats">
-              <div className="loadout-item">
-                <span className="item-label">Attack Drones</span>
-                <span className="item-value">
-                  {armoryLoadout
-                    ? `${armoryLoadout.attack_drones} / ${armoryLoadout.caps.attack_drones}`
-                    : (playerState?.attack_drones ?? 0)}
-                </span>
-              </div>
-              <div className="loadout-item">
-                <span className="item-label">Defense Drones</span>
-                <span className="item-value">
-                  {armoryLoadout
-                    ? `${armoryLoadout.defense_drones} / ${armoryLoadout.caps.defense_drones}`
-                    : (playerState?.defense_drones ?? 0)}
-                </span>
-              </div>
-              <div className="loadout-item">
-                <span className="item-label">Mines</span>
-                <span className="item-value">
-                  {armoryLoadout
-                    ? `${armoryLoadout.mines} / ${armoryLoadout.caps.mines}`
-                    : '—'}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-        <BlackMarketButton />
-      </div>
-    );
-  };
-
-  const renderServices = () => {
-    // Read real hull/shield condition off the current ship. The combat dict
-    // mirrors the server's ShipResponse; values are plain numbers there.
-    const combat = shipData?.combat ?? null;
-    const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
-    const hull = num(combat?.hull);
-    const maxHull = num(combat?.max_hull);
-    const shields = num(combat?.shields);
-    const maxShields = num(combat?.max_shields);
-
-    const hullPct = hull !== null && maxHull ? Math.max(0, Math.min(100, (hull / maxHull) * 100)) : null;
-    const shieldPct = shields !== null && maxShields ? Math.max(0, Math.min(100, (shields / maxShields) * 100)) : null;
-
-    // Mirror the server's canon pricing (player.py repair endpoint):
-    // Basic repair = 5% of ship value per +10% combined hull+shield rating
-    const totalMax = (maxHull ?? 0) + (maxShields ?? 0);
-    const deficit = ((maxHull ?? 0) - (hull ?? 0)) + ((maxShields ?? 0) - (shields ?? 0));
-    const deficitPct = totalMax > 0 ? Math.max(0, (deficit / totalMax) * 100) : 0;
-    const repairCost = totalMax > 0
-      ? Math.round((shipData?.current_value ?? 0) * 0.05 * (deficitPct / 10))
-      : null;
-    const atFullCondition = totalMax > 0 && deficitPct <= 0;
-
-    // Cargo: "used" field when present, else sum commodity values while
-    // excluding metadata keys (same convention as ShipSelector)
-    const cargo = shipData?.cargo ?? {};
-    const metadataKeys = ['capacity', 'used', 'contents'];
-    const cargoUsed = typeof cargo.used === 'number'
-      ? cargo.used
-      : Object.entries(cargo)
-          .filter(([key, val]) => !metadataKeys.includes(key) && typeof val === 'number')
-          .reduce((sum, [, val]) => sum + val, 0);
-    const cargoCapacity = shipData?.cargo_capacity ?? 0;
-    const cargoPct = cargoCapacity > 0 ? Math.max(0, Math.min(100, (cargoUsed / cargoCapacity) * 100)) : 0;
-
-    // The repair endpoint requires the docked station to offer ship_repair
-    const repairOffered = Boolean(stationServices.ship_repair);
-
-    let repairBlockReason: string | null = null;
-    if (!repairOffered) {
-      repairBlockReason = 'This station does not offer hull repair';
-    } else if (!shipData) {
-      repairBlockReason = 'Reading ship telemetry...';
-    } else if (totalMax <= 0) {
-      // Escape pods / malformed combat dicts have no repairable systems;
-      // without this branch the button enables with a "—" cost and the
-      // click can only ever earn the server's 400.
-      repairBlockReason = 'Ship has no repairable systems';
-    } else if (atFullCondition) {
-      repairBlockReason = 'Ship is at full condition';
-    } else if (repairCost !== null && displayCredits < repairCost) {
-      repairBlockReason = 'Insufficient credits';
-    }
-
-    return (
-      <div className="venue-container services">
-        <div className="venue-header">
-          <button className="back-button" onClick={() => setActiveVenue('hub')}>
-            ← Back to Hub
-          </button>
-          <h2>🔧 Ship Services</h2>
-        </div>
-        <div className="venue-content-area">
-          {repairSuccess && (
-            <div className="genesis-success-message">
-              <span className="success-icon">✅</span>
-              {repairSuccess}
-            </div>
-          )}
-          {repairError && (
-            <div className="genesis-error-message">
-              <span className="error-icon">❌</span>
-              {repairError}
-            </div>
-          )}
-
-          <div className="services-grid">
-            <div className="service-card">
-              <div className="service-icon">🔧</div>
-              <h3>Ship Repair</h3>
-              <p>{shipData ? `Restore ${shipData.name}'s hull and shield integrity` : 'Restore hull and shield integrity'}</p>
-              <div className="service-status">
-                <div className="status-bar">
-                  <span className="bar-label">Hull</span>
-                  <div className="bar-track">
-                    <div className="bar-fill" style={{ width: `${hullPct ?? 0}%` }}></div>
-                  </div>
-                  <span className="bar-value">{hullPct !== null ? `${Math.round(hullPct)}%` : '—'}</span>
-                </div>
-                <div className="status-bar">
-                  <span className="bar-label">Shields</span>
-                  <div className="bar-track">
-                    <div className="bar-fill shield" style={{ width: `${shieldPct ?? 0}%` }}></div>
-                  </div>
-                  <span className="bar-value">{shieldPct !== null ? `${Math.round(shieldPct)}%` : '—'}</span>
-                </div>
-              </div>
-              <div className="service-action">
-                <span className="repair-cost">
-                  {repairCost === null
-                    ? '—'
-                    : atFullCondition
-                      ? 'No repairs needed'
-                      : formatCredits(repairCost)}
-                </span>
-                <button
-                  className="service-btn"
-                  onClick={repairShip}
-                  disabled={repairBusy || Boolean(repairBlockReason)}
-                  title={repairBlockReason ?? undefined}
-                >
-                  {repairBusy ? 'Repairing...' : 'Full Repair'}
-                </button>
-              </div>
-            </div>
-
-            <div className="service-card">
-              <div className="service-icon">🛠️</div>
-              <h3>Maintenance</h3>
-              <p>{shipData ? `${shipData.name}'s hull condition & servicing` : 'Hull condition & servicing'}</p>
-              <div className="service-status">
-                Ships degrade over time; low condition saps combat effectiveness. Service to restore it.
-              </div>
-              <div className="service-action">
-                <button className="service-btn" onClick={() => setShowMaintenance(true)} disabled={!shipData}>
-                  Manage Maintenance
-                </button>
-              </div>
-            </div>
-
-            <div className="service-card">
-              <div className="service-icon">📦</div>
-              <h3>Cargo Hold</h3>
-              <p>Current hold loading for {shipData?.name ?? 'your ship'}</p>
-              <div className="service-status">
-                <div className="status-bar">
-                  <span className="bar-label">Cargo</span>
-                  <div className="bar-track">
-                    <div className="bar-fill" style={{ width: `${cargoPct}%` }}></div>
-                  </div>
-                  <span className="bar-value">{cargoCapacity > 0 ? `${Math.round(cargoPct)}%` : '—'}</span>
-                </div>
-              </div>
-              <div className="cargo-info">
-                <span>{cargoUsed.toLocaleString()} / {cargoCapacity.toLocaleString()} units</span>
-              </div>
-            </div>
-
-            {stationServices.ship_upgrades ? (
-              <div className="service-card">
-                <div className="service-icon">📈</div>
-                <h3>Ship Upgrades</h3>
-                <p>{shipData ? `Refit ${shipData.name}: hull, shield, cargo & equipment` : 'Hull, shield, and cargo refits'}</p>
-                <div className="service-status">
-                  Spend credits to raise ship subsystem levels or fit specialist equipment.
-                </div>
-                <div className="service-action">
-                  <button
-                    className="service-btn"
-                    onClick={() => setShowUpgrades(true)}
-                    disabled={!shipData}
-                  >
-                    Manage Upgrades
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="service-card unavailable">
-                <div className="service-icon">📈</div>
-                <h3>Ship Upgrades</h3>
-                <p>Hull, shield, and cargo refits</p>
-                <div className="service-unavailable-note">
-                  Upgrade bays are not operational at this station. New hulls
-                  can be commissioned at the Shipyard.
-                </div>
-                <div className="service-action">
-                  <span className="service-unavailable-badge">NOT AVAILABLE</span>
-                </div>
-              </div>
-            )}
-
-            {stationServices.insurance ? (
-              <div className="service-card">
-                <div className="service-icon">📜</div>
-                <h3>Hull Insurance</h3>
-                <p>{shipData ? `Insure ${shipData.name} against destruction` : 'Insure your ship against destruction'}</p>
-                <div className="service-status">
-                  Pay a one-time premium; the registered owner is paid out if the hull is destroyed.
-                </div>
-                <div className="service-action">
-                  <button
-                    className="service-btn"
-                    onClick={() => setShowInsurance(true)}
-                    disabled={!shipData}
-                  >
-                    Manage Insurance
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="service-card unavailable">
-                <div className="service-icon">📜</div>
-                <h3>Hull Insurance</h3>
-                <p>Protection against ship destruction</p>
-                <div className="service-unavailable-note">
-                  No underwriter currently operates at this station.
-                </div>
-                <div className="service-action">
-                  <span className="service-unavailable-badge">NOT AVAILABLE</span>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {showInsurance && shipData && (
-            <div className="insurance-overlay" onClick={() => setShowInsurance(false)}>
-              <div className="insurance-overlay-panel" onClick={(e) => e.stopPropagation()}>
-                <InsuranceManager
-                  shipId={shipData.id}
-                  playerCredits={displayCredits}
-                  onChanged={() => { refreshPlayerState(); fetchShipData(); }}
-                  onClose={() => setShowInsurance(false)}
-                />
-              </div>
-            </div>
-          )}
-
-          {showMaintenance && shipData && (
-            <div className="maintenance-overlay" onClick={() => setShowMaintenance(false)}>
-              <div className="maintenance-overlay-panel" onClick={(e) => e.stopPropagation()}>
-                <MaintenanceManager
-                  shipId={shipData.id}
-                  playerCredits={displayCredits}
-                  onChanged={() => { refreshPlayerState(); fetchShipData(); }}
-                  onClose={() => setShowMaintenance(false)}
-                />
-              </div>
-            </div>
-          )}
-
-          {showUpgrades && shipData && (
-            <div
-              className="insurance-overlay"
-              onClick={() => { setShowUpgrades(false); refreshPlayerState(); fetchShipData(); }}
-            >
-              <div className="insurance-overlay-panel" style={{ position: 'relative' }} onClick={(e) => e.stopPropagation()}>
-                <button
-                  className="ins-close"
-                  style={{ position: 'absolute', top: 12, right: 12, zIndex: 1 }}
-                  onClick={() => { setShowUpgrades(false); refreshPlayerState(); fetchShipData(); }}
-                  aria-label="Close ship upgrades"
-                >
-                  ✕
-                </button>
-                <ModuleGridInterface
-                  ship={{ id: shipData.id }}
-                  playerCredits={displayCredits}
-                  onChanged={() => { refreshPlayerState(); fetchShipData(); }}
-                />
-              </div>
-            </div>
-          )}
-        </div>
-        <BlackMarketButton />
-      </div>
-    );
-  };
-
-  const renderMiningVenue = () => {
-    const hasShip = Boolean(shipData?.id);
-    return (
-      <div className="venue-container mining">
-        <div className="venue-header">
-          <button className="back-button" onClick={() => setActiveVenue('hub')}>
-            ← Back to Hub
-          </button>
-          <h2>⛏️ Astral Mining Consortium</h2>
-        </div>
-        <div className="venue-content-area">
-          <div className="services-grid">
-            <div className="service-card">
-              <div className="service-icon">📜</div>
-              <h3>Claim License</h3>
-              <p>File a 24-hour Consortium claim for this sector's asteroid field</p>
-              <div className="service-status">
-                A claim license authorises legal harvesting in an asteroid-field
-                sector. The fee scales with the field's richness; renewing an
-                active claim costs less than a fresh filing.
-              </div>
-              {licenseSuccess && (
-                <div className="genesis-success-message">
-                  <span className="success-icon">✅</span>
-                  {licenseSuccess}
-                </div>
-              )}
-              {licenseError && (
-                <div className="genesis-error-message">
-                  <span className="error-icon">❌</span>
-                  {licenseError}
-                </div>
-              )}
-              <div className="service-action">
-                <button
-                  className="service-btn"
-                  onClick={purchaseClaimLicense}
-                  disabled={licenseBusy || !hasShip}
-                  title={!hasShip ? 'No active ship' : undefined}
-                >
-                  {licenseBusy ? 'Filing...' : 'Purchase / Renew License'}
-                </button>
-              </div>
-            </div>
-
-            <div className="service-card">
-              <div className="service-icon">🔆</div>
-              <h3>Mining Laser Refit</h3>
-              <p>Upgrade your installed Mining Laser to the next yield tier</p>
-              <div className="service-status">
-                A higher Mining Laser level raises ore yield, the precious-metals
-                cap, and the quantum-shard trace drop. Requires a Mining Laser
-                already fitted to your ship.
-              </div>
-              {laserSuccess && (
-                <div className="genesis-success-message">
-                  <span className="success-icon">✅</span>
-                  {laserSuccess}
-                </div>
-              )}
-              {laserError && (
-                <div className="genesis-error-message">
-                  <span className="error-icon">❌</span>
-                  {laserError}
-                </div>
-              )}
-              <div className="service-action">
-                <button
-                  className="service-btn"
-                  onClick={upgradeMiningLaser}
-                  disabled={laserBusy || !hasShip}
-                  title={!hasShip ? 'No active ship' : undefined}
-                >
-                  {laserBusy ? 'Refitting...' : 'Upgrade Mining Laser'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-        <BlackMarketButton />
-      </div>
-    );
-  };
-
-  const renderTrading = () => (
-    <div className="venue-container trading">
-      <div className="venue-header">
-        <button className="back-button" onClick={() => setActiveVenue('hub')}>
-          ← Back to Hub
-        </button>
-        <h2>🏪 Trading Hub</h2>
-      </div>
-      <div className="venue-content-area trading-venue">
-        <TradingInterface onClose={() => {}} />
-      </div>
-      <BlackMarketButton />
-    </div>
-  );
-
   // Render appropriate venue
   const renderActiveVenue = () => {
     switch (activeVenue) {
       case 'hub':
         return renderHub();
       case 'trading':
-        return renderTrading();
+        return (
+          <TradingVenue
+            onBack={() => setActiveVenue('hub')}
+            blackMarketButton={<BlackMarketButton />}
+          />
+        );
       case 'shipyard':
-        return renderShipyard();
+        return (
+          <ShipyardVenue
+            shipId={shipData?.id}
+            shipType={shipData?.type}
+            tradedockTier={tradedockTier}
+            displayCredits={displayCredits}
+            refreshPlayerState={refreshPlayerState}
+            fetchShipData={fetchShipData}
+            shipPurchaseSuccess={shipPurchaseSuccess}
+            shipPurchaseError={shipPurchaseError}
+            shipCatalogLoading={shipCatalogLoading}
+            shipCatalog={shipCatalog}
+            shipCatalogError={shipCatalogError}
+            fetchShipCatalog={fetchShipCatalog}
+            confirmShip={confirmShip}
+            setConfirmShip={setConfirmShip}
+            newShipName={newShipName}
+            setNewShipName={setNewShipName}
+            shipPurchasing={shipPurchasing}
+            setShipPurchaseError={setShipPurchaseError}
+            setShipPurchaseSuccess={setShipPurchaseSuccess}
+            purchaseShip={purchaseShip}
+            onBack={() => setActiveVenue('hub')}
+            onOpenConstruction={() => setActiveVenue('construction')}
+          />
+        );
       case 'construction':
         // Construction only exists at TradeDock stations — fall back to the
         // hub if the venue is reached without a tiered station docked
@@ -3248,23 +1908,173 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
             onBack={() => setActiveVenue('hub')}
           />
         ) : renderHub();
+      case 'contracts':
+        // The board is scoped to whichever station is currently docked
+        return currentStation ? (
+          <ContractBoardVenue
+            stationId={currentStation.id}
+            stationName={currentStation.name}
+            credits={displayCredits}
+            onCreditsSet={handleCreditsSet}
+            onBack={() => setActiveVenue('hub')}
+          />
+        ) : renderHub();
       case 'genesis':
-        return renderGenesisStore();
+        return (
+          <GenesisVenue
+            shipName={shipData?.name}
+            shipType={shipData?.type}
+            currentGenesisDevices={currentGenesisDevices}
+            maxGenesisDevices={maxGenesisDevices}
+            genesisWeeklyRemaining={genesisWeeklyRemaining}
+            genesisWeeklyLimit={genesisWeeklyLimit}
+            genesisRepGate={genesisRepGate}
+            genesisSuccess={genesisSuccess}
+            genesisError={genesisError}
+            genesisPurchasing={genesisPurchasing}
+            displayCredits={displayCredits}
+            genesisDevicePrice={GENESIS_DEVICE_PRICE}
+            purchaseGenesisDevice={purchaseGenesisDevice}
+            onBack={() => setActiveVenue('hub')}
+          />
+        );
       case 'armory':
-        return renderArmory();
+        return (
+          <ArmoryVenue
+            armoryCatalog={armoryCatalog}
+            armoryLoading={armoryLoading}
+            armoryCatalogError={armoryCatalogError}
+            fetchArmoryCatalog={fetchArmoryCatalog}
+            armoryLoadout={armoryLoadout}
+            armoryQuantities={armoryQuantities}
+            setArmoryQuantities={setArmoryQuantities}
+            armoryBuying={armoryBuying}
+            armoryError={armoryError}
+            armorySuccess={armorySuccess}
+            purchaseArmoryItem={purchaseArmoryItem}
+            displayCredits={displayCredits}
+            stationServices={stationServices}
+            stationIsSpacedock={currentStation?.is_spacedock}
+            playerAttackDrones={playerState?.attack_drones}
+            playerDefenseDrones={playerState?.defense_drones}
+            onBack={() => setActiveVenue('hub')}
+            blackMarketButton={<BlackMarketButton />}
+          />
+        );
       case 'services':
-        return renderServices();
+        return (
+          <ServicesVenue
+            shipData={shipData}
+            displayCredits={displayCredits}
+            stationServices={stationServices}
+            repairSuccess={repairSuccess}
+            repairError={repairError}
+            repairBusy={repairBusy}
+            repairShip={repairShip}
+            showInsurance={showInsurance}
+            setShowInsurance={setShowInsurance}
+            showMaintenance={showMaintenance}
+            setShowMaintenance={setShowMaintenance}
+            showUpgrades={showUpgrades}
+            setShowUpgrades={setShowUpgrades}
+            insuranceTier={insuranceTier}
+            fetchInsuranceStatus={fetchInsuranceStatus}
+            refreshPlayerState={refreshPlayerState}
+            fetchShipData={fetchShipData}
+            onBack={() => setActiveVenue('hub')}
+            blackMarketButton={<BlackMarketButton />}
+          />
+        );
       case 'mining':
-        return renderMiningVenue();
+        return (
+          <MiningVenue
+            shipId={shipData?.id}
+            licenseBusy={licenseBusy}
+            licenseError={licenseError}
+            licenseSuccess={licenseSuccess}
+            purchaseClaimLicense={purchaseClaimLicense}
+            laserBusy={laserBusy}
+            laserError={laserError}
+            laserSuccess={laserSuccess}
+            upgradeMiningLaser={upgradeMiningLaser}
+            onBack={() => setActiveVenue('hub')}
+            blackMarketButton={<BlackMarketButton />}
+          />
+        );
       case 'gambling':
-        return renderGamblingHall();
+        return (
+          <GamblingVenue
+            onBack={() => setActiveVenue('hub')}
+            displayCredits={displayCredits}
+            gamblingError={gamblingError}
+            currentGame={currentGame}
+            setCurrentGame={setCurrentGame}
+            betAmount={betAmount}
+            setBetAmount={setBetAmount}
+            slotReels={slotReels}
+            isSpinning={isSpinning}
+            isJackpot={isJackpot}
+            lastWin={lastWin}
+            setLastWin={setLastWin}
+            spinSlots={spinSlots}
+            diceValues={diceValues}
+            diceBetType={diceBetType}
+            setDiceBetType={setDiceBetType}
+            diceExactBet={diceExactBet}
+            setDiceExactBet={setDiceExactBet}
+            isSupernova={isSupernova}
+            isVoid={isVoid}
+            rollDice={rollDice}
+            blackjackGame={blackjackGame}
+            setBlackjackGame={setBlackjackGame}
+            isBlackjackDealing={isBlackjackDealing}
+            dealBlackjack={dealBlackjack}
+            blackjackAction={blackjackAction}
+            lotteryNumbers={lotteryNumbers}
+            setLotteryNumbers={setLotteryNumbers}
+            winningNumbers={winningNumbers}
+            setWinningNumbers={setWinningNumbers}
+            lotteryMatches={lotteryMatches}
+            setLotteryMatches={setLotteryMatches}
+            isLotteryPlaying={isLotteryPlaying}
+            toggleLotteryNumber={toggleLotteryNumber}
+            playLottery={playLottery}
+            blackMarketButton={<BlackMarketButton />}
+          />
+        );
       default:
         return renderHub();
     }
   };
 
   return (
-    <div className="spacedock-interface">
+    <div className={`spacedock-interface${onUndock ? ' has-station-undock' : ''}`}>
+      {/* Persistent UNDOCK (WO-UI3-STATION-MODE, de-duped by WO-UI3-CONCIERGE):
+          originally the hub's own `renderHub()` rendered a second
+          `.hub-undock-btn` inline in its header — every other venue
+          (shipyard/armory/services/mining/gambling/trading/genesis/
+          construction/portoffice/contracts) had NO undock at all, so
+          STATION-MODE added this single instance in the OUTER FRAME,
+          sibling to `renderActiveVenue()`, reachable from every venue.
+          renderHub's own copy was removed once this one covered the hub
+          view too, so exactly ONE undock button now exists anywhere in
+          this component. Reuses `.hub-undock-btn`'s visual treatment;
+          `.station-face-undock` (spacedock.css) only adds the fixed corner
+          placement. `.has-station-undock` reserves that footprint on the
+          hub/venue headers so the hub's "Services" status chip (and any
+          venue title) never paints under the button. */}
+      {onUndock && (
+        <button
+          type="button"
+          className="hub-undock-btn station-face-undock"
+          onClick={onUndock}
+          disabled={helmBusy}
+          aria-label={helmBusy ? 'Undock unavailable — helm is busy' : 'Undock and launch into space'}
+          title="Undock and launch into space"
+        >
+          {helmBusy ? '🚀 LAUNCHING…' : '🚀 UNDOCK & LAUNCH'}
+        </button>
+      )}
       {renderActiveVenue()}
       {renderBlackMarketModal()}
     </div>
