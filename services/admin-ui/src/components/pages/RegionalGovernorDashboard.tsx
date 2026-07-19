@@ -627,11 +627,11 @@ const RegionalGovernorDashboard: React.FC = () => {
             <div className="overview-grid">
               <div className="stat-card">
                 <h4>Total Population</h4>
-                <div className="stat-value">{formatNumber(stats?.total_population || 0)}</div>
+                <div className="stat-value">{formatNumber(stats?.total_population)}</div>
                 <div className="stat-breakdown">
-                  <div>Citizens: {formatNumber(stats?.citizen_count || 0)}</div>
-                  <div>Residents: {formatNumber(stats?.resident_count || 0)}</div>
-                  <div>Visitors: {formatNumber(stats?.visitor_count || 0)}</div>
+                  <div>Citizens: {formatNumber(stats?.citizen_count)}</div>
+                  <div>Residents: {formatNumber(stats?.resident_count)}</div>
+                  <div>Visitors: {formatNumber(stats?.visitor_count)}</div>
                 </div>
               </div>
 
@@ -640,37 +640,37 @@ const RegionalGovernorDashboard: React.FC = () => {
                 <div className="stat-value">{formatNumber(region.total_sectors)}</div>
                 <div className="stat-label">Sectors</div>
                 <div className="stat-breakdown">
-                  <div>Planets: {formatNumber(stats?.planets_count || 0)}</div>
-                  <div>Ports: {formatNumber(stats?.stations_count || 0)}</div>
+                  <div>Planets: {formatNumber(stats?.planets_count)}</div>
+                  <div>Ports: {formatNumber(stats?.stations_count)}</div>
                 </div>
               </div>
 
               <div className="stat-card">
                 <h4>Economy</h4>
-                <div className="stat-value">{formatCurrency(stats?.total_revenue || 0)}</div>
+                <div className="stat-value">{formatCurrency(stats?.total_revenue)}</div>
                 <div className="stat-label">Total Revenue</div>
                 <div className="stat-breakdown">
-                  <div>Trade Volume (30d): {formatCurrency(stats?.trade_volume_30d || 0)}</div>
+                  <div>Trade Volume (30d): {formatCurrency(stats?.trade_volume_30d)}</div>
                   <div>Tax Rate: {formatPercentage(region.tax_rate)}</div>
                 </div>
               </div>
 
               <div className="stat-card">
                 <h4>Governance</h4>
-                <div className="stat-value">{formatNumber(stats?.active_elections || 0)}</div>
+                <div className="stat-value">{formatNumber(stats?.active_elections)}</div>
                 <div className="stat-label">Active Elections</div>
                 <div className="stat-breakdown">
-                  <div>Pending Policies: {formatNumber(stats?.pending_policies || 0)}</div>
-                  <div>Treaties: {formatNumber(stats?.treaties_count || 0)}</div>
+                  <div>Pending Policies: {formatNumber(stats?.pending_policies)}</div>
+                  <div>Treaties: {formatNumber(stats?.treaties_count)}</div>
                 </div>
               </div>
 
               <div className="stat-card">
                 <h4>Military</h4>
-                <div className="stat-value">{formatNumber(stats?.ships_count || 0)}</div>
+                <div className="stat-value">{formatNumber(stats?.ships_count)}</div>
                 <div className="stat-label">Total Ships</div>
                 <div className="stat-breakdown">
-                  <div>Avg. Reputation: {stats?.average_reputation?.toFixed(1) || '0.0'}</div>
+                  <div>Avg. Reputation: {stats?.average_reputation != null ? stats.average_reputation.toFixed(1) : '—'}</div>
                 </div>
               </div>
 
