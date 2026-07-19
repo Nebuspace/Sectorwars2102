@@ -191,13 +191,15 @@ const WarpTunnelsManager: React.FC = () => {
   const startIndex = (currentPage - 1) * itemsPerPage;
   const paginatedWarpTunnels = filteredWarpTunnels.slice(startIndex, startIndex + itemsPerPage);
 
-  const formatStability = (stability: number): string => {
+  const formatStability = (stability: number | null | undefined): string => {
+    if (stability == null || Number.isNaN(stability)) return '—';
     // Backend returns stability as a 0-1 float; convert to percentage with 1 decimal
     const pct = stability <= 1 ? stability * 100 : stability;
     return `${pct.toFixed(1)}%`;
   };
 
-  const getStabilityColor = (stability: number) => {
+  const getStabilityColor = (stability: number | null | undefined) => {
+    if (stability == null || Number.isNaN(stability)) return 'unknown';
     // Normalise to 0-100 for threshold comparison
     const pct = stability <= 1 ? stability * 100 : stability;
     if (pct >= 90) return 'high';
@@ -310,12 +312,18 @@ const WarpTunnelsManager: React.FC = () => {
                   </div>
                 </td>
                 <td>
-                  <span className={`stability ${getStabilityColor(tunnel.stability || 0)}`}>
-                    {formatStability(tunnel.stability || 0)}
+                  <span className={`stability ${getStabilityColor(tunnel.stability)}`}>
+                    {formatStability(tunnel.stability)}
                   </span>
                 </td>
-                <td>{(tunnel.energy_cost || 0).toLocaleString()} units</td>
-                <td>{tunnel.travel_time || 0} turns</td>
+                <td>
+                  {tunnel.energy_cost != null
+                    ? `${tunnel.energy_cost.toLocaleString()} units`
+                    : '—'}
+                </td>
+                <td>
+                  {tunnel.travel_time != null ? `${tunnel.travel_time} turns` : '—'}
+                </td>
                 <td>
                   <span className={`ship-size ${tunnel.max_ship_size?.toLowerCase() || 'unknown'}`}>
                     {tunnel.max_ship_size || 'Unknown'}
@@ -331,7 +339,11 @@ const WarpTunnelsManager: React.FC = () => {
                     {tunnel.is_active ? '✓ Active' : '✗ Inactive'}
                   </span>
                 </td>
-                <td>{(tunnel.total_traversals || 0).toLocaleString()}</td>
+                <td>
+                  {tunnel.total_traversals != null
+                    ? tunnel.total_traversals.toLocaleString()
+                    : '—'}
+                </td>
                 <td>
                   <div className="action-buttons">
                     <button className="view-btn" type="button" onClick={() => handleViewTunnel(tunnel)}>View</button>
@@ -396,8 +408,8 @@ interface WarpTunnelModalProps {
   onClose: () => void;
   onSave: (data: Partial<WarpTunnel>) => void;
   saving: boolean;
-  formatStability: (s: number) => string;
-  getStabilityColor: (s: number) => string;
+  formatStability: (s: number | null | undefined) => string;
+  getStabilityColor: (s: number | null | undefined) => string;
 }
 
 const WarpTunnelModal: React.FC<WarpTunnelModalProps> = ({ tunnel, mode, onClose, onSave, saving, formatStability, getStabilityColor: _getStabilityColor }) => {
@@ -449,7 +461,7 @@ const WarpTunnelModal: React.FC<WarpTunnelModalProps> = ({ tunnel, mode, onClose
             <div className="form-group">
               <label>Stability</label>
               {isReadOnly ? (
-                <input type="text" value={formatStability(tunnel.stability || 0)} readOnly />
+                <input type="text" value={formatStability(tunnel.stability)} readOnly />
               ) : (
                 <input
                   type="number"
@@ -510,11 +522,17 @@ const WarpTunnelModal: React.FC<WarpTunnelModalProps> = ({ tunnel, mode, onClose
               </div>
               <div className="info-item">
                 <span className="label">Travel Time:</span>
-                <span className="value">{tunnel.travel_time || 0} turns</span>
+                <span className="value">
+                  {tunnel.travel_time != null ? `${tunnel.travel_time} turns` : '—'}
+                </span>
               </div>
               <div className="info-item">
                 <span className="label">Total Traversals:</span>
-                <span className="value">{(tunnel.total_traversals || 0).toLocaleString()}</span>
+                <span className="value">
+                  {tunnel.total_traversals != null
+                    ? tunnel.total_traversals.toLocaleString()
+                    : '—'}
+                </span>
               </div>
               <div className="info-item">
                 <span className="label">Created:</span>
