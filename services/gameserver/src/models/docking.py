@@ -17,14 +17,25 @@ environments — no Alembic migration is needed.
 """
 import uuid
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import CheckConstraint, Column, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 
 from src.core.database import Base
 
 
 class DockingSlipOccupancy(Base):
-    """One row per ship currently holding a transient docking slip."""
+    """One row per ship currently holding a transient docking slip.
+
+    WO-P9-realtime-npc-trader-slips: TRADER-archetype NPCs occupy real
+    slips too (npc-traders.md § Market participation — "traders occupy
+    real docking slips like players"), via the SAME occupancy table the
+    player dock path uses rather than a parallel store, so the existing
+    `occupied = len(occupancies)` count (docking_service.acquire,
+    routes/trading.py's GET .../slips) automatically includes them with
+    no reader-side change. Mirrors the player_id/npc_id dual-nullable-FK
+    pattern already established on MarketTransaction
+    (models/market_transaction.py) for the same NPC-attribution need.
+    """
     __tablename__ = "docking_slip_occupancies"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -34,11 +45,24 @@ class DockingSlipOccupancy(Base):
         nullable=False,
         index=True,
     )
-    # A player occupies at most one slip anywhere in the galaxy.
+    # Exactly one of player_id / npc_id is set per row (enforced by the
+    # ck_docking_slip_occupancy_exactly_one_owner CHECK constraint below).
+    # A player -- or an NPC trader -- occupies at most one slip anywhere
+    # in the galaxy (each FK carries its own UNIQUE constraint; Postgres
+    # UNIQUE permits multiple NULLs, so an NPC-owned row's NULL player_id
+    # never collides with another NPC-owned row's NULL player_id, and
+    # vice versa).
     player_id = Column(
         UUID(as_uuid=True),
         ForeignKey("players.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+    npc_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("npc_characters.id", ondelete="CASCADE"),
+        nullable=True,
         unique=True,
         index=True,
     )
@@ -57,9 +81,17 @@ class DockingSlipOccupancy(Base):
     docked_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     fee_paid = Column(Integer, nullable=False, default=0, server_default="0")
 
+    __table_args__ = (
+        CheckConstraint(
+            "(player_id IS NOT NULL) != (npc_id IS NOT NULL)",
+            name="ck_docking_slip_occupancy_exactly_one_owner",
+        ),
+    )
+
     def __repr__(self) -> str:
+        owner = f"player={self.player_id}" if self.player_id else f"npc={self.npc_id}"
         return (
-            f"<DockingSlipOccupancy station={self.station_id} player={self.player_id} "
+            f"<DockingSlipOccupancy station={self.station_id} {owner} "
             f"class={self.slip_class} docked_at={self.docked_at}>"
         )
 

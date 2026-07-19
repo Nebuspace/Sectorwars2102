@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import relationship
 
 from src.core.database import Base
+from src.core.commodity_economy import base_price as _commodity_base_price
 
 if TYPE_CHECKING:
     from src.models.player import Player
@@ -122,44 +123,59 @@ class Station(Base):
     trade_volume = Column(Integer, nullable=False, default=100)  # Daily trade credits
     market_volatility = Column(Integer, nullable=False, default=50)  # 0-100, price fluctuation factor
     
-    # Commodities - comprehensive trading data matching DATA_DEFS
+    # Commodities - comprehensive trading data matching DATA_DEFS.
+    # base_price/current_price derive from the WO-Y / ADR-0082 single source of
+    # truth (src.core.commodity_economy), the same table bang_import_service,
+    # nexus_generation_service and repair_tradedocks.py now read (WO-ARCH-RES-2
+    # dedup) — so a freshly-ORM-constructed station can no longer drift from
+    # the live economy. quantity/capacity/production_rate/price_variance/
+    # buys/sells are local station-seed shape, not price econ — left as-is.
     commodities = Column(JSONB, nullable=False, default={
         "ore": {
-            "quantity": 1000, "capacity": 5000, "base_price": 15, "current_price": 15,
+            "quantity": 1000, "capacity": 5000,
+            "base_price": _commodity_base_price("ore"), "current_price": _commodity_base_price("ore"),
             "production_rate": 100, "price_variance": 20, "buys": False, "sells": True
         },
         "organics": {
-            "quantity": 800, "capacity": 3000, "base_price": 18, "current_price": 18,
+            "quantity": 800, "capacity": 3000,
+            "base_price": _commodity_base_price("organics"), "current_price": _commodity_base_price("organics"),
             "production_rate": 80, "price_variance": 25, "buys": True, "sells": False
         },
         "equipment": {
-            "quantity": 500, "capacity": 2000, "base_price": 35, "current_price": 35,
+            "quantity": 500, "capacity": 2000,
+            "base_price": _commodity_base_price("equipment"), "current_price": _commodity_base_price("equipment"),
             "production_rate": 50, "price_variance": 30, "buys": True, "sells": True
         },
         "fuel": {
-            "quantity": 1500, "capacity": 4000, "base_price": 12, "current_price": 12,
+            "quantity": 1500, "capacity": 4000,
+            "base_price": _commodity_base_price("fuel"), "current_price": _commodity_base_price("fuel"),
             "production_rate": 120, "price_variance": 15, "buys": False, "sells": True
         },
         "luxury_goods": {
-            "quantity": 200, "capacity": 800, "base_price": 100, "current_price": 100,
+            "quantity": 200, "capacity": 800,
+            "base_price": _commodity_base_price("luxury_goods"), "current_price": _commodity_base_price("luxury_goods"),
             "production_rate": 20, "price_variance": 40, "buys": False, "sells": False
         },
         "gourmet_food": {
-            "quantity": 150, "capacity": 600, "base_price": 80, "current_price": 80,
+            "quantity": 150, "capacity": 600,
+            "base_price": _commodity_base_price("gourmet_food"), "current_price": _commodity_base_price("gourmet_food"),
             "production_rate": 15, "price_variance": 35, "buys": False, "sells": False
         },
         "exotic_technology": {
-            "quantity": 50, "capacity": 200, "base_price": 250, "current_price": 250,
+            "quantity": 50, "capacity": 200,
+            "base_price": _commodity_base_price("exotic_technology"), "current_price": _commodity_base_price("exotic_technology"),
             "production_rate": 5, "price_variance": 50, "buys": False, "sells": False
         },
         "colonists": {
-            "quantity": 100, "capacity": 500, "base_price": 50, "current_price": 50,
+            "quantity": 100, "capacity": 500,
+            "base_price": _commodity_base_price("colonists"), "current_price": _commodity_base_price("colonists"),
             "production_rate": 10, "price_variance": 10, "buys": False, "sells": False
         },
         # 9th commodity per ADR-0062 E-D1 (band 80-180 cr/unit; 130 is midpoint).
         # Bang's content.ts emits 9-commodity wire including precious_metals.
         "precious_metals": {
-            "quantity": 80, "capacity": 400, "base_price": 130, "current_price": 130,
+            "quantity": 80, "capacity": 400,
+            "base_price": _commodity_base_price("precious_metals"), "current_price": _commodity_base_price("precious_metals"),
             "production_rate": 8, "price_variance": 30, "buys": False, "sells": False
         }
     })
@@ -240,7 +256,89 @@ class Station(Base):
         "defensive_fire": 120,       # raw defensive-fire strength per round — heavily attrites the attacker drone swarm
         "point_defense_rating": 30   # extra drones swatted per round by dedicated point-defense (anti-swarm)
     })
-    
+
+    # WO-CMB-PORT-DEF-SEED-1 — class-scaled defense defaults for NEW stations
+    # -------------------------------------------------------------------
+    # Canon (FEATURES/gameplay/combat.md#port-assault, mirrored in
+    # FEATURES/galaxy/sectors.md "Owned port defenses"): port classes 1-5
+    # carry BUILT-IN drones — Class 1: 50, Class 2: 100, Class 3: 200,
+    # Class 4: 300 + auto-turrets, Class 5: 500 + advanced grid. Canon
+    # defines ONLY the drone counts + the two boolean markers ("carry" reads
+    # as already-garrisoned, not just a capacity ceiling, so both
+    # defense_drones AND max_defense_drones are seeded to the canon count).
+    #
+    # Every other magnitude below (hull_armor, shield_pool, shield_regen,
+    # defensive_fire, point_defense_rating, shield_strength) is NO-CANON
+    # (orchestrator-blessed pending). Derived by scaling the EXISTING flat
+    # WO-BP-a baseline above — which already equals the Class-1 canon drone
+    # count (50) — by the same multiplier the canon drone table applies at
+    # each tier (1x / 2x / 4x / 6x / 10x), so the whole defenses blob stays
+    # internally coherent instead of drones scaling while the rest of the
+    # kernel stays flat.
+    #
+    # "advanced grid" (Class 5) is realized through the EXISTING
+    # `defense_grid` boolean — already read by
+    # port_ownership_service._defender_strength and reset by
+    # station_service's destroy/rebuild cycle — rather than a new key: it is
+    # the only "grid" concept Station.defenses carries.
+    #
+    # `patrol_ships` stays 0 at every class: nothing in the codebase seeds a
+    # nonzero Station.defenses.patrol_ships anywhere (it reads everywhere as
+    # an owner-acquired garrison asset assigned AFTER creation, mirroring
+    # `military_contract`, also left False at every class as a
+    # owner-purchased immunity contract) — class-scaling it here would
+    # invent a seeding path canon never describes.
+    #
+    # Classes OUTSIDE the canon 1-5 range — CLASS_0 (regional Capital /
+    # Central Nexus Starport Prime / bang Stardock hub) and the premium
+    # CLASS_6-11 tiers minted post-import — inherit the Class-5 (strongest
+    # defined) profile: canon is silent above Class 5, and these are
+    # hub/premium station types that warrant no less than the top
+    # canon-defined tier. Flagged NO-CANON pending orchestrator/Max ruling.
+    #
+    # Used explicitly by the two station-creation sites
+    # (nexus_generation_service, bang_import_service) — the Column
+    # ``default=`` above is untouched and keeps firing its flat shape for
+    # any other/legacy creation path (equal to the Class-1 profile below).
+    _STATION_DEFENSE_BY_CLASS: Dict[int, Dict[str, Any]] = {
+        1: {"drones": 50,  "hull_armor": 5000,  "shield_pool": 4000,  "shield_regen": 200,  "defensive_fire": 120,  "point_defense_rating": 30,  "shield_strength": 50,  "auto_turrets": False, "defense_grid": False},
+        2: {"drones": 100, "hull_armor": 10000, "shield_pool": 8000,  "shield_regen": 400,  "defensive_fire": 240,  "point_defense_rating": 60,  "shield_strength": 100, "auto_turrets": False, "defense_grid": False},
+        3: {"drones": 200, "hull_armor": 20000, "shield_pool": 16000, "shield_regen": 800,  "defensive_fire": 480,  "point_defense_rating": 120, "shield_strength": 200, "auto_turrets": False, "defense_grid": False},
+        4: {"drones": 300, "hull_armor": 30000, "shield_pool": 24000, "shield_regen": 1200, "defensive_fire": 720,  "point_defense_rating": 180, "shield_strength": 300, "auto_turrets": True,  "defense_grid": False},
+        5: {"drones": 500, "hull_armor": 50000, "shield_pool": 40000, "shield_regen": 2000, "defensive_fire": 1200, "point_defense_rating": 300, "shield_strength": 500, "auto_turrets": True,  "defense_grid": True},
+    }
+
+    @staticmethod
+    def default_defenses_for_class(station_class: "StationClass") -> Dict[str, Any]:
+        """Class-scaled ``Station.defenses`` seed for a NEW station.
+
+        Accepts a :class:`StationClass` (or a raw int class value). Classes
+        1-5 use the canon drone table; every other class value borrows the
+        Class-5 profile (see the block comment above the class-table for the
+        NO-CANON rationale). Returns a fresh dict each call — never a shared
+        reference — so callers can freely persist it per-row.
+        """
+        class_value = (
+            station_class.value if isinstance(station_class, StationClass) else int(station_class)
+        )
+        tier = class_value if 1 <= class_value <= 5 else 5
+        profile = Station._STATION_DEFENSE_BY_CLASS[tier]
+        drones = profile["drones"]
+        return {
+            "defense_drones": drones,
+            "max_defense_drones": drones,
+            "auto_turrets": profile["auto_turrets"],
+            "defense_grid": profile["defense_grid"],
+            "shield_strength": profile["shield_strength"],
+            "patrol_ships": 0,
+            "military_contract": False,
+            "hull_armor": profile["hull_armor"],
+            "shield_pool": profile["shield_pool"],
+            "shield_regen": profile["shield_regen"],
+            "defensive_fire": profile["defensive_fire"],
+            "point_defense_rating": profile["point_defense_rating"],
+        }
+
     # Station protection / security tier (FEATURES/economy/station-protection.md
     # § Security tiers). Carries a security TIER under the "tier" key, one of
     # four ordered levels: none(0) < basic(1) < standard(2) < premium(3). This is

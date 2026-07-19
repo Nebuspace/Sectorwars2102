@@ -85,19 +85,35 @@ class PlayerWarpKnowledge(Base):
     # (warp_layer, warp_id) jointly identify the warp. warp_id is NOT a FK
     # because it polymorphically references either sector_warps or warp_tunnels
     # depending on warp_layer.
+    # WO-SWEEP-WARPLAYER-ENUM: values_callable is REQUIRED on all three enum
+    # columns below. Plain SQLAlchemy Enum(PyEnum) serializes the member NAME
+    # (e.g. "WARP_TUNNELS") by default -- but migration f1a4d7b2c9e3 created
+    # the Postgres enum TYPES from the lowercase VALUES ('sector_warps',
+    # 'warp_tunnels', ...). Without values_callable, every INSERT/UPDATE and
+    # every enum-compared read against a real (values-built) Postgres DB
+    # fails with "invalid input value for enum". A create_all-era dev DB
+    # (name-built) masked this indefinitely -- caught live via a fresh-stage
+    # POST /player/move 500. Python-side member names (WarpLayer.WARP_TUNNELS
+    # etc.) are completely unchanged; every existing call site keeps working.
     warp_layer = Column(
-        Enum(WarpLayer, name="warp_layer"),
+        Enum(WarpLayer, name="warp_layer", values_callable=lambda obj: [e.value for e in obj]),
         nullable=False,
     )
     warp_id = Column(UUID(as_uuid=True), nullable=False)
 
     visibility_state = Column(
-        Enum(WarpVisibilityState, name="warp_visibility_state"),
+        Enum(
+            WarpVisibilityState, name="warp_visibility_state",
+            values_callable=lambda obj: [e.value for e in obj],
+        ),
         nullable=False,
         default=WarpVisibilityState.REVEALED,
     )
     revealed_via = Column(
-        Enum(WarpRevealedVia, name="warp_revealed_via"),
+        Enum(
+            WarpRevealedVia, name="warp_revealed_via",
+            values_callable=lambda obj: [e.value for e in obj],
+        ),
         nullable=False,
         default=WarpRevealedVia.SCAN,
     )

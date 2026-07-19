@@ -34,7 +34,18 @@ class FactionType(str, enum.Enum):
     
     @classmethod
     def _missing_(cls, value):
-        """Handle case-insensitive lookup."""
+        """Handle case-insensitive lookup.
+
+        WO-QUALITY-factiontype-missing-guard: `value` may be a non-str (or
+        None) when a caller does `FactionType(some_untrusted_value)` --
+        `.upper()` on a non-str raises AttributeError, not the clean
+        ValueError an unrecognized enum value should raise. Guard first and
+        fall through to the standard "not a member" ValueError (returning
+        None from `_missing_` is what triggers it) rather than crashing.
+        Real-string lookups are byte-for-byte unchanged below.
+        """
+        if not isinstance(value, str):
+            return None
         for member in cls:
             if member.value.upper() == value.upper():
                 return member

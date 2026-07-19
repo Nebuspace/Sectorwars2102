@@ -44,6 +44,13 @@ class Message(Base):
     flagged_reason = Column(String(255))
     moderated_at = Column(DateTime)
     moderated_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    # Audit-trail status: NULL = visible (default). 'deleted' = moderator
+    # removed it from player-facing reads but the row (and its moderator
+    # stamps above) is kept for the audit log -- see messaging.md
+    # "Moderated messages remain in the database ... even after content
+    # removal". Vocabulary NO-CANON beyond NULL|'deleted'; 'redacted' /
+    # 'blocked' are reserved for the separately-gated MOD-CANON-ACTIONS set.
+    moderation_status = Column(String(16))
     
     # Relationships
     sender = relationship("Player", foreign_keys=[sender_id], backref="sent_messages")
@@ -79,7 +86,8 @@ class Message(Base):
             "thread_id": str(self.thread_id) if self.thread_id else None,
             "reply_to_id": str(self.reply_to_id) if self.reply_to_id else None,
             "flagged": self.flagged,
-            "is_read": self.read_at is not None
+            "is_read": self.read_at is not None,
+            "moderation_status": self.moderation_status
         }
         
         if include_content:

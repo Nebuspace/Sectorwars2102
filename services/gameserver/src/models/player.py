@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
 from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, func, text
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import relationship
 
 from src.core.database import Base
@@ -57,6 +57,17 @@ class Player(Base):
     aria_relationship_score = Column(Integer, nullable=False, default=25)  # 0-100
     aria_total_interactions = Column(Integer, nullable=False, default=0)
 
+    # ARIA trust / abuse-ladder persistence (WO-ARIA-TRUST-PERSIST). Canon:
+    # OPERATIONS/aria.md:239-241, ADR-0065 M-U1. Previously lived ONLY in
+    # ai_security_service.py's in-memory AISecurityService singleton --
+    # a blocked abuser was silently amnestied on every process restart.
+    # AISecurityService seeds its in-memory profile from these columns on
+    # first touch per process and writes every penalty/block back here in
+    # the same transaction as the caller's own commit.
+    aria_trust_score = Column(Float, nullable=False, default=1.0)  # 0.0 (untrusted) - 1.0 (trusted)
+    aria_violation_count = Column(Integer, nullable=False, default=0)
+    aria_blocked_until = Column(DateTime(timezone=True), nullable=True)
+
     current_ship_id = Column(UUID(as_uuid=True), ForeignKey("ships.id", ondelete="SET NULL"), nullable=True)
     home_sector_id = Column(Integer, nullable=False, default=1)
     current_sector_id = Column(Integer, nullable=False, default=1)
@@ -64,6 +75,9 @@ class Player(Base):
     current_port_id = Column(UUID(as_uuid=True), ForeignKey("stations.id", ondelete="SET NULL"), nullable=True)  # Station player is docked at
     is_landed = Column(Boolean, nullable=False, default=False)
     current_planet_id = Column(UUID(as_uuid=True), ForeignKey("planets.id", ondelete="SET NULL"), nullable=True)  # Planet player is landed on
+    # In-system pose (WO-ISP): x/y/heading/leg plan inside current_sector.
+    # Nullable JSONB — see intrasystem_movement_service.py for shape.
+    intrasystem_pose = Column(JSONB, nullable=True)
     team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id", ondelete="SET NULL"), nullable=True)
     attack_drones = Column(Integer, nullable=False, default=0)
     defense_drones = Column(Integer, nullable=False, default=0)
@@ -74,9 +88,35 @@ class Player(Base):
     # Warp Jumper itself (ships.quantum_charges), not here.
     quantum_shards = Column(Integer, nullable=False, default=0, server_default=text("0"))
     quantum_crystals = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    # Lumen Crystal ledger (WO-GWQ-LUMEN-FAUCET, ADR-0037). Two faucets credit
+    # it: quantum_service.harvest_nebula's Emerald/Crimson drop roll, and the
+    # Class-5+ refining_service.collect_lumen_refine conversion below.
+    # NOTE: quantum-resources.md:235 names this field `lumen_crystal_inventory`
+    # in prose; the master-queue WO chain (this WO + WO-GWQ-GATE-STAGING, which
+    # reads Phase-3 lumen from "Player.lumen_crystals") specs the column as
+    # `lumen_crystals` to mirror the quantum_crystals naming above. Built to
+    # the WO spec for cross-WO consistency; flagged as a canon/WO naming
+    # divergence for the doc to reconcile.
+    lumen_crystals = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    # Single in-flight Class-5+ Shard-to-Crystal (Lumen) refine job slot.
+    # NULL == no job pending. refining_service.start_lumen_refine sets this to
+    # scaled_deadline(12h) after debiting 100 Shards + 10,000 cr;
+    # collect_lumen_refine credits +1 lumen_crystals once now() >= this and
+    # clears it back to NULL. Only one job may be in flight at a time — start
+    # is rejected while this is set (collect first). Non-exclusive of the
+    # ship/station slot during the wait (NO-CANON, flagged to DECISIONS).
+    lumen_refine_ready_at = Column(DateTime(timezone=True), nullable=True)
     genesis_devices = Column(Integer, nullable=False, default=0)
     insurance = Column(JSONB, nullable=True)
     last_game_login = Column(DateTime(timezone=True), nullable=True)  # Renamed from last_login to avoid confusion
+    # QUEUE-LIVENESS-SIGNAL: throttled (~5min), post-auth API-activity touch
+    # (get_current_player) -- DISTINCT from last_game_login above, which
+    # only refreshes on the login route and is load-bearing for
+    # welcome_back()'s return-bonus detection / retention_service's
+    # dormant-lapsed signal / abandonment_service's 90-day clock. Consumed
+    # by presence_helpers._is_presence_fresh (coalesced with
+    # last_game_login for a grace period on pre-existing sessions).
+    last_activity_at = Column(DateTime(timezone=True), nullable=True)
     turn_reset_at = Column(DateTime(timezone=True), nullable=True)
     return_boost_until = Column(DateTime(timezone=True), nullable=True)  # WO-RE1: welcome-back ×1.5 emergent-rep window
     # ADR-0004: continuous turn regeneration anchor + stored cap.
@@ -85,8 +125,22 @@ class Player(Base):
     # Suspect / Wanted lifecycle (Fringe/Federation contraband + bounty law).
     is_suspect = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     is_wanted = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    # suspect_declared_at doubles as the FIRST-acquisition anchor for the 4h
+    # cumulative cap (WO-CMB-SUSPECT-LIFE-1, ships.md:289) -- set ONCE when
+    # is_suspect first flips True, never re-stamped by a later suspect event
+    # (src/services/suspect_service.py owns this contract).
     suspect_declared_at = Column(DateTime(timezone=True), nullable=True)
     wanted_declared_at = Column(DateTime(timezone=True), nullable=True)
+    # WO-CMB-SUSPECT-LIFE-1 (Max ruling, 2026-07-10) -- ships.md:287-296 +
+    # ADR-0061 S-V4. suspect_until: auto-clear timestamp, extended +1h per
+    # suspect-flagging event, capped at suspect_declared_at + 4h cumulative.
+    # suspect_team_snapshot: the flagged player's team roster (self-inclusive,
+    # mirrors ADR-0060 G-F2's combat_lock_team_snapshot pattern) frozen at
+    # FIRST acquisition only -- NULL when not flagged, [] when the player had
+    # no team at acquisition. Both clear together when suspect_until elapses
+    # (src.services.suspect_service.clear_expired_suspects).
+    suspect_until = Column(DateTime(timezone=True), nullable=True)
+    suspect_team_snapshot = Column(ARRAY(UUID(as_uuid=True)), nullable=True)
     # Grey-flag PvP status (WO-BL, Max-ruled). A temporary "open season" mark
     # earned by aggressing on a lawful target:
     #   - attacking a GOOD-STANDING player → grey 1h (grey_kind="player_attack");
@@ -101,6 +155,12 @@ class Player(Base):
     # Journey victory (rank-1 completion of the campaign).
     is_game_complete = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     rank_victory_at = Column(DateTime(timezone=True), nullable=True)
+    # Federation distress-beacon 24h scaled cooldown anchor (WO-GWQ-STRANDING;
+    # factions-and-teams.md#reputation-triggers). NULL = never used, beacon
+    # available now. Set to the fire time by distress_service.use_distress_
+    # beacon; the cooldown deadline is derived at read time via
+    # scaled_deadline(24, start=last_distress_at) -- never stored pre-computed.
+    last_distress_at = Column(DateTime(timezone=True), nullable=True)
     settings = Column(JSONB, nullable=False, default={})
     first_login = Column(JSONB, nullable=False, default={"completed": False})
     # CRT WO-K0-2: the research ledger. ONE additive NULLABLE JSONB column — the
@@ -145,6 +205,10 @@ class Player(Base):
     warp_knowledge = relationship(
         "PlayerWarpKnowledge", back_populates="player", cascade="all, delete-orphan"
     )
+    # ADR-0045: per-player special-formation knowledge (WO-GWQ-FORMATION-KNOWLEDGE).
+    formation_knowledge = relationship(
+        "PlayerFormationKnowledge", back_populates="player", cascade="all, delete-orphan"
+    )
     # WO-TF added a 2nd FK to players (port_owner_id) on MarketTransaction, so this
     # reverse relationship must declare foreign_keys to disambiguate the join (else
     # AmbiguousForeignKeysError). It pairs with MarketTransaction.player (player_id).
@@ -174,7 +238,12 @@ class Player(Base):
     aria_memories = relationship("ARIAPersonalMemory", back_populates="player", cascade="all, delete-orphan")
     aria_market_intelligence = relationship("ARIAMarketIntelligence", back_populates="player", cascade="all, delete-orphan")
     aria_exploration_map = relationship("ARIAExplorationMap", back_populates="player", cascade="all, delete-orphan")
+    # DEPRECATED (WO-ARIA-GA-CLEANUP, pending Max ruling) -- see
+    # ARIATradingPattern's own deprecation note in models/aria_personal_
+    # intelligence.py. Zero live callers as of the GA-strip; relationship
+    # kept (not dropped) until a DECISIONS ruling on the proposed DROP.
     aria_trading_patterns = relationship("ARIATradingPattern", back_populates="player", cascade="all, delete-orphan")
+    aria_trading_observations = relationship("ARIATradingObservation", back_populates="player", cascade="all, delete-orphan")
     
     # Fleet relationships
     commanded_fleets = relationship("Fleet", back_populates="commander", foreign_keys="Fleet.commander_id")
@@ -200,7 +269,43 @@ class Player(Base):
         if self.user:
             return self.user.username
         return "Unknown Player"
-    
+
+    @classmethod
+    def display_name_expr(cls, user_username_col=None, *, label: str = "username",
+                           fallback: Optional[str] = "Unknown Player"):
+        """SQL-expression twin of the `username` property above.
+
+        `username` is a plain Python @property — it can't appear in a
+        select()/query() column list, because "the linked User's username"
+        isn't reachable without a join the caller controls. This reproduces
+        the same fallback chain (nickname if truthy — '' counts as unset,
+        matching the property's truthiness check — else the linked User's
+        username) as a labeled SQLAlchemy expression, so every admin/
+        governance read-path resolves display names identically instead of
+        re-deriving the rule.
+
+        Join recipe: the caller must already join `User` on
+        `Player.user_id == User.id` (or an aliased equivalent) for the
+        fallback to see it — pass that join's username column via
+        `user_username_col` (defaults to `User.username` if omitted).
+
+        `fallback` is the terminal literal for when BOTH nickname and the
+        joined username are NULL (e.g. an outer join with no matching
+        Player/User row at all) — defaults to "Unknown Player" to match the
+        property exactly. Pass `fallback=None` to omit that terminal literal
+        and let the expression resolve to SQL NULL instead, for call sites
+        that were already relying on NULL-on-no-match (e.g. LEFT OUTER JOINs
+        that intentionally return an unresolved sender as `null`, not a
+        literal string) and must not add fabricated coalesce values.
+        """
+        if user_username_col is None:
+            from src.models.user import User
+            user_username_col = User.username
+        args = [func.nullif(cls.nickname, ''), user_username_col]
+        if fallback is not None:
+            args.append(fallback)
+        return func.coalesce(*args).label(label)
+
     # Multi-regional methods
     @property
     def can_travel_between_regions(self) -> bool:
@@ -218,7 +323,48 @@ class Player(Base):
         """Get player's reputation score in specific region"""
         membership = self.get_regional_membership(region_id)
         return membership.reputation_score if membership else 0
-    
+
+    def is_wanted_at(self, faction_code: Optional[str], threshold) -> bool:
+        """Interim Wanted-standing check for faction-patrol pursuit
+        (SYSTEMS/sector-presence.md "NPC faction patrols" encounter leg).
+
+        NO-CANON semantics (WO-RT-PATROL-ENCOUNTER): the doc says
+        ``is_wanted_at`` "consults Player.personal_reputation, the
+        player's active stolen-ship reports, and standing with the named
+        faction" without specifying how the signals combine. This build
+        ORs three conservative checks (any one true -> wanted):
+          1. The existing Suspect/Wanted flags (is_suspect / is_wanted).
+          2. personal_reputation <= threshold -- mirrors police-forces.md's
+             own Wanted-Status predicate (personal_reputation < -500),
+             generalized to whatever threshold the calling patrol carries
+             (police squads seed wanted_threshold = -500 today, see
+             npc_spawn_service.POLICE_WANTED_THRESHOLD).
+          3. Standing with the named faction (Reputation.current_value <=
+             threshold) via faction_reputations, resolving faction_code
+             against Faction.name -- the established faction_code lookup
+             convention already used by construction_service._faction_rep_tier,
+             docking_service, trading_service, and haggle_service.
+        Active stolen-ship reports (SYSTEMS/ship-registry.md) have no live
+        table in this codebase -- not consulted; flagged, not invented.
+        Defensive: an unresolvable threshold, an unknown faction_code, or
+        a missing faction_reputations entry never raises -- returns False.
+        """
+        if self.is_wanted or self.is_suspect:
+            return True
+        try:
+            thresh = int(threshold)
+        except (TypeError, ValueError):
+            return False
+        if (self.personal_reputation or 0) <= thresh:
+            return True
+        if not faction_code:
+            return False
+        for rep in (self.faction_reputations or []):
+            faction = getattr(rep, "faction", None)
+            if faction is not None and getattr(faction, "name", None) == faction_code:
+                return (getattr(rep, "current_value", 0) or 0) <= thresh
+        return False
+
     def can_vote_in_region(self, region_id: str) -> bool:
         """Check if player can vote in region's elections/referendums"""
         membership = self.get_regional_membership(region_id)

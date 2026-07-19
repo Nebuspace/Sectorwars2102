@@ -100,3 +100,69 @@ class SpecialFormation(Base):
 
     def __repr__(self):
         return f"<SpecialFormation {self.type.name} anchor={self.anchor_sector_id} region={self.region_id}>"
+
+
+class FormationRevealedVia(enum.Enum):
+    """How the player came to personally know about this formation
+    (ADR-0045). VISIT is the only source today -- arriving in, or scanning,
+    the formation's anchor or interior sector (see
+    special_formation_service.flip_formation_discovery)."""
+    VISIT = "VISIT"
+
+
+class PlayerFormationKnowledge(Base):
+    """Per-player record of which special formations a player personally
+    knows about (ADR-0045 -- per-player discovery; mirrors
+    PlayerWarpKnowledge for the warp-knowledge layer, same ADR).
+
+    ``SpecialFormation.is_discovered`` remains a global aggregate (the
+    first-ever-discovery flag that also triggers the one-time public ``name``
+    back-fill from the bang importer's JSONB) but no longer answers "does
+    THIS player know about this formation" -- that is
+    ``special_formation_service.is_formation_known_to_player``, the real
+    disclosure gate. One player's visit must never reveal a formation's
+    identity to every other player (WO-GWQ-FORMATION-KNOWLEDGE closes that
+    cross-player leak).
+
+    One row per (player, formation), first-observe only -- re-discovering a
+    formation the player already knows is an idempotent no-op, never a
+    duplicate row (see flip_formation_discovery).
+    """
+    __tablename__ = "player_formation_knowledge"
+    __table_args__ = (
+        UniqueConstraint(
+            "player_id", "formation_id",
+            name="uq_player_formation_knowledge_player_formation",
+        ),
+        # "Which formations does this player know?" -- the per-player map read.
+        Index("ix_player_formation_knowledge_player", "player_id"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    player_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("players.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    formation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("special_formations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    revealed_via = Column(
+        Enum(FormationRevealedVia, name="formation_revealed_via"),
+        nullable=False,
+        default=FormationRevealedVia.VISIT,
+    )
+    discovered_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    player = relationship("Player", back_populates="formation_knowledge")
+    formation = relationship("SpecialFormation")
+
+    def __repr__(self):
+        return (
+            f"<PlayerFormationKnowledge player={self.player_id} "
+            f"formation={self.formation_id} via {self.revealed_via.value}>"
+        )
