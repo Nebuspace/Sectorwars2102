@@ -143,7 +143,15 @@ def lock_and_validate_invite(
         return None, None, "ERR_INVITE_NOT_FOUND"
 
     # Re-validate EVERYTHING under the lock (same checks as the async
-    # validate_invite + consume_invite, in the same order).
+    # validate_invite + consume_invite, in the same order). EXHAUSTED is
+    # checked ahead of the generic non-active branch: uses >= max_uses reads
+    # as ERR_INVITE_EXHAUSTED regardless of whether the status column has
+    # already been stamped 'exhausted' by a winning concurrent redeemer —
+    # mirrors consume_invite's fix (region_invite_service.py:412-417).
+    # Revoked/expired-stamped rows (status not yet 'exhausted') still fall
+    # through to ERR_INVITE_NOT_ACTIVE.
+    if invite.status == RegionInviteStatus.EXHAUSTED.value:
+        return None, None, "ERR_INVITE_EXHAUSTED"
     if invite.status != RegionInviteStatus.ACTIVE.value:
         return None, None, "ERR_INVITE_NOT_ACTIVE"
     if invite.uses >= invite.max_uses:

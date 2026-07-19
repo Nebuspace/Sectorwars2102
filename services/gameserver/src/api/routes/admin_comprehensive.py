@@ -13,8 +13,20 @@ import logging
 import uuid
 
 from src.core.database import get_db
-from src.auth.dependencies import get_current_admin
+from src.auth.admin_scopes import (
+    ECONOMY_INTERVENE,
+    GALAXY_MANAGE,
+    PLAYERS_ADJUST_CREDITS,
+    PLAYERS_ADJUST_REP,
+    PLAYERS_SUSPEND,
+    PLAYERS_VIEW,
+    SECURITY_ACT,
+    SHIPS_MANAGE,
+)
+from src.auth.dependencies import require_all_scopes, require_scope
 from src.models.user import User
+from src.services.admin_action_log_service import log_admin_action
+from src.services.admin_action_attempt import admin_action_attempt
 from src.models.player import Player
 from src.models.ship import Ship
 from src.models.planet import Planet
@@ -26,8 +38,11 @@ from src.models.region import Region
 from src.models.zone import Zone
 from src.models.warp_tunnel import WarpTunnel
 from src.models.team import Team
+from src.models.route_optimization_run import RouteOptimizationRun
+from src.models.faction import Faction
 from src.services.analytics_service import AnalyticsService
 from src.services.ai_security_service import get_security_service
+from src.services.faction_service import FactionService
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -232,7 +247,7 @@ async def get_players_comprehensive(
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     include_assets: bool = Query(False, description="Include detailed asset information"),
     include_activity: bool = Query(False, description="Include activity metrics"),
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get comprehensive player list with filtering, sorting, and pagination"""
@@ -386,7 +401,11 @@ async def get_players_comprehensive(
 async def update_player(
     player_id: str,
     update_data: PlayerUpdateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(
+        require_all_scopes(
+            PLAYERS_ADJUST_CREDITS, PLAYERS_SUSPEND, PLAYERS_ADJUST_REP
+        )
+    ),
     db: Session = Depends(get_db)
 ):
     """Update player data"""
@@ -402,17 +421,62 @@ async def update_player(
             player.turns = update_data.turns
         if update_data.is_active is not None:
             player.user.is_active = update_data.is_active
+
+        # RBAC C1/C2 HIGH (hub-cipher): FactionService.update_reputation does its
+        # OWN session commit then may WS-throw.  Log MUST be session-added BEFORE
+        # that loop so the intervening commit persists credit+audit together —
+        # otherwise a WS failure after the internal commit leaves credits
+        # durable with ZERO AdminActionLog row.
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=PLAYERS_ADJUST_CREDITS,
+            action="player_update",
+            target_type="player",
+            target_id=str(player_id),
+            payload={
+                "credits_set": update_data.credits is not None,
+                "turns_set": update_data.turns is not None,
+                "is_active_set": update_data.is_active is not None,
+                "reputation_keys": sorted(
+                    (update_data.reputation_adjustments or {}).keys()
+                ),
+            },
+        )
         
-        # Handle reputation adjustments
+        # Handle reputation adjustments -- routed through the canonical
+        # Reputation table via FactionService.update_reputation, the same
+        # admin-set surface admin_factions.py's PUT /{faction_id}/reputation
+        # already uses (internal commit + level-change WebSocket notify +
+        # HONORED-transition medal dispatch). The prior code mutated
+        # player.reputation, a dead JSONB store nothing else in the codebase
+        # writes or reads. `faction` keys are matched against Faction.name
+        # (case-insensitive) -- the model has no `code` column, and the
+        # lowercase roster codes in
+        # emergent_reputation_service.FACTION_CODE_TO_TYPE are scoped to
+        # NPCCharacter.faction_code, not an admin-facing identifier.
         if update_data.reputation_adjustments:
-            for faction, adjustment in update_data.reputation_adjustments.items():
-                if faction in player.reputation:
-                    current_rep = player.reputation[faction].get('value', 0)
-                    new_rep = max(-800, min(800, current_rep + adjustment))
-                    player.reputation[faction]['value'] = new_rep
-                    # Update level based on new value
-                    player.reputation[faction]['level'] = calculate_reputation_level(new_rep)
-        
+            faction_service = FactionService(db)
+            for faction_name, adjustment in update_data.reputation_adjustments.items():
+                faction_row = (
+                    db.query(Faction)
+                    .filter(func.lower(Faction.name) == faction_name.lower())
+                    .first()
+                )
+                if not faction_row:
+                    logger.warning(
+                        "update_player: no faction named %r -- reputation "
+                        "adjustment %+d for player %s dropped",
+                        faction_name, adjustment, player_id,
+                    )
+                    continue
+                await faction_service.update_reputation(
+                    player_id=player.id,
+                    faction_id=faction_row.id,
+                    change=adjustment,
+                    reason=f"Admin adjustment by {current_admin.username}",
+                )
+
         db.commit()
         
         # Log admin action
@@ -434,7 +498,7 @@ async def get_ships_comprehensive(
     filter_type: Optional[str] = None,
     filter_sector: Optional[int] = None,
     filter_owner: Optional[str] = None,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get comprehensive ship list with filtering"""
@@ -575,255 +639,338 @@ class ShipUpdateRequest(BaseModel):
 @router.post("/ships", response_model=Dict[str, str])
 async def create_ship(
     ship_data: ShipCreateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(SHIPS_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Create a new ship for a player"""
-    try:
-        # Verify player exists
-        player = db.query(Player).filter(Player.id == ship_data.owner_id).first()
-        if not player:
-            raise HTTPException(status_code=404, detail="Player not found")
-        
-        # Verify sector exists
-        sector = db.query(Sector).filter(Sector.sector_id == ship_data.current_sector_id).first()
-        if not sector:
-            raise HTTPException(status_code=404, detail="Sector not found")
-        
-        # Create new ship
-        from src.models.ship import ShipType
-        new_ship = Ship(
-            id=uuid.uuid4(),
-            name=ship_data.name,
-            type=ShipType(ship_data.ship_type),
-            owner_id=ship_data.owner_id,
-            sector_id=ship_data.current_sector_id,
-            maintenance={"current_rating": 100.0},
-            cargo={"used_capacity": 0, "max_capacity": 1000},
-            combat={"shields": 100, "max_shields": 100, "hull": 100, "max_hull": 100},
-            base_speed=10.0,
-            current_speed=10.0,
-            turn_cost=1,
-            purchase_value=50000,
-            current_value=50000,
-            is_active=True
-        )
-        
-        db.add(new_ship)
-        db.commit()
-        
-        logger.info(f"Admin {current_admin.username} created ship {ship_data.name} for player {player.user.username}")
-        
-        return {"message": "Ship created successfully", "ship_id": str(new_ship.id)}
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error creating ship: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create ship: {str(e)}")
+    new_ship_id = uuid.uuid4()
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=SHIPS_MANAGE,
+        action="ship_create",
+        target_type="ship",
+        target_id=str(new_ship_id),
+        payload={
+            "name": ship_data.name,
+            "ship_type": ship_data.ship_type,
+            "owner_id": ship_data.owner_id,
+            "sector_id": ship_data.current_sector_id,
+        },
+    ) as attempt:
+        try:
+            player = db.query(Player).filter(Player.id == ship_data.owner_id).first()
+            if not player:
+                raise HTTPException(status_code=404, detail="Player not found")
+
+            sector = db.query(Sector).filter(Sector.sector_id == ship_data.current_sector_id).first()
+            if not sector:
+                raise HTTPException(status_code=404, detail="Sector not found")
+
+            from src.models.ship import ShipType
+            new_ship = Ship(
+                id=new_ship_id,
+                name=ship_data.name,
+                type=ShipType(ship_data.ship_type),
+                owner_id=ship_data.owner_id,
+                sector_id=ship_data.current_sector_id,
+                maintenance={"current_rating": 100.0},
+                cargo={"used_capacity": 0, "max_capacity": 1000},
+                combat={"shields": 100, "max_shields": 100, "hull": 100, "max_hull": 100},
+                base_speed=10.0,
+                current_speed=10.0,
+                turn_cost=1,
+                purchase_value=50000,
+                current_value=50000,
+                is_active=True
+            )
+
+            db.add(new_ship)
+            attempt.succeed(
+                payload={
+                    "name": ship_data.name,
+                    "ship_type": ship_data.ship_type,
+                    "owner_id": ship_data.owner_id,
+                    "sector_id": ship_data.current_sector_id,
+                    "ship_id": str(new_ship_id),
+                },
+            )
+
+            logger.info(f"Admin {current_admin.username} created ship {ship_data.name} for player {player.user.username}")
+
+            return {"message": "Ship created successfully", "ship_id": str(new_ship.id)}
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error creating ship: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to create ship: {str(e)}") from e
 
 @router.put("/ships/{ship_id}", response_model=Dict[str, str])
 async def update_ship(
     ship_id: str,
     ship_data: ShipUpdateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(SHIPS_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Update ship properties"""
-    try:
-        ship = db.query(Ship).filter(Ship.id == ship_id).first()
-        if not ship:
-            raise HTTPException(status_code=404, detail="Ship not found")
-        
-        # Update fields if provided
-        if ship_data.name is not None:
-            ship.name = ship_data.name
-        if ship_data.owner_id is not None:
-            # Verify new owner exists
-            player = db.query(Player).filter(Player.id == ship_data.owner_id).first()
-            if not player:
-                raise HTTPException(status_code=404, detail="New owner not found")
-            ship.owner_id = ship_data.owner_id
-        if ship_data.current_sector_id is not None:
-            # Verify sector exists
-            sector = db.query(Sector).filter(Sector.sector_id == ship_data.current_sector_id).first()
-            if not sector:
-                raise HTTPException(status_code=404, detail="Sector not found")
-            ship.sector_id = ship_data.current_sector_id
-        if ship_data.is_active is not None:
-            ship.is_active = ship_data.is_active
-        
-        db.commit()
-        
-        logger.info(f"Admin {current_admin.username} updated ship {ship.name}")
-        
-        return {"message": "Ship updated successfully"}
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error updating ship {ship_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to update ship: {str(e)}")
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=SHIPS_MANAGE,
+        action="ship_update",
+        target_type="ship",
+        target_id=str(ship_id),
+        payload=ship_data.model_dump(exclude_unset=True),
+    ) as attempt:
+        try:
+            ship = db.query(Ship).filter(Ship.id == ship_id).first()
+            if not ship:
+                raise HTTPException(status_code=404, detail="Ship not found")
+
+            if ship_data.name is not None:
+                ship.name = ship_data.name
+            if ship_data.owner_id is not None:
+                player = db.query(Player).filter(Player.id == ship_data.owner_id).first()
+                if not player:
+                    raise HTTPException(status_code=404, detail="New owner not found")
+                ship.owner_id = ship_data.owner_id
+            if ship_data.current_sector_id is not None:
+                sector = db.query(Sector).filter(Sector.sector_id == ship_data.current_sector_id).first()
+                if not sector:
+                    raise HTTPException(status_code=404, detail="Sector not found")
+                ship.sector_id = ship_data.current_sector_id
+            if ship_data.is_active is not None:
+                ship.is_active = ship_data.is_active
+
+            attempt.succeed(payload=ship_data.model_dump(exclude_unset=True))
+
+            logger.info(f"Admin {current_admin.username} updated ship {ship.name}")
+
+            return {"message": "Ship updated successfully"}
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error updating ship {ship_id}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to update ship: {str(e)}") from e
 
 @router.delete("/ships/{ship_id}", response_model=Dict[str, str])
 async def delete_ship(
     ship_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(SHIPS_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Delete a ship"""
-    try:
-        ship = db.query(Ship).filter(Ship.id == ship_id).first()
-        if not ship:
-            raise HTTPException(status_code=404, detail="Ship not found")
-        
-        ship_name = ship.name
-        owner = db.query(Player).join(User).filter(Player.id == ship.owner_id).first()
-        owner_name = owner.user.username if owner else "Unknown"
-        
-        # If this is the player's current ship, clear it
-        if owner and owner.current_ship_id == ship.id:
-            owner.current_ship_id = None
-
-        # Reabsorb pioneer colonists before hull is removed.  Mirrors the
-        # pattern in ship_service.destroy_ship — SAVEPOINT-isolated so that a
-        # ledger hiccup cannot block the admin delete.
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=SHIPS_MANAGE,
+        action="ship_delete",
+        target_type="ship",
+        target_id=str(ship_id),
+    ) as attempt:
         try:
-            from src.services.pioneer_service import reabsorb_on_ship_loss
-            with db.begin_nested():
-                reabsorb_on_ship_loss(db, ship.owner_id)
-        except Exception:
-            logger.exception("pioneer reabsorb on admin ship-delete failed")
+            ship = db.query(Ship).filter(Ship.id == ship_id).first()
+            if not ship:
+                raise HTTPException(status_code=404, detail="Ship not found")
 
-        db.delete(ship)
-        db.commit()
-        
-        logger.info(f"Admin {current_admin.username} deleted ship {ship_name} from player {owner_name}")
-        
-        return {"message": "Ship deleted successfully"}
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error deleting ship {ship_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to delete ship: {str(e)}")
+            ship_name = ship.name
+            owner = db.query(Player).join(User).filter(Player.id == ship.owner_id).first()
+            owner_name = owner.user.username if owner else "Unknown"
+
+            if owner and owner.current_ship_id == ship.id:
+                owner.current_ship_id = None
+                from src.services.ship_service import sync_current_pilot
+                sync_current_pilot(owner, None, old_ship=ship)
+
+            try:
+                from src.services.pioneer_service import reabsorb_on_ship_loss
+                with db.begin_nested():
+                    reabsorb_on_ship_loss(db, ship.owner_id)
+            except Exception:
+                logger.exception("pioneer reabsorb on admin ship-delete failed")
+
+            db.delete(ship)
+            attempt.succeed(payload={"name": ship_name, "owner": owner_name})
+
+            logger.info(f"Admin {current_admin.username} deleted ship {ship_name} from player {owner_name}")
+
+            return {"message": "Ship deleted successfully"}
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error deleting ship {ship_id}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to delete ship: {str(e)}") from e
 
 @router.post("/ships/{ship_id}/teleport", response_model=Dict[str, str])
 async def teleport_ship(
     ship_id: str,
     target_sector_id: int,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(SHIPS_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Teleport a ship to a different sector"""
-    try:
-        ship = db.query(Ship).filter(Ship.id == ship_id).first()
-        if not ship:
-            raise HTTPException(status_code=404, detail="Ship not found")
-        
-        # Verify target sector exists
-        sector = db.query(Sector).filter(Sector.sector_id == target_sector_id).first()
-        if not sector:
-            raise HTTPException(status_code=404, detail="Target sector not found")
-        
-        old_sector = ship.sector_id
-        ship.sector_id = target_sector_id
-        
-        # Also update player location if this is their current ship.
-        # Keep current_region_id in sync with the target sector — teleports
-        # can cross regions, and region-filtered routes (e.g.
-        # /player/current-sector) 404 on a stale region.
-        owner = db.query(Player).filter(Player.id == ship.owner_id).first()
-        if owner and owner.current_ship_id == ship.id:
-            owner.current_sector_id = target_sector_id
-            owner.current_region_id = sector.region_id
-        
-        db.commit()
-        
-        logger.info(f"Admin {current_admin.username} teleported ship {ship.name} from sector {old_sector} to {target_sector_id}")
-        
-        return {"message": f"Ship teleported to sector {target_sector_id}"}
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error teleporting ship {ship_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to teleport ship: {str(e)}")
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=SHIPS_MANAGE,
+        action="ship_teleport",
+        target_type="ship",
+        target_id=str(ship_id),
+        payload={"to_sector": target_sector_id},
+    ) as attempt:
+        try:
+            ship = db.query(Ship).filter(Ship.id == ship_id).first()
+            if not ship:
+                raise HTTPException(status_code=404, detail="Ship not found")
+
+            sector = db.query(Sector).filter(Sector.sector_id == target_sector_id).first()
+            if not sector:
+                raise HTTPException(status_code=404, detail="Target sector not found")
+
+            old_sector = ship.sector_id
+            ship.sector_id = target_sector_id
+
+            owner = db.query(Player).filter(Player.id == ship.owner_id).first()
+            if owner and owner.current_ship_id == ship.id:
+                owner.current_sector_id = target_sector_id
+                owner.current_region_id = sector.region_id
+
+            attempt.succeed(
+                payload={
+                    "from_sector": old_sector,
+                    "to_sector": target_sector_id,
+                },
+            )
+
+            logger.info(f"Admin {current_admin.username} teleported ship {ship.name} from sector {old_sector} to {target_sector_id}")
+
+            return {"message": f"Ship teleported to sector {target_sector_id}"}
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error teleporting ship {ship_id}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to teleport ship: {str(e)}") from e
 
 # Player Management Endpoints
 
 @router.post("/players/create-from-user", response_model=Dict[str, str])
 async def create_player_from_user(
     user_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_ADJUST_CREDITS)),
     db: Session = Depends(get_db)
 ):
     """Create a player account from an existing user account"""
-    try:
-        # Check if user exists
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        # Check if player already exists for this user
-        existing_player = db.query(Player).filter(Player.user_id == user.id).first()
-        if existing_player:
-            raise HTTPException(status_code=400, detail="Player already exists for this user")
-        
-        # Create new player
-        new_player = Player(
-            user_id=user.id,
-            credits=10000,  # Starting credits
-            turns=1000,     # Starting turns
-            current_sector_id=1  # Default starting sector
-        )
-        
-        db.add(new_player)
-        db.commit()
-        db.refresh(new_player)
-        
-        logger.info(f"Admin {current_admin.username} created player for user {user.username}")
-        
-        return {"message": f"Player created successfully for user {user.username}", "player_id": str(new_player.id)}
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error creating player for user {user_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create player: {str(e)}")
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=PLAYERS_ADJUST_CREDITS,
+        action="player_create_from_user",
+        target_type="player",
+        target_id=str(user_id),
+        payload={"user_id": str(user_id), "starting_credits": 10000},
+    ) as attempt:
+        try:
+            # Check if user exists
+            user = db.query(User).filter(User.id == user_id).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
 
-@router.post("/players/create-bulk", response_model=Dict[str, Any])
-async def create_players_from_all_users(
-    current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
-):
-    """Create player accounts for all users who don't have them"""
-    try:
-        # Get all users who don't have player accounts
-        users_without_players = db.query(User).filter(
-            ~User.id.in_(db.query(Player.user_id))
-        ).all()
-        
-        created_count = 0
-        for user in users_without_players:
+            # Check if player already exists for this user
+            existing_player = db.query(Player).filter(Player.user_id == user.id).first()
+            if existing_player:
+                raise HTTPException(status_code=400, detail="Player already exists for this user")
+
+            # Create new player
             new_player = Player(
                 user_id=user.id,
                 credits=10000,  # Starting credits
                 turns=1000,     # Starting turns
                 current_sector_id=1  # Default starting sector
             )
+
             db.add(new_player)
-            created_count += 1
-        
-        db.commit()
-        
-        logger.info(f"Admin {current_admin.username} created {created_count} players from existing users")
-        
-        return {
-            "message": f"Successfully created {created_count} players", 
-            "created_count": created_count,
-            "total_users": len(users_without_players)
-        }
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error creating players from users: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create players: {str(e)}")
+            db.flush()  # assign id before logging target
+            attempt.succeed(
+                payload={
+                    "user_id": str(user_id),
+                    "starting_credits": 10000,
+                    "player_id": str(new_player.id),
+                },
+            )
+            db.refresh(new_player)
+
+            logger.info(f"Admin {current_admin.username} created player for user {user.username}")
+
+            return {
+                "message": f"Player created successfully for user {user.username}",
+                "player_id": str(new_player.id),
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error creating player for user {user_id}: {e}")
+            raise HTTPException(
+                status_code=500, detail=f"Failed to create player: {str(e)}"
+            ) from e
+
+
+@router.post("/players/create-bulk", response_model=Dict[str, Any])
+async def create_players_from_all_users(
+    current_admin: User = Depends(require_scope(PLAYERS_ADJUST_CREDITS)),
+    db: Session = Depends(get_db)
+):
+    """Create player accounts for all users who don't have them"""
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=PLAYERS_ADJUST_CREDITS,
+        action="player_create_bulk",
+        target_type="player",
+        target_id="bulk",
+        payload={},
+    ) as attempt:
+        try:
+            # Get all users who don't have player accounts
+            users_without_players = db.query(User).filter(
+                ~User.id.in_(db.query(Player.user_id))
+            ).all()
+
+            created_count = 0
+            for user in users_without_players:
+                new_player = Player(
+                    user_id=user.id,
+                    credits=10000,  # Starting credits
+                    turns=1000,     # Starting turns
+                    current_sector_id=1  # Default starting sector
+                )
+                db.add(new_player)
+                created_count += 1
+
+            attempt.succeed(payload={"created_count": created_count})
+
+            logger.info(
+                f"Admin {current_admin.username} created {created_count} players "
+                f"from existing users"
+            )
+
+            return {
+                "message": f"Successfully created {created_count} players",
+                "created_count": created_count,
+                "total_users": len(users_without_players),
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error creating players from users: {e}")
+            raise HTTPException(
+                status_code=500, detail=f"Failed to create players: {str(e)}"
+            ) from e
 
 # Universe Management Endpoints
 
@@ -835,7 +982,7 @@ async def get_sectors_comprehensive(
     filter_region: Optional[str] = None,
     filter_zone: Optional[str] = None,
     filter_discovered: Optional[bool] = None,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get comprehensive sector information"""
@@ -916,7 +1063,7 @@ async def get_ports_comprehensive(
     filter_type: Optional[str] = None,
     filter_owner: Optional[str] = None,
     owner_id: Optional[str] = Query(None, description="Filter by exact player/owner UUID"),
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get comprehensive port information"""
@@ -1022,7 +1169,7 @@ async def get_planets_comprehensive(
     filter_owner: Optional[str] = None,
     filter_colonized: Optional[bool] = None,
     owner_id: Optional[str] = Query(None, description="Filter by exact player/owner UUID"),
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get comprehensive planet information"""
@@ -1104,7 +1251,7 @@ async def get_planets_comprehensive(
 
 @router.get("/analytics/dashboard", response_model=AnalyticsDashboardResponse)
 async def get_analytics_dashboard(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get comprehensive analytics dashboard"""
@@ -1171,7 +1318,7 @@ async def get_analytics_dashboard(
 
 @router.get("/system/health", response_model=SystemHealthResponse)
 async def get_system_health(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get system health status"""
@@ -1225,7 +1372,7 @@ async def get_warp_tunnels_comprehensive(
     filter_type: Optional[str] = None,
     filter_status: Optional[str] = None,
     filter_origin_sector: Optional[int] = None,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get comprehensive warp tunnel information"""
@@ -1304,7 +1451,7 @@ async def get_warp_tunnels_comprehensive(
 async def get_teams_comprehensive(
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=100),
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get comprehensive team information"""
@@ -1397,7 +1544,7 @@ def calculate_reputation_level(value: int) -> str:
 
 @router.get("/analytics/real-time", response_model=Dict[str, Any])
 async def get_real_time_analytics(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
     """
@@ -1406,15 +1553,39 @@ async def get_real_time_analytics(
     try:
         analytics_service = AnalyticsService(db)
         metrics = analytics_service.get_real_time_metrics()
-        
+
+        # WO-ADM-ONLINE-COUNT: overwrite the User.last_login-within-1h
+        # approximation with the live presence-set cardinality
+        # (activity:online_players -- OPERATIONS/player-activity.md:30-32).
+        # `redis_pool is None` (never connected) is indistinguishable from
+        # "genuinely zero online" at get_online_player_count()'s own return
+        # value, so the pool is checked directly here rather than trusting a
+        # bare 0; any other failure (pool connected but the call itself
+        # raises) falls through the except. Either path keeps the
+        # last_login-derived figure already in `metrics` -- never a 500.
+        try:
+            from src.services.player_activity_service import get_player_activity_service
+            from src.services.redis_service import get_redis_service
+
+            redis_svc = await get_redis_service()
+            if redis_svc.redis_pool is not None:
+                activity_service = await get_player_activity_service()
+                metrics["players_online_now"] = await activity_service.get_online_player_count()
+                metrics["players_online_source"] = "presence"
+            else:
+                metrics["players_online_source"] = "fallback"
+        except Exception:
+            logger.warning("presence online-count lookup failed, keeping last_login fallback", exc_info=True)
+            metrics["players_online_source"] = "fallback"
+
         logger.info(f"Admin {current_admin.username} requested real-time analytics")
-        
+
         return {
             "success": True,
             "data": metrics,
             "timestamp": datetime.utcnow().isoformat()
         }
-        
+
     except Exception as e:
         logger.error(f"Error fetching real-time analytics: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch analytics: {str(e)}")
@@ -1423,13 +1594,23 @@ async def get_real_time_analytics(
 @router.post("/analytics/snapshot", response_model=Dict[str, Any])
 async def create_analytics_snapshot(
     snapshot_type: str = "manual",
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
     """
     Create an analytics snapshot for historical tracking
     """
     try:
+        log_admin_action(
+            db,
+            actor=current_admin,
+            scope_used=GALAXY_MANAGE,
+            action="analytics_snapshot",
+            target_type="analytics",
+            target_id=snapshot_type,
+            payload={"snapshot_type": snapshot_type},
+        )
+
         analytics_service = AnalyticsService(db)
         snapshot = analytics_service.create_analytics_snapshot(snapshot_type)
         
@@ -1449,7 +1630,7 @@ async def create_analytics_snapshot(
 
 @router.post("/ports/update-stock-levels", response_model=Dict[str, Any])
 async def update_all_port_stock_levels(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(ECONOMY_INTERVENE)),
     db: Session = Depends(get_db)
 ):
     """
@@ -1518,7 +1699,7 @@ async def update_all_port_stock_levels(
 # =============================================================================
 
 @router.get("/security/report", summary="Get comprehensive security report")
-async def get_security_report(current_admin: User = Depends(get_current_admin)):
+async def get_security_report(current_admin: User = Depends(require_scope(PLAYERS_VIEW))):
     """
     Get comprehensive security monitoring report including:
     - Player statistics (blocked, high risk, etc.)
@@ -1539,7 +1720,7 @@ async def get_security_report(current_admin: User = Depends(get_current_admin)):
 
 
 @router.get("/security/alerts", summary="Get current security alerts")
-async def get_security_alerts(current_admin: User = Depends(get_current_admin)):
+async def get_security_alerts(current_admin: User = Depends(require_scope(PLAYERS_VIEW))):
     """
     Get current security alerts that need admin attention:
     - High cost usage warnings
@@ -1565,7 +1746,7 @@ async def get_security_alerts(current_admin: User = Depends(get_current_admin)):
 @router.get("/security/player/{player_id}/risk", summary="Get player risk assessment")
 async def get_player_risk_assessment(
     player_id: str,
-    current_admin: User = Depends(get_current_admin)
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW))
 ):
     """
     Get detailed risk assessment for a specific player including:
@@ -1589,7 +1770,7 @@ async def get_player_risk_assessment(
 @router.get("/security/player/{player_id}/status", summary="Get player security status")
 async def get_player_security_status(
     player_id: str,
-    current_admin: User = Depends(get_current_admin)
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW))
 ):
     """
     Get current security status for a specific player including:
@@ -1612,7 +1793,7 @@ async def get_player_security_status(
 @router.post("/security/cleanup", summary="Clean up old security data")
 async def cleanup_security_data(
     days_to_keep: int = Query(default=7, ge=1, le=30, description="Number of days of data to keep"),
-    current_admin: User = Depends(get_current_admin)
+    current_admin: User = Depends(require_scope(SECURITY_ACT))
 ):
     """
     Clean up old security tracking data to prevent memory growth.
@@ -1644,7 +1825,8 @@ class PlayerSecurityAction(BaseModel):
 async def take_security_action(
     player_id: str,
     action: PlayerSecurityAction,
-    current_admin: User = Depends(get_current_admin)
+    current_admin: User = Depends(require_scope(SECURITY_ACT)),
+    db: Session = Depends(get_db),
 ):
     """
     Take security action on a player:
@@ -1652,11 +1834,23 @@ async def take_security_action(
     - unblock: Immediately unblock player
     - reset_violations: Reset violation count to 0
     - reset_trust: Reset trust score to 1.0
+
+    WO-ARIA-TRUST-PERSIST: every action here writes through to the Player
+    row's aria_trust_score/aria_violation_count/aria_blocked_until columns
+    -- an admin unblock that only touched the in-memory ladder would get
+    silently UNDONE on the next process restart if a stale aria_blocked_
+    until timestamp were still sitting on the row, exactly the amnesty bug
+    this WO closes (just in the opposite direction: an admin's own
+    corrective action, not an abuser's block, would be the thing lost).
     """
     try:
+        player_row = db.query(Player).filter(Player.id == uuid.UUID(player_id)).first()
+        if player_row is None:
+            raise HTTPException(status_code=404, detail=f"Player {player_id} not found")
+
         security_service = get_security_service()
-        profile = security_service.get_or_create_player_profile(player_id)
-        
+        profile = security_service.get_or_create_player_profile(player_id, seed_from=player_row)
+
         if action.action == "block":
             if action.duration_hours is None:
                 raise HTTPException(status_code=400, detail="duration_hours required for block action")
@@ -1681,9 +1875,13 @@ async def take_security_action(
             
         else:
             raise HTTPException(status_code=400, detail=f"Unknown action: {action.action}")
-        
+
+        for _col, _val in security_service.get_trust_columns(player_id).items():
+            setattr(player_row, _col, _val)
+        db.commit()
+
         logger.info(f"Admin {current_admin.username} took security action '{action.action}' on player {player_id}: {action.reason}")
-        
+
         return {
             "success": True,
             "message": message,
@@ -1712,7 +1910,7 @@ async def get_planets(
     filter_owner: Optional[str] = None,
     filter_colonized: Optional[bool] = None,
     owner_id: Optional[str] = Query(None, description="Filter by exact player/owner UUID"),
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Simple planets endpoint that redirects to comprehensive endpoint"""
@@ -1735,7 +1933,7 @@ async def get_ports(
     filter_type: Optional[str] = None,
     filter_owner: Optional[str] = None,
     owner_id: Optional[str] = Query(None, description="Filter by exact player/owner UUID"),
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Simple ports endpoint that redirects to comprehensive endpoint"""
@@ -1757,7 +1955,7 @@ async def get_sectors(
     filter_type: Optional[str] = None,
     filter_region: Optional[str] = None,
     filter_discovered: Optional[bool] = None,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Simple sectors endpoint that redirects to comprehensive endpoint"""
@@ -1775,232 +1973,412 @@ async def get_sectors(
 async def update_sector(
     sector_id: str,
     sector_data: SectorUpdateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Update a sector's properties"""
-    try:
-        # Convert sector_id to UUID if it looks like a UUID, otherwise treat as sector_id number
-        if len(sector_id) > 10:  # UUID length check
-            sector = db.query(Sector).filter(Sector.id == uuid.UUID(sector_id)).first()
-        else:
-            sector = db.query(Sector).filter(Sector.sector_id == int(sector_id)).first()
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="sector_update",
+        target_type="sector",
+        target_id=str(sector_id),
+        payload={},
+    ) as attempt:
+        try:
+            # Convert sector_id to UUID if it looks like a UUID, otherwise treat as sector_id number
+            if len(sector_id) > 10:  # UUID length check
+                sector = db.query(Sector).filter(Sector.id == uuid.UUID(sector_id)).first()
+            else:
+                sector = db.query(Sector).filter(Sector.sector_id == int(sector_id)).first()
         
-        if not sector:
-            raise HTTPException(status_code=404, detail="Sector not found")
+            if not sector:
+                raise HTTPException(status_code=404, detail="Sector not found")
         
-        # Import SectorType enum for validation
-        from src.models.sector import SectorType
+            # Import SectorType enum for validation
+            from src.models.sector import SectorType
         
-        # Update basic fields
-        update_data = sector_data.dict(exclude_unset=True)
+            # Update basic fields
+            update_data = sector_data.dict(exclude_unset=True)
         
-        for field, value in update_data.items():
-            if field == "type" and value:
-                # Validate and convert sector type
-                try:
-                    sector_type = SectorType(value)
-                    setattr(sector, field, sector_type)
-                except ValueError:
-                    raise HTTPException(status_code=400, detail=f"Invalid sector type: {value}")
-            elif field == "discovered_by_id" and value:
-                # Validate player exists
-                player = db.query(Player).filter(Player.id == uuid.UUID(value)).first()
-                if not player:
-                    raise HTTPException(status_code=400, detail="Invalid discovered_by_id: player not found")
-                setattr(sector, field, uuid.UUID(value))
-            elif field == "controlling_team_id" and value:
-                # Validate team exists
-                team = db.query(Team).filter(Team.id == uuid.UUID(value)).first()
-                if not team:
-                    raise HTTPException(status_code=400, detail="Invalid controlling_team_id: team not found")
-                setattr(sector, field, uuid.UUID(value))
-            elif hasattr(sector, field):
-                setattr(sector, field, value)
+            for field, value in update_data.items():
+                if field == "type" and value:
+                    # Validate and convert sector type
+                    try:
+                        sector_type = SectorType(value)
+                        setattr(sector, field, sector_type)
+                    except HTTPException:
+
+                        raise
+
+                    except ValueError:
+                        raise HTTPException(status_code=400, detail=f"Invalid sector type: {value}")
+                elif field == "discovered_by_id" and value:
+                    # Validate player exists
+                    player = db.query(Player).filter(Player.id == uuid.UUID(value)).first()
+                    if not player:
+                        raise HTTPException(status_code=400, detail="Invalid discovered_by_id: player not found")
+                    setattr(sector, field, uuid.UUID(value))
+                elif field == "controlling_team_id" and value:
+                    # Validate team exists
+                    team = db.query(Team).filter(Team.id == uuid.UUID(value)).first()
+                    if not team:
+                        raise HTTPException(status_code=400, detail="Invalid controlling_team_id: team not found")
+                    setattr(sector, field, uuid.UUID(value))
+                elif hasattr(sector, field):
+                    setattr(sector, field, value)
         
-        # Update last_updated timestamp
-        sector.last_updated = datetime.now(timezone.utc)
+            # Update last_updated timestamp
+            sector.last_updated = datetime.now(timezone.utc)
         
-        db.commit()
-        db.refresh(sector)
+            attempt.succeed(payload={"updated_fields": list(update_data.keys())})
+            db.refresh(sector)
         
-        logger.info(f"Admin {current_admin.username} updated sector {sector.name} (ID: {sector.sector_id})")
+            logger.info(f"Admin {current_admin.username} updated sector {sector.name} (ID: {sector.sector_id})")
         
-        return {
-            "message": "Sector updated successfully",
-            "sector_id": str(sector.id),
-            "sector_number": sector.sector_id,
-            "name": sector.name
-        }
+            return {
+                "message": "Sector updated successfully",
+                "sector_id": str(sector.id),
+                "sector_number": sector.sector_id,
+                "name": sector.name
+            }
         
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}")
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error updating sector {sector_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to update sector: {str(e)}")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}")
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error updating sector {sector_id}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to update sector: {str(e)}")
 
 @router.post("/sectors/{sector_id}/planet", response_model=Dict[str, Any])
 async def create_planet_in_sector(
     sector_id: str,
     planet_data: PlanetCreateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Create a planet in the specified sector"""
-    try:
-        # Find the sector - try UUID first, fallback to integer sector_id
-        sector = None
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="planet_create",
+        target_type="planet",
+        target_id="pending",
+        payload={},
+    ) as attempt:
         try:
-            # Try as UUID first (UUIDs are 36 characters with hyphens)
-            sector_uuid = uuid.UUID(sector_id)
-            sector = db.query(Sector).filter(Sector.id == sector_uuid).first()
-        except ValueError:
-            # If UUID parsing fails, try as integer sector_id
+            # Find the sector - try UUID first, fallback to integer sector_id
+            sector = None
             try:
-                sector_int = int(sector_id)
-                sector = db.query(Sector).filter(Sector.sector_id == sector_int).first()
+                # Try as UUID first (UUIDs are 36 characters with hyphens)
+                sector_uuid = uuid.UUID(sector_id)
+                sector = db.query(Sector).filter(Sector.id == sector_uuid).first()
+            except HTTPException:
+
+                raise
+
             except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid sector ID format")
+                # If UUID parsing fails, try as integer sector_id
+                try:
+                    sector_int = int(sector_id)
+                    sector = db.query(Sector).filter(Sector.sector_id == sector_int).first()
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid sector ID format")
         
-        if not sector:
-            raise HTTPException(status_code=404, detail="Sector not found")
+            if not sector:
+                raise HTTPException(status_code=404, detail="Sector not found")
         
-        # Check if sector already has a planet
-        existing_planet = db.query(Planet).filter(
-            Planet.sector_uuid == sector.id
-        ).first()
+            # Check if sector already has a planet
+            existing_planet = db.query(Planet).filter(
+                Planet.sector_uuid == sector.id
+            ).first()
         
-        if existing_planet:
-            raise HTTPException(status_code=400, detail="Sector already has a planet")
+            if existing_planet:
+                raise HTTPException(status_code=400, detail="Sector already has a planet")
         
-        # Import and validate planet type
-        from src.models.planet import Planet, PlanetType, PlanetStatus
+            # Import and validate planet type
+            from src.models.planet import Planet, PlanetType, PlanetStatus
         
+            try:
+                planet_type = PlanetType(planet_data.type)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Invalid planet type: {planet_data.type}")
+        
+            # Create new planet
+            new_planet = Planet(
+                name=planet_data.name,
+                sector_id=sector.sector_id,
+                sector_uuid=sector.id,
+                type=planet_type,
+                status=PlanetStatus.UNINHABITABLE,
+                size=planet_data.size,
+                position=planet_data.position,
+                gravity=planet_data.gravity,
+                temperature=planet_data.temperature,
+                water_coverage=planet_data.water_coverage,
+                habitability_score=planet_data.habitability_score,
+                resource_richness=planet_data.resource_richness
+            )
+        
+            db.add(new_planet)
+            db.flush()
+            attempt.target_id = str(new_planet.id)
+            attempt.succeed(payload={"sector_id": str(sector_id)})
+            db.refresh(new_planet)
+        
+            logger.info(f"Admin {current_admin.username} created planet {new_planet.name} in sector {sector.sector_id}")
+        
+            return {
+                "message": "Planet created successfully",
+                "planet_id": str(new_planet.id),
+                "planet_name": new_planet.name,
+                "sector_id": str(sector.id),
+                "sector_number": sector.sector_id
+            }
+        
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}")
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error creating planet in sector {sector_id}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to create planet: {str(e)}")
+
+class PlanetUpdateRequest(BaseModel):
+    name: Optional[str] = Field(None, max_length=100)
+    type: Optional[str] = None  # PlanetType enum value (e.g. "TERRAN", "DESERT")
+    size: Optional[int] = Field(None, ge=1, le=10)
+    position: Optional[int] = Field(None, ge=1, le=10)
+    gravity: Optional[float] = Field(None, ge=0.1, le=10.0)
+    temperature: Optional[float] = Field(None, ge=-100.0, le=1000.0)
+    water_coverage: Optional[float] = Field(None, ge=0.0, le=100.0)
+    habitability_score: Optional[int] = Field(None, ge=0, le=100)
+    resource_richness: Optional[float] = Field(None, ge=0.0, le=3.0)
+    defense_level: Optional[int] = Field(None, ge=0, le=100)
+
+
+@router.patch("/planets/{planet_id}", response_model=Dict[str, Any])
+async def update_planet(
+    planet_id: str,
+    planet_data: PlanetUpdateRequest,
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
+    db: Session = Depends(get_db)
+):
+    """Update a planet's properties"""
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="planet_update",
+        target_type="planet",
+        target_id=str(planet_id),
+        payload={},
+    ) as attempt:
         try:
-            planet_type = PlanetType(planet_data.type)
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid planet type: {planet_data.type}")
-        
-        # Create new planet
-        new_planet = Planet(
-            name=planet_data.name,
-            sector_id=sector.sector_id,
-            sector_uuid=sector.id,
-            type=planet_type,
-            status=PlanetStatus.UNINHABITABLE,
-            size=planet_data.size,
-            position=planet_data.position,
-            gravity=planet_data.gravity,
-            temperature=planet_data.temperature,
-            water_coverage=planet_data.water_coverage,
-            habitability_score=planet_data.habitability_score,
-            resource_richness=planet_data.resource_richness
-        )
-        
-        db.add(new_planet)
-        db.commit()
-        db.refresh(new_planet)
-        
-        logger.info(f"Admin {current_admin.username} created planet {new_planet.name} in sector {sector.sector_id}")
-        
-        return {
-            "message": "Planet created successfully",
-            "planet_id": str(new_planet.id),
-            "planet_name": new_planet.name,
-            "sector_id": str(sector.id),
-            "sector_number": sector.sector_id
-        }
-        
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}")
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error creating planet in sector {sector_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create planet: {str(e)}")
+            planet = db.query(Planet).filter(Planet.id == planet_id).first()
+            if not planet:
+                raise HTTPException(status_code=404, detail="Planet not found")
+
+            update_data = planet_data.model_dump(exclude_unset=True)
+
+            for field, value in update_data.items():
+                if field == "type" and value:
+                    from src.models.planet import PlanetType
+                    try:
+                        planet.type = PlanetType(value)
+                    except ValueError:
+                        raise HTTPException(status_code=400, detail=f"Invalid planet type: {value}")
+                else:
+                    setattr(planet, field, value)
+
+            attempt.succeed(payload={"updated_fields": list(update_data.keys())})
+
+            logger.info(f"Admin {current_admin.username} updated planet {planet_id}: {list(update_data.keys())}")
+
+            return {
+                "message": "Planet updated successfully",
+                "planet_id": planet_id,
+                "updated_fields": list(update_data.keys())
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error updating planet {planet_id}: {e}")
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Failed to update planet: {str(e)}")
+
+
+@router.delete("/planets/{planet_id}", response_model=Dict[str, Any])
+async def delete_planet(
+    planet_id: str,
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
+    db: Session = Depends(get_db)
+):
+    """Delete a planet. Fails closed (409 Conflict) if the planet is colonized
+    or is a capital population hub (canon: non-destructible).
+
+    Colonized = ANY of: owner_id set, colonized_at set, population > 0, or
+    status is COLONIZED / DEVELOPED / DYING / RESTRICTED / TERRAFORMING.
+    Prefer over-refuse over under-refuse.
+    """
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="planet_delete",
+        target_type="planet",
+        target_id=str(planet_id),
+        payload={},
+    ) as attempt:
+        try:
+            planet = db.query(Planet).filter(Planet.id == planet_id).first()
+            if not planet:
+                raise HTTPException(status_code=404, detail="Planet not found")
+
+            from src.models.planet import PlanetStatus
+            _inhabited = {
+                PlanetStatus.COLONIZED,
+                PlanetStatus.DEVELOPED,
+                PlanetStatus.DYING,
+                PlanetStatus.RESTRICTED,
+                PlanetStatus.TERRAFORMING,
+            }
+            if getattr(planet, "is_population_hub", False):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Cannot delete a population-hub planet — hubs are non-destructible",
+                )
+            if (planet.owner_id is not None
+                    or planet.colonized_at is not None
+                    or planet.population > 0
+                    or planet.status in _inhabited):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Cannot delete a colonized planet — "
+                        "remove colonists and release ownership first"
+                    )
+                )
+
+            planet_name = planet.name
+            db.delete(planet)
+            attempt.succeed(payload={"name": planet_name})
+
+
+            logger.info(f"Admin {current_admin.username} deleted planet '{planet_name}' ({planet_id})")
+
+            return {
+                "message": f"Planet '{planet_name}' deleted successfully",
+                "planet_id": planet_id
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error deleting planet {planet_id}: {e}")
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Failed to delete planet: {str(e)}")
+
 
 @router.post("/sectors/{sector_id}/port", response_model=Dict[str, Any])
 async def create_port_in_sector(
     sector_id: str,
     station_data: StationCreateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Create a port in the specified sector"""
-    try:
-        # Find the sector - try UUID first, fallback to integer sector_id
-        sector = None
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="port_create",
+        target_type="station",
+        target_id="pending",
+        payload={},
+    ) as attempt:
         try:
-            # Try as UUID first (UUIDs are 36 characters with hyphens)
-            sector_uuid = uuid.UUID(sector_id)
-            sector = db.query(Sector).filter(Sector.id == sector_uuid).first()
-        except ValueError:
-            # If UUID parsing fails, try as integer sector_id
+            # Find the sector - try UUID first, fallback to integer sector_id
+            sector = None
             try:
-                sector_int = int(sector_id)
-                sector = db.query(Sector).filter(Sector.sector_id == sector_int).first()
+                # Try as UUID first (UUIDs are 36 characters with hyphens)
+                sector_uuid = uuid.UUID(sector_id)
+                sector = db.query(Sector).filter(Sector.id == sector_uuid).first()
+            except HTTPException:
+
+                raise
+
             except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid sector ID format")
+                # If UUID parsing fails, try as integer sector_id
+                try:
+                    sector_int = int(sector_id)
+                    sector = db.query(Sector).filter(Sector.sector_id == sector_int).first()
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid sector ID format")
         
-        if not sector:
-            raise HTTPException(status_code=404, detail="Sector not found")
+            if not sector:
+                raise HTTPException(status_code=404, detail="Sector not found")
         
-        # Check if sector already has a port
-        existing_station = db.query(Station).filter(
-            Station.sector_uuid == sector.id
-        ).first()
+            # Check if sector already has a port
+            existing_station = db.query(Station).filter(
+                Station.sector_uuid == sector.id
+            ).first()
         
-        if existing_station:
-            raise HTTPException(status_code=400, detail="Sector already has a port")
+            if existing_station:
+                raise HTTPException(status_code=400, detail="Sector already has a port")
         
-        # Import and validate enums
-        from src.models.station import Station, StationClass, StationType, StationStatus
+            # Import and validate enums
+            from src.models.station import Station, StationClass, StationType, StationStatus
 
-        try:
-            port_class = StationClass(station_data.station_class)
-            port_type = StationType(station_data.type)
+            try:
+                port_class = StationClass(station_data.station_class)
+                port_type = StationType(station_data.type)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid port class or type: {str(e)}")
+
+            # Create new port
+            new_port = Station(
+                name=station_data.name,
+                sector_id=sector.sector_id,
+                sector_uuid=sector.id,
+                station_class=port_class,
+                type=port_type,
+                status=StationStatus.OPERATIONAL,
+                size=station_data.size,
+                faction_affiliation=station_data.faction_affiliation,
+                trade_volume=station_data.trade_volume,
+                market_volatility=station_data.market_volatility
+            )
+        
+            db.add(new_port)
+            db.flush()
+            attempt.target_id = str(new_port.id)
+            attempt.succeed(payload={"sector_id": str(sector_id)})
+            db.refresh(new_port)
+        
+            logger.info(f"Admin {current_admin.username} created port {new_port.name} in sector {sector.sector_id}")
+        
+            return {
+                "message": "Station created successfully",
+                "station_id": str(new_port.id),
+                "station_name": new_port.name,
+                "sector_id": str(sector.id),
+                "sector_number": sector.sector_id
+            }
+        
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid port class or type: {str(e)}")
-
-        # Create new port
-        new_port = Station(
-            name=station_data.name,
-            sector_id=sector.sector_id,
-            sector_uuid=sector.id,
-            station_class=port_class,
-            type=port_type,
-            status=StationStatus.OPERATIONAL,
-            size=station_data.size,
-            faction_affiliation=station_data.faction_affiliation,
-            trade_volume=station_data.trade_volume,
-            market_volatility=station_data.market_volatility
-        )
-        
-        db.add(new_port)
-        db.commit()
-        db.refresh(new_port)
-        
-        logger.info(f"Admin {current_admin.username} created port {new_port.name} in sector {sector.sector_id}")
-        
-        return {
-            "message": "Station created successfully",
-            "station_id": str(new_port.id),
-            "station_name": new_port.name,
-            "sector_id": str(sector.id),
-            "sector_number": sector.sector_id
-        }
-        
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}")
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error creating port in sector {sector_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create port: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}")
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error creating port in sector {sector_id}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to create port: {str(e)}")
 
 @router.get("/sectors/{sector_id}/planet")
 async def get_sector_planet(
     sector_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get detailed planet information for a specific sector"""
@@ -2075,7 +2453,7 @@ async def get_sector_planet(
 @router.get("/sectors/{sector_id}/port")
 async def get_sector_port(
     sector_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get detailed port information for a specific sector"""
@@ -2140,7 +2518,7 @@ async def get_sector_port(
 @router.get("/sectors/{sector_id}/warp-tunnels")
 async def get_sector_warp_tunnels(
     sector_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all warp tunnels for a specific sector (outgoing, incoming, and bidirectional)"""
@@ -2251,213 +2629,256 @@ class WarpTunnelUpdateRequest(BaseModel):
 async def create_warp_tunnel(
     sector_id: str,
     tunnel_data: WarpTunnelCreateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Create a new warp tunnel from this sector to another"""
-    try:
-        # Find origin sector
-        origin_sector = None
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="warp_tunnel_create",
+        target_type="warp_tunnel",
+        target_id="pending",
+        payload={},
+    ) as attempt:
         try:
-            sector_uuid = uuid.UUID(sector_id)
-            origin_sector = db.query(Sector).filter(Sector.id == sector_uuid).first()
-        except ValueError:
+            # Find origin sector
+            origin_sector = None
             try:
-                sector_int = int(sector_id)
-                origin_sector = db.query(Sector).filter(Sector.sector_id == sector_int).first()
+                sector_uuid = uuid.UUID(sector_id)
+                origin_sector = db.query(Sector).filter(Sector.id == sector_uuid).first()
             except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid sector ID format")
+                try:
+                    sector_int = int(sector_id)
+                    origin_sector = db.query(Sector).filter(Sector.sector_id == sector_int).first()
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid sector ID format")
 
-        if not origin_sector:
-            raise HTTPException(status_code=404, detail="Origin sector not found")
+            if not origin_sector:
+                raise HTTPException(status_code=404, detail="Origin sector not found")
 
-        # Find destination sector (by sector_id number within same region)
-        dest_sector = db.query(Sector).filter(
-            Sector.sector_id == tunnel_data.destination_sector_id,
-            Sector.region_id == origin_sector.region_id  # Must be same region
-        ).first()
+            # Find destination sector (by sector_id number within same region)
+            dest_sector = db.query(Sector).filter(
+                Sector.sector_id == tunnel_data.destination_sector_id,
+                Sector.region_id == origin_sector.region_id  # Must be same region
+            ).first()
 
-        if not dest_sector:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Destination sector {tunnel_data.destination_sector_id} not found in same region"
+            if not dest_sector:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Destination sector {tunnel_data.destination_sector_id} not found in same region"
+                )
+
+            # Validation: no self-loops
+            if origin_sector.id == dest_sector.id:
+                raise HTTPException(status_code=400, detail="Cannot create tunnel from sector to itself")
+
+            # Check for duplicate tunnels
+            existing = db.query(WarpTunnel).filter(
+                WarpTunnel.origin_sector_id == origin_sector.id,
+                WarpTunnel.destination_sector_id == dest_sector.id
+            ).first()
+
+            if existing:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Tunnel already exists from sector {origin_sector.sector_id} to {dest_sector.sector_id}"
+                )
+
+            # Import WarpTunnelType and WarpTunnelStatus enums
+            from src.models.warp_tunnel import WarpTunnelType, WarpTunnelStatus
+
+            # Validate and convert type. sectors.md:42-48 -- WarpTunnel.type has exactly
+            # two canon values; admin creation is restricted to them (WO-GWQ-TUNNELTYPE).
+            try:
+                tunnel_type = WarpTunnelType[tunnel_data.type.upper()]
+            except KeyError:
+                tunnel_type = None
+            if tunnel_type not in (WarpTunnelType.NATURAL, WarpTunnelType.ARTIFICIAL):
+                raise HTTPException(status_code=400, detail=f"Invalid tunnel type: {tunnel_data.type}")
+
+            # Create the tunnel
+            new_tunnel = WarpTunnel(
+                name=tunnel_data.name,
+                origin_sector_id=origin_sector.id,
+                destination_sector_id=dest_sector.id,
+                type=tunnel_type,
+                status=WarpTunnelStatus.ACTIVE,
+                is_bidirectional=tunnel_data.is_bidirectional,
+                stability=tunnel_data.stability,
+                turn_cost=tunnel_data.turn_cost,
+                energy_cost=0,
+                is_public=tunnel_data.is_public
             )
 
-        # Validation: no self-loops
-        if origin_sector.id == dest_sector.id:
-            raise HTTPException(status_code=400, detail="Cannot create tunnel from sector to itself")
+            db.add(new_tunnel)
+            db.flush()
+            attempt.target_id = str(new_tunnel.id)
+            attempt.succeed()
+            db.refresh(new_tunnel)
 
-        # Check for duplicate tunnels
-        existing = db.query(WarpTunnel).filter(
-            WarpTunnel.origin_sector_id == origin_sector.id,
-            WarpTunnel.destination_sector_id == dest_sector.id
-        ).first()
-
-        if existing:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Tunnel already exists from sector {origin_sector.sector_id} to {dest_sector.sector_id}"
-            )
-
-        # Import WarpTunnelType and WarpTunnelStatus enums
-        from src.models.warp_tunnel import WarpTunnelType, WarpTunnelStatus
-
-        # Validate and convert type
-        try:
-            tunnel_type = WarpTunnelType[tunnel_data.type.upper()]
-        except KeyError:
-            raise HTTPException(status_code=400, detail=f"Invalid tunnel type: {tunnel_data.type}")
-
-        # Create the tunnel
-        new_tunnel = WarpTunnel(
-            name=tunnel_data.name,
-            origin_sector_id=origin_sector.id,
-            destination_sector_id=dest_sector.id,
-            type=tunnel_type,
-            status=WarpTunnelStatus.ACTIVE,
-            is_bidirectional=tunnel_data.is_bidirectional,
-            stability=tunnel_data.stability,
-            turn_cost=tunnel_data.turn_cost,
-            energy_cost=0,
-            is_public=tunnel_data.is_public
-        )
-
-        db.add(new_tunnel)
-        db.commit()
-        db.refresh(new_tunnel)
-
-        return {
-            "success": True,
-            "message": f"Warp tunnel created from sector {origin_sector.sector_id} to {dest_sector.sector_id}",
-            "tunnel": {
-                "id": str(new_tunnel.id),
-                "name": new_tunnel.name,
-                "origin_sector_id": origin_sector.sector_id,
-                "destination_sector_id": dest_sector.sector_id,
-                "type": new_tunnel.type.value,
-                "is_bidirectional": new_tunnel.is_bidirectional,
-                "turn_cost": new_tunnel.turn_cost
+            return {
+                "success": True,
+                "message": f"Warp tunnel created from sector {origin_sector.sector_id} to {dest_sector.sector_id}",
+                "tunnel": {
+                    "id": str(new_tunnel.id),
+                    "name": new_tunnel.name,
+                    "origin_sector_id": origin_sector.sector_id,
+                    "destination_sector_id": dest_sector.sector_id,
+                    "type": new_tunnel.type.value,
+                    "is_bidirectional": new_tunnel.is_bidirectional,
+                    "turn_cost": new_tunnel.turn_cost
+                }
             }
-        }
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error creating warp tunnel: {e}")
-        import traceback
-        logger.error(f"Full traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Failed to create warp tunnel: {str(e)}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error creating warp tunnel: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=f"Failed to create warp tunnel: {str(e)}")
 
 @router.put("/warp-tunnels/{tunnel_id}")
 async def update_warp_tunnel(
     tunnel_id: str,
     tunnel_data: WarpTunnelUpdateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Update an existing warp tunnel"""
-    try:
-        # Find the tunnel
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="warp_tunnel_update",
+        target_type="warp_tunnel",
+        target_id=str(tunnel_id),
+        payload={},
+    ) as attempt:
         try:
-            tunnel_uuid = uuid.UUID(tunnel_id)
-            tunnel = db.query(WarpTunnel).filter(WarpTunnel.id == tunnel_uuid).first()
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid tunnel ID format")
+            # Find the tunnel
+            try:
+                tunnel_uuid = uuid.UUID(tunnel_id)
+                tunnel = db.query(WarpTunnel).filter(WarpTunnel.id == tunnel_uuid).first()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid tunnel ID format")
 
-        if not tunnel:
-            raise HTTPException(status_code=404, detail="Warp tunnel not found")
+            if not tunnel:
+                raise HTTPException(status_code=404, detail="Warp tunnel not found")
 
-        # Import enums
-        from src.models.warp_tunnel import WarpTunnelType, WarpTunnelStatus
+            # Import enums
+            from src.models.warp_tunnel import WarpTunnelType, WarpTunnelStatus
 
-        # Update provided fields
-        update_data = tunnel_data.dict(exclude_unset=True)
+            # Update provided fields
+            update_data = tunnel_data.dict(exclude_unset=True)
 
-        for field, value in update_data.items():
-            if field == "type" and value:
-                try:
-                    tunnel.type = WarpTunnelType[value.upper()]
-                except KeyError:
-                    raise HTTPException(status_code=400, detail=f"Invalid tunnel type: {value}")
-            elif field == "status" and value:
-                try:
-                    tunnel.status = WarpTunnelStatus[value.upper()]
-                except KeyError:
-                    raise HTTPException(status_code=400, detail=f"Invalid tunnel status: {value}")
-            else:
-                setattr(tunnel, field, value)
+            for field, value in update_data.items():
+                if field == "type" and value:
+                    # sectors.md:42-48 -- restrict updates to the two canon values
+                    # (WO-GWQ-TUNNELTYPE). A same-value passthrough on a legacy row
+                    # (e.g. the admin form resubmitting an existing QUANTUM tunnel's
+                    # type unchanged while editing another field) is not a mint and
+                    # is allowed; only an actual transition to a non-canon value
+                    # is rejected. Legacy rows otherwise keep loading via the enum.
+                    try:
+                        candidate_type = WarpTunnelType[value.upper()]
+                    except KeyError:
+                        candidate_type = None
+                    is_canon = candidate_type in (WarpTunnelType.NATURAL, WarpTunnelType.ARTIFICIAL)
+                    is_unchanged = candidate_type is not None and candidate_type == tunnel.type
+                    if not (is_canon or is_unchanged):
+                        raise HTTPException(status_code=400, detail=f"Invalid tunnel type: {value}")
+                    tunnel.type = candidate_type
+                elif field == "status" and value:
+                    try:
+                        tunnel.status = WarpTunnelStatus[value.upper()]
+                    except KeyError:
+                        raise HTTPException(status_code=400, detail=f"Invalid tunnel status: {value}")
+                else:
+                    setattr(tunnel, field, value)
 
-        db.commit()
-        db.refresh(tunnel)
+            attempt.succeed()
+            db.refresh(tunnel)
 
-        return {
-            "success": True,
-            "message": "Warp tunnel updated successfully",
-            "tunnel": {
-                "id": str(tunnel.id),
-                "name": tunnel.name,
-                "type": tunnel.type.value,
-                "status": tunnel.status.value,
-                "is_bidirectional": tunnel.is_bidirectional,
-                "turn_cost": tunnel.turn_cost,
-                "stability": tunnel.stability
+            return {
+                "success": True,
+                "message": "Warp tunnel updated successfully",
+                "tunnel": {
+                    "id": str(tunnel.id),
+                    "name": tunnel.name,
+                    "type": tunnel.type.value,
+                    "status": tunnel.status.value,
+                    "is_bidirectional": tunnel.is_bidirectional,
+                    "turn_cost": tunnel.turn_cost,
+                    "stability": tunnel.stability
+                }
             }
-        }
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error updating warp tunnel {tunnel_id}: {e}")
-        import traceback
-        logger.error(f"Full traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Failed to update warp tunnel: {str(e)}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error updating warp tunnel {tunnel_id}: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=f"Failed to update warp tunnel: {str(e)}")
 
 @router.delete("/warp-tunnels/{tunnel_id}")
 async def delete_warp_tunnel(
     tunnel_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Delete a warp tunnel"""
-    try:
-        # Find the tunnel
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="warp_tunnel_delete",
+        target_type="warp_tunnel",
+        target_id=str(tunnel_id),
+        payload={},
+    ) as attempt:
         try:
-            tunnel_uuid = uuid.UUID(tunnel_id)
-            tunnel = db.query(WarpTunnel).filter(WarpTunnel.id == tunnel_uuid).first()
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid tunnel ID format")
+            # Find the tunnel
+            try:
+                tunnel_uuid = uuid.UUID(tunnel_id)
+                tunnel = db.query(WarpTunnel).filter(WarpTunnel.id == tunnel_uuid).first()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid tunnel ID format")
 
-        if not tunnel:
-            raise HTTPException(status_code=404, detail="Warp tunnel not found")
+            if not tunnel:
+                raise HTTPException(status_code=404, detail="Warp tunnel not found")
 
-        # Store info for response
-        tunnel_info = {
-            "name": tunnel.name,
-            "origin_sector_id": tunnel.origin_sector.sector_id if tunnel.origin_sector else None,
-            "destination_sector_id": tunnel.destination_sector.sector_id if tunnel.destination_sector else None,
-            "is_bidirectional": tunnel.is_bidirectional
-        }
+            # Store info for response
+            tunnel_info = {
+                "name": tunnel.name,
+                "origin_sector_id": tunnel.origin_sector.sector_id if tunnel.origin_sector else None,
+                "destination_sector_id": tunnel.destination_sector.sector_id if tunnel.destination_sector else None,
+                "is_bidirectional": tunnel.is_bidirectional
+            }
 
-        # Delete the tunnel
-        db.delete(tunnel)
-        db.commit()
+            # Delete the tunnel
+            db.delete(tunnel)
+            attempt.succeed()
 
-        return {
-            "success": True,
-            "message": f"Warp tunnel '{tunnel_info['name']}' deleted successfully",
-            "was_bidirectional": tunnel_info["is_bidirectional"]
-        }
+            return {
+                "success": True,
+                "message": f"Warp tunnel '{tunnel_info['name']}' deleted successfully",
+                "was_bidirectional": tunnel_info["is_bidirectional"]
+            }
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error deleting warp tunnel {tunnel_id}: {e}")
-        import traceback
-        logger.error(f"Full traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Failed to delete warp tunnel: {str(e)}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error deleting warp tunnel {tunnel_id}: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=f"Failed to delete warp tunnel: {str(e)}")
 
 @router.get("/warp-tunnels", response_model=Dict[str, Any])
 async def get_warp_tunnels(
@@ -2466,7 +2887,7 @@ async def get_warp_tunnels(
     filter_type: Optional[str] = None,
     filter_status: Optional[str] = None,
     filter_origin_sector: Optional[int] = None,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Simple warp tunnels endpoint that redirects to comprehensive endpoint"""
@@ -2482,204 +2903,165 @@ async def get_warp_tunnels(
 
 # Station CRUD Operations
 
-class StationUpdateRequest(BaseModel):
-    name: Optional[str] = Field(None, max_length=100)
-    port_class: Optional[str] = None  # Station class enum name (e.g., "CLASS_1")
-    trade_volume: Optional[int] = Field(None, ge=0)
-    max_capacity: Optional[int] = Field(None, ge=0)
-    security_level: Optional[int] = Field(None, ge=0, le=100)
-    docking_fee: Optional[int] = Field(None, ge=0)
-    owner_name: Optional[str] = None
-
-@router.patch("/ports/{station_id}", response_model=Dict[str, Any])
-async def update_port(
-    station_id: str,
-    station_data: StationUpdateRequest,
-    current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
-):
-    """Update a port's properties"""
-    try:
-        # Find the port by ID
-        station = db.query(Station).filter(Station.id == station_id).first()
-        if not station:
-            raise HTTPException(status_code=404, detail="Station not found")
-
-        # Update fields that were provided
-        update_data = station_data.dict(exclude_unset=True)
-
-        for field, value in update_data.items():
-            if field == "port_class" and value:
-                # Convert string enum name (e.g. "CLASS_1") to StationClass
-                from src.models.station import StationClass
-                try:
-                    station_class_enum = getattr(StationClass, value)
-                    setattr(station, "station_class", station_class_enum)
-                except AttributeError:
-                    raise HTTPException(status_code=400, detail=f"Invalid port class: {value}")
-            elif field == "owner_name":
-                # Handle owner assignment
-                if value:
-                    # Find player by username
-                    player = db.query(Player).join(User).filter(User.username == value).first()
-                    if player:
-                        station.owner_id = player.id
-                    else:
-                        raise HTTPException(status_code=404, detail=f"Player '{value}' not found")
-                else:
-                    # Clear owner
-                    station.owner_id = None
-            else:
-                # Direct field update
-                setattr(station, field, value)
-
-        db.commit()
-        
-        return {
-            "message": "Station updated successfully",
-            "station_id": str(station.id),
-            "updated_fields": list(update_data.keys())
-        }
-        
-    except Exception as e:
-        logger.error(f"Error updating port {station_id}: {e}")
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to update port: {str(e)}")
 
 @router.delete("/ports/{station_id}", response_model=Dict[str, Any])
 async def delete_port(
     station_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Delete a port"""
-    try:
-        # Find the port by ID
-        station = db.query(Station).filter(Station.id == station_id).first()
-        if not station:
-            raise HTTPException(status_code=404, detail="Station not found")
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="port_delete",
+        target_type="station",
+        target_id=str(station_id),
+        payload={},
+    ) as attempt:
+        try:
+            # Find the port by ID
+            station = db.query(Station).filter(Station.id == station_id).first()
+            if not station:
+                raise HTTPException(status_code=404, detail="Station not found")
 
-        station_name = station.name
+            station_name = station.name
 
-        # Delete the port
-        db.delete(station)
-        db.commit()
+            # Delete the port
+            db.delete(station)
+            attempt.succeed(payload={"name": station_name})
         
-        return {
-            "message": f"Station '{station_name}' deleted successfully",
-            "station_id": station_id
-        }
+            return {
+                "message": f"Station '{station_name}' deleted successfully",
+                "station_id": station_id
+            }
         
-    except Exception as e:
-        logger.error(f"Error deleting port {station_id}: {e}")
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to delete port: {str(e)}")
+        except HTTPException:
+
+            raise
+
+        except Exception as e:
+            logger.error(f"Error deleting port {station_id}: {e}")
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Failed to delete port: {str(e)}")
 
 @router.post("/ports", response_model=Dict[str, Any])
 async def create_port(
     port_data: Dict[str, Any],
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Create a new port"""
-    try:
-        # Import and validate enums
-        from src.models.station import Station, StationClass, StationType, StationStatus
-
-        # Validate required fields
-        if not port_data.get("name"):
-            raise HTTPException(status_code=400, detail="Station name is required")
-        if not port_data.get("sector_id"):
-            raise HTTPException(status_code=400, detail="Sector ID is required")
-        
-        # Find the sector
-        sector_id = port_data["sector_id"]
-        sector = None
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="port_create",
+        target_type="station",
+        target_id="pending",
+        payload={},
+    ) as attempt:
         try:
-            # Try as integer sector_id first
-            sector_int = int(sector_id)
-            sector = db.query(Sector).filter(Sector.sector_id == sector_int).first()
-        except ValueError:
-            # Try as UUID
+            # Import and validate enums
+            from src.models.station import Station, StationClass, StationType, StationStatus
+
+            # Validate required fields
+            if not port_data.get("name"):
+                raise HTTPException(status_code=400, detail="Station name is required")
+            if not port_data.get("sector_id"):
+                raise HTTPException(status_code=400, detail="Sector ID is required")
+        
+            # Find the sector
+            sector_id = port_data["sector_id"]
+            sector = None
             try:
-                sector_uuid = uuid.UUID(sector_id)
-                sector = db.query(Sector).filter(Sector.id == sector_uuid).first()
+                # Try as integer sector_id first
+                sector_int = int(sector_id)
+                sector = db.query(Sector).filter(Sector.sector_id == sector_int).first()
             except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid sector ID format")
+                # Try as UUID
+                try:
+                    sector_uuid = uuid.UUID(sector_id)
+                    sector = db.query(Sector).filter(Sector.id == sector_uuid).first()
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid sector ID format")
         
-        if not sector:
-            raise HTTPException(status_code=404, detail="Sector not found")
+            if not sector:
+                raise HTTPException(status_code=404, detail="Sector not found")
         
-        # Check if sector already has a port
-        existing_station = db.query(Station).filter(Station.sector_uuid == sector.id).first()
-        if existing_station:
-            raise HTTPException(status_code=400, detail="Sector already has a port")
+            # Check if sector already has a port
+            existing_station = db.query(Station).filter(Station.sector_uuid == sector.id).first()
+            if existing_station:
+                raise HTTPException(status_code=400, detail="Sector already has a port")
         
-        # Parse port class
-        try:
-            port_class_str = port_data.get("station_class", "CLASS_1")
-            port_class = getattr(StationClass, port_class_str)
-        except AttributeError:
-            raise HTTPException(status_code=400, detail=f"Invalid port class: {port_class_str}")
+            # Parse port class
+            try:
+                port_class_str = port_data.get("station_class", "CLASS_1")
+                port_class = getattr(StationClass, port_class_str)
+            except AttributeError:
+                raise HTTPException(status_code=400, detail=f"Invalid port class: {port_class_str}")
 
-        # Handle owner assignment
-        owner_id = None
-        if port_data.get("owner_name"):
-            player = db.query(Player).join(User).filter(User.username == port_data["owner_name"]).first()
-            if player:
-                owner_id = player.id
-            else:
-                raise HTTPException(status_code=404, detail=f"Player '{port_data['owner_name']}' not found")
+            # Handle owner assignment
+            owner_id = None
+            if port_data.get("owner_name"):
+                player = db.query(Player).join(User).filter(User.username == port_data["owner_name"]).first()
+                if player:
+                    owner_id = player.id
+                else:
+                    raise HTTPException(status_code=404, detail=f"Player '{port_data['owner_name']}' not found")
         
-        # Create the port with all required fields
-        new_port = Station(
-            name=port_data["name"],
-            sector_id=sector.sector_id,
-            sector_uuid=sector.id,
-            station_class=port_class,
-            type=StationType.TRADING,  # Default to trading
-            status=StationStatus.OPERATIONAL,
-            trade_volume=port_data.get("trade_volume", 1000),
-            size=port_data.get("size", 5),
-            owner_id=owner_id,
-            # Set default values for required fields
-            faction_affiliation=port_data.get("faction_affiliation", None),
-            market_volatility=port_data.get("market_volatility", 50)
-        )
+            # Create the port with all required fields
+            new_port = Station(
+                name=port_data["name"],
+                sector_id=sector.sector_id,
+                sector_uuid=sector.id,
+                station_class=port_class,
+                type=StationType.TRADING,  # Default to trading
+                status=StationStatus.OPERATIONAL,
+                trade_volume=port_data.get("trade_volume", 1000),
+                size=port_data.get("size", 5),
+                owner_id=owner_id,
+                # Set default values for required fields
+                faction_affiliation=port_data.get("faction_affiliation", None),
+                market_volatility=port_data.get("market_volatility", 50)
+            )
         
-        # Update commodity stock levels based on port class
-        new_port.update_commodity_trading_flags()
-        new_port.update_commodity_stock_levels()
+            # Update commodity stock levels based on port class
+            new_port.update_commodity_trading_flags()
+            new_port.update_commodity_stock_levels()
         
-        db.add(new_port)
-        db.commit()
+            db.add(new_port)
+            db.flush()
+            attempt.target_id = str(new_port.id)
+            attempt.succeed()
         
-        return {
-            "message": "Station created successfully",
-            "station_id": str(new_port.id),
-            "station_name": new_port.name,
-            "sector_id": sector.sector_id
-        }
+            return {
+                "message": "Station created successfully",
+                "station_id": str(new_port.id),
+                "station_name": new_port.name,
+                "sector_id": sector.sector_id
+            }
         
-    except HTTPException:
-        # Re-raise HTTP exceptions (like "sector already has a port")
-        db.rollback()
-        raise
-    except Exception as e:
-        logger.error(f"Error creating port: {e}")
-        logger.error(f"Station data: {port_data}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to create port: {str(e)}")
+        except HTTPException:
+            # Re-raise HTTP exceptions (like "sector already has a port")
+            db.rollback()
+            raise
+        except Exception as e:
+            logger.error(f"Error creating port: {e}")
+            logger.error(f"Station data: {port_data}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Failed to create port: {str(e)}")
 
-# =============================================================================
-# AI TRADING INTELLIGENCE ADMIN ENDPOINTS
-# =============================================================================
+    # =============================================================================
+    # AI TRADING INTELLIGENCE ADMIN ENDPOINTS
+    # =============================================================================
 
 @router.get("/ai/models", response_model=List[Dict[str, Any]])
 async def get_ai_models(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get AI models status for admin dashboard"""
@@ -2698,7 +3080,7 @@ async def get_ai_models(
 
 @router.get("/ai/predictions/accuracy", response_model=List[Dict[str, Any]])
 async def get_ai_prediction_accuracy(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get AI prediction accuracy by commodity for admin dashboard"""
@@ -2717,7 +3099,7 @@ async def get_ai_prediction_accuracy(
 
 @router.get("/ai/profiles", response_model=List[Dict[str, Any]])
 async def get_ai_player_profiles(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get AI player profiles for admin dashboard"""
@@ -2745,7 +3127,7 @@ async def get_ai_player_profiles(
 
 @router.get("/ai/metrics", response_model=Dict[str, Any])
 async def get_ai_system_metrics(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get AI system metrics for admin dashboard"""
@@ -2788,7 +3170,7 @@ async def get_ai_system_metrics(
 async def ai_model_action(
     model_id: str,
     action: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Take action on AI model (start, stop, train)"""
@@ -2808,7 +3190,7 @@ async def ai_model_action(
 async def get_ai_predictions(
     timeframe: str = Query("1h", description="Prediction timeframe"),
     resource: Optional[str] = Query(None, description="Filter by resource"),
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get AI price predictions for admin dashboard"""
@@ -2829,18 +3211,78 @@ async def get_ai_predictions(
 
 @router.get("/ai/route-optimization", response_model=Dict[str, Any])
 async def get_ai_route_optimization_data(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
-    """Get AI route optimization data for admin dashboard"""
+    """Get AI route optimization data for admin dashboard, sourced from the
+    route_optimization_runs telemetry table (WO-SB-RO2) — one row per
+    successful call to POST /routes/optimize or POST /ai/optimize-route.
+    """
     try:
-        # No route optimization engine exists; nothing in the system computes,
-        # tracks, or stores optimized routes or their outcomes. Return an
-        # empty structure (with null stats — zeros would themselves be
-        # fabricated metrics) rather than invented routes.
+        total_routes_optimized = db.query(func.count(RouteOptimizationRun.id)).scalar() or 0
+
+        if not total_routes_optimized:
+            # No runs recorded yet — an empty structure (with null stats;
+            # zeros would themselves be fabricated metrics), not invented
+            # routes.
+            data = {
+                "active_optimizations": [],
+                "optimization_stats": None
+            }
+            logger.info(f"Admin {current_admin.username} requested AI route optimization data")
+            return data
+
+        runs = (
+            db.query(RouteOptimizationRun)
+            .order_by(desc(RouteOptimizationRun.created_at))
+            .limit(50)
+            .all()
+        )
+
+        # Batch-resolve player display names via the Player.username property
+        # (nickname -> username fallback) instead of one query per row. Its
+        # SQL twin is Player.display_name_expr, for call sites that need a
+        # labeled column inline in a select() rather than a batch fetch.
+        player_ids = {run.player_id for run in runs}
+        players = db.query(Player).filter(Player.id.in_(player_ids)).all() if player_ids else []
+        name_by_player_id = {str(p.id): p.username for p in players}
+
+        active_optimizations = [
+            {
+                "id": str(run.id),
+                "playerId": str(run.player_id),
+                "playerName": name_by_player_id.get(str(run.player_id), "Unknown"),
+                "startSector": run.start_sector,
+                "route": run.sectors,
+                "estimatedProfit": run.total_profit,
+                "estimatedTime": run.total_time_hours,
+                "efficiency": max(0, min(100, round(run.cargo_efficiency * 100))),
+                "status": run.status,
+            }
+            for run in runs
+        ]
+
+        avg_efficiency, avg_profit = db.query(
+            func.avg(RouteOptimizationRun.cargo_efficiency),
+            func.avg(RouteOptimizationRun.total_profit),
+        ).one()
+
+        active_window_cutoff = datetime.now(timezone.utc) - timedelta(minutes=60)
+        active_count = (
+            db.query(func.count(RouteOptimizationRun.id))
+            .filter(RouteOptimizationRun.created_at > active_window_cutoff)
+            .scalar()
+            or 0
+        )
+
         data = {
-            "active_optimizations": [],
-            "optimization_stats": None
+            "active_optimizations": active_optimizations,
+            "optimization_stats": {
+                "total_routes_optimized": total_routes_optimized,
+                "avg_efficiency_improvement": round((avg_efficiency or 0.0) * 100, 1),
+                "avg_profit_increase": round(avg_profit or 0.0, 1),
+                "active_optimizations": active_count,
+            },
         }
 
         logger.info(f"Admin {current_admin.username} requested AI route optimization data")
@@ -2852,7 +3294,7 @@ async def get_ai_route_optimization_data(
 
 @router.get("/ai/behavior-analytics", response_model=Dict[str, Any])
 async def get_ai_behavior_analytics(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get AI behavior analytics data for admin dashboard"""

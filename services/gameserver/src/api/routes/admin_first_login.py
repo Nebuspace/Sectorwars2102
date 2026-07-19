@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session, joinedload
 from pydantic import BaseModel
 
 from src.core.database import get_db
-from src.auth.dependencies import require_admin
+from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth.dependencies import require_scope
 from src.models.first_login import FirstLoginSession, DialogueExchange, DialogueOutcome
 from src.models.player import Player
 from src.models.user import User
@@ -18,7 +19,7 @@ from src.models.user import User
 router = APIRouter(
     prefix="/admin/first-login",
     tags=["admin", "first-login"],
-    dependencies=[Depends(require_admin)]
+    dependencies=[Depends(require_scope(PLAYERS_VIEW))]
 )
 
 

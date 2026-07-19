@@ -19,11 +19,13 @@ from pydantic import BaseModel, Field
 from enum import Enum
 
 from src.core.database import get_db
-from src.auth.dependencies import get_current_user, require_admin
+from src.auth.admin_scopes import PLAYERS_VIEW, SHIPS_MANAGE
+from src.auth.dependencies import get_current_user, require_scope
 from src.models.user import User
 from src.models.ship import Ship, ShipType, ShipStatus, ShipSpecification
 from src.models.player import Player
 from src.models.sector import Sector
+from src.services.admin_action_attempt import admin_action_attempt
 from src.services.audit_service import AuditService, AuditAction
 
 router = APIRouter(prefix="/admin/ships", tags=["admin", "ships"])
@@ -77,9 +79,6 @@ class HealthReportResponse(BaseModel):
     critical_issues: List[Dict[str, Any]]
 
 
-class DeleteShipResponse(BaseModel):
-    """Response for ship deletion."""
-    success: bool
 
 
 # Admin Ship Management Endpoints
@@ -92,7 +91,7 @@ async def get_ships(
     type: Optional[str] = Query(None),
     owner_id: Optional[UUID] = Query(None, alias="ownerId"),
     sector_id: Optional[UUID] = Query(None, alias="sectorId"),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all ships with optional filters and pagination."""
@@ -153,10 +152,30 @@ async def get_ships(
         else:
             condition = "critical"
 
-        # Calculate cargo usage
-        cargo_used = sum(cargo.values()) if cargo else 0
-        # Get cargo capacity from spec if available, otherwise use default
-        cargo_capacity = spec.max_cargo if spec else 10  # Default to 10 if no spec
+        # Calculate cargo usage — ship.cargo is structured
+        # {"capacity","used","contents":{commodity:qty}}, not a flat qty map.
+        # sum(cargo.values()) TypeError'd on the nested contents dict (pre-existing
+        # since 2025-11-15; hub MED ticket @ WINDOW-CLOSED).
+        contents = cargo.get("contents") if isinstance(cargo.get("contents"), dict) else {}
+        used_field = cargo.get("used")
+        if isinstance(used_field, (int, float)):
+            cargo_used = int(used_field)
+        elif contents:
+            cargo_used = sum(
+                int(q) for q in contents.values() if isinstance(q, (int, float))
+            )
+        else:
+            # Legacy flat commodity→qty maps (if any remain).
+            cargo_used = sum(
+                int(q) for q in cargo.values() if isinstance(q, (int, float))
+            )
+        # Prefer durable capacity on the cargo blob, then ship spec, then default.
+        if isinstance(cargo.get("capacity"), (int, float)) and cargo["capacity"] > 0:
+            cargo_capacity = int(cargo["capacity"])
+        elif spec and getattr(spec, "max_cargo", None):
+            cargo_capacity = int(spec.max_cargo)
+        else:
+            cargo_capacity = 10
         cargo_percent = (cargo_used / cargo_capacity * 100) if cargo_capacity > 0 else 0
 
         ship_data = {
@@ -187,7 +206,7 @@ async def get_ships(
                 "used": cargo_used,
                 "capacity": cargo_capacity,
                 "capacity_percent": round(cargo_percent, 1),
-                "contents": cargo
+                "contents": contents,
             },
             "created_at": ship.created_at.isoformat() if ship.created_at else None,
             "last_updated": ship.last_updated.isoformat() if ship.last_updated else None
@@ -206,87 +225,93 @@ async def get_ships(
 async def emergency_ship_action(
     ship_id: UUID,
     request: EmergencyActionRequest,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(SHIPS_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Perform emergency action on a ship."""
-    
-    # Get ship
-    ship = db.query(Ship).filter(Ship.id == ship_id).first()
-    if not ship:
-        raise HTTPException(status_code=404, detail="Ship not found")
-    
-    old_status = ship.status
-    old_sector = ship.sector_id
-    message = ""
-    
-    if request.action == EmergencyAction.REPAIR:
-        # Fully repair ship - restore combat stats and maintenance
-        combat = ship.combat or {}
-        combat["hull"] = combat.get("max_hull", 100)
-        combat["shields"] = combat.get("max_shields", 100)
-        ship.combat = combat
-        # `combat = ship.combat or {}` returns the SAME dict reference when the
-        # column is already populated; reassigning it to itself does not mark
-        # the attribute dirty. flag_modified guarantees the JSONB UPDATE fires.
-        flag_modified(ship, "combat")
 
-        maintenance = ship.maintenance or {}
-        maintenance["condition"] = 100.0
-        maintenance["last_maintenance"] = datetime.utcnow().isoformat()
-        maintenance["repair_needed"] = False
-        ship.maintenance = maintenance
-        flag_modified(ship, "maintenance")
+    with admin_action_attempt(
+        db,
+        actor=admin,
+        scope_used=SHIPS_MANAGE,
+        action="ship_emergency",
+        target_type="ship",
+        target_id=str(ship_id),
+        payload={"action": request.action.value},
+    ) as attempt:
+        ship = db.query(Ship).filter(Ship.id == ship_id).first()
+        if not ship:
+            raise HTTPException(status_code=404, detail="Ship not found")
 
-        ship.status = ShipStatus.DOCKED.value
-        ship.is_active = True
-        ship.is_destroyed = False
-        message = f"Ship {ship.name} fully repaired"
+        old_status = ship.status
+        old_sector = ship.sector_id
+        message = ""
 
-    elif request.action == EmergencyAction.REFUEL:
-        # Refuel ship - restore condition and set to docked
-        maintenance = ship.maintenance or {}
-        maintenance["condition"] = 100.0
-        ship.maintenance = maintenance
-        flag_modified(ship, "maintenance")
+        if request.action == EmergencyAction.REPAIR:
+            combat = ship.combat or {}
+            combat["hull"] = combat.get("max_hull", 100)
+            combat["shields"] = combat.get("max_shields", 100)
+            ship.combat = combat
+            flag_modified(ship, "combat")
 
-        ship.status = ShipStatus.DOCKED.value
-        ship.is_active = True
-        message = f"Ship {ship.name} refueled"
-        
-    elif request.action == EmergencyAction.TELEPORT:
-        if not request.target_sector_id:
-            raise HTTPException(status_code=400, detail="target_sector_id required for teleport")
-        
-        # Verify target sector exists
-        target_sector = db.query(Sector).filter(Sector.id == request.target_sector_id).first()
-        if not target_sector:
-            raise HTTPException(status_code=404, detail="Target sector not found")
-        
-        # Teleport ship
-        ship.sector_id = request.target_sector_id
-        ship.status = ShipStatus.IN_SPACE.value
-        message = f"Ship {ship.name} teleported to {target_sector.name}"
-    
-    # Log the emergency action
-    audit_service = AuditService(db)
-    audit_service.log_action(
-        user_id=admin.id,
-        action=AuditAction.UPDATE,
-        resource_type="ship",
-        resource_id=str(ship_id),
-        details={
-            "emergency_action": request.action.value,
-            "old_status": old_status,
-            "new_status": ship.status,
-            "old_sector": str(old_sector) if old_sector else None,
-            "new_sector": str(ship.sector_id) if ship.sector_id else None,
-            "target_sector": str(request.target_sector_id) if request.target_sector_id else None
-        }
-    )
-    
-    db.commit()
-    
+            maintenance = ship.maintenance or {}
+            maintenance["condition"] = 100.0
+            maintenance["last_maintenance"] = datetime.utcnow().isoformat()
+            maintenance["repair_needed"] = False
+            ship.maintenance = maintenance
+            flag_modified(ship, "maintenance")
+
+            ship.status = ShipStatus.DOCKED.value
+            ship.is_active = True
+            ship.is_destroyed = False
+            message = f"Ship {ship.name} fully repaired"
+
+        elif request.action == EmergencyAction.REFUEL:
+            maintenance = ship.maintenance or {}
+            maintenance["condition"] = 100.0
+            ship.maintenance = maintenance
+            flag_modified(ship, "maintenance")
+
+            ship.status = ShipStatus.DOCKED.value
+            ship.is_active = True
+            message = f"Ship {ship.name} refueled"
+
+        elif request.action == EmergencyAction.TELEPORT:
+            if not request.target_sector_id:
+                raise HTTPException(status_code=400, detail="target_sector_id required for teleport")
+
+            target_sector = db.query(Sector).filter(Sector.id == request.target_sector_id).first()
+            if not target_sector:
+                raise HTTPException(status_code=404, detail="Target sector not found")
+
+            ship.sector_id = request.target_sector_id
+            ship.status = ShipStatus.IN_SPACE.value
+            message = f"Ship {ship.name} teleported to {target_sector.name}"
+
+        audit_service = AuditService(db)
+        audit_service.log_action(
+            user_id=admin.id,
+            action=AuditAction.UPDATE,
+            resource_type="ship",
+            resource_id=str(ship_id),
+            details={
+                "emergency_action": request.action.value,
+                "old_status": old_status,
+                "new_status": ship.status,
+                "old_sector": str(old_sector) if old_sector else None,
+                "new_sector": str(ship.sector_id) if ship.sector_id else None,
+                "target_sector": str(request.target_sector_id) if request.target_sector_id else None
+            }
+        )
+
+        attempt.succeed(
+            payload={
+                "action": request.action.value,
+                "old_status": old_status,
+                "new_status": ship.status,
+            },
+        )
+
     return EmergencyActionResponse(
         success=True,
         ship_id=ship_id,
@@ -298,7 +323,7 @@ async def emergency_ship_action(
 
 @router.get("/health-report", response_model=HealthReportResponse)
 async def get_fleet_health_report(
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get comprehensive fleet health report."""
@@ -393,124 +418,123 @@ async def get_fleet_health_report(
 @router.post("/create", response_model=Dict[str, Any])
 async def create_ship(
     request: CreateShipRequest,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(SHIPS_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Create a new ship administratively."""
-    
-    # Verify owner exists
-    owner = db.query(Player).filter(Player.id == request.owner_id).first()
-    if not owner:
-        raise HTTPException(status_code=404, detail="Owner (player) not found")
-    
-    # Verify sector exists
-    sector = db.query(Sector).filter(Sector.id == request.sector_id).first()
-    if not sector:
-        raise HTTPException(status_code=404, detail="Sector not found")
-    
-    # Create ship name if not provided
-    ship_name = request.name
-    if not ship_name:
-        ship_count = db.query(func.count(Ship.id)).filter(
-            Ship.owner_id == request.owner_id,
-            Ship.type == request.type.value
-        ).scalar()
-        ship_name = f"{owner.user.username}'s {request.type.value.replace('_', ' ').title()} #{ship_count + 1}"
 
-    # Get ship specification from database
-    spec = db.query(ShipSpecification).filter(
-        ShipSpecification.type == request.type
-    ).first()
-
-    if not spec:
-        raise HTTPException(status_code=400, detail=f"No specification found for ship type {request.type.value}")
-
-    # Create new ship with proper JSONB initialization
-    new_ship = Ship(
-        name=ship_name,
-        type=request.type,
-        owner_id=request.owner_id,
-        sector_id=request.sector_id,
-        base_speed=spec.speed,
-        current_speed=spec.speed,
-        turn_cost=spec.turn_cost,
-        warp_capable=spec.warp_compatible,
-        is_active=True,
-        status=ShipStatus.DOCKED,
-
-        # Initialize maintenance JSONB
-        maintenance={
-            "condition": 100.0,
-            "last_maintenance": datetime.utcnow().isoformat(),
-            "next_maintenance": None,
-            "repair_needed": False
-        },
-
-        # Initialize empty cargo JSONB
-        cargo={},
-
-        # Initialize combat JSONB from specifications
-        combat={
-            "shields": spec.max_shields,
-            "max_shields": spec.max_shields,
-            "shield_recharge_rate": spec.shield_recharge_rate,
-            "hull": spec.hull_points,
-            "max_hull": spec.hull_points,
-            "evasion": spec.evasion,
-            "attack_rating": spec.attack_rating,
-            "defense_rating": spec.defense_rating
-        },
-
-        # B3: copy the per-hull shield/armor mitigation fractions from the
-        # ShipSpecification onto the Ship row — combat_service reads these off
-        # the Ship, not the spec. Defensive default 0.0 if unset.
-        shield_resistance=(getattr(spec, 'shield_resistance', None) or 0.0),
-        armor_rating=(getattr(spec, 'armor_rating', None) or 0.0),
-
-        # Genesis and equipment
-        genesis_devices=0,
-        max_genesis_devices=spec.max_genesis_devices,
-        mines=0,
-        max_mines=spec.max_drones,
-        has_automated_maintenance=False,
-        has_cloaking=False,
-
-        # Initialize upgrades as empty array
-        upgrades=[],
-
-        # No insurance initially
-        insurance=None,
-
-        # Special flags
-        is_destroyed=False,
-        is_flagship=False,
-        purchase_value=spec.base_cost,
-        current_value=spec.base_cost
-    )
-
-    db.add(new_ship)
-    db.flush()  # Get ID
-    
-    # Log creation
-    audit_service = AuditService(db)
-    audit_service.log_action(
-        user_id=admin.id,
-        action=AuditAction.CREATE,
-        resource_type="ship",
-        resource_id=str(new_ship.id),
-        details={
-            "name": ship_name,
+    with admin_action_attempt(
+        db,
+        actor=admin,
+        scope_used=SHIPS_MANAGE,
+        action="ship_create",
+        target_type="ship",
+        target_id="pending",
+        payload={
+            "name": request.name,
             "type": request.type.value,
             "owner_id": str(request.owner_id),
-            "owner_name": owner.user.username,
             "sector_id": str(request.sector_id),
-            "sector_name": sector.name
-        }
-    )
-    
-    db.commit()
-    
-    # Return created ship
+        },
+    ) as attempt:
+        owner = db.query(Player).filter(Player.id == request.owner_id).first()
+        if not owner:
+            raise HTTPException(status_code=404, detail="Owner (player) not found")
+
+        sector = db.query(Sector).filter(Sector.id == request.sector_id).first()
+        if not sector:
+            raise HTTPException(status_code=404, detail="Sector not found")
+
+        ship_name = request.name
+        if not ship_name:
+            ship_count = db.query(func.count(Ship.id)).filter(
+                Ship.owner_id == request.owner_id,
+                Ship.type == request.type.value
+            ).scalar()
+            ship_name = f"{owner.user.username}'s {request.type.value.replace('_', ' ').title()} #{ship_count + 1}"
+
+        spec = db.query(ShipSpecification).filter(
+            ShipSpecification.type == request.type
+        ).first()
+
+        if not spec:
+            raise HTTPException(status_code=400, detail=f"No specification found for ship type {request.type.value}")
+
+        new_ship = Ship(
+            name=ship_name,
+            type=request.type,
+            owner_id=request.owner_id,
+            sector_id=request.sector_id,
+            base_speed=spec.speed,
+            current_speed=spec.speed,
+            turn_cost=spec.turn_cost,
+            warp_capable=spec.warp_compatible,
+            is_active=True,
+            status=ShipStatus.DOCKED,
+            maintenance={
+                "condition": 100.0,
+                "last_maintenance": datetime.utcnow().isoformat(),
+                "next_maintenance": None,
+                "repair_needed": False
+            },
+            cargo={},
+            combat={
+                "shields": spec.max_shields,
+                "max_shields": spec.max_shields,
+                "shield_recharge_rate": spec.shield_recharge_rate,
+                "hull": spec.hull_points,
+                "max_hull": spec.hull_points,
+                "evasion": spec.evasion,
+                "attack_rating": spec.attack_rating,
+                "defense_rating": spec.defense_rating
+            },
+            shield_resistance=(getattr(spec, 'shield_resistance', None) or 0.0),
+            armor_rating=(getattr(spec, 'armor_rating', None) or 0.0),
+            genesis_devices=0,
+            max_genesis_devices=spec.max_genesis_devices,
+            mines=0,
+            max_mines=spec.max_drones,
+            has_automated_maintenance=False,
+            has_cloaking=False,
+            upgrades=[],
+            insurance=None,
+            is_destroyed=False,
+            is_flagship=False,
+            purchase_value=spec.base_cost,
+            current_value=spec.base_cost
+        )
+
+        db.add(new_ship)
+        db.flush()
+
+        audit_service = AuditService(db)
+        audit_service.log_action(
+            user_id=admin.id,
+            action=AuditAction.CREATE,
+            resource_type="ship",
+            resource_id=str(new_ship.id),
+            details={
+                "name": ship_name,
+                "type": request.type.value,
+                "owner_id": str(request.owner_id),
+                "owner_name": owner.user.username,
+                "sector_id": str(request.sector_id),
+                "sector_name": sector.name
+            }
+        )
+
+        attempt.succeed(
+            payload={
+                "name": ship_name,
+                "type": request.type.value,
+                "owner_id": str(request.owner_id),
+                "owner_name": owner.user.username,
+                "sector_id": str(request.sector_id),
+                "sector_name": sector.name,
+                "ship_id": str(new_ship.id),
+            },
+        )
+
     return {
         "ship": {
             "id": str(new_ship.id),
@@ -541,59 +565,6 @@ async def create_ship(
     }
 
 
-@router.delete("/{ship_id}", response_model=DeleteShipResponse)
-async def delete_ship(
-    ship_id: UUID,
-    admin: User = Depends(require_admin),
-    db: Session = Depends(get_db)
-):
-    """Delete a ship administratively."""
-    
-    # Get ship
-    ship = db.query(Ship).filter(Ship.id == ship_id).first()
-    if not ship:
-        raise HTTPException(status_code=404, detail="Ship not found")
-    
-    # Store ship info for audit log
-    ship_info = {
-        "name": ship.name,
-        "type": ship.type,
-        "owner": ship.owner.user.username if ship.owner else "Unassigned",
-        "sector": ship.sector.name if ship.sector else "Deep Space"
-    }
-    
-    # Check if ship is in critical operations (battles, etc.)
-    if ship.status == ShipStatus.IN_COMBAT.value:
-        raise HTTPException(
-            status_code=400, 
-            detail="Cannot delete ship that is currently in combat"
-        )
-    
-    # Log deletion before removing
-    audit_service = AuditService(db)
-    audit_service.log_action(
-        user_id=admin.id,
-        action=AuditAction.DELETE,
-        resource_type="ship",
-        resource_id=str(ship_id),
-        details=ship_info
-    )
-    
-    # Reabsorb pioneer colonists before hull is removed.  Mirrors the
-    # pattern in ship_service.destroy_ship — SAVEPOINT-isolated so that a
-    # ledger hiccup cannot block the admin delete.
-    try:
-        from src.services.pioneer_service import reabsorb_on_ship_loss
-        with db.begin_nested():
-            reabsorb_on_ship_loss(db, ship.owner_id)
-    except Exception:
-        logger.exception("pioneer reabsorb on admin ship-delete failed")
-
-    # Delete ship
-    db.delete(ship)
-    db.commit()
-
-    return DeleteShipResponse(success=True)
 
 
 # DEPRECATED: Ship specifications are now fetched from ShipSpecification database table

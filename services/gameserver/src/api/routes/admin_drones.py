@@ -4,6 +4,7 @@ Admin drone management endpoints.
 Provides administrative control over all drones in the game.
 """
 
+import json
 from uuid import UUID
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
@@ -13,10 +14,12 @@ from pydantic import BaseModel
 from datetime import datetime
 
 from src.core.database import get_async_session
-from src.auth.dependencies import get_current_admin_user
+from src.auth.admin_scopes import PLAYERS_VIEW, SHIPS_MANAGE
+from src.auth.dependencies import require_scope
 from src.models.drone import Drone, DroneDeployment, DroneCombat
 from src.models.user import User
 from src.services.drone_service import DroneService
+from src.services.admin_action_log_service import log_admin_action
 
 
 router = APIRouter(prefix="/admin/drones", tags=["admin-drones"])
@@ -57,7 +60,7 @@ async def get_all_drones(
     sector_id: Optional[UUID] = None,
     drone_type: Optional[str] = None,
     status: Optional[str] = None,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: AsyncSession = Depends(get_async_session)
 ):
     """Get all drones with optional filters."""
@@ -111,7 +114,7 @@ async def get_all_drones(
 
 @router.get("/statistics", response_model=DroneStatistics)
 async def get_drone_statistics(
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: AsyncSession = Depends(get_async_session)
 ):
     """Get overall drone statistics."""
@@ -181,10 +184,24 @@ async def get_drone_statistics(
     )
 
 
+def _parse_combat_log(raw: Optional[str]) -> Optional[list]:
+    """Parse DroneCombat.combat_log (String(2000), can be hard-truncated by
+    the writer) into a JSON list for the admin UI. Returns None on any
+    parse failure so a truncated/malformed string degrades to "no round
+    detail" rather than surfacing a raw, possibly-invalid JSON string."""
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return parsed if isinstance(parsed, list) else None
+
+
 @router.get("/{drone_id}")
 async def get_drone_details(
     drone_id: UUID,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: AsyncSession = Depends(get_async_session)
 ):
     """Get detailed information about a specific drone."""
@@ -265,7 +282,8 @@ async def get_drone_details(
                 "was_attacker": c.attacker_drone_id == drone_id,
                 "won": c.winner_drone_id == drone_id,
                 "damage_dealt": c.attacker_damage_dealt if c.attacker_drone_id == drone_id else c.defender_damage_dealt,
-                "damage_taken": c.defender_damage_dealt if c.attacker_drone_id == drone_id else c.attacker_damage_dealt
+                "damage_taken": c.defender_damage_dealt if c.attacker_drone_id == drone_id else c.attacker_damage_dealt,
+                "combat_log": _parse_combat_log(c.combat_log)
             }
             for c in combats
         ]
@@ -276,7 +294,7 @@ async def get_drone_details(
 async def update_drone(
     drone_id: UUID,
     update: AdminDroneUpdate,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(SHIPS_MANAGE)),
     db: AsyncSession = Depends(get_async_session)
 ):
     """Update a drone's attributes."""
@@ -293,6 +311,16 @@ async def update_drone(
     for field, value in update_data.items():
         setattr(drone, field, value)
     
+    log_admin_action(
+        db,
+        actor=admin,
+        scope_used=SHIPS_MANAGE,
+        action="drone_update",
+        target_type="drone",
+        target_id=str(drone_id),
+        payload={},
+    )
+
     await db.commit()
     await db.refresh(drone)
     
@@ -302,7 +330,7 @@ async def update_drone(
 @router.delete("/{drone_id}")
 async def delete_drone(
     drone_id: UUID,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(SHIPS_MANAGE)),
     db: AsyncSession = Depends(get_async_session)
 ):
     """Permanently delete a drone."""
@@ -315,6 +343,16 @@ async def delete_drone(
         )
     
     await db.delete(drone)
+    log_admin_action(
+        db,
+        actor=admin,
+        scope_used=SHIPS_MANAGE,
+        action="drone_delete",
+        target_type="drone",
+        target_id=str(drone_id),
+        payload={},
+    )
+
     await db.commit()
     
     return {"message": "Drone deleted successfully"}
@@ -323,13 +361,23 @@ async def delete_drone(
 @router.post("/{drone_id}/force-recall")
 async def force_recall_drone(
     drone_id: UUID,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(SHIPS_MANAGE)),
     db: AsyncSession = Depends(get_async_session)
 ):
     """Force recall a deployed drone."""
     service = DroneService(db)
     
     try:
+        # Log before DroneService.recall_drone (internal commit).
+        log_admin_action(
+            db,
+            actor=admin,
+            scope_used=SHIPS_MANAGE,
+            action="drone_force_recall",
+            target_type="drone",
+            target_id=str(drone_id),
+            payload={},
+        )
         deployment = await service.recall_drone(drone_id)
         if not deployment:
             raise HTTPException(
@@ -347,7 +395,7 @@ async def force_recall_drone(
 @router.post("/{drone_id}/restore")
 async def restore_destroyed_drone(
     drone_id: UUID,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(SHIPS_MANAGE)),
     db: AsyncSession = Depends(get_async_session)
 ):
     """Restore a destroyed drone to active status."""
@@ -370,6 +418,16 @@ async def restore_destroyed_drone(
     drone.health = drone.max_health
     drone.destroyed_at = None
     
+    log_admin_action(
+        db,
+        actor=admin,
+        scope_used=SHIPS_MANAGE,
+        action="drone_restore",
+        target_type="drone",
+        target_id=str(drone_id),
+        payload={},
+    )
+
     await db.commit()
     
     return {"message": "Drone restored successfully"}
@@ -378,7 +436,7 @@ async def restore_destroyed_drone(
 @router.get("/sector/{sector_id}/summary")
 async def get_sector_drone_summary(
     sector_id: UUID,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: AsyncSession = Depends(get_async_session)
 ):
     """Get a summary of drones in a specific sector."""

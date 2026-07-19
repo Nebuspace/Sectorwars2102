@@ -1,21 +1,26 @@
-from fastapi import APIRouter, Depends, HTTPException
+import logging
+from datetime import UTC, datetime, timedelta
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
-from typing import List, Dict, Any
-from datetime import datetime, UTC
-from pydantic import BaseModel, Field
 
+from src.auth.dependencies import get_current_player, get_current_user
 from src.core.database import get_db
-from src.auth.dependencies import get_current_user, get_current_player
-from src.models.user import User
+from src.models.docking import DockingQueueEntry, DockingSlipOccupancy
+from src.models.market_transaction import MarketPrice, MarketTransaction, PriceHistory, TransactionType
 from src.models.player import Player
-from src.models.station import Station
 from src.models.sector import Sector
 from src.models.ship import Ship, ShipStatus, effective_cargo_capacity
-from src.models.docking import DockingQueueEntry, DockingSlipOccupancy
-from src.models.market_transaction import MarketTransaction, MarketPrice, TransactionType
+from src.models.station import Station
+from src.models.user import User
+from src.services import docking_service, station_security_service
+from src.services.medal_service import MedalService, check_and_award_trade_medals
+from src.services.ranking_service import RankingService
 from src.services.trading_service import (
     TradingService,
     clamp_to_commodity_band,
@@ -23,12 +28,7 @@ from src.services.trading_service import (
     compute_region_tariff_multiplier,
     compute_station_lever_multiplier,
 )
-from src.services.ranking_service import RankingService
-from src.services.medal_service import MedalService, check_and_award_trade_medals
-from src.services import docking_service
-from src.services.turn_service import spend_turns, regenerate_turns
-
-import logging
+from src.services.turn_service import regenerate_turns, spend_turns
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,13 @@ class TradeRequest(BaseModel):
     station_id: str
     resource_type: str
     quantity: int = Field(..., gt=0, le=100000, description="Must be between 1 and 100,000")
+
+
+class TradeQuoteRequest(BaseModel):
+    station_id: str
+    resource_type: str
+    quantity: int = Field(..., gt=0, le=100000, description="Must be between 1 and 100,000")
+    action: str = Field(..., description="'buy' or 'sell'")
 
 
 class StationDockRequest(BaseModel):
@@ -199,6 +206,42 @@ def _dispatch_trade_medals(db: Session, player: Player) -> None:
         logger.warning("_dispatch_trade_medals failed (non-fatal)", exc_info=True)
 
 
+def _first_profitable_trade_margin(
+    db: Session, player: Player, commodity: str, sell_unit_price: int, quantity: int
+) -> Optional[int]:
+    """Best-effort "was this trade profitable" signal for ARIA's P-F1
+    narration hook (aria-companion.md:216, WO-ARIA-NARRATE-KERNEL). No
+    cost-basis ledger exists for cargo in this game, so this compares the
+    per-unit payout just received against the unit_price of the player's
+    MOST RECENT completed BUY of the same commodity (any station) — a
+    proxy for "you just closed a buy-low/sell-high loop" without new
+    cost-tracking infrastructure. Returns the total margin in credits if
+    profitable, else None (no prior buy, or this sell didn't beat it).
+
+    WO-QTI-PHANTOM-SCHEMA lane c: SAVEPOINT-scoped (begin_nested) -- an
+    unguarded query failure here would poison this route's shared
+    session, failing the trade's OWN db.commit() downstream even though
+    the hook's own try/except (the caller) already logged and moved on.
+    """
+    with db.begin_nested():
+        last_buy = (
+            db.query(MarketTransaction)
+            .filter(
+                MarketTransaction.player_id == player.id,
+                MarketTransaction.commodity == commodity,
+                MarketTransaction.transaction_type == TransactionType.BUY,
+            )
+            .order_by(MarketTransaction.timestamp.desc())
+            .first()
+        )
+    if last_buy is None or last_buy.unit_price is None:
+        return None
+    per_unit_margin = sell_unit_price - last_buy.unit_price
+    if per_unit_margin <= 0:
+        return None
+    return int(per_unit_margin * quantity)
+
+
 def compute_effective_unit_price(
     db: Session,
     player: Player,
@@ -259,6 +302,60 @@ def compute_effective_unit_price(
             price /= lever_mult
 
     return clamp_to_commodity_band(commodity, int(price))
+
+
+def compute_buy_totals(unit_price: int, quantity: int, tax_rate: float) -> Dict[str, int]:
+    """Shared buy-side money math (WO-API-B1): the SAME arithmetic /buy's
+    commit path and /quote's read-only preview both call, so a quote can
+    never drift from what the next real buy actually charges. tax_amount
+    truncates (Python ``int()``), matching the commit path's existing
+    convention."""
+    total_cost = unit_price * quantity
+    tax_amount = int(total_cost * tax_rate)
+    return {
+        "total_cost": total_cost,
+        "tax_amount": tax_amount,
+        "total_with_tax": total_cost + tax_amount,
+    }
+
+
+def compute_sell_totals(unit_price: int, quantity: int, tax_rate: float) -> Dict[str, int]:
+    """Shared sell-side money math (WO-API-B1) — mirrors compute_buy_totals
+    for payouts; see its docstring."""
+    total_earnings = unit_price * quantity
+    tax_amount = int(total_earnings * tax_rate)
+    return {
+        "total_earnings": total_earnings,
+        "tax_amount": tax_amount,
+        "net_earnings": total_earnings - tax_amount,
+    }
+
+
+def _peek_agreed_haggle_price(
+    db: Session, player: Player, station: Station, commodity: str, side: str
+) -> Optional[float]:
+    """Read-only counterpart to HaggleService.consume_agreed_price (WO-API-B1):
+    returns the accepted-but-not-yet-consumed per-unit haggle price for
+    (station, commodity, side) WITHOUT clearing it, so /quote can preview
+    exactly what the next real buy/sell will charge without burning the
+    single-use haggle result (consume_agreed_price marks it "consumed" —
+    calling that from a quote would silently make the FOLLOWING real trade
+    fall back to the posted price, breaking quote == charge). Same
+    accepted-only gate as consume_agreed_price. Defensive: a haggle-state
+    read failure degrades to None (posted price)."""
+    try:
+        from src.services.haggle_service import HaggleService
+        status = HaggleService(db).get_status(player, station, commodity, side)
+        session = status.get("session")
+        if not session or session.get("status") != "accepted":
+            return None
+        agreed = session.get("agreed_price")
+        if agreed is None:
+            return None
+        return float(agreed)
+    except Exception:
+        logger.warning("haggle price peek failed (quote); using posted price", exc_info=True)
+        return None
 
 
 async def _publish_trade_tick(
@@ -323,6 +420,128 @@ async def _emit_transaction_completed(
         logger.debug("transaction_completed WS push skipped", exc_info=True)
 
 
+async def _record_aria_trade_hooks(
+    db: Session,
+    player: Player,
+    station: Station,
+    transaction: MarketTransaction,
+    *,
+    action: str,
+    commodity: str,
+    quantity: int,
+    unit_price: float,
+    total_value: float,
+) -> None:
+    """Best-effort ARIA trade recording (WO-ARIA-OBS-LOG): one
+    ``ARIAPersonalMemory`` row (``record_trade_memory_sync`` semantics,
+    aria-companion.md:156) + one ``ARIATradingObservation`` row (append-only
+    observation log, ADR-0038 / OPERATIONS/aria.md:222). Replaces the retired
+    ``pending_aria_memories`` player-settings stash, which had zero readers.
+
+    Each write is independently defensive -- a failure in the memory write
+    must never block the observation write, and neither may ever fail the
+    trade (by this point the trade is already fully validated and staged;
+    only ``db.commit()`` remains).
+
+    Both surfaces are SYNC (``record_trade_memory_sync`` /
+    ``record_trade_observation``): this route's ``db`` is a sync
+    ``Session`` (core/database.py's ``get_db``), not the ``AsyncSession``
+    the plain ``record_trade_memory`` requires -- calling that async method
+    here previously raised internally on every trade (swallowed, but zero
+    rows ever persisted). ``record_trade_memory_sync`` closes that gap,
+    mirroring the existing ``record_combat_memory_sync`` precedent.
+    """
+    from src.services.aria_personal_intelligence_service import get_aria_intelligence_service
+
+    aria_service = get_aria_intelligence_service()
+    player_id = str(player.id)
+
+    try:
+        aria_service.record_trade_memory_sync(
+            player_id,
+            {
+                "station_name": station.name if station else "Unknown",
+                "action": action,
+                "commodity": commodity,
+                "quantity": quantity,
+                "total_value": total_value,
+            },
+            db,
+        )
+    except Exception as e:
+        logger.debug("ARIA trade memory recording skipped: %s", e)
+
+    try:
+        aria_service.record_trade_observation(
+            player_id,
+            {
+                "commodity": commodity,
+                "action": action,
+                "source_station_id": station.id,
+                "source_sector_id": player.current_sector_id,
+                "quantity": quantity,
+                "unit_price": unit_price,
+                "total_credits": total_value,
+                "trade_id": transaction.id if transaction is not None else None,
+            },
+            db,
+        )
+    except Exception as e:
+        logger.debug("ARIA trade observation recording skipped: %s", e)
+
+
+async def _record_aria_market_observation(
+    db: Session,
+    player: Player,
+    station: Station,
+    market_price_rows,
+) -> None:
+    """Best-effort ARIA market-observation recording (WO-ARIA-MARKET-OBS):
+    one ``record_market_observation_sync`` call per station visit, ALL
+    commodities batched into a single payload. The dedup window (repeated
+    views during one dock shouldn't spam duplicate observations) lives
+    INSIDE the service, per lane B's contract -- this hook fires
+    unconditionally on every call and never maintains route-side dedup
+    state.
+
+    ``market_price_rows`` is the RAW (station-side, un-rank-adjusted)
+    ``MarketPrice`` rows for this station -- deliberately NOT the
+    player-rank-discounted view ``get_market_info`` builds for its response
+    payload. A shared per-commodity price-history signal must mean the same
+    thing regardless of which route observed it or which player's rank
+    happened to be active; mixing in a per-player discount would corrupt
+    trend/volatility aggregates the moment two players (or one player's
+    rank-up) produced different "prices" for the same station state.
+
+    FLUSH-FREE by design (matches the OBS-LOG sync twins): only stages the
+    write via ``db.add()``-equivalent inside the service; the CALLER owns
+    the commit. Never blocks or fails the route.
+    """
+    if not market_price_rows:
+        return
+
+    from src.services.aria_personal_intelligence_service import get_aria_intelligence_service
+
+    aria_service = get_aria_intelligence_service()
+    market_prices = [
+        {
+            "commodity": row.commodity,
+            "price": row.buy_price,
+            "buy_price": row.buy_price,
+            "sell_price": row.sell_price,
+            "quantity": row.quantity,
+        }
+        for row in market_price_rows
+    ]
+
+    try:
+        aria_service.record_market_observation_sync(
+            str(player.id), str(station.id), market_prices, db,
+        )
+    except Exception as e:
+        logger.debug("ARIA market observation recording skipped: %s", e)
+
+
 @router.post("/buy")
 async def buy_resource(
     trade_request: TradeRequest,
@@ -371,7 +590,7 @@ async def buy_resource(
 
     # Lock player row to prevent race conditions on concurrent trades
     # (after the station lock — see lock-order note above)
-    current_player = db.query(Player).filter(Player.id == current_player.id).with_for_update().first()
+    current_player = db.query(Player).filter(Player.id == current_player.id).populate_existing().with_for_update().first()
 
     # Get current ship
     current_ship = db.query(Ship).filter(
@@ -435,9 +654,6 @@ async def buy_resource(
     except Exception:
         logger.warning("haggle price consume failed (buy); using posted price", exc_info=True)
 
-    # Calculate total cost
-    total_cost = effective_buy_price * trade_request.quantity
-
     # REAL TAX (port-ownership canon): trades pay the station's tax_rate
     # into its treasury — but canon frames the tax as an OWNER lever, so
     # unowned (NPC) stations levy none. The station row is already locked
@@ -445,8 +661,21 @@ async def buy_resource(
     tax_rate = (
         station.tax_rate if (station.owner_id is not None and station.tax_rate is not None) else 0.0
     )
-    tax_amount = int(total_cost * tax_rate)
-    total_with_tax = total_cost + tax_amount
+    # WO-API-B1: compute_buy_totals is the SAME callable /quote uses — this
+    # is the single source of truth for the tax/total math (not just the
+    # unit price), so for the SAME resolved inputs a quote and this charge
+    # compute byte-identical numbers. That does NOT make the number a
+    # player looked at in /quote a minute ago a promise — the inputs
+    # themselves (MarketPrice, rank/rep/tariff/lever) can move between the
+    # two calls; TradingInterface's executeTrade re-quotes immediately
+    # before calling this route and re-confirms on drift, which narrows the
+    # gap to one RTT, not zero. Closing that residual fully needs a server-
+    # side price/version token (mack follow-on, tracked by the hub) — not
+    # done here.
+    _buy_totals = compute_buy_totals(effective_buy_price, trade_request.quantity, tax_rate)
+    total_cost = _buy_totals["total_cost"]
+    tax_amount = _buy_totals["tax_amount"]
+    total_with_tax = _buy_totals["total_with_tax"]
 
     # Check if player has enough credits (goods + station trade tax)
     if current_player.credits < total_with_tax:
@@ -593,15 +822,15 @@ async def buy_resource(
         except Exception as e:
             logger.error("Failed to award rank points for buy trade: %s", e)
 
-        # ARIA consciousness + medal hooks
+        # ARIA consciousness + relationship + medal hooks (WO-ARIA-
+        # PROGRESSION: single canonical helper, replaces the old
+        # interactions-only inline threshold walk).
         try:
-            current_player.aria_total_interactions += 1
-            # Check consciousness thresholds (50→L2, 150→L3, 400→L4, 1000→L5)
-            thresholds = {50: (2, 1.1), 150: (3, 1.2), 400: (4, 1.35), 1000: (5, 1.5)}
-            for threshold, (level, multiplier) in thresholds.items():
-                if current_player.aria_total_interactions >= threshold and current_player.aria_consciousness_level < level:
-                    current_player.aria_consciousness_level = level
-                    current_player.aria_bonus_multiplier = multiplier
+            from src.services.aria_personal_intelligence_service import get_aria_intelligence_service
+
+            get_aria_intelligence_service().update_consciousness_and_relationship_sync(
+                str(current_player.id), db
+            )
             # Check trading medals (lifetime trade-count + revenue from MarketTransaction).
             # Explicit flush required: session is autoflush=False (database.py:19).
             db.flush()
@@ -609,24 +838,17 @@ async def buy_resource(
         except Exception as e:
             logger.error("Failed ARIA/medal hooks for buy trade: %s", e)
 
-        # Record ARIA trade memory (best-effort, don't block trade)
-        try:
-            trade_memory = {
-                "station_name": station.name if station else "Unknown",
-                "action": "buy",
-                "commodity": trade_request.resource_type,
-                "quantity": trade_request.quantity,
-                "total_value": total_cost,
-            }
-            if not current_player.settings:
-                current_player.settings = {}
-            pending = current_player.settings.get("pending_aria_memories", [])
-            pending.append({"type": "trade", "data": trade_memory})
-            # Keep only last 10 pending memories
-            current_player.settings["pending_aria_memories"] = pending[-10:]
-            flag_modified(current_player, "settings")
-        except Exception as e:
-            logger.debug("ARIA trade memory recording skipped: %s", e)
+        # Record ARIA trade memory + observation (best-effort, don't block
+        # trade). WO-ARIA-OBS-LOG: replaces the retired pending_aria_memories
+        # player-settings stash, which had zero readers.
+        await _record_aria_trade_hooks(
+            db, current_player, station, transaction,
+            action="buy",
+            commodity=trade_request.resource_type,
+            quantity=trade_request.quantity,
+            unit_price=effective_buy_price,
+            total_value=total_cost,
+        )
 
         db.commit()
 
@@ -723,7 +945,7 @@ async def sell_resource(
 
     # Lock player row to prevent race conditions on concurrent trades
     # (after the station lock — see lock-order note above)
-    current_player = db.query(Player).filter(Player.id == current_player.id).with_for_update().first()
+    current_player = db.query(Player).filter(Player.id == current_player.id).populate_existing().with_for_update().first()
 
     # Get current ship
     current_ship = db.query(Ship).filter(
@@ -788,9 +1010,6 @@ async def sell_resource(
     except Exception:
         logger.warning("haggle price consume failed (sell); using posted price", exc_info=True)
 
-    # Calculate total earnings (gross, before station trade tax)
-    total_earnings = effective_sell_price * trade_request.quantity
-
     # REAL TAX (port-ownership canon): the station's tax_rate is withheld
     # from sale proceeds and credited to its treasury — but canon frames
     # the tax as an OWNER lever, so unowned (NPC) stations levy none. The
@@ -799,8 +1018,12 @@ async def sell_resource(
     tax_rate = (
         station.tax_rate if (station.owner_id is not None and station.tax_rate is not None) else 0.0
     )
-    tax_amount = int(total_earnings * tax_rate)
-    net_earnings = total_earnings - tax_amount
+    # WO-API-B1: compute_sell_totals is the SAME callable /quote uses — see
+    # compute_buy_totals's comment on the buy side.
+    _sell_totals = compute_sell_totals(effective_sell_price, trade_request.quantity, tax_rate)
+    total_earnings = _sell_totals["total_earnings"]
+    tax_amount = _sell_totals["tax_amount"]
+    net_earnings = _sell_totals["net_earnings"]
 
     # Execute the trade
     try:
@@ -940,15 +1163,15 @@ async def sell_resource(
         except Exception as e:
             logger.error("Failed to award rank points for sell trade: %s", e)
 
-        # ARIA consciousness + medal hooks
+        # ARIA consciousness + relationship + medal hooks (WO-ARIA-
+        # PROGRESSION: single canonical helper, replaces the old
+        # interactions-only inline threshold walk).
         try:
-            current_player.aria_total_interactions += 1
-            # Check consciousness thresholds (50→L2, 150→L3, 400→L4, 1000→L5)
-            thresholds = {50: (2, 1.1), 150: (3, 1.2), 400: (4, 1.35), 1000: (5, 1.5)}
-            for threshold, (level, multiplier) in thresholds.items():
-                if current_player.aria_total_interactions >= threshold and current_player.aria_consciousness_level < level:
-                    current_player.aria_consciousness_level = level
-                    current_player.aria_bonus_multiplier = multiplier
+            from src.services.aria_personal_intelligence_service import get_aria_intelligence_service
+
+            get_aria_intelligence_service().update_consciousness_and_relationship_sync(
+                str(current_player.id), db
+            )
             # Check trading medals (lifetime trade-count + revenue from MarketTransaction).
             # Explicit flush required: session is autoflush=False (database.py:19).
             db.flush()
@@ -956,24 +1179,45 @@ async def sell_resource(
         except Exception as e:
             logger.error("Failed ARIA/medal hooks for sell trade: %s", e)
 
-        # Record ARIA trade memory (best-effort, don't block trade)
+        # Record ARIA trade memory + observation (best-effort, don't block
+        # trade). WO-ARIA-OBS-LOG: replaces the retired pending_aria_memories
+        # player-settings stash, which had zero readers.
+        await _record_aria_trade_hooks(
+            db, current_player, station, transaction,
+            action="sell",
+            commodity=trade_request.resource_type,
+            quantity=trade_request.quantity,
+            unit_price=effective_sell_price,
+            total_value=total_earnings,
+        )
+
+        # ARIA narration — P-F1 first profitable trade this session
+        # (aria-companion.md:216, WO-ARIA-NARRATE-KERNEL). Best-effort,
+        # never fails the trade. A line the ceiling allows RIGHT NOW is
+        # pushed immediately (lane C); anything queued (backlogged) is
+        # delivered later by the heartbeat drain in websocket_service.py.
         try:
-            trade_memory = {
-                "station_name": station.name if station else "Unknown",
-                "action": "sell",
-                "commodity": trade_request.resource_type,
-                "quantity": trade_request.quantity,
-                "total_value": total_earnings,
-            }
-            if not current_player.settings:
-                current_player.settings = {}
-            pending = current_player.settings.get("pending_aria_memories", [])
-            pending.append({"type": "trade", "data": trade_memory})
-            # Keep only last 10 pending memories
-            current_player.settings["pending_aria_memories"] = pending[-10:]
-            flag_modified(current_player, "settings")
-        except Exception as e:
-            logger.debug("ARIA trade memory recording skipped: %s", e)
+            margin = _first_profitable_trade_margin(
+                db, current_player, trade_request.resource_type,
+                effective_sell_price, trade_request.quantity,
+            )
+            if margin is not None:
+                from src.services.aria_narration_service import (
+                    dispatch_narration_push,
+                    get_aria_narration_service,
+                    resolve_assistance_level,
+                )
+                narration_line = get_aria_narration_service().record_event(
+                    "P-F1",
+                    current_player.id,
+                    assistance_level=resolve_assistance_level(db, current_player.id),
+                    session_token=str(current_player.last_game_login),
+                    context={"margin": f"{margin:,}"},
+                )
+                if narration_line is not None and narration_line.delivered_immediately:
+                    dispatch_narration_push(current_player, narration_line)
+        except Exception:
+            logger.warning("ARIA narration hook failed (P-F1)", exc_info=True)
 
         db.commit()
 
@@ -1027,6 +1271,119 @@ async def sell_resource(
         raise HTTPException(status_code=500, detail=f"Trade failed: {str(e)}")
 
 
+@router.post("/quote")
+async def get_trade_quote(
+    quote_request: TradeQuoteRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player)
+):
+    """Server-authoritative READ-ONLY preview of what /buy or /sell would
+    charge/pay for these exact parameters (WO-API-B1). Mirrors the commit
+    path's price resolution EXACTLY — compute_effective_unit_price, the
+    same accepted-haggle override (peeked, not consumed), then
+    compute_buy_totals/compute_sell_totals — so the client can drop its
+    own duplicate price/tax/total formula and just render this response.
+
+    Deliberately takes no row locks, applies no clamp/reprice, records no
+    transaction, and consumes no haggle session: calling this any number of
+    times back-to-back for the same parameters returns the SAME number,
+    because nothing in between could have changed it.
+
+    That guarantee is scoped to "nothing changed the market in between" — it
+    is NOT a guarantee across a time gap. MarketPrice is a single row shared
+    by every player at this station; ANY player's trade reprices it
+    (_reprice_after_trade), and the price/rep/rank/tariff/lever stack this
+    endpoint reads can itself move between calls. A quote is therefore only
+    exact for the market state at the moment it was taken — a real gap (the
+    player reading the confirm dialog, a slow network) can see a DIFFERENT
+    number at commit time. The client is expected to re-quote immediately
+    before charging and re-confirm on drift (see TradingInterface.tsx's
+    executeTrade) rather than trust an old quote blindly.
+    """
+    action = quote_request.action.lower()
+    if action not in ("buy", "sell"):
+        raise HTTPException(status_code=400, detail="action must be 'buy' or 'sell'")
+
+    if not current_player.is_docked:
+        raise HTTPException(status_code=400, detail="You must be docked at a station to trade")
+
+    station = _get_station_or_404(db, quote_request.station_id)
+
+    if current_player.current_sector_id != station.sector_id:
+        raise HTTPException(status_code=400, detail="You must be in the same sector as the station")
+
+    # Same lazy-init idiom GET /market/{id} already uses — populates
+    # MarketPrice rows from the commodities JSONB on first read. Not a
+    # "trade write": no player credits/cargo/market VALUE changes.
+    _ensure_market_prices(db, station)
+
+    commodity_cfg = (station.commodities or {}).get(quote_request.resource_type)
+    if action == "buy" and commodity_cfg is not None and not commodity_cfg.get("sells", False):
+        raise HTTPException(status_code=400, detail="Station does not sell this resource")
+    if action == "sell" and commodity_cfg is not None and not commodity_cfg.get("buys", False):
+        raise HTTPException(status_code=400, detail="Station does not buy this resource")
+
+    market_price = db.query(MarketPrice).filter(
+        MarketPrice.station_id == quote_request.station_id,
+        MarketPrice.commodity == quote_request.resource_type
+    ).first()
+    if not market_price:
+        raise HTTPException(status_code=404, detail="Resource not available at this port")
+
+    # Same station-stock check /buy enforces (BUY only — sell_resource has
+    # no analogous cap; a station never runs out of room to buy FROM a
+    # player). Without this, a quote for more than the station has in
+    # stock would price successfully while the real /buy 400s on the same
+    # quantity — a mirrors-the-commit-path-exactly violation.
+    if action == "buy" and market_price.quantity < quote_request.quantity:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Station only has {market_price.quantity} units available"
+        )
+
+    # Same base_price selection the buy/sell routes use: BUY reads the
+    # station's sell_price, SELL reads its buy_price.
+    base_price = market_price.sell_price if action == "buy" else market_price.buy_price
+    unit_price = compute_effective_unit_price(
+        db, current_player, station, quote_request.resource_type, action, base_price,
+    )
+
+    # Haggle peek: if the player has an accepted-but-not-yet-consumed
+    # negotiated price for this (station, commodity, action), the NEXT real
+    # trade will charge/pay THAT instead of the posted price — preview it
+    # here too, same re-clamp the commit path applies, without consuming
+    # the single-use session.
+    peeked = _peek_agreed_haggle_price(db, current_player, station, quote_request.resource_type, action)
+    if peeked is not None:
+        unit_price = clamp_to_commodity_band(quote_request.resource_type, int(round(peeked)))
+
+    tax_rate = (
+        station.tax_rate if (station.owner_id is not None and station.tax_rate is not None) else 0.0
+    )
+
+    if action == "buy":
+        totals = compute_buy_totals(unit_price, quote_request.quantity, tax_rate)
+        subtotal = totals["total_cost"]
+        total = totals["total_with_tax"]
+    else:
+        totals = compute_sell_totals(unit_price, quote_request.quantity, tax_rate)
+        subtotal = totals["total_earnings"]
+        total = totals["net_earnings"]
+
+    return {
+        "station_id": quote_request.station_id,
+        "resource_type": quote_request.resource_type,
+        "quantity": quote_request.quantity,
+        "action": action,
+        "unit_price": unit_price,
+        "subtotal": subtotal,
+        "tax_rate": tax_rate,
+        "tax": totals["tax_amount"],
+        "total": total,
+    }
+
+
 @router.get("/market/{station_id}", response_model=MarketInfoResponse)
 async def get_market_info(
     station_id: str,
@@ -1069,9 +1426,28 @@ async def get_market_info(
             # PLAYER demand signal only — NPC trader activity (the
             # npc_restock_demand key) is never surfaced here.
             "player_demand_score": float(cfg.get("player_demand_score", 1.0)),
-            "last_updated": price.updated_at.isoformat() if price.updated_at else None
+            "last_updated": price.updated_at.isoformat() if price.updated_at else None,
+            # WO-ECON-MKT-TIMESERIES: already computed on every reprice
+            # (TradingService.update_market_prices) but never surfaced —
+            # positive = rising, negative = falling, fed straight through
+            # (raw fraction, not rank-adjusted; the trend direction is the
+            # same regardless of this player's rank discount).
+            "price_trend": float(price.price_trend),
+            "previous_buy_price": price.previous_buy_price,
+            "previous_sell_price": price.previous_sell_price,
         }
-    
+
+    # ARIA market-observation hook (WO-ARIA-MARKET-OBS): best-effort, reads
+    # the raw `market_prices` rows already queried above (not the
+    # rank-adjusted `resources` built just now -- see
+    # _record_aria_market_observation's docstring). This route has no other
+    # commit point of its own (a pure GET otherwise) -- unlike
+    # _ensure_market_prices above, whose commits are conditional on a first
+    # read/lazy tick -- so the write needs its own explicit commit here or
+    # it is silently discarded when the request's session closes uncommitted.
+    await _record_aria_market_observation(db, current_player, station, market_prices)
+    db.commit()
+
     return MarketInfoResponse(
         resources=resources,
         port={
@@ -1088,6 +1464,53 @@ async def get_market_info(
             "trader_personality_type": (station.trader_personality or {}).get("type")
         }
     )
+
+
+@router.get("/market/{station_id}/history")
+async def get_market_history(
+    station_id: str,
+    commodity: str,
+    hours: int = Query(24, ge=1, le=24 * 90, description="Lookback window in hours (max 90 days)"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player)
+):
+    """Get PriceHistory snapshots for one commodity at a station — feeds the
+    trading UI's sparkline (WO-ECON-MKT-TIMESERIES). Written by the hourly
+    npc_scheduler_service.sweep_price_history sweep; returns an empty list
+    (never 404/500) before the first sweep tick or for a commodity the
+    station has never carried, so the client can render a graceful
+    'no history yet' state.
+    """
+    station = _get_station_or_404(db, station_id)
+
+    since = datetime.now(UTC) - timedelta(hours=hours)
+    rows = (
+        db.query(PriceHistory)
+        .filter(
+            PriceHistory.station_id == station.id,
+            PriceHistory.commodity == commodity,
+            PriceHistory.snapshot_date >= since,
+        )
+        .order_by(PriceHistory.snapshot_date.asc())
+        .all()
+    )
+
+    return {
+        "station_id": str(station.id),
+        "commodity": commodity,
+        "hours": hours,
+        "history": [
+            {
+                "snapshot_date": row.snapshot_date.isoformat(),
+                "snapshot_type": row.snapshot_type,
+                "buy_price": row.buy_price,
+                "sell_price": row.sell_price,
+                "quantity": row.quantity,
+            }
+            for row in rows
+        ],
+    }
 
 
 @router.post("/dock")
@@ -1119,7 +1542,7 @@ async def dock_at_station(
 
     # Lock player row to prevent concurrent turn deduction races
     # (after the station lock — see lock-order note above)
-    current_player = db.query(Player).filter(Player.id == current_player.id).with_for_update().first()
+    current_player = db.query(Player).filter(Player.id == current_player.id).populate_existing().with_for_update().first()
 
     # ADR-0004: continuous lazy regen — refill the pool for real elapsed time
     # inside the row lock, BEFORE the affordability check, so docking is never
@@ -1129,6 +1552,20 @@ async def dock_at_station(
     # Verify player is in the same sector as the station
     if current_player.current_sector_id != station.sector_id:
         raise HTTPException(status_code=400, detail="You must be in the same sector as the station")
+
+    # Server-gated proximity (WO-ISP-DOCKPROX): the client already hides the
+    # DOCK button beyond DOCK_LAND_PROXIMITY_RANGE_EM (WindshieldTableau.tsx's
+    # own DOCK_RANGE_EM) -- this closes the bypass of calling the route
+    # directly from anywhere else in the sector. See
+    # intrasystem_movement_service.assert_dock_land_proximity's own
+    # doc-comment for the threshold rationale (a tunable dial, not fixed).
+    from src.services.intrasystem_movement_service import assert_dock_land_proximity
+
+    assert_dock_land_proximity(
+        db, current_player,
+        sector_id=station.sector_id, target_kind="station", target_id=str(station.id),
+        target_label=station.name, action_word="dock",
+    )
 
     # Check if already docked
     if current_player.is_docked:
@@ -1153,9 +1590,12 @@ async def dock_at_station(
             detail=f"Insufficient turns. Need {DOCKING_TURN_COST} turn(s), have {current_player.turns}"
         )
 
-    # Docking fee (canon: fees fund the station treasury). Validated after the
+    # Docking fee (canon: size x security-tier matrix, station-protection.md
+    # §Docking fee economics). Sized off the docking ship itself so the quote
+    # shown by /slips and the charge here always agree. Validated after the
     # turn check, in addition to the 1-turn dock cost.
-    docking_fee = docking_service.docking_fee_for(station)
+    docking_ship_size = docking_service.ship_size_for(db, current_ship)
+    docking_fee = docking_service.docking_fee_for(station, docking_ship_size)
     if current_player.credits < docking_fee:
         raise HTTPException(
             status_code=400,
@@ -1219,6 +1659,61 @@ async def dock_at_station(
         docking_service._realize_fee(db, station, docking_fee)
         slip_result["occupancy"].fee_paid = docking_fee
 
+        # ARIA market-observation hook (WO-ARIA-MARKET-OBS): best-effort,
+        # folds into this transaction's single commit below. Deliberately
+        # does NOT call _ensure_market_prices first (unlike get_market_info)
+        # -- that helper may itself commit (see its docstring), which would
+        # split this route's documented "one session, single commit"
+        # transaction mid-flight. A station with no MarketPrice rows yet
+        # (never read/traded) simply yields zero observations here; the
+        # next get_market_info call lazily creates them in its own
+        # read-only context.
+        station_prices = db.query(MarketPrice).filter(MarketPrice.station_id == station.id).all()
+        await _record_aria_market_observation(db, current_player, station, station_prices)
+
+        # ARIA narration — P-F7 first docking at a station with open
+        # contracts (aria-companion.md:221, WO-ARIA-NARRATE-KERNEL). The
+        # "once per station ever" suppression key means a station with
+        # zero open contracts on this player's first dock is simply not
+        # recorded here — a LATER dock at the same station that does have
+        # contracts still narrates once, exactly matching the trigger.
+        # Best-effort, never fails the dock. Query is SAVEPOINT-scoped
+        # (WO-QTI-PHANTOM-SCHEMA lane c) -- see _first_profitable_trade_margin's
+        # docstring above for why a read needs this too, not just writes.
+        try:
+            from src.models.contract import Contract, ContractStatus
+
+            with db.begin_nested():
+                open_contract_count = (
+                    db.query(Contract)
+                    .filter(
+                        Contract.destination_station_id == station.id,
+                        Contract.status == ContractStatus.POSTED,
+                    )
+                    .count()
+                )
+            if open_contract_count > 0:
+                from src.services.aria_narration_service import (
+                    dispatch_narration_push,
+                    get_aria_narration_service,
+                    resolve_assistance_level,
+                )
+                narration_line = get_aria_narration_service().record_event(
+                    "P-F7",
+                    current_player.id,
+                    assistance_level=resolve_assistance_level(db, current_player.id),
+                    dedupe_key=str(station.id),
+                    context={
+                        "station_name": station.name,
+                        "contract_count": open_contract_count,
+                        "plural": "" if open_contract_count == 1 else "s",
+                    },
+                )
+                if narration_line is not None and narration_line.delivered_immediately:
+                    dispatch_narration_push(current_player, narration_line)
+        except Exception:
+            logger.warning("ARIA narration hook failed (P-F7)", exc_info=True)
+
         db.commit()
 
         return {
@@ -1257,13 +1752,35 @@ async def undock_from_port(
     UNDOCKING_TURN_COST = 1
 
     # Lock player row to prevent concurrent turn deduction races
-    current_player = db.query(Player).filter(Player.id == current_player.id).with_for_update().first()
+    current_player = db.query(Player).filter(Player.id == current_player.id).populate_existing().with_for_update().first()
 
     # ADR-0004: continuous lazy regen before the affordability check.
     regenerate_turns(db, current_player)
 
     if not current_player.is_docked:
         raise HTTPException(status_code=400, detail="You are not currently docked at a station")
+
+    # Station protection -- Guarantee #2 (FEATURES/economy/station-protection.md
+    # §§ "Anti-theft tractor beam" + "Security tiers"): a ship attempting to
+    # undock from a security_rank >= basic station is checked against the
+    # canon deny-list (stolen / wanted / deny-listed). A hit locks the ship to
+    # the docking ring -- reject BEFORE any turn charge, mirroring Guarantee
+    # #1's own "reject before any turn charge" discipline (combat_service.py
+    # ERR_DOCKED_SHIP_PROTECTED). A clean pilot is completely unaffected:
+    # check_tractor_lock returns None below security_rank "basic" or when no
+    # deny-list signal fires, and this block is a no-op in both cases.
+    if current_player.current_port_id:
+        station_for_lock = db.query(Station).filter(
+            Station.id == current_player.current_port_id
+        ).first()
+        ship_for_lock = current_player.current_ship
+        if station_for_lock is not None and ship_for_lock is not None:
+            lock_payload = station_security_service.check_tractor_lock(
+                db, station_for_lock, ship_for_lock, current_player
+            )
+            if lock_payload is not None:
+                db.commit()  # persist the (possibly newly-created) lock record
+                raise HTTPException(status_code=403, detail=lock_payload)
 
     # Check if player has enough turns
     if current_player.turns < UNDOCKING_TURN_COST:
@@ -1337,7 +1854,12 @@ async def get_station_slips(
         None
     )
 
-    fee = docking_service.docking_fee_for(station)
+    # Sized off the player's current ship so this quote agrees with the
+    # /dock charge for the same ship+station (station-protection.md
+    # §Docking fee economics).
+    quote_ship = db.query(Ship).filter(Ship.id == current_player.current_ship_id).first()
+    quote_ship_size = docking_service.ship_size_for(db, quote_ship)
+    fee = docking_service.docking_fee_for(station, quote_ship_size)
 
     # Estimated wait (canon UX promise): wall-clock minutes until the
     # longest-tenured occupant crosses the 4h bumpable threshold — the

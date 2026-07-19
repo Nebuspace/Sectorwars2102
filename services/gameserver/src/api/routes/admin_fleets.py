@@ -18,7 +18,8 @@ from sqlalchemy import and_, or_, func
 from pydantic import BaseModel, Field
 
 from src.core.database import get_db
-from src.auth.dependencies import get_current_user, require_admin
+from src.auth.admin_scopes import COMBAT_INTERVENE, PLAYERS_VIEW
+from src.auth.dependencies import get_current_user, require_scope
 from src.models.user import User
 from src.models.fleet import Fleet, FleetBattle, FleetMember, FleetBattleCasualty, FleetStatus
 from src.models.team import Team
@@ -128,7 +129,7 @@ async def get_all_fleets(
     in_battle: Optional[bool] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all fleets with optional filters."""
@@ -185,7 +186,7 @@ async def get_all_fleets(
 
 @router.get("/stats", response_model=FleetStatsResponse)
 async def get_fleet_statistics(
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get fleet statistics summary."""
@@ -270,7 +271,7 @@ async def get_all_battles(
     sector_id: Optional[UUID] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all fleet battles with optional filters."""
@@ -331,7 +332,7 @@ async def get_all_battles(
 @router.get("/battles/{battle_id}")
 async def get_battle_details(
     battle_id: UUID,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get detailed information about a specific battle."""
@@ -400,7 +401,7 @@ async def get_battle_details(
 async def intervene_in_battle(
     battle_id: UUID,
     request: InterveneBattleRequest,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(COMBAT_INTERVENE)),
     db: Session = Depends(get_db)
 ):
     """Intervene in an ongoing battle."""
@@ -461,7 +462,7 @@ async def intervene_in_battle(
 @router.get("/{fleet_id}", response_model=AdminFleetResponse)
 async def get_fleet_details(
     fleet_id: UUID,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get detailed information about a specific fleet."""
@@ -496,7 +497,7 @@ async def get_fleet_details(
 @router.get("/{fleet_id}/members")
 async def get_fleet_members(
     fleet_id: UUID,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all members of a fleet with detailed ship information."""
@@ -533,7 +534,7 @@ async def adjust_fleet_morale(
     fleet_id: UUID,
     morale: int = Query(..., ge=0, le=100),
     reason: str = Query(..., min_length=10),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(COMBAT_INTERVENE)),
     db: Session = Depends(get_db)
 ):
     """Adjust fleet morale administratively."""
@@ -568,7 +569,7 @@ async def adjust_fleet_morale(
 async def force_dissolve_fleet(
     fleet_id: UUID,
     request: ForceDissolveRequest,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_scope(COMBAT_INTERVENE)),
     db: Session = Depends(get_db)
 ):
     """Force dissolve a fleet administratively."""

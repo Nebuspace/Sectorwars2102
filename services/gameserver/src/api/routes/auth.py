@@ -1,7 +1,7 @@
 import os
 import re
 import logging
-from typing import Optional
+from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, Body
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import RedirectResponse, HTMLResponse
@@ -29,7 +29,7 @@ from src.auth.signup_rate_limit import register_rate_limit, exchange_rate_limit
 router = APIRouter()
 
 
-async def _track_player_login(db: Session, user_id) -> None:
+async def _track_player_login(db: Session, user_id) -> Optional[Dict[str, Any]]:
     """Record a player-login activity event (best-effort).
 
     Maps the authenticated User to its Player row (only players have game
@@ -37,26 +37,38 @@ async def _track_player_login(db: Session, user_id) -> None:
     The activity service is Redis-backed and async; auth routes are async, so
     we await it directly. Fully DEFENSIVE — any failure (no Redis, no Player,
     service error) is swallowed so activity tracking can never break login.
+
+    Returns the ``welcome_back()`` outcome dict (WO-PUX-WBACK-SURFACE) so the
+    caller can surface it on the login response, or ``None`` when there is
+    nothing to surface: no matching Player (admin/non-player user), or the
+    bonus evaluation itself failed. A downstream, unrelated failure (e.g. the
+    activity-service call below) does NOT null out an outcome that already
+    committed successfully — the bonus was actually granted in the DB either
+    way, so the response should reflect that.
     """
+    welcome_back_outcome: Optional[Dict[str, Any]] = None
     try:
         from src.models.player import Player
         player = db.query(Player).filter(Player.user_id == user_id).first()
         if player is None:
-            return  # admin or non-player user — nothing to track
+            return None  # admin or non-player user — nothing to track
 
         # WO-F4 — returning-player welcome-back turn bonus (retention.md). This
-        # is the SINGLE shared login chokepoint (every login route funnels here),
-        # so the bonus is applied exactly once per login here rather than in each
-        # endpoint. Capture the OLD last_game_login BEFORE welcome_back overwrites
-        # it to now: that overwrite is what makes the grant one-shot per return
-        # (a second login inside 7 days measures a sub-threshold gap → 0). Fully
-        # DEFENSIVE — a bonus failure must never break login, so it is isolated
-        # in its own try/except and the row is committed best-effort.
+        # is the SINGLE shared login chokepoint for the password/JSON login
+        # routes AND the OAuth callbacks (github/google/steam) — every one of
+        # those funnels here, so the bonus is applied exactly once per login
+        # here rather than in each endpoint. Capture the OLD last_game_login
+        # BEFORE welcome_back overwrites it to now: that overwrite is what makes the grant one-shot
+        # per return (a second login inside 7 days measures a sub-threshold gap
+        # → 0). Fully DEFENSIVE — a bonus failure must never break login, so it
+        # is isolated in its own try/except and the row is committed
+        # best-effort.
         try:
             from src.services.turn_service import welcome_back
             prior_last_game_login = player.last_game_login
             outcome = welcome_back(player, prior_last_game_login)
             db.commit()
+            welcome_back_outcome = outcome
             if outcome.get("granted"):
                 logger.info(
                     "Welcome-back bonus granted to player %s: +%d turns (%d days inactive)",
@@ -77,6 +89,7 @@ async def _track_player_login(db: Session, user_id) -> None:
         await activity_service.track_login(str(player.id))
     except Exception:
         logger.warning("player-login activity tracking failed (non-fatal)", exc_info=True)
+    return welcome_back_outcome
 
 
 async def _track_player_logout(db: Session, user_id) -> None:
@@ -176,13 +189,14 @@ async def login(
     access_token, refresh_token = create_tokens(user.id, db)
 
     # Best-effort player-activity login tracking (no-op for admins)
-    await _track_player_login(db, user.id)
+    welcome_back_outcome = await _track_player_login(db, user.id)
 
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer",
-        "user_id": str(user.id)
+        "user_id": str(user.id),
+        "welcome_back": welcome_back_outcome
     }
 
 
@@ -237,13 +251,14 @@ async def login_json(
     access_token, refresh_token = create_tokens(user.id, db)
 
     # Best-effort player-activity login tracking (no-op for admins)
-    await _track_player_login(db, user.id)
+    welcome_back_outcome = await _track_player_login(db, user.id)
 
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer",
-        "user_id": str(user.id)
+        "user_id": str(user.id),
+        "welcome_back": welcome_back_outcome
     }
 
 @router.options("/login/json")
@@ -340,7 +355,7 @@ async def login_direct(
     access_token, refresh_token = create_tokens(user.id, db)
 
     # Best-effort player-activity login tracking (no-op for admins)
-    await _track_player_login(db, user.id)
+    welcome_back_outcome = await _track_player_login(db, user.id)
 
     return {
         "access_token": access_token,
@@ -348,7 +363,8 @@ async def login_direct(
         "token_type": "bearer",
         "user_id": str(user.id),
         "requires_mfa": False,
-        "mfa_enabled": mfa_enabled
+        "mfa_enabled": mfa_enabled,
+        "welcome_back": welcome_back_outcome
     }
 
 
@@ -378,13 +394,14 @@ async def player_login(
     access_token, refresh_token = create_tokens(user.id, db)
 
     # Best-effort player-activity login tracking
-    await _track_player_login(db, user.id)
+    welcome_back_outcome = await _track_player_login(db, user.id)
 
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer",
-        "user_id": str(user.id)
+        "user_id": str(user.id),
+        "welcome_back": welcome_back_outcome
     }
 
 
@@ -414,13 +431,14 @@ async def player_login_json(
     access_token, refresh_token = create_tokens(user.id, db)
 
     # Best-effort player-activity login tracking
-    await _track_player_login(db, user.id)
+    welcome_back_outcome = await _track_player_login(db, user.id)
 
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer",
-        "user_id": str(user.id)
+        "user_id": str(user.id),
+        "welcome_back": welcome_back_outcome
     }
 
 @router.options("/player/login/json")
@@ -926,6 +944,11 @@ async def github_callback(request: Request, code: str, register: bool = False, s
         access_token, refresh_token = create_tokens(str(user.id), db)
         update_user_last_login(db, str(user.id))
 
+        # Best-effort player-activity login tracking (mirrors the password/JSON
+        # login chokepoint above — grants the welcome-back turn bonus and Redis
+        # online-session tracking for OAuth logins too; previously a gap).
+        await _track_player_login(db, user.id)
+
         # ADR-0085: keep tokens OUT of the redirect URL. Stash the token payload
         # server-side under a short-lived single-use code and redirect with only
         # the code (+ user_id / is_new_user, which are not secrets). The SPA POSTs
@@ -1041,6 +1064,11 @@ async def google_callback(request: Request, code: str, register: bool = False, s
     access_token, refresh_token = create_tokens(str(user.id), db)
     update_user_last_login(db, str(user.id))
 
+    # Best-effort player-activity login tracking (mirrors the password/JSON
+    # login chokepoint above — grants the welcome-back turn bonus and Redis
+    # online-session tracking for OAuth logins too; previously a gap).
+    await _track_player_login(db, user.id)
+
     # ADR-0085: tokens go server-side under a single-use code, not in the URL.
     auth_code = store_auth_code({
         "access_token": access_token,
@@ -1111,6 +1139,11 @@ async def steam_callback(request: Request, register: bool = False, invite: Optio
     # Create tokens and update last login
     access_token, refresh_token = create_tokens(str(user.id), db)
     update_user_last_login(db, str(user.id))
+
+    # Best-effort player-activity login tracking (mirrors the password/JSON
+    # login chokepoint above — grants the welcome-back turn bonus and Redis
+    # online-session tracking for OAuth logins too; previously a gap).
+    await _track_player_login(db, user.id)
 
     # ADR-0085: tokens go server-side under a single-use code, not in the URL.
     auth_code = store_auth_code({

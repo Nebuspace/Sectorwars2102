@@ -9,7 +9,14 @@ import math
 import logging
 
 from src.core.database import get_db
-from src.auth.dependencies import get_current_admin
+from src.auth.admin_scopes import (
+    GALAXY_MANAGE,
+    PLAYERS_ADJUST_CREDITS,
+    PLAYERS_SUSPEND,
+    PLAYERS_VIEW,
+)
+from src.auth.dependencies import require_all_scopes, require_scope
+from src.services.admin_action_attempt import admin_action_attempt
 from src.models.user import User
 from src.models.player import Player
 from src.models.ship import Ship
@@ -82,7 +89,7 @@ logger = logging.getLogger(__name__)
 
 @router.get("/users", response_model=dict)
 async def get_all_users(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all users for admin panel (excludes soft-deleted accounts)"""
@@ -108,7 +115,7 @@ async def get_all_users(
 
 @router.get("/players", response_model=dict)
 async def get_all_players(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all player accounts for admin panel"""
@@ -267,7 +274,7 @@ async def get_all_players(
 
 @router.get("/regions", response_model=dict)
 async def get_all_regions(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all regions for admin panel"""
@@ -292,7 +299,7 @@ async def get_all_regions(
 @router.get("/regions/{region_id}/zones", response_model=dict)
 async def get_region_zones(
     region_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """
@@ -349,7 +356,7 @@ async def get_region_zones(
 async def get_zone_details(
     region_id: str,
     zone_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """
@@ -401,158 +408,171 @@ async def get_zone_details(
 async def update_player(
     player_id: str,
     update_data: dict,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(
+        require_all_scopes(PLAYERS_ADJUST_CREDITS, PLAYERS_SUSPEND)
+    ),
     db: Session = Depends(get_db)
 ):
     """Update player information (admin only)"""
-    try:
-        # Find the player
-        player = db.query(Player).filter(Player.id == player_id).first()
-        if not player:
-            raise HTTPException(status_code=404, detail="Player not found")
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=PLAYERS_ADJUST_CREDITS,
+        action="player_update",
+        target_type="player",
+        target_id=str(player_id),
+        payload={"fields": sorted(k for k in update_data.keys() if k != "password")},
+    ) as attempt:
+        try:
+            # Find the player
+            player = db.query(Player).filter(Player.id == player_id).first()
+            if not player:
+                raise HTTPException(status_code=404, detail="Player not found")
 
-        # Get the associated user
-        user = db.query(User).filter(User.id == player.user_id).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="Associated user not found")
+            # Get the associated user
+            user = db.query(User).filter(User.id == player.user_id).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="Associated user not found")
 
-        # Validate and update User fields
-        if 'username' in update_data and update_data['username'] != user.username:
-            # Check if username is already taken
-            existing_user = db.query(User).filter(
-                User.username == update_data['username'],
-                User.id != user.id
-            ).first()
-            if existing_user:
-                raise HTTPException(status_code=400, detail="Username already taken")
-            user.username = update_data['username']
-
-        if 'email' in update_data and update_data['email'] != user.email:
-            # Basic email validation
-            import re
-            email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-            if not re.match(email_pattern, update_data['email']):
-                raise HTTPException(status_code=400, detail="Invalid email format")
-
-            # Check if email is already taken
-            existing_user = db.query(User).filter(
-                User.email == update_data['email'],
-                User.id != user.id
-            ).first()
-            if existing_user:
-                raise HTTPException(status_code=400, detail="Email already taken")
-            user.email = update_data['email']
-
-        # Validate and update Player fields
-        if 'credits' in update_data:
-            credits = int(update_data['credits'])
-            if credits < 0:
-                raise HTTPException(status_code=400, detail="Credits cannot be negative")
-            player.credits = credits
-
-        if 'turns' in update_data:
-            turns = int(update_data['turns'])
-            if turns < 0:
-                raise HTTPException(status_code=400, detail="Turns cannot be negative")
-            player.turns = turns
-
-        # Handle region and sector location updates (region + sector = complete location)
-        if 'current_region_id' in update_data:
-            if update_data['current_region_id'] is None or update_data['current_region_id'] == '':
-                player.current_region_id = None
-            else:
-                # Verify region exists
-                region = db.query(Region).filter(Region.id == update_data['current_region_id']).first()
-                if not region:
-                    raise HTTPException(status_code=400, detail="Region not found")
-                player.current_region_id = update_data['current_region_id']
-
-        if 'current_sector_id' in update_data and update_data['current_sector_id'] is not None:
-            sector_id = int(update_data['current_sector_id'])
-
-            # Validate sector exists within the specified region (if region is set)
-            region_id = update_data.get('current_region_id') or player.current_region_id
-            if region_id:
-                # Check sector exists in the specific region
-                sector = db.query(Sector).filter(
-                    Sector.sector_id == sector_id,
-                    Sector.region_id == region_id
+            # Validate and update User fields
+            if 'username' in update_data and update_data['username'] != user.username:
+                # Check if username is already taken
+                existing_user = db.query(User).filter(
+                    User.username == update_data['username'],
+                    User.id != user.id
                 ).first()
-                if not sector:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Sector {sector_id} does not exist in the specified region"
-                    )
-            else:
-                # No region specified, just verify sector exists globally
-                sector = db.query(Sector).filter(Sector.sector_id == sector_id).first()
-                if not sector:
-                    raise HTTPException(status_code=400, detail=f"Sector {sector_id} does not exist")
+                if existing_user:
+                    raise HTTPException(status_code=400, detail="Username already taken")
+                user.username = update_data['username']
 
-            player.current_sector_id = sector_id
+            if 'email' in update_data and update_data['email'] != user.email:
+                # Basic email validation
+                import re
+                email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+                if not re.match(email_pattern, update_data['email']):
+                    raise HTTPException(status_code=400, detail="Invalid email format")
 
-        if 'status' in update_data:
-            status = update_data['status']
-            if status not in ['active', 'inactive', 'banned', 'suspended']:
-                raise HTTPException(status_code=400, detail="Invalid status value")
-            # Map status to is_active
-            player.is_active = (status == 'active')
+                # Check if email is already taken
+                existing_user = db.query(User).filter(
+                    User.email == update_data['email'],
+                    User.id != user.id
+                ).first()
+                if existing_user:
+                    raise HTTPException(status_code=400, detail="Email already taken")
+                user.email = update_data['email']
 
-        if 'team_id' in update_data:
-            if update_data['team_id'] is None or update_data['team_id'] == '':
-                player.team_id = None
-            else:
-                # Verify team exists
-                team = db.query(Team).filter(Team.id == update_data['team_id']).first()
-                if not team:
-                    raise HTTPException(status_code=400, detail="Team not found")
-                player.team_id = update_data['team_id']
+            # Validate and update Player fields
+            if 'credits' in update_data:
+                credits = int(update_data['credits'])
+                if credits < 0:
+                    raise HTTPException(status_code=400, detail="Credits cannot be negative")
+                player.credits = credits
 
-        # Commit changes
-        db.commit()
-        db.refresh(player)
-        db.refresh(user)
+            if 'turns' in update_data:
+                turns = int(update_data['turns'])
+                if turns < 0:
+                    raise HTTPException(status_code=400, detail="Turns cannot be negative")
+                player.turns = turns
 
-        # Return updated player data in same format as GET /players
-        from src.models.ship import Ship
-        ships_count = db.query(Ship).filter(Ship.owner_id == player.id).count()
-        planets_count = db.query(Planet).filter(Planet.owner_id == player.id).count()
-        ports_count = db.query(Station).filter(Station.owner_id == player.id).count()
+            # Handle region and sector location updates (region + sector = complete location)
+            if 'current_region_id' in update_data:
+                if update_data['current_region_id'] is None or update_data['current_region_id'] == '':
+                    player.current_region_id = None
+                else:
+                    # Verify region exists
+                    region = db.query(Region).filter(Region.id == update_data['current_region_id']).first()
+                    if not region:
+                        raise HTTPException(status_code=400, detail="Region not found")
+                    player.current_region_id = update_data['current_region_id']
 
-        return {
-            "id": str(player.id),
-            "user_id": str(player.user_id),
-            "username": user.username,
-            "email": user.email,
-            "credits": player.credits,
-            "turns": player.turns,
-            "current_sector_id": player.current_sector_id,
-            "current_region_id": str(player.current_region_id) if player.current_region_id else None,
-            "current_ship_id": str(player.current_ship_id) if player.current_ship_id else None,
-            "team_id": str(player.team_id) if player.team_id else None,
-            "is_active": player.is_active,
-            "status": "active" if player.is_active else "inactive",
-            "created_at": user.created_at.isoformat() if user.created_at else None,
-            "last_login": user.last_login.isoformat() if user.last_login else None,
-            "assets": {
-                "ships_count": ships_count,
-                "planets_count": planets_count,
-                "ports_count": ports_count,
-                "total_value": player.credits
-            },
-            "message": "Player updated successfully"
-        }
+            if 'current_sector_id' in update_data and update_data['current_sector_id'] is not None:
+                sector_id = int(update_data['current_sector_id'])
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error updating player {player_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to update player: {str(e)}")
+                # Validate sector exists within the specified region (if region is set)
+                region_id = update_data.get('current_region_id') or player.current_region_id
+                if region_id:
+                    # Check sector exists in the specific region
+                    sector = db.query(Sector).filter(
+                        Sector.sector_id == sector_id,
+                        Sector.region_id == region_id
+                    ).first()
+                    if not sector:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Sector {sector_id} does not exist in the specified region"
+                        )
+                else:
+                    # No region specified, just verify sector exists globally
+                    sector = db.query(Sector).filter(Sector.sector_id == sector_id).first()
+                    if not sector:
+                        raise HTTPException(status_code=400, detail=f"Sector {sector_id} does not exist")
+
+                player.current_sector_id = sector_id
+
+            if 'status' in update_data:
+                status = update_data['status']
+                if status not in ['active', 'inactive', 'banned', 'suspended']:
+                    raise HTTPException(status_code=400, detail="Invalid status value")
+                # Map status to is_active
+                player.is_active = (status == 'active')
+
+            if 'team_id' in update_data:
+                if update_data['team_id'] is None or update_data['team_id'] == '':
+                    player.team_id = None
+                else:
+                    # Verify team exists
+                    team = db.query(Team).filter(Team.id == update_data['team_id']).first()
+                    if not team:
+                        raise HTTPException(status_code=400, detail="Team not found")
+                    player.team_id = update_data['team_id']
+
+            attempt.succeed(
+                payload={
+                    "fields": sorted(k for k in update_data.keys() if k != "password")
+                }
+            )
+            db.refresh(player)
+            db.refresh(user)
+
+            # Return updated player data in same format as GET /players
+            from src.models.ship import Ship
+            ships_count = db.query(Ship).filter(Ship.owner_id == player.id).count()
+            planets_count = db.query(Planet).filter(Planet.owner_id == player.id).count()
+            ports_count = db.query(Station).filter(Station.owner_id == player.id).count()
+
+            return {
+                "id": str(player.id),
+                "user_id": str(player.user_id),
+                "username": user.username,
+                "email": user.email,
+                "credits": player.credits,
+                "turns": player.turns,
+                "current_sector_id": player.current_sector_id,
+                "current_region_id": str(player.current_region_id) if player.current_region_id else None,
+                "current_ship_id": str(player.current_ship_id) if player.current_ship_id else None,
+                "team_id": str(player.team_id) if player.team_id else None,
+                "is_active": player.is_active,
+                "status": "active" if player.is_active else "inactive",
+                "created_at": user.created_at.isoformat() if user.created_at else None,
+                "last_login": user.last_login.isoformat() if user.last_login else None,
+                "assets": {
+                    "ships_count": ships_count,
+                    "planets_count": planets_count,
+                    "ports_count": ports_count,
+                    "total_value": player.credits
+                },
+                "message": "Player updated successfully"
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error updating player {player_id}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to update player: {str(e)}") from e
 
 @router.get("/colonies", response_model=dict)
 async def get_all_colonies(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all colonies (planets) for admin panel"""
@@ -584,6 +604,7 @@ async def get_all_colonies(
             "max_population": planet.max_population,
             "habitability_score": planet.habitability_score,
             "resource_richness": planet.resource_richness,
+            "morale": planet.morale,
             "defense_level": planet.defense_level,
             "colonized_at": planet.colonized_at.isoformat() if planet.colonized_at else None,
             "fuel_ore": getattr(planet, 'fuel_ore', 0),
@@ -602,7 +623,7 @@ async def get_all_colonies(
 
 @router.get("/teams", response_model=dict)
 async def get_all_teams(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all teams for admin panel"""
@@ -660,7 +681,7 @@ async def get_all_teams(
 
 @router.get("/teams/analytics", response_model=dict)
 async def get_teams_analytics(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get team analytics for admin dashboard"""
@@ -748,7 +769,7 @@ async def get_teams_analytics(
 
 @router.get("/stats", response_model=dict)
 async def get_admin_stats(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get statistics for admin dashboard"""
@@ -889,7 +910,7 @@ async def get_admin_stats(
 
 @router.get("/galaxy")
 async def get_galaxy_info(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get galaxy information for admin panel"""
@@ -1031,7 +1052,7 @@ async def get_galaxy_info(
 @router.post("/galaxy/generate", response_model=dict)
 async def generate_galaxy(
     request: GalaxyGenerateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
 ):
     """Deprecated: legacy Python galaxy generator removed in Phase 4 of the
     sw2102-bang cutover. The synchronous, monolithic generator has been replaced
@@ -1061,7 +1082,7 @@ async def generate_galaxy(
 
 @router.get("/clusters", response_model=dict)
 async def get_all_clusters(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all clusters across all zones"""
@@ -1105,7 +1126,7 @@ async def get_all_stations(
     limit: int = 100,
     offset: int = 0,
     search: Optional[str] = None,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all stations with pagination"""
@@ -1176,7 +1197,7 @@ async def get_all_sectors(
     page: int = 1,
     limit: int = 100,
     offset: Optional[int] = None,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get sectors with optional filtering and honest server-side pagination."""
@@ -1313,139 +1334,192 @@ def _sector_resource_richness(resources):
 @router.post("/warp-tunnels/create", response_model=dict)
 async def create_warp_tunnel(
     request: WarpTunnelCreateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Create a warp tunnel between two sectors"""
-    try:
-        # Find source and target sectors
-        source_sector = db.query(Sector).filter(Sector.sector_id == request.source_sector_id).first()
-        target_sector = db.query(Sector).filter(Sector.sector_id == request.target_sector_id).first()
-        
-        if not source_sector or not target_sector:
-            raise HTTPException(status_code=404, detail="One or both sectors not found")
-        
-        # Check if tunnel already exists
-        existing_tunnel = db.query(WarpTunnel).filter(
-            ((WarpTunnel.origin_sector_id == source_sector.id) & 
-             (WarpTunnel.destination_sector_id == target_sector.id)) |
-            ((WarpTunnel.origin_sector_id == target_sector.id) & 
-             (WarpTunnel.destination_sector_id == source_sector.id))
-        ).first()
-        
-        if existing_tunnel:
-            raise HTTPException(status_code=400, detail="Warp tunnel already exists between these sectors")
-        
-        # Create new warp tunnel
-        warp_tunnel = WarpTunnel(
-            origin_sector_id=source_sector.id,
-            destination_sector_id=target_sector.id,
-            stability=request.stability,
-            is_bidirectional=True
-        )
-        
-        db.add(warp_tunnel)
-        db.commit()
-        db.refresh(warp_tunnel)
-        
-        return {
-            "id": str(warp_tunnel.id),
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="warp_tunnel_create",
+        target_type="warp_tunnel",
+        target_id="pending",
+        payload={
             "source_sector_id": request.source_sector_id,
             "target_sector_id": request.target_sector_id,
-            "stability": warp_tunnel.stability,
-            "message": "Warp tunnel created successfully"
-        }
-        
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to create warp tunnel: {str(e)}")
+        },
+    ) as attempt:
+        try:
+            source_sector = db.query(Sector).filter(
+                Sector.sector_id == request.source_sector_id
+            ).first()
+            target_sector = db.query(Sector).filter(
+                Sector.sector_id == request.target_sector_id
+            ).first()
+
+            if not source_sector or not target_sector:
+                raise HTTPException(
+                    status_code=404, detail="One or both sectors not found"
+                )
+
+            existing_tunnel = db.query(WarpTunnel).filter(
+                (
+                    (WarpTunnel.origin_sector_id == source_sector.id)
+                    & (WarpTunnel.destination_sector_id == target_sector.id)
+                )
+                | (
+                    (WarpTunnel.origin_sector_id == target_sector.id)
+                    & (WarpTunnel.destination_sector_id == source_sector.id)
+                )
+            ).first()
+
+            if existing_tunnel:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Warp tunnel already exists between these sectors",
+                )
+
+            warp_tunnel = WarpTunnel(
+                origin_sector_id=source_sector.id,
+                destination_sector_id=target_sector.id,
+                stability=request.stability,
+                is_bidirectional=True,
+            )
+
+            db.add(warp_tunnel)
+            db.flush()
+            attempt.target_id = str(warp_tunnel.id)
+            attempt.succeed(
+                payload={
+                    "source_sector_id": request.source_sector_id,
+                    "target_sector_id": request.target_sector_id,
+                },
+            )
+            db.refresh(warp_tunnel)
+
+            return {
+                "id": str(warp_tunnel.id),
+                "source_sector_id": request.source_sector_id,
+                "target_sector_id": request.target_sector_id,
+                "stability": warp_tunnel.stability,
+                "message": "Warp tunnel created successfully",
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(
+                status_code=500, detail=f"Failed to create warp tunnel: {str(e)}"
+            ) from e
 
 @router.delete("/galaxy/clear", response_model=dict)
 async def clear_all_galaxy_data(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Clear all galaxy data for testing purposes (complete wipe including player game state)"""
-    try:
-        # Delete all universe data in correct order to avoid foreign key constraints
-        # Must delete children before parents to avoid FK violations
-        # NOTE: Preserves User and OAuthAccount tables (authentication identity)
-        # but deletes all game state (Players, Ships, galaxy structure)
-
-        from src.models.npc_character import NPCCharacter
-        db.query(NPCCharacter).delete()  # NPC pilots (incl. KIA tombstones) reference Ships; must not outlive their galaxy
-        db.query(Ship).delete()          # Ships reference Players + Sectors
-        db.query(Player).delete()        # Players reference Sectors + Regions + Ships (via current_ship_id)
-        db.query(Station).delete()       # Stations reference Sectors
-        db.query(Planet).delete()        # Planets reference Sectors
-        db.query(WarpTunnel).delete()    # Warp tunnels reference Sectors
-        db.query(Sector).delete()        # Sectors reference Clusters AND Regions
-        db.query(Cluster).delete()       # Clusters reference Regions
-        db.query(Region).delete()        # Regions (includes Central Nexus), referenced by Sectors
-        db.query(Galaxy).delete()        # Finally delete Galaxy
-        db.commit()
-
-        return {"message": "All galaxy data and player game state cleared successfully. User accounts preserved."}
-
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Failed to clear galaxy data: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to clear galaxy data: {str(e)}")
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="galaxy_clear",
+        target_type="galaxy",
+        target_id="all",
+        payload={"preserved": ["users", "oauth_accounts"]},
+    ) as attempt:
+        try:
+            # Delete all universe data in correct order to avoid foreign key constraints
+            # NOTE: Preserves User and OAuthAccount tables (authentication identity)
+            from src.models.npc_character import NPCCharacter
+            db.query(NPCCharacter).delete()
+            db.query(Ship).delete()
+            db.query(Player).delete()
+            db.query(Station).delete()
+            db.query(Planet).delete()
+            db.query(WarpTunnel).delete()
+            db.query(Sector).delete()
+            db.query(Cluster).delete()
+            db.query(Region).delete()
+            db.query(Galaxy).delete()
+            attempt.succeed()
+            return {
+                "message": (
+                    "All galaxy data and player game state cleared successfully. "
+                    "User accounts preserved."
+                )
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to clear galaxy data: {str(e)}")
+            raise HTTPException(
+                status_code=500, detail=f"Failed to clear galaxy data: {str(e)}"
+            ) from e
 
 @router.post("/galaxy/fix-statistics", response_model=dict)
 async def fix_galaxy_statistics(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Migrate galaxy statistics from old field names (port_count) to new field names (station_count)"""
-    try:
-        from sqlalchemy.orm.attributes import flag_modified
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="galaxy_fix_statistics",
+        target_type="galaxy",
+        target_id="pending",
+        payload={},
+    ) as attempt:
+        try:
+            from sqlalchemy.orm.attributes import flag_modified
 
-        galaxy = db.query(Galaxy).first()
-        if not galaxy:
-            raise HTTPException(status_code=404, detail="No galaxy found")
+            galaxy = db.query(Galaxy).first()
+            if not galaxy:
+                raise HTTPException(status_code=404, detail="No galaxy found")
 
-        # Count actual stations in database
-        actual_station_count = db.query(Station).count()
+            actual_station_count = db.query(Station).count()
 
-        logger.info(f"Found galaxy: {galaxy.name}")
-        logger.info(f"Current statistics: {galaxy.statistics}")
-        logger.info(f"Actual stations in database: {actual_station_count}")
+            logger.info(f"Found galaxy: {galaxy.name}")
+            logger.info(f"Current statistics: {galaxy.statistics}")
+            logger.info(f"Actual stations in database: {actual_station_count}")
 
-        # Migrate port_count -> station_count
-        if 'port_count' in galaxy.statistics:
-            galaxy.statistics['station_count'] = galaxy.statistics['port_count']
-            del galaxy.statistics['port_count']
-            logger.info("Renamed port_count -> station_count")
-        else:
-            # Set station_count to actual count if it doesn't exist
-            galaxy.statistics['station_count'] = actual_station_count
-            logger.info("Added station_count field")
+            if 'port_count' in galaxy.statistics:
+                galaxy.statistics['station_count'] = galaxy.statistics['port_count']
+                del galaxy.statistics['port_count']
+                logger.info("Renamed port_count -> station_count")
+            else:
+                galaxy.statistics['station_count'] = actual_station_count
+                logger.info("Added station_count field")
 
-        # Migrate port_density -> station_density
-        if 'port_density' in galaxy.statistics:
-            galaxy.statistics['station_density'] = galaxy.statistics['port_density']
-            del galaxy.statistics['port_density']
-            logger.info("Renamed port_density -> station_density")
+            if 'port_density' in galaxy.statistics:
+                galaxy.statistics['station_density'] = galaxy.statistics['port_density']
+                del galaxy.statistics['port_density']
+                logger.info("Renamed port_density -> station_density")
 
-        # Mark as modified so SQLAlchemy knows to update the JSON field
-        flag_modified(galaxy, 'statistics')
-        db.commit()
+            flag_modified(galaxy, 'statistics')
+            attempt.target_id = str(galaxy.id)
+            attempt.succeed(
+                payload={"station_count": galaxy.statistics.get("station_count")},
+            )
 
-        logger.info(f"Updated statistics: {galaxy.statistics}")
+            logger.info(f"Updated statistics: {galaxy.statistics}")
 
-        return {
-            "message": "Galaxy statistics fixed successfully",
-            "updated_statistics": galaxy.statistics,
-            "actual_station_count": actual_station_count
-        }
+            return {
+                "message": "Galaxy statistics fixed successfully",
+                "updated_statistics": galaxy.statistics,
+                "actual_station_count": actual_station_count,
+            }
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Failed to fix galaxy statistics: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to fix galaxy statistics: {str(e)}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to fix galaxy statistics: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to fix galaxy statistics: {str(e)}",
+            ) from e
 
 # NOTE: DELETE /galaxy/{galaxy_id} intentionally removed from this router.
 # It shadowed bang_galaxy.py's proper cascade hard-delete (same path, mounted
@@ -1455,7 +1529,7 @@ async def fix_galaxy_statistics(
 @router.get("/sectors/{sector_id}/port", response_model=dict)
 async def get_sector_port(
     sector_id: int,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get port details for a specific sector"""
@@ -1521,7 +1595,7 @@ async def get_sector_port(
 @router.get("/sectors/{sector_id}/planet", response_model=dict)
 async def get_sector_planet(
     sector_id: int,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get planet details for a specific sector"""
@@ -1575,7 +1649,7 @@ async def get_sector_planet(
 @router.get("/sectors/{sector_id}/ships", response_model=dict)
 async def get_sector_ships(
     sector_id: int,
-    _: User = Depends(get_current_admin),
+    _: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all ships currently in a specific sector"""
@@ -1598,7 +1672,7 @@ async def get_sector_ships(
 
 @router.get("/alliances", response_model=dict)
 async def get_all_alliances(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all alliances for admin panel"""
@@ -1638,51 +1712,57 @@ async def get_all_alliances(
 async def update_port(
     station_id: str,
     port_updates: dict,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Update port details including commodity quantities"""
-    try:
-        station = db.query(Station).filter(Station.id == station_id).first()
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="port_update",
+        target_type="station",
+        target_id=str(station_id),
+        payload={"fields": sorted(k for k in port_updates.keys() if k != "password")},
+    ) as attempt:
+        try:
+            station = db.query(Station).filter(Station.id == station_id).first()
 
-        if not station:
-            raise HTTPException(status_code=404, detail="Station not found")
-        
-        # Handle commodity updates
-        if 'commodities' in port_updates:
-            # Update specific commodity fields
-            for commodity_name, updates in port_updates['commodities'].items():
-                if commodity_name in station.commodities:
-                    for field, value in updates.items():
-                        station.commodities[commodity_name][field] = value
-        
-        # Handle direct field updates (like quantity updates from frontend)
-        for field, value in port_updates.items():
-            if field == 'commodities':
-                continue  # Already handled above
-            elif hasattr(station, field):
-                setattr(station, field, value)
-            elif field.endswith('_quantity'):
-                # Handle direct quantity updates like "ore_quantity"
-                commodity_name = field.replace('_quantity', '')
-                if commodity_name in station.commodities:
-                    station.commodities[commodity_name]['quantity'] = value
-        
-        # Mark commodities as modified for SQLAlchemy
-        station.commodities = dict(station.commodities)
-        
-        db.commit()
-        
-        return {
-            "success": True,
-            "message": "Station updated successfully",
-            "station_id": str(station.id)
-        }
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error updating port: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to update port: {str(e)}")
+            if not station:
+                raise HTTPException(status_code=404, detail="Station not found")
+
+            if 'commodities' in port_updates:
+                for commodity_name, updates in port_updates['commodities'].items():
+                    if commodity_name in station.commodities:
+                        for field, value in updates.items():
+                            station.commodities[commodity_name][field] = value
+
+            for field, value in port_updates.items():
+                if field == 'commodities':
+                    continue
+                elif hasattr(station, field):
+                    setattr(station, field, value)
+                elif field.endswith('_quantity'):
+                    commodity_name = field.replace('_quantity', '')
+                    if commodity_name in station.commodities:
+                        station.commodities[commodity_name]['quantity'] = value
+
+            station.commodities = dict(station.commodities)
+            attempt.succeed()
+
+            return {
+                "success": True,
+                "message": "Station updated successfully",
+                "station_id": str(station.id),
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error updating port: {e}")
+            raise HTTPException(
+                status_code=500, detail=f"Failed to update port: {str(e)}"
+            ) from e
 
 
 # ============================================================================
@@ -1695,7 +1775,7 @@ async def update_port(
 
 @router.get("/game-events/summary", response_model=dict)
 async def get_game_events_summary(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get a summary of game events for the admin dashboard.
@@ -1799,7 +1879,7 @@ async def list_game_events(
     type_filter: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """List game events with optional filters.
@@ -1864,7 +1944,7 @@ async def list_game_events(
 @router.post("/game-events", response_model=dict)
 async def create_game_event(
     event_data: QuickEventCreateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Create a new game event with a simplified payload.
@@ -1873,89 +1953,108 @@ async def create_game_event(
     control (participation requirements, rewards config, etc.) use the
     comprehensive POST /admin/events/ endpoint.
     """
-    try:
-        # Validate event type
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="game_event_create",
+        target_type="game_event",
+        target_id="pending",
+        payload={},
+    ) as attempt:
         try:
-            event_type = EventType(event_data.event_type)
-        except ValueError:
-            valid_types = [t.value for t in EventType]
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid event_type '{event_data.event_type}'. Valid types: {valid_types}"
+            try:
+                event_type = EventType(event_data.event_type)
+            except ValueError:
+                valid_types = [t.value for t in EventType]
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Invalid event_type '{event_data.event_type}'. "
+                        f"Valid types: {valid_types}"
+                    ),
+                )
+
+            now = datetime.now(timezone.utc)
+            from datetime import timedelta
+            end_time = now + timedelta(hours=event_data.duration_hours)
+
+            new_event = GameEvent(
+                title=event_data.title,
+                description=event_data.description,
+                event_type=event_type,
+                status=EventStatus.ACTIVE if event_data.auto_start else EventStatus.SCHEDULED,
+                start_time=now if event_data.auto_start else now,
+                end_time=end_time,
+                actual_start_time=now if event_data.auto_start else None,
+                affected_regions=event_data.affected_regions,
+                global_event=(
+                    event_data.affected_regions is None
+                    or len(event_data.affected_regions) == 0
+                ),
+                auto_start=event_data.auto_start,
+                created_by=current_admin.id,
+                created_at=now,
             )
 
-        now = datetime.now(timezone.utc)
-        from datetime import timedelta
-        end_time = now + timedelta(hours=event_data.duration_hours)
+            db.add(new_event)
+            db.flush()
 
-        new_event = GameEvent(
-            title=event_data.title,
-            description=event_data.description,
-            event_type=event_type,
-            status=EventStatus.ACTIVE if event_data.auto_start else EventStatus.SCHEDULED,
-            start_time=now if event_data.auto_start else now,
-            end_time=end_time,
-            actual_start_time=now if event_data.auto_start else None,
-            affected_regions=event_data.affected_regions,
-            global_event=(event_data.affected_regions is None or len(event_data.affected_regions) == 0),
-            auto_start=event_data.auto_start,
-            created_by=current_admin.id,
-            created_at=now,
-        )
+            effects_created = 0
+            if event_data.effects:
+                for eff_data in event_data.effects:
+                    effect = EventEffect(
+                        event_id=new_event.id,
+                        effect_type=eff_data.get("type", "modifier"),
+                        target=eff_data.get("target", "global"),
+                        modifier=float(eff_data.get("modifier", 1.0)),
+                        duration_hours=eff_data.get(
+                            "duration_hours", event_data.duration_hours
+                        ),
+                        description=eff_data.get("description", ""),
+                        is_active=event_data.auto_start,
+                        applied_at=now if event_data.auto_start else None,
+                    )
+                    db.add(effect)
+                    effects_created += 1
 
-        db.add(new_event)
-        db.flush()  # get the id
+            attempt.target_id = str(new_event.id)
+            attempt.succeed()
+            db.refresh(new_event)
 
-        # Create effects if provided
-        effects_created = 0
-        if event_data.effects:
-            for eff_data in event_data.effects:
-                effect = EventEffect(
-                    event_id=new_event.id,
-                    effect_type=eff_data.get("type", "modifier"),
-                    target=eff_data.get("target", "global"),
-                    modifier=float(eff_data.get("modifier", 1.0)),
-                    duration_hours=eff_data.get("duration_hours", event_data.duration_hours),
-                    description=eff_data.get("description", ""),
-                    is_active=event_data.auto_start,
-                    applied_at=now if event_data.auto_start else None,
-                )
-                db.add(effect)
-                effects_created += 1
+            return {
+                "success": True,
+                "event": {
+                    "id": str(new_event.id),
+                    "title": new_event.title,
+                    "description": new_event.description,
+                    "event_type": new_event.event_type.value,
+                    "status": new_event.status.value,
+                    "start_time": new_event.start_time.isoformat(),
+                    "end_time": (
+                        new_event.end_time.isoformat() if new_event.end_time else None
+                    ),
+                    "affected_regions": new_event.affected_regions or [],
+                    "global_event": new_event.global_event,
+                    "effects_created": effects_created,
+                    "created_by": current_admin.username,
+                    "created_at": new_event.created_at.isoformat(),
+                },
+                "message": f"Event '{new_event.title}' created successfully",
+            }
 
-        db.commit()
-        db.refresh(new_event)
-
-        return {
-            "success": True,
-            "event": {
-                "id": str(new_event.id),
-                "title": new_event.title,
-                "description": new_event.description,
-                "event_type": new_event.event_type.value,
-                "status": new_event.status.value,
-                "start_time": new_event.start_time.isoformat(),
-                "end_time": new_event.end_time.isoformat() if new_event.end_time else None,
-                "affected_regions": new_event.affected_regions or [],
-                "global_event": new_event.global_event,
-                "effects_created": effects_created,
-                "created_by": current_admin.username,
-                "created_at": new_event.created_at.isoformat(),
-            },
-            "message": f"Event '{new_event.title}' created successfully"
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error creating game event: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create game event: {str(e)}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error creating game event: {e}")
+            raise HTTPException(
+                status_code=500, detail=f"Failed to create game event: {str(e)}"
+            ) from e
 
 
 @router.get("/game-events/active/current", response_model=dict)
 async def get_active_game_events(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get all currently active game events with their effects.
@@ -2013,7 +2112,7 @@ async def get_active_game_events(
 @router.get("/game-events/{event_id}", response_model=dict)
 async def get_game_event_detail(
     event_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get detailed information about a specific game event."""
@@ -2097,229 +2196,299 @@ async def get_game_event_detail(
 async def update_game_event(
     event_id: str,
     update_data: EventUpdateRequest,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Update a game event's basic fields (title, description, status, end_time)."""
-    try:
-        event = db.query(GameEvent).filter(GameEvent.id == event_id).first()
-        if not event:
-            raise HTTPException(status_code=404, detail="Event not found")
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="game_event_update",
+        target_type="game_event",
+        target_id=str(event_id),
+        payload=update_data.model_dump(exclude_unset=True),
+    ) as attempt:
+        try:
+            event = db.query(GameEvent).filter(GameEvent.id == event_id).first()
+            if not event:
+                raise HTTPException(status_code=404, detail="Event not found")
 
-        if update_data.title is not None:
-            event.title = update_data.title
-        if update_data.description is not None:
-            event.description = update_data.description
-        if update_data.end_time is not None:
-            event.end_time = update_data.end_time
+            if update_data.title is not None:
+                event.title = update_data.title
+            if update_data.description is not None:
+                event.description = update_data.description
+            if update_data.end_time is not None:
+                event.end_time = update_data.end_time
 
-        # Handle status transitions
-        if update_data.status is not None:
-            try:
-                new_status = EventStatus(update_data.status)
-            except ValueError:
-                valid_statuses = [s.value for s in EventStatus]
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid status '{update_data.status}'. Valid statuses: {valid_statuses}"
-                )
+            if update_data.status is not None:
+                try:
+                    new_status = EventStatus(update_data.status)
+                except ValueError:
+                    valid_statuses = [s.value for s in EventStatus]
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Invalid status '{update_data.status}'. "
+                            f"Valid statuses: {valid_statuses}"
+                        ),
+                    )
 
-            old_status = event.status
-            now = datetime.now(timezone.utc)
+                old_status = event.status
+                now = datetime.now(timezone.utc)
 
-            # Enforce valid transitions
-            if new_status == EventStatus.ACTIVE and old_status == EventStatus.SCHEDULED:
-                event.status = EventStatus.ACTIVE
-                event.actual_start_time = now
-                # Activate effects
-                effects = db.query(EventEffect).filter(EventEffect.event_id == event.id).all()
-                for eff in effects:
-                    eff.is_active = True
-                    eff.applied_at = now
+                if new_status == EventStatus.ACTIVE and old_status == EventStatus.SCHEDULED:
+                    event.status = EventStatus.ACTIVE
+                    event.actual_start_time = now
+                    effects = db.query(EventEffect).filter(
+                        EventEffect.event_id == event.id
+                    ).all()
+                    for eff in effects:
+                        eff.is_active = True
+                        eff.applied_at = now
 
-            elif new_status in (EventStatus.COMPLETED, EventStatus.CANCELLED) and old_status in (EventStatus.ACTIVE, EventStatus.SCHEDULED):
-                event.status = new_status
-                event.actual_end_time = now
-                # Deactivate effects
-                effects = db.query(EventEffect).filter(EventEffect.event_id == event.id).all()
-                for eff in effects:
-                    eff.is_active = False
+                elif new_status in (
+                    EventStatus.COMPLETED,
+                    EventStatus.CANCELLED,
+                ) and old_status in (EventStatus.ACTIVE, EventStatus.SCHEDULED):
+                    event.status = new_status
+                    event.actual_end_time = now
+                    effects = db.query(EventEffect).filter(
+                        EventEffect.event_id == event.id
+                    ).all()
+                    for eff in effects:
+                        eff.is_active = False
 
-            elif new_status == EventStatus.PAUSED and old_status == EventStatus.ACTIVE:
-                event.status = EventStatus.PAUSED
-                # Deactivate effects while paused
-                effects = db.query(EventEffect).filter(EventEffect.event_id == event.id).all()
-                for eff in effects:
-                    eff.is_active = False
+                elif new_status == EventStatus.PAUSED and old_status == EventStatus.ACTIVE:
+                    event.status = EventStatus.PAUSED
+                    effects = db.query(EventEffect).filter(
+                        EventEffect.event_id == event.id
+                    ).all()
+                    for eff in effects:
+                        eff.is_active = False
 
-            elif new_status == EventStatus.ACTIVE and old_status == EventStatus.PAUSED:
-                event.status = EventStatus.ACTIVE
-                # Reactivate effects
-                effects = db.query(EventEffect).filter(EventEffect.event_id == event.id).all()
-                for eff in effects:
-                    eff.is_active = True
-                    eff.applied_at = now
+                elif new_status == EventStatus.ACTIVE and old_status == EventStatus.PAUSED:
+                    event.status = EventStatus.ACTIVE
+                    effects = db.query(EventEffect).filter(
+                        EventEffect.event_id == event.id
+                    ).all()
+                    for eff in effects:
+                        eff.is_active = True
+                        eff.applied_at = now
 
-            else:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Cannot transition from '{old_status.value}' to '{new_status.value}'"
-                )
+                else:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Cannot transition from '{old_status.value}' "
+                            f"to '{new_status.value}'"
+                        ),
+                    )
 
-        db.commit()
-        db.refresh(event)
+            attempt.succeed()
+            db.refresh(event)
 
-        return {
-            "success": True,
-            "event": {
-                "id": str(event.id),
-                "title": event.title,
-                "status": event.status.value if isinstance(event.status, EventStatus) else str(event.status),
-                "end_time": event.end_time.isoformat() if event.end_time else None,
-                "updated_at": event.updated_at.isoformat() if event.updated_at else None,
-            },
-            "message": f"Event '{event.title}' updated successfully"
-        }
+            return {
+                "success": True,
+                "event": {
+                    "id": str(event.id),
+                    "title": event.title,
+                    "status": (
+                        event.status.value
+                        if isinstance(event.status, EventStatus)
+                        else str(event.status)
+                    ),
+                    "end_time": (
+                        event.end_time.isoformat() if event.end_time else None
+                    ),
+                    "updated_at": (
+                        event.updated_at.isoformat() if event.updated_at else None
+                    ),
+                },
+                "message": f"Event '{event.title}' updated successfully",
+            }
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error updating game event {event_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to update game event: {str(e)}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error updating game event {event_id}: {e}")
+            raise HTTPException(
+                status_code=500, detail=f"Failed to update game event: {str(e)}"
+            ) from e
 
 
 @router.post("/game-events/{event_id}/activate", response_model=dict)
 async def activate_game_event(
     event_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Activate a scheduled or paused game event."""
-    try:
-        event = db.query(GameEvent).filter(GameEvent.id == event_id).first()
-        if not event:
-            raise HTTPException(status_code=404, detail="Event not found")
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="game_event_activate",
+        target_type="game_event",
+        target_id=str(event_id),
+        payload={},
+    ) as attempt:
+        try:
+            event = db.query(GameEvent).filter(GameEvent.id == event_id).first()
+            if not event:
+                raise HTTPException(status_code=404, detail="Event not found")
 
-        if event.status not in (EventStatus.SCHEDULED, EventStatus.PAUSED):
+            if event.status not in (EventStatus.SCHEDULED, EventStatus.PAUSED):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Cannot activate event with status '{event.status.value}'. "
+                        "Must be 'scheduled' or 'paused'."
+                    ),
+                )
+
+            now = datetime.now(timezone.utc)
+            event.status = EventStatus.ACTIVE
+            event.actual_start_time = event.actual_start_time or now
+
+            effects = db.query(EventEffect).filter(
+                EventEffect.event_id == event.id
+            ).all()
+            for eff in effects:
+                eff.is_active = True
+                eff.applied_at = now
+
+            attempt.succeed()
+
+            return {
+                "success": True,
+                "event_id": str(event.id),
+                "status": "active",
+                "message": f"Event '{event.title}' is now active",
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error activating game event {event_id}: {e}")
             raise HTTPException(
-                status_code=400,
-                detail=f"Cannot activate event with status '{event.status.value}'. Must be 'scheduled' or 'paused'."
-            )
-
-        now = datetime.now(timezone.utc)
-        event.status = EventStatus.ACTIVE
-        event.actual_start_time = event.actual_start_time or now
-
-        # Activate all effects
-        effects = db.query(EventEffect).filter(EventEffect.event_id == event.id).all()
-        for eff in effects:
-            eff.is_active = True
-            eff.applied_at = now
-
-        db.commit()
-
-        return {
-            "success": True,
-            "event_id": str(event.id),
-            "status": "active",
-            "message": f"Event '{event.title}' is now active"
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error activating game event {event_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to activate game event: {str(e)}")
+                status_code=500, detail=f"Failed to activate game event: {str(e)}"
+            ) from e
 
 
 @router.post("/game-events/{event_id}/deactivate", response_model=dict)
 async def deactivate_game_event(
     event_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Deactivate (complete or cancel) an active or scheduled game event."""
-    try:
-        event = db.query(GameEvent).filter(GameEvent.id == event_id).first()
-        if not event:
-            raise HTTPException(status_code=404, detail="Event not found")
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="game_event_deactivate",
+        target_type="game_event",
+        target_id=str(event_id),
+        payload={},
+    ) as attempt:
+        try:
+            event = db.query(GameEvent).filter(GameEvent.id == event_id).first()
+            if not event:
+                raise HTTPException(status_code=404, detail="Event not found")
 
-        if event.status not in (EventStatus.ACTIVE, EventStatus.SCHEDULED, EventStatus.PAUSED):
+            if event.status not in (
+                EventStatus.ACTIVE,
+                EventStatus.SCHEDULED,
+                EventStatus.PAUSED,
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Cannot deactivate event with status '{event.status.value}'"
+                    ),
+                )
+
+            now = datetime.now(timezone.utc)
+            if event.status == EventStatus.SCHEDULED:
+                event.status = EventStatus.CANCELLED
+            else:
+                event.status = EventStatus.COMPLETED
+            event.actual_end_time = now
+
+            effects = db.query(EventEffect).filter(
+                EventEffect.event_id == event.id
+            ).all()
+            for eff in effects:
+                eff.is_active = False
+
+            attempt.succeed()
+
+            return {
+                "success": True,
+                "event_id": str(event.id),
+                "status": event.status.value,
+                "message": f"Event '{event.title}' has been {event.status.value}",
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error deactivating game event {event_id}: {e}")
             raise HTTPException(
-                status_code=400,
-                detail=f"Cannot deactivate event with status '{event.status.value}'"
-            )
-
-        now = datetime.now(timezone.utc)
-        # Scheduled events get cancelled; active/paused events get completed
-        if event.status == EventStatus.SCHEDULED:
-            event.status = EventStatus.CANCELLED
-        else:
-            event.status = EventStatus.COMPLETED
-        event.actual_end_time = now
-
-        # Deactivate all effects
-        effects = db.query(EventEffect).filter(EventEffect.event_id == event.id).all()
-        for eff in effects:
-            eff.is_active = False
-
-        db.commit()
-
-        return {
-            "success": True,
-            "event_id": str(event.id),
-            "status": event.status.value,
-            "message": f"Event '{event.title}' has been {event.status.value}"
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error deactivating game event {event_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to deactivate game event: {str(e)}")
+                status_code=500,
+                detail=f"Failed to deactivate game event: {str(e)}",
+            ) from e
 
 
 @router.delete("/game-events/{event_id}", response_model=dict)
 async def delete_game_event(
     event_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Delete a game event. Active events must be deactivated first."""
-    try:
-        event = db.query(GameEvent).filter(GameEvent.id == event_id).first()
-        if not event:
-            raise HTTPException(status_code=404, detail="Event not found")
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=GALAXY_MANAGE,
+        action="game_event_delete",
+        target_type="game_event",
+        target_id=str(event_id),
+        payload={},
+    ) as attempt:
+        try:
+            event = db.query(GameEvent).filter(GameEvent.id == event_id).first()
+            if not event:
+                raise HTTPException(status_code=404, detail="Event not found")
 
-        if event.status == EventStatus.ACTIVE:
+            if event.status == EventStatus.ACTIVE:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot delete an active event. Deactivate it first.",
+                )
+
+            event_title = event.title
+
+            db.query(EventEffect).filter(EventEffect.event_id == event.id).delete()
+            db.query(EventParticipation).filter(
+                EventParticipation.event_id == event.id
+            ).delete()
+            db.delete(event)
+            attempt.succeed(payload={"title": event_title})
+
+            return {
+                "success": True,
+                "event_id": event_id,
+                "message": f"Event '{event_title}' deleted successfully",
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error deleting game event {event_id}: {e}")
             raise HTTPException(
-                status_code=400,
-                detail="Cannot delete an active event. Deactivate it first."
-            )
-
-        event_title = event.title
-
-        # Delete associated effects and participations (cascade should handle this,
-        # but be explicit for safety)
-        db.query(EventEffect).filter(EventEffect.event_id == event.id).delete()
-        db.query(EventParticipation).filter(EventParticipation.event_id == event.id).delete()
-        db.delete(event)
-        db.commit()
-
-        return {
-            "success": True,
-            "event_id": event_id,
-            "message": f"Event '{event_title}' deleted successfully"
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error deleting game event {event_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to delete game event: {str(e)}")
+                status_code=500, detail=f"Failed to delete game event: {str(e)}"
+            ) from e
 
 
