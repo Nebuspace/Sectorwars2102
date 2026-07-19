@@ -105,7 +105,7 @@ def test_resource_rich_multiplicative_border_zone():
     # ×1.5 × 1.0 (border)
     assert y["ore"] == int(_GX1_RESOURCE_RICH_BASE["ore"] * 1.5)
     assert y["precious_metals"] == int(_GX1_RESOURCE_RICH_BASE["precious_metals"] * 1.5)
-    assert y["radioactives"] == int(_GX1_RESOURCE_RICH_BASE["radioactives"] * 1.5)
+    assert y["quantum_shards"] == int(_GX1_RESOURCE_RICH_BASE["quantum_shards"] * 1.5)
     assert defenses is None
     assert faction is None
 
