@@ -69,6 +69,27 @@ around):
    service.py:1394-1423, is pure DB writes -- no further AI call sites are
    reachable after this one guard).
 
+3. DOCKING NEEDS REAL IN-SECTOR PROXIMITY, NOT JUST SAME-SECTOR. WO-ISP-
+   DOCKPROX added ``assert_dock_land_proximity`` (intrasystem_movement_
+   service.py) to ``POST /trading/dock`` -- a same-sector player 400s with
+   "too far ... move closer and try again" unless their %-space pose is
+   within ``DOCK_LAND_PROXIMITY_RANGE_EM`` of the target's own resolved
+   position. A freshly-arrived player who has never burned toward anything
+   in this sector has no stored ``intrasystem_pose`` at all --
+   ``ensure_player_pose`` defaults them to ``empty_idle_pose``'s seeded
+   "resting anchor", a deterministic point with zero relation to where
+   Playthrough Depot itself renders. Sector-to-sector ``move_player_to_
+   sector`` never touches ``intrasystem_pose`` either, so this is not
+   resolved by the move step. A real player would fly there first (``POST
+   /helm/intrasystem/burn``); simulating that via the real route would make
+   this integration test racy (``derive_pose`` samples the burn leg by
+   real elapsed wall-clock time). Instead this test parks the ship's pose
+   directly at the depot's own resolved position -- via
+   ``resolve_target_position``, the SAME lookup the gate itself calls, so
+   this can never silently drift from what the gate actually checks --
+   simulating "already flown here and idle", a legitimate, deterministic
+   precondition rather than a working-around of the gate.
+
 PROOF BOUNDARY (per this WO's own instruction): the Mac has no Postgres, so
 this file's collection is what's proven locally (see the report for the
 exact ``pytest --collect-only`` output) -- the live green run is the
@@ -90,12 +111,18 @@ from sqlalchemy.orm import Session
 from src.core.config import settings
 from src.models.cluster import Cluster, ClusterType
 from src.models.contract import Contract, ContractIssuerType, ContractStatus, ContractType
+from src.models.player import Player
 from src.models.region import Region, RegionType
 from src.models.sector import Sector
 from src.models.ship import Ship, ShipStatus, ShipType
 from src.models.station import Station, StationClass, StationType
+from src.models.user import User
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelType
 from src.services import ai_provider_service as ai_provider_module
+from src.services.intrasystem_movement_service import (
+    resolve_target_position,
+    set_player_pose,
+)
 
 API = settings.API_V1_STR
 
@@ -401,6 +428,24 @@ def test_core_loop_playthrough(
     # not just the move response.
     state_after_move = client.get(f"{API}/player/state", headers=headers).json()
     assert state_after_move["current_sector_id"] == w.sector_dest.sector_id
+
+    # Finding 3 (see module docstring): park the ship's pose at the depot's
+    # own resolved %-space position -- same-sector alone isn't dockable
+    # range since WO-ISP-DOCKPROX.
+    player_row = (
+        db.query(Player).join(User, Player.user_id == User.id)
+        .filter(User.username == username).first()
+    )
+    assert player_row is not None
+    depot_xy = resolve_target_position(
+        db, w.sector_dest.sector_id, str(player_row.id), "station", str(w.station.id),
+    )
+    assert depot_xy is not None, "Playthrough Depot must resolve a real %-space position"
+    set_player_pose(db, player_row, {
+        "x_pct": depot_xy[0], "y_pct": depot_xy[1],
+        "heading_deg": 0.0, "phase": "idle", "burning": False, "leg": None,
+    })
+    db.commit()
 
     # --- step 4: dock ---
     dock_resp = client.post(

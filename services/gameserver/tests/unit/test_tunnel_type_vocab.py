@@ -228,6 +228,13 @@ class TestSpacetimeAnomalyReKeyed:
 # ---------------------------------------------------------------------------
 
 
+def _admin_user():
+    """These routes are RBAC-E5-wrapped (admin_action_attempt), which reads
+    actor.id on both the succeed() and fail() paths -- a bare SimpleNamespace()
+    (fine when the routes were is_admin-only) now AttributeErrors on log."""
+    return SimpleNamespace(id=uuid.uuid4(), username="admin", is_admin=True)
+
+
 def _build_admin_db(source, target, existing_tunnel=None):
     mock_db = MagicMock()
     sector_returns = iter([source, target])
@@ -269,7 +276,7 @@ class TestAdminCreateRestrictsToCanonTypes:
 
         result = asyncio.run(
             create_enhanced_warp_tunnel(
-                _make_request(tunnel_type), current_admin=SimpleNamespace(), db=db
+                _make_request(tunnel_type), current_admin=_admin_user(), db=db
             )
         )
 
@@ -284,7 +291,7 @@ class TestAdminCreateRestrictsToCanonTypes:
         with pytest.raises(HTTPException) as exc_info:
             asyncio.run(
                 create_enhanced_warp_tunnel(
-                    _make_request(tunnel_type), current_admin=SimpleNamespace(), db=db
+                    _make_request(tunnel_type), current_admin=_admin_user(), db=db
                 )
             )
 
@@ -319,7 +326,7 @@ class TestAdminComprehensiveCreateRestrictsToCanonTypes:
 
         result = asyncio.run(
             create_warp_tunnel(
-                str(origin.id), _make_create_request(tunnel_type), current_admin=SimpleNamespace(), db=db
+                str(origin.id), _make_create_request(tunnel_type), current_admin=_admin_user(), db=db
             )
         )
 
@@ -335,7 +342,7 @@ class TestAdminComprehensiveCreateRestrictsToCanonTypes:
         with pytest.raises(HTTPException) as exc_info:
             asyncio.run(
                 create_warp_tunnel(
-                    str(origin.id), _make_create_request(tunnel_type), current_admin=SimpleNamespace(), db=db
+                    str(origin.id), _make_create_request(tunnel_type), current_admin=_admin_user(), db=db
                 )
             )
 
@@ -378,7 +385,7 @@ class TestAdminComprehensiveUpdateRestrictsToCanonTypes:
             update_warp_tunnel(
                 str(tunnel.id),
                 WarpTunnelUpdateRequest(type=tunnel_type),
-                current_admin=SimpleNamespace(),
+                current_admin=_admin_user(),
                 db=db,
             )
         )
@@ -396,7 +403,7 @@ class TestAdminComprehensiveUpdateRestrictsToCanonTypes:
                 update_warp_tunnel(
                     str(tunnel.id),
                     WarpTunnelUpdateRequest(type=tunnel_type),
-                    current_admin=SimpleNamespace(),
+                    current_admin=_admin_user(),
                     db=db,
                 )
             )
@@ -416,7 +423,7 @@ class TestAdminComprehensiveUpdateRestrictsToCanonTypes:
             update_warp_tunnel(
                 str(tunnel.id),
                 WarpTunnelUpdateRequest(type="quantum"),
-                current_admin=SimpleNamespace(),
+                current_admin=_admin_user(),
                 db=db,
             )
         )
@@ -436,7 +443,7 @@ class TestAdminComprehensiveUpdateRestrictsToCanonTypes:
                 update_warp_tunnel(
                     str(tunnel.id),
                     WarpTunnelUpdateRequest(type="unstable"),
-                    current_admin=SimpleNamespace(),
+                    current_admin=_admin_user(),
                     db=db,
                 )
             )
@@ -454,7 +461,7 @@ class TestAdminComprehensiveUpdateRestrictsToCanonTypes:
             update_warp_tunnel(
                 str(tunnel.id),
                 WarpTunnelUpdateRequest(type="natural"),
-                current_admin=SimpleNamespace(),
+                current_admin=_admin_user(),
                 db=db,
             )
         )

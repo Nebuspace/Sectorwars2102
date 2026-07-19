@@ -55,9 +55,25 @@ def _make_planet(
 
 
 def _make_db(planet=None):
-    """Return a mock Session whose query chain returns `planet`."""
+    """Return a mock Session whose Planet lookup resolves to `planet` and
+    whose AdminScopeGrant lookup (require_scope(GALAXY_MANAGE) -- both
+    routes are RBAC-E5-wrapped, gated on an active scope grant rather than
+    is_admin alone) resolves to a granted row. A blanket
+    `db.query.return_value...` accidentally coupled the two unrelated
+    lookups (same mock answers both "planet exists?" and "admin has scope?"),
+    which happened to pass when `planet` was truthy and 403'd instead of
+    404'd when it wasn't -- dispatch per queried model instead."""
     db = MagicMock()
-    db.query.return_value.filter.return_value.first.return_value = planet
+
+    def _query(model):
+        q = MagicMock()
+        if str(model) == "AdminScopeGrant.id":
+            q.filter.return_value.first.return_value = (uuid.uuid4(),)  # active grant
+        else:
+            q.filter.return_value.first.return_value = planet
+        return q
+
+    db.query.side_effect = _query
     return db
 
 
@@ -167,7 +183,12 @@ class TestDeletePlanetColonizedGuard:
         resp = planet_client.delete(f"{API}/{planet.id}")
         assert resp.status_code == 409, f"Expected 409 for colonized planet, got {resp.status_code}"
         db.delete.assert_not_called()
-        db.commit.assert_not_called()
+        # admin_action_attempt rolls back any buffered mutation before its
+        # own best-effort commit of the blocked-attempt audit row (RBAC
+        # E-5) -- a commit call here is the audit trail, not the guarded
+        # delete, so the load-bearing proof is delete-never-called + the
+        # rollback that precedes the audit commit.
+        db.rollback.assert_called_once()
 
     def test_planet_with_owner_id_is_refused(self, planet_client):
         self._assert_guard_fires(planet_client, _make_planet(owner_id=uuid.uuid4()))

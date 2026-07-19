@@ -80,10 +80,25 @@ def test_helper_is_single_constructor_source():
 
 
 def _assert_log_before_commit(fn, action: str):
+    """Audit log must be written before the mutation commits.
+
+    Two current shapes: the still-inline `log_admin_action(...)` +
+    `db.commit()` pair (e.g. decide_cluster), or an `admin_action_attempt`
+    context manager whose `succeed()` itself logs-then-commits (proven
+    generically in test_rbac_phase_e5_attempts.py) -- for the latter the
+    route must not also commit again after `attempt.succeed()`, which
+    would double-commit outside the helper's owned boundary.
+    """
     src = inspect.getsource(fn)
-    assert "log_admin_action" in src
     assert f'action="{action}"' in src
-    assert src.index("log_admin_action") < src.index("db.commit()")
+    if "admin_action_attempt" in src:
+        assert "attempt.succeed" in src
+        after_succeed = src.split("attempt.succeed", 1)[1]
+        assert "db.commit()" not in after_succeed
+    else:
+        assert "log_admin_action" in src
+        assert "db.commit()" in src
+        assert src.index("log_admin_action") < src.index("db.commit()")
 
 
 def test_update_planet_logs_before_commit():
@@ -116,10 +131,13 @@ def test_no_secrets_in_c0_payloads():
 
     for fn in (mod.update_planet, mod.delete_planet, ma.decide_cluster):
         src = inspect.getsource(fn)
-        blob = src.lower()
-        for banned in ("password", "token", "secret", "credential", "authorization"):
-            # Allow the word only outside the log_admin_action call region
+        if "admin_action_attempt" in src:
+            # succeed()/fail() may log from anywhere inside the `with`
+            # block -- the whole wrapped body is the candidate log region.
+            log_region = src[src.index("admin_action_attempt") :]
+        else:
             log_region = src[src.index("log_admin_action") : src.index("db.commit()")]
+        for banned in ("password", "token", "secret", "credential", "authorization"):
             assert banned not in log_region.lower(), f"{fn.__name__}: {banned} in payload"
 
 

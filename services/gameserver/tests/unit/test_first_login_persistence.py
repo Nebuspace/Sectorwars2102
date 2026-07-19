@@ -75,6 +75,11 @@ from src.models.faction import Faction, FactionType
 from src.models.reputation import Reputation, ReputationLevel
 from src.api.routes import admin_comprehensive as admin_mod
 from src.api.routes.admin_comprehensive import update_player, PlayerUpdateRequest
+from src.auth.admin_scopes import (
+    PLAYERS_ADJUST_CREDITS,
+    PLAYERS_ADJUST_REP,
+    PLAYERS_SUSPEND,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -419,7 +424,9 @@ def _admin_faction(faction_id, name="Terran Federation", ftype=FactionType.FEDER
 
 
 def _admin_user():
-    return types.SimpleNamespace(username="test-admin")
+    # update_player is RBAC-E5-wrapped (admin_action_attempt), which reads
+    # actor.id on log -- a bare username-only fake AttributeErrors on log.
+    return types.SimpleNamespace(id=uuid.uuid4(), username="test-admin")
 
 
 @pytest.mark.asyncio
@@ -498,15 +505,26 @@ async def test_admin_reputation_adjustment_unknown_faction_name_is_dropped_not_f
 
     assert result == {"message": "Player updated successfully"}
     assert player.credits == 5000
-    assert db.added == []
+    # No phantom Reputation row for the dropped unknown-faction adjustment
+    # -- db.added legitimately also holds the route's own AdminActionLog
+    # audit row (log_admin_action fires on every successful update_player
+    # call, unrelated to this WO), so filter by type like the sibling
+    # clamp/create-path tests above rather than requiring an empty list.
+    assert not any(isinstance(o, Reputation) for o in db.added)
 
 
 def test_update_player_route_auth_dependency_unchanged():
-    """Zero auth diff -- Lane B only touched the reputation_adjustments
-    block. Pin that `current_admin` is still resolved via the same
-    `get_current_admin` dependency object admin_comprehensive.py already
-    imported (itself `auth.dependencies.get_current_admin_user` under an
-    alias)."""
+    """Lane B only touched the reputation_adjustments block -- the route's
+    auth gate itself is untouched by THIS WO. That gate has since migrated
+    (a separate RBAC-E5 rollout) from the old `get_current_admin`
+    (is_admin-only) dependency to `require_all_scopes(PLAYERS_ADJUST_CREDITS,
+    PLAYERS_SUSPEND, PLAYERS_ADJUST_REP)` -- pin the scope-gated shape via
+    the dependency's own self-describing name (require_all_scopes stamps
+    `__name__` with its exact scope list, the same convention
+    test_rbac_phase_a2.py pins via `__require_scope__`)."""
     sig = py_inspect.signature(admin_mod.update_player)
     current_admin_param = sig.parameters["current_admin"]
-    assert current_admin_param.default.dependency is admin_mod.get_current_admin
+    dependency = current_admin_param.default.dependency
+    assert dependency.__name__ == (
+        f"require_all_scopes[{PLAYERS_ADJUST_CREDITS},{PLAYERS_SUSPEND},{PLAYERS_ADJUST_REP}]"
+    )

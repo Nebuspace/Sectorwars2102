@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment jsdomnodefetch
 /**
  * GameLayout — shell-slots portal + state round-trip (WO-UI0-SHELL-
  * TRANSPLANT's STATE-PRESERVATION GATE).

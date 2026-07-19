@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment jsdomnodefetch
 /**
  * GameRouteRedirects — the 10 legacy /game/* URL redirect matrix
  * (WO-UI5-RETIREMENT+GLASS).

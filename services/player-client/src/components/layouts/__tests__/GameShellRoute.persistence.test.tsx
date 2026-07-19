@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment jsdomnodefetch
 /**
  * GameShellRoute + GameLayout — persistent-shell state survives navigation
  * (WO-UI0-PERSISTENT-SHELL lane A).
