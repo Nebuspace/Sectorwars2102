@@ -57,7 +57,9 @@ def _condition_matches(row, condition) -> bool:
     if op is operators.eq:
         return actual == value
     if op is operators.in_op:
-        return actual in value
+        if isinstance(value, (list, tuple, set, frozenset)):
+            return actual in value
+        return actual == value
     raise AssertionError(f"unhandled operator {op!r} on column {column!r}")
 
 
