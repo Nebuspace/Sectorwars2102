@@ -14,7 +14,11 @@ from typing import Dict, Any, List, Optional
 
 from sqlalchemy.orm import Session
 
-from src.core.commodity_economy import get_commodity_credit_values
+from src.core.commodity_economy import (
+    COMMODITY_BASE_PRICES,
+    canonical_commodity,
+    get_commodity_credit_values,
+)
 from src.models.player import Player
 from src.models.planet import Planet
 
@@ -146,13 +150,22 @@ DEFENSE_BUILDINGS = {
         "cost": 100000,
         "build_hours": 48,
         "effects": {
-            # Deferred per-mine combat data (no resolver wiring yet — mirrors
-            # rail_gun's deferred per-shot data living here).
             "weapon_kind": "proximity_mine",
             "mines_per_field": 20,
             # Equipment material requirement recorded as catalog metadata
             # (build_defense_building charges credits only, like rail_gun).
             "equipment_cost": 10000,
+            # WO-P5-planets-minefield-wiring: canon raw per-mine-impact damage
+            # (defense.md §"Mine fields": "deal 500-1,500 hull damage per mine
+            # impact, ignore shields"). Metadata only, mirroring rail_gun's
+            # base_damage_min/max shape — the resolver's actual injection uses
+            # combat_service.py's separate in-scale NO-CANON
+            # MINEFIELD_BASE_DAMAGE_PER_FIELD constant (this raw literal would
+            # instakill on the resolver's 1-7 scale, same WO-CT1/rail_gun
+            # incompatibility).
+            "base_damage_min": 500,
+            "base_damage_max": 1500,
+            "ignores_shields": True,
         },
     },
 }
@@ -263,6 +276,24 @@ CITADEL_LEVELS = {
         "resource_cost": {"fuel_ore": 15000, "organics": 8000, "equipment": 10000},
     },
 }
+
+
+def _validate_citadel_resource_cost_vocab() -> None:
+    """Import-time guard (WO-ARCH-RES-2I-D): every CITADEL_LEVELS
+    resource_cost key must resolve to a known commodity-economy slug (via
+    canonical_commodity — e.g. fuel_ore -> ore) rather than silently drifting
+    off the SoT vocabulary. VALIDATION ONLY: raises at import on a bad slug;
+    zero numeric change to CITADEL_LEVELS itself."""
+    for level, spec in CITADEL_LEVELS.items():
+        for slug in spec["resource_cost"]:
+            assert canonical_commodity(slug) in COMMODITY_BASE_PRICES, (
+                f"citadel_service: CITADEL_LEVELS[{level}] resource_cost key "
+                f"{slug!r} does not resolve to a known commodity-economy slug "
+                "— vocabulary drift"
+            )
+
+
+_validate_citadel_resource_cost_vocab()
 
 # --- T1.5-2 NO-FREE-PROMOTION GATE (CRT-4 / CRT-T15-MASTER §3.4) -------------
 # The honest one-time GATE at the early tiers (NOT the recurring floor — that is
@@ -527,7 +558,7 @@ class CitadelService:
             }
 
         # For levels 1+: lock player row to prevent concurrent credit races
-        player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
+        player = self.db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
         if not player:
             return {"success": False, "message": "Player not found"}
 
@@ -618,7 +649,7 @@ class CitadelService:
         refund = int((target_info.get("upgrade_cost", 0) or 0) * 0.5)
 
         if refund > 0:
-            player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
+            player = self.db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
             if player:
                 player.credits += refund
 
@@ -1552,7 +1583,7 @@ class CitadelService:
         unit_cost = spec.get("tier_costs", {}).get(count_to_be, spec["cost"])
 
         # --- Lock player for credit deduction ---
-        player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
+        player = self.db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
         if not player:
             return {"success": False, "message": "Player not found"}
 

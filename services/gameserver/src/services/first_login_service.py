@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple, Any, Union
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.player import Player
 from src.models.first_login import (
@@ -16,7 +17,7 @@ from src.models.first_login import (
     NegotiationSkillLevel,
     DialogueOutcome
 )
-from src.models.ship import Ship, ShipType
+from src.models.ship import Ship, ShipType, ShipSpecification
 from src.services.ai_dialogue_service import (
     AIDialogueService,
     DialogueContext,
@@ -24,10 +25,23 @@ from src.services.ai_dialogue_service import (
     GuardMood
 )
 from src.services.ai_provider_service import get_ai_provider_service, ProviderType
+from src.services.nickname_validation_service import validate_nickname
 from src.utils.guard_personalities import get_guard_for_session
 from src.core.ship_specifications_seeder import SHIP_SPECIFICATIONS
 
 logger = logging.getLogger(__name__)
+
+
+class FirstLoginCompletionError(Exception):
+    """Raised by complete_first_login when the flow's side effects have
+    already run for this player; carries an HTTP status hint (matches the
+    ConstructionError convention in construction_service.py)."""
+
+    def __init__(self, status_code: int, detail: str):
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
+
 
 def get_ship_specifications(ship_choice: ShipChoice) -> Optional[Dict[str, Any]]:
     """
@@ -325,6 +339,95 @@ class FirstLoginService:
         self.db.commit()
         self.db.refresh(session)
         return session
+
+    def get_session_with_history(self, player_id: uuid.UUID) -> Optional[Dict[str, Any]]:
+        """
+        Read-only assembly of a player's in-progress first-login session for
+        resume: the session row plus its ordered, already-persisted
+        DialogueExchange history (canon: first-login.md:135-139 persistence/
+        resume — "reload mid-flow returns the full history"). Returns None
+        when there is nothing to resume, in which case the caller falls back
+        to get_or_create_session for a fresh one.
+
+        A session counts as resumable for as long as the player hasn't
+        finished the whole flow (state.has_completed_first_login) — not
+        merely reached a dialogue outcome. completed_at is set as soon as
+        the outcome is scored (_evaluate_dialogue_outcome), before /complete
+        grants resources, so the outcome/completion screen must stay
+        resumable too or a reload there would silently spin up a duplicate
+        session with a new guard and new ships.
+        """
+        state = self.get_player_first_login_state(player_id)
+        if not state.current_session_id or state.has_completed_first_login:
+            return None
+
+        session = self.db.query(FirstLoginSession).filter_by(id=state.current_session_id).first()
+        if not session:
+            return None
+
+        exchanges = self.db.query(DialogueExchange).filter_by(
+            session_id=session.id
+        ).order_by(DialogueExchange.sequence_number).all()
+
+        ship_options = self.db.query(ShipPresentationOptions).filter_by(session_id=session.id).first()
+        available_ships = ship_options.available_ships if ship_options else [ShipChoice.ESCAPE_POD.name]
+
+        current_step = "ship_selection"
+        if session.ship_claimed:
+            current_step = "dialogue" if not session.outcome else "completion"
+
+        last_exchange = exchanges[-1] if exchanges else None
+        # The exchange still awaiting a reply — None once the dialogue has
+        # been fully answered and scored (no further question is created).
+        pending_exchange = (
+            last_exchange if (last_exchange and not last_exchange.player_response) else None
+        )
+
+        outcome = None
+        if session.outcome:
+            outcome = {
+                "outcome": session.outcome.name,
+                "awarded_ship": session.awarded_ship.name if session.awarded_ship else None,
+                "starting_credits": session.starting_credits,
+                "negotiation_skill": session.negotiation_skill.name if session.negotiation_skill else None,
+                "final_persuasion_score": session.final_persuasion_score,
+                "negotiation_bonus": bool(session.negotiation_bonus_flag),
+                "notoriety_penalty": bool(session.notoriety_penalty),
+                # The AI-narrated closing line is generated at outcome time,
+                # not persisted anywhere — resume never re-invokes the AI
+                # provider (no cost, no non-determinism, ARIA-LLM untouched).
+                # The client falls back to its own canonical outcome message.
+                "guard_response": None,
+                # Carries the pending nickname-confirmation prompt across a
+                # reload (WO-PUX-FLOGIN-NICKNAME) — a player who reaches the
+                # outcome screen with an extracted name but reloads before
+                # /complete must still see the confirm gate, not lose it.
+                "extracted_player_name": session.extracted_player_name,
+            }
+
+        return {
+            "session": session,
+            "available_ships": available_ships,
+            "current_step": current_step,
+            "npc_prompt": last_exchange.npc_prompt if last_exchange else "ERROR: Missing initial prompt",
+            "exchange_id": str(pending_exchange.id) if pending_exchange else None,
+            "sequence_number": (
+                pending_exchange.sequence_number if pending_exchange
+                else (last_exchange.sequence_number if last_exchange else None)
+            ),
+            "outcome": outcome,
+            "dialogue_history": [
+                {
+                    "npc_prompt": ex.npc_prompt,
+                    "player_response": ex.player_response,
+                    "sequence_number": ex.sequence_number,
+                    "persuasiveness": ex.persuasiveness,
+                    "confidence": ex.confidence,
+                    "consistency": ex.consistency,
+                }
+                for ex in exchanges
+            ],
+        }
 
     async def generate_initial_prompt(self, session_id: uuid.UUID) -> str:
         """
@@ -1538,9 +1641,14 @@ Description: {ship_specs.get('description', 'N/A')}
             "final_persuasion_score": final_persuasion_score,
             "negotiation_bonus": negotiation_bonus_flag,
             "notoriety_penalty": notoriety_penalty,
-            "guard_response": guard_response
+            "guard_response": guard_response,
+            # Surfaced so the client can offer the nickname-confirmation
+            # prompt (WO-PUX-FLOGIN-NICKNAME); complete_first_login is the
+            # only place that ever writes it to Player.nickname, and only
+            # once the player has explicitly confirmed it.
+            "extracted_player_name": session.extracted_player_name,
         }
-    
+
     async def _generate_guard_outcome_response_async(self, session: FirstLoginSession) -> str:
         """Generate AI-powered personalized guard response based on the dialogue outcome"""
         try:
@@ -1599,8 +1707,22 @@ Description: {ship_specs.get('description', 'N/A')}
             ship_type = claimed_ship.name.replace("_", " ").title()
             return f"[RULE-BASED] Your story doesn't add up. You're getting the Escape Pod, not the {ship_type}."
     
-    def complete_first_login(self, session_id: uuid.UUID) -> Dict[str, Any]:
-        """Complete the first login process and grant the player their ship and credits"""
+    def complete_first_login(
+        self,
+        session_id: uuid.UUID,
+        nickname_confirmed: bool = False,
+        nickname_override: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Complete the first login process and grant the player their ship and credits.
+
+        nickname_confirmed / nickname_override (WO-PUX-FLOGIN-NICKNAME):
+        Player.nickname is written ONLY when the player explicitly confirmed
+        the callsign AND it passes nickname_validation_service — never
+        unconditionally from the dialogue extraction. Declining or failing
+        validation never blocks completion (first-login.md:255); the
+        rejection reason is returned instead so the client can offer a
+        free-text retry.
+        """
         session = self.db.query(FirstLoginSession).filter_by(id=session_id).first()
 
         if not session:
@@ -1611,6 +1733,21 @@ Description: {ship_specs.get('description', 'N/A')}
 
         if not player:
             raise ValueError(f"Player not found: {session.player_id}")
+
+        # Idempotency guard (WO-PUX-FLOGIN-IDEMPOTENT): has_completed_first_login
+        # is the only reliable marker here -- it is set exactly once, at the
+        # very end of this method, after every side effect below has already
+        # run. session.completed_at is NOT usable for this: it is already
+        # stamped by _evaluate_dialogue_outcome as soon as the dialogue
+        # outcome is scored, before /complete is ever called (see
+        # get_session_with_history's docstring above), which made the old
+        # `if not session.completed_at:` check below permanently dead. A
+        # repeat call (double-click, client retry, reload race) must be a
+        # true no-op: no ship delete/create, no credit re-grant, no ARIA
+        # reset, no nickname write.
+        state = self.get_player_first_login_state(player.id)
+        if state.has_completed_first_login:
+            raise FirstLoginCompletionError(400, "First login already completed")
 
         # SELF-HEALING: First Login should always give a clean slate
         # If there's stale data from previous testing/sessions, clean it up
@@ -1631,14 +1768,40 @@ Description: {ship_specs.get('description', 'N/A')}
         # Update the player with the awarded resources
         player.credits = session.starting_credits
         
-        # Update nickname if extracted from dialogue
-        if session.extracted_player_name:
-            player.nickname = session.extracted_player_name
-        
+        # Nickname capture — gated on explicit confirmation + validation
+        # (canon: first-login.md:252-255). RETIRES the prior unconditional
+        # `player.nickname = session.extracted_player_name` write: an
+        # unconfirmed or failed-validation candidate never reaches the
+        # column, and completion still proceeds either way — a declined or
+        # rejected nickname is never a blocking failure.
+        nickname_rejected_reason = None
+        if nickname_confirmed:
+            candidate = nickname_override or session.extracted_player_name
+            ok, reason = validate_nickname(
+                self.db, candidate, exclude_player_id=player.id
+            )
+            if ok:
+                player.nickname = candidate
+            else:
+                nickname_rejected_reason = reason
+
         # Create the player's starter ship
         ship_type = SHIP_CHOICE_TO_TYPE.get(session.awarded_ship, ShipType.LIGHT_FREIGHTER)
         ship_name = f"{player.nickname or player.username}'s {ship_type.name.replace('_', ' ').title()}"
-        
+
+        # B3: copy the per-hull shield/armor mitigation fractions from the
+        # ShipSpecification onto the Ship row — combat_service reads these off
+        # the Ship, not the spec (matches ship_service.py:105-106). A missing
+        # spec row degrades to 0.0/0.0 rather than blocking first-login.
+        spec = self.db.query(ShipSpecification).filter(
+            ShipSpecification.type == ship_type
+        ).first()
+        if not spec:
+            logger.warning(
+                f"No ShipSpecification found for starter ship type {ship_type}; "
+                "defaulting shield_resistance/armor_rating to 0.0"
+            )
+
         new_ship = Ship(
             name=ship_name,
             type=ship_type,
@@ -1652,6 +1815,8 @@ Description: {ship_specs.get('description', 'N/A')}
             maintenance={"status": "good", "next_service": None},
             cargo={"capacity": 50, "used": 0, "contents": {}},
             combat={"shields": 10, "weapons": 5},
+            shield_resistance=(getattr(spec, 'shield_resistance', None) or 0.0),
+            armor_rating=(getattr(spec, 'armor_rating', None) or 0.0),
             is_flagship=True,
             purchase_value=session.starting_credits // 2,
             current_value=session.starting_credits // 2
@@ -1661,16 +1826,32 @@ Description: {ship_specs.get('description', 'N/A')}
         
         # Set as player's current ship
         player.current_ship_id = new_ship.id
+        from src.services.ship_service import sync_current_pilot
+        # QUEUE-REGISTRY-PILOT-WIRING: no old ship -- every pre-existing
+        # ship was hard-deleted above (self-healing stale-data cleanup).
+        sync_current_pilot(player, new_ship)
         
         # Apply any bonuses or penalties from the dialogue outcome
         if session.negotiation_bonus_flag:
-            # Store negotiation bonus in player settings
-            player.settings["trade_bonus"] = 0.1  # 10% better prices
-        
-        if session.notoriety_penalty:
-            # Start with minor negative reputation
-            player.reputation = {"faction1": -10}
-        
+            # Reassign (not in-place mutation) + flag_modified so SQLAlchemy
+            # detects the JSONB change (matches
+            # emergent_reputation_service._store_throttle_bucket /
+            # faction_service.apply_faction_rep_delta's history pattern) --
+            # the prior in-place `player.settings["trade_bonus"] = ...` was
+            # invisible to the ORM and silently dropped at commit.
+            settings = dict(player.settings) if isinstance(player.settings, dict) else {}
+            settings["trade_bonus"] = 0.1  # 10% better prices
+            player.settings = settings
+            flag_modified(player, "settings")
+
+        # notoriety_penalty is already persisted on the session (line ~1611,
+        # `session.notoriety_penalty`) and surfaced in the response below --
+        # SYSTEMS/first-login.md:186 documents the lower 300-credit hard-fail
+        # payout plus that persistent session flag as the only mechanical
+        # penalty for deceptive play. No replacement write belongs here; the
+        # removed `player.reputation = {"faction1": -10}` was a ghost write
+        # into a dead JSONB store the canonical Reputation table never reads.
+
         # Update the player's first login state
         state = self.get_player_first_login_state(player.id)
         state.has_completed_first_login = True
@@ -1708,7 +1889,8 @@ Description: {ship_specs.get('description', 'N/A')}
                 "type": new_ship.type.name
             },
             "negotiation_bonus": session.negotiation_bonus_flag,
-            "notoriety_penalty": session.notoriety_penalty
+            "notoriety_penalty": session.notoriety_penalty,
+            "nickname_rejected_reason": nickname_rejected_reason,
         }
     
     def reset_player_session(self, session_id: uuid.UUID) -> None:

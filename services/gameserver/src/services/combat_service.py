@@ -4,9 +4,10 @@ import uuid
 import random
 import math
 from typing import List, Dict, Any, Optional, Tuple
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
 from sqlalchemy import and_, or_
 
 from src.models.player import Player
@@ -15,7 +16,7 @@ from src.models.sector import Sector, SectorType
 from src.models.cargo_wreck import CargoWreck, WreckCause
 from src.models.combat import CombatType, CombatResult
 from src.models.combat_log import CombatLog, CombatOutcome
-from src.models.drone import Drone, DroneDeployment, DroneStatus
+from src.models.drone import Drone, DroneCombat, DroneDeployment, DroneStatus
 from src.models.planet import Planet
 from src.models.region import RegionType
 from src.models.station import Station
@@ -47,6 +48,82 @@ logger = logging.getLogger(__name__)
 NPC_KILL_LOOT_MINT_MIN_PCT = 0.05  # NO-CANON, flagged — lifecycle.md "≈ 5%"
 NPC_KILL_LOOT_MINT_MAX_PCT = 0.15  # NO-CANON, flagged — lifecycle.md "≈ 15%"
 NPC_KILL_LOOT_MINT_CAP = 5000      # NO-CANON, flagged — per-encounter ceiling
+
+# ── NPC quantum-shard drop table (WO-CMB-QDROP-NPC-1 / FEATURES/galaxy/
+# quantum-resources.md §3 "Combat salvage"): "Quantum Smuggler NPC" kill →
+# 5% chance of 1-2 shards; "Rogue Scientist encounter" kill → 15% chance of
+# 1-3 shards. The percentages/ranges themselves ARE canon — not NO-CANON
+# numbers.
+#
+# ⚠️ NO-CANON MAPPING — FLAGGED FOR MAX: canon names two NPC kinds that do
+# not exist as spawn kinds in npc_spawn_service.py. Existing substrate:
+# NPCArchetype.TRADER personas draw a persona TITLE from
+# TRADER_TITLES_BY_TIER["NOTORIOUS"] (npc_spawn_service.py), which includes
+# "Smuggler" and "Black Marketeer"; NPCArchetype.RESEARCHER is declared but
+# never spawned (npc_spawn_service.py only spawns TRADER / HOSTILE_RAIDER /
+# LAW_ENFORCEMENT today). We bridge the canon table onto this vocabulary: a
+# Smuggler/Black-Marketeer-titled TRADER kill rolls the 5%/1-2 row; a
+# RESEARCHER-archetype kill (currently unspawned, so this row is inert
+# until a future npc_spawn_service WO) rolls the 15%/1-3 row; every other
+# NPC never drops. If Max prefers dedicated QUANTUM_SMUGGLER /
+# ROGUE_SCIENTIST spawn kinds instead, that is a follow-up
+# npc_spawn_service WO, not a rename here. Destroyed-gate drops
+# (quantum-resources.md's third salvage row) stay 0% — no gate-destruction
+# combat path exists yet.
+NPC_QUANTUM_DROP_SMUGGLER_TITLES = frozenset({"Smuggler", "Black Marketeer"})
+NPC_QUANTUM_DROP_SMUGGLER_CHANCE = 0.05
+NPC_QUANTUM_DROP_SMUGGLER_MIN = 1
+NPC_QUANTUM_DROP_SMUGGLER_MAX = 2
+NPC_QUANTUM_DROP_RESEARCHER_CHANCE = 0.15
+NPC_QUANTUM_DROP_RESEARCHER_MIN = 1
+NPC_QUANTUM_DROP_RESEARCHER_MAX = 3
+
+
+def _roll_npc_quantum_drop(looted_npc: Optional["NPCCharacter"]) -> int:  # noqa: F821 (typing-only forward ref, lazily imported below)
+    """Roll the NPC quantum-shard drop table on a genuine NPC-hull kill
+    (quantum-resources.md §3 "Combat salvage"). Returns the shard count to
+    award — 0 if ``looted_npc`` is None or its archetype/title isn't one of
+    the two mapped rows (every non-mapped NPC never drops). See the
+    NO-CANON mapping note on the NPC_QUANTUM_DROP_* constants above for why
+    a TRADER persona title and the RESEARCHER archetype stand in for
+    canon's "Quantum Smuggler" / "Rogue Scientist" kinds. Uses the same
+    random.random() gate + random.randint() magnitude idiom as the rest of
+    this module's combat rolls, so tests can seed/script it consistently.
+    """
+    if looted_npc is None:
+        return 0
+    from src.models.npc_character import NPCArchetype as _Arch
+    if (
+        looted_npc.archetype == _Arch.TRADER
+        and (looted_npc.title or "") in NPC_QUANTUM_DROP_SMUGGLER_TITLES
+    ):
+        chance = NPC_QUANTUM_DROP_SMUGGLER_CHANCE
+        lo, hi = NPC_QUANTUM_DROP_SMUGGLER_MIN, NPC_QUANTUM_DROP_SMUGGLER_MAX
+    elif looted_npc.archetype == _Arch.RESEARCHER:
+        chance = NPC_QUANTUM_DROP_RESEARCHER_CHANCE
+        lo, hi = NPC_QUANTUM_DROP_RESEARCHER_MIN, NPC_QUANTUM_DROP_RESEARCHER_MAX
+    else:
+        return 0
+    if random.random() < chance:
+        return random.randint(lo, hi)
+    return 0
+
+
+def _combat_log_region_snapshot(sector: Optional[Sector]) -> Optional[uuid.UUID]:
+    """The ``CombatLog.region_id_snapshot`` value for a fight resolved in
+    ``sector`` (ADR-0050 SK24, DATA_MODELS/combat.md "Region-deletion
+    handling"): a plain copy of the sector's region at combat time, so the
+    audit row still names its region after ``sector_uuid`` SETs NULL on a
+    region regenerate/terminate. ``sector`` is already required non-None by
+    every existing column on the same CombatLog row (sector_id, sector_uuid),
+    but this helper stays defensive independently of that so a future call
+    site is never the one that turns a missing sector into a hard crash.
+    ``getattr`` (not a plain attribute read) so a sector-like stand-in
+    without the column -- e.g. an older test double built before this WO --
+    degrades to NULL rather than raising; a real Sector row's ``region_id``
+    is itself nullable (an unassigned sector), which flows through as NULL
+    the same way."""
+    return getattr(sector, "region_id", None) if sector is not None else None
 
 
 def _regen_turns(db: Session, player: Player) -> None:
@@ -178,6 +255,96 @@ def _emit_bounty_collected(collector_id, target_id, bounty_result: Dict[str, Any
     except Exception:  # never let a WS hiccup break combat
         logger.debug(
             "Skipped bounty_updated 'collected' WS event (no loop or socket)",
+            exc_info=True,
+        )
+
+
+def _emit_teammate_under_attack(attacker: Player, defender: Player, sector_id: Optional[int]) -> None:
+    """Best-effort ``teammate_under_attack`` push to the DEFENDER's team-mates
+    at combat initiation (factions-and-teams.md "Combat advantages":
+    "Defensive notifications when any teammate is attacked").
+
+    Called once per ``attack_player`` fight, from the same POST-COMMIT spot
+    ``_emit_combat_phase_events`` fires from (never before the commit — a WS
+    hiccup must not be able to touch the already-landed transaction). Only
+    the defender's team hears it (the attacker's team gets nothing here —
+    that would be a different notification); the defender itself is
+    excluded via ``exclude_user`` since they already get the personal
+    ``combat_update`` frame. A solo defender (``team_id`` is ``None``) is a
+    silent no-op — there's no team to notify.
+
+    Transport mirrors ``_emit_bounty_collected`` / ``_emit_combat_phase_events``
+    verbatim: lazy import, grab the running loop, ``loop.create_task`` so the
+    send never blocks, and swallow every failure (no loop, no socket, a quiet
+    client).
+
+    NO-CANON (flag for Max): canon confirms the notification exists but not
+    its frame shape — kept deliberately small, just enough for a client
+    toast ("<defender> is under attack in sector <N>")."""
+    if not defender.team_id:
+        return
+    try:
+        import asyncio
+        from src.services.websocket_service import connection_manager
+
+        loop = asyncio.get_running_loop()
+        loop.create_task(connection_manager.broadcast_to_team(
+            str(defender.team_id),
+            {
+                "type": "teammate_under_attack",
+                "defender_id": str(defender.id),
+                "defender_name": defender.username,
+                "attacker_name": attacker.username,
+                "sector_id": sector_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+            exclude_user=str(defender.user_id) if defender.user_id else None,
+        ))
+    except Exception:
+        logger.debug(
+            "Skipped teammate_under_attack WS event (no loop or socket)",
+            exc_info=True,
+        )
+
+
+def _emit_warp_gate_destroyed(gate_id: uuid.UUID, sector_id: Optional[int], attacker_name: str) -> None:
+    """Best-effort ``warp_gate_destroyed`` sector broadcast (WO-P3-galaxy-
+    gate-destruction, warp-gates.md:342: "The destroyed-gate event is
+    published on the realtime bus... so subscribed players see the route
+    disappear"). Called POST-COMMIT from attack_warp_gate, the same
+    discipline _emit_teammate_under_attack / _emit_combat_phase_events
+    already use in this file (never before the commit -- a WS hiccup must
+    not be able to touch the already-landed transaction).
+
+    Broadcasts to the gate's SOURCE sector (where the beacon/gate
+    structure physically exists) -- NO-CANON (flag for Max): canon
+    doesn't specify whether both endpoints should hear this, only that
+    "subscribed players see the route disappear"; the source sector is
+    where the structure players would actually be looking at lives.
+
+    Transport mirrors _emit_teammate_under_attack verbatim: lazy import,
+    grab the running loop, loop.create_task so the send never blocks, and
+    swallow every failure (no loop, no socket, a quiet client)."""
+    if sector_id is None:
+        return
+    try:
+        import asyncio
+        from src.services.websocket_service import connection_manager
+
+        loop = asyncio.get_running_loop()
+        loop.create_task(connection_manager.broadcast_to_sector(
+            sector_id,
+            {
+                "type": "warp_gate_destroyed",
+                "gate_id": str(gate_id),
+                "attacker_name": attacker_name,
+                "sector_id": sector_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        ))
+    except Exception:
+        logger.debug(
+            "Skipped warp_gate_destroyed WS event (no loop or socket)",
             exc_info=True,
         )
 
@@ -355,6 +522,9 @@ class CombatService:
         (ShipType.SCOUT_SHIP, ShipType.CARRIER): 0.5,         # Scout vs capital
         (ShipType.CARRIER, ShipType.SCOUT_SHIP): 1.8,         # Capital vs scout
         (ShipType.CARRIER, ShipType.FAST_COURIER): 1.5,       # Capital vs light
+        # FC mirror per ship-roster.md Citizen Clipper — P2W firewall: no edge, no deficit.
+        (ShipType.CITIZEN_CLIPPER, ShipType.CARRIER): 0.7,
+        (ShipType.CARRIER, ShipType.CITIZEN_CLIPPER): 1.5,
         (ShipType.COLONY_SHIP, ShipType.DEFENDER): 0.5,       # Colony ship weak in combat
     }
 
@@ -383,6 +553,78 @@ class CombatService:
         # .get() default already yields 1.0 for anything absent here).
     }
 
+    # --- Sector-defence bonus for deployed drones (WO-DRN-COMBAT-RECORD) ----
+    # combat.md#sector-drones: "Defender drones get a +5% bonus over
+    # ship-deployed drones (SECTOR_DEFENSE)." Applied in
+    # _resolve_sector_drone_combat, tagged in combat_details via
+    # CombatType.SECTOR_DEFENSE.value — making that enum member live rather
+    # than a dead tag.
+    #
+    # NO-CANON (flag for Max): canon gives the magnitude but not the exact
+    # term it modifies. Recommended application point: each defending
+    # drone's per-round return-fire hit (the value that actually reaches the
+    # attacker's ship), not drone.defense_power — filed to DECISIONS.
+    SECTOR_DEFENSE_BONUS_MULT = 1.05
+
+    # --- Siege vulnerability penalty (WO-PLN-SIEGE-VULN-1, defense.md:282) --
+    # "the besieged planet's effective defenses are multiplied down for as
+    # long as a qualifying besieger holds the sector... expires the moment
+    # the siege is lifted." Applied in _resolve_planet_combat when the
+    # target planet is under_siege AND morale <= 0 AND the assaulting player
+    # is the recorded besieger (planetary_service.siege_attacker_id — one
+    # besieger tracked per siege). Presence-gated at assault time from live
+    # siege state; no expiry machinery needed, since lifting the siege
+    # already clears under_siege/siege_attacker_id.
+    #
+    # NO-CANON (flag for Max): defense.md gives the mechanic but no
+    # magnitude. 0.5 is a deliberately simple binary penalty (matches
+    # planetary_service's own binary isVulnerable flag at morale<=0) — the
+    # morale-graduated-scaling alternative was considered and rejected for
+    # this kernel; noted in DECISIONS, not built.
+    VULNERABLE_DEFENSE_MULT = 0.5
+
+    # --- Rail Gun Batteries (WO-P5-planets-railgun-resolver, defense.md
+    # §"Fixed rail gun batteries") -----------------------------------------
+    # "This makes rail guns a specialized anti-capital weapon. Small/fast
+    # ships shrug them off; large ships take heavy damage." Canon's literal
+    # magnitudes (1,000-3,000 raw burst x up to 200% ship-class multiplier)
+    # would instakill on this resolver's randint(1,7)/round ship-damage
+    # scale -- the SAME incompatibility WO-CT1 hit for orbital
+    # platforms/turrets (defense.md: "the resolver's 1-5 scale would
+    # instakill, so raw-burst injection is a scoped resolver redesign").
+    #
+    # NO-CANON (flag for orchestrator bless): the two magnitudes below are
+    # chosen conservative and in-scale with the existing 1-7 ship-damage
+    # roll, mirroring WO-CT1's "small per-building contribution, hard
+    # ceiling" shape (turret_reduction/orbital_reduction capped at 18%
+    # each). The ship-class RATIOS themselves are canon-pinned and are
+    # NOT re-declared here -- _calculate_rail_gun_bonus_damage reads them
+    # straight off citadel_service.DEFENSE_BUILDINGS["rail_gun"]["effects"]
+    # ["ship_size_multiplier_pct"] (10%-200%) so the two files can't drift.
+    RAIL_GUN_BASE_DAMAGE_PER_BATTERY = 0.5
+    RAIL_GUN_MAX_BONUS_DAMAGE = 10
+
+    # --- Planetary Minefields (WO-P5-planets-minefield-wiring, defense.md
+    # §"Mine fields") --------------------------------------------------------
+    # "Mines target incoming hostiles only... deal 500-1,500 hull damage per
+    # mine impact, ignore shields." Unlike turrets/rail guns (recurring,
+    # every-round weapons), a minefield is a ONE-TIME proximity hazard that
+    # triggers on assault-round entry (round 1 only) -- modelled as an
+    # independent strike before the round's turret/attacker/defender turns,
+    # not folded into the recurring "planet's turn" ship-damage roll.
+    #
+    # Canon's literal 500-1,500-per-mine-impact magnitude would instakill on
+    # this resolver's randint(1,7)/round scale -- the SAME WO-CT1/rail_gun
+    # incompatibility. NO-CANON (flag for orchestrator bless): the two
+    # magnitudes below abstract at the MINEFIELD level (built-count), not the
+    # individual-mine level (canon's "20 mines/field" replenishment/depletion
+    # tracking is out of scope here, same as rail_gun abstracting at the
+    # battery level rather than per-shot). Unlike rail guns, canon gives no
+    # ship-class table for mines ("target incoming hostiles only", no size
+    # distinction), so this contribution does NOT vary by attacker ship type.
+    MINEFIELD_BASE_DAMAGE_PER_FIELD = 3
+    MINEFIELD_MAX_BONUS_DAMAGE = 9
+
     # Weapon type effectiveness against different defenses
     WEAPON_TYPES = {
         "laser": {"base_damage": 1.0, "shield_effectiveness": 0.8, "hull_effectiveness": 1.0, "description": "Standard energy weapon"},
@@ -409,8 +651,9 @@ class CombatService:
         ShipType.NPC_SENTINEL_INTERDICTOR: "plasma",
     }
 
-    # Ship types that get a bonus to escape chance due to speed/agility
-    FAST_ESCAPE_SHIP_TYPES = {ShipType.FAST_COURIER, ShipType.SCOUT_SHIP}
+    # Ship types that get a bonus to escape chance due to speed/agility.
+    # CITIZEN_CLIPPER: FC mirror per ship-roster.md Citizen Clipper.
+    FAST_ESCAPE_SHIP_TYPES = {ShipType.FAST_COURIER, ShipType.SCOUT_SHIP, ShipType.CITIZEN_CLIPPER}
 
     # --- Escape-chance formula (WO-CR2, combat-resolver.md) ----------------
     # escape = BASE + FAST_BONUS·[fast] + (1−hull/maxhull)·HULL_W + edge·EDGE_W − pursuer_class·PURSUER_W
@@ -432,11 +675,47 @@ class CombatService:
         ShipType.WARP_JUMPER: 0.5,
         ShipType.SCOUT_SHIP: 0.5,                # fast, but not a warship
         ShipType.FAST_COURIER: 0.4,
+        # FC mirror per ship-roster.md Citizen Clipper — P2W firewall: no edge, no deficit.
+        ShipType.CITIZEN_CLIPPER: 0.4,
         ShipType.LIGHT_FREIGHTER: 0.3,
         ShipType.CARGO_HAULER: 0.2,
         ShipType.COLONY_SHIP: 0.1,
         ShipType.ESCAPE_POD: 0.0,
     }
+
+    # --- Warp-gate destruction & salvage (WO-P3-galaxy-gate-destruction,
+    # warp-gates.md:323-354) ------------------------------------------------
+    GATE_ATTACK_TURN_COST = 75  # canon-exact
+    GATE_INVULNERABILITY_HOURS = 48  # canon-exact
+    # canon-exact yields (warp-gates.md:345-349) -- keys match the same
+    # cargo-content commodity keys warp_gate_service.py's own
+    # _charge_cargo/_refund_cargo helpers already use elsewhere in this
+    # gate lineage (ore/equipment/lumen_crystals).
+    GATE_SALVAGE_YIELD = {"ore": 500, "equipment": 250, "lumen_crystals": 10}
+    # NO-CANON (flag for Max): warp-gates.md states "reputation loss with
+    # the owner's faction/team" qualitatively but gives no magnitude. -25
+    # mirrors this file's own existing infrastructure-assault penalty scale
+    # (attacked_chartered_planet is -50 PERSONAL rep for assaulting a
+    # civilian-chartered planet; this is a FACTION rep penalty for
+    # destroying another player's built infrastructure, judged a smaller
+    # single-faction hit than that broader civilian-protection penalty).
+    # TEAM-reputation loss is not applied — no established single-action
+    # team-reputation-penalty hook exists elsewhere in this codebase to
+    # mirror (team_reputation_service's own triggers are aggregate/
+    # calculated, not per-combat-action deltas); flagged as a canon gap,
+    # not silently built as a guess.
+    GATE_OWNER_FACTION_REP_PENALTY = -25
+    # NO-CANON (flag for Max): canon specifies gate HP pools (5,000 /
+    # 10,000) and turret counts once upgraded (10/25/50) but no explicit
+    # per-attack damage magnitude for the gate-vs-attacker exchange itself.
+    # Reuses _calculate_attack_power unscaled (the SAME base-attack figure
+    # ship-vs-ship combat already uses) rather than inventing a
+    # gate-specific damage multiplier -- a gate is a tough, static,
+    # multi-attack siege target by design (mirrors this file's own
+    # multi-attack_planet-call planet-siege precedent), not a one-shot
+    # kill. If this reads as too grindy against a 10,000-HP active gate,
+    # that is a magnitude call for Max/DECISIONS, not something to guess
+    # bigger here.
 
     # --- Between-battle shield regeneration (WO-SR1) ---------------------
     # ShipSpecification.shield_recharge_rate seeds Ship.combat but nothing
@@ -473,9 +752,34 @@ class CombatService:
         if attacker_id == defender_id:
             return {"success": False, "message": "You cannot attack yourself"}
 
-        # Get players with row locks to prevent concurrent combat race conditions
-        attacker = self.db.query(Player).filter(Player.id == attacker_id).with_for_update().first()
-        defender = self.db.query(Player).filter(Player.id == defender_id).with_for_update().first()
+        # Friendly-fire prevention (factions-and-teams.md:383): same-team
+        # players cannot attack each other. Column-scalar team_id reads (no
+        # full-object load, so no identity-map poisoning of the
+        # .populate_existing() locked reads below; no row lock acquired,
+        # matching "reject before any lock"). Mirrors the identical
+        # db.query(Player.team_id)...scalar() shape already used at
+        # movement_service.py:203.
+        attacker_team = self.db.query(Player.team_id).filter(Player.id == attacker_id).scalar()
+        defender_team = self.db.query(Player.team_id).filter(Player.id == defender_id).scalar()
+        if attacker_team is not None and attacker_team == defender_team:
+            return {"success": False, "message": "Friendly-fire prevention: you cannot attack a teammate"}
+
+        # Get players with row locks to prevent concurrent combat race
+        # conditions -- locked in ASCENDING-ID order (mirrors bounty_
+        # service.place_bounty's :331-336 dual-lock convention, the same
+        # convention _load_two_players_for_update uses elsewhere) so two
+        # concurrent attack_player calls touching the same pair of players
+        # (P1->P2 and P2->P1, both ordinary "engage" clicks) can never
+        # acquire the pair in opposite order and deadlock. Previously locked
+        # in raw call-argument order (attacker-then-defender), which
+        # disagreed with every other dual-Player-lock site in this codebase
+        # and produced a live AB-BA deadlock under ordinary concurrent PvP.
+        if attacker_id < defender_id:
+            attacker = self.db.query(Player).filter(Player.id == attacker_id).populate_existing().with_for_update().first()
+            defender = self.db.query(Player).filter(Player.id == defender_id).populate_existing().with_for_update().first()
+        else:
+            defender = self.db.query(Player).filter(Player.id == defender_id).populate_existing().with_for_update().first()
+            attacker = self.db.query(Player).filter(Player.id == attacker_id).populate_existing().with_for_update().first()
 
         if not attacker or not defender:
             return {"success": False, "message": "Player not found"}
@@ -564,6 +868,30 @@ class CombatService:
         if attacker.current_sector_id != defender.current_sector_id:
             return {"success": False, "message": "Target is not in your sector"}
 
+        # WO-API-A1 cipher MEDIUM (hub-ruled Option B): the route's own
+        # optimistic proximity pre-check (engage_combat) reads pose BEFORE
+        # this method's row locks -- a victim could warp into range or (more
+        # relevantly here) the route's check could have been satisfied a
+        # moment ago but the two players are no longer actually close by the
+        # time this call is reached (network delay, a scripted client
+        # racing the request against its own movement). attacker/defender
+        # are ALREADY locked (.populate_existing().with_for_update() above)
+        # by this point, so re-evaluating the SAME is_within_engage_range
+        # predicate here reads their genuinely-current, locked poses -- one
+        # shared predicate, two call sites (route + here), never a second
+        # independently-drifting copy. Dict-error, not HTTPException -- this
+        # file raises none; the route already treats a dict failure the
+        # same way it treats "Target is not in your sector" above.
+        from src.services import intrasystem_movement_service as isp
+        attacker_xy = isp.current_player_pose_xy(attacker)
+        defender_xy = isp.current_player_pose_xy(defender)
+        if not isp.is_within_engage_range(*attacker_xy, *defender_xy):
+            return {
+                "success": False,
+                "message": "Target is out of engagement range — move closer and try again",
+                "error": "ERR_TARGET_OUT_OF_RANGE",
+            }
+
         # Look up attack turn cost from DEFENDER's ship specification
         # Cost reflects difficulty of attacking that ship type (e.g., escape pod = 10,000 turns)
         defender_spec = self.db.query(ShipSpecification).filter(
@@ -602,6 +930,7 @@ class CombatService:
             outcome=COMBAT_RESULT_TO_OUTCOME[combat_result["result"]],
             sector_id=sector.sector_id,
             sector_uuid=sector.id,
+            region_id_snapshot=_combat_log_region_snapshot(sector),
             attacker_id=attacker.id,
             attacker_ship_id=attacker.current_ship_id,
             attacker_ship_name=attacker_ship.name if attacker_ship else None,
@@ -611,7 +940,7 @@ class CombatService:
             defender_ship_name=defender_ship.name if defender_ship else None,
             defender_ship_type=defender_ship.type.value if defender_ship else None,
             rounds=combat_result["rounds"],
-            attacker_drones=attacker.defense_drones,
+            attacker_drones=attacker.attack_drones,
             defender_drones=defender.defense_drones,
             attacker_drones_lost=combat_result["attacker_drones_lost"],
             defender_drones_lost=combat_result["defender_drones_lost"],
@@ -626,9 +955,31 @@ class CombatService:
 
         # Handle cargo theft BEFORE destruction — destroy_ship swaps the
         # loser into an escape pod, so transferring afterwards would loot the
-        # pod's emergency cargo instead of the defeated ship's hold
+        # pod's emergency cargo instead of the defeated ship's hold. Snapshot
+        # the attacker's hold before/after transfer (same idiom as the NPC
+        # leg in attack_npc_ship) so the persisted history row can carry the
+        # capped-actual haul, not the pre-cap request that may exceed
+        # remaining hold capacity.
+        actual_cargo_looted: Dict[str, int] = {}
         if combat_result["cargo_stolen"]:
+            _hold_before = dict(
+                (attacker_ship.cargo or {}).get("contents") or {}
+            )
             self._transfer_cargo(defender_ship, attacker_ship, combat_result["cargo_stolen"])
+            _hold_after = (attacker_ship.cargo or {}).get("contents") or {}
+            actual_cargo_looted = {
+                resource: int(_hold_after.get(resource, 0)) - int(_hold_before.get(resource, 0))
+                for resource in _hold_after
+                if int(_hold_after.get(resource, 0)) - int(_hold_before.get(resource, 0)) > 0
+            }
+
+        # Write the capped-actual haul back onto the history row (WO-NEON-
+        # RES-NH3B) — combat_log is session-pending (added above, not yet
+        # committed), so a plain attribute assignment on the ORM instance is
+        # enough; no flush is needed since combat_log.id is client-generated
+        # (models/combat_log.py default uuid4), and the single commit below
+        # persists both the log and this assignment together.
+        combat_log.cargo_looted = actual_cargo_looted or None
 
         # Snapshot the defender's PRE-destruction ship type. _handle_ship_destruction
         # swaps the destroyed defender into an escape pod, so reading
@@ -643,8 +994,9 @@ class CombatService:
         # "PvP Warp Jumper kill (pre-expedition) → 100% of victim's unused
         # shards/crystals"). The defeated PLAYER's quantum_shards/crystals (Player
         # columns, not the ship) transfer in full to the VICTOR player on actual
-        # ship destruction. Drop-FRACTION (the NPC 5%/15% drop tables) is NO-CANON
-        # for PvP and deferred — PvP canon is a flat 100%. _transfer_quantum_wallet
+        # ship destruction. Drop-FRACTION (the NPC 5%/15% drop tables, now LIVE
+        # in attack_npc_ship via _roll_npc_quantum_drop / WO-CMB-QDROP-NPC-1) is
+        # NO-CANON for PvP — PvP canon stays a flat 100%. _transfer_quantum_wallet
         # zeroes the loser's wallet, so a mutual-destruction double-fire (both
         # branches true) and a multi-round resolution can never double-transfer,
         # and a victim carrying 0 is a no-op.
@@ -658,7 +1010,7 @@ class CombatService:
 
         # Update drone counts
         if combat_result["attacker_drones_lost"] > 0:
-            attacker.defense_drones = max(0, attacker.defense_drones - combat_result["attacker_drones_lost"])
+            attacker.attack_drones = max(0, attacker.attack_drones - combat_result["attacker_drones_lost"])
 
         if combat_result["defender_drones_lost"] > 0:
             defender.defense_drones = max(0, defender.defense_drones - combat_result["defender_drones_lost"])
@@ -687,19 +1039,20 @@ class CombatService:
         except Exception as e:
             logger.error("Failed to award rank points after combat: %s", e)
 
-        # ARIA consciousness + medal hooks for the victor
+        # ARIA consciousness + relationship + medal hooks for the victor
+        # (WO-ARIA-PROGRESSION: single canonical helper, replaces the old
+        # interactions-only inline threshold walk).
         try:
             winner = attacker if combat_result["result"] == CombatResult.ATTACKER_VICTORY else (
                 defender if combat_result["result"] == CombatResult.DEFENDER_VICTORY else None
             )
             if winner:
-                winner.aria_total_interactions += 1
-                # Check consciousness thresholds (50→L2, 150→L3, 400→L4, 1000→L5)
-                thresholds = {50: (2, 1.1), 150: (3, 1.2), 400: (4, 1.35), 1000: (5, 1.5)}
-                for threshold, (level, multiplier) in thresholds.items():
-                    if winner.aria_total_interactions >= threshold and winner.aria_consciousness_level < level:
-                        winner.aria_consciousness_level = level
-                        winner.aria_bonus_multiplier = multiplier
+                from src.services.aria_personal_intelligence_service import (
+                    get_aria_intelligence_service,
+                )
+                get_aria_intelligence_service().update_consciousness_and_relationship_sync(
+                    str(winner.id), self.db
+                )
                 # (Medal awards are handled by the single frozen dispatcher
                 # _dispatch_combat_medals below — the legacy inline
                 # check_combat_medals call was removed to fire the medal hook
@@ -738,42 +1091,69 @@ class CombatService:
             is_good_standing,
             attack_is_penalty_free,
         )
+        # Fed-zone / Federation-Suspect immunity (WO-CMB-SUSPECT-LIFE-1 held
+        # item, applied). Mirrors the grey-flag exemption immediately above:
+        # a defender who is EFFECTIVELY suspect right now (is_live_suspect
+        # checks suspect_until against the clock, not just the possibly-stale
+        # is_suspect boolean) is being lawfully brought to justice, so the
+        # same attack_innocent rep penalty + police routing suspension
+        # applies. attack_innocent carries NO zone gating anywhere in this
+        # module — the suspension is universal-scope, matching the
+        # mechanic's actual reach (canon's fed-space framing + the
+        # nonexistent fight-back-cost mechanic are pre-existing DOC-GAPs).
+        from src.services.suspect_service import is_live_suspect
+
         defender_was_good_standing = is_good_standing(defender)
         attack_was_penalty_free = attack_is_penalty_free(attacker, defender)
+        defender_is_live_suspect = is_live_suspect(defender)
 
-        # Personal reputation + bounty hooks
+        # Personal reputation + bounty hooks. Deliberately UNWRAPPED — no
+        # module-level try/except here (cipher's friendly-fire gate finding,
+        # WO-CMB-SWALLOW-NARROW). Every call in this block below is a
+        # money-moving ledger mutation (bounty payout, reputation adjust,
+        # grey-flag set) EXCEPT the two dispatch calls explicitly marked
+        # "decorative" below, which are each self-isolated with their OWN
+        # internal try/except (_dispatch_bounty_medals / _emit_bounty_collected
+        # both log-and-swallow internally) and so can never raise out of this
+        # scope regardless of an outer wrapper. A failure in any of the
+        # money-moving calls must now propagate to the caller (attack_player
+        # owns the single commit further below) so the whole attack rolls
+        # back instead of landing a partial reputation/bounty state behind a
+        # log line nobody sees.
         attacked_innocent = False
         killed_escape_pod = False
-        try:
-            from src.services.personal_reputation_service import PersonalReputationService
-            from src.services.bounty_service import BountyService
-            rep_service = PersonalReputationService(self.db)
+        from src.services.personal_reputation_service import PersonalReputationService
+        from src.services.bounty_service import BountyService
+        rep_service = PersonalReputationService(self.db)
 
-            if combat_result["result"] == CombatResult.ATTACKER_VICTORY:
-                # Attacker won — check if defender had bounties
-                bounty_service = BountyService(self.db)
-                bounty_result = bounty_service.collect_bounty(attacker.id, defender.id)
-                if bounty_result.get("total_collected", 0) > 0:
-                    # Bounty paid out — heroic bounty hunting.
-                    rep_service.adjust_reputation(attacker.id, 100, "defeat_bounty_target")
-                    # Medal: combat.bounty_hunter (bounties_collected). Fires only
-                    # on a genuine paying collection, inside this combat unit of
-                    # work; idempotent on the medals side. Defensive dispatch —
-                    # never breaks combat (the hook swallows its own errors).
-                    _dispatch_bounty_medals(self.db, attacker.id)
-                    # Realtime bounty-board push: the "collected" lifecycle event
-                    # (place/cancel already emit "placed"/"cancelled" from the
-                    # route layer). Best-effort + self-isolated — a WS hiccup
-                    # never breaks combat or rolls back the paid bounty.
-                    _emit_bounty_collected(attacker.id, defender.id, bounty_result)
-                elif not bounty_result.get("had_bounty"):
-                    # Target carried NO bounty at all — attacked a genuine
-                    # innocent. Reputation penalty + police "attack_innocent"
-                    # engagement trigger (attacked_innocent gates that below) —
-                    # UNLESS the target is grey and this attacker qualifies for the
-                    # penalty-free exemption (WO-BL): bringing a flagged aggressor
-                    # to justice is lawful, so neither the rep penalty nor the
-                    # police "attack_innocent" routing fires.
+        if combat_result["result"] == CombatResult.ATTACKER_VICTORY:
+            # Attacker won — check if defender had bounties
+            bounty_service = BountyService(self.db)
+            bounty_result = bounty_service.collect_bounty(attacker.id, defender.id)
+            if bounty_result.get("total_collected", 0) > 0:
+                # Bounty paid out — heroic bounty hunting.
+                rep_service.adjust_reputation(attacker.id, 100, "defeat_bounty_target")
+                # Medal: combat.bounty_hunter (bounties_collected). Fires only
+                # on a genuine paying collection, inside this combat unit of
+                # work; idempotent on the medals side. Defensive dispatch —
+                # never breaks combat (the hook swallows its own errors).
+                _dispatch_bounty_medals(self.db, attacker.id)
+                # Realtime bounty-board push: the "collected" lifecycle event
+                # (place/cancel already emit "placed"/"cancelled" from the
+                # route layer). Best-effort + self-isolated — a WS hiccup
+                # never breaks combat or rolls back the paid bounty.
+                _emit_bounty_collected(attacker.id, defender.id, bounty_result)
+            elif not bounty_result.get("had_bounty"):
+                # Target carried NO bounty at all — attacked a genuine
+                # innocent. Reputation penalty + police "attack_innocent"
+                # engagement trigger (attacked_innocent gates that below) —
+                # UNLESS the target is grey and this attacker qualifies for the
+                # penalty-free exemption (WO-BL), OR the target is a LIVE
+                # Federation Suspect (WO-CMB-SUSPECT-LIFE-1): bringing a
+                # flagged aggressor or a wanted suspect to justice is lawful,
+                # so neither the rep penalty nor the police "attack_innocent"
+                # routing fires.
+                if attack_was_penalty_free or defender_is_live_suspect:
                     if attack_was_penalty_free:
                         logger.info(
                             "Grey-flag exemption: player %s killed grey target %s "
@@ -782,35 +1162,40 @@ class CombatService:
                             attacker.id, defender.id, defender.grey_kind,
                         )
                     else:
-                        rep_service.adjust_reputation(attacker.id, -100, "attack_innocent")
-                        attacked_innocent = True
-                        # Aggressing on a GOOD-STANDING player marks the ATTACKER
-                        # grey for 1h: good-standing players may now hunt them
-                        # penalty-free. Only good-standing victims trigger this —
-                        # gunning down an already-grey/outlaw player is its own
-                        # (separate) consequence, not a fresh open-season mark. MAX
-                        # rule applied inside set_grey (never shortens a longer grey).
-                        if defender_was_good_standing:
-                            GreyFlagService(self.db).set_grey(
-                                attacker, GREY_KIND_PLAYER_ATTACK
-                            )
-                # else: had_bounty True but total_collected == 0 — the target
-                # was a known criminal whose head this hunter had ALREADY turned
-                # in (system bounty deduped by the claims ledger). Killing a
-                # criminal you've already claimed is neither heroic nor innocent-
-                # slaughter: apply NEITHER +100 nor -100, and do NOT set
-                # attacked_innocent (no police "attack_innocent" routing).
-                # Check if the DESTROYED defender ship was an escape pod —
-                # evaluated against the pre-destruction snapshot, not
-                # defender.current_ship (which is now the post-kill pod).
-                if defender_pre_destruction_type == ShipType.ESCAPE_POD:
-                    rep_service.adjust_reputation(attacker.id, -500, "kill_escape_pod")
-                    killed_escape_pod = True
-            elif combat_result["result"] == CombatResult.DEFENDER_VICTORY:
-                # Defender successfully defended — reputation boost
-                rep_service.adjust_reputation(defender.id, 50, "defend_against_attacker")
-        except Exception as e:
-            logger.error("Failed reputation/bounty hooks after combat: %s", e)
+                        logger.info(
+                            "Fed-zone/suspect exemption: player %s killed live-"
+                            "suspect target %s penalty-free — attack_innocent rep "
+                            "+ police skipped (WO-CMB-SUSPECT-LIFE-1)",
+                            attacker.id, defender.id,
+                        )
+                else:
+                    rep_service.adjust_reputation(attacker.id, -100, "attack_innocent")
+                    attacked_innocent = True
+                    # Aggressing on a GOOD-STANDING player marks the ATTACKER
+                    # grey for 1h: good-standing players may now hunt them
+                    # penalty-free. Only good-standing victims trigger this —
+                    # gunning down an already-grey/outlaw player is its own
+                    # (separate) consequence, not a fresh open-season mark. MAX
+                    # rule applied inside set_grey (never shortens a longer grey).
+                    if defender_was_good_standing:
+                        GreyFlagService(self.db).set_grey(
+                            attacker, GREY_KIND_PLAYER_ATTACK
+                        )
+            # else: had_bounty True but total_collected == 0 — the target
+            # was a known criminal whose head this hunter had ALREADY turned
+            # in (system bounty deduped by the claims ledger). Killing a
+            # criminal you've already claimed is neither heroic nor innocent-
+            # slaughter: apply NEITHER +100 nor -100, and do NOT set
+            # attacked_innocent (no police "attack_innocent" routing).
+            # Check if the DESTROYED defender ship was an escape pod —
+            # evaluated against the pre-destruction snapshot, not
+            # defender.current_ship (which is now the post-kill pod).
+            if defender_pre_destruction_type == ShipType.ESCAPE_POD:
+                rep_service.adjust_reputation(attacker.id, -500, "kill_escape_pod")
+                killed_escape_pod = True
+        elif combat_result["result"] == CombatResult.DEFENDER_VICTORY:
+            # Defender successfully defended — reputation boost
+            rep_service.adjust_reputation(defender.id, 50, "defend_against_attacker")
 
         # Suspect / Wanted lifecycle (police-forces.md + ranking.md). The
         # ranking lane only DISPLAYS these flags; combat SETS them, keyed off
@@ -865,6 +1250,13 @@ class CombatService:
         # Commit changes
         self.db.commit()
 
+        # Defensive team notification (WO-RT-TEAM-DEFENSE / factions-and-
+        # teams.md "Combat advantages: Defensive notifications when any
+        # teammate is attacked"). POST-COMMIT, fully try/except-isolated
+        # inside the emitter, fired first — a heads-up to the defender's
+        # team-mates ahead of the granular phase events below.
+        _emit_teammate_under_attack(attacker, defender, sector.sector_id if sector else None)
+
         # Granular phase WS events (WO-DBB-RT3 / combat-resolver.md "Events
         # emitted"): combat_started → combat_round(s) → combat_resolved, to the
         # two PvP participants and the sector spectators. POST-COMMIT and fully
@@ -912,11 +1304,11 @@ class CombatService:
         canon gives no numeric value and the CONCORD FactionType is
         Design-only — deferred with a logged TODO, not invented.
         """
-        attacker = self.db.query(Player).filter(Player.id == attacker_id).with_for_update().first()
+        attacker = self.db.query(Player).filter(Player.id == attacker_id).populate_existing().with_for_update().first()
         if not attacker:
             return {"success": False, "message": "Player not found"}
 
-        npc_ship = self.db.query(Ship).filter(Ship.id == ship_id).with_for_update().first()
+        npc_ship = self.db.query(Ship).filter(Ship.id == ship_id).populate_existing().with_for_update().first()
         if not npc_ship or npc_ship.is_destroyed:
             return {"success": False, "message": "Target ship not found"}
 
@@ -932,6 +1324,47 @@ class CombatService:
 
         if attacker.current_sector_id != npc_ship.sector_id:
             return {"success": False, "message": "Target is not in your sector"}
+
+        # WO-API-A1 cipher MEDIUM (hub-ruled Option B): the route's own
+        # optimistic proximity pre-check reads pose BEFORE this method's
+        # locks -- re-evaluate the SAME is_within_engage_range predicate
+        # here, under a genuinely LOCKED re-read of the NPC's pose, so a
+        # route-level bypass can never skip the gate. attacker is already
+        # locked above; the NPC's pose lives on NPCCharacter, not npc_ship
+        # (Ship), and is NOT otherwise locked by this method until the loot
+        # section below -- lock it HERE instead (same Player-then-Ship-then-
+        # NPCCharacter type order the loot section already uses later in
+        # this same function, just acquired earlier), with
+        # .populate_existing() so the route's own earlier unlocked pre-read
+        # of this exact row (player_combat.py's engage_combat) can never
+        # poison this read the way it could the loot query (see the sibling
+        # fix on that query, below in this same method). A missing
+        # NPCCharacter row here would violate the single-pilot invariant
+        # (models/npc_character.py) -- treat it the same as the route does:
+        # fail CLOSED, not open.
+        from src.models.npc_character import NPCCharacter
+        from src.services import intrasystem_movement_service as isp
+        npc_char = (
+            self.db.query(NPCCharacter)
+            .filter(NPCCharacter.ship_id == npc_ship.id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if npc_char is None:
+            return {
+                "success": False,
+                "message": "Target position could not be verified — try again",
+                "error": "ERR_TARGET_POSITION_UNVERIFIED",
+            }
+        attacker_xy = isp.current_player_pose_xy(attacker)
+        target_xy = isp.current_npc_pose_xy(npc_char)
+        if not isp.is_within_engage_range(*attacker_xy, *target_xy):
+            return {
+                "success": False,
+                "message": "Target is out of engagement range — move closer and try again",
+                "error": "ERR_TARGET_OUT_OF_RANGE",
+            }
 
         # Attack turn cost comes from the defender ship's specification,
         # exactly as in player-vs-player combat
@@ -968,6 +1401,7 @@ class CombatService:
         # profit rather than minting a large seed into the economy.
         looted_credits = 0
         minted_loot = 0
+        quantum_shards_dropped = 0
         if combat_result["result"] == CombatResult.ATTACKER_VICTORY:
             full_contents = (npc_ship.cargo or {}).get("contents") or {}
             combat_result["cargo_stolen"] = {
@@ -976,9 +1410,23 @@ class CombatService:
                 if isinstance(qty, (int, float)) and qty > 0
             }
             from src.models.npc_character import NPCCharacter as _NPCCharacterLoot
+            # WO-API-A1 cipher HIGH: the engage-range gate's own route-level
+            # pre-check (player_combat.py's engage_combat) reads this SAME
+            # NPCCharacter row UNLOCKED, before this method's locks -- that
+            # caches it in this session's identity map. Without
+            # .populate_existing() here, .with_for_update() still acquires
+            # the DB-level row lock but does NOT refresh the ORM object's
+            # attributes from the now-locked row -- .credits would read the
+            # STALE cached value from the earlier unlocked pre-read, not the
+            # true current balance (which npc_trading_service.py's Loop A
+            # tick can mutate concurrently, outside this ship's own lock).
+            # A stale-HIGHER cached balance mints the difference to the
+            # attacker for free. Matches the sibling Player locks above
+            # (778-782), which already chain .populate_existing().
             looted_npc = (
                 self.db.query(_NPCCharacterLoot)
                 .filter(_NPCCharacterLoot.ship_id == npc_ship.id)
+                .populate_existing()
                 .with_for_update()
                 .first()
             )
@@ -1039,6 +1487,28 @@ class CombatService:
                             minted_loot, loot_pct * 100, hull_value,
                             NPC_KILL_LOOT_MINT_CAP, attacker.id, npc_ship.id,
                         )
+
+            # NPC quantum-shard drop table (WO-CMB-QDROP-NPC-1 /
+            # quantum-resources.md §3 "Combat salvage"). Same one-time gate
+            # as the loot faucet above — ATTACKER_VICTORY (this branch) +
+            # defender_ship_destroyed, asserted explicitly for the same
+            # non-farmable reason: a fled/survived NPC or a per-round tick
+            # can never roll this. looted_npc is None-safe inside the
+            # helper, so a hull with no NPCCharacter row (defense-in-depth)
+            # is silently a no-op rather than an error.
+            if looted_npc is not None and combat_result["defender_ship_destroyed"]:
+                quantum_shards_dropped = _roll_npc_quantum_drop(looted_npc)
+                if quantum_shards_dropped > 0:
+                    attacker.quantum_shards = (
+                        (attacker.quantum_shards or 0) + quantum_shards_dropped
+                    )
+                    logger.info(
+                        "NPC quantum-shard drop: %d shard(s) to player %s "
+                        "from NPC %s (archetype=%s, title=%s; "
+                        "quantum-resources.md §3 NPC drop table)",
+                        quantum_shards_dropped, attacker.id, looted_npc.id,
+                        looted_npc.archetype, looted_npc.title,
+                    )
 
             # Notoriety consequence: gunning down a REPUTABLE merchant is a
             # crime — the canon attack_innocent penalty (−100, mirroring PvP).
@@ -1121,6 +1591,7 @@ class CombatService:
             outcome=COMBAT_RESULT_TO_OUTCOME[combat_result["result"]],
             sector_id=sector.sector_id,
             sector_uuid=sector.id,
+            region_id_snapshot=_combat_log_region_snapshot(sector),
             attacker_id=attacker.id,
             attacker_ship_id=attacker.current_ship_id,
             attacker_ship_name=attacker_ship.name if attacker_ship else None,
@@ -1130,7 +1601,7 @@ class CombatService:
             defender_ship_name=npc_ship.name,
             defender_ship_type=npc_ship.type.value,
             rounds=combat_result["rounds"],
-            attacker_drones=attacker.defense_drones,
+            attacker_drones=attacker.attack_drones,
             defender_drones=0,
             attacker_drones_lost=combat_result["attacker_drones_lost"],
             defender_drones_lost=combat_result["defender_drones_lost"],
@@ -1158,6 +1629,14 @@ class CombatService:
                 for resource in _hold_after
                 if int(_hold_after.get(resource, 0)) - int(_hold_before.get(resource, 0)) > 0
             }
+
+        # Write the capped-actual haul back onto the history row (WO-NEON-
+        # RES-NH3B) — combat_log is session-pending (added above, not yet
+        # committed), so a plain attribute assignment on the ORM instance is
+        # enough; no flush is needed since combat_log.id is client-generated
+        # (models/combat_log.py default uuid4), and the single commit below
+        # persists both the log and this assignment together.
+        combat_log.cargo_looted = actual_cargo_looted or None
 
         # Apply combat effects
         if combat_result["defender_ship_destroyed"]:
@@ -1302,7 +1781,7 @@ class CombatService:
 
         # Update attacker drone count
         if combat_result["attacker_drones_lost"] > 0:
-            attacker.defense_drones = max(0, attacker.defense_drones - combat_result["attacker_drones_lost"])
+            attacker.attack_drones = max(0, attacker.attack_drones - combat_result["attacker_drones_lost"])
 
         # Update last_combat timestamp for sector
         sector.last_combat = datetime.now()
@@ -1377,7 +1856,174 @@ class CombatService:
         }
         if police_response:
             result_dict["police_response"] = police_response
+        # FE-consumable NPC quantum drop: present only on an actual hit
+        # (mirrors the police_response idiom above) so the normal no-drop
+        # case doesn't spam every NPC-kill payload with a zero field.
+        if quantum_shards_dropped > 0:
+            result_dict["quantum_shards_dropped"] = quantum_shards_dropped
         return result_dict
+
+    def npc_attack_player(self, npc_ship_id: uuid.UUID, defender_id: uuid.UUID) -> Dict[str, Any]:
+        """Resolve an NPC-INITIATED attack against a player (WO-CMB-NPC-
+        INITIATED-1, Max ruling 2026-07-10) — the symmetric mirror of
+        ``attack_npc_ship``: there the PLAYER is the attacker and the NPC
+        ship is the defender; here the NPC ship is the attacker and the
+        PLAYER is the defender.
+
+        Callers: ``npc_combat_initiation_service.initiate_npc_combat`` is the
+        police/pirate POLICY layer — defender/NPC guards, the Terran-Space
+        law-enforcement bypass amendment, and the ``npc_combat_initiated``
+        WS event all live THERE, not here (squad selection is the CALLER's
+        own concern one level up — npc_engagement_service._maybe_initiate_
+        police_combat picks the squad's first member before ever reaching
+        this module). This
+        method is purely mechanical resolution + persistence, mirroring
+        ``attack_npc_ship``'s own shape and re-using its exact NPC-ship-
+        destroyed handling (``is_destroyed``/``is_active``/``status``,
+        ``_spawn_cargo_wreck``, ``npc_spawn_service.handle_npc_ship_
+        destroyed``) and the ALREADY-established ``_handle_ship_
+        destruction(player, None, cause)`` idiom for "a player's ship
+        destroyed by a non-player cause" (the same call ``attack_npc_ship``
+        itself makes when the NPC wins:
+        ``self._handle_ship_destruction(attacker, None, "combat")``).
+
+        FLUSH-ONLY — deliberately NOT matching ``attack_player``/
+        ``attack_npc_ship``'s own ``self.db.commit()``. This may be called
+        from inside ``sweep_pending_engagements``' per-row SAVEPOINT
+        (WO-B1/B2 discipline); a commit here would finalize the ENTIRE
+        session, not just this NPC's row, breaking that per-row isolation.
+        The caller owns the commit.
+
+        No CombatLog schema change: ``attacker_id`` stays NULL (no Player
+        behind the NPC) — the literal mirror of ``attack_npc_ship``'s own
+        ``defender_id`` NULL idiom, flipped to the attacker side.
+        ``cargo_stolen`` is returned raw, not transferred: disposal is
+        faction-specific policy (pirates loot into their own hold; police
+        confiscate to a depot per police-forces.md outcome #3), so it's
+        the CALLER's decision, not this method's.
+        """
+        # Lock order: Player (defender) FIRST, then the two Ship rows (the
+        # NPC's hull + the defender's own current_ship) SECOND, in
+        # ASCENDING Ship.id order — mirrors attack_player's Player-before-
+        # Ship convention (both Players locked, then both current_ship rows
+        # via one ordered Ship.id.in_() query) and attack_npc_ship's own
+        # Player-before-Ship order. defender, npc_ship, AND defender.
+        # current_ship are all pre-loaded UNLOCKED upstream by
+        # npc_combat_initiation_service._guard_failure (which lazy-loads
+        # defender.current_ship while validating it there), so every
+        # re-read below needs populate_existing() to pick up the locked
+        # row's live state instead of the stale identity-mapped copy.
+        defender = self.db.query(Player).filter(Player.id == defender_id).populate_existing().with_for_update().first()
+        if defender is None:
+            return {"success": False, "message": "Defender has no active ship"}
+
+        if defender.current_ship_id is None:
+            return {"success": False, "message": "Defender has no active ship"}
+
+        ship_ids = sorted(
+            {npc_ship_id, defender.current_ship_id},
+            key=lambda sid: str(sid),
+        )
+        locked_ships = {
+            ship.id: ship
+            for ship in self.db.query(Ship).filter(
+                Ship.id.in_(ship_ids)
+            ).order_by(Ship.id).populate_existing().with_for_update().all()
+        }
+
+        npc_ship = locked_ships.get(npc_ship_id)
+        if npc_ship is None or npc_ship.is_destroyed:
+            return {"success": False, "message": "NPC has no active ship"}
+
+        if defender.current_ship is None or defender.current_ship.is_destroyed:
+            return {"success": False, "message": "Defender has no active ship"}
+
+        if npc_ship.sector_id != defender.current_sector_id:
+            return {"success": False, "message": "Target is not in your sector"}
+
+        sector = self.db.query(Sector).filter(Sector.sector_id == defender.current_sector_id).first()
+        if sector is None:
+            return {"success": False, "message": "Sector not found"}
+
+        combat_result = self._resolve_ship_combat(
+            attacker=None, defender=defender, sector=sector, attacker_ship=npc_ship,
+        )
+
+        defender_ship = defender.current_ship
+        combat_log = CombatLog(
+            combat_type=CombatType.SHIP_VS_SHIP.value,
+            outcome=COMBAT_RESULT_TO_OUTCOME[combat_result["result"]],
+            sector_id=sector.sector_id,
+            sector_uuid=sector.id,
+            region_id_snapshot=_combat_log_region_snapshot(sector),
+            attacker_id=None,
+            attacker_ship_id=npc_ship.id,
+            attacker_ship_name=npc_ship.name,
+            attacker_ship_type=npc_ship.type.value,
+            defender_id=defender.id,
+            defender_ship_id=defender.current_ship_id,
+            defender_ship_name=defender_ship.name if defender_ship else None,
+            defender_ship_type=defender_ship.type.value if defender_ship else None,
+            rounds=combat_result["rounds"],
+            attacker_drones=0,
+            defender_drones=defender.defense_drones,
+            attacker_drones_lost=combat_result["attacker_drones_lost"],
+            defender_drones_lost=combat_result["defender_drones_lost"],
+            attacker_damage_dealt=combat_result["attacker_damage_dealt"],
+            defender_damage_dealt=combat_result["defender_damage_dealt"],
+            cargo_looted=None,
+            combat_log=json.dumps(combat_result["combat_details"]),
+            ended_at=datetime.now(),
+        )
+        self.db.add(combat_log)
+        self.db.flush()
+
+        dead_npc = None
+        if combat_result["defender_ship_destroyed"]:
+            self._handle_ship_destruction(defender, None, "npc_combat")
+
+        if combat_result["attacker_ship_destroyed"]:
+            npc_ship.is_destroyed = True
+            npc_ship.is_active = False
+            npc_ship.status = ShipStatus.DESTROYED
+            self._spawn_cargo_wreck(
+                destroyed_ship=npc_ship, cause="combat",
+                original_owner=None, killing_blow_pilot=defender,
+            )
+            try:
+                from src.services.npc_spawn_service import handle_npc_ship_destroyed
+                dead_npc = handle_npc_ship_destroyed(
+                    self.db, npc_ship.id,
+                    killed_by_player_id=defender.id,
+                    combat_log_id=combat_log.id,
+                )
+            except ImportError:
+                logger.warning(
+                    "npc_spawn_service not available — NPC ship %s destroyed without KIA processing",
+                    npc_ship.id,
+                )
+
+        flag_modified(npc_ship, "combat")
+        if defender_ship is not None:
+            flag_modified(defender_ship, "combat")
+        self.db.flush()
+
+        return {
+            "success": True,
+            "message": combat_result["message"],
+            "combat_result": combat_result["result"].name,
+            "combat_log_id": str(combat_log.id),
+            "npc_ship_destroyed": combat_result["attacker_ship_destroyed"],
+            "defender_ship_destroyed": combat_result["defender_ship_destroyed"],
+            "dead_npc": dead_npc,
+            "npc_ship_id": str(npc_ship.id),
+            "npc_ship_name": npc_ship.name,
+            "npc_ship_type": npc_ship.type.name,
+            "defender_id": str(defender.id),
+            "defender_ship_id": str(defender.current_ship_id) if defender.current_ship_id else None,
+            "sector_id": sector.sector_id,
+            "cargo_stolen": combat_result.get("cargo_stolen") or {},
+        }
 
     def attack_sector_drones(self, attacker_id: uuid.UUID, sector_id: int) -> Dict[str, Any]:
         """Attack the hostile drones deployed in the player's current sector.
@@ -1397,7 +2043,7 @@ class CombatService:
         # (mirrors attack_player / attack_planet).
         attacker = self.db.query(Player).filter(
             Player.id == attacker_id
-        ).with_for_update().first()
+        ).populate_existing().with_for_update().first()
         if not attacker:
             return {"success": False, "message": "Player not found"}
 
@@ -1447,6 +2093,7 @@ class CombatService:
         starting_drone_count = len(target_drones)
 
         # Resolve combat against the real drone rows
+        combat_started_at = datetime.now()
         combat_result = self._resolve_sector_drone_combat(attacker, sector, target_drones)
 
         # Consume turns
@@ -1459,13 +2106,14 @@ class CombatService:
             outcome=COMBAT_RESULT_TO_OUTCOME[combat_result["result"]],
             sector_id=sector.sector_id,
             sector_uuid=sector.id,
+            region_id_snapshot=_combat_log_region_snapshot(sector),
             attacker_id=attacker.id,
             attacker_ship_id=attacker.current_ship_id,
             attacker_ship_name=attacker_ship.name if attacker_ship else None,
             attacker_ship_type=attacker_ship.type.value if attacker_ship else None,
             defender_id=None,  # No single owning player for sector drones
             rounds=combat_result["rounds"],
-            attacker_drones=attacker.defense_drones,
+            attacker_drones=attacker.attack_drones,
             defender_drones=starting_drone_count,
             attacker_drones_lost=combat_result["attacker_drones_lost"],
             defender_drones_lost=combat_result["defender_drones_lost"],
@@ -1477,14 +2125,37 @@ class CombatService:
 
         self.db.add(combat_log)
 
+        # Wire the drone combat record (WO-DRN-COMBAT-RECORD, drones.md#combat-
+        # record): one DroneCombat row per participating hostile drone — the
+        # attacker here is a ship, not a drone, so attacker_drone_id stays
+        # NULL (nullable by design); defender_drone_id is what makes
+        # admin_drones.py's per-drone recent-combats lookup (:209-218) return
+        # real rows instead of forever-empty (NO-CANON: row granularity filed
+        # to DECISIONS — one row per drone vs one per encounter).
+        drone_combat_log = self._drone_combat_log_summary(combat_result["combat_details"])
+        winner_drone_id = combat_result["winner_drone_id"]
+        for drone in target_drones:
+            self.db.add(DroneCombat(
+                attacker_drone_id=None,
+                defender_drone_id=drone.id,
+                sector_id=sector.id,
+                started_at=combat_started_at,
+                ended_at=combat_log.ended_at,
+                rounds=combat_result["rounds"],
+                winner_drone_id=winner_drone_id,
+                attacker_damage_dealt=combat_result["attacker_damage_dealt"],
+                defender_damage_dealt=combat_result["defender_damage_dealt"],
+                combat_log=drone_combat_log,
+            ))
+
         # Apply combat effects to the attacker's ship
         if combat_result["attacker_ship_destroyed"]:
             self._handle_ship_destruction(attacker, None, "drone_combat")
 
         # Update attacker's carried drone count if any were lost
         if combat_result["attacker_drones_lost"] > 0:
-            attacker.defense_drones = max(
-                0, attacker.defense_drones - combat_result["attacker_drones_lost"]
+            attacker.attack_drones = max(
+                0, attacker.attack_drones - combat_result["attacker_drones_lost"]
             )
 
         # Deactivate the matching deployment records for fully-destroyed drones
@@ -1537,14 +2208,14 @@ class CombatService:
         """Attack a planet."""
         # Get attacker with a row lock to prevent concurrent turn deduction
         # races (mirrors attack_player / attack_npc_ship)
-        attacker = self.db.query(Player).filter(Player.id == attacker_id).with_for_update().first()
+        attacker = self.db.query(Player).filter(Player.id == attacker_id).populate_existing().with_for_update().first()
         if not attacker:
             return {"success": False, "message": "Player not found"}
-        
+
         # Check if attacker has an active ship
         if not attacker.current_ship:
             return {"success": False, "message": "No active ship selected"}
-        
+
         # Get planet
         planet = self.db.query(Planet).filter(Planet.id == planet_id).first()
         if not planet:
@@ -1596,6 +2267,7 @@ class CombatService:
             outcome=COMBAT_RESULT_TO_OUTCOME[combat_result["result"]],
             sector_id=sector.sector_id,
             sector_uuid=sector.id,
+            region_id_snapshot=_combat_log_region_snapshot(sector),
             attacker_id=attacker.id,
             attacker_ship_id=attacker.current_ship_id,
             attacker_ship_name=attacker_ship.name if attacker_ship else None,
@@ -1603,7 +2275,7 @@ class CombatService:
             defender_id=planet_owner.id if planet_owner else None,
             planet_id=planet.id,
             rounds=combat_result["rounds"],
-            attacker_drones=attacker.defense_drones,
+            attacker_drones=attacker.attack_drones,
             attacker_drones_lost=combat_result["attacker_drones_lost"],
             defender_drones_lost=combat_result["defender_drones_lost"],
             combat_log=json.dumps(combat_result["combat_details"]),
@@ -1618,8 +2290,8 @@ class CombatService:
         
         # Update drone counts
         if combat_result["attacker_drones_lost"] > 0:
-            attacker.defense_drones = max(0, attacker.defense_drones - combat_result["attacker_drones_lost"])
-        
+            attacker.attack_drones = max(0, attacker.attack_drones - combat_result["attacker_drones_lost"])
+
         # Update planet defenses
         planet.defense_level = max(0, planet.defense_level - combat_result["planet_damage"])
         
@@ -1746,6 +2418,7 @@ class CombatService:
             outcome=COMBAT_RESULT_TO_OUTCOME[combat_result["result"]],
             sector_id=sector.sector_id,
             sector_uuid=sector.id,
+            region_id_snapshot=_combat_log_region_snapshot(sector),
             attacker_id=attacker.id,
             attacker_ship_id=attacker.current_ship_id,
             attacker_ship_name=attacker_ship.name if attacker_ship else None,
@@ -1753,7 +2426,7 @@ class CombatService:
             defender_id=port_owner.id if port_owner else None,
             port_id=station.id,
             rounds=combat_result["rounds"],
-            attacker_drones=attacker.defense_drones,
+            attacker_drones=attacker.attack_drones,
             attacker_drones_lost=combat_result["attacker_drones_lost"],
             defender_drones_lost=combat_result["defender_drones_lost"],
             combat_log=json.dumps(combat_result["combat_details"]),
@@ -1768,8 +2441,8 @@ class CombatService:
         
         # Update drone counts
         if combat_result["attacker_drones_lost"] > 0:
-            attacker.defense_drones = max(0, attacker.defense_drones - combat_result["attacker_drones_lost"])
-        
+            attacker.attack_drones = max(0, attacker.attack_drones - combat_result["attacker_drones_lost"])
+
         # Update port defenses
         station.defense_level = max(0, station.defense_level - combat_result["port_damage"])
 
@@ -1813,7 +2486,348 @@ class CombatService:
             "turns_remaining": attacker.turns,
             "combat_log_id": str(combat_log.id)
         }
-    
+
+    def attack_warp_gate(self, attacker_id: uuid.UUID, gate_id: uuid.UUID) -> Dict[str, Any]:
+        """Attack a warp gate (beacon, focus, or active) after its 48-hour
+        invulnerability window (WO-P3-galaxy-gate-destruction, warp-gates.md
+        :323-354). Costs 75 turns + reputation loss with the owner's
+        faction. On kill: the WarpTunnel flips COLLAPSED, the beacon/gate
+        structure rows are deleted, and the attacker's ship cargo receives
+        partial salvage.
+
+        No CombatLog row is written here (unlike attack_planet/attack_port/
+        attack_sector_drones) -- CombatType has no gate-appropriate member
+        and adding one would touch combat_log.py, outside this WO's owned
+        paths; canon requires only a realtime-bus event for gate
+        destruction, which this method fires post-commit below.
+
+        Commit boundary: self.db.commit() at the end -- matching EVERY
+        other attack method in this class (attack_planet/attack_port/
+        attack_sector_drones all self-commit internally), not the
+        assigning WO's literal "route owns commit" instruction. Verified
+        via grep: 6 separate self.db.commit() call sites already exist in
+        this file, one per attack method -- introducing a route-commits
+        exception for only this new method would be the actual
+        inconsistency. See this WO's report."""
+        from src.models.warp_gate import WarpGate, WarpGateBeacon, WarpGateStatus
+        from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
+
+        # WO-P3 revise (cipher, HIGH, lock-order): GATE locked first,
+        # PLAYER second -- warp_gate_service.py's own module docstring
+        # (:55-57) documents this as an explicit contract ("the BEACON/
+        # GATE row is locked first, the PLAYER row second"), reaffirmed at
+        # 7 separate call sites in that file (anchor_focus, toll reconfig,
+        # transfer, cancel, ...). The original build locked Player first,
+        # which risks a deadlock against any concurrent warp_gate_service
+        # operation on the SAME gate that follows the documented order.
+        #
+        # WO-P3 revise (mack, concurrency): this lock ALSO serializes the
+        # gate.hp RMW below -- without it, two different attackers race
+        # the shared read-decide-write independently. Whoever loses the
+        # race blocks here until the winner's transaction commits; by the
+        # time the loser's SELECT FOR UPDATE resumes, the winner has
+        # already deleted the beacon (cascading the WarpGate row away too
+        # -- see below), so the loser's query simply finds no row and
+        # falls through to the EXISTING "Warp gate not found" branch --
+        # no double-salvage, no double-delete, no separate error path
+        # needed for that half of the race.
+        gate = self.db.query(WarpGate).filter(WarpGate.id == gate_id).with_for_update().first()
+        if not gate:
+            return {"success": False, "message": "Warp gate not found"}
+        if gate.status not in (WarpGateStatus.HARMONIZING, WarpGateStatus.ACTIVE):
+            return {"success": False, "message": "This gate cannot be attacked"}
+
+        beacon = self.db.query(WarpGateBeacon).filter(WarpGateBeacon.id == gate.beacon_id).first()
+        if beacon is None:
+            return {"success": False, "message": "Warp gate structure not found"}
+
+        if gate.player_id == attacker_id:
+            return {"success": False, "message": "Cannot attack your own warp gate"}
+
+        # Lock the attacker row before any charge (mirrors attack_planet)
+        # -- AFTER the gate, per the lock-order contract above.
+        attacker = self.db.query(Player).filter(Player.id == attacker_id).populate_existing().with_for_update().first()
+        if not attacker:
+            return {"success": False, "message": "Player not found"}
+        if not attacker.current_ship:
+            return {"success": False, "message": "No active ship selected"}
+
+        # WO-P3 revise (cipher, CRITICAL, 2nd pass): location check gates
+        # on the DESTINATION sector, not the source (the original build's
+        # mistake). The structure combat actually attacks is gate.hp (the
+        # focus / merged gate) -- _resolve_warp_gate_combat only ever
+        # touches gate.hp, never beacon.hp (the separate 5,000 source-side
+        # value). Confirmed by re-reading warp_gate_service.anchor_focus
+        # (:928), which REQUIRES player.current_sector_id == beacon.
+        # destination_sector_id to create this exact structure in the
+        # first place -- that's where it physically sits. Gating on
+        # source_sector_id let an attacker destroy the gate from the
+        # public, undefended source side, never from the destination
+        # sector canon's own defense story is actually about ("gather
+        # defenders... at the destination sector before the gate goes
+        # live", warp-gates.md:164).
+        if attacker.current_sector_id != beacon.destination_sector_id:
+            return {"success": False, "message": "You must be in the gate's sector to attack it"}
+
+        # Invulnerability window guard -- BEFORE any charge/mutation, per
+        # the WO's own explicit ordering requirement. CONFIRMED against
+        # canon's own dedicated "48-hour invulnerability window" section
+        # (warp-gates.md:157-167, not just the Destruction section's
+        # passing mention): "For the first 48 real-time hours after Phase
+        # 1 deployment, the beacon is flagged invulnerable... The focus
+        # inherits the same invulnerability flag for the REMAINDER of that
+        # 48h window PLUS the Phase 3 harmonization hour." Two components,
+        # not one:
+        #   (a) fixed 48h from beacon.created_at (Phase 1 deploy) -- the
+        #       base window, covers Phase 1/2 regardless of gate phase.
+        #   (b) for a HARMONIZING gate specifically, ALSO protected through
+        #       gate.harmonization_completes_at -- covers the edge case
+        #       where Phase 2 travel eats nearly the full 48h and
+        #       harmonization starts right as the base window would
+        #       otherwise expire; canon explicitly grants the FULL
+        #       harmonization hour regardless of where it falls.
+        # whichever is LATER wins. beacon.invulnerable_until is
+        # deliberately NOT reused for either component: it is cleared to
+        # None at HARMONIZING->ACTIVE (warp_gate_service.advance_gate) and
+        # tracks a DIFFERENT concern (the unmatched-beacon's own expiry
+        # timer), not "this structure lineage is under combat protection"
+        # -- see this WO's report.
+        now = datetime.now(timezone.utc)
+        invuln_until = beacon.created_at + timedelta(hours=self.GATE_INVULNERABILITY_HOURS)
+        if gate.status == WarpGateStatus.HARMONIZING and gate.harmonization_completes_at is not None:
+            invuln_until = max(invuln_until, gate.harmonization_completes_at)
+        if now < invuln_until:
+            return {
+                "success": False,
+                "message": (
+                    "ERR_GATE_INVULNERABLE: this gate is still within its "
+                    "48-hour invulnerability window"
+                ),
+            }
+
+        if attacker.is_docked or attacker.is_landed:
+            return {"success": False, "message": "Cannot attack while docked at a port or landed on a planet"}
+
+        turn_cost = self.GATE_ATTACK_TURN_COST
+        _regen_turns(self.db, attacker)
+        if attacker.turns < turn_cost:
+            return {"success": False, "message": "Not enough turns to attack a warp gate"}
+
+        combat_result = self._resolve_warp_gate_combat(attacker, gate)
+        spend_turns(attacker, turn_cost)
+
+        destroyed = combat_result["destroyed"]
+        salvage_granted: Dict[str, int] = {}
+        # WO-P3 revise (cipher, sanity-check requested, confirmed + fixed):
+        # the destroyed-gate broadcast must target where the structure (and
+        # any onlookers/defenders) actually are -- the destination, the
+        # SAME field the location check above now uses. The original build
+        # broadcast to source_sector_id, the identical wrong-side mistake.
+        target_sector_id = beacon.destination_sector_id
+
+        if destroyed:
+            from src.services.warp_gate_service import _refund_cargo
+
+            tunnel = None
+            if gate.warp_tunnel_id:
+                tunnel = self.db.query(WarpTunnel).filter(WarpTunnel.id == gate.warp_tunnel_id).first()
+            if tunnel is not None:
+                tunnel.status = WarpTunnelStatus.COLLAPSED
+
+            # WO-P3 landmine: lock the SHIP row before the cargo RMW
+            # (mirrors WO-P4-play-beacon-kernel's own equipment-cargo
+            # lesson -- resources live on the Ship, not the Player).
+            # Attacker Player is already locked above; Player-then-Ship
+            # stays the consistent lock order this codebase uses
+            # everywhere else a cargo grant follows a Player-row charge.
+            # WO-MONEY-STRAGGLER-FLUSHFIRST: flush BEFORE the locked re-query,
+            # not just add populate_existing(). attacker.current_ship IS this
+            # same identity-mapped Ship row -- _resolve_warp_gate_combat's
+            # turret-return-fire branch above (structurally unreachable today,
+            # WarpGate has no turret_count column, but latent for the day an
+            # Upgrades WO adds one) mutates attacker_ship.combat and
+            # flag_modified()s it, UNFLUSHED (autoflush=False on this
+            # session). A bare .populate_existing() here would re-hydrate
+            # from the row's last-FLUSHED state -- still pre-battle -- and
+            # silently overwrite/discard that pending in-memory combat
+            # mutation, a lost update. Flushing here, immediately before the
+            # query, persists it first so the subsequent locked
+            # populate_existing() read is a no-op / correct rather than a
+            # regression.
+            self.db.flush()
+            ship = (
+                self.db.query(Ship)
+                .filter(Ship.id == attacker.current_ship_id, Ship.owner_id == attacker.id)
+                .populate_existing()
+                .with_for_update()
+                .first()
+            )
+            if ship is not None:
+                _refund_cargo(ship, self.GATE_SALVAGE_YIELD)
+                salvage_granted = dict(self.GATE_SALVAGE_YIELD)
+
+            # Structure rows deleted (canon: "the structure rows (beacon/
+            # focus) are deleted"). WarpGate.beacon_id is
+            # ondelete="CASCADE", so deleting the beacon removes the
+            # WarpGate row too in one statement. Deliberately NOT the
+            # cascade_region_gate_teardown pattern (flip WarpGate.status=
+            # COLLAPSED, keep the row) -- that path preserves the row as
+            # an idempotency marker for a re-invocable region-sweep and to
+            # keep freeing the owner's gate-cap slot auditable; a one-shot
+            # combat kill has no re-invocation concern, and canon's own
+            # wording for THIS path says "deleted", not "flipped".
+            #
+            # Belt + suspenders (WO-P3 revise, mack): the gate-row lock
+            # above already makes this StaleDataError structurally
+            # unreachable in steady state (a second attacker's gate query
+            # blocks, then finds no row at all once it resumes -- never
+            # reaches this delete). Caught anyway for any path outside the
+            # locked lineage (e.g. a GM force-delete). A failed flush
+            # leaves the SESSION -- not just this statement -- unusable
+            # until rollback (see message_beacon_service's own equivalent
+            # lesson), and the salvage grant + tunnel flip above already
+            # happened in THIS same transaction, so a savepoint scoped to
+            # only the delete would leave those stale-and-wrong on a
+            # rollback-free path -- the whole transaction must go, not
+            # just this statement.
+            try:
+                self.db.delete(beacon)
+                self.db.flush()
+            except (StaleDataError, ObjectDeletedError):
+                self.db.rollback()
+                return {
+                    "success": False,
+                    "message": "ERR_GATE_ALREADY_DESTROYED: this warp gate was destroyed by another attack first",
+                    "destroyed": True,
+                    "gate_hp_remaining": 0,
+                    "salvage_granted": {},
+                }
+
+            owner = self.db.query(Player).filter(Player.id == gate.player_id).first()
+            if owner is not None:
+                try:
+                    from src.models.faction import Faction
+                    from src.services.faction_service import (
+                        apply_faction_rep_delta,
+                        dominant_reputation_faction_id,
+                    )
+
+                    owner_faction_id = dominant_reputation_faction_id(self.db, owner.id)
+                    if owner_faction_id is not None:
+                        owner_faction = (
+                            self.db.query(Faction).filter(Faction.id == owner_faction_id).first()
+                        )
+                        if owner_faction is not None:
+                            apply_faction_rep_delta(
+                                self.db, attacker.id, owner_faction.faction_type,
+                                self.GATE_OWNER_FACTION_REP_PENALTY,
+                                "destroyed_warp_gate",
+                            )
+                except Exception as e:
+                    logger.error("Failed owner-faction reputation hook after gate destruction: %s", e)
+
+        # Commit changes -- see docstring for why this method self-commits.
+        self.db.commit()
+
+        if destroyed:
+            # WO-P3 revise (mack, CRITICAL): use the gate_id PARAMETER, not
+            # gate.id. On a kill, only the beacon is explicitly deleted
+            # (WarpGate.beacon_id is ondelete=CASCADE, so the gate row
+            # cascades away at the DB level without the SESSION ever
+            # calling db.delete(gate) itself). SessionLocal's default
+            # expire_on_commit=True means the self.db.commit() above
+            # expires every object touched this transaction, including
+            # `gate` -- the VERY NEXT attribute access on it (gate.id)
+            # triggers a refresh-on-access SELECT against a row that's
+            # already gone, raising ObjectDeletedError uncaught past this
+            # point (a raw 500 on a kill that already fully committed).
+            # gate_id is the plain UUID parameter this method received --
+            # immune to ORM expiration, and identical to gate.id by
+            # construction since it's what the gate was looked up by.
+            _emit_warp_gate_destroyed(gate_id, target_sector_id, attacker.username)
+
+        return {
+            "success": True,
+            "message": combat_result["message"],
+            "destroyed": destroyed,
+            "gate_hp_remaining": combat_result["gate_hp_remaining"],
+            "salvage_granted": salvage_granted,
+            "turns_consumed": turn_cost,
+            "turns_remaining": attacker.turns,
+        }
+
+    def _resolve_warp_gate_combat(self, attacker: Player, gate: Any) -> Dict[str, Any]:
+        """Resolve a single attack-pass against a warp gate's HP pool,
+        reusing the standard weapon damage stack (_apply_weapon_damage,
+        combat-resolver.md) rather than reinventing planet-style hit-chance
+        math. A gate is a static, non-evading target (no escape mechanic) --
+        canon's "Resolution uses the standard combat resolver ... against
+        the target's effective HP" reads as one resolution per attack call,
+        the same shape attack_sector_drones/attack_planet/attack_port
+        already use (repeat ATTACKS wear a gate down over time, mirroring
+        this file's own multi-attack_planet-call siege precedent, not an
+        internal multi-round loop within one call).
+
+        Shields/turrets are read defensively via getattr with a 0 default:
+        WarpGate has no shields/turret_count column today (the entire
+        Upgrades section -- shield generator, turret arrays -- is canon
+        Design-only and unbuilt), so both are structurally 0 for every
+        currently-existing gate. This hook is genuinely wired to those
+        field names, not stubbed with a hardcoded 0 -- a future Upgrades
+        WO that adds real columns lights this up with zero changes here."""
+        attacker_ship = attacker.current_ship
+        weapon_key = self.SHIP_DEFAULT_WEAPONS.get(attacker_ship.type, "laser") if attacker_ship else "laser"
+        weapon = self.WEAPON_TYPES[weapon_key]
+
+        attacker_power = self._calculate_attack_power(attacker_ship, attacker.attack_drones or 0)
+
+        gate_shields = float(getattr(gate, "shields", 0) or 0)
+        gate_combat = {"shields": gate_shields, "hull": float(gate.hp or 0)}
+        hit = self._apply_weapon_damage(
+            damage=attacker_power,
+            weapon=weapon,
+            target_combat=gate_combat,
+            shield_resistance=0.0,
+            armor_rating=0.0,
+        )
+        gate.hp = max(0, int(round(gate_combat["hull"])))
+        destroyed = gate.hp <= 0
+
+        return_fire: Optional[Dict[str, Any]] = None
+        turret_count = int(getattr(gate, "turret_count", 0) or 0)
+        if turret_count > 0 and attacker_ship is not None:
+            # NO-CANON (flag for Max): canon doesn't specify turrets'
+            # weapon type or per-turret damage. "laser" mirrors the
+            # conservative fallback default every unmapped ship type
+            # already gets; 3 damage/turret mirrors _calculate_attack_
+            # power's own 2-pts-per-drone shape for a comparable
+            # small-per-unit contribution.
+            turret_weapon = self.WEAPON_TYPES["laser"]
+            turret_damage = turret_count * 3
+            attacker_combat = self._ensure_combat_state(attacker_ship)
+            return_fire = self._apply_weapon_damage(
+                damage=turret_damage,
+                weapon=turret_weapon,
+                target_combat=attacker_combat,
+                shield_resistance=self._resistance_fraction(getattr(attacker_ship, "shield_resistance", 0.0)),
+                armor_rating=self._resistance_fraction(getattr(attacker_ship, "armor_rating", 0.0)),
+            )
+            flag_modified(attacker_ship, "combat")
+
+        hit_amount = hit["hull_damage"] + hit["shield_damage"]
+        message = (
+            "The warp gate is destroyed!" if destroyed
+            else f"Your attack deals {hit_amount:.0f} damage to the warp gate ({gate.hp} HP remaining)"
+        )
+
+        return {
+            "destroyed": destroyed,
+            "gate_hp_remaining": gate.hp,
+            "hit": hit,
+            "return_fire": return_fire,
+            "message": message,
+        }
+
     def get_combat_log(self, combat_log_id: uuid.UUID) -> Dict[str, Any]:
         """Get detailed information about a combat log."""
         # Get combat log
@@ -2259,10 +3273,11 @@ class CombatService:
 
     def _resolve_ship_combat(
         self,
-        attacker: Player,
+        attacker: Optional[Player],
         defender: Optional[Player],
         sector: Sector,
-        defender_ship: Optional[Ship] = None
+        defender_ship: Optional[Ship] = None,
+        attacker_ship: Optional[Ship] = None,
     ) -> Dict[str, Any]:
         """Resolve ship-to-ship combat.
 
@@ -2270,9 +3285,23 @@ class CombatService:
         defender is None and defender_ship is the NPC-controlled Ship — the
         NPC fights with its ship alone (no rank damage bonus, no player-owned
         defense drones).
+
+        WO-CMB-NPC-INITIATED-1 (Max ruling, 2026-07-10): attacker is now
+        symmetric — None for an NPC-INITIATED attack, with attacker_ship the
+        NPC-controlled Ship. The NPC fights with its ship alone (no rank
+        damage bonus, no medal bonus, no player-owned attack drones) — the
+        literal mirror of the existing NPC-defender branch below. The
+        DEFENDER-side escape roll is completely UNCHANGED by this: flee
+        remains possible exactly as it always has.
         """
         # Get ships and equipment
-        attacker_ship = attacker.current_ship
+        if attacker is not None:
+            attacker_ship = attacker.current_ship
+            attacker_name = attacker.username
+        elif attacker_ship is None:
+            raise ValueError("NPC-initiated combat requires an attacker_ship")
+        else:
+            attacker_name = attacker_ship.name
 
         # WO-BC tractor escape-suppression (single-shot MVP). CANON combat.md:162
         # — a tractor-locked target "cannot succeed at flee actions while the lock
@@ -2321,17 +3350,44 @@ class CombatService:
             defender_drones = 0
             defender_damage_mult = 1.0
 
-        # Get rank combat bonus for the attacker
-        attacker_bonuses = RankingService.get_rank_bonuses(attacker.military_rank)
-        # WO-CG: fold the attacker's summed, capped medal combat_damage bonus into
-        # the damage multiplier alongside the rank term (≤ +3% from all medals).
-        attacker_medal_pct = _medal_combat_damage_bonus(self.db, attacker)
-        attacker_damage_mult = 1.0 + (
-            (attacker_bonuses["combat_damage_bonus_percent"] + attacker_medal_pct) / 100.0
-        )
+        if attacker is not None:
+            # Get rank combat bonus for the attacker
+            attacker_bonuses = RankingService.get_rank_bonuses(attacker.military_rank)
+            # WO-CG: fold the attacker's summed, capped medal combat_damage bonus into
+            # the damage multiplier alongside the rank term (≤ +3% from all medals).
+            attacker_medal_pct = _medal_combat_damage_bonus(self.db, attacker)
+            attacker_damage_mult = 1.0 + (
+                (attacker_bonuses["combat_damage_bonus_percent"] + attacker_medal_pct) / 100.0
+            )
+            attacker_drones = attacker.attack_drones
+        else:
+            # NPC-initiated attacker (WO-CMB-NPC-INITIATED-1): no rank bonus,
+            # no medal bonus, no player-owned attack drones — the literal
+            # mirror of the existing NPC-defender branch above.
+            attacker_damage_mult = 1.0
+            attacker_drones = 0
+
+        # WO-P4-fleet-coord-combat-wire: fold each side's fleet
+        # coordination_bonus in as a SEPARATE multiplicative outer factor.
+        # Canon (combat-resolver.md "Damage stack — order of operations",
+        # step 1) lists `(1 + fleet.coordination_bonus)` as its own term
+        # alongside `(1 + rank.combat_bonus / 100)`, and the doc's
+        # "Multiplicative composition order" note rules the two stack
+        # multiplicatively -- so this multiplies the existing rank+medal
+        # mult rather than folding into its additive bucket. Ship-keyed
+        # (FleetService.get_coordination_bonus), not player-keyed: applies
+        # to whichever ship is actually firing, so the NPC-initiated
+        # attacker/defender branches above need no special-casing here — an
+        # NPC ship can never be a FleetMember and transparently resolves to
+        # 0.0 (multiplier 1.0, identity). A ship outside any fleet (or in a
+        # <3-ship fleet, fleet-tactics.md) also resolves to 0.0 — the
+        # solo-combatant path is byte-identical to the pre-wire damage.
+        from src.services.fleet_service import FleetService
+        fleet_service = FleetService(self.db)
+        attacker_damage_mult *= (1.0 + fleet_service.get_coordination_bonus(attacker_ship.id))
+        defender_damage_mult *= (1.0 + fleet_service.get_coordination_bonus(defender_ship.id))
 
         # Combat parameters
-        attacker_drones = attacker.defense_drones
         attacker_attack = self._calculate_attack_power(attacker_ship, attacker_drones)
         defender_defense = self._calculate_defense_power(defender_ship, defender_drones)
 
@@ -2398,7 +3454,7 @@ class CombatService:
                             "round": round_number,
                             "actor": "attacker",
                             "action": "drone_attack",
-                            "message": f"{attacker.username}'s {atk_weapon_name} destroyed {drones_destroyed} of {defender_name}'s drones",
+                            "message": f"{attacker_name}'s {atk_weapon_name} destroyed {drones_destroyed} of {defender_name}'s drones",
                             "drones_destroyed": drones_destroyed,
                             "weapon_type": atk_weapon_name,
                             "weapon_effectiveness": atk_weapon["shield_effectiveness"]
@@ -2447,7 +3503,7 @@ class CombatService:
                                 "round": round_number,
                                 "actor": "attacker",
                                 "action": "ship_destroyed",
-                                "message": f"{attacker.username}'s {atk_weapon_name} critically damaged {defender_name}'s ship, {destroy_flavor}",
+                                "message": f"{attacker_name}'s {atk_weapon_name} critically damaged {defender_name}'s ship, {destroy_flavor}",
                                 "weapon_type": atk_weapon_name,
                                 "shield_damage": hit["shield_damage"],
                                 "hull_damage": hit["hull_damage"],
@@ -2461,7 +3517,7 @@ class CombatService:
                                 "actor": "attacker",
                                 "action": "ship_attack",
                                 "message": (
-                                    f"{attacker.username}'s {atk_weapon_name} hit {defender_name}'s ship for "
+                                    f"{attacker_name}'s {atk_weapon_name} hit {defender_name}'s ship for "
                                     f"{hit['shield_damage']} shield / {hit['hull_damage']} hull damage"
                                     f"{crit_note}{modifier_note}"
                                 ),
@@ -2478,7 +3534,7 @@ class CombatService:
                         "round": round_number,
                         "actor": "attacker",
                         "action": "miss",
-                        "message": f"{attacker.username}'s attack missed {defender_name}'s ship"
+                        "message": f"{attacker_name}'s attack missed {defender_name}'s ship"
                     })
 
             # Check if combat is over
@@ -2509,7 +3565,7 @@ class CombatService:
                             "round": round_number,
                             "actor": "defender",
                             "action": "drone_attack",
-                            "message": f"{defender_name}'s {def_weapon_name} destroyed {drones_destroyed} of {attacker.username}'s drones",
+                            "message": f"{defender_name}'s {def_weapon_name} destroyed {drones_destroyed} of {attacker_name}'s drones",
                             "drones_destroyed": drones_destroyed,
                             "weapon_type": def_weapon_name,
                             "weapon_effectiveness": def_weapon["shield_effectiveness"]
@@ -2544,11 +3600,19 @@ class CombatService:
 
                         if hit["destroyed"]:
                             attacker_ship_destroyed = True
+                            # NPC attackers (attacker is None, WO-CMB-NPC-
+                            # INITIATED-1) have no escape pod to eject into —
+                            # the literal mirror of the destroy_flavor
+                            # ternary above for NPC defenders.
+                            attacker_destroy_flavor = (
+                                "destroying the vessel" if attacker is None
+                                else "forcing ejection"
+                            )
                             combat_details.append({
                                 "round": round_number,
                                 "actor": "defender",
                                 "action": "ship_destroyed",
-                                "message": f"{defender_name}'s {def_weapon_name} critically damaged {attacker.username}'s ship, forcing ejection",
+                                "message": f"{defender_name}'s {def_weapon_name} critically damaged {attacker_name}'s ship, {attacker_destroy_flavor}",
                                 "weapon_type": def_weapon_name,
                                 "shield_damage": hit["shield_damage"],
                                 "hull_damage": hit["hull_damage"],
@@ -2562,7 +3626,7 @@ class CombatService:
                                 "actor": "defender",
                                 "action": "ship_attack",
                                 "message": (
-                                    f"{defender_name}'s {def_weapon_name} hit {attacker.username}'s ship for "
+                                    f"{defender_name}'s {def_weapon_name} hit {attacker_name}'s ship for "
                                     f"{hit['shield_damage']} shield / {hit['hull_damage']} hull damage"
                                     f"{crit_note}{modifier_note}"
                                 ),
@@ -2579,7 +3643,7 @@ class CombatService:
                         "round": round_number,
                         "actor": "defender",
                         "action": "miss",
-                        "message": f"{defender_name}'s attack missed {attacker.username}'s ship"
+                        "message": f"{defender_name}'s attack missed {attacker_name}'s ship"
                     })
 
             # --- Escape check after both sides have dealt damage this round ---
@@ -2621,8 +3685,13 @@ class CombatService:
                             "escape_chance": escape_pct
                         })
 
-                # Attacker tries to escape if they have no drones left (hull exposed)
-                if fled_result is None and attacker_drones <= 0:
+                # Attacker tries to escape if they have no drones left (hull
+                # exposed). NPC attackers (attacker is None, WO-CMB-NPC-
+                # INITIATED-1) never roll — the literal mirror of the NPC
+                # defender skip above: v1 static NPCs stand and fight; NPC
+                # flee behavior is Design-only (npc-scheduler.md) regardless
+                # of which side of the fight the NPC is on.
+                if attacker is not None and fled_result is None and attacker_drones <= 0:
                     escape_pct = self._calculate_escape_chance(
                         attacker_ship, defender_ship,
                         self._sector_edge_proximity(attacker_ship))
@@ -2633,7 +3702,7 @@ class CombatService:
                             "actor": "attacker",
                             "action": "escape",
                             "message": (
-                                f"{attacker.username}'s ship engaged emergency thrusters "
+                                f"{attacker_name}'s ship engaged emergency thrusters "
                                 f"and escaped! (escape chance: {escape_pct}%)"
                             ),
                             "escape_chance": escape_pct
@@ -2668,18 +3737,18 @@ class CombatService:
         if fled_result is not None:
             result = fled_result
             if fled_result == CombatResult.ATTACKER_FLED:
-                message = f"{attacker.username} fled from combat with {defender_name}"
+                message = f"{attacker_name} fled from combat with {defender_name}"
             else:
-                message = f"{defender_name} escaped from {attacker.username}'s attack"
+                message = f"{defender_name} escaped from {attacker_name}'s attack"
         elif attacker_ship_destroyed and defender_ship_destroyed:
             result = CombatResult.MUTUAL_DESTRUCTION
             message = "Combat ended in mutual destruction"
         elif attacker_ship_destroyed:
             result = CombatResult.DEFENDER_VICTORY
-            message = f"{defender_name} defeated {attacker.username} in combat"
+            message = f"{defender_name} defeated {attacker_name} in combat"
         elif defender_ship_destroyed:
             result = CombatResult.ATTACKER_VICTORY
-            message = f"{attacker.username} defeated {defender_name} in combat"
+            message = f"{attacker_name} defeated {defender_name} in combat"
         else:
             result = CombatResult.DRAW
             message = "Combat ended in a draw"
@@ -2705,7 +3774,7 @@ class CombatService:
                     "round": round_number,
                     "actor": "attacker",
                     "action": "cargo_theft",
-                    "message": f"{attacker.username} salvaged cargo from {defender_name}'s ship: {cargo_list}"
+                    "message": f"{attacker_name} salvaged cargo from {defender_name}'s ship: {cargo_list}"
                 })
         
         # Finalize results
@@ -2742,170 +3811,20 @@ class CombatService:
                 "max_hull": defender_combat.get("max_hull")
             }
         }
-    
-    def _resolve_drone_combat(self, attacker: Player, sector: Sector, deployments: List[DroneDeployment]) -> Dict[str, Any]:
-        """Resolve combat between a ship and sector drones."""
-        # Get attacker ship and equipment
-        attacker_ship = attacker.current_ship
-        attacker_drones = attacker.defense_drones
-        
-        # Combine all defender drones
-        total_defender_drones = sum(d.drone_count for d in deployments)
-        defender_drones = total_defender_drones
-        
-        # Combat parameters
-        attacker_attack = self._calculate_attack_power(attacker_ship, attacker_drones)
-        defender_attack = total_defender_drones * 0.5  # Each drone contributes to attack power
-        
-        # Track combat details
-        round_number = 0
-        attacker_drones_lost = 0
-        defender_drones_lost = 0
-        attacker_ship_destroyed = False
-        combat_details = []
-        
-        # Track deployments affected
-        deployment_updates = []
-        for deployment in deployments:
-            deployment_updates.append({
-                "deployment_id": str(deployment.id),
-                "player_id": str(deployment.player_id),
-                "starting_drones": deployment.drone_count,
-                "drones_lost": 0
-            })
-        
-        # Combat continues until one side is defeated or retreats
-        while (not attacker_ship_destroyed and defender_drones > 0):
-            round_number += 1
-            
-            # Add round header
-            combat_details.append({
-                "round": round_number,
-                "message": f"Combat Round {round_number}"
-            })
-            
-            # Attacker's turn
-            if not attacker_ship_destroyed:
-                # Calculate damage to drones
-                drones_destroyed = random.randint(1, min(5, defender_drones))
-                defender_drones -= drones_destroyed
-                defender_drones_lost += drones_destroyed
-                
-                # Distribute drone losses across deployments
-                # This is simplified - a more sophisticated implementation would be needed
-                # for a real game to properly attribute drone losses
-                remaining_to_distribute = drones_destroyed
-                for deployment_update in deployment_updates:
-                    if remaining_to_distribute <= 0:
-                        break
-                    
-                    deployment = next((d for d in deployments if str(d.id) == deployment_update["deployment_id"]), None)
-                    if deployment and deployment.drone_count > deployment_update["drones_lost"]:
-                        available = deployment.drone_count - deployment_update["drones_lost"]
-                        lost = min(remaining_to_distribute, available)
-                        deployment_update["drones_lost"] += lost
-                        remaining_to_distribute -= lost
-                
-                combat_details.append({
-                    "round": round_number,
-                    "actor": "attacker",
-                    "action": "drone_attack",
-                    "message": f"{attacker.username}'s ship destroyed {drones_destroyed} sector defense drones",
-                    "drones_destroyed": drones_destroyed
-                })
-            
-            # Check if combat is over
-            if defender_drones <= 0:
-                break
-            
-            # Defender's turn (drones)
-            # Calculate chance to hit
-            hit_chance = min(0.7, defender_attack / (attacker_attack * 2) * 0.5)
-            
-            # Random element
-            if random.random() < hit_chance:
-                # Successful hit
-                # Determine if attacking drones or ship
-                if attacker_drones > 0:
-                    # Attack attacker's drones first
-                    drones_destroyed = random.randint(1, min(3, attacker_drones))
-                    attacker_drones -= drones_destroyed
-                    attacker_drones_lost += drones_destroyed
-                    combat_details.append({
-                        "round": round_number,
-                        "actor": "defender",
-                        "action": "drone_attack",
-                        "message": f"Sector defense drones destroyed {drones_destroyed} of {attacker.username}'s drones",
-                        "drones_destroyed": drones_destroyed
-                    })
-                else:
-                    # Attack ship - calculate ship damage
-                    damage = random.randint(1, 8)
-                    
-                    # Check if attacker ship destroyed
-                    ship_destruction_chance = damage / 60  # Lower chance than player vs player
-                    if random.random() < ship_destruction_chance:
-                        attacker_ship_destroyed = True
-                        combat_details.append({
-                            "round": round_number,
-                            "actor": "defender",
-                            "action": "ship_destroyed",
-                            "message": f"Sector defense drones critically damaged {attacker.username}'s ship, forcing ejection"
-                        })
-                    else:
-                        combat_details.append({
-                            "round": round_number,
-                            "actor": "defender",
-                            "action": "ship_attack",
-                            "message": f"Sector defense drones hit {attacker.username}'s ship for {damage} damage"
-                        })
-            else:
-                # Miss
-                combat_details.append({
-                    "round": round_number,
-                    "actor": "defender",
-                    "action": "miss",
-                    "message": f"Sector defense drones' attack missed {attacker.username}'s ship"
-                })
-            
-            # Check if combat ends due to round limit
-            if round_number >= 8:
-                combat_details.append({
-                    "round": round_number,
-                    "action": "stalemate",
-                    "message": "Combat ends as attacker withdraws after 8 rounds"
-                })
-                break
-        
-        # Determine result
-        if attacker_ship_destroyed:
-            result = CombatResult.DEFENDER_VICTORY
-            message = f"Sector defense drones defeated {attacker.username}"
-        elif defender_drones <= 0:
-            result = CombatResult.ATTACKER_VICTORY
-            message = f"{attacker.username} destroyed all sector defense drones"
-        else:
-            result = CombatResult.DRAW
-            message = "Combat ended in a stalemate"
-        
-        # Finalize results
-        combat_details.append({
-            "round": round_number,
-            "action": "combat_end",
-            "result": result.name,
-            "message": message
-        })
-        
-        return {
-            "result": result,
-            "message": message,
-            "rounds": round_number,
-            "attacker_drones_lost": attacker_drones_lost,
-            "defender_drones_lost": defender_drones_lost,
-            "attacker_ship_destroyed": attacker_ship_destroyed,
-            "deployment_updates": deployment_updates,
-            "combat_details": combat_details
-        }
+
+    @staticmethod
+    def _drone_combat_log_summary(combat_details: List[Dict[str, Any]], max_len: int = 2000) -> str:
+        """Serialize combat_details for DroneCombat.combat_log.
+
+        Unlike CombatLog.combat_log (Text, unbounded), DroneCombat.combat_log
+        is String(2000) — an 8-round multi-drone engagement's full
+        combat_details JSON can overflow that. Truncate to fit rather than
+        let the insert raise a DataError.
+        """
+        serialized = json.dumps(combat_details)
+        if len(serialized) <= max_len:
+            return serialized
+        return serialized[: max_len - 3] + "..."
 
     def _resolve_sector_drone_combat(
         self, attacker: Player, sector: Sector, target_drones: List[Drone]
@@ -2921,7 +3840,7 @@ class CombatService:
         ship-vs-ship resolver uses.
         """
         attacker_ship = attacker.current_ship
-        attacker_carried_drones = attacker.defense_drones
+        attacker_carried_drones = attacker.attack_drones
 
         # Attacker firepower per round (shared helper — ship type + bonuses +
         # carried drones + maintenance multiplier)
@@ -2953,6 +3872,12 @@ class CombatService:
 
         # Live working set of drones still fighting
         live_drones = list(target_drones)
+
+        # Combat-record wiring (WO-DRN-COMBAT-RECORD, drones.md#combat-record):
+        # every participating hostile drone counts this engagement toward its
+        # battles_fought tally regardless of how the fight ends.
+        for drone in target_drones:
+            drone.battles_fought += 1
 
         combat_details.append({
             "round": 0,
@@ -3014,11 +3939,24 @@ class CombatService:
             # attack_power, lightly randomised — no invented base numbers),
             # then route it through the canonical shields-first damage stack so
             # a shielded ship is protected exactly as in ship-vs-ship combat.
+            # SECTOR_DEFENSE (combat.md#sector-drones): deployed defender
+            # drones get a +5% bonus, applied per-drone to the return-fire hit
+            # before the round total is aggregated (see SECTOR_DEFENSE_BONUS_MULT).
             round_drone_damage = 0
             for drone in live_drones:
                 base = max(1, drone.attack_power or 0)
                 hit = random.randint(max(1, base // 2), base)
+                hit = int(round(hit * self.SECTOR_DEFENSE_BONUS_MULT))
+                drone.damage_dealt += hit
                 round_drone_damage += hit
+
+            combat_details.append({
+                "round": round_number,
+                "actor": "defender",
+                "action": "sector_defense_bonus",
+                "tag": CombatType.SECTOR_DEFENSE.value,
+                "message": "Deployed defender drones apply the SECTOR_DEFENSE bonus to this round's return fire",
+            })
 
             defender_damage_dealt += round_drone_damage
             hit_result = self._apply_weapon_damage(
@@ -3076,6 +4014,18 @@ class CombatService:
             result = CombatResult.DRAW
             message = "Combat ended in a stalemate — surviving drones remain"
 
+        # Kills semantics for ship-vs-drones (drones don't kill drones here,
+        # NO-CANON recommendation filed to DECISIONS): a surviving drone is
+        # only credited a kill when it actually took down the attacker's
+        # ship. winner_drone_id mirrors the same asymmetry — no single drone
+        # "wins" a cleared-sector or stalemate outcome, only a ship-destroyed
+        # one (first survivor, ties broken by fight order).
+        winner_drone_id: Optional[uuid.UUID] = None
+        if attacker_ship_destroyed:
+            winner_drone_id = live_drones[0].id
+            for drone in live_drones:
+                drone.kills += 1
+
         combat_details.append({
             "round": round_number,
             "action": "combat_end",
@@ -3093,6 +4043,7 @@ class CombatService:
             "defender_damage_dealt": defender_damage_dealt,
             "attacker_ship_destroyed": attacker_ship_destroyed,
             "destroyed_drone_ids": destroyed_drone_ids,
+            "winner_drone_id": winner_drone_id,
             "combat_details": combat_details,
         }
 
@@ -3101,7 +4052,7 @@ class CombatService:
         """Resolve combat between a ship and a planet."""
         # Get attacker ship and equipment
         attacker_ship = attacker.current_ship
-        attacker_drones = attacker.defense_drones
+        attacker_drones = attacker.attack_drones
 
         # Planet defenses
         planet_defense_level = planet.defense_level or 0
@@ -3123,10 +4074,25 @@ class CombatService:
         # planets / no grid -> no behaviour change).
         drone_damage_bonus = planetary_def.get("drone_damage_bonus", 0.0)
 
+        # WO-PLN-SIEGE-VULN-1 (see VULNERABLE_DEFENSE_MULT above): qualifying
+        # besieger == the assaulting player being the recorded siege
+        # besieger. combat_defense_level == planet_defense_level (same int,
+        # unchanged) whenever siege_vulnerable is False, so the no-siege
+        # math below is untouched — regression-identical to today.
+        siege_vulnerable = (
+            planet.under_siege
+            and (planet.morale or 0) <= 0
+            and planet.siege_attacker_id == attacker.id
+        )
+        combat_defense_level = (
+            planet_defense_level * self.VULNERABLE_DEFENSE_MULT if siege_vulnerable
+            else planet_defense_level
+        )
+
         # Combat parameters
         attacker_attack = self._calculate_attack_power(attacker_ship, attacker_drones)
         planet_attack = planet_weapons * 2 + planet_defense_level * 3
-        planet_defense = planet_shields * 3 + planet_defense_level * 5
+        planet_defense = planet_shields * 3 + combat_defense_level * 5
 
         # Track combat details
         round_number = 0
@@ -3146,6 +4112,20 @@ class CombatService:
                 "shield_hp": remaining_shield_hp
             })
 
+        # Siege-vulnerability applied (WO-PLN-SIEGE-VULN-1) — auditable in
+        # the combat log payload per the WO's acceptance criteria.
+        if siege_vulnerable:
+            combat_details.append({
+                "round": 0,
+                "action": "siege_vulnerability",
+                "message": (
+                    f"{planet.name}'s morale has collapsed under siege — its "
+                    f"defenses are critically weakened "
+                    f"(x{self.VULNERABLE_DEFENSE_MULT} effective defense)"
+                ),
+                "vulnerable_defense_mult": self.VULNERABLE_DEFENSE_MULT
+            })
+
         # Combat continues until one side is defeated or retreats
         while (not attacker_ship_destroyed and not planet_captured):
             round_number += 1
@@ -3155,6 +4135,39 @@ class CombatService:
                 "round": round_number,
                 "message": f"Combat Round {round_number}"
             })
+
+            # Planetary minefield proximity strike (WO-P5-planets-minefield-
+            # wiring): a ONE-TIME hazard on assault-round entry (round 1
+            # only) -- distinct from turrets/rail guns, which fire every
+            # round. Deterministic magnitude (no RNG) gated on minefield
+            # count > 0, so a 0-minefield planet consumes zero random-module
+            # calls here -- same byte-identical-at-zero contract rail_gun
+            # established. `break`s the round loop immediately on a
+            # mine-inflicted destruction (mirrors the `if planet_captured:
+            # break` idiom below) so a destroyed ship doesn't also take a
+            # redundant same-round turret/attacker/defender turn.
+            if round_number == 1:
+                mine_bonus = self._calculate_minefield_bonus_damage(planet)
+                if mine_bonus > 0:
+                    mine_destruction_chance = mine_bonus / 50
+                    if random.random() < mine_destruction_chance:
+                        attacker_ship_destroyed = True
+                        combat_details.append({
+                            "round": round_number,
+                            "actor": "defender",
+                            "action": "minefield_strike",
+                            "message": f"Planetary minefield mines caught {attacker.username}'s ship on approach for {mine_bonus} damage, forcing ejection",
+                            "damage": mine_bonus,
+                        })
+                        break
+                    else:
+                        combat_details.append({
+                            "round": round_number,
+                            "actor": "defender",
+                            "action": "minefield_strike",
+                            "message": f"Planetary minefield mines struck {attacker.username}'s ship for {mine_bonus} damage on approach",
+                            "damage": mine_bonus,
+                        })
 
             # Automated turret-network point-defense (WO-CT1): turret networks fire
             # every round independent of the planet's main-weapon hit roll, shredding
@@ -3207,7 +4220,7 @@ class CombatService:
                     planet_damage += damage
 
                     # Update planet defense parameters for subsequent rounds
-                    effective_defense_left = max(0, planet_defense_level - planet_damage)
+                    effective_defense_left = max(0, combat_defense_level - planet_damage)
                     planet_defense = effective_defense_left * 5 + planet_shields * 3
 
                     if damage > 0:
@@ -3223,7 +4236,7 @@ class CombatService:
                         })
                     
                     # Check if planet captured
-                    if planet_damage >= planet_defense_level:
+                    if planet_damage >= combat_defense_level:
                         planet_captured = True
                         combat_details.append({
                             "round": round_number,
@@ -3287,7 +4300,17 @@ class CombatService:
                 else:
                     # Attack ship - calculate ship damage
                     damage = random.randint(1, 7)
-                    
+
+                    # WO-P5-planets-railgun-resolver: rail gun batteries add
+                    # anti-capital bonus damage on top of the base roll,
+                    # scaled by the attacker's ship class. Deterministic (no
+                    # random-module call) so a planet with 0 rail guns leaves
+                    # this round's RNG sequence byte-identical to before.
+                    rail_gun_bonus = self._calculate_rail_gun_bonus_damage(planet, attacker_ship)
+                    if rail_gun_bonus > 0:
+                        damage += rail_gun_bonus
+                    rail_gun_note = f" (+{rail_gun_bonus} rail-gun anti-capital fire)" if rail_gun_bonus > 0 else ""
+
                     # Check if attacker ship destroyed
                     ship_destruction_chance = damage / 50
                     if random.random() < ship_destruction_chance:
@@ -3296,14 +4319,14 @@ class CombatService:
                             "round": round_number,
                             "actor": "defender",
                             "action": "ship_destroyed",
-                            "message": f"Planetary defenses critically damaged {attacker.username}'s ship, forcing ejection"
+                            "message": f"Planetary defenses critically damaged {attacker.username}'s ship, forcing ejection{rail_gun_note}"
                         })
                     else:
                         combat_details.append({
                             "round": round_number,
                             "actor": "defender",
                             "action": "ship_attack",
-                            "message": f"Planetary defenses hit {attacker.username}'s ship for {damage} damage"
+                            "message": f"Planetary defenses hit {attacker.username}'s ship for {damage} damage{rail_gun_note}"
                         })
             else:
                 # Miss
@@ -3383,7 +4406,7 @@ class CombatService:
         """
         # --- Attacker ---
         attacker_ship = attacker.current_ship
-        attacker_drones = attacker.defense_drones or 0
+        attacker_drones = attacker.attack_drones or 0
         attacker_attack = self._calculate_attack_power(attacker_ship, attacker_drones)
 
         # --- Station defenses (from the existing `defenses` JSONB) ---
@@ -3486,7 +4509,7 @@ class CombatService:
             # hull. Per-round damage is hard-capped (per_round_damage_ceiling)
             # AND scales with the swarm the station hasn't shredded yet, so the
             # attacker's output decays fast as drones are lost. ---
-            drone_factor = attacker_drones / max(1, (attacker.defense_drones or 1))
+            drone_factor = attacker_drones / max(1, (attacker.attack_drones or 1))
             raw = int(attacker_attack * (0.3 + 0.7 * drone_factor))
             incoming = max(0, min(per_round_damage_ceiling, raw))
 
@@ -3665,6 +4688,72 @@ class CombatService:
                 n = 0
             clean[str(btype)] = max(0, n)
         return clean
+
+    def _calculate_rail_gun_bonus_damage(
+        self, planet: Planet, attacker_ship: Optional[Ship]
+    ) -> int:
+        """Extra per-round hull damage the planet's Rail Gun Batteries deal to
+        the attacker's ship (WO-P5-planets-railgun-resolver; defense.md
+        §"Fixed rail gun batteries" — "specialized anti-capital weapon:
+        small/fast ships shrug them off, large ships take heavy damage").
+
+        Reads the built battery count off the same ``active_events
+        ["defense_buildings"]["rail_gun"]`` JSONB WO-CT1 established for
+        turret_network/orbital_platform (via ``_read_defense_buildings``), and
+        the per-ship-class multiplier straight off
+        ``citadel_service.DEFENSE_BUILDINGS["rail_gun"]["effects"]
+        ["ship_size_multiplier_pct"]`` (canon-pinned 10%-200%) so the ratio
+        table lives in exactly one place. See RAIL_GUN_BASE_DAMAGE_PER_BATTERY
+        / RAIL_GUN_MAX_BONUS_DAMAGE above for the NO-CANON in-scale magnitude.
+
+        0 rail_gun batteries (or no resolvable attacker ship) -> 0, with ZERO
+        random-module calls — this is the byte-for-byte regression contract:
+        a planet with no rail guns must produce an identical combat log/RNG
+        sequence to before this WO.
+        """
+        buildings = self._read_defense_buildings(planet)
+        rail_gun_count = buildings.get("rail_gun", 0)
+        if rail_gun_count <= 0 or attacker_ship is None:
+            return 0
+
+        from src.services.citadel_service import DEFENSE_BUILDINGS
+        ship_type = getattr(attacker_ship, "type", None)
+        type_name = ship_type.name if ship_type is not None else None
+        multiplier_pct = DEFENSE_BUILDINGS["rail_gun"]["effects"][
+            "ship_size_multiplier_pct"
+        ].get(type_name, 100)  # untabled hulls (escape pod, citizen clipper,
+        # NPC interdictors) default to a neutral 100% — no table entry means
+        # no documented anti-capital stance either way.
+        class_mult = multiplier_pct / 100.0
+
+        bonus = rail_gun_count * self.RAIL_GUN_BASE_DAMAGE_PER_BATTERY * class_mult
+        return min(int(round(bonus)), self.RAIL_GUN_MAX_BONUS_DAMAGE)
+
+    def _calculate_minefield_bonus_damage(self, planet: Planet) -> int:
+        """One-time proximity-strike damage the planet's Minefields deal to an
+        incoming attacker on assault-round entry (WO-P5-planets-minefield-wiring;
+        defense.md §"Mine fields" — "mines target incoming hostiles only...
+        deal 500-1,500 hull damage per mine impact, ignore shields").
+
+        Reads the built minefield count off the same ``active_events
+        ["defense_buildings"]["planet_minefield"]`` JSONB WO-CT1/rail_gun
+        established (via ``_read_defense_buildings``). Unlike rail guns, canon
+        gives no ship-class table for mines, so this does not vary by
+        attacker ship type. See MINEFIELD_BASE_DAMAGE_PER_FIELD /
+        MINEFIELD_MAX_BONUS_DAMAGE above for the NO-CANON in-scale magnitude.
+
+        0 minefields -> 0, with ZERO random-module calls — the same
+        byte-for-byte regression contract rail_gun established: a planet with
+        no minefields must produce an identical combat log/RNG sequence to
+        before this WO.
+        """
+        buildings = self._read_defense_buildings(planet)
+        minefield_count = buildings.get("planet_minefield", 0)
+        if minefield_count <= 0:
+            return 0
+
+        bonus = minefield_count * self.MINEFIELD_BASE_DAMAGE_PER_FIELD
+        return min(int(round(bonus)), self.MINEFIELD_MAX_BONUS_DAMAGE)
 
     def _calculate_planetary_defense_reduction(self, planet: Planet) -> Dict[str, Any]:
         """Calculate how much planetary defenses reduce incoming attack damage.
@@ -4110,8 +5199,9 @@ class CombatService:
         swap. Zeroing the victim's wallet makes the transfer idempotent: a
         mutual-destruction double-fire or a re-entered resolution cannot move the
         same resource twice, and a victim holding 0 of both is a no-op (no write).
-        Drop-FRACTION (the NPC drop-table percentages) is NO-CANON for PvP and is
-        deferred — the canon PvP yield is a flat 100% transfer.
+        Drop-FRACTION (the NPC drop-table percentages, now LIVE in
+        attack_npc_ship via _roll_npc_quantum_drop / WO-CMB-QDROP-NPC-1) is
+        NO-CANON for PvP — the canon PvP yield stays a flat 100% transfer.
         """
         if not victor or not victim or victor.id == victim.id:
             return

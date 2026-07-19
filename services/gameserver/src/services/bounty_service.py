@@ -146,6 +146,45 @@ class BountyService:
         player.settings[SYSTEM_BOUNTY_POT_KEY] = max(0, int(value))
         flag_modified(player, "settings")
 
+    def _restore_target_rep_after_system_payout(self, target: Player) -> None:
+        """Rehabilitate a criminal's reputation the moment their SYSTEM bounty
+        pot actually pays out (WO-INTEGRITY-PAIR NH2 — bounty-collusion faucet).
+
+        Before this fix, killing a target never touched the TARGET's own
+        reputation — only the collector's. A criminal pinned at a deep negative
+        score (e.g. two colluding players, one always the "wanted" accomplice)
+        would sit at ``is_criminal() == True`` forever, so the accrual sweep
+        kept re-filling their pot on the same schedule after every collection —
+        a slow-but-*permanent* faucet requiring zero further "crime" after the
+        initial rep tank. Approach (a) from the WO: restore the target's rep on
+        collection so the SAME target can't keep generating bounties.
+
+        Raises ``personal_reputation`` to exactly one point above the criminal
+        threshold (``SYSTEM_BOUNTY_CRIMINAL_THRESHOLD + 1``, i.e. -499) — the
+        MINIMAL restore that flips ``is_criminal()`` False and stops further
+        accrual, "debt paid" rather than a full wipe to neutral. Monotonic: only
+        ever RAISES reputation (never lowers it) and no-ops if the target is
+        already clear, so this can never be abused to lower anyone's score or
+        double-apply across the two call sites (collect_bounty /
+        collect_bounty_share) — a target already restored simply reads > the
+        threshold and the guard below skips.
+
+        NO-CANON: bounties.md is silent on any reputation effect of being
+        bounty-killed; the exact floor (threshold + 1, not a full reset to 0)
+        is a conservative design choice — flagged for DECISIONS.md. Applies
+        uniformly to legitimate bounty hunting too (a criminal genuinely brought
+        to justice also has their case "closed"), which is intentional and not
+        considered a legit-path regression.
+        """
+        current = target.personal_reputation or 0
+        if current > SYSTEM_BOUNTY_CRIMINAL_THRESHOLD:
+            return  # already clear — nothing to restore
+        from src.services.personal_reputation_service import PersonalReputationService
+        delta = (SYSTEM_BOUNTY_CRIMINAL_THRESHOLD + 1) - current
+        PersonalReputationService(self.db).adjust_reputation(
+            target.id, delta, "bounty_collected_rehabilitation"
+        )
+
     @staticmethod
     def is_criminal(player: Player) -> bool:
         """True if this player is wanted by the Federation — i.e. deep enough in
@@ -228,6 +267,56 @@ class BountyService:
         flag_modified(player, "settings")
         return added
 
+    def _load_two_players_for_update(
+        self, id_a: uuid.UUID, id_b: uuid.UUID,
+    ):
+        """WO-ECON-BOUNTY-DUAL-LOCK-ORDER: lock two distinct Player rows
+        for a single operation that touches both (cancel_bounty's
+        placer+target, collect_bounty's collector+target) in a
+        CONSISTENT order — ascending by id — regardless of which one is
+        the semantic "first" party. Mirrors contract_service._load_two_
+        players_for_update exactly (same reasoning, same shape — see that
+        function's own docstring): without this, two concurrent
+        operations that both need to lock the SAME pair of players (e.g.
+        player X cancelling a bounty they placed on player Y, racing
+        player Y's kill of player X collecting a bounty ON player X)
+        could acquire the pair in opposite order and deadlock. BOTH
+        dual-lock sites in this class funnel through this one method, so
+        any two concurrent callers touching the same pair always agree on
+        which row to lock first — including one cancel_bounty call racing
+        one collect_bounty call on the SAME pair, not just two calls to
+        the same method.
+
+        Pure lock-ORDER fix — no credit/refund amount or business logic
+        changes anywhere in this file.
+
+        WO-BOUNTY-COLLECT-FLUSH: every lock query below also carries
+        ``.populate_existing()`` — mirrors contract_service._load_player's
+        ``for_update=True`` branch (its ``_load_two_players_for_update``
+        twin routes ALL three lock cases, including the equal-id one,
+        through that same for_update=True helper). Without it, a caller
+        that already holds an UNLOCKED, identity-mapped copy of one of
+        these players (route-level ``get_current_player`` in cancel_bounty's
+        case) would have this with_for_update() re-read return the STALE
+        cached instance instead of the fresh locked row — a lost-update on
+        any RMW the caller performs after this call returns (cancel_bounty's
+        ``placer.credits += refund``). This is safe everywhere it's called
+        from in this file: cancel_bounty locks BEFORE any mutation (nothing
+        pending to discard), and collect_bounty's caller (attack_player)
+        now flushes its own pending in-memory mutations immediately before
+        calling this helper (see collect_bounty), so populate_existing's
+        re-read picks those up fresh rather than discarding them."""
+        if id_a == id_b:
+            player = self.db.query(Player).filter(Player.id == id_a).populate_existing().with_for_update().first()
+            return player, player
+        if id_a < id_b:
+            player_a = self.db.query(Player).filter(Player.id == id_a).populate_existing().with_for_update().first()
+            player_b = self.db.query(Player).filter(Player.id == id_b).populate_existing().with_for_update().first()
+        else:
+            player_b = self.db.query(Player).filter(Player.id == id_b).populate_existing().with_for_update().first()
+            player_a = self.db.query(Player).filter(Player.id == id_a).populate_existing().with_for_update().first()
+        return player_a, player_b
+
     def place_bounty(
         self, placer_id: uuid.UUID, target_id: uuid.UUID, amount: int
     ) -> Dict[str, Any]:
@@ -238,9 +327,23 @@ class BountyService:
                 "message": f"Minimum bounty is {BOUNTY_MIN_AMOUNT} credits",
             }
 
-        # Lock placer row to prevent concurrent bounty placement race conditions
-        placer = self.db.query(Player).filter(Player.id == placer_id).with_for_update().first()
-        target = self.db.query(Player).filter(Player.id == target_id).first()
+        # Lock placer AND target rows, in ASCENDING-ID order — deterministic,
+        # matching cancel_bounty/collect_bounty's dual-lock convention (see
+        # _load_two_players_for_update) so no two concurrent bounty
+        # operations touching the same pair of players can acquire the pair
+        # in opposite order and deadlock.
+        # WO-MONEY-REREAD-SERVICES: placer was already loaded unlocked by the
+        # route's get_current_player dependency on this same session;
+        # populate_existing() forces its lock to re-read live credits rather
+        # than returning the stale identity-mapped instance. target is
+        # freshly loaded here, so no staleness risk — plain with_for_update()
+        # suffices.
+        if placer_id < target_id:
+            placer = self.db.query(Player).filter(Player.id == placer_id).populate_existing().with_for_update().first()
+            target = self.db.query(Player).filter(Player.id == target_id).with_for_update().first()
+        else:
+            target = self.db.query(Player).filter(Player.id == target_id).with_for_update().first()
+            placer = self.db.query(Player).filter(Player.id == placer_id).populate_existing().with_for_update().first()
 
         if not placer or not target:
             return {"success": False, "message": "Player not found"}
@@ -320,18 +423,11 @@ class BountyService:
         # Lock placer + target rows. Acquire the target lock as well so a
         # concurrent collect_bounty (which locks the target) cannot clear the
         # pot between our read and our remove — the refund stays exact.
-        placer = (
-            self.db.query(Player)
-            .filter(Player.id == placer_id)
-            .with_for_update()
-            .first()
-        )
-        target = (
-            self.db.query(Player)
-            .filter(Player.id == target_id)
-            .with_for_update()
-            .first()
-        )
+        # WO-ECON-BOUNTY-DUAL-LOCK-ORDER: acquired in ascending-id order via
+        # the shared helper (not placer-then-target unconditionally) so this
+        # can never deadlock against collect_bounty locking the SAME pair in
+        # the opposite role order.
+        placer, target = self._load_two_players_for_update(placer_id, target_id)
 
         if not placer or not target:
             return {"success": False, "message": "Player not found"}
@@ -414,9 +510,26 @@ class BountyService:
         self, collector_id: uuid.UUID, target_id: uuid.UUID
     ) -> Dict[str, Any]:
         """Award all bounties on target to collector (called on kill)."""
-        # Lock both rows to prevent double-collection race condition
-        collector = self.db.query(Player).filter(Player.id == collector_id).with_for_update().first()
-        target = self.db.query(Player).filter(Player.id == target_id).with_for_update().first()
+        # WO-BOUNTY-COLLECT-FLUSH: combat_service.attack_player mutates
+        # attacker/defender IN-MEMORY (quantum-wallet loot transfer, drone
+        # counts, ship-destruction swap) before calling this method, on a
+        # session opened autoflush=False (core/database.py:19) — none of
+        # that is persisted yet. _load_two_players_for_update below now
+        # carries .populate_existing() (closes cancel_bounty's stale-placer
+        # lost-update), which would otherwise DISCARD those unflushed
+        # combat mutations on the locked re-read. Flushing here, immediately
+        # before the lock call, persists them first so the populate_existing
+        # re-read picks them up fresh instead of clobbering them. Same
+        # transaction — attack_player still owns the eventual commit — so
+        # this is not a premature commit, only an earlier flush.
+        self.db.flush()
+
+        # Lock both rows to prevent double-collection race condition.
+        # WO-ECON-BOUNTY-DUAL-LOCK-ORDER: acquired in ascending-id order via
+        # the shared helper (not collector-then-target unconditionally) so
+        # this can never deadlock against cancel_bounty locking the SAME
+        # pair in the opposite role order.
+        collector, target = self._load_two_players_for_update(collector_id, target_id)
 
         if not collector or not target:
             return {"success": False, "message": "Player not found", "had_bounty": False}
@@ -478,6 +591,11 @@ class BountyService:
         if total_system > 0:
             # Empty the pot under the target lock — the reset is the dedup.
             self._set_system_bounty_pot(target, 0)
+            # Close the collusion faucet (WO-INTEGRITY-PAIR NH2): a paid-out
+            # system bounty also rehabilitates the target's reputation, so the
+            # same criminal cannot sit at a deeply-negative score and keep
+            # regenerating a pot for a colluding "hunter" to farm forever.
+            self._restore_target_rep_after_system_payout(target)
 
         total = total_player + total_system
 
@@ -596,9 +714,12 @@ class BountyService:
         n = max(1, int(num_participants))
 
         # Lock THIS member's row before any credit mutation (lost-update guard).
+        # .populate_existing() mirrors WO-BOUNTY-COLLECT-FLUSH above: no flush
+        # needed here (nothing pending on hunter before this lock).
         hunter = (
             self.db.query(Player)
             .filter(Player.id == hunter_id)
+            .populate_existing()
             .with_for_update()
             .first()
         )
@@ -647,6 +768,11 @@ class BountyService:
         # its own share above — the reset is the anti-double-collect.
         if claim_player_pot and system_bounties:
             self._set_system_bounty_pot(target, 0)
+            # Close the collusion faucet (WO-INTEGRITY-PAIR NH2), mirrored from
+            # the solo collect_bounty path — see _restore_target_rep_after_
+            # system_payout for the rationale. Fires once per pot-zero event
+            # (the designated member's turn), exactly like the reset itself.
+            self._restore_target_rep_after_system_payout(target)
 
         # --- PLAYER-placed pot: claimed once by the designated member only ------
         player_paid = 0

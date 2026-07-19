@@ -38,7 +38,7 @@ DESIGN — both paths mirror the proven scheduler sweep discipline:
     ``Galaxy.state`` JSONB (oldest galaxy row), advanced in the SAME transaction
     as the citizen grants so they are atomic; canonical-week index so the week
     is never skipped or double-fired across restarts; xact-advisory-lock-gated
-    on ``_ADVISORY_LOCK_KEY`` in its OWN SessionLocal.
+    on ``_WEEKLY_FAUCET_LOCK_KEY`` in its OWN SessionLocal.
   * DAILY path (apply_daily_rep_stipend_for_player): a durable PER-PLAYER
     UTC-date anchor in ``Player.settings`` JSONB advanced in the SAME
     per-player transaction as the credit (the scheduler sweep
@@ -75,6 +75,8 @@ from typing import Any, Dict, List
 from sqlalchemy import text
 from sqlalchemy.orm import object_session
 from sqlalchemy.orm.attributes import flag_modified
+
+from src.services.npc_scheduler_service import _mnemonic_lock_key
 
 logger = logging.getLogger(__name__)
 
@@ -147,9 +149,16 @@ _FAUCET_STATE_KEY: str = "economy_faucet_last_week"
 # value written by paypal_service._activate_galactic_citizenship.
 _CITIZEN_TIER: str = "galactic_citizen"
 
-# Advisory lock key reused from npc_scheduler_service (same literal).
-# Defined here as a named constant so it's legible — the value MUST match.
-_ADVISORY_LOCK_KEY: int = 0x53573231  # 'SW21'
+# Advisory lock key for the weekly faucet sweep. Pre-de-globalization this
+# reused npc_scheduler_service's global _ADVISORY_LOCK_KEY literal (same
+# value, "MUST match" by design) — that meant a long-held main-tick lock
+# could starve the faucet's own sweep. Post-0fe103a de-globalization, every
+# sweep serializes only against another instance of ITSELF, never the main
+# tick or any unrelated sweep — so this key is now deliberately DISTINCT.
+# Derived via npc_scheduler_service's established mnemonic-pack idiom
+# (_mnemonic_lock_key) rather than a hand-picked literal, so it inherits the
+# same byte-for-byte collision-freedom guarantee as every other per-sweep key.
+_WEEKLY_FAUCET_LOCK_KEY: int = _mnemonic_lock_key("WFCT")
 
 # ---------------------------------------------------------------------------
 # Public: canonical week helpers (re-export-friendly, no circular import)
@@ -371,8 +380,8 @@ def run_weekly_faucet_sync() -> Dict[str, int]:
     FULLY SYNCHRONOUS, self-gated on a DURABLE canonical-week anchor in
     Galaxy.state.  Pattern mirrors _run_weekly_decay_sync exactly:
       * Own SessionLocal — never uses an AsyncSession or asyncio.run.
-      * pg_try_advisory_xact_lock on _ADVISORY_LOCK_KEY — second instance
-        skips its tick instead of double-granting.
+      * pg_try_advisory_xact_lock on _WEEKLY_FAUCET_LOCK_KEY — second
+        instance skips its tick instead of double-granting.
       * Anchor read + citizen perks + anchor advance in ONE transaction.
       * Any raise rolls back everything; the week retries next wake.
 
@@ -392,7 +401,7 @@ def run_weekly_faucet_sync() -> Dict[str, int]:
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": _WEEKLY_FAUCET_LOCK_KEY},
         ).scalar()
         if not got_lock:
             return not_due

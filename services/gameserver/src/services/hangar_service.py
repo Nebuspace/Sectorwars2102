@@ -316,6 +316,7 @@ class HangarService:
         docking_ship.status = ShipStatus.DOCKED
         docking_pilot.current_sector_id = carrier.sector_id
         docking_pilot.current_region_id = self._carrier_region(carrier)
+        self._schedule_region_hop(docking_pilot, docking_pilot.current_region_id)
         # A passenger is neither port-docked nor planet-landed.
         docking_pilot.is_docked = False
         docking_pilot.is_landed = False
@@ -372,6 +373,7 @@ class HangarService:
         docked_ship.status = ShipStatus.IN_SPACE
         docked_pilot.current_sector_id = carrier.sector_id
         docked_pilot.current_region_id = self._carrier_region(carrier)
+        self._schedule_region_hop(docked_pilot, docked_pilot.current_region_id)
         docked_pilot.is_docked = False
         docked_pilot.is_landed = False
 
@@ -407,6 +409,7 @@ class HangarService:
         docked_ship.status = ShipStatus.DOCKED
         docked_pilot.current_sector_id = carrier.sector_id
         docked_pilot.current_region_id = carrier_owner.current_region_id
+        self._schedule_region_hop(docked_pilot, docked_pilot.current_region_id)
         docked_pilot.is_docked = True
         docked_pilot.is_landed = False
         docked_pilot.current_port_id = carrier_owner.current_port_id
@@ -445,6 +448,7 @@ class HangarService:
                 if pilot is not None and pilot.current_ship_id == ship.id:
                     pilot.current_sector_id = destination_sector_id
                     pilot.current_region_id = region_id
+                    self._schedule_region_hop(pilot, region_id)
             carried += 1
 
         if carried:
@@ -496,6 +500,8 @@ class HangarService:
                 if pilot is not None and pilot.current_ship_id == ship.id:
                     escape_pod = ship_service._ensure_escape_pod(pilot, destruction_sector_id)
                     pilot.current_ship_id = escape_pod.id
+                    from src.services.ship_service import sync_current_pilot
+                    sync_current_pilot(pilot, escape_pod, old_ship=ship)  # QUEUE-REGISTRY-PILOT-WIRING
                     pilot.current_sector_id = destruction_sector_id
                     pilot.is_docked = False
                     pilot.is_landed = False
@@ -529,3 +535,39 @@ class HangarService:
         effort — None when the Carrier is NPC-owned or the owner is absent."""
         owner = carrier.owner
         return owner.current_region_id if owner is not None else None
+
+    @staticmethod
+    def _schedule_region_hop(pilot: Optional[Player], new_region_id) -> None:
+        """Best-effort WS region-room hop for a hangar-driven pilot relocation
+        (WO-RT-ROOM-HOP). Mirrors movement_service._broadcast_sector_presence /
+        _dispatch_hostile_detected: import inside the function, grab the
+        running loop, schedule connection_manager.update_user_region with
+        loop.create_task (never blocks the sync hangar transaction — these
+        callers commit AFTER returning, not here), and swallow any failure (no
+        loop, no socket) so a quiet socket can never break a dock / undock /
+        disembark / ride-along. No-op when ``pilot`` or its ``user_id`` is
+        unavailable.
+
+        NO-CANON (flagged in report): only the region room is corrected here.
+        Whether these carrier-implied relocations should ALSO hop the WS
+        SECTOR room — which would additionally emit player_entered_sector /
+        player_left_sector frames to the destination sector's other
+        occupants — is left open. A hangared passenger is currently modeled
+        as an inert rider on the Carrier's own move (ships.md:338-340), not an
+        independent arrival, so this hop stays silent on the sector axis."""
+        if pilot is None or pilot.user_id is None:
+            return
+        try:
+            import asyncio
+            from src.services.websocket_service import connection_manager
+
+            loop = asyncio.get_running_loop()
+            loop.create_task(connection_manager.update_user_region(
+                str(pilot.user_id),
+                str(new_region_id) if new_region_id is not None else None,
+            ))
+        except Exception:
+            logger.debug(
+                "Skipped hangar region WS room-hop (no loop or socket)",
+                exc_info=True,
+            )
