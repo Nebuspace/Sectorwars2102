@@ -5,7 +5,9 @@ import websocketService, {
   PlayerMovementMessage,
   SectorPlayersMessage,
   NotificationMessage,
-  ARIAResponseMessage
+  ARIAResponseMessage,
+  ARIANarrationMessage,
+  LinkStatus
 } from '../services/websocket';
 import { useAuth } from './AuthContext';
 
@@ -13,7 +15,12 @@ interface WebSocketContextType {
   // Connection status
   isConnected: boolean;
   connectionStatus: string;
-  
+
+  // Coarse uplink health for chrome (WO-PUX-UPLINK-HUD) — projects the
+  // reconnect state machine in websocketService without exposing every close
+  // code/backoff detail. See LinkStatus in services/websocket.ts.
+  linkStatus: LinkStatus;
+
   // Chat functionality
   chatMessages: ChatMessage[];
   sendChatMessage: (content: string, targetType?: 'sector' | 'team' | 'global') => boolean;
@@ -141,6 +148,68 @@ interface WebSocketContextType {
     ariaText: string | null;
   } | null;
 
+  // Faction reputation ticks (WO-UIPC-REP-MFD-FACTION): bumps once per
+  // inbound `reputation_changed` (personal — faction_service.update_reputation)
+  // or `team_reputation_changed` (team-aggregate — team_reputation_service
+  // ._emit_team_reputation_changed_event) frame. Both fire ONLY on a tier
+  // boundary crossing, never on every point delta, and both already carry
+  // the new standing — REPUTATION MFD patches its matching faction row in
+  // place from lastReputationChanged / lastTeamReputationChanged, no
+  // refetch. The two payloads are kept SEPARATE (not merged into one field):
+  // lastReputationChanged.new_value is the player's OWN standing;
+  // lastTeamReputationChanged.new_value is the TEAM's aggregated standing
+  // with the same faction under its configured average/lowest/leader method
+  // (factions-and-teams.md) — a genuinely different number, never the same
+  // reading, so overwriting one with the other would misreport the player's
+  // actual personal reputation.
+  reputationEventSignal: number;
+  lastReputationChanged: {
+    faction_id: string;
+    faction_name: string;
+    old_level: string;
+    new_level: string;
+    old_value: number;
+    new_value: number;
+    title: string;
+  } | null;
+  lastTeamReputationChanged: {
+    team_id: string;
+    method: string;
+    faction_id: string;
+    faction_name: string;
+    old_level: string;
+    new_level: string;
+    old_value: number;
+    new_value: number;
+  } | null;
+
+  // NPC-initiated combat (WO-CMB-NPC-INITIATED-1 lane D): bumps once per
+  // inbound `npc_combat_initiated` frame (an NPC — police interdiction or
+  // pirate raid — attacks a player; combat_service emits this personal-to-
+  // defender AND sector-broadcast, SAME payload shape both times).
+  // WebSocketContext deliberately does no defender-vs-spectator branching
+  // here (it never imports GameContext, so it has no player id to compare
+  // defender_id against) — it's pure data plumbing. NpcCombatBanner (mounted
+  // in GameLayout, which has both useWebSocket and useGame) reads this
+  // signal/payload and does the actual branch: an unmistakable banner for
+  // the defender, the lighter toast idiom (matching teammate_under_attack)
+  // for everyone else in the sector. combat_id rides along for hand-off
+  // correlation to whatever eventually renders the resolved fight.
+  npcCombatSignal: number;
+  lastNpcCombatInitiated: {
+    npc_id: string;
+    npc_display_name: string;
+    npc_archetype: 'LAW_ENFORCEMENT' | 'HOSTILE_RAIDER';
+    npc_ship_name: string | null;
+    npc_ship_type: string | null;
+    defender_id: string;
+    defender_name: string | null;
+    sector_id: number | null;
+    trigger: string | null;
+    combat_id: string;
+    timestamp: string | null;
+  } | null;
+
   // Connection management
   connect: () => void;
   disconnect: () => void;
@@ -166,6 +235,10 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
   const token = localStorage.getItem('accessToken');
   const [isConnected, setIsConnected] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState('Disconnected');
+  // Seeded from the service's current value (not a hardcoded 'down') so a
+  // provider mounted after the singleton already started connecting reflects
+  // reality on first render instead of a false initial flash.
+  const [linkStatus, setLinkStatus] = useState<LinkStatus>(() => websocketService.getLinkStatus());
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [ariaMessages, setAriaMessages] = useState<Array<{
     id: string;
@@ -179,6 +252,7 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
       [key: string]: any;
     }>;
     suggestions?: string[];
+    isNarration?: true;
   }>>([]);
   const [sectorPlayers, setSectorPlayers] = useState<Array<{
     user_id: string;
@@ -236,6 +310,40 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     rpPerDay: number | null;
     throughputPct: number | null;
     ariaText: string | null;
+  } | null>(null);
+  const [reputationEventSignal, setReputationEventSignal] = useState(0);
+  const [lastReputationChanged, setLastReputationChanged] = useState<{
+    faction_id: string;
+    faction_name: string;
+    old_level: string;
+    new_level: string;
+    old_value: number;
+    new_value: number;
+    title: string;
+  } | null>(null);
+  const [lastTeamReputationChanged, setLastTeamReputationChanged] = useState<{
+    team_id: string;
+    method: string;
+    faction_id: string;
+    faction_name: string;
+    old_level: string;
+    new_level: string;
+    old_value: number;
+    new_value: number;
+  } | null>(null);
+  const [npcCombatSignal, setNpcCombatSignal] = useState(0);
+  const [lastNpcCombatInitiated, setLastNpcCombatInitiated] = useState<{
+    npc_id: string;
+    npc_display_name: string;
+    npc_archetype: 'LAW_ENFORCEMENT' | 'HOSTILE_RAIDER';
+    npc_ship_name: string | null;
+    npc_ship_type: string | null;
+    defender_id: string;
+    defender_name: string | null;
+    sector_id: number | null;
+    trigger: string | null;
+    combat_id: string;
+    timestamp: string | null;
   } | null>(null);
 
   // Keep track of cleanup functions
@@ -340,6 +448,30 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     });
     cleanups.push(connectionHandler);
 
+    // Link-status handler (WO-PUX-UPLINK-HUD) — mirrors the service's own
+    // reconnect-state projection into React state for chrome consumers.
+    const linkStatusHandler = websocketService.onLinkStatus((status) => {
+      setLinkStatus(status);
+    });
+    cleanups.push(linkStatusHandler);
+
+    // Send-failure handler (WO-UI2-FLIGHT-FEEL UX nit) — websocketService.
+    // send() previously only console.warn'd on a dead uplink; every caller
+    // (chat, ARIA, sector-player requests) failed silently from the
+    // player's point of view. One consistent, generic warning toast via the
+    // SAME addNotification idiom every other in-cockpit toast already uses
+    // (mirrors StatusBar's `sb-link` DOWN/RELINK/OK chip, which stays the
+    // persistent ambient signal — this is the one-shot per-action echo of
+    // it, so a click that silently did nothing now visibly says so).
+    const sendFailedHandler = websocketService.onSendFailed(() => {
+      addNotification({
+        title: 'Uplink down',
+        content: "That action wasn't sent — the connection is down.",
+        level: 'warning'
+      });
+    });
+    cleanups.push(sendFailedHandler);
+
     // Chat message handler
     const chatHandler = websocketService.onChatMessage((message) => {
       setChatMessages(prev => [...prev, message].slice(-50)); // Keep last 50 messages
@@ -398,7 +530,9 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
         content: message.data.message,
         // The plain-WS aria_response frame omits a top-level timestamp; without
         // a fallback this stays undefined and any consumer that sorts the feed
-        // by timestamp (AriaTerminalPage) throws on .localeCompare → MFD fault.
+        // by timestamp (the teleprinter, components/aria/Teleprinter.tsx —
+        // ARIA is absorbed into it, there is no standalone ARIA page anymore)
+        // throws on .localeCompare → MFD fault.
         timestamp: message.timestamp ?? new Date().toISOString(),
         conversationId: message.conversation_id,
         confidence: message.data.confidence,
@@ -418,6 +552,26 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
       }
     });
     cleanups.push(ariaHandler);
+
+    // ARIA narration handler (WO-ARIA-NARRATE-KERNEL / ADR-0068). Appends
+    // into the SAME ariaMessages array aria_response populates, so the
+    // teleprinter's (components/aria/Teleprinter.tsx) existing merge-and-
+    // render (ariaMessages + navMessages) picks these up with zero further
+    // wiring — visually attributed to ARIA via type: 'ai', no layout
+    // changes. Server-side emission lands in a later WO; this activates the
+    // moment the message type appears on the wire.
+    const ariaNarrationHandler = websocketService.onARIANarration((message: ARIANarrationMessage) => {
+      const narrationMessage = {
+        id: `narration-${message.event_id}-${message.ts}`,
+        type: 'ai' as const,
+        content: message.line,
+        timestamp: message.ts ?? new Date().toISOString(),
+        isNarration: true as const,
+      };
+
+      setAriaMessages(prev => [...prev, narrationMessage]);
+    });
+    cleanups.push(ariaNarrationHandler);
 
     // Handle other message types
     const generalHandler = (message: WebSocketMessage) => {
@@ -446,7 +600,26 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
             level: 'warning'
           });
           break;
-          
+
+        case 'teammate_under_attack': {
+          // Team defensive notification (factions-and-teams.md "Combat
+          // advantages: Defensive notifications when any teammate is
+          // attacked" — combat_service._emit_teammate_under_attack).
+          // Toast only, never a modal (matches the other combat/chat frames
+          // in this handler) — a heads-up, not an interrupt.
+          const defenderName = String(message.defender_name || 'A teammate');
+          const sectorId = message.sector_id;
+          addNotification({
+            title: 'Teammate Under Attack',
+            content: sectorId !== undefined && sectorId !== null
+              ? `${defenderName} is under attack in sector ${sectorId}`
+              : `${defenderName} is under attack`,
+            level: 'warning'
+          });
+          break;
+        }
+
+
         case 'new_message': {
           // Player-to-player hail (message_service → notification_service).
           // The backend resolves the canon delivery surfaces by priority
@@ -638,6 +811,65 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           break;
         }
 
+        case 'reputation_changed': {
+          // Personal per-faction tier change (see ReputationChangedMessage in
+          // services/websocket.ts). Already carries the new standing —
+          // REPUTATION MFD patches its row from lastReputationChanged, no refetch.
+          setLastReputationChanged({
+            faction_id: String(message.faction_id || ''),
+            faction_name: String(message.faction_name || ''),
+            old_level: String(message.old_level || ''),
+            new_level: String(message.new_level || ''),
+            old_value: typeof message.old_value === 'number' ? message.old_value : 0,
+            new_value: typeof message.new_value === 'number' ? message.new_value : 0,
+            title: String(message.title || '')
+          });
+          setReputationEventSignal(prev => prev + 1);
+          break;
+        }
+
+        case 'team_reputation_changed': {
+          // Team-AGGREGATE per-faction tier change (see
+          // TeamReputationChangedMessage in services/websocket.ts) — a
+          // DIFFERENT number from the player's own standing above; kept in
+          // its own field, never merged into lastReputationChanged.
+          setLastTeamReputationChanged({
+            team_id: String(message.team_id || ''),
+            method: String(message.method || ''),
+            faction_id: String(message.faction_id || ''),
+            faction_name: String(message.faction_name || ''),
+            old_level: String(message.old_level || ''),
+            new_level: String(message.new_level || ''),
+            old_value: typeof message.old_value === 'number' ? message.old_value : 0,
+            new_value: typeof message.new_value === 'number' ? message.new_value : 0
+          });
+          setReputationEventSignal(prev => prev + 1);
+          break;
+        }
+
+        case 'npc_combat_initiated': {
+          // WO-CMB-NPC-INITIATED-1 lane D: see the field doc-comment on
+          // npcCombatSignal above for why this is plumbing-only (no toast/
+          // banner decision here — NpcCombatBanner does that).
+          const archetype: 'LAW_ENFORCEMENT' | 'HOSTILE_RAIDER' =
+            message.npc_archetype === 'LAW_ENFORCEMENT' ? 'LAW_ENFORCEMENT' : 'HOSTILE_RAIDER';
+          setLastNpcCombatInitiated({
+            npc_id: String(message.npc_id || ''),
+            npc_display_name: String(message.npc_display_name || 'An NPC vessel'),
+            npc_archetype: archetype,
+            npc_ship_name: message.npc_ship_name != null ? String(message.npc_ship_name) : null,
+            npc_ship_type: message.npc_ship_type != null ? String(message.npc_ship_type) : null,
+            defender_id: String(message.defender_id || ''),
+            defender_name: message.defender_name != null ? String(message.defender_name) : null,
+            sector_id: typeof message.sector_id === 'number' ? message.sector_id : null,
+            trigger: message.trigger != null ? String(message.trigger) : null,
+            combat_id: String(message.combat_id || ''),
+            timestamp: message.timestamp != null ? String(message.timestamp) : null
+          });
+          setNpcCombatSignal(prev => prev + 1);
+          break;
+        }
+
         case 'admin_broadcast':
           addNotification({
             title: message.title || 'System Message',
@@ -665,8 +897,12 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
         default:
           // Only log truly unhandled message types, not ones handled by specific handlers
           // (aria_response is consumed by the dedicated ariaHandler above; the
-          // generalHandler still sees it, so exclude it from the noise warning.)
-          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status'].includes(message.type)) {
+          // generalHandler still sees it, so exclude it from the noise warning.
+          // aria_narration is consumed by ariaNarrationHandler the same way.
+          // send_failed is consumed by sendFailedHandler above — it's a
+          // client-local synthetic event (websocket.ts's own send()), not
+          // an unhandled server frame.)
+          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'aria_narration', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'reputation_changed', 'team_reputation_changed', 'npc_combat_initiated', 'send_failed'].includes(message.type)) {
             console.warn('WebSocket: Unhandled message type:', message.type);
           }
       }
@@ -711,7 +947,8 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     // Connection status
     isConnected,
     connectionStatus,
-    
+    linkStatus,
+
     // Chat functionality
     chatMessages,
     sendChatMessage,
@@ -753,6 +990,15 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     researchEventSignal,
     lastContractOffer,
     lastGovernorStatus,
+
+    // Faction reputation ticks (reputation_changed / team_reputation_changed — WO-UIPC-REP-MFD-FACTION)
+    reputationEventSignal,
+    lastReputationChanged,
+    lastTeamReputationChanged,
+
+    // NPC-initiated combat (npc_combat_initiated — WO-CMB-NPC-INITIATED-1 lane D)
+    npcCombatSignal,
+    lastNpcCombatInitiated,
 
     // Connection management
     connect,

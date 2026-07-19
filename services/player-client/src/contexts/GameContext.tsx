@@ -1,6 +1,8 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
 import apiClient from '../services/apiClient';
+import websocketService from '../services/websocket';
+import { ariaFeed } from '../components/mfd/ariaFeedStore';
 
 // Types for game state
 export interface Ship {
@@ -41,6 +43,11 @@ export interface Sector {
   type: string;
   region_id?: string | null;
   region_name?: string | null;
+  /** RegionType enum value ("terran_space"/"central_nexus"/"player_owned",
+   *  models/region.py) — live on SectorResponse since b879da38. Drives the
+   *  glass locrow's region-type chip via formatRegionType (WO-T1D-LANEB);
+   *  region_name stays the dev-seeded label for other readouts. */
+  region_type?: string | null;
   hazard_level: number;
   radiation_level: number;
   resources: Record<string, any>;
@@ -48,6 +55,10 @@ export interface Sector {
   special_features?: string[];
   special_formations?: SpecialFormationSummary[];
   description?: string;
+  /** Galaxy Euclidean coords (same frame as Quantum Jump / NAV 3D). */
+  x_coord?: number | null;
+  y_coord?: number | null;
+  z_coord?: number | null;
 }
 
 export interface Planet {
@@ -111,6 +122,10 @@ export interface MoveOption {
   region_name?: string | null;
   turn_cost: number;
   can_afford: boolean;
+  /** Neighbor galaxy coords for spatial NAV layout (from available-moves). */
+  x_coord?: number | null;
+  y_coord?: number | null;
+  z_coord?: number | null;
   tunnel_type?: string;
   stability?: number;
   // Special formations present in (or anchored at) this neighbour sector,
@@ -136,6 +151,13 @@ export interface MarketInfo {
     station_buys: boolean;
     station_sells: boolean;
     last_updated?: string;
+    /** Player-trade demand signal (ADR-0062 E-V4). */
+    player_demand_score?: number;
+    /** WO-ECON-MKT-TIMESERIES: computed on every reprice
+     *  (TradingService.update_market_prices) — positive = rising fraction. */
+    price_trend?: number;
+    previous_buy_price?: number | null;
+    previous_sell_price?: number | null;
   }>;
   port: {
     id: string;
@@ -408,7 +430,11 @@ interface GameContextType {
   exploreCurrentLocation: () => Promise<void>;
 }
 
-const GameContext = createContext<GameContextType | undefined>(undefined);
+// Exported (additive, zero-behavior-change) so a dev-only harness can supply
+// a mocked value via <GameContext.Provider> — see LabShell.tsx
+// (WO-UI0-PERSISTENT-SHELL lane B). No existing consumer is affected; every
+// other usage still goes through useGame() below.
+export const GameContext = createContext<GameContextType | undefined>(undefined);
 
 export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const { user, isAuthenticated } = useAuth();
@@ -677,7 +703,11 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setError(null);
     
     try {
-      const response = await api.post(`/api/v1/player/move/${sectorId}`);
+      // Hard ceiling so a stuck FOR UPDATE / wedged gameserver cannot leave
+      // the cockpit in "warp bubble forever" with no sector change.
+      const response = await api.post(`/api/v1/player/move/${sectorId}`, null, {
+        timeout: 20000,
+      });
 
       // Update player state after movement
       await refreshPlayerState();
@@ -689,7 +719,11 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return response.data;
     } catch (error: any) {
       console.error('Error moving to sector:', error);
-      setError(error.response?.data?.message || 'Failed to move to sector');
+      const msg =
+        error?.code === 'ECONNABORTED'
+          ? 'Move timed out — server busy. Try again.'
+          : (error.response?.data?.detail || error.response?.data?.message || 'Failed to move to sector');
+      setError(msg);
       throw error;
     }
   };
@@ -1613,6 +1647,27 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       setQuantumStatus(null);
     }
   }, [currentShip?.id, currentShip?.type, playerState?.turns, playerState?.current_sector_id]);
+
+  // Live quantum-shard harvest push (quantum.py's _emit_quantum_harvest,
+  // canon Resolution step 6 — "client UI updates without polling"). Keeps
+  // the shard wallet in lockstep with the server the instant a harvest
+  // lands, and narrates it into the ARIA feed store so a pilot watching a
+  // different MFD page still sees it land. Payload fields beyond `type` are
+  // a builder proposal pending DECISIONS ratification, so every field is
+  // read defensively.
+  useEffect(() => {
+    if (!user) return;
+
+    const unsubscribe = websocketService.onQuantumHarvest((message) => {
+      refreshQuantumStatus();
+
+      const shards = typeof message?.shards === 'number' ? message.shards : 0;
+      const critSuffix = message?.crit ? ' — critical!' : '';
+      ariaFeed.appendNav(`Harvested ${shards} quantum shard${shards === 1 ? '' : 's'}${critSuffix}.`);
+    });
+
+    return unsubscribe;
+  }, [user]);
 
   // Hyperspace echo scan along a bearing (spends turns; far band spends a shard)
   const quantumScan = async (payload: QuantumBearing): Promise<QuantumScanResult> => {

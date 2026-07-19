@@ -85,6 +85,101 @@ export interface ARIAResponseMessage {
   signature?: string;
 }
 
+// ARIA narration push (WO-ARIA-NARRATE-KERNEL / ADR-0068). Server-side
+// delivery (the drain_due_lines → WS push wiring) lands in a later WO --
+// this handler is the client-side seam, ready to activate the moment the
+// server starts emitting the type. Shape matches
+// aria_narration_service.NarrationLine.to_payload() exactly.
+export interface ARIANarrationMessage {
+  type: 'aria_narration';
+  event_id: string;
+  line: string;
+  priority: number;
+  ts: string;
+}
+
+// Quantum-shard harvest push (quantum.py's _emit_quantum_harvest, sent to the
+// harvesting player's own socket only, post-commit). Canon Resolution step 6:
+// "Emit a real-time event on the WebSocket bus so the client UI updates
+// without polling". Payload shape is a builder proposal pending DECISIONS
+// ratification — consumers should treat every field but `type` as optional.
+export interface QuantumHarvestMessage {
+  type: 'quantum_harvest';
+  sector_id: number;
+  nebula_type: string;
+  shards: number;
+  crit: boolean;
+  timestamp: string;
+}
+
+// Personal per-faction reputation TIER change (faction_service
+// .update_reputation → manager.send_personal_message). Fires ONLY when
+// current_level actually crosses a boundary, never on every point delta —
+// new_value/new_level are already the post-change standing, so a consumer
+// can patch its row in place without a refetch. No dedicated on* handler:
+// WebSocketContext's generalHandler is the only consumer (same shape as
+// npc_combat_initiated / planetary_update below it).
+export interface ReputationChangedMessage {
+  type: 'reputation_changed';
+  faction_id: string;
+  faction_name: string;
+  old_level: string;
+  new_level: string;
+  old_value: number;
+  new_value: number;
+  title: string;
+}
+
+// Team-AGGREGATE per-faction reputation tier change
+// (team_reputation_service.recalculate_team →
+// _emit_team_reputation_changed_event, broadcast to the team room via
+// connection_manager.broadcast_to_team — every member's socket gets it, not
+// just the actor's). new_value/new_level are the TEAM's aggregated standing
+// under its configured method (average / lowest / leader —
+// factions-and-teams.md "Team reputation with factions"), a DIFFERENT
+// number from the receiving player's own reputation_changed — consumers
+// must keep it a separate field, never merge it into the personal value.
+export interface TeamReputationChangedMessage {
+  type: 'team_reputation_changed';
+  team_id: string;
+  method: string;
+  timestamp: string;
+  faction_id: string;
+  faction_name: string;
+  old_value: number;
+  new_value: number;
+  old_level: string;
+  new_level: string;
+}
+
+// Coarse link-status projection of the reconnect state machine below, for
+// chrome that needs "is the uplink healthy" without tracking every close
+// code/backoff detail itself (WO-PUX-UPLINK-HUD). 'reconnecting' covers both
+// the initial connect and every backoff/refresh retry; 'down' is reserved for
+// states where nothing is actively retrying (terminal closes, exhausted
+// backoff, or no token).
+export type LinkStatus = 'up' | 'reconnecting' | 'down';
+
+export interface LinkStatusMessage {
+  type: 'link_status';
+  status: LinkStatus;
+  timestamp: string;
+}
+
+// A client-LOCAL synthetic event (never sent over the wire) — send() emits
+// this through the SAME notifyHandlers pub/sub every server-pushed message
+// type above uses, so any caller (chat, ARIA, sector-player requests, and
+// any future flight-feel action) that attempts a send while disconnected
+// gets ONE consistent, generic surface instead of the previous
+// `console.warn`-only "WebSocket: Cannot send message - not connected"
+// silent failure (WO-UI2-FLIGHT-FEEL UX nit — WebSocketContext.tsx
+// subscribes and turns this into a visible toast via addNotification).
+export interface SendFailedMessage {
+  type: 'send_failed';
+  messageType: string;
+  timestamp: string;
+}
+
 type MessageHandler = (message: WebSocketMessage) => void;
 
 class WebSocketService {
@@ -100,7 +195,10 @@ class WebSocketService {
   private shouldReconnect = true;
   // Whether the CURRENT socket attempt ever reached onopen. A close without an
   // open is a handshake/auth rejection (an expired token is rejected pre-accept
-  // and surfaces to the browser as code 1006, NOT the server's 4001).
+  // and surfaces to the browser as code 1006, NOT the server's 4001). A
+  // post-accept 4001 is always this socket's own connection having reached
+  // onopen first — including the eviction case (reason 'superseded'), which
+  // is handled separately from auth failure in the onclose handler below.
   private hadOpen = false;
   // Guards against stacking multiple refresh-then-reconnect cycles at once.
   private refreshingAuth = false;
@@ -108,6 +206,9 @@ class WebSocketService {
   // token isn't the problem (transport), so fall back to plain backoff instead
   // of hammering the refresh endpoint. Reset on a successful open.
   private didAuthRefresh = false;
+  // Coarse status for chrome (see LinkStatus above). Starts 'down' — nothing
+  // has attempted a connection yet.
+  private linkStatus: LinkStatus = 'down';
 
   constructor() {
     this.setupEventListeners();
@@ -184,6 +285,7 @@ class WebSocketService {
     const token = getAccessToken() || this.token;
     if (!token) {
       console.error('WebSocket: No authentication token available');
+      this.setLinkStatus('down');
       return;
     }
     this.token = token;
@@ -193,6 +295,9 @@ class WebSocketService {
     }
 
     this.hadOpen = false;
+    // Every path that actually attempts a socket (first connect AND every
+    // backoff retry) funnels through here, so this single call covers both.
+    this.setLinkStatus('reconnecting');
     try {
       const wsUrl = `${this.getWebSocketUrl()}?token=${encodeURIComponent(token)}`;
       this.ws = new WebSocket(wsUrl);
@@ -213,7 +318,8 @@ class WebSocketService {
       this.reconnectAttempts = 0;
       this.reconnectDelay = 1000;
       this.startHeartbeat();
-      
+      this.setLinkStatus('up');
+
       // Notify handlers about connection
       this.notifyHandlers({
         type: 'connection_status',
@@ -244,12 +350,37 @@ class WebSocketService {
         timestamp: new Date().toISOString()
       });
 
-      if (!this.shouldReconnect) return;
+      if (!this.shouldReconnect) {
+        this.setLinkStatus('down');
+        return;
+      }
       // 4002 = player profile not found — not retryable.
-      if (event.code === 4002) return;
+      if (event.code === 4002) {
+        this.setLinkStatus('down');
+        return;
+      }
+      // 4001/'superseded' = a newer tab/device connected as this same user
+      // and evicted this socket (WO-RT-EVICTION-SUPERSEDE). This is NOT an
+      // auth failure — reconnecting here would just evict the new tab in
+      // turn, ping-ponging the eviction forever. Stop the retry loop and
+      // surface a "connected elsewhere" state instead.
+      if (event.code === 4001 && event.reason === 'superseded') {
+        this.shouldReconnect = false;
+        this.setLinkStatus('down');
+        this.notifyHandlers({
+          type: 'connection_superseded',
+          message: 'Connected in another tab or device',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+      // Every remaining branch below retries in some form (refresh-then-retry
+      // or plain backoff), so the link is actively being re-established.
+      this.setLinkStatus('reconnecting');
       // Auth failure surfaces two ways: the server's explicit 4001 (post-accept
-      // close) OR, when an expired token is rejected before accept, a handshake
-      // that never opened (browser code 1006). In both cases the token is the
+      // close, reason !== 'superseded' — see the eviction branch above) OR,
+      // when an expired token is rejected before accept, a handshake that
+      // never opened (browser code 1006). In both cases the token is the
       // suspect, so refresh it before retrying instead of looping on a dead
       // token ("WebSocket: Connection error" every interval). A clean drop
       // AFTER a successful open (network blip) just reconnects.
@@ -276,6 +407,10 @@ class WebSocketService {
   private scheduleReconnect(): void {
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       console.error('WebSocket: Max reconnection attempts reached');
+      // No timer is armed past this point (only the online/visibility
+      // listeners can restart the loop), so this is a genuine "down", not a
+      // still-retrying "reconnecting".
+      this.setLinkStatus('down');
       this.notifyHandlers({
         type: 'connection_failed',
         message: 'Failed to reconnect after maximum attempts',
@@ -333,6 +468,7 @@ class WebSocketService {
   private endSession(): void {
     this.shouldReconnect = false;
     this.token = null;
+    this.setLinkStatus('down');
     this.notifyHandlers({
       type: 'session_expired',
       message: 'Session expired — please sign in again',
@@ -361,6 +497,7 @@ class WebSocketService {
   send(message: WebSocketMessage): boolean {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       console.warn('WebSocket: Cannot send message - not connected');
+      this.notifySendFailed(message.type);
       return false;
     }
 
@@ -369,8 +506,27 @@ class WebSocketService {
       return true;
     } catch (error) {
       console.error('WebSocket: Failed to send message', error);
+      this.notifySendFailed(message.type);
       return false;
     }
+  }
+
+  private notifySendFailed(messageType: string): void {
+    this.notifyHandlers({
+      type: 'send_failed',
+      messageType,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  onSendFailed(callback: (messageType: string) => void): () => void {
+    const handler = (message: WebSocketMessage) => {
+      if (message.type === 'send_failed') {
+        callback((message as SendFailedMessage).messageType);
+      }
+    };
+    this.addMessageHandler(handler);
+    return () => this.removeMessageHandler(handler);
   }
 
   // Chat methods
@@ -440,6 +596,34 @@ class WebSocketService {
     this.messageHandlers.delete(handler);
   }
 
+  // Records the new status and emits a link_status frame ONLY on an actual
+  // change, so repeated calls from idempotent paths (e.g. openSocket()'s
+  // already-CONNECTING guard is bypassed above, but disconnect() racing an
+  // onclose from the same close() is common) never double-fire.
+  private setLinkStatus(status: LinkStatus): void {
+    if (this.linkStatus === status) return;
+    this.linkStatus = status;
+    this.notifyHandlers({
+      type: 'link_status',
+      status,
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  getLinkStatus(): LinkStatus {
+    return this.linkStatus;
+  }
+
+  onLinkStatus(callback: (status: LinkStatus) => void): () => void {
+    const handler = (message: WebSocketMessage) => {
+      if (message.type === 'link_status') {
+        callback((message as LinkStatusMessage).status);
+      }
+    };
+    this.addMessageHandler(handler);
+    return () => this.removeMessageHandler(handler);
+  }
+
   private notifyHandlers(message: WebSocketMessage): void {
     this.messageHandlers.forEach(handler => {
       try {
@@ -467,6 +651,11 @@ class WebSocketService {
     }
 
     this.isConnected = false;
+    // Set synchronously rather than relying solely on the close event above:
+    // disconnect() can be called while a backoff TIMER is pending and no
+    // live ws exists (already cleared above), in which case no close event
+    // ever fires to flip the status itself.
+    this.setLinkStatus('down');
   }
 
   getConnectionStatus(): {
@@ -548,6 +737,28 @@ class WebSocketService {
     const handler = (message: WebSocketMessage) => {
       if (message.type === 'aria_response') {
         callback(message as ARIAResponseMessage);
+      }
+    };
+    this.addMessageHandler(handler);
+    return () => this.removeMessageHandler(handler);
+  }
+
+  // ARIA narration push (WO-ARIA-NARRATE-KERNEL) — see ARIANarrationMessage above.
+  onARIANarration(callback: (message: ARIANarrationMessage) => void): () => void {
+    const handler = (message: WebSocketMessage) => {
+      if (message.type === 'aria_narration') {
+        callback(message as ARIANarrationMessage);
+      }
+    };
+    this.addMessageHandler(handler);
+    return () => this.removeMessageHandler(handler);
+  }
+
+  // Quantum-shard harvest push (see QuantumHarvestMessage above)
+  onQuantumHarvest(callback: (message: QuantumHarvestMessage) => void): () => void {
+    const handler = (message: WebSocketMessage) => {
+      if (message.type === 'quantum_harvest') {
+        callback(message as QuantumHarvestMessage);
       }
     };
     this.addMessageHandler(handler);

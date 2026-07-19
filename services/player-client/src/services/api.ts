@@ -31,10 +31,46 @@ async function apiRequest(
       // `detail` (a string; 422 validation makes it an array — skip those), but
       // this gameserver's global error handler wraps errors as `{message}`.
       // Prefer a string `detail`, fall back to `message`, then a generic code.
-      const msg = data && typeof data === 'object'
-        ? (typeof data.detail === 'string' ? data.detail : undefined) || data.message
-        : undefined;
-      throw new Error(msg || `API Error: ${error.response.status}`);
+      //
+      // Some routes (e.g. POST /regions/{id}/policies validation) reject with
+      // a STRUCTURED `detail: {code, errors: string[]}` instead of a plain
+      // string. Surface that errors array on the thrown Error too (as
+      // `.errors`) so a call site that needs per-field detail can read it,
+      // while `.message` still gets a sane joined fallback for every other
+      // (non-field-aware) caller.
+      //
+      // GET /regions/my-region (no region_id) 400s a 2+-region owner with
+      // `detail: {code: "ERR_AMBIGUOUS_REGION_OWNER", regions: [...]}`
+      // instead of guessing one (WO-DRIFT-admin-gov-multiregion-owner-500).
+      // Surface `code`/`regions` the same way, generalized beyond that one
+      // shape so any future structured-detail route gets them for free.
+      let msg: string | undefined;
+      let errors: string[] | undefined;
+      let code: string | undefined;
+      let regions: Array<{ id: string; name: string; display_name?: string }> | undefined;
+      if (data && typeof data === 'object') {
+        if (typeof data.detail === 'string') {
+          msg = data.detail;
+        } else if (data.detail && typeof data.detail === 'object') {
+          if (Array.isArray(data.detail.errors)) {
+            errors = data.detail.errors;
+            msg = errors!.join('; ');
+          }
+          if (typeof data.detail.code === 'string') {
+            code = data.detail.code;
+          }
+          if (Array.isArray(data.detail.regions)) {
+            regions = data.detail.regions;
+          }
+          msg = msg || data.detail.message;
+        }
+        msg = msg || data.message;
+      }
+      const err = new Error(msg || `API Error: ${error.response.status}`);
+      if (errors) (err as any).errors = errors;
+      if (code) (err as any).code = code;
+      if (regions) (err as any).regions = regions;
+      throw err;
     }
     // Network-level failure (no response) – rethrow like fetch would.
     throw error;
@@ -69,6 +105,35 @@ export const combatAPI = {
     apiRequest(`/api/v1/drones/${deploymentId}/recall`, {
       method: 'DELETE'
     })
+};
+
+// Grey-flag PvP status (WO-BL). Mirrors player_combat.py's
+// GreyStatusResponse exactly — a temporary "open season" mark earned by
+// aggressing on a lawful target (attacking a player -> 1h, a station -> 1
+// day). While grey, qualifying players may attack this player with no
+// reputation penalty. Clears at greyUntil or by paying clearFineCredits early.
+export interface GreyStatus {
+  isGrey: boolean;
+  kind: 'player_attack' | 'station_attack' | null;
+  greyUntil: string | null;
+  remainingSeconds: number;
+  clearFineCredits: number | null;
+}
+
+// Mirrors player_combat.py's GreyClearFineResponse. success=false (with a
+// reason in `message`) covers: not grey, already expired, insufficient
+// credits -- credits and grey status are left untouched in every failure case.
+export interface GreyClearFineResult {
+  success: boolean;
+  message: string;
+  finePaid: number | null;
+  creditsRemaining: number | null;
+}
+
+export const greyStatusAPI = {
+  getStatus: (): Promise<GreyStatus> => apiRequest('/api/v1/combat/grey-status'),
+  clearFine: (): Promise<GreyClearFineResult> =>
+    apiRequest('/api/v1/combat/grey-status/clear-fine', { method: 'POST' }),
 };
 
 // Planetary Management APIs
@@ -118,6 +183,17 @@ export const planetaryAPI = {
       method: 'POST',
       body: JSON.stringify({ sectorId, planetName, tier, registration })
     }),
+
+  // Server-authoritative quote for a (tier, registration) pair, priced for
+  // the current player's reputation (WO-API-B2). Read-only — makes no
+  // credit/reputation/device change. Returns exactly what deployGenesis
+  // would charge for the same inputs, since both are sourced from the same
+  // server-side cost function.
+  getGenesisQuote: (
+    tier: 'basic' | 'enhanced' | 'advanced',
+    registration: 'clandestine' | 'registered' | 'chartered' = 'registered'
+  ) =>
+    apiRequest(`/api/v1/genesis/quote?tier=${tier}&registration=${registration}`),
 
   specializePlanet: (planetId: string, specialization: string) =>
     apiRequest(`/api/v1/planets/${planetId}/specialize`, {
@@ -419,6 +495,10 @@ export const shipAPI = {
   getShips: () =>
     apiRequest('/api/v1/ships'), // Endpoint may vary
 
+  /** Current piloted hull (cargo hold, genesis, etc.) — SpaceDock's live source. */
+  getCurrentShip: () =>
+    apiRequest('/api/v1/player/current-ship'),
+
   getShip: (shipId: string) =>
     apiRequest(`/api/v1/ships/${shipId}`),
 
@@ -593,6 +673,11 @@ export const terraformAPI = {
 //     gate + cr sink via the existing start_contract). { offerId?, kind?, planetId }.
 //   cancelContract → cancel an active/accepted contract (existing cancel_contract;
 //     0% cr on active, 0% RP — the anti-arbitrage refund rule). { contractId }.
+//   unlockNode → spend banked RP on a tech_tree node (WO-PLN-UNLOCK-1). Response
+//     is minimal ({ success, nodeId, bankedRp, unlockedNodes, message }); the
+//     caller re-fetches getCockpit() for the refreshed per-node techTree state
+//     (an additive field on the cockpit payload above), same as the existing
+//     post-startContract refresh pattern.
 export const researchCockpitAPI = {
   getCockpit: () =>
     apiRequest('/api/v1/research/cockpit'),
@@ -611,6 +696,11 @@ export const researchCockpitAPI = {
     apiRequest('/api/v1/research/contracts/cancel', {
       method: 'POST',
       body: JSON.stringify({ contractId }),
+    }),
+
+  unlockNode: (nodeId: string) =>
+    apiRequest(`/api/v1/research/tech/${nodeId}/unlock`, {
+      method: 'POST',
     }),
 };
 
@@ -691,6 +781,143 @@ export const registryAPI = {
     })
 };
 
+// Resource Registry — read-only catalog of the 13 canon resources
+// (WO-ARCH-RES-1-KERNEL / WO-ARCH-RES-3-FE-CATALOG). Consumed through
+// services/resourceCatalog.ts, which fetches + caches this once per session.
+export const resourceAPI = {
+  list: () => apiRequest('/api/v1/resources'),
+};
+
+// Navigation — the cockpit NAV CHART's known-graph surface (WO-PUX-NAVCHART).
+// GET /api/v1/nav/chart returns the player's KNOWN sectors (visited ∪
+// corp-shared ∪ current — course-plotting.md), the warp/tunnel edges between
+// them, and id-only frontier stubs (each linked to the known sector that
+// surfaced it, via `from` -- WO-NAV-CHART-FRONTIER-EDGES) for adjacent-but-
+// unknown sectors. Course plotting/engagement itself stays on
+// AutopilotContext's own apiClient.post call to POST /api/v1/nav/plot
+// (unchanged by this WO).
+export interface NavChartSector {
+  sector_id: number;
+  name: string;
+  type: string;
+  x: number;
+  y: number;
+  z: number;
+  visited: boolean;
+  current: boolean;
+}
+
+export interface NavChartEdge {
+  from: number;
+  to: number;
+  kind: 'warp' | 'tunnel';
+}
+
+// A frontier stub carries only the id of the unexplored sector plus the id
+// of the ONE known sector that surfaced it (`from`) -- never name/type/
+// coordinates (WO-NAV-CHART-FRONTIER-EDGES). `from` exists purely so a
+// client can attach the stub to the known graph; it carries no information
+// about the frontier sector itself.
+export interface NavChartFrontier {
+  id: number;
+  from: number;
+}
+
+export interface NavChartResponse {
+  sectors: NavChartSector[];
+  edges: NavChartEdge[];
+  frontier: NavChartFrontier[];
+}
+
+// GET /api/v1/nav/threat — the cockpit TACTICAL deck-monitor's known-graph
+// STATIC threat rollup (WO-UI2-TACTICAL-MONITOR). One entry per sector in
+// the player's known graph (the exact node-set /nav/chart's `sectors`
+// covers — frontier stubs excluded), each carrying a 0-~86 danger score,
+// a coarse band, and the scored inputs that produced it. STATIC-only by
+// security ruling — this never reflects live remote sector composition
+// (that stays client-side, from currentSector.players_present).
+export type NavThreatBand = 'CLEAR' | 'CAUTION' | 'HOSTILE' | 'LETHAL';
+
+export interface NavThreatContributor {
+  input: 'low_security' | 'hazard' | 'pirate_pressure' | 'recent_combat' | string;
+  points: number;
+}
+
+export interface NavThreatEntry {
+  sector_id: number;
+  score: number;
+  band: NavThreatBand;
+  contributors: NavThreatContributor[];
+}
+
+export const navAPI = {
+  // `bounded` (WO-NAV-REACH-BACKEND, default false) opts into the server's
+  // scanner-depth-bounded chart (CHART_BOUNDED_DEPTH_CEILING=12) — sectors
+  // beyond the bound are demoted to frontier stubs instead of full nodes.
+  // Omitted/false preserves today's exact unbounded query string
+  // (byte-identical), so any existing caller that doesn't pass it (e.g.
+  // GalaxyMap.tsx's standalone fetch) is untouched (WO-NAV-CHART-POLISH
+  // sub-part e).
+  getChart: (bounded?: boolean): Promise<NavChartResponse> =>
+    apiRequest(`/api/v1/nav/chart${bounded ? '?bounded=true' : ''}`),
+  getThreat: (): Promise<NavThreatEntry[]> =>
+    apiRequest('/api/v1/nav/threat'),
+};
+
+// Sector contents — existing read-only endpoints (services/gameserver/src/
+// api/routes/sectors.py), previously unconsumed by the player client. Scoped
+// to the player's CURRENT region server-side (pre-existing constraint,
+// unchanged by WO-PUX-NAVCHART) — a known sector in a different region 404s;
+// callers should treat that as "contents unknown", not a hard failure.
+
+// WO-CMB-SALVAGE-LOOP-1: one wreck row from GET /sectors/{id}/wrecks.
+// Field shape mirrors routes/sectors.py's WreckResponse exactly — no
+// damage_type key (the column does not exist on CargoWreck, NO-CANON).
+export interface SectorWreck {
+  id: string;
+  original_owner_id: string | null;
+  original_owner_name: string | null;
+  destroyed_ship_type: string;
+  cause: string;
+  created_at: string;
+  age_seconds: number;
+  cargo: Record<string, number>;
+  // Live preview only — can flip true->false while a page is open as the
+  // grace window elapses; treat as advisory, not a lock-in (server re-checks
+  // at salvage time regardless of what this said when the list loaded).
+  would_flag_suspect: boolean;
+}
+
+// Mirrors routes/sectors.py's SalvageResponse.
+export interface SalvageResult {
+  salvaged: Record<string, number>;
+  suspect_flagged: boolean;
+  wreck_cleared: boolean;
+  turns_spent: number;
+}
+
+export const sectorAPI = {
+  getPlanets: (sectorId: number) => apiRequest(`/api/v1/sectors/${sectorId}/planets`),
+  getStations: (sectorId: number) => apiRequest(`/api/v1/sectors/${sectorId}/stations`),
+
+  // List salvageable wrecks in a sector (numeric, cockpit-native sector id —
+  // the server resolves it to the sector's UUID internally).
+  sectorWrecks: (sectorId: number): Promise<SectorWreck[]> =>
+    apiRequest(`/api/v1/sectors/${sectorId}/wrecks`),
+
+  // Salvage a wreck. `quantity` omitted = take as much as fits (server
+  // default); a positive int requests a specific amount, further capped
+  // server-side by free cargo hold and available turns (whichever is
+  // tightest) — 1 turn per 100 units taken, rounded up.
+  salvageWreck: (wreckId: string, quantity?: number): Promise<SalvageResult> =>
+    apiRequest('/api/v1/sectors/salvage', {
+      method: 'POST',
+      body: JSON.stringify(
+        quantity === undefined ? { wreck_id: wreckId } : { wreck_id: wreckId, quantity }
+      ),
+    }),
+};
+
 // Export all APIs
 // Regional governance APIs (member-facing). The owner-scoped /my-region/*
 // endpoints live in the admin surface; these are the player-facing reads/writes.
@@ -705,6 +932,67 @@ export const governanceAPI = {
     apiRequest(`/api/v1/regions/${regionId}/citizenship/colony-claim`, {
       method: 'POST',
     }),
+
+  // Member-scoped discovery (WO-REGOV-CITIZEN-API — any region member, not
+  // just the owner, may list). 403 ERR_NOT_A_MEMBER / 404 propagate as thrown
+  // Errors via apiRequest.
+  listPolicies: (regionId: string) =>
+    apiRequest(`/api/v1/regions/${regionId}/policies`),
+
+  listElections: (regionId: string) =>
+    apiRequest(`/api/v1/regions/${regionId}/elections`),
+
+  // `terms` is redacted server-side for this member view (owner-only via
+  // the separate /my-region/treaties read).
+  listTreaties: (regionId: string) =>
+    apiRequest(`/api/v1/regions/${regionId}/treaties`),
+
+  // Cast (or reject) a vote in an ACTIVE election. One vote per (election,
+  // voter) — a repeat call rejects 409 ERR_ALREADY_VOTED.
+  castElectionVote: (regionId: string, electionId: string, candidateId: string) =>
+    apiRequest(`/api/v1/regions/${regionId}/elections/${electionId}/vote`, {
+      method: 'POST',
+      body: JSON.stringify({ candidate_id: candidateId }),
+    }),
+
+  // Self-nominate in a PENDING (candidate-registration phase) election.
+  // Locks 409 ERR_CANDIDATES_LOCKED once the election advances to ACTIVE.
+  registerCandidacy: (regionId: string, electionId: string, platform?: string) =>
+    apiRequest(`/api/v1/regions/${regionId}/elections/${electionId}/candidates`, {
+      method: 'POST',
+      body: JSON.stringify(platform ? { platform } : {}),
+    }),
+
+  // Read an election's status + tally (results is populated once COMPLETED).
+  getElectionResults: (regionId: string, electionId: string) =>
+    apiRequest(`/api/v1/regions/${regionId}/elections/${electionId}/results`),
+
+  // Cast (or reject) a yes/no vote on a VOTING-state policy. One vote per
+  // (policy, voter) — a repeat call rejects 409 ERR_ALREADY_VOTED.
+  castPolicyVote: (regionId: string, policyId: string, support: boolean) =>
+    apiRequest(`/api/v1/regions/${regionId}/policies/${policyId}/vote`, {
+      method: 'POST',
+      body: JSON.stringify({ support }),
+    }),
+
+  // Propose a new policy. 403 ERR_NOT_ELIGIBLE if the caller isn't a voting
+  // member; 400 ERR_INVALID_PROPOSED_CHANGES (with a structured `.errors`
+  // array on the thrown Error — see apiRequest above) if proposed_changes
+  // fails server-side validation.
+  proposePolicy: (
+    regionId: string,
+    data: {
+      policy_type: string;
+      title: string;
+      description?: string;
+      proposed_changes: Record<string, unknown>;
+      voting_duration_days?: number;
+    }
+  ) =>
+    apiRequest(`/api/v1/regions/${regionId}/policies`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
 };
 
 // Region-OWNER-facing APIs (distinct from the member-facing governanceAPI above).
@@ -718,8 +1006,18 @@ export const governanceAPI = {
 //   GET    /api/v1/regions/{region_id}/invites              — list owner's invites
 //   POST   /api/v1/regions/{region_id}/invites/{id}/revoke  — revoke (idempotent)
 export const regionOwnerAPI = {
-  // Probe region ownership + load the owned region. Throws on 404 (not an owner).
-  getMyRegion: () => apiRequest('/api/v1/regions/my-region'),
+  // Probe region ownership + load the owned region. Throws on 404 (not an
+  // owner). Omitting regionId is fine for a 1-region owner (unchanged); a
+  // 2+-region owner without it gets a 400 whose thrown Error carries
+  // `.code === 'ERR_AMBIGUOUS_REGION_OWNER'` and `.regions` (the pick-list) —
+  // never a silent guess. Pass the region_id a caller already knows (e.g. a
+  // panel that received it as a prop) to skip the ambiguity entirely.
+  getMyRegion: (regionId?: string) =>
+    apiRequest(
+      regionId
+        ? `/api/v1/regions/my-region?region_id=${encodeURIComponent(regionId)}`
+        : '/api/v1/regions/my-region'
+    ),
 
   // List the caller's invites for a region (newest first), owner-scoped.
   listInvites: (regionId: string) =>
@@ -742,6 +1040,32 @@ export const regionOwnerAPI = {
     apiRequest(`/api/v1/regions/${regionId}/invites/${inviteId}/revoke`, {
       method: 'POST',
     }),
+
+  // Region-funded TradeDock construction (WO-TD-RGF-1). "my-region" scoped
+  // like getMyRegion above — the server derives the region from the
+  // authenticated owner, no regionId param. stationId must be an EXISTING
+  // TradeDock-tier station inside the caller's region (construction_service
+  // ._require_tradedock precondition) — pulls 50,000,000 cr from the region
+  // treasury over a 90-day build. There is no dedicated status GET for this
+  // route; poll construction_service reservations instead (constructionAPI
+  // below) filtering ship_type === 'TRADEDOCK_CONSTRUCTION'.
+  initiateTradeDockConstruction: (stationId: string) =>
+    apiRequest('/api/v1/regions/my-region/tradedock-construction', {
+      method: 'POST',
+      body: JSON.stringify({ station_id: stationId }),
+    }),
+};
+
+// Ship-construction reservation reads (routes/construction.py — the live
+// slip-rental pipeline). Ownership-gated server-side to the caller's own
+// Player row; a region-funded TradeDock reservation (ship_type
+// 'TRADEDOCK_CONSTRUCTION') is owned by the initiating region owner and
+// shows up here exactly like a player ship-build reservation does.
+export const constructionAPI = {
+  getMyReservations: () => apiRequest('/api/v1/construction/reservations/mine'),
+
+  getReservation: (reservationId: string) =>
+    apiRequest(`/api/v1/construction/reservations/${reservationId}`),
 };
 
 // Haggle APIs (ADR-0079 — numerical price negotiation)
@@ -785,8 +1109,117 @@ export const haggleAPI = {
     ),
 };
 
+// Trading price-quote API (WO-API-B1) — server-authoritative READ-ONLY
+// preview of what POST /trading/buy or /trading/sell would charge/pay right
+// now (unit_price/subtotal/tax_rate/tax/total). If the caller has an
+// accepted-but-unconsumed haggle session for this (station, commodity,
+// side), the quote peeks that price too (without consuming it) so it stays
+// the single source of truth even mid-haggle — see HaggleDesk's "Deal
+// struck" total (mack HIGH-2: the desk used to show a tax-FREE total while
+// the actual charge applies the station's tax_rate).
+export const tradingAPI = {
+  quote: (
+    stationId: string,
+    resourceType: string,
+    quantity: number,
+    action: 'buy' | 'sell'
+  ) =>
+    apiRequest('/api/v1/trading/quote', {
+      method: 'POST',
+      body: JSON.stringify({
+        station_id: stationId,
+        resource_type: resourceType,
+        quantity,
+        action,
+      }),
+    }),
+};
+
+// Trade Contract APIs (SYSTEMS/contracts.md, gameserver contracts.py) —
+// per-station board reads, accept/complete/abandon transitions, and
+// player-issued posting/cancel. Callers type-cast the response at the call
+// site (matches resourceAPI.list()'s convention above) — see
+// src/types/contract.ts for the exact wire shapes.
+export const contractsAPI = {
+  getBoard: (stationId: string) =>
+    apiRequest(`/api/v1/contracts/board?station_id=${encodeURIComponent(stationId)}`),
+
+  getMine: () => apiRequest('/api/v1/contracts/mine'),
+
+  getContract: (contractId: string) =>
+    apiRequest(`/api/v1/contracts/${contractId}`),
+
+  accept: (contractId: string) =>
+    apiRequest(`/api/v1/contracts/${contractId}/accept`, { method: 'POST' }),
+
+  complete: (contractId: string) =>
+    apiRequest(`/api/v1/contracts/${contractId}/complete`, { method: 'POST' }),
+
+  abandon: (contractId: string) =>
+    apiRequest(`/api/v1/contracts/${contractId}/abandon`, { method: 'POST' }),
+
+  // body matches PostContractRequest (src/types/contract.ts) — contract_type
+  // is restricted server-side to cargo_delivery | bulk_procurement; omit
+  // it and the server defaults to cargo_delivery.
+  post: (body: {
+    destination_station_id: string;
+    commodity_type: string;
+    quantity: number;
+    payment: number;
+    deadline: string;
+    origin_station_id?: string;
+    insurance_pool_reserve?: number;
+    contract_type?: 'cargo_delivery' | 'bulk_procurement';
+  }) =>
+    apiRequest('/api/v1/contracts', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  cancel: (contractId: string) =>
+    apiRequest(`/api/v1/contracts/${contractId}/cancel`, { method: 'POST' }),
+
+  // WO-1a-CORE. tier is one of 'basic' | 'standard' | 'hazard'. Claim-
+  // filing (WO-1b-CLAIM-SAFETY) is deferred, design-gated -- not built.
+  insure: (contractId: string, tier: string) =>
+    apiRequest(`/api/v1/contracts/${contractId}/insure`, {
+      method: 'POST',
+      body: JSON.stringify({ tier }),
+    }),
+};
+
+// Storage lockers — multi-trip contract fulfillment (FEATURES/economy/storage-lockers.md).
+// Rent is idempotent per (player, contract); deposit auto-completes when
+// accumulated deposits reach the contract quantity.
+export const storageAPI = {
+  rentLocker: (contractId: string) =>
+    apiRequest('/api/v1/storage/lockers', {
+      method: 'POST',
+      body: JSON.stringify({ contract_id: contractId }),
+    }),
+
+  deposit: (lockerId: string, quantity: number) =>
+    apiRequest(`/api/v1/storage/lockers/${lockerId}/deposit`, {
+      method: 'POST',
+      body: JSON.stringify({ quantity }),
+    }),
+
+  retrieve: (lockerId: string, quantity?: number) =>
+    apiRequest(`/api/v1/storage/lockers/${lockerId}/retrieve`, {
+      method: 'POST',
+      body: JSON.stringify(quantity != null ? { quantity } : {}),
+    }),
+
+  // GET /storage/lockers/claimable (WO-STORE-EXPIRY-CLAIMABLE) — every
+  // CLAIMABLE locker the caller owns, across every station, with cargo
+  // still retrievable. Bare array, unfiltered by station (a locker's
+  // stationId travels on each row) — see types/storage.ts.
+  getClaimable: () => apiRequest('/api/v1/storage/lockers/claimable'),
+};
+
 export const gameAPI = {
   combat: combatAPI,
+  greyStatus: greyStatusAPI,
   planetary: planetaryAPI,
   registry: registryAPI,
   team: teamAPI,
@@ -802,5 +1235,10 @@ export const gameAPI = {
   shipUpgrade: shipUpgradeAPI,
   governance: governanceAPI,
   regionOwner: regionOwnerAPI,
+  construction: constructionAPI,
   haggle: haggleAPI,
+  trading: tradingAPI,
+  resource: resourceAPI,
+  contracts: contractsAPI,
+  storage: storageAPI,
 };

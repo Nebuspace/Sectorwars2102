@@ -147,41 +147,6 @@ export class InputValidator {
   }
 
   /**
-   * Validate trade parameters
-   */
-  static validateTradeParams(params: {
-    resourceType?: string;
-    quantity?: number;
-    price?: number;
-  }): { valid: boolean; errors: string[] } {
-    const errors: string[] = [];
-    const validResources = ['fuel', 'organics', 'equipment', 'luxury_goods', 'medical_supplies', 'technology'];
-    
-    if (params.resourceType && !validResources.includes(params.resourceType)) {
-      errors.push('Invalid resource type');
-    }
-    
-    if (params.quantity !== undefined) {
-      const validation = this.validateNumeric(params.quantity, 1, 999999);
-      if (!validation.valid) {
-        errors.push('Invalid quantity');
-      }
-    }
-    
-    if (params.price !== undefined) {
-      const validation = this.validateNumeric(params.price, 0, 999999999);
-      if (!validation.valid) {
-        errors.push('Invalid price');
-      }
-    }
-    
-    return {
-      valid: errors.length === 0,
-      errors
-    };
-  }
-
-  /**
    * Sanitize message content for team/player communication
    */
   static sanitizeMessage(message: string): string {

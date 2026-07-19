@@ -20,6 +20,94 @@
      solid backing (WO-COCKPIT-TABBED). */
   --surface-primary: #141a24;
   --hover-bg: #334155;
+  /* Same bug class as --surface-primary above (QUEUE-CSSVAR-DEFECT): was only
+     ever defined scoped to .colony-specialization, so every OTHER planetary/
+     surface referencing it bare (building-manager, colonist-allocator,
+     defense-configuration, genesis-deployment, planet-manager,
+     production-dashboard, siege-status-monitor -- 61 usage sites across 8
+     files) rendered its hover/selected border-color as nothing/invisible.
+     Value #00d9ff copied verbatim from the ONLY real declaration
+     (colony-specialization.css's own `.colony-specialization { --accent-primary: #00d9ff }`),
+     corroborated by 3 of the 6 existing var(--accent-primary, <fallback>)
+     guards elsewhere already landing on this exact value. Promoted to :root;
+     the local declaration in colony-specialization.css is left in place
+     (same value, harmless local reinforcement -- matches how --surface-primary
+     was handled). */
+  --accent-primary: #00d9ff;
+  /* Referenced (bare, no fallback) by teams/mission-planner.css,
+     teams/team-manager.css, teams/team-chat.css, teams/resource-sharing.css
+     (88 usage sites) but never defined anywhere in the codebase -- their
+     hover/selected border-color has been invisible in production. Value
+     #00ff9d is not a guess: it's the ONLY fallback value ever used for this
+     var anywhere (ships/insurance-manager.css + ships/maintenance-manager.css,
+     23 sites, all var(--primary-green, #00ff9d)), and it's the exact hex
+     equivalent of the rgba(0, 255, 157, ...) accent hardcoded throughout all
+     four teams/ files' own hover/hover-adjacent declarations. */
+  --primary-green: #00ff9d;
+
+  /* --cockpit-* family (QUEUE-CSSVAR-COCKPIT): referenced ~108 times across
+     ships/ship-selector.css + combat/combat-interface.css (plus
+     combat/npc-combat-banner.css, hud/annunciator.css) but never defined
+     anywhere -- same bug class as --accent-primary/--primary-green above.
+     Verified: no scoped definition exists in any .css/.ts/.tsx file (this is
+     a from-scratch definition, not a promotion). Only 4 of the 9 names have a
+     real evidence trail; the other 5 have zero fallback and zero literal
+     same-rule color sibling anywhere -- NOT defined here, reported to the
+     team lead as needing a design call instead of guessing.
+     --cockpit-primary #00ffff: every site pairing this var with a literal
+     wash color in the SAME rule/block, in BOTH target files, uses
+     rgba(0, 255, 255, ...) -- ship-selector.css's own .ship-selector
+     box-shadow (line 14) sits directly beside its `border: var(--cockpit-primary)`
+     (line 9); same pattern on .filter-btn:hover, .stat-chip,
+     .ships-grid::-webkit-scrollbar-thumb, and combat-interface.css's
+     .combatant / .action-btn.
+     --cockpit-danger #ff0000: ship-selector.css's .selector-error and
+     combat-interface.css's .combat-error both pair
+     `background: rgba(255, 0, 0, 0.1)` directly with
+     `border/color: var(--cockpit-danger)` in the identical rule shape;
+     corroborated by combat/npc-combat-banner.css's
+     `box-shadow: 0 0 20px rgba(255, 0, 0, 0.4)` on the same element as its
+     `border: var(--cockpit-danger)`.
+     --cockpit-success #00ff00: combat-interface.css's .loot-display pairs
+     `background: rgba(0, 255, 0, 0.1)` with
+     `border: 1px solid var(--cockpit-success)` in the same rule.
+     --cockpit-warning #ffb020: not inferred -- this is the literal fallback
+     value already in use, unanimously, everywhere this var ships one:
+     combat/npc-combat-banner.css (`var(--cockpit-warning, #ffb020)` x2) and
+     hud/annunciator.css (same), plus npc-combat-banner.css's own
+     `box-shadow: 0 0 20px rgba(255, 176, 32, 0.35)` (=#ffb020 exactly) on the
+     same element as the var. Zero conflicting values found anywhere. */
+  --cockpit-primary: #00ffff;
+  --cockpit-danger: #ff0000;
+  --cockpit-success: #00ff00;
+  --cockpit-warning: #ffb020;
+
+  /* WO-CI-TOKEN-GATE inventory remainder -- each of these 4 has exactly one
+     fallback value in use anywhere (no conflicting alternates), so the
+     evidence bar is the same as --primary-green/--cockpit-warning above:
+     adopt the value someone already shipped, don't invent a new one.
+     --border-tertiary: rgba(255, 255, 255, 0.08) is the ONLY fallback ever
+     used for it (planetary/planet-manager.css:602's
+     `var(--border-tertiary, rgba(255, 255, 255, 0.08))`); the other 8 usage
+     sites across building-manager/genesis-deployment/planet-manager/
+     production-dashboard are all bare.
+     --card-bg: #1a1a2e is the only fallback used, consistently, at all 3
+     sites (ships/module-grid-interface.css).
+     --input-bg: rgba(255, 255, 255, 0.05) is the only fallback used, at its
+     one site (trading/route-planner.css:78).
+     --mfd-key-accent: #3fd2ec is the only fallback used, at its one site
+     (mfd/mfd.css:118). Its ORIGINAL purpose was a per-key runtime override
+     (`--mfd-key-accent: var(--mfd-accent)`, e.g. QTM purple, CARGO
+     light-blue) documented in a "RETIRED" comment a few lines above that
+     same file's own softkey-rail section -- the ratified `.skey` styling
+     replaced it with uniform coloring on purpose (artifact-fidelity, not an
+     oversight), so nothing sets this per-key anymore and it will always
+     resolve via this default now. Not touching mfd.css's now-vestigial
+     var() indirection itself -- out of scope for a token-definition fix. */
+  --border-tertiary: rgba(255, 255, 255, 0.08);
+  --card-bg: #1a1a2e;
+  --input-bg: rgba(255, 255, 255, 0.05);
+  --mfd-key-accent: #3fd2ec;
 
   /* Scale-compensated viewport height. #root applies `zoom: var(--ui-scale)`,
      so a raw `vh` used INSIDE #root resolves against the unzoomed viewport and

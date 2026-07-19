@@ -9,6 +9,17 @@ interface User {
   is_admin?: boolean;
 }
 
+// WO-PUX-WBACK-SURFACE: the returning-player turn-bonus outcome, mirrored
+// from gameserver's AuthResponse.welcome_back (schemas/auth.py). Only
+// `granted: true` payloads are ever surfaced to the cockpit — a granted:false
+// outcome (no bonus due) is discarded at the login() call site below, same
+// as `null` (nothing evaluated, e.g. an OAuth login or a bonus-eval failure).
+export interface WelcomeBackOutcome {
+  granted: boolean;
+  bonus: number;
+  days_inactive: number;
+}
+
 interface AuthContextType {
   user: User | null;
   isAuthenticated: boolean;
@@ -19,6 +30,15 @@ interface AuthContextType {
   registerWithOAuth: (provider: string) => void;
   logout: () => void;
   refreshToken: () => Promise<void>;
+  // Monotonic counter (mirrors newMessageSignal/medalAwardedSignal in
+  // WebSocketContext) bumped exactly once per login that GRANTED a
+  // welcome-back bonus; 0 is the mount baseline, never a real grant.
+  // AuthContext sits OUTSIDE WebSocketProvider in the tree (WebSocketContext
+  // itself consumes useAuth), so it cannot call addNotification directly —
+  // consumers mounted inside WebSocketProvider (GameLayout's
+  // WelcomeBackToastWiring) watch this signal instead.
+  welcomeBackSignal: number;
+  lastWelcomeBack: WelcomeBackOutcome | null;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -32,6 +52,7 @@ interface AuthResponse {
   access_token: string;
   refresh_token: string;
   user_id: string;
+  welcome_back?: WelcomeBackOutcome | null;
   [key: string]: any;
 }
 
@@ -44,7 +65,19 @@ interface AuthResponse {
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }: AuthProviderProps) => {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  
+  const [welcomeBackSignal, setWelcomeBackSignal] = useState<number>(0);
+  const [lastWelcomeBack, setLastWelcomeBack] = useState<WelcomeBackOutcome | null>(null);
+
+  // WO-PUX-WBACK-SURFACE: bump the signal iff this login just granted a
+  // bonus. Read-only — no token/auth-flow side effects, no dedupe state
+  // (one-shot semantics are server-guaranteed by welcome_back()'s
+  // last_game_login overwrite; a granted:false/null outcome is a no-op here).
+  const noteWelcomeBack = (outcome: WelcomeBackOutcome | null | undefined) => {
+    if (!outcome?.granted) return;
+    setLastWelcomeBack(outcome);
+    setWelcomeBackSignal((s) => s + 1);
+  };
+
   // Use Vite proxy for all API requests to avoid CORS issues
   const getApiUrl = () => {
     // If an environment variable is explicitly set, use it
@@ -173,6 +206,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }: AuthProv
         // Set authorization header
         axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
 
+        noteWelcomeBack(response.data.welcome_back);
+
         // Get user data
         const userResponse = await axios.get<User>(`${apiUrl}/api/v1/auth/me`);
         setUser(userResponse.data);
@@ -202,6 +237,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }: AuthProv
 
           // Set authorization header
           axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
+
+          noteWelcomeBack(response.data.welcome_back);
 
           // Get user data
           const userResponse = await axios.get<User>(`${apiUrl}/api/v1/auth/me`);
@@ -336,6 +373,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }: AuthProv
     registerWithOAuth,
     logout,
     refreshToken,
+    welcomeBackSignal,
+    lastWelcomeBack,
   };
   
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
