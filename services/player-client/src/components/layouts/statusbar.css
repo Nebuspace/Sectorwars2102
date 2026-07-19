@@ -126,6 +126,31 @@
   max-width: 9rem;
 }
 
+/* [🚀 ship type] — static IDENTITY-adjacent readout beside the name chip
+   (WO-HUD-SHIPTYPE). Reuses the frozen shared `.chip` pill
+   (cockpit-shell.css) alone, not `.sb-chip` -- that class's `:hover` glow
+   and `cursor:pointer` are trigger-only affordances (name/location open a
+   dropdown; this has none). The icon+label layout those triggers get from
+   `.sb-chip`'s own flex/gap is reproduced here since plain `.chip` has
+   neither. */
+.sb-shiptype-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.9615em;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  cursor: default;
+  overflow: hidden;
+}
+
+.sb-shiptype-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 9rem;
+}
+
 .sb-dropdown {
   position: absolute;
   top: calc(100% + 0.4rem);

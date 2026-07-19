@@ -4,7 +4,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useGame } from '../../contexts/GameContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useSettings } from '../../contexts/SettingsContext';
-import { formatCredits } from '../../utils/formatters';
+import { formatCredits, formatShipType } from '../../utils/formatters';
 import { TurnsIcon } from '../icons/TurnsIcon';
 import { MineIcon } from '../icons/MineIcon';
 import ReputationPage from '../mfd/pages/ReputationPage';
@@ -39,6 +39,19 @@ import './statusbar.css';
  * Row order (left→right), matching the ratified brief exactly:
  *   [👤 name ▾ dossier] · [◉ location ▾] · grow · vitals + REP badge ·
  *   [⚙] · [⏻]
+ *
+ * WO-HUD-SHIPTYPE (Max, live-playtest): the dynamic ship TYPE (via
+ * formatShipType()) now renders as a static [🚀] chip beside the name --
+ * IDENTITY (who + what they're flying). Row order is otherwise unchanged.
+ * (An earlier pass of this WO also regrouped LocationDropdown's collapsed
+ * trigger to show sector+region together -- REVERTED: "Terran Space" is
+ * the always-visible windshield `.locrow` chip's clean `formatRegionType()`
+ * label (GameDashboard.tsx), not LocationDropdown's `region_name`, which
+ * carries the raw dev-seeded name including its galaxy-id prefix; grouping
+ * sector into THAT label would have surfaced the ugly string in the top
+ * bar. The sector->locrow move Max actually wants is a separate follow-up,
+ * pending confirmation -- LocationDropdown.tsx is untouched by this WO.)
+ * Ship NAMING is out of scope (a separate design brief) -- type only.
  *
  * Evolved from PlayerVitalsHud.tsx: reuses its data primitives (formatCredits,
  * TurnsIcon, MineIcon, useGame().playerState, useWebSocket().linkStatus)
@@ -208,7 +221,7 @@ const SettingsTab: React.FC<{ idPrefix?: string }> = ({ idPrefix = '' }) => {
 
 const StatusBar: React.FC = () => {
   const { user, logout } = useAuth();
-  const { playerState } = useGame();
+  const { playerState, currentShip } = useGame();
   const { linkStatus } = useWebSocket();
   const navigate = useNavigate();
 
@@ -394,6 +407,15 @@ const StatusBar: React.FC = () => {
   const repSign = personalRep >= 0 ? '+' : '';
   const repColor = repTierColor(repTier);
 
+  // WO-HUD-SHIPTYPE: dynamic ship-type readout beside the name -- whatever
+  // hull the player is currently flying, formatted via the shared
+  // formatShipType() (PlayerInfo/VesselPage/CombatInterface's own enum-to-
+  // label convention, e.g. "LIGHT_FREIGHTER" -> "Light Freighter"). Graceful
+  // degrade to the same '—' placeholder IdentityTab already uses for other
+  // missing fields, rather than crashing on formatShipType(undefined) or
+  // leaking the raw enum.
+  const shipTypeLabel = currentShip?.type ? formatShipType(currentShip.type) : '—';
+
   return (
     <div className="sbar status-bar">
       {/* [👤 name ▾] — dossier dropdown. `.chip.who` (cockpit-shell.css)
@@ -470,6 +492,16 @@ const StatusBar: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* [🚀 ship type] — WO-HUD-SHIPTYPE: static (non-interactive) readout,
+          the dynamic ship TYPE beside the player name. Wears the shared
+          shell `.chip` pill alone (not `.sb-chip`, whose hover glow + hand
+          cursor are trigger-only affordances this non-clickable badge
+          shouldn't imply). Ship-NAMING is out of scope -- type only. */}
+      <span className="chip sb-shiptype-chip" title="Ship type" aria-label={`Ship type: ${shipTypeLabel}`}>
+        <span className="sb-chip-icon" aria-hidden="true">🚀</span>
+        <span className="sb-shiptype-text">{shipTypeLabel}</span>
+      </span>
 
       {/* [◉ location ▾] — RegionOwnerControls (sub-part b) wired in at
           integration. LocationDropdown owns its own trigger/panel markup

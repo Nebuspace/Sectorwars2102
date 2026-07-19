@@ -2799,11 +2799,20 @@ const GameDashboardInner: React.FC = () => {
                   canonical region_type enum via formatRegionType (utils/
                   formatters.ts) — never parsed out of region_name (rejected
                   2026-07-13 as fragile). Renders nothing when region_type is
-                  absent (e.g. a player with no region) rather than a guess. */}
+                  absent (e.g. a player with no region) rather than a guess.
+
+                  WO-HUD-SHIPTYPE (sector-move, Max ruled 2026-07-19): sector
+                  identity moves down HERE from the status bar's
+                  LocationDropdown trigger -- "not in both, entirely down"
+                  (that trigger is now icon-only; LocationDropdown.tsx,
+                  unrelated file). Same sector_number-or-sector_id fallback
+                  LocationDropdown's own `sectorNumber` and this file's own
+                  sector-name derivation (~line 1054) already use. */}
               <div className="locrow">
                 {formatRegionType(currentSector.region_type) && (
                   <span className="loc">{formatRegionType(currentSector.region_type)}</span>
                 )}
+                <span className="loc">Sector {currentSector.sector_number ?? currentSector.sector_id ?? '—'}</span>
                 {/* WO-UI2-FLIGHT-FEEL: reads the SAME shared flight store
                     the SOLAR SYSTEM rows now do (flying/handleHalt, above)
                     — flight.isFlying covers a real autopilot course AND the
