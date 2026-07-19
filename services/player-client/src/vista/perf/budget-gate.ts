@@ -53,7 +53,10 @@ export const DRAWSCENE_BUDGET_MS = 8;
 /** frameMs minus the postProcess layer — see the FORMULA note above for why this, not a layer-sum. */
 export function computeDrawSceneMs(snapshot: PerfSnapshot): number {
   const postProcessMs = snapshot.layers.postProcess ?? 0;
-  return snapshot.frameMs - postProcessMs;
+  // Clamp — a postProcess layer sample can exceed frameMs (jitter between two
+  // separately-recorded timings), which would otherwise report a negative
+  // draw-scene cost.
+  return Math.max(0, snapshot.frameMs - postProcessMs);
 }
 
 export interface GateResult {

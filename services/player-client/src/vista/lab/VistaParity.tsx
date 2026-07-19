@@ -112,6 +112,13 @@ function OldCanvas({ planetType, source, width, height }: OldCanvasProps) {
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    // Cross-slice-boundary guard: landedPalette/drawLandedScene live in
+    // SolarSystemViewscreen.tsx, which promotes in a LATER slice than this
+    // dev-only lab harness — a partial-slice static analyzer sees the
+    // import as possibly-undefined. Both are always real functions once
+    // the full app is merged; this early-return just skips drawing in that
+    // otherwise-impossible case, with no behavior change when defined.
+    if (typeof landedPalette !== 'function' || typeof drawLandedScene !== 'function') return;
     // canvas.width/height are set via HTML attributes (see JSX below); just draw.
     const pal = landedPalette(planetType);
     const env = buildLandedEnv(source);

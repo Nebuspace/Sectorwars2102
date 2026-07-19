@@ -87,6 +87,14 @@ class PerfCollector {
 
   /** Snapshot the current frame's numbers.  Returns a fresh copy — safe to hold across frames. */
   snapshot(): PerfSnapshot {
+    // Disabled → the accumulators are whatever was last written before the
+    // gate flipped off (possibly stale, from the last enabled frame), not
+    // "the collector is idle" zeros. Match the module header's own
+    // "zero-cost when disabled" claim honestly for a caller that samples
+    // snapshot() without checking `enabled` itself (e.g. PerfOverlay).
+    if (!this.enabled) {
+      return { layers: {}, particleCount: 0, allocChurn: 0, fps: 0, frameMs: 0 };
+    }
     return {
       layers: { ...this._layers },
       particleCount: this._particles,
