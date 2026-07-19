@@ -10,14 +10,32 @@
   position: relative; /* anchors the absolutely-placed GC crest (WO-GC-B) */
 }
 
+/* Ship Upgrades overlay panel (ServicesVenue portal) — the Module Bay renders
+   at shrink-to-content width there, which cramped the header (title + ship name
+   + credits) against the overlay's absolute ✕. Give the panel a comfortable
+   fixed width. Scoped to the overlay only: the inline Shipyard-venue mount and
+   the insurance/maintenance panels that share `.insurance-overlay-panel` keep
+   their own sizing. */
+.insurance-overlay-panel.mgi-overlay-panel {
+  width: min(860px, 94vw);
+}
+
 /* Header */
 .module-grid-interface .mgi-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
   padding: 1rem;
   background: linear-gradient(135deg, #2a2a3e 0%, #1a1a2e 100%);
   border-bottom: 1px solid var(--border-color, #333);
+}
+
+/* Clear the overlay's absolute ✕ (top:12/right:12) so the credits never sit
+   under it — only inside the Ship Upgrades overlay, where that button exists. */
+.mgi-overlay-panel .module-grid-interface .mgi-header {
+  padding-right: 3rem;
 }
 
 .module-grid-interface .mgi-header h3 {

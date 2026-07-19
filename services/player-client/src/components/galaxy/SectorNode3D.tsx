@@ -1,10 +1,18 @@
 import { useRef, useState, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { Text, Sphere, Box, Cylinder } from '@react-three/drei';
+import { Text, Sphere, Box, Cylinder, Html } from '@react-three/drei';
 import { Color } from 'three';
 import * as THREE from 'three';
 
 import { Sector } from '../../contexts/GameContext';
+
+/** Fog-of-war / chart knowledge for NAV 3D styling. */
+export type SectorKnowledge =
+  | 'current'
+  | 'visited'
+  | 'known'
+  | 'reachable'
+  | 'frontier';
 
 interface SectorNode3DProps {
   sector: Sector;
@@ -18,6 +26,9 @@ interface SectorNode3DProps {
     showEffects: boolean;
   };
   playerCount: number;
+  knowledge?: SectorKnowledge;
+  /** False for fog stubs / distant known — no warp click. */
+  clickable?: boolean;
 }
 
 export default function SectorNode3D({
@@ -27,7 +38,9 @@ export default function SectorNode3D({
   isCurrent,
   onClick,
   lodLevel,
-  playerCount
+  playerCount,
+  knowledge = isCurrent ? 'current' : 'visited',
+  clickable = true,
 }: SectorNode3DProps) {
   const groupRef = useRef<THREE.Group>(null);
   const meshRef = useRef<THREE.Mesh>(null);
@@ -92,36 +105,39 @@ export default function SectorNode3D({
   }, [playerCount]);
 
   // Target values for smooth animation (lerped in useFrame)
-  const targetScale = isSelected ? 1.3 : isCurrent ? 1.1 : hovered ? 1.05 : 1.0;
-  const targetOpacity = lodLevel.detail === 'low' ? 0.7 : 1.0;
+  const knowledgeScale =
+    knowledge === 'frontier' ? 0.55
+      : knowledge === 'known' ? 0.85
+        : knowledge === 'reachable' ? 1.05
+          : knowledge === 'visited' ? 0.95
+            : 1.0;
+  const targetScale = (isSelected ? 1.3 : isCurrent ? 1.15 : hovered && clickable ? 1.08 : 1.0) * knowledgeScale;
+  const targetOpacity =
+    knowledge === 'frontier' ? 0.35
+      : knowledge === 'known' ? 0.55
+        : knowledge === 'visited' ? 0.95
+          : lodLevel.detail === 'low' ? 0.7 : 1.0;
 
-  // Continuous animation via useFrame (replaces react-spring)
-  useFrame((state) => {
-    // Smooth scale animation
+  // Scale/opacity lerp only — no continuous spin (that read as the camera
+  // drifting and tanked the NAV 3D frame budget with N useFrame writers).
+  useFrame(() => {
     if (groupRef.current) {
       const currentScale = groupRef.current.scale.x;
-      const newScale = THREE.MathUtils.lerp(currentScale, targetScale, 0.1);
-      groupRef.current.scale.setScalar(newScale);
+      const newScale = THREE.MathUtils.lerp(currentScale, targetScale, 0.15);
+      if (Math.abs(newScale - currentScale) > 0.001) {
+        groupRef.current.scale.setScalar(newScale);
+      }
     }
 
-    // Continuous rotation for active sectors
-    if (meshRef.current && (isCurrent || playerCount > 0)) {
-      meshRef.current.rotation.x += 0.01;
-      meshRef.current.rotation.z += 0.005;
-    }
-
-    // Glow effect for special sector types
-    if (meshRef.current && sectorConfig.glow && lodLevel.showEffects) {
-      const time = state.clock.getElapsedTime();
-      const intensity = 0.5 + Math.sin(time * 2) * 0.3;
-      (meshRef.current.material as THREE.MeshStandardMaterial).emissiveIntensity = intensity;
-    }
-
-    // Update opacity on material
     if (meshRef.current) {
       const mat = meshRef.current.material as THREE.MeshStandardMaterial;
       if (mat && mat.opacity !== undefined) {
-        mat.opacity = THREE.MathUtils.lerp(mat.opacity, targetOpacity, 0.1);
+        const next = THREE.MathUtils.lerp(mat.opacity, targetOpacity, 0.15);
+        if (Math.abs(next - mat.opacity) > 0.001) mat.opacity = next;
+      }
+      // Static emissive for special types — no per-frame sin pulse.
+      if (sectorConfig.glow && lodLevel.showEffects && mat.emissiveIntensity !== 0.65) {
+        mat.emissiveIntensity = 0.65;
       }
     }
   });
@@ -129,12 +145,14 @@ export default function SectorNode3D({
   // Handle click events
   const handleClick = (event: any) => {
     event.stopPropagation();
+    if (!clickable || knowledge === 'frontier') return;
     onClick(sector);
   };
 
   // Handle hover events
   const handlePointerOver = (event: any) => {
     event.stopPropagation();
+    if (!clickable) return;
     setHovered(true);
     document.body.style.cursor = 'pointer';
   };
@@ -144,26 +162,44 @@ export default function SectorNode3D({
     document.body.style.cursor = 'auto';
   };
 
-  // Color calculation based on state and activity
+  // Color calculation. Knowledge/reachability dominates the sector's own
+  // type hue so the pilot can tell at a glance:
+  //   current   → green      (you are here)
+  //   reachable → bright amber (warp NOW — immediately adjacent)
+  //   visited   → steel blue  (been there, not a current exit)
+  //   known     → dim slate   (corp-shared / charted, never visited)
+  //   frontier  → violet      (scanner fog, one hop past knowledge)
   const finalColor = useMemo(() => {
-    const baseColor = new Color(sectorConfig.color);
-
-    if (isCurrent) {
-      return baseColor.clone().lerp(new Color('#00ff00'), 0.3);
-    } else if (isSelected) {
-      return baseColor.clone().lerp(new Color('#ffff00'), 0.3);
-    } else if (hovered) {
-      return baseColor.clone().lerp(new Color('#ffffff'), 0.2);
+    if (knowledge === 'frontier') {
+      return new Color('#7a52c9');
     }
-
-    // Adjust based on activity
-    return baseColor.clone().multiplyScalar(0.5 + activityIntensity * 0.5);
-  }, [sectorConfig.color, isCurrent, isSelected, hovered, activityIntensity]);
+    if (isCurrent || knowledge === 'current') {
+      return new Color('#3dff7a');
+    }
+    if (knowledge === 'reachable') {
+      const amber = new Color('#ffb023');
+      return hovered ? amber.clone().lerp(new Color('#ffffff'), 0.25) : amber;
+    }
+    if (isSelected) {
+      return new Color('#ffe14d');
+    }
+    if (knowledge === 'known') {
+      return new Color('#3a4a63');
+    }
+    // visited — steel blue fog trail (been there, not a current exit)
+    const visited = new Color('#6aa8e8');
+    if (hovered) return visited.clone().lerp(new Color('#ffffff'), 0.25);
+    return visited;
+  }, [isCurrent, isSelected, hovered, activityIntensity, knowledge]);
 
   const emissiveColor = useMemo(() => {
+    if (knowledge === 'frontier') return new Color('#1a0033');
+    if (knowledge === 'reachable') return new Color('#5a3800');
+    if (isCurrent || knowledge === 'current') return new Color('#004d1a');
+    if (knowledge === 'known') return new Color('#0a1220');
     const baseEmissive = new Color(sectorConfig.emissive);
     return baseEmissive.clone().multiplyScalar(activityIntensity);
-  }, [sectorConfig.emissive, activityIntensity]);
+  }, [sectorConfig.emissive, activityIntensity, knowledge, isCurrent]);
 
   // Geometry based on sector type and LOD
   const renderGeometry = () => {
@@ -227,22 +263,35 @@ export default function SectorNode3D({
     );
   };
 
-  // Sector label
+  // Screen-space label — transform={false} keeps CSS px readable at any zoom.
+  // Single line under the node (where the old #id sat); no duplicate id row.
   const renderLabel = () => {
     if (!lodLevel.showLabels || lodLevel.detail === 'low') return null;
 
+    const labelColor =
+      knowledge === 'current' || isCurrent ? '#5dff8a'
+        : knowledge === 'reachable' ? '#ffc23d'
+          : knowledge === 'frontier' ? '#a88cff'
+            : knowledge === 'known' ? '#7d879b'
+              : '#8fc0f5';
+
     return (
-      <Text
-        position={[0, -sectorConfig.scale - 1, 0]}
-        fontSize={0.4}
-        color={isCurrent ? "#00ff00" : isSelected ? "#ffff00" : "#ffffff"}
-        anchorX="center"
-        anchorY="middle"
-        maxWidth={8}
-        textAlign="center"
+      <Html
+        position={[0, -(sectorConfig.scale + 0.85), 0]}
+        center
+        transform={false}
+        style={{ pointerEvents: 'none' }}
+        zIndexRange={[8, 1]}
       >
-        {sector.name}
-      </Text>
+        <div
+          className={`sector-node-label${knowledge === 'frontier' ? ' sector-node-label--fog' : ''}`}
+          style={{ color: labelColor }}
+        >
+          <div className="sector-node-label__name">
+            {knowledge === 'frontier' ? '???' : sector.name}
+          </div>
+        </div>
+      </Html>
     );
   };
 
@@ -330,7 +379,7 @@ export default function SectorNode3D({
       {/* Feature indicators */}
       {renderFeatureIndicators()}
 
-      {/* Selection ring */}
+      {/* Selection / current ring */}
       {(isSelected || isCurrent) && lodLevel.showEffects && (
         <mesh rotation={[Math.PI / 2, 0, 0]}>
           <ringGeometry args={[sectorConfig.scale + 0.5, sectorConfig.scale + 0.7, 32]} />
@@ -338,6 +387,20 @@ export default function SectorNode3D({
             color={isCurrent ? "#00ff00" : "#ffff00"}
             transparent
             opacity={0.6}
+            side={THREE.DoubleSide}
+          />
+        </mesh>
+      )}
+
+      {/* Warp-now ring — amber halo marking an immediately-warpable exit,
+          so a reachable sector is unmistakable from a merely-visited one. */}
+      {knowledge === 'reachable' && !isSelected && lodLevel.showEffects && (
+        <mesh rotation={[Math.PI / 2, 0, 0]}>
+          <ringGeometry args={[sectorConfig.scale + 0.45, sectorConfig.scale + 0.62, 32]} />
+          <meshBasicMaterial
+            color="#ffb023"
+            transparent
+            opacity={0.75}
             side={THREE.DoubleSide}
           />
         </mesh>

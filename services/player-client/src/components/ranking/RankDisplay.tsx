@@ -73,6 +73,14 @@ const RankDisplay: React.FC = () => {
   }
 
   const tierColor = TIER_COLORS[rankInfo.rank_tier] || '#ffffff';
+  // Defensive: RankInfo's shape is enforced by the TS type, not at runtime --
+  // a malformed/incomplete 200 (e.g. a brand-new player row the backend
+  // hasn't backfilled bonuses for yet) must not crash the panel.
+  const bonuses = rankInfo.bonuses ?? {
+    trading_discount_percent: 0,
+    max_turns_bonus: 0,
+    combat_damage_bonus_percent: 0,
+  };
 
   return (
     <div className="rank-display">
@@ -117,24 +125,24 @@ const RankDisplay: React.FC = () => {
         )}
       </div>
       <div className="rank-bonuses">
-        {rankInfo.bonuses.trading_discount_percent > 0 && (
+        {bonuses.trading_discount_percent > 0 && (
           <div className="bonus-item">
             <span className="bonus-icon">💰</span>
-            <span className="bonus-value">-{rankInfo.bonuses.trading_discount_percent}%</span>
+            <span className="bonus-value">-{bonuses.trading_discount_percent}%</span>
             <span className="bonus-label">Trade</span>
           </div>
         )}
-        {rankInfo.bonuses.combat_damage_bonus_percent > 0 && (
+        {bonuses.combat_damage_bonus_percent > 0 && (
           <div className="bonus-item">
             <span className="bonus-icon">⚔️</span>
-            <span className="bonus-value">+{rankInfo.bonuses.combat_damage_bonus_percent}%</span>
+            <span className="bonus-value">+{bonuses.combat_damage_bonus_percent}%</span>
             <span className="bonus-label">Damage</span>
           </div>
         )}
-        {rankInfo.bonuses.max_turns_bonus > 0 && (
+        {bonuses.max_turns_bonus > 0 && (
           <div className="bonus-item">
             <span className="bonus-icon">⏱️</span>
-            <span className="bonus-value">+{rankInfo.bonuses.max_turns_bonus}</span>
+            <span className="bonus-value">+{bonuses.max_turns_bonus}</span>
             <span className="bonus-label">Turns</span>
           </div>
         )}

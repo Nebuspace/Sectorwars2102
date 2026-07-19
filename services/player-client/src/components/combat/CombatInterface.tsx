@@ -11,7 +11,6 @@ import React, { useState, useCallback } from 'react';
 import { useGame } from '../../contexts/GameContext';
 import { gameAPI } from '../../services/api';
 import { InputValidator, SecurityAudit } from '../../utils/security/inputValidation';
-import GameLayout from '../layouts/GameLayout';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import './combat-interface.css';
 
@@ -19,11 +18,9 @@ import './combat-interface.css';
    identity across target-selection/engagement renders. Used only when the
    component is a standalone route; modal usage stays bare. */
 const WeaponsConsoleShell: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
-  <GameLayout>
-    <CockpitInstrument title="WEAPONS CONSOLE" accent="#FF4D6D" subtitle="COMBAT OPERATIONS">
-      {children}
-    </CockpitInstrument>
-  </GameLayout>
+  <CockpitInstrument title="WEAPONS CONSOLE" accent="#FF4D6D" subtitle="COMBAT OPERATIONS">
+    {children}
+  </CockpitInstrument>
 );
 
 // Shapes returned by the player_combat API (see gameserver player_combat.py)

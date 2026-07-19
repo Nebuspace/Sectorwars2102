@@ -39,7 +39,7 @@ const VesselPage: React.FC = () => {
   if (!currentShip) {
     return (
       <>
-        <MFDPageHeader title="VESSEL STATUS" accent={ACCENT} status="shipped" />
+        <MFDPageHeader title="VESSEL STATUS" accent={ACCENT} status="shipped" showTitle={false} />
         <MFDPageBody scrollKey="vessel-status">
           <MFDEmpty text="NO ACTIVE VESSEL" />
         </MFDPageBody>
@@ -60,7 +60,7 @@ const VesselPage: React.FC = () => {
 
   return (
     <>
-      <MFDPageHeader title="VESSEL STATUS" accent={ACCENT} status="shipped" />
+      <MFDPageHeader title="VESSEL STATUS" accent={ACCENT} status="shipped" showTitle={false} />
       <MFDPageBody scrollKey="vessel-status">
         <div className="mfd-page-fields">
           <MFDField label="VESSEL" value={currentShip.name || '—'} accent />

@@ -40,6 +40,26 @@
   letter-spacing: 0.1em;
 }
 
+/* Caution line (WO-PROG-TURN-VISIBILITY: low-turn scarcity hint) — same
+   one-line structural language as .mfd-page-warnline but amber, since a
+   scarcity heads-up is informational, not a failure alert. */
+.mfd-page-cautionline {
+  margin-top: 8px;
+  padding: 3px 6px;
+  border-left: 2px solid var(--health-warning, #f59e0b);
+  background: rgba(245, 158, 11, 0.08);
+  color: var(--health-warning, #f59e0b);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+/* Field-value tint for the TURNS figure when the pool is below the canon
+   scarcity threshold (<50) — matches .mfd-page-cautionline's amber. */
+.mfd-value-caution {
+  color: var(--health-warning, #f59e0b);
+}
+
 /* ── Cargo manifest ─────────────────────────────────────────── */
 
 .mfd-page-cargo-list {
@@ -238,3 +258,105 @@
 .mfd-mine-msg { margin-top: 5px; font-size: 0.62rem; }
 .mfd-mine-msg.ok { color: #66dd99; }
 .mfd-mine-msg.err { color: #ff7a6b; }
+
+/* ── Salvage (WO-CMB-SALVAGE-LOOP-1) ─────────────────────────── */
+
+/* Height-capped + internally scrollable — a heavily-fought sector's wreck
+   list must never push the action panel below the fold (Scroll Law: the
+   primary action stays reachable without scrolling; this list is the
+   secondary thing allowed to scroll). */
+.mfd-page-wreck-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 132px;
+  overflow-y: auto;
+}
+
+.mfd-page-wreck-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 5px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: inherit;
+  font: inherit;
+  font-size: 0.66rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mfd-page-wreck-row:hover { background: rgba(158, 197, 255, 0.1); }
+
+.mfd-page-wreck-row.selected {
+  border-color: rgba(158, 197, 255, 0.5);
+  background: rgba(158, 197, 255, 0.12);
+}
+
+.mfd-page-wreck-ship {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgba(225, 235, 245, 0.9);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mfd-page-wreck-owner {
+  color: rgba(225, 235, 245, 0.6);
+  flex-shrink: 0;
+}
+
+.mfd-page-wreck-age {
+  font-variant-numeric: tabular-nums;
+  color: var(--mfd-accent, #9ec5ff);
+  flex-shrink: 0;
+}
+
+.mfd-page-wreck-risk { color: #ff4d6d; flex-shrink: 0; }
+
+.mfd-salvage-row { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+.mfd-salvage-input {
+  width: 64px; background: rgba(0, 0, 0, 0.4); border: 1px solid rgba(158, 197, 255, 0.4);
+  color: #fff; border-radius: 3px; padding: 2px 6px; font: inherit; font-size: 0.7rem;
+}
+.mfd-salvage-preview {
+  font-size: 0.62rem; color: rgba(225, 235, 245, 0.7); font-variant-numeric: tabular-nums;
+}
+.mfd-salvage-btn {
+  flex: 1; background: rgba(158, 197, 255, 0.16); color: #9EC5FF;
+  border: 1px solid rgba(158, 197, 255, 0.5); border-radius: 3px; padding: 3px 8px;
+  font: inherit; font-size: 0.66rem; cursor: pointer; transition: all 0.15s ease;
+}
+.mfd-salvage-btn:hover:not(:disabled) { background: rgba(158, 197, 255, 0.3); }
+.mfd-salvage-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Law status / grey-flag (WO-UIPC-LAW-GREY-STATUS) ────────── */
+
+.mfd-law-clean {
+  font-size: 0.62rem;
+  color: rgba(102, 221, 153, 0.9);
+  letter-spacing: 0.04em;
+}
+
+.mfd-law-row { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+.mfd-law-btn {
+  flex: 1; background: rgba(255, 77, 109, 0.16); color: #FF4D6D;
+  border: 1px solid rgba(255, 77, 109, 0.5); border-radius: 3px; padding: 3px 8px;
+  font: inherit; font-size: 0.66rem; cursor: pointer; transition: all 0.15s ease;
+}
+.mfd-law-btn:hover:not(:disabled) { background: rgba(255, 77, 109, 0.3); }
+.mfd-law-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+/* Distinct class from .mfd-mine-msg (same visual language) -- ThreatPage now
+   hosts two independent action outcomes (mine deploy + fine clear) that can
+   both be visible at once, so they need separable selectors. */
+.mfd-law-msg { margin-top: 5px; font-size: 0.62rem; }
+.mfd-law-msg.ok { color: #66dd99; }
+.mfd-law-msg.err { color: #ff7a6b; }

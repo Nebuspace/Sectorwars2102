@@ -72,6 +72,20 @@ const RankProgress: React.FC = () => {
   }
 
   const tierColor = TIER_COLORS[data.rank_tier] || '#ffffff';
+  // Defensive: RankProgressData's shape is enforced by the TS type, not at
+  // runtime -- a malformed/incomplete 200 must not crash the panel. Missing
+  // numeric fields render as 0 (the same "nothing yet" reading a brand-new
+  // player would legitimately see); missing arrays render as empty lists.
+  const progressPercent = data.progress_percent ?? 0;
+  const requirements = data.requirements ?? [];
+  const stats = data.stats ?? {
+    combat_victories: 0,
+    total_trades: 0,
+    trade_volume: 0,
+    exploration_score: 0,
+    credits: 0,
+    turns_remaining: 0,
+  };
 
   return (
     <div className="rank-progress">
@@ -107,18 +121,18 @@ const RankProgress: React.FC = () => {
       <div className="rank-progress-bar">
         <div
           className="rank-progress-fill"
-          style={{ width: `${data.progress_percent}%`, backgroundColor: tierColor }}
+          style={{ width: `${progressPercent}%`, backgroundColor: tierColor }}
         />
       </div>
-      <div className="rank-progress-pct">{data.progress_percent.toFixed(1)}%</div>
+      <div className="rank-progress-pct">{progressPercent.toFixed(1)}%</div>
 
       <div className="rank-progress-reqs">
         <h4>Requirements</h4>
-        {data.requirements.map((req) => (
-          <div key={req.name} className={`req-item ${req.met ? 'met' : 'unmet'}`}>
-            <span className="req-icon">{req.met ? '\u2705' : '\u274C'}</span>
-            <span className="req-name">{req.name}</span>
-            <span className="req-value">
+        {requirements.map((req) => (
+          <div key={req.name} className={`rank-progress-req-item ${req.met ? 'met' : 'unmet'}`}>
+            <span className="rank-progress-req-icon">{req.met ? '\u2705' : '\u274C'}</span>
+            <span className="rank-progress-req-name">{req.name}</span>
+            <span className="rank-progress-req-value">
               {req.current.toLocaleString()}
               {req.required != null && ` / ${req.required.toLocaleString()}`}
             </span>
@@ -130,19 +144,19 @@ const RankProgress: React.FC = () => {
         <h4>Stats</h4>
         <div className="stats-grid">
           <div className="stat-item">
-            <span className="stat-value">{data.stats.combat_victories}</span>
+            <span className="stat-value">{stats.combat_victories}</span>
             <span className="stat-label">Combat Wins</span>
           </div>
           <div className="stat-item">
-            <span className="stat-value">{data.stats.total_trades}</span>
+            <span className="stat-value">{stats.total_trades}</span>
             <span className="stat-label">Trades</span>
           </div>
           <div className="stat-item">
-            <span className="stat-value">{data.stats.trade_volume.toLocaleString()}</span>
+            <span className="stat-value">{stats.trade_volume.toLocaleString()}</span>
             <span className="stat-label">Trade Volume</span>
           </div>
           <div className="stat-item">
-            <span className="stat-value">{data.stats.exploration_score}</span>
+            <span className="stat-value">{stats.exploration_score}</span>
             <span className="stat-label">ARIA Activity</span>
           </div>
         </div>
