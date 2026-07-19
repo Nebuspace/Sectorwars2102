@@ -32,7 +32,7 @@ Discovered route map (file:line as of this WO):
     GET  /combat/{combatId}/status api/routes/player_combat.py:218
                                     == "combat-poll"
 
-TWO FINDINGS surfaced building this (both reported, neither silently worked
+FOUR FINDINGS surfaced building this (all reported, none silently worked
 around):
 
 1. STEP-ORDER CONTRADICTS REAL GAME-STATE PRECONDITIONS. The WO's literal
@@ -90,6 +90,28 @@ around):
    simulating "already flown here and idle", a legitimate, deterministic
    precondition rather than a working-around of the gate.
 
+4. COMBAT ENGAGE HAS THE SAME PROXIMITY GATE, ONE LAYER DEEPER --
+   ``ERR_TARGET_POSITION_UNVERIFIED``, NOT A RANGE MISS. ``POST /combat/
+   engage`` (targetType=ship, an NPC target) hard-requires a paired
+   ``NPCCharacter`` row for the target ``Ship`` -- the single-pilot
+   invariant (models/npc_character.py: every ``is_npc`` Ship has exactly
+   one NPCCharacter) means both the route's own pre-check
+   (player_combat.py) and ``CombatService.attack_npc_ship`` (combat_
+   service.py:1358) treat a missing NPCCharacter as fail-CLOSED --
+   ``ERR_TARGET_POSITION_UNVERIFIED``, a step BEFORE the
+   ``is_within_engage_range`` distance check even runs. The fixture's
+   "Derelict Raider" was a bare ``is_npc=True`` Ship with no NPCCharacter
+   at all -- not a state a legitimately-spawned NPC can ever be in.
+   Fixed by giving it one (same faction_code/archetype convention as
+   ``test_npc_living_system.py``'s own ``_make_npc`` helper), then --
+   mirroring finding 3 -- parking BOTH the player's and the NPC's pose at
+   the same %-space point (never moved by dock/undock, so the player's
+   pose from finding 3 is still valid at this point) so the subsequent
+   ``ENGAGE_RANGE_EM`` distance check trivially holds at distance 0.
+   Scanned forward: combat-poll (``GET /combat/{id}/status``) is a
+   read-only status check with no position gate of its own -- no further
+   position-gated steps after engage.
+
 PROOF BOUNDARY (per this WO's own instruction): the Mac has no Postgres, so
 this file's collection is what's proven locally (see the report for the
 exact ``pytest --collect-only`` output) -- the live green run is the
@@ -111,6 +133,12 @@ from sqlalchemy.orm import Session
 from src.core.config import settings
 from src.models.cluster import Cluster, ClusterType
 from src.models.contract import Contract, ContractIssuerType, ContractStatus, ContractType
+from src.models.npc_character import (
+    NPCArchetype,
+    NPCCharacter,
+    NPCLifecycleStage,
+    NPCStatus,
+)
 from src.models.player import Player
 from src.models.region import Region, RegionType
 from src.models.sector import Sector
@@ -121,6 +149,7 @@ from src.models.warp_tunnel import WarpTunnel, WarpTunnelType
 from src.services import ai_provider_service as ai_provider_module
 from src.services.intrasystem_movement_service import (
     resolve_target_position,
+    set_npc_pose,
     set_player_pose,
 )
 
@@ -326,6 +355,31 @@ def playthrough_world(db: Session) -> PlaythroughWorld:
     db.add(w.npc_ship)
     db.flush()
 
+    # Finding 4 (see module docstring): the single-pilot invariant
+    # (models/npc_character.py: every is_npc Ship has exactly one
+    # NPCCharacter) means an is_npc Ship with no paired NPCCharacter row
+    # is not a state a legitimately-spawned NPC can ever be in --
+    # CombatService.attack_npc_ship and the route's own pre-check both fail
+    # CLOSED (ERR_TARGET_POSITION_UNVERIFIED) rather than guess a position
+    # for one. Same faction_code/archetype convention as
+    # test_npc_living_system.py's own `_make_npc` helper.
+    w.npc_char = NPCCharacter(
+        name="Derelict Raider",
+        faction_code="pirates",
+        archetype=NPCArchetype.HOSTILE_RAIDER,
+        status=NPCStatus.ON_DUTY,
+        current_sector_id=w.sector_dest.sector_id,
+        ship_id=w.npc_ship.id,
+        home_region_id=w.region.id,
+        lifecycle_stage=NPCLifecycleStage.ACTIVE,
+        daily_schedule={},
+        role_history=[],
+        backstory={},
+        credits=0,
+    )
+    db.add(w.npc_char)
+    db.flush()
+
     # One NPC-issued, currently-POSTED cargo_delivery contract at the
     # destination station — issuer_id = the station's own id, matching
     # cargo_delivery's NPC-issuer convention (contract.py's issuer_id
@@ -503,6 +557,18 @@ def test_core_loop_playthrough(
     undock_resp = client.post(f"{API}/trading/undock", headers=headers)
     assert undock_resp.status_code == 200, undock_resp.text
     assert client.get(f"{API}/player/state", headers=headers).json()["is_docked"] is False
+
+    # Finding 4 (see module docstring): the target NPC needs a genuinely
+    # resolvable pose too, not just a paired NPCCharacter row -- park it at
+    # the SAME %-space point the player's own pose is already sitting at
+    # (never moved by dock/undock, neither of which touches
+    # intrasystem_pose) so the engage-range check trivially holds at
+    # distance 0, regardless of the exact ENGAGE_RANGE_EM threshold.
+    set_npc_pose(db, w.npc_char, {
+        "x_pct": depot_xy[0], "y_pct": depot_xy[1],
+        "heading_deg": 0.0, "phase": "idle", "burning": False, "leg": None,
+    })
+    db.commit()
 
     # --- step 9: combat-poll ---
     engage_resp = client.post(
