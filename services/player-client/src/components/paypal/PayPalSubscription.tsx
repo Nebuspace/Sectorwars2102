@@ -1,6 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
+import apiClient from '../../services/apiClient';
 import './paypal-subscription.css';
+
+// Pull the backend's verbatim detail string out of an axios error (mirrors
+// the established FETCH-CONVERGE idiom, e.g. GatewrightPanel.tsx's errDetail).
+const errDetail = (e: unknown, fallback: string): string => {
+  if (e && typeof e === 'object') {
+    const resp = (e as { response?: { data?: unknown } }).response;
+    const data = resp?.data;
+    if (data && typeof data === 'object') {
+      const detail = (data as Record<string, unknown>).detail;
+      if (typeof detail === 'string' && detail) return detail;
+    }
+  }
+  return fallback;
+};
 
 interface SubscriptionPlan {
   id: string;
@@ -27,7 +42,7 @@ const PayPalSubscription: React.FC<PayPalSubscriptionProps> = ({
   onSubscriptionCreated,
   onSubscriptionCancelled
 }) => {
-  const { user, token } = useAuth();
+  const { user, isAuthenticated } = useAuth();
   const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
   const [userSubscriptions, setUserSubscriptions] = useState<UserSubscription[]>([]);
   const [loading, setLoading] = useState(false);
@@ -45,29 +60,22 @@ const PayPalSubscription: React.FC<PayPalSubscriptionProps> = ({
 
   const loadPlans = async () => {
     try {
-      const response = await fetch('/api/v1/paypal/plans');
-      if (response.ok) {
-        const data = await response.json();
-        setPlans(data.plans);
-      }
+      const response = await apiClient.get('/api/v1/paypal/plans');
+      setPlans(response.data.plans);
     } catch (err) {
       console.error('Failed to load subscription plans:', err);
     }
   };
 
   const loadUserSubscriptions = async () => {
-    if (!token) return;
+    if (!isAuthenticated) return;
 
     try {
-      const response = await fetch('/api/v1/paypal/subscriptions', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setUserSubscriptions(data.subscriptions);
-      }
+      // apiClient's request interceptor attaches the current access token
+      // (and its response interceptor handles 401 refresh-and-retry) —
+      // no manual Authorization header needed.
+      const response = await apiClient.get('/api/v1/paypal/subscriptions');
+      setUserSubscriptions(response.data.subscriptions);
     } catch (err) {
       console.error('Failed to load user subscriptions:', err);
     }
@@ -81,12 +89,9 @@ const PayPalSubscription: React.FC<PayPalSubscriptionProps> = ({
     }
 
     try {
-      const response = await fetch(`/api/v1/paypal/regions/available-names?name=${encodeURIComponent(name)}`);
-      if (response.ok) {
-        const data = await response.json();
-        setRegionNameAvailable(data.available);
-        setRegionNameError(data.available ? null : data.reason);
-      }
+      const response = await apiClient.get(`/api/v1/paypal/regions/available-names?name=${encodeURIComponent(name)}`);
+      setRegionNameAvailable(response.data.available);
+      setRegionNameError(response.data.available ? null : response.data.reason);
     } catch (err) {
       console.error('Failed to check region name availability:', err);
       setRegionNameError('Failed to check availability');
@@ -103,7 +108,7 @@ const PayPalSubscription: React.FC<PayPalSubscriptionProps> = ({
   };
 
   const createSubscription = async (subscriptionType: string) => {
-    if (!token) {
+    if (!isAuthenticated) {
       setError('Please log in to subscribe');
       return;
     }
@@ -122,35 +127,23 @@ const PayPalSubscription: React.FC<PayPalSubscriptionProps> = ({
     setError(null);
 
     try {
-      const response = await fetch('/api/v1/paypal/subscriptions/create', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          subscription_type: subscriptionType,
-          region_name: subscriptionType === 'regional_owner' ? regionName : undefined,
-          return_url: `${window.location.origin}/subscription/success`,
-          cancel_url: `${window.location.origin}/subscription/cancelled`
-        })
+      // apiClient's request interceptor attaches the current access token —
+      // no manual Authorization header needed.
+      const response = await apiClient.post('/api/v1/paypal/subscriptions/create', {
+        subscription_type: subscriptionType,
+        region_name: subscriptionType === 'regional_owner' ? regionName : undefined,
+        return_url: `${window.location.origin}/subscription/success`,
+        cancel_url: `${window.location.origin}/subscription/cancelled`
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        
-        // Redirect to PayPal approval URL
-        if (data.approval_url) {
-          window.location.href = data.approval_url;
-        }
-        
-        onSubscriptionCreated?.(data.subscription_id);
-      } else {
-        const errorData = await response.json();
-        setError(errorData.detail || 'Failed to create subscription');
+      // Redirect to PayPal approval URL
+      if (response.data.approval_url) {
+        window.location.href = response.data.approval_url;
       }
+
+      onSubscriptionCreated?.(response.data.subscription_id);
     } catch (err) {
-      setError('Network error. Please try again.');
+      setError(errDetail(err, 'Failed to create subscription'));
       console.error('Subscription creation error:', err);
     } finally {
       setLoading(false);
@@ -158,7 +151,7 @@ const PayPalSubscription: React.FC<PayPalSubscriptionProps> = ({
   };
 
   const cancelSubscription = async (subscriptionId: string) => {
-    if (!token) return;
+    if (!isAuthenticated) return;
 
     if (!confirm('Are you sure you want to cancel this subscription? This action cannot be undone.')) {
       return;
@@ -168,22 +161,11 @@ const PayPalSubscription: React.FC<PayPalSubscriptionProps> = ({
     setError(null);
 
     try {
-      const response = await fetch(`/api/v1/paypal/subscriptions/${subscriptionId}/cancel`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-
-      if (response.ok) {
-        await loadUserSubscriptions(); // Refresh the list
-        onSubscriptionCancelled?.(subscriptionId);
-      } else {
-        const errorData = await response.json();
-        setError(errorData.detail || 'Failed to cancel subscription');
-      }
+      await apiClient.post(`/api/v1/paypal/subscriptions/${subscriptionId}/cancel`);
+      await loadUserSubscriptions(); // Refresh the list
+      onSubscriptionCancelled?.(subscriptionId);
     } catch (err) {
-      setError('Network error. Please try again.');
+      setError(errDetail(err, 'Failed to cancel subscription'));
       console.error('Subscription cancellation error:', err);
     } finally {
       setLoading(false);

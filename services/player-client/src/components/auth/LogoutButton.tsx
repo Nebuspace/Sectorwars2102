@@ -17,8 +17,9 @@ const LogoutButton: React.FC<LogoutButtonProps> = ({ className }) => {
   };
   
   return (
-    <button 
-      onClick={handleLogout} 
+    <button
+      type="button"
+      onClick={handleLogout}
       className={`logout-button ${className || ''}`}
     >
       Logout
