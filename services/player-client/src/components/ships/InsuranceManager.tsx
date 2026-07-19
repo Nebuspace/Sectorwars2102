@@ -33,7 +33,10 @@ interface InsuranceManagerProps {
   onClose?: () => void;
 }
 
-const TIER_LABEL: Record<string, string> = {
+// Shared with SpaceDockInterface's Services venue, which shows the held
+// coverage tier inline (coverage attaches to the hull for life, so it's
+// surfaced there independent of this station's underwriter availability).
+export const TIER_LABEL: Record<string, string> = {
   NONE: 'Uninsured', BASIC: 'Basic', STANDARD: 'Standard', PREMIUM: 'Premium'
 };
 

@@ -118,6 +118,389 @@
   color: #00d9ff;
 }
 
+.mfd-page-comms-hail-btn {
+  flex-shrink: 0;
+  padding: 0.15rem 0.45rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(0, 217, 255, 0.75);
+  background: rgba(0, 217, 255, 0.08);
+  border: 1px solid rgba(0, 217, 255, 0.35);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.mfd-page-comms-hail-btn:hover {
+  color: #00d9ff;
+  border-color: rgba(0, 217, 255, 0.7);
+  background: rgba(0, 217, 255, 0.15);
+}
+
+/* ── COMMS / CREW — transmissions (inbox + composer), ported from the
+   retiring components/comms/CommsMailbox.tsx HAILS mode. Same visual
+   language, .mfd-page-comms-* namespaced per this file's contract rule. ── */
+
+.mfd-page-comms-inbox {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.mfd-page-comms-hail-item {
+  background: rgba(0, 255, 127, 0.04);
+  border: 1px solid rgba(0, 255, 127, 0.18);
+  border-radius: 3px;
+  transition: all 0.2s ease;
+}
+
+.mfd-page-comms-hail-item:hover {
+  border-color: rgba(0, 255, 127, 0.4);
+}
+
+.mfd-page-comms-hail-item.unread {
+  background: rgba(0, 217, 255, 0.06);
+  border-color: rgba(0, 217, 255, 0.3);
+}
+
+.mfd-page-comms-hail-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  padding: 0.3rem 0.4rem;
+  background: transparent;
+  border: none;
+  font-family: 'Courier New', monospace;
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+}
+
+.mfd-page-comms-unread-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #00d9ff;
+  box-shadow: 0 0 6px rgba(0, 217, 255, 0.8);
+}
+
+.mfd-page-comms-unread-dot.off {
+  background: transparent;
+  box-shadow: none;
+}
+
+.mfd-page-comms-hail-sender {
+  flex-shrink: 0;
+  max-width: 38%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #00d9ff;
+}
+
+.mfd-page-comms-hail-subject {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.62rem;
+  color: rgba(220, 235, 255, 0.85);
+}
+
+.mfd-page-comms-hail-time {
+  flex-shrink: 0;
+  font-size: 0.54rem;
+  letter-spacing: 0.06em;
+  color: rgba(0, 255, 127, 0.6);
+}
+
+.mfd-page-comms-hail-item.read .mfd-page-comms-hail-sender {
+  color: rgba(0, 217, 255, 0.45);
+}
+
+.mfd-page-comms-hail-item.read .mfd-page-comms-hail-subject {
+  color: rgba(220, 235, 255, 0.45);
+}
+
+.mfd-page-comms-hail-item.read .mfd-page-comms-hail-time {
+  color: rgba(0, 255, 127, 0.35);
+}
+
+.mfd-page-comms-hail-body {
+  padding: 0.1rem 0.5rem 0.4rem 1.15rem;
+  border-top: 1px dashed rgba(0, 255, 127, 0.2);
+}
+
+.mfd-page-comms-hail-content {
+  margin: 0.3rem 0;
+  font-size: 0.64rem;
+  line-height: 1.45;
+  color: rgba(220, 235, 255, 0.9);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mfd-page-comms-reply-btn {
+  padding: 0.15rem 0.45rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(0, 255, 127, 0.8);
+  background: rgba(0, 255, 127, 0.08);
+  border: 1px solid rgba(0, 255, 127, 0.35);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.mfd-page-comms-reply-btn:hover {
+  color: #00ff7f;
+  border-color: rgba(0, 255, 127, 0.7);
+  background: rgba(0, 255, 127, 0.15);
+}
+
+.mfd-page-comms-compose {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0.3rem 0;
+  padding: 0.35rem 0.4rem;
+  background: rgba(0, 217, 255, 0.04);
+  border: 1px solid rgba(0, 217, 255, 0.25);
+  border-radius: 3px;
+}
+
+.mfd-page-comms-compose-to {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.08em;
+  min-width: 0;
+}
+
+.mfd-page-comms-compose-to-label {
+  color: rgba(0, 255, 127, 0.6);
+  font-weight: 700;
+}
+
+.mfd-page-comms-compose-recipient {
+  color: #00d9ff;
+  font-weight: 700;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.mfd-page-comms-compose-tag {
+  flex-shrink: 0;
+  padding: 0 0.25rem;
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: rgba(0, 255, 127, 0.8);
+  border: 1px solid rgba(0, 255, 127, 0.4);
+  border-radius: 2px;
+}
+
+.mfd-page-comms-compose-clear {
+  margin-left: auto;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  line-height: 1;
+  padding: 0;
+  font-size: 0.7rem;
+  color: rgba(220, 235, 255, 0.5);
+  background: transparent;
+  border: 1px solid rgba(220, 235, 255, 0.2);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.mfd-page-comms-compose-clear:hover {
+  color: #ff4d6d;
+  border-color: rgba(255, 77, 109, 0.5);
+}
+
+.mfd-page-comms-compose-subject,
+.mfd-page-comms-compose-content {
+  width: 100%;
+  padding: 0.25rem 0.35rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.62rem;
+  color: rgba(220, 235, 255, 0.9);
+  background: rgba(0, 5, 10, 0.8);
+  border: 1px solid rgba(0, 255, 127, 0.25);
+  border-radius: 2px;
+  outline: none;
+  resize: none;
+}
+
+.mfd-page-comms-compose-subject::placeholder,
+.mfd-page-comms-compose-content::placeholder {
+  color: rgba(0, 255, 127, 0.35);
+  letter-spacing: 0.08em;
+}
+
+.mfd-page-comms-compose-subject:focus,
+.mfd-page-comms-compose-content:focus {
+  border-color: rgba(0, 217, 255, 0.5);
+  box-shadow: 0 0 6px rgba(0, 217, 255, 0.25);
+}
+
+.mfd-page-comms-transmit-btn {
+  align-self: flex-end;
+  padding: 0.2rem 0.6rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #00d9ff;
+  background: rgba(0, 217, 255, 0.1);
+  border: 1px solid rgba(0, 217, 255, 0.45);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.mfd-page-comms-transmit-btn:hover:not(:disabled) {
+  background: rgba(0, 217, 255, 0.2);
+  box-shadow: 0 0 8px rgba(0, 217, 255, 0.3);
+}
+
+.mfd-page-comms-transmit-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.mfd-page-comms-send-notice {
+  font-family: 'Courier New', monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.08em;
+  color: #00ff7f;
+}
+
+.mfd-page-comms-compose-hint {
+  margin: 0.2rem 0 0.3rem;
+  padding: 0.35rem 0.4rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.55rem;
+  letter-spacing: 0.08em;
+  text-align: center;
+  color: rgba(0, 255, 127, 0.4);
+  border: 1px dashed rgba(0, 255, 127, 0.2);
+  border-radius: 3px;
+}
+
+/* ── REPUTATION — per-faction standings list ─── */
+
+.mfd-page-faction-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.mfd-page-faction-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  font-size: 0.66rem;
+  line-height: 1.5;
+  padding: 0.12rem 0;
+  border-bottom: 1px solid rgba(255, 215, 0, 0.08);
+}
+
+.mfd-page-faction-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(220, 235, 255, 0.85);
+}
+
+.mfd-page-faction-level {
+  flex-shrink: 0;
+  font-size: 0.58rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--mfd-accent, #FFD700);
+  opacity: 0.85;
+}
+
+.mfd-page-faction-value {
+  flex-shrink: 0;
+  min-width: 3em;
+  text-align: right;
+  font-weight: 700;
+  color: #00FF7F;
+}
+
+.mfd-page-faction-value.negative {
+  color: #FF4D6D;
+}
+
+/* Distinct visual weight from .mfd-page-faction-value — a TEAM aggregate
+   reading is informational context, never the player's own standing. */
+.mfd-page-faction-team {
+  flex-shrink: 0;
+  width: 100%;
+  font-size: 0.56rem;
+  letter-spacing: 0.05em;
+  color: rgba(158, 197, 255, 0.75);
+}
+
+/* Color-graded standing bar (WO-UI5-DOSSIER) — same width%+backgroundColor
+   fill idiom as RankDisplay.tsx's .rank-progress-bar/.rank-progress-fill.
+   `width: 100%` on the flex-wrap row forces its own line, same as
+   .mfd-page-faction-team above. */
+.mfd-page-faction-bar {
+  flex-shrink: 0;
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.mfd-page-faction-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s ease, background-color 0.3s ease;
+}
+
+/* Failure / alert line — mirrors pages-ship.css's .mfd-page-warnline
+   exactly (same class name, same visual language) so a fetch failure reads
+   consistently as an alarm across both page families. */
+.mfd-page-warnline {
+  margin-top: 8px;
+  padding: 3px 6px;
+  border-left: 2px solid #ff4d6d;
+  background: rgba(255, 77, 109, 0.08);
+  color: #ff4d6d;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
 /* ── ARIA TERMINAL ──────────────────────────
    Feed scrolls inside MFDPageBody; status row +
    input row are pinned below it by .mfd-page-ops.
@@ -181,6 +564,15 @@
    nav channel from the WS ARIA channel without changing geometry. */
 .mfd-page-aria-line.nav {
   border-left: 2px solid rgba(0, 217, 255, 0.25);
+  padding-left: 0.35rem;
+}
+
+/* ARIA narration lines (WO-ARIA-NARRATE-KERNEL, server-pushed catalog
+   events): faint violet left accent — ARIA's own channel color — sets a
+   proactive narration apart from a conversational aria_response, without
+   changing geometry (same idiom as .nav above). */
+.mfd-page-aria-line.narration {
+  border-left: 2px solid rgba(123, 47, 255, 0.3);
   padding-left: 0.35rem;
 }
 

@@ -14,34 +14,35 @@ interface ConnectionPath3DProps {
 }
 
 export default function ConnectionPath3D({ start, end, type, lodLevel }: ConnectionPath3DProps) {
-  // Generate curve points for the connection
+  // Stable curve — no Math.random (refresh/remount must not reshuffle paths).
   const points = useMemo(() => {
     if (lodLevel.detail === 'low') {
-      // Simple straight line for low detail
       return [start, end];
     }
-    
-    // Curved path for better visual appeal
+
     const midPoint = start.clone().lerp(end, 0.5);
-    const distance = start.distanceTo(end);
-    
-    // Add some curve variation
-    const curve = new Vector3(
-      (Math.random() - 0.5) * distance * 0.2,
-      (Math.random() - 0.5) * distance * 0.2,
-      (Math.random() - 0.5) * distance * 0.2
-    );
-    
-    midPoint.add(curve);
-    
+    const dir = end.clone().sub(start);
+    const distance = dir.length();
+    if (distance < 1e-6) {
+      return [start, end];
+    }
+
+    const up = Math.abs(dir.y / distance) < 0.9
+      ? new Vector3(0, 1, 0)
+      : new Vector3(1, 0, 0);
+    const perp = new Vector3().crossVectors(dir, up).normalize();
+    const bulge = type === 'tunnel' ? 0.16 : 0.1;
+    midPoint.add(perp.multiplyScalar(distance * bulge));
+    midPoint.y += distance * 0.06;
+
     return [start, midPoint, end];
-  }, [start, end, lodLevel.detail]);
+  }, [start, end, lodLevel.detail, type]);
 
   const color = type === 'tunnel' ? '#ff4444' : '#4488ff';
   const lineWidth = type === 'tunnel' ? 3 : 1;
 
   if (lodLevel.detail === 'low' && start.distanceTo(end) > 50) {
-    return null; // Don't render distant connections in low detail
+    return null;
   }
 
   return (

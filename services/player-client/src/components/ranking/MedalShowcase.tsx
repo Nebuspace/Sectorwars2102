@@ -92,9 +92,11 @@ const MedalShowcase: React.FC = () => {
     if (!medalData) return { earned: [], available: [] };
     const filterFn = (m: Medal) =>
       activeCategory === 'All' || m.category === activeCategory;
+    // Defensive: MedalData's shape is enforced by the TS type, not at
+    // runtime -- a malformed/incomplete 200 must not crash the showcase.
     return {
-      earned: medalData.earned.filter(filterFn),
-      available: medalData.available.filter(filterFn),
+      earned: (medalData.earned ?? []).filter(filterFn),
+      available: (medalData.available ?? []).filter(filterFn),
     };
   }, [medalData, activeCategory]);
 
@@ -125,7 +127,7 @@ const MedalShowcase: React.FC = () => {
       <div className="medal-header">
         <h3>Medals</h3>
         <span className="medal-count">
-          {medalData.earned.length} / {medalData.earned.length + medalData.available.length}
+          {(medalData.earned ?? []).length} / {(medalData.earned ?? []).length + (medalData.available ?? []).length}
         </span>
       </div>
 

@@ -13,18 +13,32 @@ export const MFDPageHeader: React.FC<{
   title: string;
   accent: string;
   status: MFDFeatureStatus;
-}> = ({ title, accent, status }) => (
-  <header
-    className="mfd-page-header"
-    style={{ '--mfd-accent': accent } as React.CSSProperties}
-  >
-    <span className="mfd-page-title">{title}</span>
-    {status === 'partial' ? <span className="mfd-chip-partial">PARTIAL</span> : null}
-    {/* Page-change announcement lives in MFDScreen: a live region that
-        remounts with the page is not reliably announced — the region must
-        persist and have its CONTENT change. */}
-  </header>
-);
+  // WO-UI0-SHELL-TRANSPLANT integration cleanup (item 2): MFDScreen.tsx
+  // now renders its own `<b className="mfd-unit-title">{unit} · {page}</b>`
+  // inside `.scr`, so a live-registered MFD page's OWN title here would
+  // double-stack. Those pages (mfd/pages/VesselPage, CargoPage, QuantumPage,
+  // NavPositionPage, CommsCrewPage) pass `showTitle={false}` to suppress
+  // just the title text while keeping this header's non-title chrome (the
+  // PARTIAL status chip, the accent LED border). Pages reused OUTSIDE
+  // MFDScreen — ReputationPage inside PlayerInfo.tsx's dossier tab is the
+  // one live case — keep the default `true` and render their own title as
+  // before, since no ancestor supplies it there.
+  showTitle?: boolean;
+}> = ({ title, accent, status, showTitle = true }) => {
+  if (!showTitle && status !== 'partial') return null;
+  return (
+    <header
+      className="mfd-page-header"
+      style={{ '--mfd-accent': accent } as React.CSSProperties}
+    >
+      {showTitle ? <span className="mfd-page-title">{title}</span> : null}
+      {status === 'partial' ? <span className="mfd-chip-partial">PARTIAL</span> : null}
+      {/* Page-change announcement lives in MFDScreen: a live region that
+          remounts with the page is not reliably announced — the region must
+          persist and have its CONTENT change. */}
+    </header>
+  );
+};
 
 export const MFDPageBody: React.FC<{
   children: React.ReactNode;

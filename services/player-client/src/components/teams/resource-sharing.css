@@ -132,6 +132,16 @@
   border-color: var(--primary-green);
 }
 
+/* T4-K: .member-option is now a keyboard-focusable role="button" row (see
+   ResourceSharing.tsx). Outline + outline-offset only -- no border/
+   box-shadow size change. Same --primary-green fallback guard as
+   mission-planner.css's sibling .mission-item rule (the variable is
+   undefined anywhere in the codebase). */
+.member-option:focus-visible {
+  outline: 2px solid var(--primary-green, #00ff9d);
+  outline-offset: 2px;
+}
+
 .member-option.offline {
   opacity: 0.6;
 }

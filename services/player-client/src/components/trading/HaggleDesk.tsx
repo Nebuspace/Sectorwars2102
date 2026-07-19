@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { haggleAPI } from '../../services/api';
+import { haggleAPI, tradingAPI } from '../../services/api';
 import { formatCredits } from '../../utils/formatters';
 import './haggle-desk.css';
 
@@ -71,6 +71,16 @@ interface StatusResult {
   } | null;
 }
 
+/** POST /api/v1/trading/quote's response shape (WO-API-B1) — the
+ *  tax-inclusive total the real buy/sell commit will charge/pay. */
+interface TradeQuoteResult {
+  unit_price: number;
+  subtotal: number;
+  tax_rate: number;
+  tax: number;
+  total: number;
+}
+
 interface HaggleDeskProps {
   stationId: string;
   /** resource_type KEY — must match the buy/sell resource_type. */
@@ -79,6 +89,12 @@ interface HaggleDeskProps {
   side: Side;
   /** Quantity is FIXED at open; the parent locks the slider while haggling. */
   quantity: number;
+  /** Station's EFFECTIVE tax rate (0 at unowned/untaxed stations — same
+   *  field TradingInterface reads off marketInfo.port.tax_rate). Used to
+   *  show a tax-INCLUSIVE live-offer preview (mack HIGH-2) before any
+   *  session is accepted; the "Deal struck" total instead re-quotes the
+   *  server directly once accepted, so this is only the pre-accept path. */
+  taxRate: number;
   /** Display name + icon passed through for header parity with the modal. */
   commodityLabel: string;
   /** Optional trader temperament chip label (purely informational). */
@@ -94,6 +110,7 @@ const HaggleDesk: React.FC<HaggleDeskProps> = ({
   commodity,
   side,
   quantity,
+  taxRate,
   commodityLabel,
   personalityLabel,
   onBack,
@@ -130,6 +147,67 @@ const HaggleDesk: React.FC<HaggleDeskProps> = ({
       if (cooldownTimer.current) clearInterval(cooldownTimer.current);
     };
   }, []);
+
+  // mack HIGH-2: the "Deal struck" card used to show agreed_price*quantity
+  // with NO tax, while buy_resource/sell_resource apply the station's
+  // tax_rate on the haggled price exactly like any other trade — shown !=
+  // charged at any taxed station, deterministically. Once accepted, the
+  // agreed price is stored server-side (accepted, not yet consumed), so
+  // POST /trading/quote's haggle-peek + compute_buy_totals/
+  // compute_sell_totals reuse gives the EXACT tax-inclusive number the
+  // charge will use — single source of truth, no client-side tax math.
+  //
+  // mack MEDIUM (rev-3): a failed fetch used to fall back to the tax-less
+  // estimate behind only a muted note — easy to miss at exactly the
+  // "Deal struck!" moment, so the player could commit expecting the WRONG
+  // number even though the actual charge is (and always was) correct.
+  // acceptedQuoteError now drives a PROMINENT warning + Retry instead
+  // (see the render below); acceptedQuoteRetryNonce re-runs this fetch
+  // with identical params, mirroring the plain-quote surface's own
+  // quoteRetryNonce pattern in TradingInterface.tsx. Confirm stays
+  // ENABLED through the error state (deliberately NOT added to its
+  // disabled condition below) — the haggle session is single-use, so
+  // blocking Confirm on a persistently flaky connection would strand an
+  // already-negotiated deal with zero corresponding safety benefit (the
+  // charge is server-authoritative regardless of what this preview
+  // shows); the warning gives informed consent to proceed without a
+  // retry instead.
+  const [acceptedQuote, setAcceptedQuote] = useState<TradeQuoteResult | null>(null);
+  const [acceptedQuoteLoading, setAcceptedQuoteLoading] = useState(false);
+  const [acceptedQuoteError, setAcceptedQuoteError] = useState(false);
+  const [acceptedQuoteRetryNonce, setAcceptedQuoteRetryNonce] = useState(0);
+  useEffect(() => {
+    if (!(accepted && lastResult?.agreed_price != null)) {
+      return;
+    }
+    let cancelled = false;
+    setAcceptedQuoteLoading(true);
+    setAcceptedQuoteError(false);
+    tradingAPI
+      .quote(stationId, commodity, quantity, side)
+      .then((data: TradeQuoteResult) => {
+        if (cancelled || !mountedRef.current) return;
+        setAcceptedQuote(data);
+        setAcceptedQuoteError(false);
+      })
+      .catch(() => {
+        if (cancelled || !mountedRef.current) return;
+        setAcceptedQuoteError(true);
+      })
+      .finally(() => {
+        if (!cancelled && mountedRef.current) setAcceptedQuoteLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [accepted, lastResult?.agreed_price, stationId, commodity, quantity, side, acceptedQuoteRetryNonce]);
+
+  // carry-forward LOW (mack, accepted as a follow-on, not fixed here): this
+  // effect and the eventual buy/sell commit both read the station's
+  // tax_rate fresh, independently, with no re-check between them — an
+  // owner moving the tax lever mid-negotiation could still show one rate
+  // here and charge a different one a moment later. Same class as the
+  // Phase-2 server-side price/version-token follow-on tracked by the hub.
 
   // Tick the cooldown down to zero so the player sees it clear in real time.
   useEffect(() => {
@@ -260,6 +338,17 @@ const HaggleDesk: React.FC<HaggleDeskProps> = ({
     !!clamp &&
     Number.isFinite(offerNum) &&
     (offerNum < clamp.min || offerNum > clamp.max);
+
+  // mack HIGH-2: this is a SPECULATIVE preview of "what if this exact offer
+  // gets accepted" — no haggle session exists yet for /trading/quote to
+  // peek (the trader might counter instead), so this can't be re-quoted
+  // server-side the way the accepted total below is. It CAN still be tax-
+  // INCLUSIVE though: Math.floor mirrors compute_buy_totals/
+  // compute_sell_totals' int() truncation exactly for non-negative inputs,
+  // and buy ADDS tax / sell WITHHOLDS it, same as the server.
+  const offerSubtotal = Number.isFinite(offerNum) ? offerNum * quantity : 0;
+  const offerTax = Math.floor(offerSubtotal * taxRate);
+  const offerTotal = side === 'buy' ? offerSubtotal + offerTax : offerSubtotal - offerTax;
 
   // ── Render: pre-open gates ──────────────────────────────────────────────
   if (checking) {
@@ -402,9 +491,13 @@ const HaggleDesk: React.FC<HaggleDeskProps> = ({
             <div className="haggle-offer-total">
               You'd {directionWord}{' '}
               <strong>
-                {Number.isFinite(offerNum) ? formatCredits(offerNum * quantity) : '—'}
+                {Number.isFinite(offerNum) ? formatCredits(offerTotal) : '—'}
               </strong>{' '}
-              total for ×{quantity}.
+              total for ×{quantity}
+              {taxRate > 0 && Number.isFinite(offerNum) && (
+                <span className="haggle-tax-note"> (incl. {(taxRate * 100).toFixed(1)}% station tax)</span>
+              )}
+              .
             </div>
             <button
               className="haggle-submit-btn"
@@ -424,9 +517,40 @@ const HaggleDesk: React.FC<HaggleDeskProps> = ({
           <h4>Deal struck</h4>
           <p className="haggle-agreed">
             Agreed at <strong>{formatCredits(lastResult.agreed_price)}/unit</strong> ·
-            total <strong>{formatCredits(lastResult.agreed_price * quantity)}</strong>{' '}
-            for ×{quantity}.
+            total{' '}
+            <strong>
+              {acceptedQuote
+                ? formatCredits(acceptedQuote.total)
+                : acceptedQuoteError
+                  ? formatCredits(lastResult.agreed_price * quantity)
+                  : '…'}
+            </strong>{' '}
+            for ×{quantity}
+            {acceptedQuote && acceptedQuote.tax_rate > 0 && (
+              <span className="haggle-tax-note"> (incl. {(acceptedQuote.tax_rate * 100).toFixed(1)}% station tax)</span>
+            )}
+            .
           </p>
+          {/* mack MEDIUM (rev-3): PROMINENT — not the muted haggle-tax-note
+              style — because a missed caveat here means committing to a
+              number that isn't what gets charged. The charge itself is
+              always correct regardless of this fetch's outcome. */}
+          {acceptedQuoteError && (
+            <div className="haggle-quote-error" role="alert">
+              <span>
+                Couldn't confirm the tax-inclusive total shown above — you'll
+                still be charged the correct amount (incl. station tax)
+                regardless. Retry to preview it first.
+              </span>
+              <button
+                type="button"
+                className="haggle-quote-retry-btn"
+                onClick={() => setAcceptedQuoteRetryNonce(n => n + 1)}
+              >
+                Retry
+              </button>
+            </div>
+          )}
           <p className="haggle-agreed-note">
             Confirm the trade to lock it in — this price is single-use and is
             forfeit if you cancel.
@@ -434,7 +558,7 @@ const HaggleDesk: React.FC<HaggleDeskProps> = ({
           <button
             className="haggle-confirm-trade-btn"
             onClick={() => onAccepted(lastResult.agreed_price!)}
-            disabled={busy}
+            disabled={busy || acceptedQuoteLoading}
           >
             {side === 'buy' ? 'Buy' : 'Sell'} at Agreed Price
           </button>

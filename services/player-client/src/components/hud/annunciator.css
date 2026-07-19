@@ -1,0 +1,176 @@
+/* Annunciator — windshield HUD overlay (WO-UI0-SHELL-TRANSPLANT leaf L5).
+   The strip/lamp/seg/bulb GEOMETRY + COLORS are now owned by
+   layouts/cockpit-shell.css (`.annun`/`.lamp`/`.bulb`/`.segs`/`.seg` — the
+   ratified prototype's own bare classnames, imported alongside this file by
+   both Annunciator.tsx and AnnunciatorMini.tsx). This file keeps only what
+   cockpit-shell.css doesn't cover:
+     1. `.annunciator-overlay` — this app's own scene-narrowing/z-index
+        wrapper (no artifact equivalent; the demo has no portaled scene
+        underneath its band to guard against).
+     2. `.annunciator-card*` — the HazardAnalysisCard dialog (item 6 of
+        WO-UI1-CHROME-COMPLETE; the ratified prototype's own hazInfo() just
+        narrates via the teleprinter, no card, so there is no bare class to
+        adopt here).
+     3. `.annunciator-mini-*` — AnnunciatorMini's SIZE-only overrides
+        (written as `.bulb.annunciator-mini-bulb` / `.seg.annunciator-mini-
+        seg` compound selectors so they out-specificity cockpit-shell.css's
+        bare single-class rules regardless of import order — see
+        AnnunciatorMini.tsx's own doc-comment for why the mini variant
+        can't just adopt the bare classes outright). */
+
+/* SCENE-NARROWING guardrail: position:absolute + inset:0 so the layer
+   contributes ZERO layout size to its parent (GameLayout's `.band` —
+   WO-UI0-SHELL-TRANSPLANT, supersedes the retired `.windshield-hud-anchor`)
+   — it never narrows or occludes the scene portaled into that same `.band`.
+   Non-interactive by default: pointer-events is set inline in
+   Annunciator.tsx (testable without depending on this file loading in the
+   vitest node/jsdom pipeline) and repeated here so the visual contract
+   stays self-documenting if the inline style is ever dropped. No longer
+   flex-centers its content -- `.annun` (cockpit-shell.css) self-positions
+   via its own position:absolute;top:5%;left:50%;transform, resolved
+   against THIS wrapper's box (which exactly matches `.band`'s box, being
+   inset:0) -- so this wrapper is now purely a positioning/pointer-events/
+   z-index passthrough layer, not a layout container. */
+.annunciator-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 30; /* matches the HUD z-index band documented in game-layout.css (console:20, HUD:30, edge-toggle:40) --
+  fragile: this only wins over the portaled .cockpit-windshield scene (z:1) because nothing under it currently sets z-index>=30; revisit if that ever changes. */
+}
+
+/* ── Hazard analysis card (item 6: HAZARD→"the analysis card") ──────────── */
+.annunciator-card {
+  pointer-events: auto;
+  position: absolute;
+  /* Clears `.annun`'s own box (top:5% + ~2rem of bulb+label height at
+     typical viewport sizes) so the card never overlaps the strip above it
+     -- see Annunciator.tsx's doc-comment for why this can no longer be a
+     simple in-flow margin-top now that `.annun` is absolutely positioned
+     (out of any flex flow) rather than a sibling flex item. */
+  top: 3.2rem;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(22rem, 90%);
+  border: 1px solid var(--cockpit-warning, #ffb020);
+  border-radius: 6px;
+  background: linear-gradient(180deg, rgba(18, 14, 4, 0.97) 0%, rgba(10, 8, 2, 0.98) 100%);
+  color: #eef4fb;
+  font: 500 0.75rem/1.4 var(--mono, 'Courier New', monospace);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+}
+
+.annunciator-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0.7rem;
+  border-bottom: 1px solid rgba(255, 176, 32, 0.3);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.annunciator-card-close {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.85rem;
+  opacity: 0.75;
+}
+
+.annunciator-card-close:hover {
+  opacity: 1;
+}
+
+.annunciator-card-body {
+  padding: 0.6rem 0.7rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.annunciator-card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #a8bdd4;
+}
+
+.annunciator-card-features {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.annunciator-card-badge {
+  border: 1px solid rgba(255, 176, 32, 0.35);
+  border-radius: 3px;
+  padding: 0.1rem 0.4rem;
+  font-size: 0.62rem;
+  letter-spacing: 0.05em;
+}
+
+.annunciator-card-description {
+  color: #a8bdd4;
+  margin: 0;
+}
+
+.annunciator-card-note {
+  color: #ffc64d;
+  margin: 0;
+  font-size: 0.66rem;
+}
+
+/* ── AnnunciatorMini (item 7: monitor-header variant) ────────────────────
+   Inline row, NOT an absolute overlay -- meant to sit inside a header's
+   own flex layout (see AnnunciatorMini.tsx's doc-comment for its intended
+   station/surface-header consumers, not yet built, and for why it keeps
+   these SIZE-only compound-selector overrides instead of adopting the bare
+   `.bulb`/`.seg` classes outright -- their cockpit-shell.css geometry is
+   baked to the FULL strip's size). Every color/state rule (idle, warn.on,
+   caut.ack, seg.live/livec/livecm, ...) is intentionally ABSENT below --
+   those come from cockpit-shell.css for free via the bare `.bulb`/`.seg`
+   class each element also carries (AnnunciatorMini.tsx). */
+.annunciator-mini {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font: 700 0.58rem/1 var(--mono, 'Courier New', monospace);
+  letter-spacing: 0.05em;
+}
+
+.bulb.annunciator-mini-bulb {
+  width: 1.1rem;
+  height: 0.85rem;
+  border-radius: 3px;
+  font-size: 0.5rem;
+  line-height: 0.8rem;
+  text-align: center;
+}
+
+.segs.annunciator-mini-segs {
+  gap: 0.18rem;
+}
+
+.seg.annunciator-mini-seg {
+  font-size: 0.55rem;
+  padding: 0.1rem 0.3rem;
+  border-radius: 2px;
+}
+
+/* Reduced motion: cockpit-shell.css's own `@media (prefers-reduced-motion:
+   reduce){ .bulb{animation:none!important;} }` already covers both bulb
+   variants (full + mini, since both carry the bare `.bulb` class). It does
+   NOT cover `.seg.livecm` (COMM/cyan is the only lit segment class with an
+   animation in the ratified baseline -- `.seg.live`/`.seg.livec` are static
+   there, a deliberate rendered-demo-truth change from this build's prior
+   WARN/CAUTION segment flash, flagged in the WO-UI0-SHELL-TRANSPLANT
+   report) -- so COMM keeps its own explicit override here to preserve the
+   "reduced motion: never flashing" a11y contract (Accept #3, carried over
+   from the prior sub-part) for the one segment class that still animates. */
+@media (prefers-reduced-motion: reduce) {
+  .seg.livecm {
+    animation: none !important;
+  }
+}

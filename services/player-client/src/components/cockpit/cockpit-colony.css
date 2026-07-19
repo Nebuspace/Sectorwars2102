@@ -21,15 +21,44 @@
   margin: 0.4rem 0 0 0;
 }
 
-.colony-mgmt-console .cmc-tabbar {
+/* WO-UI2-CANON-A-COLONY: the tablist is now the shared cockpit/
+   DeckPageTabs.tsx rail (role=tablist/tab, roving-tabindex keyboard nav)
+   mounted with className="cmc-tabbar" so the element carries BOTH
+   `.deck-tab-rail` (base rail chrome, cockpit.css) and `.cmc-tabbar` (this
+   venue's original hand-rolled tablist skin). Every rule below re-scopes
+   the pre-migration `.cmc-tab` / `.cmc-tab:hover` / `.cmc-tab.active` look
+   onto `.deck-tab-btn` — qualified as `.cmc-tabbar.deck-tab-rail` /
+   `.cmc-tabbar .deck-tab-btn` (2-3 classes, specificity 0,2,0/0,3,0) so it
+   beats the base `.deck-tab-rail` / `.deck-tab-btn` (0,1,0/0,2,0)
+   regardless of CSS import order, and every base-rail property this skin
+   doesn't want (inline-flex, tight gap, boxed border/padding/background on
+   the rail; the base button's 2px radius/uppercase glow on .active) is
+   explicitly reset so the rendered look is byte-identical to the
+   hand-rolled tablist this replaced — the converged pattern from the
+   Construction/ContractBoard/PortOffice migrations (commit 4bdae518). */
+.colony-mgmt-console .cmc-tabbar.deck-tab-rail {
   display: flex;
   flex-wrap: wrap;
   align-items: stretch;
   gap: 0.3rem;
   flex-shrink: 0;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  background: none;
 }
 
-.colony-mgmt-console .cmc-tab {
+/* Each tab carries its own instrument's accent via --tab-accent — now set
+   per-page by DeckPageTabs.tsx (page.accent, WO-UI2-CANON-A-COLONY),
+   matching CitadelPanel/GridPanel/TerraformPanel/ResearchPanel/
+   ProductionPanel's own --panel-accent — Law 5). UNLIT (inactive) stations
+   stay a neutral surface-console graphite rather than one flat flight-deck
+   cyan; the SELECTED tab lights up in its own station's color — the console
+   reads as seven distinct instruments, not one avionics strip re-labeled
+   seven times. */
+.colony-mgmt-console .cmc-tabbar .deck-tab-btn {
+  --tab-accent: #7dd3fc;
+  position: static;
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
@@ -39,28 +68,30 @@
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: #7dd3fc;
-  background: rgba(0, 20, 35, 0.6);
-  border: 1px solid rgba(125, 211, 252, 0.28);
-  border-radius: 4px 4px 0 0;
+  color: #8a95a5;
+  background: rgba(20, 18, 15, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 3px 3px 0 0;
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
   white-space: nowrap;
 }
 
-.colony-mgmt-console .cmc-tab:hover {
-  background: rgba(0, 30, 50, 0.8);
-  color: #bae6fd;
+.colony-mgmt-console .cmc-tabbar .deck-tab-btn:hover {
+  background: rgba(32, 28, 24, 0.75);
+  color: color-mix(in srgb, var(--tab-accent) 55%, #e2e8f0 45%);
+  border-color: color-mix(in srgb, var(--tab-accent) 40%, transparent);
 }
 
-.colony-mgmt-console .cmc-tab.active {
-  color: #001018;
-  background: linear-gradient(180deg, #7dd3fc 0%, #38bdf8 100%);
-  border-color: #7dd3fc;
-  box-shadow: 0 0 10px rgba(125, 211, 252, 0.5);
+.colony-mgmt-console .cmc-tabbar .deck-tab-btn.active {
+  color: #05070a;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--tab-accent) 85%, #ffffff 15%) 0%, var(--tab-accent) 100%);
+  border-color: var(--tab-accent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--tab-accent) 55%, transparent);
+  text-shadow: none;
 }
 
-.colony-mgmt-console .cmc-tab-icon { font-size: 0.85rem; }
+.colony-mgmt-console .cmc-tabbar .cmc-tab-icon { font-size: 0.85rem; }
 
 
 /* The active panel's region — flex-fills the rest of the console height. The
@@ -166,14 +197,17 @@
   overflow-x: hidden;
 }
 
-/* ── Panel frame — small instrument bezel, accent-tinted LED header ── */
+/* ── Panel frame — small instrument bezel, accent-tinted LED header ──
+   Surface-console tone: a warm near-black (vs. the flight deck's cold
+   blue-black) so the colony console reads as ground-side hardware, not a
+   re-skinned flight instrument. Still accent-driven per panel (Law 5). */
 .cockpit-panel {
   --panel-accent: #00d9ff;
   position: relative;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: rgba(0, 5, 10, 0.85);
+  background: rgba(9, 7, 5, 0.85);
   border: 1px solid color-mix(in srgb, var(--panel-accent) 28%, transparent);
   border-radius: 4px;
   box-shadow:
