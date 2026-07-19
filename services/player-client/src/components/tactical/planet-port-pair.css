@@ -1,77 +1,113 @@
 /* ============================================
-   PLANET-PORT PAIR - Ultra-Compact Orbital View
+   PLANET-PORT PAIR - Dense two-line sensor rows
+   (WO-UI-MAX-BATCH-1 item 7: "EVERY object = ONE
+   DENSE .row line ... the claim/dock/land button
+   sits to the RIGHT of the info on the SAME line").
+   Was a side-by-side planet↔station "orbit pair"
+   card with an arrow connector and stacked meta/
+   stats beneath each name; now a vertical stack of
+   up to two full-width dense rows — no connector,
+   no stacking, matching the SOLAR SYSTEM page's flat
+   object list (every other row on that monitor —
+   NAV exits, TACTICAL contacts — is already this
+   shape; PlanetPortPair was the one holdout).
+
+   FIX #32 (habitable-planet card too tall): every
+   selector below is scoped under `.planet-port-pair`
+   on purpose. cockpit.css ships bare, unscoped
+   `.planet-section` / `.planet-icon` / `.planet-name`
+   / `.station-icon` / `.station-name` rules left over
+   from a retired stacked planet-header design (its own
+   comments admit "remain because tactical cards share
+   those class names") — since cockpit.css loads AFTER
+   this file in GameDashboard's import graph, those
+   same-specificity bare rules were winning: a 4rem
+   icon, a 1.1rem name, and (worst) `.planet-section {
+   flex-direction: column !important }` turning the
+   dense one-line row into a stack. Scoping under
+   `.planet-port-pair` raises specificity so THIS file
+   wins regardless of import order; the one `!important`
+   is matched with a higher-specificity `!important` of
+   our own rather than editing the shared cockpit.css
+   (out of this lane).
    ============================================ */
 
+/* Flat sensor-list row — matches sibling `.row` items in the SOLAR SYSTEM
+   monitor (star / barren / SCAN). The old card chrome (gradient + border +
+   padding + scanline ::before) made the planet button box multiples taller
+   than every other entry even when the text was only two lines. */
 .planet-port-pair {
   display: flex;
-  align-items: center;
-  /* In a narrow monitor the planet and station rows stack instead of
-     crushing each other into clipped names — each section has a hard
-     wrap floor below. */
-  flex-wrap: wrap;
-  gap: 0.25rem;
-  background: linear-gradient(135deg, rgba(15, 20, 35, 0.9) 0%, rgba(8, 12, 22, 0.95) 100%);
-  border: 1px solid rgba(147, 51, 234, 0.3);
-  border-radius: 4px;
-  padding: 0.3rem;
-  margin-bottom: 0.25rem;
-  transition: all 0.3s ease;
+  flex-direction: column;
+  gap: 0;
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  margin: 0;
+  /* Same dashed separator as cockpit-shell.css `.row` */
+  border-bottom: 1px dashed #14202E;
+  transition: none;
   position: relative;
-  overflow: hidden;
+  overflow: visible;
 }
 
-.planet-port-pair::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: repeating-linear-gradient(
-    90deg,
-    rgba(147, 51, 234, 0.03) 0px,
-    transparent 1px,
-    transparent 2px
-  );
-  pointer-events: none;
-}
-
-/* Planet Section */
-.planet-section {
+/* Planet Section — two dense lines: icon+name on line 1, action button
+   rides alongside; quals/stats on line 2. cockpit.css's bare
+   `.planet-section { flex-direction: column !important }` (see file
+   header) would otherwise stack `.planet-info` above the action button —
+   matched here with our own higher-specificity !important. */
+.planet-port-pair .planet-section {
   display: flex;
+  flex-direction: row !important;
   align-items: center;
+  justify-content: space-between;
   flex-wrap: nowrap;
-  gap: 0.25rem;
-  padding: 0.15rem 0.3rem;
-  border-radius: 4px;
+  gap: 0.35em;
+  /* Match cockpit-shell.css `.row` vertical padding (.35em 0). !important
+     on the box model so a regression of the bare colony-card rule can never
+     re-inflate this row (Max 2026-07-14: Earth Planet was 4× Earth Station). */
+  padding: 0.35em 0 !important;
+  border-radius: 0 !important;
   transition: all 0.2s ease;
-  /* Wrap floor: below ~11rem of available width the section takes its own
-     row rather than letting names clip (min-width:0 let it crush to
-     nothing). */
-  flex: 1 1 11rem;
   min-width: 0;
+  min-height: 0 !important;
+  background: transparent !important;
+  background-image: none !important;
+  border: none !important;
+  box-shadow: none !important;
 }
 
-.planet-section.clickable {
+.planet-port-pair .planet-section.clickable {
   cursor: pointer;
 }
 
-.planet-section.clickable:hover {
+.planet-port-pair .planet-section.clickable:hover {
   background: rgba(147, 51, 234, 0.15);
-  transform: scale(1.02);
 }
 
-.planet-section.landed {
+.planet-port-pair .planet-section.landed {
   background: rgba(147, 51, 234, 0.2);
   border-left: 2px solid #9333ea;
 }
 
-.planet-icon {
-  font-size: 1rem;   /* ~1 line-height so icon sits flush beside the name */
+/* In transit (flying) — mirrors .station-section.inactive below; the row's
+   action becomes the shared .act.armed HALT chip instead of LAND/APPROACH. */
+.planet-port-pair .planet-section.inactive {
+  opacity: 0.6;
+}
+
+.planet-port-pair .planet-icon {
+  /* em-relative; !important belt against any leftover bare `.planet-icon`
+     hero rules (cockpit.css previously shipped 4rem + margin-bottom:1rem —
+     that alone made Earth Planet ~4× Earth Station). */
+  font-size: 1.15em !important;
+  margin: 0 !important;
+  filter: none !important;
   flex-shrink: 0;
   animation: planet-rotation 20s linear infinite;
   display: inline-block;
-  line-height: 1;
+  line-height: 1 !important;
 }
 
 @keyframes planet-rotation {
@@ -83,76 +119,89 @@
   }
 }
 
-.planet-details {
+/* icon + name on line 1, quals/stats forced to line 2 via flex-wrap +
+   flex-basis:100% on `.planet-quals` below (Max: "TWO lines: top line =
+   name, bottom line = stats"). min-width:0 lets children shrink/ellipsis
+   rather than blow out the row width. */
+.planet-port-pair .planet-info,
+.planet-port-pair .station-info {
   display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
+  align-items: center;
+  flex-wrap: wrap;
+  /* Two lines of content is fine (name / stats) — but don't inherit the
+     panel's fat ~1.7 line-height or the box balloons around the text. */
+  row-gap: 0;
+  column-gap: 0.35em;
+  line-height: 1.2;
+  /* HEIGHT BOMB #3: planetary/colony-specialization.css ships a bare
+     `.planet-info` card rule (padding:var(--space-md), margin-bottom:
+     var(--space-lg), font-size:.875rem). In the live cockpit that leaked
+     into PlanetPortPair's planet row only, giving NEW EARTH 16px top/bottom
+     padding + 24px bottom margin while Earth Station stayed dense. Keep this
+     sensor-list info block chromeless and inherited-size, same as station. */
+  padding: 0 !important;
+  margin: 0 !important;
+  background: transparent !important;
+  border-radius: 0 !important;
+  font-size: inherit !important;
   min-width: 0;
   flex: 1;
 }
 
-/* icon + name always on one tight row — flex-row, never wraps */
-.planet-name-line {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 0.3rem;
-  flex-wrap: nowrap;
-  min-width: 0;
-}
-
-/* claim/hub/owner badges — stacked below the name row */
-.planet-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-  min-width: 0;
-}
-
-.planet-name {
-  font-size: 0.75rem;
+.planet-port-pair .planet-name {
+  /* WO-SOLARUI item B(ii): em-relative — scales with `.mbody`.
+     Also zero the bare cockpit.css `.planet-name { margin: 0 0 0.25rem }`
+     so it doesn't pad the row. */
+  font-size: 1em;
   font-weight: 700;
   color: #9333ea;
   line-height: 1.2;
-  /* id=141: TRUNCATE (ellipsis) instead of break-word wrapping — a long name
-     wrapping grew the details block and read as the icon "stacking" above the
-     name at narrow cockpit widths. nowrap + ellipsis keeps the planet row a
-     single line so the icon stays beside the name; needs the min-width:0 chain
-     (.planet-section / .planet-details / .planet-name-line) to shrink. */
-  display: block;
-  align-self: stretch;
-  min-width: 0;
+  margin: 0;
+  /* id=141: TRUNCATE (ellipsis) instead of break-word wrapping. */
+  flex-shrink: 1;
   max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.planet-hub-tag {
-  font-size: 0.55rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+/* Secondary stats/badges — line 2 of the card (Max #32). Each qualifier is
+   its own <span>; a leading " · " separator renders via ::before on every
+   sibling but the first, so the list composes cleanly regardless of which
+   qualifiers are present for a given row. flex-basis:100% is the standard
+   flex-wrap trick that forces this block onto its own line even though
+   icon+name (line 1) don't fill the row's width. */
+.planet-port-pair .planet-quals {
+  display: flex;
+  align-items: center;
+  /* Max 2026-07-14: two lines is correct (name · stats). Force quals onto
+     line 2 via flex-basis:100%, but keep leading tight so the box hugs the
+     text — never a padded colony card. */
+  flex: 1 1 100%;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.85em;
+  line-height: 1.15;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.planet-port-pair .planet-quals span + span::before {
+  content: ' · ';
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.planet-port-pair .planet-quals .pq-hub {
   color: #00d9ff;
-  background: rgba(0, 217, 255, 0.08);
-  border: 1px solid rgba(0, 217, 255, 0.35);
-  border-radius: 3px;
-  padding: 0.1rem 0.3rem;
-  white-space: normal;
-  line-height: 1.3;
+  font-weight: 700;
+  letter-spacing: 0.06em;
 }
 
-.planet-owner {
-  font-size: 0.6rem;
-  color: #00ff41;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.planet-claim-hint {
-  font-size: 0.6rem;
+.planet-port-pair .planet-quals .pq-unclaimed {
   color: #ffb000;
-  font-weight: 600;
-  white-space: nowrap;
+  font-weight: 700;
+  letter-spacing: 0.04em;
   animation: claim-pulse 2s ease-in-out infinite;
 }
 
@@ -165,191 +214,127 @@
   }
 }
 
-/* Claim requirements at a glance, shown under the Click-to-Claim hint */
-.planet-claim-reqs {
-  font-size: 0.55rem;
+.planet-port-pair .planet-quals .pq-owner {
+  color: #00ff41;
+  font-weight: 600;
+}
+
+.planet-port-pair .planet-quals .pq-status {
+  color: rgba(255, 255, 255, 0.75);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.planet-port-pair .planet-quals .pq-reqs {
   color: rgba(255, 176, 0, 0.75);
-  white-space: nowrap;
   letter-spacing: 0.02em;
 }
 
+.planet-port-pair .planet-quals .pq-stat {
+  color: rgba(255, 255, 255, 0.8);
+}
+
 /* Unclaimed planet styling */
-.planet-section.unclaimed {
+.planet-port-pair .planet-section.unclaimed {
   border-left: 2px solid rgba(255, 176, 0, 0.5);
 }
 
-.planet-section.unclaimed.clickable:hover {
+.planet-port-pair .planet-section.unclaimed.clickable:hover {
   background: rgba(255, 176, 0, 0.15);
 }
 
-.planet-stats {
-  display: flex;
-  gap: 0.3rem;
-  font-size: 0.65rem;
-}
-
-.planet-stats .stat {
-  display: flex;
-  align-items: center;
-  gap: 0.2rem;
-  color: rgba(255, 255, 255, 0.8);
-  white-space: nowrap;
-}
-
-/* Orbital Connector — decorative; when the pair wraps into stacked rows
-   the arrow would dangle at the end of the planet row, so it only renders
-   when there is room for the side-by-side layout. */
-.orbital-connector {
-  font-size: 0.9rem;
-  color: rgba(147, 51, 234, 0.5);
+/* Row action button (LAND/CLAIM/APPROACH/HALT ▸) — shared cockpit-shell.css
+   `.act`/`.act.armed`; never let it get crushed by the flex-1 info block. */
+.planet-port-pair .planet-section > .act,
+.planet-port-pair .station-section > .act {
   flex-shrink: 0;
-  animation: pulse-connector 2s ease-in-out infinite;
+  /* HEIGHT BOMB #2: `.act` sets no line-height, so it inherits `.mbody`'s
+     15.81px line box (~1.7x its own 8.8px font). Padding .25em + that fat
+     inherited leading made the button 21.4px tall — taller than a text line —
+     so `align-items:center` stretched the whole clickable row well above every
+     sibling `.row`. Pin a tight line-height + trim vertical padding so the
+     button hugs its label and the row height is driven by the text, not the
+     chip. Row now measures ~as tall as star/barren `.row` items. */
+  line-height: 1.15;
+  padding-top: 0.1em;
+  padding-bottom: 0.1em;
+  align-self: center;
 }
 
-@container planetary-content (max-width: 26rem) {
-  .orbital-connector {
-    display: none;
-  }
-}
-
-@keyframes pulse-connector {
-  0%, 100% {
-    opacity: 0.5;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
-/* Station Section */
-.station-section {
+/* Station Section — same dense two-line grammar as the planet section.
+   No bare cockpit.css `.station-section` rule exists (grep-confirmed), so
+   flex-direction doesn't need the !important escape hatch here — only the
+   icon/name font-size collision applies (below). */
+.planet-port-pair .station-section {
   display: flex;
   align-items: center;
-  gap: 0.25rem;
-  padding: 0.15rem 0.3rem;
-  border-radius: 4px;
+  justify-content: space-between;
+  gap: 0.5rem;
+  /* Keep in lockstep with .planet-section — same `.row` padding. */
+  padding: 0.35em 0;
+  border-radius: 0;
   transition: all 0.2s ease;
-  /* Same wrap floor as .planet-section; the old flex-shrink:0 +
-     max-width:50% combination clipped long station names mid-word
-     ("Industrial Hub Tau...") instead of giving them their own row. */
-  flex: 1 1 11rem;
   min-width: 0;
-  max-width: 100%;
 }
 
-.station-section.clickable {
+.planet-port-pair .station-section.clickable {
   cursor: pointer;
 }
 
-.station-section.clickable:hover {
+.planet-port-pair .station-section.clickable:hover {
   background: rgba(0, 217, 255, 0.15);
-  transform: scale(1.02);
 }
 
-.station-section.inactive {
+.planet-port-pair .station-section.inactive {
   opacity: 0.6;
 }
 
-.station-icon {
+.planet-port-pair .station-icon {
   display: inline-flex;
   align-items: center;
-  font-size: 1rem;   /* scaled to ~1 line-height, matches planet-icon */
+  /* em-relative + kill bare cockpit.css `.station-icon` (4rem + margin-bottom:1rem) */
+  font-size: 1.15em;
+  margin: 0;
   flex-shrink: 0;
   line-height: 1;
+  animation: none;
   /* currentColor follows the station-class accent set inline; falls back to cyan */
   color: #00d9ff;
   filter: drop-shadow(0 0 6px currentColor);
 }
 
-.station-details {
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-  min-width: 0;
-  flex: 1;
-}
-
-.station-name-line {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.1rem;
-}
-
-/* icon + name + status dot on ONE tight row */
-.station-name-status {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  min-width: 0;
-  width: 100%;
-}
-
-.station-name {
-  font-size: 0.75rem;
+.planet-port-pair .station-name {
+  /* em-relative, matches .planet-name; zero bare margins */
+  font-size: 1em;
   font-weight: 700;
   color: #00d9ff;
   line-height: 1.2;
+  margin: 0;
   /* ellipsis-truncate long names (mirrors .planet-name / id=141) */
+  flex-shrink: 1;
+  max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  min-width: 0;
-  flex: 1;
 }
 
-.station-owner {
-  font-size: 0.6rem;
-  color: #00ff41;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.station-class {
-  font-size: 0.6rem;
-  color: rgba(255, 215, 0, 0.9);
-  font-weight: 600;
-  letter-spacing: 0.3px;
-}
-
-.station-type {
-  font-size: 0.6rem;
-  color: rgba(0, 217, 255, 0.7);
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-  font-weight: 500;
-}
-
-.station-status {
-  font-size: 0.9rem;
+.planet-port-pair .station-status {
+  font-size: 0.85em;
   line-height: 1;
   flex-shrink: 0;
-}
-
-/* Responsive */
-@media (max-width: 1024px) {
-  .planet-port-pair {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .orbital-connector {
-    transform: rotate(90deg);
-    align-self: center;
-  }
+  margin: 0;
 }
 
 /* Accessibility */
 @media (prefers-reduced-motion: reduce) {
   .planet-port-pair,
-  .planet-section,
-  .station-section {
+  .planet-port-pair .planet-section,
+  .planet-port-pair .station-section {
     transition: none;
   }
 
-  .orbital-connector,
-  .planet-icon,
-  .planet-claim-hint {
+  .planet-port-pair .planet-icon,
+  .planet-port-pair .planet-quals .pq-unclaimed {
     animation: none;
   }
 }

@@ -1,0 +1,289 @@
+/* ============================================
+   TACTICAL MONITOR — cockpit deck-monitor (WO-UI2-DECK-RECONCILE, §05)
+   Two pages: TARGET (sector contacts, rep-colored, ENGAGE/HAIL) and
+   THREAT (law status, mines, hazard readout). Shared by both page
+   components (tactical/pages/TacticalTargetPage.tsx,
+   TacticalThreatPage.tsx), mirroring mfd/pages/pages-ship.css's one-
+   file-for-several-pages convention rather than a file per page.
+   ============================================ */
+
+/* --- TARGET: contact list --- */
+
+.target-contact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  /* WO-TACTICAL-APPROACH-ENGAGE-SCROLL Part A: an explicit scroll boundary
+     ON the list itself (not just relying on `.mbody`'s own overflow-y:auto,
+     cockpit-shell.css) -- 10+ contacts must scroll INTERNALLY, never grow
+     `.mon`/`.cockpit-console`/`.deck` past the cockpit's grid-allocated
+     slot (cockpit.css's `.cockpit-console{grid-template-rows:1fr}`).
+     `max-height:100%` (not a hand-picked calc(100vh - Npx)) deliberately:
+     `.mbody`'s own height is already DEFINITE by the time it reaches this
+     list -- `.stage *{min-height:0}` (cockpit-shell.css) plus the full
+     100vh-rooted fr/auto grid chain (`.stage` -> `.lower` -> `.deck` ->
+     `.cockpit-console` -> `.mon{flex:1 via .mbody}`) already resolves a
+     real pixel height for `.mbody` before any child is laid out, so a
+     percentage here inherits that correctly-computed budget instead of
+     re-deriving it from a hardcoded chrome-height subtraction that would
+     silently drift on --uiscale changes, docked/landed mode-band height
+     swaps, or the teleprinter transcript opening/closing. Verified via a
+     static computed-layout harness (real cockpit-shell.css/game-layout.css/
+     cockpit.css cascade, 1440x900, 15 rows): `.mbody` was already
+     correctly bounded and internally scrolling pre-fix -- this makes the
+     LIST itself (not the shared `.mbody` all three deck-monitors share)
+     the visible scroll boundary Max is asking for. */
+  max-height: 100%;
+  overflow-y: auto;
+}
+
+.target-contact-row {
+  /* flex-shrink:0 -- without it, `.stage *{min-height:0}` (cockpit-
+     shell.css) lets these flex-column children shrink below their content
+     height to cram into `.target-contact-list`'s new max-height instead of
+     the LIST overflowing/scrolling as intended (caught empirically: rows
+     kept shrinking as contact count grew instead of holding a stable
+     height). flex-shrink:0 makes the row hold its natural content height
+     so excess count becomes list overflow, not squished rows. */
+  flex-shrink: 0;
+  padding: 0.25rem 0.5rem;
+  background: rgba(255, 136, 0, 0.05);
+  border: 1px solid rgba(255, 136, 0, 0.2);
+  border-radius: 4px;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.target-contact-row:hover {
+  background: rgba(255, 136, 0, 0.09);
+  border-color: rgba(255, 136, 0, 0.35);
+}
+
+.target-contact-main {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.target-contact-name {
+  font-family: 'Courier New', monospace;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+
+.target-contact-name:focus-visible {
+  outline: 1px solid currentColor;
+  outline-offset: 2px;
+}
+
+.target-selected-badge {
+  color: #00d9ff;
+  text-shadow: 0 0 6px rgba(0, 217, 255, 0.7);
+}
+
+/* NPC badge / rep-tag chip / legend / inline ENGAGE-HAIL action-row CSS
+   retired here (WO-TACTICAL-POPUP) — the row strip no longer shows them;
+   ENGAGE/HAIL moved into ContactActionMenu (contact-action-menu* below)
+   and HailComposeDialog (reuses .target-hail-input + .target-result-msg,
+   both kept). Zero remaining consumers in TacticalTargetPage.tsx. */
+
+/* Standalone in HailComposeDialog's message area now (WO-TACTICAL-POPUP
+   moved it out of the old flex `.target-hail-compose` row) -- width:100%
+   fills the dialog instead of relying on a flex parent to size it. */
+.target-hail-input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 26px;
+  padding: 0 0.5rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.7rem;
+  background: rgba(0, 5, 12, 0.85);
+  border: 1px solid rgba(0, 217, 255, 0.4);
+  border-radius: 3px;
+  color: #eaf6ff;
+  outline: none;
+}
+
+.target-result-msg {
+  margin-top: 0.3rem;
+  font-size: 0.6rem;
+  letter-spacing: 0.04em;
+  text-align: right;
+}
+
+.target-result-msg.ok {
+  color: #00ff41;
+}
+
+.target-result-msg.err {
+  color: #ff5a6a;
+}
+
+/* --- TARGET: ContactActionMenu (WO-TACTICAL-POPUP) — the row's ENGAGE/
+   HAIL popup, opened from the contact name. Portal'd to document.body
+   (position:fixed, coords computed by the component itself), so this is
+   deliberately NOT position:relative-anchored the way an inline dropdown
+   would be -- same reasoning as ConfirmDialog's own body-portal (deck-
+   monitor scroll body / ancestor transforms can never clip it). Same
+   HUD-glass language as SolarSystemViewscreen's .ssv-ctxmenu (frosted
+   glass, cyan border) for visual continuity across the cockpit's floating
+   menus. */
+.contact-action-menu {
+  position: fixed;
+  /* Matches the app's "in-context modal/panel" tier (medal-toast,
+     construction-venue, cockpit.css's own modals all sit at 1200) rather
+     than ConfirmDialog's base 1000 -- comfortably above any tactical
+     panel that could plausibly be open alongside it, still well below
+     the always-on-top priority-hail/combat-banner tier (8000+), which
+     this quick-menu has no business contesting with. */
+  z-index: 1200;
+  min-width: 128px;
+  box-sizing: border-box;
+  background: rgba(0, 10, 16, 0.92);
+  border: 1px solid rgba(0, 217, 255, 0.35);
+  border-radius: 4px;
+  backdrop-filter: blur(3px);
+  box-shadow:
+    0 0 14px rgba(0, 217, 255, 0.15),
+    inset 0 1px 0 rgba(0, 217, 255, 0.08);
+  padding: 0.3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-family: 'Courier New', monospace;
+}
+
+.contact-action-menu-item {
+  width: 100%;
+  text-align: left;
+  padding: 0.3rem 0.6rem;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: 'Courier New', monospace;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  background: transparent;
+  border: 1px solid transparent;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.contact-action-menu-item:hover,
+.contact-action-menu-item:focus-visible {
+  outline: none;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.contact-action-menu-item-engage {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: rgba(239, 68, 68, 0.5);
+  color: #ff8080;
+  text-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
+}
+
+.contact-action-menu-item-engage:hover,
+.contact-action-menu-item-engage:focus-visible {
+  background: rgba(239, 68, 68, 0.28);
+}
+
+.contact-action-menu-item-hail {
+  background: rgba(0, 217, 255, 0.1);
+  border-color: rgba(0, 217, 255, 0.45);
+  color: #00d9ff;
+}
+
+.contact-action-menu-item-hail:hover,
+.contact-action-menu-item-hail:focus-visible {
+  background: rgba(0, 217, 255, 0.22);
+}
+
+/* --- THREAT: law status / mines / hazard readout --- */
+
+.threat-section {
+  margin-bottom: 0.7rem;
+}
+
+.threat-section-title {
+  font-family: 'Courier New', monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: rgba(255, 136, 0, 0.75);
+  margin-bottom: 0.3rem;
+}
+
+.threat-law-clean {
+  color: rgba(0, 255, 65, 0.85);
+  font-size: 0.7rem;
+}
+
+.threat-warnline {
+  color: #ffb000;
+  font-size: 0.7rem;
+  text-shadow: 0 0 6px rgba(255, 176, 0, 0.4);
+  margin-bottom: 0.3rem;
+}
+
+.threat-hint {
+  font-size: 0.65rem;
+  color: rgba(255, 255, 255, 0.5);
+  font-style: italic;
+}
+
+.threat-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.threat-mine-input {
+  width: 60px;
+  height: 22px;
+  padding: 0 0.4rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.65rem;
+  background: rgba(0, 5, 12, 0.85);
+  border: 1px solid rgba(255, 136, 0, 0.4);
+  border-radius: 3px;
+  color: #ffb000;
+  outline: none;
+}
+
+.threat-btn {
+  font-family: 'Courier New', monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 0.25rem 0.6rem;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+  background: rgba(255, 136, 0, 0.12);
+  border: 1px solid rgba(255, 136, 0, 0.45);
+  color: #ffb000;
+}
+
+.threat-btn:hover:not(:disabled) {
+  background: rgba(255, 136, 0, 0.22);
+}
+
+.threat-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.threat-msg {
+  margin-top: 0.3rem;
+  font-size: 0.6rem;
+}
+
+.threat-msg.ok {
+  color: #00ff41;
+}
+
+.threat-msg.err {
+  color: #ff5a6a;
+}

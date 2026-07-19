@@ -2,6 +2,60 @@ import React, { useEffect, useRef, useState } from 'react';
 import apiClient from '../../services/apiClient';
 import SectorViewport from './SectorViewport';
 import './solar-system-viewscreen.css';
+import VistaCanvas from '../../vista/react';
+import { VistaErrorBoundary } from './VistaErrorBoundary';
+import { adaptLandedSceneToVistaInput } from './landedVistaAdapter';
+import type { LandedVistaSource } from './landedVistaAdapter';
+import type { VistaInput } from '../../vista/contract';
+import type { SectorWreck } from '../../services/api';
+import type { SpecialFormationSummary } from '../../contexts/GameContext';
+
+// ---------------------------------------------------------------------------
+// Vista engine feature flag (Lane A3 — Phase-2a go-live)
+// Default ON: the vista engine renders landed scenes by default.
+// To opt OUT and revert to the legacy drawLandedScene, set:
+//   VITE_VISTA_ENGINE=false   or   VITE_VISTA_ENGINE=0
+// Build-time constant — Vite replaces import.meta.env at bundle time.
+// Reversible without a code change: rebuild with the opt-out env var.
+// flight / docked paths are byte-unchanged regardless of this flag.
+// ---------------------------------------------------------------------------
+const VISTA_ENGINE_ON =
+  import.meta.env.VITE_VISTA_ENGINE !== 'false' &&
+  import.meta.env.VITE_VISTA_ENGINE !== '0';
+
+// ---------------------------------------------------------------------------
+// DEV-ONLY: VistaForceThrowDev — drives the boundary→legacy fallback path.
+//
+// Vite replaces import.meta.env.DEV with `false` in production builds, making
+// the entire ternary's truthy branch dead code.  Rollup eliminates it
+// completely — the function body and the window / URLSearchParams reads are
+// fully absent from any production bundle.
+//
+// HOW TO TRIGGER (dev builds only):
+//   • URL param:   add  ?vistaThrow=1  to the cockpit URL, then (re-)land.
+//   • Console:     window.__vistaForceThrow = true  then navigate to a landed scene.
+//
+// The component renders as a sibling of VistaCanvas inside VistaErrorBoundary.
+// When the trigger is set it throws during React render → the boundary catches
+// the throw → handleVistaEngineError() fires → VistaCanvas unmounts and the
+// legacy drawLandedScene resumes.  Result: the windshield shows drawLandedScene,
+// not a blank — exercising the exact same path a real engine crash would take.
+// ---------------------------------------------------------------------------
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const VistaForceThrowDev: React.FC | null = import.meta.env.DEV
+  ? function VistaForceThrowDev() {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const shouldThrow =
+        new URLSearchParams(window.location.search).get('vistaThrow') === '1' ||
+        (window as any).__vistaForceThrow === true;
+      if (shouldThrow) {
+        throw new Error(
+          '[DEV] vistaForceThrow: testing VistaErrorBoundary → drawLandedScene fallback'
+        );
+      }
+      return null;
+    }
+  : null;
 
 /**
  * SolarSystemViewscreen — the cockpit windshield spectacle.
@@ -23,24 +77,24 @@ import './solar-system-viewscreen.css';
 // Contract types (mirror the /sectors/{id}/system response shape)
 // ---------------------------------------------------------------------------
 
-interface SystemStarSecondary {
+export interface SystemStarSecondary {
   kind: string;
   color: string;
 }
 
-interface SystemStar {
+export interface SystemStar {
   kind: string;
   label: string;
   color: string;
   secondary?: SystemStarSecondary | null;
 }
 
-interface SystemNebula {
+export interface SystemNebula {
   hue: number;
   density: number;
 }
 
-interface SystemBelt {
+export interface SystemBelt {
   inner_au: number;
   outer_au: number;
 }
@@ -48,19 +102,19 @@ interface SystemBelt {
 /** Collision-debris ring: two worlds that collided long ago, their wreck
  *  spread into a belt encircling the orbital plane. An annulus like the
  *  asteroid belt (reddish). Cosmetic only — non-clickable. */
-interface SystemDebris {
+export interface SystemDebris {
   inner_au: number;
   outer_au: number;
   hue: number;
 }
 
 /** Habitable zone band (inner/outer in normalized orbit-AU space). */
-interface SystemHabitableZone {
+export interface SystemHabitableZone {
   inner_au: number;
   outer_au: number;
 }
 
-interface SystemBody {
+export interface SystemBody {
   slot: number;
   orbit_au: number;
   kind: string;
@@ -86,7 +140,7 @@ interface SystemBody {
   formation_status?: string;
 }
 
-interface SystemStation {
+export interface SystemStation {
   station_id: string;
   name: string;
   type: string;
@@ -94,7 +148,7 @@ interface SystemStation {
   phase_deg: number;
 }
 
-interface SystemSnapshot {
+export interface SystemSnapshot {
   sector_id: number;
   sector_type: string;
   star: SystemStar | null;
@@ -163,25 +217,61 @@ interface SolarSystemViewscreenProps {
    * spotlights that ship in the main cockpit viewport.
    */
   selectedShipId?: string | null;
+  /**
+   * flight scene only: fires when the player picks a ship contact (left-click
+   * glyph, or the right-click context menu's SELECT action) — wire to the same
+   * selection state that drives `selectedShipId` (e.g. the Comms panel), so
+   * picking a contact here spotlights it there too.
+   */
+  onSelectShip?: (id: string) => void;
+  /**
+   * flight scene only: sector wrecks (GET /sectors/{id}/wrecks — see
+   * services/api.ts's sectorAPI.sectorWrecks / SectorWreck) rendered as SCAN
+   * layer glyphs, gated behind the `scanActive` toggle below. Defaults to
+   * empty — the SCAN layer simply shows nothing when omitted.
+   */
+  wrecks?: SectorWreck[];
+  /**
+   * flight scene only: the current sector's special_formations (anomalies —
+   * see contexts/GameContext.tsx's SpecialFormationSummary) rendered as SCAN
+   * layer glyphs alongside wrecks. Defaults to empty.
+   */
+  formations?: SpecialFormationSummary[];
+  /**
+   * flight scene only: gates the wreck/formation glyphs (+ their hit
+   * targets) drawn above. WO-UI5-RETIREMENT+GLASS item 3: this used to be
+   * SSV-local state with its own glass button (`.ssv-scan-toggle`); the
+   * button moved to the SOLAR SYSTEM monitor's SYSTEM page, so this is now
+   * a controlled prop — mirrors `selectedShipId` above (same "cross-
+   * component state, button lives elsewhere" shape). Defaults to false.
+   */
+  scanActive?: boolean;
 }
 
 /** Per-kind payload backing the click popup card */
-type HitMeta =
+export type HitMeta =
   | { kind: 'star'; label: string; starClass: string; color: string }
   | { kind: 'planet'; planetId: string; planetKind: string; habitability?: number; owned?: boolean }
   | { kind: 'station'; stationId: string; stationType: string }
   | { kind: 'procedural'; designation: string; typeName: string; sizeDesc: string }
   | { kind: 'ship'; shipId: string; shipName: string; shipType: string; captain: string;
       isNpc: boolean; factionLabel: string; factionColor: string; lawful: boolean;
-      notoriety?: number };
+      notoriety?: number }
+  /** SCAN layer (#7): a sector wreck, gated behind the SCAN toggle. */
+  | { kind: 'wreck'; wreckId: string; shipType: string; cause: string; suspect: boolean }
+  /** SCAN layer (#7): a special_formations anomaly, gated behind the SCAN toggle. */
+  | { kind: 'formation'; formationId: string; name?: string | null; type?: string | null; discovered: boolean }
+  /** Right-click on open space — synthetic target for the context menu only;
+   *  never produced by hitTest, never passed to openPopupFor. */
+  | { kind: 'empty' };
 
-interface HitTarget {
+export interface HitTarget {
   /** screen-space hit data in CSS pixels (the draw loop paints through a
       setTransform(dpr, …) so every recorded coordinate is CSS-pixel space) */
   x: number;
   y: number;
   r: number;
-  kind: 'star' | 'planet' | 'station' | 'procedural' | 'ship';
+  kind: 'star' | 'planet' | 'station' | 'procedural' | 'ship' | 'wreck' | 'formation' | 'empty';
   id?: string;
   name: string;
   lines: string[];
@@ -189,7 +279,7 @@ interface HitTarget {
 }
 
 /** Sector ship presence (subset of players_present the dashboard passes). */
-interface ShipPresence {
+export interface ShipPresence {
   player_id?: string;
   user_id?: string;
   username?: string;
@@ -206,6 +296,27 @@ interface ShipPresence {
   activity?: string | null;
   /** Trader mission (commerce | colonist | science) — drives which dock type. */
   mission?: string | null;
+  /** WO-ISP: authoritative in-system pose / leg plan from the server. */
+  pose?: {
+    x_pct: number;
+    y_pct: number;
+    heading_deg: number;
+    phase?: string;
+    burning?: boolean;
+    leg?: {
+      kind?: string;
+      from_x: number;
+      from_y: number;
+      to_x: number;
+      to_y: number;
+      started_at: string;
+      prograde_deg?: number;
+      parked_heading_deg?: number;
+      target_kind?: string | null;
+      target_id?: string | null;
+    } | null;
+    server_time?: string;
+  } | null;
 }
 
 /** Faction read of a ship — drives glyph color + label. When `archetype` is
@@ -214,7 +325,7 @@ interface ShipPresence {
  *  archetype field. Traders are further graded by notoriety so a paladin can
  *  tell an honest merchant (green) from a shady one (amber) or a notorious
  *  smuggler (orange) at a glance. */
-function shipFaction(s: ShipPresence): { key: string; color: string; label: string; lawful: boolean } {
+export function shipFaction(s: ShipPresence): { key: string; color: string; label: string; lawful: boolean } {
   if (!s.is_npc) return { key: 'pilot', color: '#00d9ff', label: 'PILOT', lawful: false };
   const arch = (s.archetype || '').toUpperCase();
   const tp = (s.ship_type || '').toUpperCase();
@@ -253,6 +364,9 @@ interface PopupState {
   /** clamped CSS-pixel position inside the windshield band */
   left: number;
   top: number;
+  /** true = the right-click action menu (Travel/Inspect/SELECT) renders in
+   *  this SAME .ssv-popup card instead of the normal info-card content. */
+  contextMenu?: boolean;
 }
 
 const popupKeyFor = (t: HitTarget): string => `${t.kind}:${t.id ?? t.name}`;
@@ -324,7 +438,7 @@ function moonPlanePos(
 // Star rendering
 // ---------------------------------------------------------------------------
 
-const STAR_RADIUS_FACTOR: Record<string, number> = {
+export const STAR_RADIUS_FACTOR: Record<string, number> = {
   M_DWARF: 0.05,
   K_ORANGE: 0.06,
   G_YELLOW: 0.07,
@@ -831,6 +945,37 @@ function drawRingHalf(
   ctx.stroke();
 }
 
+/** Orbital-following hazard/nebula/radiation band — a thick partial-ellipse
+ *  arc anchored to the system's orbital plane, reusing drawRingHalf's tilted
+ *  ctx.ellipse(x, y, rx, ry, tilt, start, end) primitive at sector-spanning
+ *  scale instead of drawRingHalf's small ring geometry. Replaces the old
+ *  floating blob-scatter (nebula) and flat full-canvas tint (hazard/
+ *  radiation) — every environmental overlay now reads as a band that follows
+ *  the same orbital ellipses the rest of the scene draws (WO-UI2-LIVING-
+ *  WINDSHIELD #1). Color/radius/tilt/sweep vary per caller so nebula, hazard,
+ *  and radiation each read as a distinct band from the existing palette. */
+function drawHazardBandArc(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  rx: number,
+  ry: number,
+  tilt: number,
+  startAngle: number,
+  sweep: number,
+  color: string,
+  width: number
+): void {
+  ctx.save();
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, rx, ry, tilt, startAngle, startAngle + sweep);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.lineCap = 'round';
+  ctx.stroke();
+  ctx.restore();
+}
+
 // ---------------------------------------------------------------------------
 // Station glyph — keeps the hex visual language of the legacy viewport
 // ---------------------------------------------------------------------------
@@ -869,6 +1014,95 @@ function drawStationGlyph(
     ctx.arc(x, y, 1.6, 0, Math.PI * 2);
     ctx.fill();
   }
+}
+
+// ---------------------------------------------------------------------------
+// SCAN layer glyphs — wrecks + anomaly formations (#7, real server data).
+// Neither entity carries server screen coordinates, so both are placed the
+// same way ship contacts are: hash the id through splitmix32 for a stable,
+// deterministic screen position (the shipPlacement()/dockCycle idiom used
+// throughout this file, without ship-specific drift/dock/orbit behavior —
+// wrecks and anomalies don't move).
+// ---------------------------------------------------------------------------
+
+function scanContactPosition(id: string, w: number, h: number): { x: number; y: number; seed: number } {
+  let hseed = 0;
+  for (let i = 0; i < id.length; i++) hseed = (hseed * 31 + id.charCodeAt(i)) >>> 0;
+  const rng = splitmix32(hseed || 1);
+  return {
+    x: w * (0.08 + rng() * 0.84),
+    y: h * (0.1 + rng() * 0.78),
+    seed: hseed || 1
+  };
+}
+
+/** Salvageable wreck — a scattered debris cluster with a pulsing amber
+ *  containment ring (distinct from the anomaly swirl below). */
+function drawWreckGlyph(ctx: CanvasRenderingContext2D, x: number, y: number, size: number, t: number, seed: number): void {
+  const rng = splitmix32(seed);
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = 'rgba(200, 150, 90, 0.85)';
+  ctx.strokeStyle = 'rgba(255, 200, 120, 0.6)';
+  ctx.lineWidth = 0.8;
+  for (let i = 0; i < 4; i++) {
+    const a = rng() * Math.PI * 2;
+    const d = size * (0.3 + rng() * 0.7);
+    const s = size * (0.35 + rng() * 0.35);
+    ctx.save();
+    ctx.translate(Math.cos(a) * d, Math.sin(a) * d);
+    ctx.rotate(rng() * Math.PI * 2);
+    ctx.beginPath();
+    ctx.moveTo(s, 0);
+    ctx.lineTo(-s * 0.4, s * 0.6);
+    ctx.lineTo(-s * 0.6, -s * 0.5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+  const pulse = 0.5 + 0.5 * Math.sin(t * 2.2 + (seed % 10));
+  ctx.strokeStyle = `rgba(255, 180, 90, ${0.35 + 0.25 * pulse})`;
+  ctx.lineWidth = 1;
+  ctx.setLineDash([3, 2]);
+  ctx.beginPath();
+  ctx.arc(0, 0, size * 1.7, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+/** Special-formation anomaly — a slowly-spinning tri-arc swirl (additive,
+ *  hue-seeded per formation) around a bright core; undiscovered anomalies
+ *  read dimmer than discovered ones. */
+function drawFormationGlyph(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  size: number,
+  t: number,
+  hue: number,
+  discovered: boolean
+): void {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.globalCompositeOperation = 'lighter';
+  const spin = t * 0.6;
+  for (let i = 0; i < 3; i++) {
+    const a0 = spin + (i * Math.PI * 2) / 3;
+    ctx.strokeStyle = `hsla(${hue}, 80%, ${discovered ? 70 : 55}%, 0.5)`;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.arc(0, 0, size * (0.6 + i * 0.35), a0, a0 + Math.PI * 1.1);
+    ctx.stroke();
+  }
+  ctx.restore();
+  ctx.save();
+  ctx.fillStyle = `hsla(${hue}, 85%, 75%, ${discovered ? 0.85 : 0.45})`;
+  ctx.beginPath();
+  ctx.arc(x, y, size * 0.32, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
 }
 
 // ---------------------------------------------------------------------------
@@ -918,7 +1152,11 @@ function drawShipGlyph(
   y: number,
   size: number,
   color: string,
-  angle: number
+  angle: number,
+  /** Cosmetic exhaust flame behind the hull — used by the player's own
+   *  marker (#6) so it reads as "under thrust" and distinct from ambient
+   *  ship drift, which never sets this. */
+  thrusting: boolean = false
 ): void {
   const rgb = hexToRgb(color);
   ctx.save();
@@ -933,6 +1171,25 @@ function drawShipGlyph(
   ctx.fill();
   // Hull chevron pointing along its drift heading
   ctx.rotate(angle);
+  if (thrusting) {
+    // Exhaust flame behind the hull (opposite the heading), additive so it
+    // reads as bright plasma rather than a flat triangle.
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const flameLen = size * 2.1;
+    const flame = ctx.createLinearGradient(-size * 0.45, 0, -size * 0.45 - flameLen, 0);
+    flame.addColorStop(0, 'rgba(255, 205, 90, 0.9)');
+    flame.addColorStop(0.6, 'rgba(255, 140, 60, 0.4)');
+    flame.addColorStop(1, 'rgba(255, 140, 60, 0)');
+    ctx.fillStyle = flame;
+    ctx.beginPath();
+    ctx.moveTo(-size * 0.45, -size * 0.3);
+    ctx.lineTo(-size * 0.45 - flameLen, 0);
+    ctx.lineTo(-size * 0.45, size * 0.3);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
   ctx.beginPath();
   ctx.moveTo(size * 1.3, 0);
   ctx.lineTo(-size * 0.9, size * 0.85);
@@ -1002,6 +1259,24 @@ function shipPos(
   const y = p.baseY + Math.sin(theta * 0.8) * driftAmp * 0.6;
   const angle = Math.atan2(Math.cos(theta * 0.8) * 0.48, -Math.sin(theta));
   return { x, y, angle };
+}
+
+/** Smoothstep glide from `from` to `to` over `durMs`, evaluated at wall-clock
+ *  `now`. Shared by the player marker's Travel-Here glide (draw loop +
+ *  the click handler that starts it) so both read the identical curve. */
+function easeToward(
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  startMs: number,
+  durMs: number,
+  now: number
+): { pt: { x: number; y: number }; done: boolean } {
+  const p = Math.min(1, (now - startMs) / durMs);
+  const ease = p * p * (3 - 2 * p);
+  return {
+    pt: { x: from.x + (to.x - from.x) * ease, y: from.y + (to.y - from.y) * ease },
+    done: p >= 1
+  };
 }
 
 type ShipMotion = { x: number; y: number; angle: number; docked: boolean };
@@ -1204,7 +1479,7 @@ function drawOrbitCloseup(
 // Scene draw — pure function of (snapshot, size, clock)
 // ---------------------------------------------------------------------------
 
-function drawScene(
+export function drawScene(
   ctx: CanvasRenderingContext2D,
   w: number,
   h: number,
@@ -1218,9 +1493,23 @@ function drawScene(
   ships: ShipPresence[] = [],
   departures: ShipDeparture[] = [],
   selectedShipId: string | null = null,
-  arrivals: ShipArrival[] = []
+  arrivals: ShipArrival[] = [],
+  /** Player's own COSMETIC marker (#6) — purely decorative screen position +
+   *  heading, precomputed by the caller (it owns the Travel-Here glide
+   *  state); null hides it (docked/landed/orbit-closeup callers omit it). */
+  selfMarker: { x: number; y: number; angle: number } | null = null,
+  /** SCAN layer (#7) — real sector wrecks + anomaly formations. */
+  wrecks: SectorWreck[] = [],
+  formations: SpecialFormationSummary[] = [],
+  scanActive: boolean = false
 ): void {
   hitTargets.length = 0;
+  // Malformed/empty system payloads can omit bodies/stations at runtime even
+  // though the fetched-JSON type says they're required (no server-response
+  // shape validation on this client — see api.ts callers generally). Guard
+  // here once so every downstream .forEach/.find below never throws.
+  const bodies = system?.bodies ?? [];
+  const stations = system?.stations ?? [];
 
   // 1) Deep space background
   ctx.fillStyle = '#040711';
@@ -1260,34 +1549,21 @@ function drawScene(
     return;
   }
 
-  // 3) Nebula haze
-  if (system.nebula) {
-    const rng = splitmix32(sectorId * 31 + 777);
-    const blobCount = 5 + Math.floor(rng() * 3);
-    const alpha = Math.min(0.2, Math.max(0.03, system.nebula.density * 0.12));
-    for (let i = 0; i < blobCount; i++) {
-      const cx = rng() * w + Math.sin(t * 0.01 + i) * 9;
-      const cy = rng() * h + Math.cos(t * 0.008 + i * 2) * 6;
-      const rad = (0.22 + rng() * 0.45) * Math.max(w, h);
-      const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, rad);
-      grad.addColorStop(0, `hsla(${system.nebula.hue}, 70%, 55%, ${alpha})`);
-      grad.addColorStop(1, `hsla(${system.nebula.hue}, 70%, 55%, 0)`);
-      ctx.fillStyle = grad;
-      ctx.fillRect(cx - rad, cy - rad, rad * 2, rad * 2);
-    }
-  }
-
   // Scene geometry — star left-of-center, orbits squashed ellipses
   // Seeded star-anchor jitter (±3% w, ±4% h) so the layout skeleton varies
   // per sector instead of every system sharing one fixed anchor.
+  // (Computed before the nebula band below — #1 anchors the nebula/hazard/
+  // radiation arcs to this same starX/starY/rxMax orbital plane.)
   const anchorRng = splitmix32(sectorId * 2654435761 + 97);
   // Star anchored just right of centre (Max: "move the sun right so we can see
   // more of the rotation") — centring the primary lets the FULL orbital ellipse
   // fall on-screen instead of the left arc clipping the cap. Small seeded
   // jitter keeps systems from sharing one fixed skeleton.
   const starX = w * 0.54 + (anchorRng() - 0.5) * 2 * (w * 0.03);
-  // h is the VISIBLE scene height (container clips to calc(100% - var(--deck-h))),
-  // so h/2 lands at the visual centre regardless of the deck-h setting.
+  // h is the full `.band` height now (WO-UI0-SHELL-TRANSPLANT: the
+  // container is 100% of its portaled-into `.band` parent, no deck-overlap
+  // clip left to account for — solar-system-viewscreen.css), so h/2 lands
+  // at the visual centre.
   const starY = h / 2 + (anchorRng() - 0.5) * 2 * (h * 0.04);
   const margin = 14;
   // Cap orbital extent so the outermost ellipse stays fully on-screen on BOTH
@@ -1299,6 +1575,29 @@ function drawScene(
     w - starX - margin
   );
   const bodyScale = Math.min(2.2, Math.max(0.8, Math.min(w, h) / 340));
+
+  // 3) Nebula haze — an orbital-following ARC band (#1), not floating blobs.
+  // Reuses drawHazardBandArc (drawRingHalf's tilted partial-ellipse primitive
+  // at sector-spanning scale), anchored at the star like the orbit rings
+  // below so it reads as part of the same orbital plane.
+  if (system.nebula) {
+    const rng = splitmix32(sectorId * 31 + 777);
+    const bandCount = 2 + Math.floor(rng() * 2);
+    const baseAlpha = Math.min(0.4, Math.max(0.1, system.nebula.density * 0.35));
+    for (let i = 0; i < bandCount; i++) {
+      const rFrac = 0.35 + rng() * 0.55;
+      const rx = rFrac * rxMax;
+      const ry = rx * SQUASH;
+      const drift = t * 0.015 * (i % 2 === 0 ? 1 : -1);
+      const start = rng() * Math.PI * 2 + drift;
+      const sweep = Math.PI * (0.5 + rng() * 0.7);
+      drawHazardBandArc(
+        ctx, starX, starY, rx, ry, 0, start, sweep,
+        `hsla(${system.nebula.hue}, 70%, 55%, ${baseAlpha})`,
+        Math.max(16, rx * 0.22)
+      );
+    }
+  }
 
   // Extra stars (STAR_CLUSTER) scattered behind everything else
   if (system.extra_stars && system.extra_stars.length > 0) {
@@ -1313,8 +1612,8 @@ function drawScene(
 
   // 4) Orbit arcs (faint ellipses with perspective squash)
   const orbitAus = new Set<number>();
-  system.bodies.forEach((b) => orbitAus.add(b.orbit_au));
-  system.stations.forEach((s) => orbitAus.add(s.orbit_au));
+  bodies.forEach((b) => orbitAus.add(b.orbit_au));
+  stations.forEach((s) => orbitAus.add(s.orbit_au));
   ctx.strokeStyle = 'rgba(120, 140, 200, 0.12)';
   ctx.lineWidth = 1;
   orbitAus.forEach((au) => {
@@ -1443,7 +1742,7 @@ function drawScene(
   }
 
   // Bodies on their orbits with slow deterministic drift
-  system.bodies.forEach((body, bodyIdx) => {
+  bodies.forEach((body, bodyIdx) => {
     const rx = body.orbit_au * rxMax;
     const ry = rx * SQUASH;
     // Angular speed ~ 1/orbit_au — full orbit takes minutes (slowed by the
@@ -1543,7 +1842,7 @@ function drawScene(
   });
 
   // Stations on stable orbits
-  system.stations.forEach((st, idx) => {
+  stations.forEach((st, idx) => {
     const rx = st.orbit_au * rxMax;
     const ry = rx * SQUASH;
     const omega = ORBIT_SCALE * (Math.PI * 2) / (160 + st.orbit_au * 380);
@@ -1571,6 +1870,43 @@ function drawScene(
 
   drawBelt('front');
   drawDebrisRing('front');
+
+  // SCAN layer (#7) — real sector wrecks + anomaly formations, gated behind
+  // the windshield's local SCAN toggle (scanActive). Neither entity has a
+  // server screen position, so both use the id-seeded scanContactPosition()
+  // idiom (drawStationGlyph/drawShipGlyph placement pattern, without ship
+  // drift — wrecks and anomalies don't move).
+  if (scanActive) {
+    wrecks.forEach((wk) => {
+      const pos = scanContactPosition(wk.id, w, h);
+      const size = 7 * bodyScale;
+      hitTargets.push({
+        x: pos.x, y: pos.y, r: size + 6, kind: 'wreck', id: wk.id,
+        name: 'WRECKAGE',
+        lines: ['WRECKAGE', wk.destroyed_ship_type.replace(/_/g, ' ').toUpperCase()],
+        meta: {
+          kind: 'wreck', wreckId: wk.id, shipType: wk.destroyed_ship_type,
+          cause: wk.cause, suspect: wk.would_flag_suspect
+        }
+      });
+      drawWreckGlyph(ctx, pos.x, pos.y, size, t, pos.seed);
+    });
+    formations.forEach((fm) => {
+      const pos = scanContactPosition(fm.id, w, h);
+      const size = 8 * bodyScale;
+      const hue = pos.seed % 360;
+      hitTargets.push({
+        x: pos.x, y: pos.y, r: size + 6, kind: 'formation', id: fm.id,
+        name: fm.name || 'ANOMALY',
+        lines: [
+          (fm.name || 'UNIDENTIFIED ANOMALY').toUpperCase(),
+          (fm.type || 'FORMATION').replace(/_/g, ' ').toUpperCase()
+        ],
+        meta: { kind: 'formation', formationId: fm.id, name: fm.name, type: fm.type, discovered: fm.is_discovered }
+      });
+      drawFormationGlyph(ctx, pos.x, pos.y, size, t, hue, fm.is_discovered);
+    });
+  }
 
   // Ships in the sector — foreground contacts (NPC captains, other pilots),
   // each animated by its real activity/mission/archetype (orbit a planet, dock
@@ -1634,6 +1970,32 @@ function drawScene(
       drawShipGlyph(ctx, x, y, size, fac.color, angle);
     }
   });
+
+  // Player's own COSMETIC marker (#6) — PURELY DECORATIVE: no hit target (it
+  // is never pushed to hitTargets, so it can't be clicked/right-clicked), no
+  // maneuver/drag affordance, zero implication of a real intrasystem position
+  // model. The caller (drawNowRef) owns the seeded placement + Travel-Here
+  // glide state and hands over just a resolved {x,y,angle}; this only draws
+  // it — a distinct color + dashed ring + "YOU" tag so it never reads as an
+  // ordinary contact, with the flame that marks it as under thrust.
+  if (selfMarker) {
+    const selfSize = 6.0 * Math.min(1.5, bodyScale);
+    drawShipGlyph(ctx, selfMarker.x, selfMarker.y, selfSize, '#e8f4ff', selfMarker.angle, true);
+    ctx.save();
+    ctx.strokeStyle = 'rgba(232, 244, 255, 0.55)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 2]);
+    ctx.beginPath();
+    ctx.arc(selfMarker.x, selfMarker.y, selfSize * 2.0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.font = FONT;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = 'rgba(232, 244, 255, 0.85)';
+    ctx.fillText('YOU', selfMarker.x, selfMarker.y + selfSize * 2.0 + 3);
+    ctx.restore();
+  }
 
   // Selection reticle — the COMMS-selected contact gets a bold pulsing ring +
   // corner ticks so picking a contact spotlights its ship in the windshield.
@@ -1768,16 +2130,24 @@ function drawScene(
     }
   }
 
-  // Environmental overlays — parity with the legacy viewscreen
+  // Environmental overlays (#1) — orbital-following ARC bands, concentric
+  // with the orbit-ring ellipses drawn above (same starX/starY/rxMax, tilt 0),
+  // replacing the old flat full-canvas tint (radiation) and pulsing border
+  // (hazard) so both read as bands hugging the outer orbital plane rather
+  // than washing the whole windshield.
   if (radiationLevel > 0) {
-    ctx.fillStyle = `rgba(0, 255, 65, ${Math.min(0.5, radiationLevel) * 0.12})`;
-    ctx.fillRect(0, 0, w, h);
+    const alpha = Math.min(0.5, radiationLevel) * 0.5;
+    drawHazardBandArc(
+      ctx, starX, starY, rxMax * 1.05, rxMax * 1.05 * SQUASH, 0.15, Math.PI * 0.15, Math.PI * 0.7,
+      `rgba(0, 255, 65, ${alpha})`, Math.max(10, Math.min(w, h) * 0.05)
+    );
   }
   if (hazardLevel > 5) {
     const pulse = Math.sin(t * 5) * 0.5 + 0.5;
-    ctx.strokeStyle = `rgba(255, 107, 0, ${pulse * 0.3})`;
-    ctx.lineWidth = 3;
-    ctx.strokeRect(2, 2, w - 4, h - 4);
+    drawHazardBandArc(
+      ctx, starX, starY, rxMax * 1.12, rxMax * 1.12 * SQUASH, -0.2, Math.PI * 1.05, Math.PI * 0.65,
+      `rgba(255, 107, 0, ${pulse * 0.55})`, Math.max(8, Math.min(w, h) * 0.035)
+    );
   }
 
   // Hover tooltip — drawn last, on top of everything
@@ -1791,7 +2161,7 @@ function drawScene(
 // LANDED scene — planet-surface vista (horizon gradient, haze, parallax ridges)
 // ---------------------------------------------------------------------------
 
-interface LandedPalette {
+export interface LandedPalette {
   skyTop: string;
   skyMid: string;
   horizon: string;
@@ -1808,7 +2178,7 @@ interface LandedPalette {
 }
 
 /** Sky/ridge palette per planet type — reuses the treatment mapping above. */
-function landedPalette(planetType?: string): LandedPalette {
+export function landedPalette(planetType?: string): LandedPalette {
   // treatmentFor() buckets every UNKNOWN kind into BARREN (gray). But the
   // cockpit tint class (getPlanetTintClass → base [class*='planet-tint-'])
   // paints unknown types violet-dusk. Align the two: only paint the barren
@@ -3474,7 +3844,7 @@ function buildLandedCache(
   };
 }
 
-function drawLandedScene(
+export function drawLandedScene(
   ctx: CanvasRenderingContext2D,
   w: number,
   h: number,
@@ -7238,7 +7608,11 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   landedPlanetId,
   onRequestLand,
   onRequestDock,
-  selectedShipId = null
+  selectedShipId = null,
+  onSelectShip,
+  wrecks = [],
+  formations = [],
+  scanActive = false
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -7319,6 +7693,78 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   const sceneRef = useRef({ scene, isSpaceDock, palette: landedPalette(planetType), landedCtx });
   sceneRef.current = { scene, isSpaceDock, palette: landedPalette(planetType), landedCtx };
 
+  // ---------------------------------------------------------------------------
+  // Vista engine wiring (Lane A3 — flag OFF by default; zero effect when off)
+  // ---------------------------------------------------------------------------
+
+  // Ref-mirrored adapter output so the draw-loop guard can read it without a
+  // stale-closure (the closure captures the ref, not the per-render value).
+  const vistaAdaptedInputRef = useRef<VistaInput | null>(null);
+  // Elapsed-seconds clock driving VistaCanvas animation (mirrors the lab pattern).
+  const vistaStartRef = useRef<number | null>(null);
+  const [vistaClock, setVistaClock] = useState(0);
+
+  // Engine failure flag: set once when VistaCanvas throws (render phase via
+  // VistaErrorBoundary, or draw phase via the onError prop).  Once set, the
+  // draw-loop guard below drops the early-return so drawLandedScene resumes,
+  // and the JSX gate removes <VistaCanvas> from the tree entirely.
+  // Ref-mirrored so the rAF draw loop reads the current value without a
+  // stale-closure (the draw closure captures the ref, not the per-render state).
+  const [vistaEngineFailed, setVistaEngineFailed] = useState(false);
+  const vistaEngineFailedRef = useRef(false);
+  vistaEngineFailedRef.current = vistaEngineFailed;
+
+  // Stable callback (setter identity is stable): called by both the
+  // VistaErrorBoundary (render-phase throw) and VistaCanvas's onError prop
+  // (draw-phase throw) — both paths converge here.
+  function handleVistaEngineError() {
+    setVistaEngineFailed(true);
+  }
+
+  // Build the adapter input from current props + landedCtx.
+  // Returns null when the planet type is unmappable → legacy renderer stays active.
+  const vistaAdaptedInput: VistaInput | null = VISTA_ENGINE_ON && scene === 'landed'
+    ? adaptLandedSceneToVistaInput({
+        planetType,
+        habitability,
+        citadelLevel,
+        orbitAu: landedCtx.orbitAu,
+        star: (landedCtx.starKind != null && landedCtx.starColor != null)
+          ? { kind: landedCtx.starKind, color: landedCtx.starColor }
+          : null,
+        moons: landedCtx.moons,
+        siblingCount: landedCtx.siblings?.length,
+        // seedKey must be stable: prefer the planet's own id, fall back to sector
+        seedKey: landedPlanetId != null ? landedPlanetId : String(sectorId),
+      } as LandedVistaSource)
+    : null;
+  // Mirror into ref so the draw-loop guard always reads the current frame's value.
+  vistaAdaptedInputRef.current = vistaAdaptedInput;
+
+  // Vista clock: simple rAF ticker that only drives setVistaClock when the adapter
+  // has produced a valid input (avoids 60fps re-renders while adapter is null).
+  useEffect(() => {
+    if (!VISTA_ENGINE_ON || scene !== 'landed' || reducedMotion) return;
+    let rafId: number;
+    function tick(now: number) {
+      // Only update state (and therefore re-render) when VistaCanvas is actually
+      // mounted — the ref check is a cheap guard, no closure staleness since
+      // refs are always current.
+      if (vistaAdaptedInputRef.current !== null) {
+        if (vistaStartRef.current === null) vistaStartRef.current = now;
+        setVistaClock((now - vistaStartRef.current) / 1000);
+      }
+      rafId = requestAnimationFrame(tick);
+    }
+    rafId = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(rafId);
+      vistaStartRef.current = null;
+    };
+  }, [scene, reducedMotion]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ---------------------------------------------------------------------------
+
   // Sector ships, ref-mirrored so the draw loop reads the latest poll without
   // restarting the animation effect every 5s.
   const shipsRef = useRef<ShipPresence[]>(ships as ShipPresence[]);
@@ -7336,6 +7782,29 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   // warped) doesn't mass-animate the old sector's ships departing and the new
   // sector's ships arriving. Streaks only fire for in-sector roster churn.
   const prevSectorRef = useRef<number | null>(null);
+
+  // SCAN layer (#7) real data, ref-mirrored like ships/env above so the draw
+  // loop always reads the latest poll without restarting the animation effect.
+  const wrecksRef = useRef<SectorWreck[]>(wrecks);
+  wrecksRef.current = wrecks;
+  const formationsRef = useRef<SpecialFormationSummary[]>(formations);
+  formationsRef.current = formations;
+  // SCAN toggle — gates the wreck/formation glyphs + their hit targets.
+  // WO-UI5-RETIREMENT+GLASS item 3: was SSV-local state with its own button
+  // here; now a controlled prop (GameDashboard owns the state + the button,
+  // relocated to the SOLAR SYSTEM monitor's SYSTEM page) — same ref-mirror
+  // shape as wrecksRef/formationsRef above, just sourced from a prop instead
+  // of local state.
+  const scanActiveRef = useRef(scanActive);
+  scanActiveRef.current = scanActive;
+
+  // Player's own COSMETIC marker (#6): a resting screen-space anchor (x:-1 =
+  // "not yet seeded for this canvas size", seeded lazily on first draw since
+  // w/h are unknown at mount) plus an optional in-flight Travel-Here glide
+  // (right-click → Travel). PURELY DECORATIVE — no real intrasystem position/
+  // maneuver model; see drawScene's selfMarker param + travelMarkerTo below.
+  const selfBaseRef = useRef<{ x: number; y: number }>({ x: -1, y: -1 });
+  const selfTravelRef = useRef<{ from: { x: number; y: number }; to: { x: number; y: number }; startMs: number } | null>(null);
 
   // Orbital closeup: when set, the windshield zooms to a single planet. The
   // body snapshot + the clicked screen geometry (fromX/Y/R) are captured on
@@ -7399,6 +7868,10 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     }
     if (mode === 'landed') {
       hitTargetsRef.current.length = 0;
+      // Vista engine: when flag ON, the adapter produced a valid input, AND the
+      // engine has not thrown, VistaCanvas handles rendering — skip legacy path.
+      // Flag OFF, null adapter, OR engine failure → drawLandedScene runs as before.
+      if (VISTA_ENGINE_ON && vistaAdaptedInputRef.current !== null && !vistaEngineFailedRef.current) return;
       drawLandedScene(ctx, w, h, sectorId, t, sceneRef.current.palette, sceneRef.current.landedCtx);
       return;
     }
@@ -7440,12 +7913,36 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
       drawOrbitCloseup(ctx, w, h, sectorId, orb.body, t, 1, orb.fromX, orb.fromY, orb.fromR);
       return;
     }
+    // Player's own COSMETIC marker (#6): resolve this frame's screen
+    // position from the resting anchor (or the in-flight Travel-Here glide),
+    // reusing shipPlacement()'s seeded pattern for the base + shipPos() for
+    // the idle drift around it — never duplicated, just re-seeded per sector.
+    const selfPlace = shipPlacement(`__self__:${sectorId}`, w, h);
+    if (selfBaseRef.current.x < 0) {
+      selfBaseRef.current = { x: selfPlace.baseX, y: selfPlace.baseY };
+    }
+    let selfBase = selfBaseRef.current;
+    let travelAngle: number | null = null;
+    const travel = selfTravelRef.current;
+    if (travel) {
+      const { pt, done } = easeToward(travel.from, travel.to, travel.startMs, 900, Date.now());
+      selfBase = pt;
+      travelAngle = Math.atan2(travel.to.y - travel.from.y, travel.to.x - travel.from.x);
+      if (done) {
+        selfBaseRef.current = travel.to;
+        selfTravelRef.current = null;
+      }
+    }
+    const selfMotion = shipPos({ ...selfPlace, baseX: selfBase.x, baseY: selfBase.y }, w, h, t);
+    const selfMarker = { x: selfMotion.x, y: selfMotion.y, angle: travelAngle ?? selfMotion.angle };
+
     drawScene(
       ctx, w, h, sectorId, systemRef.current, t,
       hitTargetsRef.current, hoverRef.current,
       envRef.current.hazardLevel, envRef.current.radiationLevel,
       shipsRef.current, departuresRef.current, selectedShipRef.current,
-      arrivalsRef.current
+      arrivalsRef.current, selfMarker,
+      wrecksRef.current, formationsRef.current, scanActiveRef.current
     );
   };
 
@@ -7486,6 +7983,12 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     setHudVisible(false);
     departuresRef.current.length = 0;
     arrivalsRef.current.length = 0;
+    // A sector warp is a real position change — re-seed the cosmetic self
+    // marker at the NEW sector's deterministic spot instead of carrying the
+    // old sector's screen position across (that would misleadingly imply
+    // continuity the game has no model for).
+    selfBaseRef.current = { x: -1, y: -1 };
+    selfTravelRef.current = null;
   }, [sectorId, scene]);
 
   // ---- Detect ships entering/leaving the sector → warp-in / warp-out streaks ----
@@ -7563,6 +8066,17 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   useEffect(() => {
     if (reducedMotionRef.current) drawNowRef.current();
   }, [selectedShipId]);
+
+  // ---- SCAN toggle change (now a controlled prop, WO-UI5-RETIREMENT+GLASS
+  //      item 3) → repaint immediately in reduced-motion (static) mode, same
+  //      reasoning as the selection-change effect above: with reduced motion
+  //      there's no rAF loop to naturally pick up the new scanActiveRef value
+  //      on the next frame, so the button's former inline click-handler used
+  //      to force this draw itself. Now that the button lives outside this
+  //      component, this effect is the only place left to do it. ----
+  useEffect(() => {
+    if (reducedMotionRef.current) drawNowRef.current();
+  }, [scanActive]);
 
   // ---- Drop the module-level landed-scene cache on unmount so a remount never
   //      reuses CanvasGradient objects bound to the destroyed canvas context.
@@ -7772,12 +8286,58 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
       enterOrbit(target);
       return;
     }
+    // Picking a ship contact spotlights it (the reticle at drawScene's
+    // "selectedShipId" branch is already built — this is the wiring half).
+    if (target.kind === 'ship' && target.id) {
+      onSelectShip?.(target.id);
+    }
     if (popup && popup.key === popupKeyFor(target)) {
       // The closing click is consumed — never reopen the same body with it
       setPopup(null);
       return;
     }
     openPopupFor(target);
+  };
+
+  // ---- Cosmetic self-marker: right-click "Travel Here" glides the marker's
+  //      resting anchor to a new screen point over ~0.9s (purely decorative —
+  //      no real endpoint, no server call; see drawScene's selfMarker param). ----
+  const travelMarkerTo = (x: number, y: number) => {
+    const { w, h } = sizeRef.current;
+    if (w < 2 || h < 2) return;
+    const place = shipPlacement(`__self__:${sectorId}`, w, h);
+    let from = selfBaseRef.current.x < 0 ? { x: place.baseX, y: place.baseY } : selfBaseRef.current;
+    const inFlight = selfTravelRef.current;
+    if (inFlight) {
+      // Already mid-glide — resume from its current eased point, not the
+      // original start, so a second Travel click doesn't jump backward.
+      from = easeToward(inFlight.from, inFlight.to, inFlight.startMs, 900, Date.now()).pt;
+    }
+    selfTravelRef.current = { from, to: { x, y }, startMs: Date.now() };
+    if (reducedMotionRef.current) drawNowRef.current();
+  };
+
+  // ---- Right-click context menu — reuses the SAME popup/.ssv-popup card
+  //      (PopupState.contextMenu=true), never a separate MenuState. ----
+  const handleContextMenu = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    event.preventDefault();
+    if (scene !== 'flight') return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = event.clientX - rect.left;
+    const my = event.clientY - rect.top;
+    const hit = hitTest(mx, my);
+    const target: HitTarget = hit ?? {
+      x: mx, y: my, r: 0, kind: 'empty', name: 'SECTOR SPACE', lines: [], meta: { kind: 'empty' }
+    };
+    const { w, h } = sizeRef.current;
+    const left = Math.min(Math.max(6, mx + 10), Math.max(6, w - POPUP_W - 6));
+    const top = Math.min(Math.max(6, my + 10), Math.max(6, h - POPUP_H - 6));
+    setPopup({
+      key: `ctx:${popupKeyFor(target)}:${Math.round(mx)}:${Math.round(my)}`,
+      target, left, top, contextMenu: true
+    });
   };
 
   // ---- Popup card content, by body kind ----
@@ -7889,7 +8449,78 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
             )}
           </>
         );
+      case 'wreck':
+        return (
+          <>
+            <div className="ssv-popup-title proc">WRECKAGE</div>
+            <div className="ssv-popup-line proc">{meta.shipType.replace(/_/g, ' ').toUpperCase()}</div>
+            <div className="ssv-popup-line proc">CAUSE — {meta.cause.replace(/_/g, ' ').toUpperCase()}</div>
+            <div className="ssv-popup-status">
+              {meta.suspect ? 'SALVAGE FLAGGED — CAUTION' : 'UNCLAIMED SALVAGE'}
+            </div>
+          </>
+        );
+      case 'formation':
+        return (
+          <>
+            <div className="ssv-popup-title">{(meta.name || 'UNIDENTIFIED ANOMALY').toUpperCase()}</div>
+            <div className="ssv-popup-line">{(meta.type || 'FORMATION').replace(/_/g, ' ').toUpperCase()}</div>
+            <div className="ssv-popup-status">
+              {meta.discovered ? 'DISCOVERED' : 'UNDISCOVERED — SCAN TO CONFIRM'}
+            </div>
+          </>
+        );
+      case 'empty':
+        return null;
     }
+  };
+
+  // ---- Right-click context menu content — renders inside the SAME
+  //      .ssv-popup card (PopupState.contextMenu=true). Empty space only
+  //      offers Travel Here; any real contact adds Inspect; ship contacts
+  //      also get SELECT (drives selectedShipId / the reticle). No HAIL here
+  //      — NPC-hail is AI-dialogue, human-gated, deferred to a follow-up. ----
+  const renderContextMenuContent = (target: HitTarget): React.ReactNode => {
+    const isEmpty = target.meta.kind === 'empty';
+    const isShip = target.meta.kind === 'ship';
+    return (
+      <>
+        <div className="ssv-popup-title proc">
+          {isEmpty ? 'SECTOR SPACE' : target.name.toUpperCase()}
+        </div>
+        <button
+          type="button"
+          className="ssv-popup-action"
+          onClick={() => {
+            travelMarkerTo(target.x, target.y);
+            setPopup(null);
+          }}
+        >
+          🧭 TRAVEL HERE
+        </button>
+        {!isEmpty && (
+          <button
+            type="button"
+            className="ssv-popup-action"
+            onClick={() => openPopupFor(target)}
+          >
+            🔎 INSPECT
+          </button>
+        )}
+        {isShip && target.id && (
+          <button
+            type="button"
+            className="ssv-popup-action"
+            onClick={() => {
+              onSelectShip?.(target.id as string);
+              setPopup(null);
+            }}
+          >
+            ◉ SELECT
+          </button>
+        )}
+      </>
+    );
   };
 
   // ---- Fallback: the viewscreen never breaks ----
@@ -7923,13 +8554,44 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
         onMouseLeave={handleMouseLeave}
         onMouseDown={handleMouseDown}
         onClick={handleClick}
+        onContextMenu={handleContextMenu}
       />
+      {/* Vista engine overlay — landed scene, flag ON, adapter returned non-null,
+          engine has not thrown.  Sits above the legacy canvas in absolute fill;
+          the draw loop skips drawLandedScene while this overlay is mounted.
+          Glass-law geometry unchanged.
+          Safety: VistaErrorBoundary catches render-phase throws; VistaCanvas's
+          onError prop catches draw-phase (setTime) throws.  Either path sets
+          vistaEngineFailed → this block is removed from the tree and the legacy
+          drawLandedScene at ~7474 resumes — windshield never goes blank. */}
+      {VISTA_ENGINE_ON && scene === 'landed' && vistaAdaptedInput !== null && !vistaEngineFailed && (
+        <VistaErrorBoundary onError={handleVistaEngineError}>
+          {/* DEV-ONLY: when ?vistaThrow=1 or window.__vistaForceThrow=true is set,
+              VistaForceThrowDev throws during render → boundary catches it →
+              handleVistaEngineError → VistaCanvas unmounts → drawLandedScene resumes.
+              VistaForceThrowDev is null in prod builds (import.meta.env.DEV gate). */}
+          {import.meta.env.DEV && VistaForceThrowDev && <VistaForceThrowDev />}
+          <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+            <VistaCanvas
+              input={vistaAdaptedInput}
+              clock={reducedMotion ? 0 : vistaClock}
+              onError={handleVistaEngineError}
+            />
+          </div>
+        </VistaErrorBoundary>
+      )}
+      {/* SCAN toggle (#7) button RETIRED from the glass here (WO-UI5-
+          RETIREMENT+GLASS item 3) — relocated to the SOLAR SYSTEM monitor's
+          SYSTEM page as a `.act` button (GameDashboard.tsx), wired to the
+          SAME `scanActive` flag, now received as a controlled prop above.
+          The wreck/formation glyphs + hit targets below still gate on
+          `scanActive` exactly as before — only the trigger moved. */}
       {popup && scene === 'flight' && (
         <div
           className="ssv-popup"
           style={{ left: popup.left, top: popup.top }}
           role="dialog"
-          aria-label={`${popup.target.name} details`}
+          aria-label={popup.contextMenu ? `${popup.target.name} actions` : `${popup.target.name} details`}
         >
           <button
             type="button"
@@ -7939,7 +8601,7 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
           >
             ✕
           </button>
-          {renderPopupContent(popup.target)}
+          {popup.contextMenu ? renderContextMenuContent(popup.target) : renderPopupContent(popup.target)}
         </div>
       )}
       {orbit && hudVisible && scene === 'flight' && (() => {

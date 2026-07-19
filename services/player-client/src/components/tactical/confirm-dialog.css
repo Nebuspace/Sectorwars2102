@@ -135,6 +135,33 @@
   box-shadow: 0 0 12px rgba(0, 217, 255, 0.3);
 }
 
+/* WO-TACTICAL-POPUP browser-prove note: HailComposeDialog's Send button
+   is functionally disabled while the input is empty/whitespace-only
+   (disabled={busy || !value.trim()}), but this shared class had no
+   :disabled styling -- it rendered indistinguishable from an enabled
+   button, so a click just silently no-op'd with no visual explanation.
+   Matches the house `.action-button:disabled` idiom (opacity + not-allowed
+   cursor, hover reverting to the base look) -- inert for ConfirmDialog.tsx,
+   whose buttons never set `disabled`. */
+.confirm-dialog-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.confirm-dialog-btn:disabled:hover {
+  background: rgba(0, 0, 0, 0.4);
+  border-color: rgba(0, 217, 255, 0.35);
+  box-shadow: none;
+}
+
+.confirm-dialog-btn.confirm:disabled:hover {
+  border-color: rgba(0, 255, 65, 0.35);
+}
+
+.confirm-dialog-btn.cancel:disabled:hover {
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
 .confirm-dialog-btn.confirm {
   color: #00ff41;
   border-color: rgba(0, 255, 65, 0.35);

@@ -7,14 +7,16 @@
 .solar-viewscreen-container {
   position: relative;
   width: 100%;
-  /* Clip the canvas to the VISIBLE scene area only: the console (deck) overlays
-     the bottom portion of the full-bleed windshield. Using the inherited
-     --deck-h variable (defined on .game-container) ensures the canvas height
-     tracks the visible area in every mode — flight (52%), docked/landed expanded
-     (20%), minimized (60px). Without this, getBoundingClientRect() returns the
-     FULL windshield height (900px at 1440×900), and starY = h*0.5 lands at the
-     deck boundary rather than the scene centre. */
-  height: calc(100% - var(--deck-h));
+  /* WO-UI0-SHELL-TRANSPLANT: `.cockpit-windshield` (this element's parent)
+     is now portaled directly into `.band`, a container sized to EXACTLY the
+     visible scene area for the current mode (cockpit-shell.css's `.band`
+     base + game-layout.css's `.mode-station .band`/`.mode-surface .band`)
+     — there is no deck overlap left to clip away, so this is simply 100%
+     of that box. The old `calc(100% - var(--deck-h))` clip existed only
+     because the pre-transplant windshield spanned band+deck combined; that
+     combined box no longer exists (the deck is a separate `.stage` row
+     now, see game-layout.css). */
+  height: 100%;
   overflow: hidden;
   background: #040711;
 }
@@ -97,11 +99,19 @@
   font-weight: 700;
   letter-spacing: 0.08em;
   text-shadow: 0 0 10px rgba(0, 217, 255, 0.7);
-  padding-right: 18px; /* clear the ✕ tab */
+  padding-right: 18px; /* clear the ✕ tab, on every wrapped line too */
   margin-bottom: 0.25rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* WO-TABLEAU-TUNE (Max #25): a real station/planet name (e.g. "TRADE HUB
+     CAPELWORKS") routinely exceeds the ~20-char single-line budget this
+     232px-wide card leaves at 0.85rem bold monospace, so the previous
+     nowrap+ellipsis clamp silently cut real names off mid-word. The demo's
+     own name-reveal idiom (`.pltag`/`.objtag`, RATIFIED.html L113-115/L60)
+     never clamps — full names always render — so this card shouldn't
+     either: let the title WRAP instead (the card has no fixed height, so
+     it just grows) and hard-break the rare single unbroken token that
+     alone exceeds the card width, instead of ellipsizing. */
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 .ssv-popup-line {
@@ -156,4 +166,509 @@
 .ssv-popup-action:hover {
   background: rgba(0, 217, 255, 0.22);
   box-shadow: 0 0 10px rgba(0, 217, 255, 0.25);
+}
+.ssv-popup-action.halt {
+  color: #FFD9DE;
+  border-color: #7A3644;
+  background: linear-gradient(180deg, #3A1520, #2A0E16);
+  text-shadow: 0 0 8px rgba(255, 90, 106, .7);
+  animation: ssv-halt-flash 1s steps(2, start) infinite;
+}
+@keyframes ssv-halt-flash { 50% { filter: brightness(.45); } }
+
+/* FIX C revise (Max correction: right-click must be MENU-mediated, not
+   direct-travel) — a small floating "Travel To" menu, same HUD-glass
+   language as .ssv-popup (rgba/border/backdrop-filter) but sized for a
+   single action button instead of an info card. Its own .ssv-popup-action
+   button is the SAME reused class the popup's LAND/DOCK buttons already
+   use — margin-top reset to 0 since here it's the menu's only/first item,
+   not spaced below other popup content. */
+.ssv-ctxmenu {
+  position: absolute;
+  z-index: 26;
+  min-width: 120px;
+  box-sizing: border-box;
+  pointer-events: auto;
+  background: rgba(0, 10, 16, 0.38);
+  border: 1px solid rgba(0, 217, 255, 0.25);
+  border-radius: 4px;
+  backdrop-filter: blur(3px);
+  box-shadow:
+    0 0 14px rgba(0, 217, 255, 0.12),
+    inset 0 1px 0 rgba(0, 217, 255, 0.08);
+  padding: 0.35rem;
+  font-family: 'Courier New', monospace;
+}
+
+.ssv-ctxmenu .ssv-popup-action {
+  margin-top: 0;
+  width: 100%;
+  text-align: left;
+}
+
+/* SCAN TOGGLE button CSS retired here (WO-UI5-RETIREMENT+GLASS item 3) — the
+   button moved off the glass to the SOLAR SYSTEM monitor's SYSTEM page,
+   which skins it with the shared artifact `.act` class (cockpit-shell.css)
+   instead of this bespoke `.ssv-scan-toggle` rule. Dead, zero remaining
+   consumers — see SolarSystemViewscreen.tsx's own SCAN-toggle comment. */
+
+/* ============================================================
+   WINDSHIELD TABLEAU (WO-UI2-WINDSHIELD-TABLEAU) — static DOM scene
+   composition for WindshieldTableau.tsx, replacing the flight-mode canvas
+   orrery with the ratified demo's "sliver" composition. Classes are
+   demo-verbatim (RATIFIED.html L43-60, L107-131, L294-303) but SCOPED
+   under `.ssv-tableau` (this component's root): cockpit-shell.css's own
+   header comment excludes scene-content classes from the shell lane on
+   purpose ("Scene-content sections... are intentionally EXCLUDED — those
+   belong to later content lanes"), confirmed empty of .scene/.sun/.pl/
+   .obj/.shipmk/... on this WO's verify-first grep — so this is that scene-
+   content lane's home, per the coordinator's redirect (do not edit
+   cockpit-shell.css). Scoping under `.ssv-tableau` (rather than emitting
+   these short, generic names bare/global) avoids leaking .obj/.other/.sun
+   etc. into the wider app cascade while keeping every DOM node's class
+   string demo-identical.
+   ============================================================ */
+
+.ssv-tableau { position: absolute; inset: 0; }
+.ssv-tableau .scene { position: absolute; inset: 0; }
+.ssv-tableau .scene.space {
+  background: radial-gradient(ellipse 60% 90% at 70% 20%, #12365233, transparent 60%),
+              linear-gradient(180deg, #0A1526, #060B14);
+}
+.ssv-tableau .scene.space.nebula {
+  background: radial-gradient(ellipse 80% 100% at 50% 30%, #3A1D5433, transparent 70%),
+              radial-gradient(ellipse 50% 70% at 25% 60%, #16405A44, transparent 60%),
+              linear-gradient(180deg, #0D1122, #060B14);
+}
+.ssv-tableau .scene.space.hazard {
+  background: radial-gradient(ellipse 70% 90% at 60% 30%, #4A1B1633, transparent 60%),
+              linear-gradient(180deg, #160D12, #060B14);
+}
+
+/* PURE-CSS starfield — fixed, zero JS/randomness, so a resize only rescales
+   the layer instead of re-rolling star positions (Max addendum #2,
+   live-playtest #8: stars used to jump on every browser resize because the
+   canvas painter re-randomized them per render). Demo-verbatim, first child
+   of the scene (RATIFIED.html L51-55). */
+.ssv-tableau .stars {
+  position: absolute; inset: 0;
+  background-image:
+    radial-gradient(1px 1px at 12% 22%, #cfe6ff 60%, transparent),
+    radial-gradient(1px 1px at 32% 68%, #9fc0e8 60%, transparent),
+    radial-gradient(1.5px 1.5px at 55% 30%, #fff 60%, transparent),
+    radial-gradient(1px 1px at 71% 75%, #cfe6ff 60%, transparent),
+    radial-gradient(1px 1px at 86% 18%, #9fc0e8 60%, transparent),
+    radial-gradient(1.5px 1.5px at 44% 84%, #e8f3ff 60%, transparent),
+    radial-gradient(1px 1px at 92% 55%, #fff 60%, transparent),
+    radial-gradient(1px 1px at 6% 80%, #9fc0e8 60%, transparent);
+}
+
+.ssv-tableau .sun { position: absolute; border-radius: 50%; z-index: 1; background: none; }
+.ssv-tableau .orbit { position: absolute; border: 1px dashed #1B324755; border-radius: 50%; z-index: 0; }
+.ssv-tableau .belt { position: absolute; border: 3px dotted #4A3B2A66; border-radius: 50%; z-index: 0; }
+
+/* WO-AAA-SOLAR-TABLEAU: the shared-harness canvas layers -- explicit z-index:0
+   pins them into the SAME stacking level as `.orbit`/`.belt` above (CSS
+   Appendix E step 6: z-index:0 and z-index:auto positioned descendants of one
+   stacking context paint together, in tree order), which is unconditionally
+   BELOW `.sun` (z:1) and `.pl` (z:2) regardless of DOM order -- so these can
+   sit anywhere in `.scene.space`'s markup without a stacking fight. Sizing/
+   position/pointer-events are already inline (StarDisc.tsx/drawPlanetTableau.
+   tsx's own `<canvas style={{...}}>`) -- this is purely the stacking pin. */
+.ssv-tableau .star-disc-fx,
+.ssv-tableau .planet-tableau-fx { z-index: 0; }
+
+/* WO-AAA-SOLAR-TABLEAU: fill is now the PlanetTableauLayer canvas beneath
+   this button (same %-anchor/size) -- the former flat HSL fill + this inset
+   shadow "faking a terminator" are both gone; `.pl` stays a transparent hit-
+   area/label/moons/focus target. */
+.ssv-tableau .pl { position: absolute; border-radius: 50%; z-index: 2; cursor: pointer; border: none; padding: 0; }
+.ssv-tableau .pl:hover,
+.ssv-tableau button.obj:hover .glyphbox { outline: 1px solid #3FD2EC66; outline-offset: 3px; }
+.ssv-tableau .pl:focus-visible,
+.ssv-tableau button.obj:focus-visible,
+.ssv-tableau .anom:focus-visible { outline: 1px solid #3FD2EC; outline-offset: 2px; }
+.ssv-tableau .pltag {
+  pointer-events: none; position: absolute; transform: translate(-50%, .4em);
+  top: 100%; left: 50%; white-space: nowrap; background: #0A141FD8; border: 1px solid #1E3348;
+  border-radius: 4px; padding: .1em .45em; color: #BFE9F5; font-size: .55em; letter-spacing: .06em;
+}
+.ssv-tableau .pltag.dim { color: #6E8298; }
+/* WO-UI-PLTAG-CLAMP: `.pltag` is centered under its anchor by default
+   (left:50% + translateX(-50%) above) -- correct for the common case, but
+   a body near the band's left/right edge can have a name label wide enough
+   that HALF its width still crosses the edge even though the disc itself
+   (`.pl`, T1-A) stays fully in-band, since this label escapes `.pl`'s own
+   layout box (position:absolute). WindshieldTableau.tsx's labelEdgeLean
+   decides which lean (if any) a given body's label needs and applies one
+   of these two modifiers instead -- never repositions the disc, only the
+   label's own horizontal anchor: right-lean flushes the label's RIGHT
+   edge to the disc's right edge (`right:0` instead of centering), left-
+   lean flushes its LEFT edge to the disc's left edge. Same higher-
+   specificity-via-compound-class convention as `.pltag.dim` above; no
+   `!important` needed since `.pltag.pltag-lean-*` (2 classes) beats the
+   base `.pltag` (1 class) on specificity alone. */
+.ssv-tableau .pltag.pltag-lean-right { left: auto; right: 0; transform: translateY(.4em); }
+.ssv-tableau .pltag.pltag-lean-left { left: 0; transform: translateY(.4em); }
+
+.ssv-tableau .obj {
+  position: absolute; display: flex; flex-direction: column; align-items: center; gap: .3em;
+  color: #BFE9F5; font-size: .7em; letter-spacing: .08em; background: none; border: none; cursor: pointer;
+}
+.ssv-tableau .glyphbox { border: 1px solid #2A4A62; border-radius: 8px; padding: .5em .8em; background: #0C1826CC; font-size: 1.6em; }
+.ssv-tableau .objtag { pointer-events: none; background: #0A141FDD; border: 1px solid #1E3348; border-radius: 4px; padding: .15em .5em; }
+
+.ssv-tableau .shipmk {
+  position: absolute; z-index: 5; color: #BDEFFB; font-size: 1.1em; text-shadow: 0 0 10px #3FD2ECCC;
+  /* Position + rotation durations are driven by CSS variables so a phase
+     change can retime the NEXT rotation without restarting the single,
+     continuous position glide already running (running transitions snapshot
+     their timing at start — later variable edits only affect future ones).
+     That is what keeps momentum reading smoothly through the mid-flight flip. */
+  transition:
+    left var(--travel-pos-dur, 0s) var(--travel-pos-ease, ease-in-out),
+    top var(--travel-pos-dur, 0s) var(--travel-pos-ease, ease-in-out),
+    transform var(--travel-rot-dur, .5s) var(--travel-rot-ease, cubic-bezier(.4,0,.2,1));
+  transform: translate(-50%, -50%) rotate(var(--hdg, 0deg)); pointer-events: none;
+}
+/* Local flight profile — ONE continuous eased glide (accelerate → cruise →
+   decelerate as a single position transition), with engine burn, RCS jets, and
+   the retrograde flip layered on as a timed track. The ship keeps coasting at
+   speed through the flip (momentum), never stopping to turn. TRAVEL_MOVE_MS in
+   WindshieldTableau.tsx (6400) must equal this 6.4s position duration. */
+/* QUEUE-TRAVEL-ROT-EASE: --travel-rot-ease was the one member of this
+   4-var family with no per-state overrides (always the fallback
+   cubic-bezier(.4,0,.2,1) above) -- git-blame shows it was introduced
+   alongside its 3 siblings in one commit with no comment ever singling it
+   out as deliberately static, so this fills the same per-state pattern the
+   siblings already carry. Only states with a NONZERO --travel-rot-dur get
+   an override (matching the existing convention: --travel-pos-ease is
+   likewise never set for a 0s --travel-pos-dur state -- an ease on a
+   zero-duration transition is a no-op). Values are either (a) mirrored
+   from that SAME state's own --travel-pos-ease when one exists, so the
+   flip/turn shares its embedded glide's motion character, or (b) a fresh
+   curve matching the state's own doc-comment narrative where no position
+   sibling exists to borrow from -- documented per state below. */
+.ssv-tableau .shipmk.travel-orienting {
+  --travel-pos-dur: 0s; --travel-rot-dur: 1s;
+  /* No pos-ease sibling (pos-dur:0s) -- the pre-departure aim-and-lock
+     turn, snappy swing settling hard into the new heading (nothing else
+     is moving yet, so this can read as decisive rather than gentle). */
+  --travel-rot-ease: cubic-bezier(.3, 0, .15, 1);
+}
+.ssv-tableau .shipmk.travel-accelerating,
+.ssv-tableau .shipmk.travel-gliding,
+.ssv-tableau .shipmk.travel-brake-turn,
+.ssv-tableau .shipmk.travel-braking {
+  --travel-pos-dur: 6.4s;
+  --travel-pos-ease: cubic-bezier(.45, .05, .55, .95);
+}
+.ssv-tableau .shipmk.travel-accelerating,
+.ssv-tableau .shipmk.travel-gliding,
+.ssv-tableau .shipmk.travel-braking { --travel-rot-dur: 0s; }
+/* brake-turn's flip happens WHILE still coasting forward on the SAME 6.4s
+   glide (this block's own comment above: "the ship keeps coasting at
+   speed through the flip") -- mirrors that glide's own --travel-pos-ease
+   so the rotation reads as embedded in the same continuous motion, not a
+   separately-timed turn. */
+.ssv-tableau .shipmk.travel-brake-turn { --travel-rot-dur: 1.3s; --travel-rot-ease: cubic-bezier(.45, .05, .55, .95); }
+.ssv-tableau .shipmk.travel-final-orient {
+  --travel-pos-dur: 0s; --travel-rot-dur: .8s;
+  /* No pos-ease sibling (pos-dur:0s) -- the LAST beat of the sequence,
+     settling face-forward at the destination; a long, gentle deceleration
+     into rest reads as "arrived," not another mid-flight turn. */
+  --travel-rot-ease: cubic-bezier(.16, 1, .3, 1);
+}
+/* Emergency Halt — retargets the running glide to a nearby stop. Shorter
+   position duration so the coast-ahead + burn reads as an abort, not a crawl. */
+.ssv-tableau .shipmk.travel-halt-turn,
+.ssv-tableau .shipmk.travel-halt-brake {
+  --travel-pos-dur: 3.4s;
+  --travel-pos-ease: cubic-bezier(.05, .7, .15, 1);
+}
+/* Mirrors this SAME emergency-halt block's own --travel-pos-ease (fast
+   initial ramp, long settle) -- the abort flip should read as urgent, the
+   same motion language as the "coast-ahead + burn reads as an abort, not
+   a crawl" position curve it's paired with. */
+.ssv-tableau .shipmk.travel-halt-turn { --travel-rot-dur: 1.8s; --travel-rot-ease: cubic-bezier(.05, .7, .15, 1); }
+.ssv-tableau .shipmk.travel-halt-brake { --travel-rot-dur: 0s; }
+/* Mid-course redirect — keep forward speed while RCS swings onto a soft
+   arc waypoint, then burn toward the new destination. Never parks. */
+.ssv-tableau .shipmk.travel-redirect-turn {
+  --travel-pos-dur: 2.4s;
+  --travel-pos-ease: cubic-bezier(.2, .55, .35, 1);
+  --travel-rot-dur: 1.6s;
+  /* Mirrors this state's own --travel-pos-ease -- the RCS swing is the
+     SAME "soft arc" this comment already describes, not a harder turn. */
+  --travel-rot-ease: cubic-bezier(.2, .55, .35, 1);
+}
+/* Sector reseeds / warp arrival are teleports — never CSS-glide the hull across
+   the band (that reads as "ship crawling from the old sector's coordinates"). */
+.ssv-tableau .shipmk.warp-launching,
+.ssv-tableau .shipmk.warp-arriving { transition: none; }
+.ssv-tableau .shipmk.warp-turning {
+  --travel-rot-dur: 3s; /* preserve the deliberate pre-warp reorientation */
+  /* No pos-ease sibling (warp-launching/-arriving disable the transition
+     entirely, and this state's own comment calls the turn "deliberate") --
+     a slow, weighty, symmetric ease distinct from the punchier combat/nav
+     turns above, reading as a ceremonial pre-warp swing, not a maneuver. */
+  --travel-rot-ease: cubic-bezier(.65, 0, .35, 1);
+  filter: drop-shadow(0 0 .45em rgba(125, 215, 255, .7));
+}
+/* RCS attitude jets — tiny gas puffs on opposite corners of the hull firing as
+   a rotational couple while the ship re-orients before warp. Body-mounted, so
+   they inherit the hull's rotate() and read as maneuvering thrusters. */
+.ssv-tableau .shipmk .ssv-rcs {
+  position: absolute; width: .5em; height: .16em; border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(225, 246, 255, .95), rgba(150, 205, 255, .45) 55%, transparent 78%);
+  filter: blur(.35px); opacity: 0; pointer-events: none;
+}
+.ssv-tableau .shipmk .ssv-rcs-a { top: -.05em; right: -.35em; animation: ssv-rcs-puff .42s steps(3, jump-none) infinite; }
+.ssv-tableau .shipmk .ssv-rcs-b { bottom: -.05em; left: -.35em; animation: ssv-rcs-puff .42s steps(3, jump-none) .21s infinite; }
+@keyframes ssv-rcs-puff {
+  0% { opacity: 0; transform: scaleX(.3); }
+  25% { opacity: .95; transform: scaleX(1); }
+  100% { opacity: 0; transform: scaleX(1.7); }
+}
+.ssv-tableau .shipmk::after {
+  content: ""; display: none; position: absolute; right: 92%; top: 50%; transform: translateY(-50%);
+  width: 1.25em; height: .3em; border-radius: 2px; filter: blur(.4px);
+  background: linear-gradient(270deg, #FFD27ACC, #FF7A5A99 40%, transparent);
+}
+.ssv-tableau .shipmk.burning::after { display: block; animation: ssv-thrust .22s steps(2, start) infinite; }
+@keyframes ssv-thrust { 50% { opacity: .55; width: 1.05em; } }
+
+/* Warp cinematic (see WindshieldTableau.tsx's warpPhase machine). The exit
+   bearing arrives as --warp-bearing (deg, 0 = +x / rightward). Durations here
+   MUST track WARP_MIN_CHARGE_MS / WARP_LAUNCH_MS / WARP_ARRIVE_MS in that file. */
+.ssv-tableau .ssv-warp { position: absolute; z-index: 6; transform: translate(-50%, -50%); pointer-events: none; }
+.ssv-tableau .ssv-warp-bubble {
+  position: absolute; left: 0; top: 0; width: 3.4em; height: 3.4em; margin: -1.7em 0 0 -1.7em;
+  border-radius: 50%; border: 1px solid rgba(180, 228, 255, .6);
+  background: radial-gradient(circle at 50% 42%, rgba(160, 224, 255, .30), rgba(90, 160, 255, .15) 55%, transparent 72%);
+  box-shadow: 0 0 1.4em rgba(120, 200, 255, .55), inset 0 0 .9em rgba(190, 232, 255, .55);
+  opacity: 0; transform: scale(.1);
+}
+.ssv-tableau .ssv-warp-streak {
+  position: absolute; left: 0; top: 0; height: .34em; margin-top: -.17em; width: 0;
+  transform-origin: left center; transform: rotate(var(--warp-bearing, 0deg));
+  background: linear-gradient(90deg, rgba(210, 240, 255, .95), rgba(130, 195, 255, .5) 55%, transparent);
+  border-radius: 2px; filter: blur(.4px); opacity: 0;
+}
+.ssv-tableau .ssv-warp.warp-charging .ssv-warp-bubble { animation: ssv-warp-charge 1.8s ease-out forwards; }
+.ssv-tableau .ssv-warp.warp-launch .ssv-warp-bubble { animation: ssv-warp-pop 1.7s ease-in forwards; }
+.ssv-tableau .ssv-warp.warp-launch .ssv-warp-streak { animation: ssv-warp-streak 1.7s ease-in forwards; }
+.ssv-tableau .ssv-warp.warp-arriving .ssv-warp-bubble { animation: ssv-warp-arrive 3.4s ease-out forwards; }
+.ssv-tableau .ssv-warp.warp-arriving .ssv-warp-streak {
+  transform: rotate(calc(var(--arrival-bearing, 0deg) + 180deg));
+  animation: ssv-warp-streak-in 2s cubic-bezier(.35,.05,.75,.45) forwards;
+}
+@keyframes ssv-warp-charge {
+  0% { opacity: 0; transform: scale(.1); }
+  55% { opacity: 1; transform: scale(1); }
+  100% { opacity: .92; transform: scale(1.06); filter: blur(.3px); }
+}
+@keyframes ssv-warp-pop {
+  0% { opacity: .92; transform: scale(1.06); }
+  100% { opacity: 0; transform: scale(2); }
+}
+@keyframes ssv-warp-streak {
+  0% { opacity: 0; width: 0; }
+  35% { opacity: 1; }
+  100% { opacity: 0; width: 15em; }
+}
+/* Inbound line starts far behind the hull and collapses into the bubble-in
+   point, making the arrival direction legible across the solar-system band. */
+@keyframes ssv-warp-streak-in {
+  0% { opacity: 0; width: 44em; filter: blur(1.2px); }
+  18% { opacity: .95; }
+  72% { opacity: .8; width: 9em; filter: blur(.35px); }
+  100% { opacity: 0; width: 0; }
+}
+@keyframes ssv-warp-arrive {
+  0% { opacity: 0; transform: scale(2.2); }
+  20% { opacity: .9; transform: scale(1.7); }
+  72% { opacity: .75; transform: scale(1); }
+  100% { opacity: 0; transform: scale(.7); }
+}
+
+/* Full-band flash bridging the sector swap. */
+.ssv-tableau .ssv-warp-flash {
+  position: absolute; inset: 0; z-index: 6; pointer-events: none; opacity: 0;
+  background: radial-gradient(circle at 50% 50%, rgba(215, 242, 255, .55), rgba(150, 200, 255, .16) 45%, transparent 70%);
+  animation: ssv-warp-flash 3.4s ease-out forwards;
+}
+@keyframes ssv-warp-flash { 0% { opacity: 0; } 18% { opacity: .9; } 55% { opacity: .35; } 100% { opacity: 0; } }
+
+/* The hull itself: streak out on launch, fade back in on arrival. */
+.ssv-tableau .shipmk.warp-launching { animation: ssv-ship-warpout 1.7s ease-in forwards; }
+.ssv-tableau .shipmk.warp-arriving { animation: ssv-ship-warpin 3.4s ease-out; }
+@keyframes ssv-ship-warpout {
+  to { opacity: 0; transform: translate(-50%, -50%) rotate(var(--hdg, 0deg)) scale(.4); }
+}
+@keyframes ssv-ship-warpin {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+.ssv-tableau .anom {
+  position: absolute; z-index: 2; color: #C9B8F5; opacity: .5; font-size: 1.2em; cursor: pointer;
+  text-shadow: 0 0 12px #9B7BFFAA; animation: ssv-shimmer 2.4s ease-in-out infinite; background: none; border: none;
+}
+@keyframes ssv-shimmer { 50% { opacity: .15; } }
+
+.ssv-tableau .other {
+  position: absolute; z-index: 3; color: #8FB8D8; font-size: .85em; text-shadow: 0 0 8px #8FB8D866;
+  cursor: pointer; transform: translate(-50%, -50%); background: none; border: none;
+  /* Position is absolute from otherShipFlightPose (same turn/burn/flip/brake
+     timeline as .shipmk). No CSS left/top easing here — the pose function owns it. */
+}
+.ssv-tableau .other .other-hull {
+  position: relative; display: inline-block;
+  transform: rotate(var(--hdg, 0deg));
+  transition: transform .12s linear;
+}
+.ssv-tableau .other.travel-orienting .other-hull,
+.ssv-tableau .other.travel-brake-turn .other-hull,
+.ssv-tableau .other.travel-final-orient .other-hull {
+  transition: transform var(--travel-rot-dur, .5s) cubic-bezier(.4,0,.2,1);
+}
+.ssv-tableau .other.travel-orienting { --travel-rot-dur: 1s; }
+.ssv-tableau .other.travel-brake-turn { --travel-rot-dur: 1.3s; }
+.ssv-tableau .other.travel-final-orient { --travel-rot-dur: .8s; }
+.ssv-tableau .other.travel-accelerating .other-hull,
+.ssv-tableau .other.travel-gliding .other-hull,
+.ssv-tableau .other.travel-braking .other-hull { transition: transform 0s; }
+/* Exhaust flame — same idiom as .shipmk::after, mounted on the hull so it
+   rotates with heading (behind the chevron while burning). */
+.ssv-tableau .other .other-hull::after {
+  content: ""; display: none; position: absolute; right: 92%; top: 50%; transform: translateY(-50%);
+  width: 1.05em; height: .26em; border-radius: 2px; filter: blur(.4px);
+  background: linear-gradient(270deg, #FFD27ACC, #FF7A5A99 40%, transparent);
+}
+.ssv-tableau .other.burning .other-hull::after { display: block; animation: ssv-thrust .22s steps(2, start) infinite; }
+.ssv-tableau .other .other-hull .ssv-rcs {
+  position: absolute; width: .45em; height: .14em; border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(225, 246, 255, .95), rgba(150, 205, 255, .45) 55%, transparent 78%);
+  filter: blur(.35px); opacity: 0; pointer-events: none;
+}
+.ssv-tableau .other .other-hull .ssv-rcs-a { top: -.05em; right: -.3em; animation: ssv-rcs-puff .42s steps(3, jump-none) infinite; }
+.ssv-tableau .other .other-hull .ssv-rcs-b { bottom: -.05em; left: -.3em; animation: ssv-rcs-puff .42s steps(3, jump-none) .21s infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .ssv-tableau .other .other-hull { transition: none; }
+  .ssv-tableau .other.burning .other-hull::after { animation: none; }
+  .ssv-tableau .other .other-hull .ssv-rcs { display: none; }
+}
+.ssv-tableau .other .pltag { font-size: .62em; color: #7FA3C0; }
+.ssv-tableau .other:hover { color: #CFE8FA; }
+
+/* Moon child-orbits (Max refinement 5a): system-level bodies stay FIXED but
+   a planet's own moons keep slow, local, parent-anchored motion. A rotating
+   0x0 wrapper centered on the planet + a dot translated out by the orbit
+   radius — pure CSS, so it dies for free under reduced-motion below.
+   WO-TABLEAU-TUNE (live-playtest #17): every moon of ONE planet shares a
+   single `.ccw` state (windshieldTableauLayout.ts's moonOrbits() draws one
+   `clockwise` per family) so the whole family visibly co-rotates; only the
+   per-family DIRECTION varies planet-to-planet, not per-moon. */
+.ssv-tableau .moon-orbit {
+  position: absolute; left: 50%; top: 50%; width: 0; height: 0;
+  animation-name: ssv-moon-spin; animation-timing-function: linear; animation-iteration-count: infinite;
+}
+.ssv-tableau .moon-orbit.ccw { animation-direction: reverse; }
+.ssv-tableau .moon-dot {
+  /* Slightly dim + a soft (not point-source) glow — reads as a nearby moon
+     catching starlight, not a bright background star (Max addendum #9).
+     width/height default here is a fallback only — WindshieldTableau.tsx
+     always sets an inline width/height from windshieldTableauLayout.ts's
+     per-moon `sizeEm` (MOON_DOT_MIN_EM..MOON_DOT_MAX_EM), so moons within
+     one family read as varied sizes, not a uniform dot (WO-TABLEAU-TUNE,
+     live-playtest #17). */
+  position: absolute; width: .3em; height: .3em; border-radius: 50%;
+  background: rgba(200, 202, 214, 0.72); box-shadow: 0 0 .2em rgba(200, 202, 214, .32);
+  transform: translate(-50%, -50%);
+}
+@keyframes ssv-moon-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+.ssv-tableau .reticle { position: absolute; z-index: 4; width: 3.4em; height: 3.4em; transform: translate(-50%, -50%); pointer-events: none; }
+.ssv-tableau .reticle::before {
+  content: ""; position: absolute; inset: 0; border: 1px solid #FF9AA5; border-radius: 50%;
+  box-shadow: 0 0 12px #FF5A6A66; animation: ssv-retspin 3.2s linear infinite;
+  -webkit-mask: conic-gradient(#000 0 55deg, transparent 55deg 90deg, #000 90deg 145deg, transparent 145deg 180deg, #000 180deg 235deg, transparent 235deg 270deg, #000 270deg 325deg, transparent 325deg);
+  mask: conic-gradient(#000 0 55deg, transparent 55deg 90deg, #000 90deg 145deg, transparent 145deg 180deg, #000 180deg 235deg, transparent 235deg 270deg, #000 270deg 325deg, transparent 325deg);
+}
+.ssv-tableau .reticle::after {
+  content: ""; position: absolute; left: 50%; top: 50%; width: .4em; height: .4em; transform: translate(-50%, -50%);
+  border: 1px solid #FF9AA5; box-shadow: 0 0 8px #FF5A6A88;
+}
+@keyframes ssv-retspin { to { transform: rotate(360deg); } }
+
+/* Nebula/debris hazard bands — blurred SVG ARCS along the star's orbital
+   plane (WO composition step 2: "not rings"), not floating blobs. */
+.ssv-tableau .hazard-arcs { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ssv-tableau .shipmk { transition: none; }
+  .ssv-tableau .shipmk.burning::after { animation: none; }
+  .ssv-tableau .anom { animation: none; }
+  .ssv-tableau .moon-orbit { animation: none; }
+  .ssv-tableau .reticle::before { animation: none; }
+  /* Warp cinematic is decorative — GameDashboard already withholds the token
+     under reduced-motion, but belt-and-suspenders in case it ever renders. */
+  .ssv-tableau .ssv-warp,
+  .ssv-tableau .ssv-warp-flash { display: none; }
+  .ssv-tableau .shipmk.warp-launching,
+  .ssv-tableau .shipmk.warp-arriving { animation: none; }
+  .ssv-tableau .shipmk .ssv-rcs { display: none; }
+  .ssv-popup-action.halt { animation: none; }
+}
+
+/* ============================================================
+   SOLAR SYSTEM DECK MONITOR (T1-B) — `.mon.system-monitor`
+   header + interior-scroll rules. These target GameDashboard.tsx's deck
+   monitor (cockpit-shell.css/cockpit.css own that panel's base chrome),
+   not this file's own `.ssv-*` glass/tableau classes above — they live
+   here because this file is the one CSS lane this WO's fence permits,
+   and SolarSystemViewscreen.tsx (which imports this file) is always
+   mounted alongside GameDashboard's deck in flight mode, so the rule
+   reaches its target the same as every other global stylesheet here.
+   ============================================================ */
+
+/* Let the header wrap instead of silently clipping (`.mon` is
+   `overflow:hidden`) once the uninhabitable-filter toggle button joins
+   the title + sector-name — narrower monitor columns need the room. */
+.system-monitor .mhead {
+  flex-wrap: wrap;
+  row-gap: 0.3em;
+}
+
+/* WO-SOLARUI item A — header filter toggle density.
+   The 🌑 HIDE UNINHABITABLE button is the shared `.act` chip
+   (cockpit-shell.css: `font-size:.95em`), but it sits in `.mhead`, which
+   inherits the shell-ROOT font (`.stage` ~10-15px) — NOT `.mbody`'s `.62em`.
+   So the identical chip that reads ~6-9px in the object list renders ~10-14px
+   here and dominates the header. `.act` sets its own font-size, so we must
+   override on the button itself (higher specificity than `.act`). Bring its
+   effective size to the in-body `.act` scale (`.95 * .62 ≈ .59em` of root) so
+   it matches the list chips + sits in line with `.mtitle`/`.hsub` (.66em),
+   while staying clearly tappable. Scoped under `.system-monitor .mhead` so it
+   touches ONLY this header's toggle — bare `.act` elsewhere is untouched. */
+.system-monitor .mhead .system-filter-toggle {
+  font-size: 0.6em;
+  padding: 0.2em 0.55em;
+  line-height: 1.2;
+  align-self: center;
+}
+
+/* SCROLL-LAW EXCEPTION (Max ruling, T1-B): the SOLAR SYSTEM object list
+   is a secondary sensor readout, not the panel's primary action — Max
+   explicitly ruled it should SCROLL WITHIN ITSELF when long rather than
+   cap the object count. `.mbody` (cockpit-shell.css) already carries a
+   base `overflow-y:auto` shared by every monitor; this reaffirms it
+   scoped + documented for THIS panel specifically, so a future Scroll-Law
+   audit reads the ruling here instead of "fixing" it by truncating the
+   list or forcing the document to scroll. Do not remove without a fresh
+   Max ruling.
+   ============================================================ */
+.system-monitor .mbody {
+  overflow-y: auto;
 }
