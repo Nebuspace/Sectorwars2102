@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 logger = logging.getLogger(__name__)
 
 from src.core.config import settings
+from src.utils.error_handling import generate_error_id, sanitize_error_message
 
 # Create a dedicated status router without authentication
 router = APIRouter()
@@ -128,6 +129,7 @@ async def ai_providers_health():
         # Test actual connectivity if configured
         openai_reachable = False
         openai_error = None
+        openai_error_id = None
         if openai_configured and openai_available:
             try:
                 # Quick test with OpenAI API
@@ -137,10 +139,15 @@ async def ai_providers_health():
                 response = client.models.list()
                 openai_reachable = True
             except Exception as e:
-                openai_error = str(e)
-        
+                openai_error_id = generate_error_id()
+                logger.error(
+                    "OpenAI health-check connectivity test failed [error_id=%s]",
+                    openai_error_id, exc_info=True,
+                )
+                openai_error = sanitize_error_message(e)
+
         openai_response_time = (time.time() - openai_start) * 1000
-        
+
         providers_status["openai"] = {
             "provider": "openai",
             "status": "healthy" if (openai_configured and openai_reachable) else "degraded" if openai_configured else "unavailable",
@@ -148,9 +155,14 @@ async def ai_providers_health():
             "reachable": openai_reachable,
             "response_time": round(openai_response_time, 2),
             "last_check": datetime.datetime.now().isoformat(),
-            "error": openai_error
+            "error": openai_error,
+            "error_id": openai_error_id
         }
     except Exception as e:
+        openai_error_id = generate_error_id()
+        logger.error(
+            "OpenAI health check failed [error_id=%s]", openai_error_id, exc_info=True,
+        )
         providers_status["openai"] = {
             "provider": "openai",
             "status": "unavailable",
@@ -158,7 +170,8 @@ async def ai_providers_health():
             "reachable": False,
             "response_time": 0,
             "last_check": datetime.datetime.now().isoformat(),
-            "error": str(e)
+            "error": sanitize_error_message(e),
+            "error_id": openai_error_id
         }
     
     # Anthropic Health Check
@@ -170,6 +183,7 @@ async def ai_providers_health():
         # Test actual connectivity if configured
         anthropic_reachable = False
         anthropic_error = None
+        anthropic_error_id = None
         if anthropic_configured and anthropic_available:
             try:
                 # Quick test with Anthropic API
@@ -183,10 +197,15 @@ async def ai_providers_health():
                 )
                 anthropic_reachable = True
             except Exception as e:
-                anthropic_error = str(e)
-        
+                anthropic_error_id = generate_error_id()
+                logger.error(
+                    "Anthropic health-check connectivity test failed [error_id=%s]",
+                    anthropic_error_id, exc_info=True,
+                )
+                anthropic_error = sanitize_error_message(e)
+
         anthropic_response_time = (time.time() - anthropic_start) * 1000
-        
+
         providers_status["anthropic"] = {
             "provider": "anthropic",
             "status": "healthy" if (anthropic_configured and anthropic_reachable) else "degraded" if anthropic_configured else "unavailable",
@@ -194,9 +213,14 @@ async def ai_providers_health():
             "reachable": anthropic_reachable,
             "response_time": round(anthropic_response_time, 2),
             "last_check": datetime.datetime.now().isoformat(),
-            "error": anthropic_error
+            "error": anthropic_error,
+            "error_id": anthropic_error_id
         }
     except Exception as e:
+        anthropic_error_id = generate_error_id()
+        logger.error(
+            "Anthropic health check failed [error_id=%s]", anthropic_error_id, exc_info=True,
+        )
         providers_status["anthropic"] = {
             "provider": "anthropic",
             "status": "unavailable",
@@ -204,7 +228,8 @@ async def ai_providers_health():
             "reachable": False,
             "response_time": 0,
             "last_check": datetime.datetime.now().isoformat(),
-            "error": str(e)
+            "error": sanitize_error_message(e),
+            "error_id": anthropic_error_id
         }
     
     # Overall status
@@ -241,7 +266,8 @@ async def openai_health():
     configured = bool(os.environ.get("OPENAI_API_KEY"))
     reachable = False
     error = None
-    
+    error_id = None
+
     if configured:
         try:
             import openai
@@ -250,11 +276,13 @@ async def openai_health():
             response = client.models.list()
             reachable = True
         except Exception as e:
-            error = str(e)
-    
+            error_id = generate_error_id()
+            logger.error("OpenAI health check failed [error_id=%s]", error_id, exc_info=True)
+            error = sanitize_error_message(e)
+
     response_time = (time.time() - start_time) * 1000
     status = "healthy" if (configured and reachable) else "degraded" if configured else "unavailable"
-    
+
     result = {
         "provider": "openai",
         "status": status,
@@ -263,10 +291,11 @@ async def openai_health():
         "response_time": round(response_time, 2),
         "last_check": datetime.datetime.now().isoformat()
     }
-    
+
     if error:
         result["error"] = error
-    
+        result["error_id"] = error_id
+
     return result
 
 @router.get("/ai/anthropic")
@@ -281,7 +310,8 @@ async def anthropic_health():
     configured = bool(os.environ.get("ANTHROPIC_API_KEY"))
     reachable = False
     error = None
-    
+    error_id = None
+
     if configured:
         try:
             import anthropic
@@ -294,11 +324,13 @@ async def anthropic_health():
             )
             reachable = True
         except Exception as e:
-            error = str(e)
-    
+            error_id = generate_error_id()
+            logger.error("Anthropic health check failed [error_id=%s]", error_id, exc_info=True)
+            error = sanitize_error_message(e)
+
     response_time = (time.time() - start_time) * 1000
     status = "healthy" if (configured and reachable) else "degraded" if configured else "unavailable"
-    
+
     result = {
         "provider": "anthropic",
         "status": status,
@@ -307,10 +339,11 @@ async def anthropic_health():
         "response_time": round(response_time, 2),
         "last_check": datetime.datetime.now().isoformat()
     }
-    
+
     if error:
         result["error"] = error
-    
+        result["error_id"] = error_id
+
     return result
 
 # Container Health Check Endpoint
@@ -329,7 +362,8 @@ async def containers_health():
     containers_status = {}
     overall_healthy = True
     error = None
-    
+    error_id = None
+
     try:
         # Get container status using docker command
         result = subprocess.run([
@@ -416,7 +450,9 @@ async def containers_health():
         error = "Docker command not found"
         overall_healthy = False
     except Exception as e:
-        error = str(e)
+        error_id = generate_error_id()
+        logger.error("Container health check failed [error_id=%s]", error_id, exc_info=True)
+        error = sanitize_error_message(e)
         overall_healthy = False
     
     response_time = (time.time() - start_time) * 1000
@@ -438,10 +474,12 @@ async def containers_health():
         "response_time": round(response_time, 2),
         "last_check": datetime.now().isoformat()
     }
-    
+
     if error:
         result["error"] = error
-    
+        if error_id:
+            result["error_id"] = error_id
+
     return result
 
 # Database Health Check Endpoint
@@ -467,7 +505,8 @@ async def database_health():
     pool_status = {}
     database_info = {}
     error = None
-    
+    error_id = None
+
     try:
         # Test database connection and gather metrics
         with engine.connect() as connection:
@@ -509,7 +548,9 @@ async def database_health():
             }
             
     except Exception as e:
-        error = str(e)
+        error_id = generate_error_id()
+        logger.error("Database health check failed [error_id=%s]", error_id, exc_info=True)
+        error = sanitize_error_message(e)
         connected = False
         # Set default values for failed connection
         pool_status = {
@@ -539,8 +580,10 @@ async def database_health():
         "database_info": database_info,
         "last_check": datetime.datetime.now().isoformat()
     }
-    
+
     if error:
         result["error"] = error
-    
+        if error_id:
+            result["error_id"] = error_id
+
     return result
