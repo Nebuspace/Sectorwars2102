@@ -291,6 +291,11 @@ export interface VistaModel {
   /**
    * Composite beauty budget 0–1.  Drives bloom, saturation, colorGradeWarmth,
    * life density, and sky depth.  Players should be able to glance and read quality.
+   *
+   * Wired: the post-process compositor (render/canvas2d/post.ts) consumes this
+   * field directly — vignette strength, split-tone grade intensity, and film-grain
+   * grit all scale from it.  Low desirability (hostile worlds) → heavier vignette,
+   * stronger grain; high desirability (lush worlds) → open grade, minimal grain.
    */
   desirability: number;
 
@@ -310,6 +315,13 @@ export interface VistaModel {
 
     /** Deposit / energy glow tint. */
     accent: RGB;
+
+    /**
+     * Optional warm secondary accent (sodium/amber city-light).
+     * Present only for ARTIFICIAL; absent for all 11 natural types.
+     * Contrast pair: cold conduit glow (accent) + warm window light (accentWarm).
+     */
+    accentWarm?: RGB;
   };
 
   lighting: {
@@ -326,6 +338,28 @@ export interface VistaModel {
 
     /** -1 (cold/blue) .. +1 (warm/golden). */
     colorGradeWarmth: number;
+
+    /**
+     * [TK-2] Optional emissive light SOURCE — tints nearby layers via
+     * additive gradient overlays and feeds the existing bloom pass (no
+     * post.ts changes needed; bloom already re-composites any bright pixels
+     * drawScene produces). DISTINCT from layers.terrain.emissive (the
+     * ARTIFICIAL-only window/signage grid) — this is a natural glow (lava,
+     * aurora, alpenglow), not a building light. Present only for profiles
+     * with PlanetProfile.emissiveSource configured (profiles.ts); absent for
+     * every other type, so their models are byte-identical to before this
+     * field existed.
+     */
+    emissiveSource?: {
+      kind: 'lava' | 'aurora' | 'alpenglow';
+      /** Normalized screen position (0–1 × 0–1); seed-jittered from the profile's base. */
+      pos: [number, number];
+      color: RGB;
+      /** 0–1 glow strength; seed-jittered from the profile's base. */
+      intensity: number;
+      /** Normalized influence radius, fraction of canvas width. */
+      radius: number;
+    };
   };
 
   layers: {
@@ -369,6 +403,9 @@ export interface VistaModel {
 
       /** Stable key into the starfield noise — varies by seed, cached per model. */
       starfieldSeedKey: string;
+
+      /** Sector-level nebula wash; absent when no nebula in the input celestial data. */
+      nebula?: { hue: number; density: number };
     };
 
     atmosphere: {
@@ -399,6 +436,13 @@ export interface VistaModel {
        * 'plating'    → ARTIFICIAL: flat engineered substrate.
        */
       mode?: 'surface' | 'cloud-deck' | 'plating';
+
+      /**
+       * Optional emissive window/signage grid parameters.
+       * Present only for ARTIFICIAL; absent for all 11 natural types.
+       * color: sRGB of the window glow; density: fraction of grid cells lit (0–1).
+       */
+      emissive?: { color: RGB; density: number };
 
       /** Normalized Y position of the horizon line (0=top, 1=bottom). */
       horizonY: number;
@@ -441,6 +485,25 @@ export interface VistaModel {
         pos: [number, number];
         scale: number;
       }[];
+    };
+
+    /**
+     * [TK-1] Hero-landform — the single dominant midground focal feature
+     * (WO-VISTA-TK1). Present only for the 6 planet types with a hero shape
+     * assigned (profiles.ts's PlanetProfile.heroLandform: VOLCANIC=cone,
+     * ICE=glacier, OCEANIC=sea-stack, BARREN=mesa, MOUNTAINOUS=massif,
+     * TERRAN=delta-bluff); absent for all other types, so their models are
+     * byte-identical to before this field existed.
+     * Consumed by drawHeroLandform (render/canvas2d/hero.ts); ignored elsewhere.
+     */
+    hero?: {
+      shape: 'cone' | 'glacier' | 'sea-stack' | 'mesa' | 'massif' | 'delta-bluff';
+
+      /** Normalized [x, y] anchor — matches terrain.landmarks.pos convention. */
+      pos: [number, number];
+
+      /** Dimensionless size multiplier — heroes read larger than background landmarks. */
+      scale: number;
     };
 
     water?: {
