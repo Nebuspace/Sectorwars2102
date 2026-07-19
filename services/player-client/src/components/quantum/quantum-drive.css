@@ -880,7 +880,9 @@
 }
 
 /* ============================================
-   NAV MONITOR MODE SWITCH (header, WJ only)
+   NAV MONITOR HEADER (mode switch is now the shared DeckPageTabs rail —
+   see cockpit.css's .deck-tab-rail/.deck-tab-btn — mounted with a cyan
+   --tab-accent; WO-UI2-DECK-MONITORS retired .nav-mode-switch/-btn here)
    ============================================ */
 
 .nav-header-with-modes {
@@ -888,52 +890,6 @@
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-}
-
-.nav-mode-switch {
-  display: inline-flex;
-  gap: 2px;
-  border: 1px solid rgba(123, 47, 255, 0.35);
-  border-radius: 3px;
-  padding: 1px;
-  background: rgba(0, 0, 0, 0.4);
-}
-
-.nav-mode-btn {
-  padding: 0.12rem 0.45rem;
-  font-family: inherit;
-  font-size: 0.5rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  background: transparent;
-  border: none;
-  border-radius: 2px;
-  color: rgba(0, 217, 255, 0.55);
-  cursor: pointer;
-  transition: all 0.2s ease;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.nav-mode-btn:hover {
-  color: rgba(0, 217, 255, 0.9);
-}
-
-.nav-mode-btn.active {
-  background: rgba(0, 217, 255, 0.18);
-  color: #00d9ff;
-  text-shadow: 0 0 8px rgba(0, 217, 255, 0.7);
-}
-
-.nav-mode-btn.quantum.active {
-  background: rgba(123, 47, 255, 0.25);
-  color: #c9a8ff;
-  text-shadow: 0 0 8px rgba(123, 47, 255, 0.8);
-  box-shadow: 0 0 8px rgba(123, 47, 255, 0.3);
-}
-
-.nav-mode-btn.quantum:hover {
-  color: #c9a8ff;
 }
 
 /* ============================================

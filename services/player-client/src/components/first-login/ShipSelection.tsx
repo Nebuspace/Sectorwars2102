@@ -86,10 +86,19 @@ Guard: "Hold it right there! This area is restricted to registered pilots only. 
       {/* Ship selection grid */}
       <div className="ship-selection">
         {availableShips && availableShips.length > 0 ? availableShips.map(ship => (
-          <div 
+          <div
             key={ship}
             className={`ship-option ${selectedShip === ship ? 'selected' : ''}`}
             onClick={() => handleShipClick(ship)}
+            role="button"
+            tabIndex={0}
+            aria-pressed={selectedShip === ship}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                handleShipClick(ship);
+              }
+            }}
           >
             <div className={`ship-image ${ship.toLowerCase().replace(/_/g, '-')}`}>
               <div className="fallback">{SHIP_NAMES[ship]}</div>

@@ -1,0 +1,37 @@
+{
+  "_comment": "WO-CI-TOKEN-GATE allowlist for services/player-client/scripts/check-css-vars.js. Every entry here is a var() reference the checker found with NO definition anywhere in the codebase (CSS declaration or JS/TSX injection) that was deliberately NOT given a value, because inventing one would be a guess rather than an evidence-backed decision (see check-css-vars.js's own file header + WO-CI-TOKEN-GATE report for the full evidence trail on each). Removing an entry here without either (a) defining the var at src/index.css's :root, matching the 17704371/QUEUE-CSSVAR-COCKPIT evidence-citation convention, or (b) confirming it's now dead code, will make the gate fail again the moment its var() usage sites are next touched.",
+  "allowlist": [
+    {
+      "name": "--cockpit-border",
+      "reason": "PENDING-MAX-RULING. 13 usage sites (ships/ship-selector.css, combat/combat-interface.css), all bare, zero fallback anywhere, zero same-rule literal color sibling (only ever paired with neutral rgba(0,0,0,X) dark washes -- no hex hint). One of the 5 --cockpit-* tokens WO-CI-TOKEN-GATE's predecessor ticket (QUEUE-CSSVAR-COCKPIT) explicitly flagged for a design call rather than a guess; the other 4 in that family (--cockpit-primary/-danger/-success/-warning) had clean evidence and are defined at :root."
+    },
+    {
+      "name": "--cockpit-dark-bg",
+      "reason": "PENDING-MAX-RULING. 8 usage sites (ships/ship-selector.css, combat/combat-interface.css), all bare. Used both as the root-container `background` AND as the 'dark text on a bright background' contrast color on badges/active buttons (e.g. `background: var(--cockpit-primary); color: var(--cockpit-dark-bg)`) -- strongly implies near-black, but there is no literal hex sibling anywhere, only that functional inference. Flagged rather than guessed."
+    },
+    {
+      "name": "--cockpit-font",
+      "reason": "PENDING-MAX-RULING. 2 usage sites (ships/ship-selector.css:29, combat/combat-interface.css:39), both bare, both on header `font-family`. No literal font-family fallback or sibling anywhere in either target file. The only plausible cross-reference is the UNRELATED JS ThemeProvider's `--font-heading: '\"Orbitron\", \"Exo 2\", monospace'` (src/themes/themes/cockpit.ts) used in an analogous semantic role (uppercase header text) elsewhere in the app -- a reasonable recommendation, not evidence from the target files themselves."
+    },
+    {
+      "name": "--cockpit-text",
+      "reason": "PENDING-MAX-RULING. 8 usage sites; 3 bare (ships/ship-selector.css, combat/combat-interface.css) + 2 with a fallback, and the two fallbacks CONFLICT: #eee (combat/npc-combat-banner.css -- same directory family as the target combat-interface.css) vs #d8f4ff (onboarding/firstSessionObjectives.css -- an unrelated component). No literal same-rule color sibling in either target file itself, so there is no tiebreaker evidence -- flagged rather than picking one guess over the other."
+    },
+    {
+      "name": "--cockpit-text-secondary",
+      "reason": "PENDING-MAX-RULING. 14 usage sites (ships/ship-selector.css, combat/combat-interface.css), all bare, zero fallback anywhere, zero same-rule literal color sibling."
+    },
+    {
+      "name": "--dial-pct",
+      "reason": "Intentionally per-instance dynamic, not a global token. 1 usage site (pages/cockpit.css:1967, `calc(var(--dial-pct, 0) * 1%)` inside a conic-gradient) -- a dial-fill PERCENTAGE that by nature must vary per rendered dial instance, set via an inline `style={{ '--dial-pct': n }}` on the specific element, not a single codebase-wide default. No TSX currently sets it (every dial renders at the static 0 fallback today), which is a real feature-completeness gap -- but it's a 'wire the per-instance value' gap, not a 'define the missing color/size token' gap this gate exists to catch. Tracked here so the gate doesn't silently forget this is unwired."
+    },
+    {
+      "name": "--value",
+      "reason": "Intentionally per-instance dynamic, not a global token. Same shape as --dial-pct: 10 usage sites, all pages/cockpit.css `.alloc-slider.*` gradient stops (`var(--value, 20%)`), a slider-FILL percentage that must vary per instance via inline style. No TSX currently sets it (every allocator slider renders at the static 20% fallback today) -- a feature-completeness gap tracked here, not a token-definition gap."
+    },
+    {
+      "name": "--travel-rot-ease",
+      "reason": "Design gap, not a token gap -- caught by the gate itself, not present in either predecessor ticket's manual inventory. 1 usage site (tactical/solar-system-viewscreen.css:316, `var(--travel-rot-ease, cubic-bezier(.4,0,.2,1))`). Its 3 sibling vars in the same transition declaration (--travel-pos-dur, --travel-pos-ease, --travel-rot-dur) are ALL genuinely defined via real CSS, per travel-state class (.travel-orienting/.travel-braking/.travel-cruising/etc., same file, lines 324-481) -- a per-animation-phase override pattern. --travel-rot-ease is the one family member with NO per-state override anywhere, so it always uses the static fallback regardless of travel state. Whether that's intentional (rotation easing doesn't need to vary by phase) or an oversight (someone forgot to add the per-state rotation-easing values the other 3 vars get) is a design call about animation tuning, not something this ticket should invent values for."
+    }
+  ]
+}

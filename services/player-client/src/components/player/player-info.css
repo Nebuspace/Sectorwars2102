@@ -5,9 +5,36 @@
 .player-info {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  min-height: 0;
-  padding: 0.5rem;
+  /* WO-UIPC-COCKPIT-CONTENT-REGION (supersedes the WO-UIPC-PLAYERINFO-OVERLAY
+     padding hack below, same clearance values, different mechanism).
+     .main-viewport doesn't reserve space for the MFD rail (`.mfdcol`, inside
+     `.lower`) or the status bar (WO-UI0-SHELL-TRANSPLANT: `.main-viewport`
+     sits inside `.game-content`, a position:absolute box spanning `.stage`'s
+     band+teleprinter+lower rows, full width, BEHIND them in paint/hit-test
+     order — game-layout.css's own doc-comment). This view rendered
+     full-bleed straight underneath both: the tab bar collided with the HUD
+     text, and every faction-standings row's LEFT half (the faction NAME)
+     sat behind the opaque rail, leaving only the right-edge value visible.
+     position:absolute + explicit left/top/right/bottom (NOT padding) carves
+     a GENUINE bounded box -- this element's own border-box now starts at
+     x=19% (the SAME fixed left-column width `.lower{grid-template-columns:
+     19% 81%}`, cockpit-shell.css, gives `.mfdcol` — was `var(--sidebar-w)`,
+     retired along with the rest of the old absolute-sidebar geometry; the
+     post-transplant `.mfdcol` has no player-collapsible width anymore, see
+     game-layout.css's `.mfdcol` doc-comment, so a literal percentage is the
+     correct replacement) -- while staying entirely local to this element:
+     .main-viewport stays position:relative (game-layout.css, UNTOUCHED) as
+     the positioning context. Top clearance is a fixed rem value -- no
+     shared `--hud-h` var exists to read, so 3.4rem is a measured clearance
+     (live-mount screenshot: the HUD's rendered box bottom-edges at ~50px /
+     3.1rem at 16px root; +0.3rem margin) rather than a guess.
+     PLY-CONTAINER-SCOPED: touches only this file, not the shared chrome. */
+  position: absolute;
+  top: 3.4rem;
+  left: 19%;
+  right: 0;
+  bottom: 0;
+  padding: 0 0.5rem 0.5rem 0.5rem;
   gap: 0.5rem;
   box-sizing: border-box;
 }

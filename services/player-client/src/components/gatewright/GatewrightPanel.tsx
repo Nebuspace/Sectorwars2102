@@ -27,6 +27,18 @@ type GatePhase =
   | 'EXPIRED'
   | 'CANCELLED';
 
+type SiteStatus = 'STAGING' | 'CURING' | 'READY' | 'CONSUMED' | 'CANCELLED';
+
+interface ConstructionSiteEntry {
+  site_id: string;
+  phase: number;
+  status: SiteStatus | string;
+  required: Record<string, number>;
+  staged: Record<string, number>;
+  turns_applied: number;
+  cure_completes_at?: string | null;
+}
+
 interface GateProject {
   beacon_id: string;
   gate_id?: string | null;
@@ -38,6 +50,10 @@ interface GateProject {
   invulnerable_until?: string | null;
   harmonization_completes_at?: string | null;
   created_at?: string | null;
+  // ADR-0078 staged-materials progress for whichever site is currently
+  // actionable (Phase-3 once it exists, else Phase 1) — null once nothing
+  // is left to stage (HARMONIZING/ACTIVE/EXPIRED/CANCELLED).
+  construction_site?: ConstructionSiteEntry | null;
 }
 
 interface SectorGateEntry {
@@ -83,21 +99,33 @@ interface ManifestItem {
   cargoKey?: string;
 }
 
+// ADR-0078: the bulk ore/equipment/Lumen totals are no longer demanded from
+// the ship's hold at deploy-beacon / anchor-focus call time — they stage
+// into the project's construction site over multiple runs instead (see the
+// staging block rendered from `construction_site`, below). These manifests
+// now cover only what's actually charged at the call itself.
 const PHASE1_MANIFEST: ManifestItem[] = [
   { label: 'TURNS', need: 50, source: 'turns' },
   { label: 'CREDITS', need: 10000, source: 'credits' },
-  { label: 'ORE', need: 1000, source: 'cargo', cargoKey: 'ore' },
-  { label: 'EQUIPMENT', need: 500, source: 'cargo', cargoKey: 'equipment' },
   { label: 'QUANTUM CRYSTAL', need: 1, source: 'quantum_crystals' },
 ];
 
 const PHASE3_MANIFEST: ManifestItem[] = [
   { label: 'TURNS', need: 100, source: 'turns' },
   { label: 'CREDITS', need: 10000, source: 'credits' },
-  { label: 'ORE', need: 1000, source: 'cargo', cargoKey: 'ore' },
-  { label: 'EQUIPMENT', need: 500, source: 'cargo', cargoKey: 'equipment' },
-  { label: 'LUMEN CRYSTALS', need: 30, source: 'cargo', cargoKey: 'lumen_crystals' },
 ];
+
+// Commodity key -> display label for the staging block (mirrors the
+// gate_construction_site payload's `required`/`staged` keys).
+const SITE_COMMODITY_LABELS: Record<string, string> = {
+  ore: 'ORE',
+  equipment: 'EQUIPMENT',
+  lumen_crystals: 'LUMEN CRYSTALS',
+};
+
+// ADR-0078 advance-construction turn cost (display only — the server is
+// authoritative; see warp_gate_service.CONSTRUCTION_TURN_COST).
+const CONSTRUCTION_TURN_COST = 5;
 
 // --- Phase ribbon (5 ritual steps) ---
 
@@ -188,6 +216,17 @@ const GatewrightPanel: React.FC<GatewrightPanelProps> = ({ onClose }) => {
 
   // Per-project action errors (verbatim backend detail strings)
   const [projectErrors, setProjectErrors] = useState<Record<string, string>>({});
+
+  // --- Staging flow (ADR-0078): stage-from-hold + advance-construction ---
+  // Keyed by `${site_id}:${commodity}` so per-commodity inputs/busy-flags
+  // don't clash across sites or across commodities on the same site.
+  const [stageAmounts, setStageAmounts] = useState<Record<string, string>>({});
+  const [stageBusyKey, setStageBusyKey] = useState<string | null>(null);
+  // Site-level errors (advance-construction rejection or a staging deposit
+  // rejection), keyed by site_id.
+  const [siteErrors, setSiteErrors] = useState<Record<string, string>>({});
+  const [armedAdvanceSiteId, setArmedAdvanceSiteId] = useState<string | null>(null);
+  const [advanceBusySiteId, setAdvanceBusySiteId] = useState<string | null>(null);
 
   // Ticking clock for countdowns
   const [nowMs, setNowMs] = useState<number>(Date.now());
@@ -327,7 +366,10 @@ const GatewrightPanel: React.FC<GatewrightPanelProps> = ({ onClose }) => {
     const projectTimers = (projects ?? []).some(
       (p) =>
         (p.phase === 'BEACON_DEPLOYED' && p.invulnerable_until) ||
-        (p.phase === 'HARMONIZING' && p.harmonization_completes_at)
+        (p.phase === 'HARMONIZING' && p.harmonization_completes_at) ||
+        (p.phase === 'BEACON_DEPLOYED' &&
+          p.construction_site?.status === 'CURING' &&
+          p.construction_site?.cure_completes_at)
     );
     const beaconTimers = (sectorBeacons ?? []).some((b) => b.invulnerable_until);
     return projectTimers || beaconTimers;
@@ -421,6 +463,53 @@ const GatewrightPanel: React.FC<GatewrightPanelProps> = ({ onClose }) => {
     }
   };
 
+  const handleStage = async (site: ConstructionSiteEntry, commodity: string, amount: number) => {
+    if (!amount || amount <= 0 || stageBusyKey) return;
+    const key = `${site.site_id}:${commodity}`;
+    setStageBusyKey(key);
+    setSiteErrors((prev) => {
+      const next = { ...prev };
+      delete next[site.site_id];
+      return next;
+    });
+    try {
+      await apiClient.post(`/api/v1/warp-gates/${site.site_id}/stage-materials`, {
+        [commodity]: amount,
+      });
+      setStageAmounts((prev) => ({ ...prev, [key]: '' }));
+      await refreshAll();
+    } catch (e) {
+      setSiteErrors((prev) => ({
+        ...prev,
+        [site.site_id]: errDetail(e, 'Staging rejected.'),
+      }));
+    } finally {
+      setStageBusyKey(null);
+    }
+  };
+
+  const handleAdvanceConstruction = async (site: ConstructionSiteEntry) => {
+    if (advanceBusySiteId) return;
+    setAdvanceBusySiteId(site.site_id);
+    setSiteErrors((prev) => {
+      const next = { ...prev };
+      delete next[site.site_id];
+      return next;
+    });
+    try {
+      await apiClient.post(`/api/v1/warp-gates/${site.site_id}/advance-construction`);
+      setArmedAdvanceSiteId(null);
+      await refreshAll();
+    } catch (e) {
+      setSiteErrors((prev) => ({
+        ...prev,
+        [site.site_id]: errDetail(e, 'Advance construction rejected.'),
+      }));
+    } finally {
+      setAdvanceBusySiteId(null);
+    }
+  };
+
   // --- Derived render data ---
 
   const ribbonIndex = (project: GateProject, anchorReady: boolean): number => {
@@ -506,10 +595,138 @@ const GatewrightPanel: React.FC<GatewrightPanelProps> = ({ onClose }) => {
     );
   };
 
+  // ADR-0078 staging block: per-commodity progress bars, a stage-from-hold
+  // control while STAGING, and an advance-construction trigger (armed-confirm
+  // idiom, matching the abandon-beacon block above) once fully staged.
+  const renderConstructionSite = (site: ConstructionSiteEntry) => {
+    const commodities = Object.entries(site.required).filter(([, need]) => need > 0);
+    const fullyStaged = commodities.every(([key, need]) => (site.staged[key] ?? 0) >= need);
+    const cure = site.cure_completes_at ? fmtCountdown(site.cure_completes_at, nowMs) : null;
+    const siteError = siteErrors[site.site_id];
+    const advanceArmed = armedAdvanceSiteId === site.site_id;
+    const advanceBusy = advanceBusySiteId === site.site_id;
+
+    return (
+      <div className="gw-staging-block" data-testid={`staging-site-phase-${site.phase}`}>
+        <div className="gw-staging-title">
+          PHASE {site.phase} CONSTRUCTION SITE — {site.status}
+        </div>
+        <ul className="gw-staging-list">
+          {commodities.map(([key, need]) => {
+            const have = site.staged[key] ?? 0;
+            const pct = need > 0 ? Math.min(100, Math.round((have / need) * 100)) : 100;
+            const remaining = Math.max(0, need - have);
+            const stageKey = `${site.site_id}:${key}`;
+            const raw = stageAmounts[stageKey] ?? '';
+            const parsedAmount = Math.min(remaining, parseInt(raw, 10) || 0);
+            return (
+              <li key={key} className="gw-staging-row">
+                <div className="gw-staging-row-header">
+                  <span>{SITE_COMMODITY_LABELS[key] ?? key.toUpperCase()}</span>
+                  <span>
+                    {fmtNumber(have)} / {fmtNumber(need)}
+                  </span>
+                </div>
+                <div className="gw-staging-bar-track">
+                  <div
+                    className={`gw-staging-bar-fill ${have >= need ? 'full' : ''}`}
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+                {site.status === 'STAGING' && remaining > 0 && (
+                  <div className="gw-staging-input-row">
+                    <input
+                      type="number"
+                      min={1}
+                      max={remaining}
+                      className="gw-staging-input"
+                      data-testid={`stage-input-${key}`}
+                      value={raw}
+                      onChange={(e) =>
+                        setStageAmounts((prev) => ({ ...prev, [stageKey]: e.target.value }))
+                      }
+                    />
+                    <button
+                      type="button"
+                      className="gw-btn ghost small"
+                      data-testid={`stage-button-${key}`}
+                      disabled={stageBusyKey === stageKey || parsedAmount <= 0}
+                      onClick={() => handleStage(site, key, parsedAmount)}
+                    >
+                      {stageBusyKey === stageKey ? 'STAGING…' : 'STAGE FROM HOLD'}
+                    </button>
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+
+        {siteError && <div className="gw-validation-strip">{siteError}</div>}
+
+        {site.status === 'STAGING' && fullyStaged && (
+          !advanceArmed ? (
+            <button
+              type="button"
+              className="gw-btn commit"
+              data-testid="advance-construction"
+              disabled={advanceBusy}
+              onClick={() => setArmedAdvanceSiteId(site.site_id)}
+            >
+              ADVANCE CONSTRUCTION ({CONSTRUCTION_TURN_COST} TURNS)
+            </button>
+          ) : (
+            <div className="gw-confirm-row">
+              <button
+                type="button"
+                className="gw-btn commit"
+                data-testid="confirm-advance-construction"
+                disabled={advanceBusy}
+                onClick={() => handleAdvanceConstruction(site)}
+              >
+                {advanceBusy ? 'ADVANCING…' : `CONFIRM — SPEND ${CONSTRUCTION_TURN_COST} TURNS`}
+              </button>
+              <button
+                type="button"
+                className="gw-btn ghost"
+                disabled={advanceBusy}
+                onClick={() => setArmedAdvanceSiteId(null)}
+              >
+                STAND DOWN
+              </button>
+            </div>
+          )
+        )}
+
+        {site.status === 'CURING' && (
+          <div className="gw-project-line">
+            <span className="gw-line-label">CURING</span>
+            <span className={`gw-line-value ${cure?.urgent ? 'urgent' : ''}`}>
+              {cure ? (cure.expired ? 'CURE COMPLETE — refresh to proceed' : cure.text) : '—'}
+            </span>
+          </div>
+        )}
+        {site.status === 'READY' && (
+          <p className="gw-project-hint">
+            {site.phase === 3
+              ? 'Materials cured and ready — anchor the focus below to draw them.'
+              : 'Origin structure cured — Phase 3 staging is now open.'}
+          </p>
+        )}
+      </div>
+    );
+  };
+
   const renderProjectCard = (project: GateProject) => {
     const atDestination = currentSectorId === project.destination_sector_id;
+    const site = project.construction_site ?? null;
     const anchorReady =
-      project.phase === 'BEACON_DEPLOYED' && atDestination && isWarpJumper && !isGrounded;
+      project.phase === 'BEACON_DEPLOYED' &&
+      atDestination &&
+      isWarpJumper &&
+      !isGrounded &&
+      site?.phase === 3 &&
+      site?.status === 'READY';
     const actionError = projectErrors[project.beacon_id];
     const cancelArmed = armedCancelId === project.beacon_id;
     const anchorArmed = armedAnchorId === project.beacon_id;
@@ -563,6 +780,53 @@ const GatewrightPanel: React.FC<GatewrightPanelProps> = ({ onClose }) => {
                 : `Fly the Jumper to ${fmtSector(project.destination_sector_id, project.destination_name)} to anchor the focus.`
               : 'A Warp Jumper must carry the focus to the destination.'}
           </p>
+        )}
+
+        {project.phase === 'BEACON_DEPLOYED' && site && renderConstructionSite(site)}
+
+        {project.phase === 'BEACON_DEPLOYED' && (
+          <div className="gw-abandon-block">
+            {!cancelArmed ? (
+              <button
+                type="button"
+                className="gw-btn ghost"
+                disabled={busy}
+                data-testid="abandon-beacon"
+                onClick={() => {
+                  setArmedCancelId(project.beacon_id);
+                  setArmedAnchorId(null);
+                }}
+              >
+                ABANDON BEACON
+              </button>
+            ) : (
+              <div className="gw-confirm-block">
+                <p className="gw-cancel-note">
+                  Abandoning sinks the Phase 1 materials already spent on this beacon —
+                  including the Quantum Crystal fused into it. Nothing refunds.
+                </p>
+                <div className="gw-confirm-row">
+                  <button
+                    type="button"
+                    className="gw-btn danger"
+                    disabled={busy}
+                    data-testid="confirm-abandon-beacon"
+                    onClick={() => handleCancel(project)}
+                  >
+                    {cancelBusyId === project.beacon_id ? 'ABANDONING…' : 'CONFIRM — MATERIALS SUNK'}
+                  </button>
+                  <button
+                    type="button"
+                    className="gw-btn ghost"
+                    disabled={busy}
+                    onClick={() => setArmedCancelId(null)}
+                  >
+                    KEEP BEACON
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         )}
 
         {anchorReady && (
