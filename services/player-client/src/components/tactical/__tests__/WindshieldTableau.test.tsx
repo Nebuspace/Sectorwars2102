@@ -177,6 +177,8 @@ describe('WindshieldTableau', () => {
     container.remove();
     vi.useRealTimers();
     vi.restoreAllMocks();
+    // No-op for every test that never called stubInertRaf() below.
+    vi.unstubAllGlobals();
   });
 
   // Captures the shared flight context alongside the real WindshieldTableau
@@ -1088,7 +1090,31 @@ describe('WindshieldTableau', () => {
   // best-effort (glide toward wherever the `.other` marker is drawn).
   // -------------------------------------------------------------------
 
+  // jsdom has no requestAnimationFrame of its own -- vitest's jsdom
+  // environment only synthesizes one (pretendToBeVisual), and that one is
+  // a REAL, wall-clock-scheduled timer that vi.useFakeTimers() (called
+  // AFTER mount() everywhere in this file, since mount()'s own flush()
+  // needs real setTimeout) cannot retroactively adopt. The two tests below
+  // pass `ships:`, which starts WindshieldTableau's contactT traffic-clock
+  // effect -- its first requestAnimationFrame() call escapes into real
+  // time during mount(), and if that stray real tick lands mid-'orienting'
+  // it re-fires the pendingApproach effect (contactT is one of its deps)
+  // and resets the glide's commit timer before it settles, landing on a
+  // non-final left/top instead of the asserted target (observed once in
+  // CI: 34.86 instead of 25 for the server-posed test below). Stubbing rAF
+  // to a true no-op BEFORE mount() closes the race by construction --
+  // contactT simply never advances, which is harmless for both tests here
+  // since neither's target depends on it (a leg:null server pose and a
+  // poseless human's parked anchor are both contactT-independent -- see
+  // resolveShipPose/deriveIspPose/otherPresencePosition). Restored via
+  // this file's shared afterEach (vi.unstubAllGlobals()).
+  const stubInertRaf = () => {
+    vi.stubGlobal('requestAnimationFrame', (_cb: FrameRequestCallback): number => 0);
+    vi.stubGlobal('cancelAnimationFrame', (_handle: number): void => {});
+  };
+
   it("resolves flight.approach(shipId) to a poseless human contact's own parked-anchor dot (WYSIWYG best-effort, not gated on real server pose)", async () => {
+    stubInertRaf();
     await mount({ ships: [TEST_SHIP] }); // TEST_SHIP carries no `pose` -- poseless human.
     vi.useFakeTimers();
     const other = container.querySelector('.other') as HTMLElement;
@@ -1106,6 +1132,7 @@ describe('WindshieldTableau', () => {
   });
 
   it("resolves flight.approach(shipId) to a server-posed contact's x_pct/y_pct", async () => {
+    stubInertRaf();
     const posedShip = { ...TEST_SHIP, pose: { x_pct: 25, y_pct: 60, heading_deg: 0, leg: null } };
     await mount({ ships: [posedShip] });
     vi.useFakeTimers();
