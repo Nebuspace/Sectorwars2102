@@ -1,13 +1,14 @@
 import logging
 import random
 import uuid
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Iterable, Set
 from datetime import datetime, timedelta, UTC
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, select
+from sqlalchemy.exc import IntegrityError
 
 from src.models.player import Player
-from src.models.ship import Ship, ShipStatus, ShipType
+from src.models.ship import Ship, ShipStatus
 from src.models.sector import Sector, SectorType, sector_warps
 from src.models.planet import Planet
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus, WarpTunnelType
@@ -17,8 +18,10 @@ from src.models.player_warp_knowledge import (
     WarpVisibilityState,
     WarpRevealedVia,
 )
+from src.models.team_member import TeamMember
 from src.models.combat import CombatResult
 from src.models.combat_log import CombatLog
+from src.models.drone import Drone, DroneStatus
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.services import warp_gate_service
@@ -108,6 +111,28 @@ def _player_knows_warp(db: Session, player_id: uuid.UUID, tunnel: WarpTunnel) ->
     return row is not None and row.is_known
 
 
+def _player_known_warp_ids(
+    db: Session, player_id: uuid.UUID, tunnel_ids: Iterable[uuid.UUID]
+) -> Set[uuid.UUID]:
+    """Batched sibling of ``_player_knows_warp`` for the move-listing hot
+    path: ONE query for however many tunnel ids are passed, returning the
+    subset the player holds a known (``is_known``) PlayerWarpKnowledge row
+    for (ADR-0045). The scan-reveal (``scan_for_latent_tunnels``) and
+    traversal-reject (``_validate_tunnel_traversal`` et al) call sites keep
+    using the single-tunnel ``_player_knows_warp`` above — this helper is
+    for listing callers only.
+    """
+    ids = list(tunnel_ids)
+    if not ids:
+        return set()
+    rows = db.query(PlayerWarpKnowledge).filter(
+        PlayerWarpKnowledge.player_id == player_id,
+        PlayerWarpKnowledge.warp_layer == WarpLayer.WARP_TUNNELS,
+        PlayerWarpKnowledge.warp_id.in_(ids),
+    ).all()
+    return {row.warp_id for row in rows if row.is_known}
+
+
 def _reveal_warp_to_player(
     db: Session,
     player_id: uuid.UUID,
@@ -117,7 +142,13 @@ def _reveal_warp_to_player(
     """Idempotent upsert of a per-player warp-knowledge row at ``revealed``
     state (ADR-0045 / aria-companion.md § Warp discovery). Re-revealing an
     already-known warp is a no-op that never downgrades a ``traversed`` row.
-    Does NOT commit — the caller owns the transaction."""
+    Does NOT commit — the caller owns the transaction.
+
+    Also fans the reveal out to the discoverer's CURRENT team/corp (WO-GWQ-
+    WARPSHARE): every teammate who doesn't already hold a knowledge row for
+    this tunnel gets one at ``revealed_via=CORP_SHARE``, plus a realtime WS
+    push. See ``_propagate_warp_reveal_to_team``.
+    """
     row = db.query(PlayerWarpKnowledge).filter(
         PlayerWarpKnowledge.player_id == player_id,
         PlayerWarpKnowledge.warp_layer == WarpLayer.WARP_TUNNELS,
@@ -136,7 +167,233 @@ def _reveal_warp_to_player(
         # Promote hidden -> revealed; never downgrade traversed.
         row.visibility_state = WarpVisibilityState.REVEALED
         row.revealed_via = revealed_via
+    elif (
+        row.revealed_via == WarpRevealedVia.CORP_SHARE
+        and revealed_via != WarpRevealedVia.CORP_SHARE
+    ):
+        # ADR-0064 R-V3: the Nexus-warp marker requires PERSONAL discovery
+        # "regardless of corp share" — a row whose only provenance was a
+        # teammate's share must upgrade to personal the moment this player
+        # genuinely discovers the same tunnel themselves (scan/traversal),
+        # so a personal-discovery check never stays permanently masked by
+        # an earlier share. Visibility state is already revealed; only the
+        # provenance changes.
+        row.revealed_via = revealed_via
+
+    _propagate_warp_reveal_to_team(db, player_id, tunnel)
     return row
+
+
+def _propagate_warp_reveal_to_team(
+    db: Session, discoverer_id: uuid.UUID, tunnel: WarpTunnel
+) -> None:
+    """Corp-share fan-out (WO-GWQ-WARPSHARE / ADR-0045): every CURRENT
+    teammate of the discoverer who doesn't already hold a PlayerWarpKnowledge
+    row for ``tunnel`` gets one at ``revealed_via=CORP_SHARE``, so their own
+    available-moves / nexus-marker views reflect a teammate's discovery
+    without a scan of their own. A solo player (no team) propagates to no
+    one. Does NOT commit — caller owns the transaction.
+
+    Idempotency mirrors special_formation_service.flip_formation_discovery /
+    medal_service.award_medal: a pre-check SELECT, then an INSERT wrapped in
+    its own SAVEPOINT (``db.begin_nested()``) so a concurrent teammate-reveal
+    racing on the same UNIQUE(player_id, warp_layer, warp_id) constraint
+    rolls back only the losing INSERT, never the caller's open transaction.
+    """
+    team_id = db.query(Player.team_id).filter(Player.id == discoverer_id).scalar()
+    if team_id is None:
+        return
+
+    teammates = (
+        db.query(Player.id, Player.user_id)
+        .join(TeamMember, TeamMember.player_id == Player.id)
+        .filter(TeamMember.team_id == team_id, Player.id != discoverer_id)
+        .all()
+    )
+    if not teammates:
+        return
+
+    newly_notified: List[Tuple[uuid.UUID, uuid.UUID]] = []
+    for teammate_player_id, teammate_user_id in teammates:
+        existing = db.query(PlayerWarpKnowledge).filter(
+            PlayerWarpKnowledge.player_id == teammate_player_id,
+            PlayerWarpKnowledge.warp_layer == WarpLayer.WARP_TUNNELS,
+            PlayerWarpKnowledge.warp_id == tunnel.id,
+        ).first()
+        if existing is not None:
+            continue
+
+        knowledge = PlayerWarpKnowledge(
+            player_id=teammate_player_id,
+            warp_layer=WarpLayer.WARP_TUNNELS,
+            warp_id=tunnel.id,
+            visibility_state=WarpVisibilityState.REVEALED,
+            revealed_via=WarpRevealedVia.CORP_SHARE,
+        )
+        try:
+            with db.begin_nested():
+                db.add(knowledge)
+                db.flush()
+        except IntegrityError:
+            # Lost the race to a concurrent share/scan for the same
+            # (player, tunnel) — already known now, not a new share for
+            # this call. begin_nested already rolled back to the savepoint;
+            # nothing else lost.
+            logger.info(
+                "corp-share warp reveal: teammate %s already knows tunnel %s "
+                "(race resolved by UNIQUE)", teammate_player_id, tunnel.id,
+            )
+            continue
+
+        newly_notified.append((teammate_player_id, teammate_user_id))
+
+    if newly_notified:
+        _dispatch_warp_corp_share(db, discoverer_id, newly_notified, tunnel)
+
+
+def _dispatch_warp_corp_share(
+    db: Session,
+    discoverer_id: uuid.UUID,
+    newly_notified: List[Tuple[uuid.UUID, uuid.UUID]],
+    tunnel: WarpTunnel,
+) -> None:
+    """Push the corp-share warp-discovery event to each newly-notified
+    teammate's socket (WO-GWQ-WARPSHARE; special-formations.md § Discovery:
+    "Corp-mates can share discoveries via the existing realtime-bus event").
+
+    Mirrors ``_dispatch_hostile_detected`` / ``_broadcast_sector_presence``:
+    import inside the function, grab the running loop, schedule with
+    ``loop.create_task`` (so it runs after the caller's commit and never
+    blocks the sync reveal), and swallow any failure so a quiet socket can
+    never break a scan. Delivered via ``send_personal_message`` (keyed on
+    ``str(user_id)``, movement_service.py:484-505 precedent) to exactly the
+    newly-notified subset — a teammate who already knew gets no redundant
+    push."""
+    try:
+        import asyncio
+        from src.services.websocket_service import connection_manager
+
+        loop = asyncio.get_running_loop()
+        ts = datetime.now(UTC).isoformat()
+        origin_sector = db.query(Sector).filter(Sector.id == tunnel.origin_sector_id).first()
+        destination_sector = db.query(Sector).filter(Sector.id == tunnel.destination_sector_id).first()
+        payload = {
+            "type": "warp_corp_share",
+            "discoverer_id": str(discoverer_id),
+            "origin_sector_id": origin_sector.sector_id if origin_sector else None,
+            "destination_sector_id": destination_sector.sector_id if destination_sector else None,
+            "revealed_via": WarpRevealedVia.CORP_SHARE.value,
+            "timestamp": ts,
+        }
+        for teammate_player_id, teammate_user_id in newly_notified:
+            loop.create_task(connection_manager.send_personal_message(
+                str(teammate_user_id),
+                {**payload, "player_id": str(teammate_player_id)},
+            ))
+    except Exception:
+        logger.debug(
+            "Skipped warp corp-share WS push (no loop or socket)", exc_info=True,
+        )
+
+
+def share_warp_knowledge_with_team(
+    db: Session, sharer_player_id: uuid.UUID, team_id: uuid.UUID,
+) -> Dict[str, Any]:
+    """Deliberate, one-time bulk share (WO-ARIA-WARP-RESIDUALS;
+    aria-companion.md:71 "A corp-mate shares scan knowledge, propagating
+    rows to current corp members at the moment of the share"): copies
+    EVERY warp the sharer currently knows (``revealed`` OR ``traversed``)
+    to every OTHER CURRENT member of ``team_id``, at
+    ``revealed_via=CORP_SHARE``, evaluated once at the moment of this
+    call. Does NOT commit — caller owns the transaction.
+
+    Distinct from ``_propagate_warp_reveal_to_team``'s automatic, ONGOING,
+    per-reveal fan-out (WO-GWQ-WARPSHARE — fires on every NEW reveal a
+    teammate makes going forward, already live in
+    ``_reveal_warp_to_player``): that mechanism only ever propagates the
+    ONE warp being revealed at that moment, never a bulk retroactive push
+    of everything a player already knew before this feature (or before a
+    teammate joined) existed. This function is the manual "catch-up"
+    action for exactly that gap — canon's "no ongoing sync, later joiners
+    get nothing retroactively" (aria-companion.md:65) holds for BOTH
+    mechanisms: calling this once does not subscribe the sharer to future
+    auto-propagation (that already happens independently via
+    ``_reveal_warp_to_player``), and a player who joins the team AFTER
+    this call gets nothing from it either — they'd need a fresh share.
+
+    NEVER overwrites a teammate's own existing row, in ANY state or
+    provenance — mirrors ``_propagate_warp_reveal_to_team``'s own
+    skip-if-present semantics exactly (same idempotent-upsert-under-
+    SAVEPOINT idiom, generalized from one tunnel to every is_known row the
+    sharer holds): a teammate's own already-``traversed`` (or even just
+    previously-``revealed``) knowledge is never downgraded or re-stamped
+    by someone else's share.
+
+    Returns ``{"shared_warp_count", "recipient_count", "rows_created"}``.
+    """
+    sharer_rows = (
+        db.query(PlayerWarpKnowledge)
+        .filter(
+            PlayerWarpKnowledge.player_id == sharer_player_id,
+            PlayerWarpKnowledge.visibility_state.in_(
+                [WarpVisibilityState.REVEALED, WarpVisibilityState.TRAVERSED]
+            ),
+        )
+        .all()
+    )
+    if not sharer_rows:
+        return {"shared_warp_count": 0, "recipient_count": 0, "rows_created": 0}
+
+    teammate_rows = (
+        db.query(Player.id)
+        .join(TeamMember, TeamMember.player_id == Player.id)
+        .filter(TeamMember.team_id == team_id, Player.id != sharer_player_id)
+        .all()
+    )
+    teammate_ids = [row[0] for row in teammate_rows]
+    if not teammate_ids:
+        return {"shared_warp_count": len(sharer_rows), "recipient_count": 0, "rows_created": 0}
+
+    rows_created = 0
+    for sharer_row in sharer_rows:
+        for teammate_id in teammate_ids:
+            existing = db.query(PlayerWarpKnowledge).filter(
+                PlayerWarpKnowledge.player_id == teammate_id,
+                PlayerWarpKnowledge.warp_layer == sharer_row.warp_layer,
+                PlayerWarpKnowledge.warp_id == sharer_row.warp_id,
+            ).first()
+            if existing is not None:
+                continue
+
+            knowledge = PlayerWarpKnowledge(
+                player_id=teammate_id,
+                warp_layer=sharer_row.warp_layer,
+                warp_id=sharer_row.warp_id,
+                visibility_state=WarpVisibilityState.REVEALED,
+                revealed_via=WarpRevealedVia.CORP_SHARE,
+            )
+            try:
+                with db.begin_nested():
+                    db.add(knowledge)
+                    db.flush()
+            except IntegrityError:
+                # Lost the race to a concurrent share/scan/reveal for the
+                # same (player, warp) — already known now, not a new share
+                # for this call. begin_nested already rolled back to the
+                # savepoint; nothing else lost.
+                logger.info(
+                    "warp-knowledge share: teammate %s already knows %s:%s "
+                    "(race resolved by UNIQUE)",
+                    teammate_id, sharer_row.warp_layer.value, sharer_row.warp_id,
+                )
+                continue
+            rows_created += 1
+
+    return {
+        "shared_warp_count": len(sharer_rows),
+        "recipient_count": len(teammate_ids),
+        "rows_created": rows_created,
+    }
 
 
 def _dispatch_exploration_medals(db: Session, player: Player, context: Dict[str, Any]) -> None:
@@ -459,16 +716,24 @@ class MovementService:
             )
 
     def _broadcast_sector_presence(self, old_sector_id: int, new_sector_id: int,
-                                   presence_entry: Dict[str, Any],
-                                   mover_ws_user_id: str) -> None:
-        """Schedule the async sector join/leave presence broadcasts.
+                                   mover_ws_user_id: str,
+                                   old_region_id: Optional[uuid.UUID] = None,
+                                   new_region_id: Optional[uuid.UUID] = None) -> None:
+        """Schedule the async WS room-hop for the moving player (WO-RT-ROOM-HOP).
 
-        Fires a ``player_left_sector`` event to the OLD sector and a
-        ``player_entered_sector`` event to the NEW sector, each carrying the
-        moving player's presence-entry payload (the same shape stored in
-        ``sector.players_present``) so subscribers can update who's-here in real
-        time. ``exclude_user`` is the moving player's WS user id, so they never
-        receive their own join/leave echo.
+        Delegates to ``connection_manager.update_user_location``, which both
+        corrects the WS sector-room registry (previously frozen at connect
+        time — a moved player kept receiving broadcasts for their OLD sector
+        forever, per realtime-bus.md:92) AND emits the ``player_left_sector`` /
+        ``player_entered_sector`` frames itself, in the same shape the
+        player-client's PlayerMovementMessage contract expects
+        (websocket.ts:19-25) — this method no longer emits raw
+        ``broadcast_to_sector`` frames directly, so each move emits exactly one
+        leave + one enter instead of two independent sources racing to do it.
+        When the destination sector's region differs from the origin's, also
+        schedules ``update_user_region`` so region-scoped broadcasts
+        (governance / election / treaty) follow the player across the
+        boundary.
 
         Mirrors ``_dispatch_hostile_detected`` / docking_service._notify_bumped /
         turn_service._emit_turn_pool_update: import inside the function, grab the
@@ -481,36 +746,16 @@ class MovementService:
             from src.services.websocket_service import connection_manager
 
             loop = asyncio.get_running_loop()
-            # FLAT payload matching the player-client contract (websocket.ts PlayerMovementMessage /
-            # WebSocketContext.tsx, which read user_id/username/sector_id at top level and key the
-            # who's-here list on user_id = User.id). mover_ws_user_id IS str(player.user_id).
-            ts = datetime.now().isoformat()
-            username = presence_entry.get("username")
-            loop.create_task(connection_manager.broadcast_to_sector(
-                old_sector_id,
-                {
-                    "type": "player_left_sector",
-                    "user_id": mover_ws_user_id,
-                    "username": username,
-                    "sector_id": old_sector_id,
-                    "timestamp": ts,
-                },
-                exclude_user=mover_ws_user_id,
-            ))
-            loop.create_task(connection_manager.broadcast_to_sector(
-                new_sector_id,
-                {
-                    "type": "player_entered_sector",
-                    "user_id": mover_ws_user_id,
-                    "username": username,
-                    "sector_id": new_sector_id,
-                    "timestamp": ts,
-                },
-                exclude_user=mover_ws_user_id,
-            ))
+            loop.create_task(connection_manager.update_user_location(mover_ws_user_id, new_sector_id))
+
+            if old_region_id != new_region_id:
+                loop.create_task(connection_manager.update_user_region(
+                    mover_ws_user_id,
+                    str(new_region_id) if new_region_id is not None else None,
+                ))
         except Exception:
             logger.debug(
-                "Skipped sector join/leave WS broadcast (no loop or socket)",
+                "Skipped sector/region WS room-hop (no loop or socket)",
                 exc_info=True,
             )
 
@@ -536,8 +781,32 @@ class MovementService:
             logger.error("Failed lazy warp-gate advance during movement: %s", e)
             self.db.rollback()
 
-        # Lock player row to prevent concurrent movement race conditions
-        player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
+        # Lock player row to prevent concurrent movement race conditions.
+        # Fail fast if another session is idle-in-transaction on this row —
+        # otherwise the cockpit arms the warp cinematic and hangs forever
+        # waiting on FOR UPDATE (seen live on Heimdall: 4+ minute lock waits).
+        from sqlalchemy import text as _sql_text
+        self.db.execute(_sql_text("SET LOCAL lock_timeout = '5s'"))
+        try:
+            player = (
+                self.db.query(Player)
+                .filter(Player.id == player_id)
+                .populate_existing()
+                .with_for_update()
+                .first()
+            )
+        except Exception as lock_err:
+            # SQLAlchemy wraps QueryCanceled / lock_not_available
+            err = str(lock_err).lower()
+            if "lock" in err or "canceling statement" in err or "querycanceled" in err:
+                logger.warning("move_player_to_sector: player-row lock timeout for %s", player_id)
+                self.db.rollback()
+                return {
+                    "success": False,
+                    "message": "Movement busy — try again in a moment",
+                    "turn_cost": 0,
+                }
+            raise
         if not player:
             return {"success": False, "message": "Player not found", "turn_cost": 0}
 
@@ -605,6 +874,16 @@ class MovementService:
         if current_sector_id == destination_sector_id:
             return {"success": True, "message": "Already in this sector", "turn_cost": 0}
 
+        # Auth fix (b) / ADR-0043: Galactic Citizen subscription gate on
+        # Region<->Nexus natural-warp traversal. Runs ONCE here, before the
+        # player-gate / direct-warp / warp-tunnel branches below, so no
+        # movement path into Central Nexus can bypass it — see
+        # _check_nexus_subscription_gate's docstring for the full
+        # canon citation and the [NO-CANON] directionality note.
+        nexus_gate_rejection = self._check_nexus_subscription_gate(player, destination_sector_id)
+        if nexus_gate_rejection is not None:
+            return nexus_gate_rejection
+
         # Tractor tow (WO-AF; ships.md:354-357): if THIS ship is actively towing
         # another, the hauler pays its full move cost PLUS a tow surcharge. The
         # surcharge is size-based on warps/tunnels (the cached surcharge_per_move:
@@ -629,12 +908,32 @@ class MovementService:
         # turns; if a direct warp ALSO connects origin -> destination, charging
         # the direct-warp cost here would contradict the advertised 0. Take the
         # gate first so the charged cost matches what the player was shown.
-        if self._has_player_gate(current_sector_id, destination_sector_id):
+        player_gate_tunnel = self._has_player_gate(current_sector_id, destination_sector_id)
+        if player_gate_tunnel is not None:
             # Gate is 0 turns normally; while towing it is +2 turns FLAT
             # (ships.md:357 — flat, not the size surcharge).
             gate_cost = 0 + (self.GATE_TOW_SURCHARGE_FLAT if tow_size_surcharge else 0)
             if player.turns < gate_cost:
                 return {"success": False, "message": "Not enough turns for this gate transit while towing", "turn_cost": gate_cost}
+
+            # WG1 access-mode enforcement + WO-GWQ-GATE-TOLL layered gates
+            # (faction-rep min/max) — this is the REAL move-validation path a
+            # player-built gate traversal takes (this branch matches BEFORE
+            # _check_warp_tunnel is ever called below, so its own dead
+            # player-gate branch never fires from here — see its comment).
+            # Must run, and reject if it's going to, BEFORE any toll credit
+            # moves and AFTER the turns check above already passed (so a
+            # blocked player is never charged turns for a move that never
+            # happens, and a turns-short player is never billed a toll for a
+            # move that was already going to fail). warp_gate_service is
+            # already imported module-wide above (see advance_gates_touching_
+            # sector's use elsewhere in this file) -- no fresh import needed.
+            try:
+                warp_gate_service.check_traversal_access(self.db, player, player_gate_tunnel)
+                warp_gate_service.collect_toll(self.db, player, player_gate_tunnel)
+            except warp_gate_service.WarpGateError as e:
+                return {"success": False, "message": e.detail, "turn_cost": 0}
+
             result = self._execute_movement(player, destination_sector_id, gate_cost)
             tunnel_events = self._check_for_tunnel_events(
                 player, current_sector_id, destination_sector_id
@@ -693,10 +992,10 @@ class MovementService:
 
             # Execute the move
             result = self._execute_movement(player, destination_sector_id, tunnel_cost)
-            
+
             # Check for tunnel-specific events
             tunnel_events = self._check_for_tunnel_events(player, current_sector_id, destination_sector_id)
-            
+
             # Check for encounters
             encounters = self._check_for_encounters(player, destination_sector_id)
 
@@ -713,7 +1012,86 @@ class MovementService:
 
         # If we get here, no valid path was found
         return {"success": False, "message": "No valid path to destination sector", "turn_cost": 0}
-    
+
+    def _check_nexus_subscription_gate(
+        self, player: Player, destination_sector_id: int,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Auth fix (b), Max-approved 2026-07-10: ADR-0043 / SYSTEMS/region-
+        lifecycle.md:655 — "The Galactic Citizen subscription gate is
+        enforced at traversal, not at the warp's existence: every region
+        carries the warp regardless of subscription tier, and the cross-
+        region traversal endpoint checks the traversing player's tier,
+        rejecting free-tier players with ERR_GALACTIC_CITIZEN_REQUIRED."
+
+        Fires exactly when this move crosses FROM a non-Nexus region INTO
+        Central Nexus (``Region.is_central_nexus`` on the destination, and
+        NOT already true of the player's current region — pure intra-Nexus
+        movement is never gated). Runs once in move_player_to_sector before
+        any of the three movement-path branches, so no path (player-built
+        gate, direct warp, natural warp tunnel) can reach Nexus unchecked.
+
+        Returns a rejection dict (the same ``{"success": False, "message":
+        ..., "turn_cost": 0}`` shape every other early-exit in this method
+        uses) if the player must be blocked, else ``None`` to let the move
+        proceed unchanged.
+
+        [NO-CANON] Directionality, flagged not silently resolved: canon's
+        sentence does not say whether the gate applies to both directions
+        or entry only. This implementation gates ENTRY into Central Nexus
+        only — leaving Nexus back to a region is always allowed. Rationale:
+        a bidirectional gate would permanently strand a player already
+        inside Nexus whose subscription lapses mid-visit, with no way back
+        to their home region (new players always start in Terran Space,
+        never in Nexus — auth.py:580-606 — so this is a mid-visit-lapse
+        scenario, not an onboarding one, but still a real trap). The SAME
+        canon document's sibling rule (ADR-0054 suspended-region-ingress,
+        region-lifecycle.md:85) explicitly states "Outbound... always
+        allowed" for its own, different gate — the closest textual analog
+        available, and the only directionally-safe reading. Flagged for
+        DECISIONS in case an intentional bidirectional (or Nexus-side) gate
+        is what Max actually wants.
+
+        [NO-CANON] Scope, flagged not silently resolved: this gates the
+        TRAVERSAL endpoint only, per the WO's explicit scope. It does NOT
+        filter Central Nexus destinations out of get_available_moves's
+        listing — a free-tier player can still see Nexus sectors advertised
+        as reachable and will be rejected only when actually attempting the
+        move. Widening into the available-moves listing was out of this
+        fix's approved scope (AUTH DISCIPLINE: exact fix approved, no
+        widening without asking) — flagged as a follow-up, not built here.
+        """
+        from src.models.region import Region
+
+        origin_region_id = player.current_region_id
+        if origin_region_id is not None:
+            origin_region = self.db.query(Region).filter(Region.id == origin_region_id).first()
+            if origin_region is not None and origin_region.is_central_nexus:
+                return None  # already inside Nexus -- not an entry, always allowed
+
+        destination_sector = self.db.query(Sector).filter(
+            Sector.sector_id == destination_sector_id
+        ).first()
+        if destination_sector is None or destination_sector.region_id is None:
+            return None  # unknown/unattributed destination -- nothing to gate
+
+        destination_region = self.db.query(Region).filter(
+            Region.id == destination_sector.region_id
+        ).first()
+        if destination_region is None or not destination_region.is_central_nexus:
+            return None  # not entering Nexus -- gate does not apply
+
+        from src.services.ship_upgrade_service import is_galactic_citizen as _is_galactic_citizen
+
+        if not _is_galactic_citizen(self.db, player):
+            return {
+                "success": False,
+                "message": "ERR_GALACTIC_CITIZEN_REQUIRED",
+                "error": "ERR_GALACTIC_CITIZEN_REQUIRED",
+                "turn_cost": 0,
+            }
+        return None
+
     def get_available_moves(self, player_id: uuid.UUID) -> Dict[str, Any]:
         """
         Get all sectors a player can move to from their current position.
@@ -740,10 +1118,10 @@ class MovementService:
         current_sector = self.db.query(Sector).filter(Sector.sector_id == player.current_sector_id).first()
         if not current_sector:
             return {"warps": [], "tunnels": []}
-        
+
         # Get ship for capabilities
         ship = player.current_ship
-        
+
         # Get direct warps. sector_warps stores bidirectional connections
         # as ONE row (source, dest, is_bidirectional=true) per the
         # bang-integration schema map — so a sector reaches its
@@ -751,18 +1129,6 @@ class MovementService:
         # outgoing. Walk both sides.
         direct_warps = []
         seen_sector_ids: set = set()
-
-        # Outgoing edges (this sector is the source).
-        for connected_sector in current_sector.outgoing_warps:
-            warp_cost = self._calculate_warp_cost(current_sector, connected_sector, ship)
-            direct_warps.append({
-                "sector_id": connected_sector.sector_id,
-                "name": connected_sector.name,
-                "type": connected_sector.type.name,
-                "turn_cost": warp_cost,
-                "can_afford": player.turns >= warp_cost
-            })
-            seen_sector_ids.add(connected_sector.sector_id)
 
         # Incoming bidirectional edges — the bang translator stores a
         # two-way warp A↔B as one row (source=A, dest=B, bidir=true),
@@ -775,19 +1141,43 @@ class MovementService:
                 sector_warps.c.is_bidirectional == True,  # noqa: E712 — SQLA boolean column compare
             )
         ).fetchall()
-        for row in incoming_bidir_rows:
-            origin = self.db.query(Sector).filter(Sector.id == row.source_sector_id).first()
-            if origin is None or origin.sector_id in seen_sector_ids:
-                continue
-            warp_cost = self._calculate_warp_cost(current_sector, origin, ship)
+
+        # WO-QTI-MOVES-BATCH: _calculate_warp_cost re-queries sector_warps
+        # per edge to find the row's turn_cost -- another per-edge query the
+        # outgoing-warps loop below used to pay W times. ONE query for every
+        # outgoing edge's turn_cost, keyed by destination, so the loop can
+        # use the pure _warp_cost_from_turn_cost formula instead. (The
+        # incoming_bidir_rows fetched above already carry turn_cost
+        # directly -- no separate lookup needed for that side.)
+        outgoing_edge_rows = self.db.execute(
+            sector_warps.select().where(
+                sector_warps.c.source_sector_id == current_sector.id,
+            )
+        ).fetchall()
+        outgoing_turn_cost_by_dest = {
+            row.destination_sector_id: row.turn_cost for row in outgoing_edge_rows
+        }
+
+        # Outgoing edges (this sector is the source).
+        for connected_sector in current_sector.outgoing_warps:
+            if connected_sector.id in outgoing_turn_cost_by_dest:
+                warp_cost = self._warp_cost_from_turn_cost(
+                    outgoing_turn_cost_by_dest[connected_sector.id], ship
+                )
+            else:
+                # Defensive fallback (should be unreachable -- the batched
+                # query above uses the same source_sector_id predicate the
+                # relationship itself is built from): preserves exact
+                # behavior if the two ever disagree.
+                warp_cost = self._calculate_warp_cost(current_sector, connected_sector, ship)
             direct_warps.append({
-                "sector_id": origin.sector_id,
-                "name": origin.name,
-                "type": origin.type.name,
+                "sector_id": connected_sector.sector_id,
+                "name": connected_sector.name,
+                "type": connected_sector.type.name,
                 "turn_cost": warp_cost,
                 "can_afford": player.turns >= warp_cost
             })
-            seen_sector_ids.add(origin.sector_id)
+            seen_sector_ids.add(connected_sector.sector_id)
 
         # Get warp tunnels - both outgoing and incoming (for bidirectional)
         warp_tunnels = []
@@ -797,6 +1187,57 @@ class MovementService:
             WarpTunnel.origin_sector_id == current_sector.id,
             WarpTunnel.status == WarpTunnelStatus.ACTIVE
         ).all()
+
+        # Incoming bidirectional tunnels (destination is current sector, but tunnel is bidirectional)
+        incoming_bidirectional = self.db.query(WarpTunnel).filter(
+            WarpTunnel.destination_sector_id == current_sector.id,
+            WarpTunnel.is_bidirectional == True,
+            WarpTunnel.status == WarpTunnelStatus.ACTIVE
+        ).all()
+
+        # WO-QTI-MOVES-BATCH: everything below this point used to issue a
+        # Sector query per warp edge / per tunnel and a PlayerWarpKnowledge
+        # query per latent tunnel (~W+2T+2 queries per listing). Batch both
+        # into ONE Sector load (IN source_ids ∪ dest_ids) and ONE
+        # PlayerWarpKnowledge load, independent of W/T. Output ordering and
+        # fields are unchanged — the loops below just read from dicts/sets
+        # instead of re-querying per row.
+        needed_sector_ids = {row.source_sector_id for row in incoming_bidir_rows}
+        needed_sector_ids.update(t.destination_sector_id for t in outgoing_tunnels)
+        needed_sector_ids.update(t.origin_sector_id for t in incoming_bidirectional)
+        sectors_by_id = {}
+        if needed_sector_ids:
+            sectors_by_id = {
+                s.id: s
+                for s in self.db.query(Sector).filter(Sector.id.in_(needed_sector_ids)).all()
+            }
+
+        latent_tunnel_ids = [
+            t.id for t in outgoing_tunnels
+            if getattr(t, "is_latent", False) and not _is_player_gate(t)
+        ]
+        latent_tunnel_ids += [
+            t.id for t in incoming_bidirectional
+            if getattr(t, "is_latent", False) and not _is_player_gate(t)
+        ]
+        known_tunnel_ids = _player_known_warp_ids(self.db, player.id, latent_tunnel_ids)
+
+        for row in incoming_bidir_rows:
+            origin = sectors_by_id.get(row.source_sector_id)
+            if origin is None or origin.sector_id in seen_sector_ids:
+                continue
+            # row IS the definitive sector_warps edge (this is exactly the
+            # reverse-direction row _calculate_warp_cost's fallback lookup
+            # would find) -- its turn_cost is used directly, no re-query.
+            warp_cost = self._warp_cost_from_turn_cost(row.turn_cost, ship)
+            direct_warps.append({
+                "sector_id": origin.sector_id,
+                "name": origin.name,
+                "type": origin.type.name,
+                "turn_cost": warp_cost,
+                "can_afford": player.turns >= warp_cost
+            })
+            seen_sector_ids.add(origin.sector_id)
 
         for tunnel in outgoing_tunnels:
             # WO-WC: a lifetime-expired tunnel is collapsed and must not list as
@@ -809,10 +1250,10 @@ class MovementService:
             if (
                 getattr(tunnel, "is_latent", False)
                 and not _is_player_gate(tunnel)
-                and not _player_knows_warp(self.db, player.id, tunnel)
+                and tunnel.id not in known_tunnel_ids
             ):
                 continue
-            dest_sector = self.db.query(Sector).filter(Sector.id == tunnel.destination_sector_id).first()
+            dest_sector = sectors_by_id.get(tunnel.destination_sector_id)
             if dest_sector:
                 tunnel_cost = tunnel.turn_cost
                 player_gate = _is_player_gate(tunnel)
@@ -837,13 +1278,6 @@ class MovementService:
                     "can_afford": player.turns >= tunnel_cost
                 })
 
-        # Incoming bidirectional tunnels (destination is current sector, but tunnel is bidirectional)
-        incoming_bidirectional = self.db.query(WarpTunnel).filter(
-            WarpTunnel.destination_sector_id == current_sector.id,
-            WarpTunnel.is_bidirectional == True,
-            WarpTunnel.status == WarpTunnelStatus.ACTIVE
-        ).all()
-
         for tunnel in incoming_bidirectional:
             # WO-WC: hide a lifetime-expired (collapsed) tunnel from the reverse view too.
             if _tunnel_collapse_due(tunnel):
@@ -853,11 +1287,11 @@ class MovementService:
             if (
                 getattr(tunnel, "is_latent", False)
                 and not _is_player_gate(tunnel)
-                and not _player_knows_warp(self.db, player.id, tunnel)
+                and tunnel.id not in known_tunnel_ids
             ):
                 continue
             # The "destination" for travel is the tunnel's origin sector
-            dest_sector = self.db.query(Sector).filter(Sector.id == tunnel.origin_sector_id).first()
+            dest_sector = sectors_by_id.get(tunnel.origin_sector_id)
             if dest_sector:
                 # Don't add duplicates (in case there's already a tunnel in the other direction)
                 if any(t["sector_id"] == dest_sector.sector_id for t in warp_tunnels):
@@ -887,6 +1321,242 @@ class MovementService:
             "warps": direct_warps,
             "tunnels": warp_tunnels
         }
+
+    # ------------------------------------------------------------------
+    # WO-PROG-SECTOR-SCAN-1 -- scan adjacent sectors (turns.md:83)
+    # ------------------------------------------------------------------
+    #
+    # CANON: "Scan adjacent sectors | 2 [turns] | Design-only -- currently
+    # free / passive map fill" (sw2102-docs/FEATURES/gameplay/turns.md:83).
+    # get_available_moves already discloses {sector_id, name, type,
+    # turn_cost, can_afford} for every neighbor at ZERO cost -- this action
+    # is the PAID enrichment above that baseline, never a duplicate of it.
+    #
+    # THE SCALING LADDER (Max-approved 2026-07-10 off a 3-rail investigation
+    # -- WO-PROG-SECTOR-SCAN-1). Every magnitude below is [NO-CANON],
+    # flagged for DECISIONS: canon confirms the feature and its 2-turn cost
+    # only, not these tiers/thresholds.
+    #
+    #   Rail A (PRIMARY) -- the scanning ship's effective scanner_range
+    #   (ShipSpecification.scanner_range + the SENSOR ship-upgrade bonus via
+    #   ShipUpgradeService.effective_scanner_range) -- the SAME mechanism
+    #   already driving the long-range quantum scan's reach
+    #   (quantum_service.py:348-365/446):
+    #     Tier 0 (range 0-1): hazard_level + radiation_level only.
+    #     Tier 1 (range 2-3): + resources summary (has_asteroids,
+    #       gas-cloud presence) + a binary presence echo (any non-self ship
+    #       in the sector -- no count, no identity; mirrors
+    #       quantum_service's own "echo: faint motion / silent").
+    #     Tier 2 (range >=4, chosen to sit roughly where a hull reaches
+    #       Sensor L3 -- conceptually mirroring quantum_service's own
+    #       EXTENDED_BAND_SENSOR_LEVEL=3 gate -- AND Rail C's second gate
+    #       clears): + defenses summary (mine presence, a patrol-ship COUNT
+    #       BAND not an exact count) + planet/station presence flags.
+    #       Still short of on-arrival truth -- no player identity, no
+    #       formation identity (those stay gated by their own existing
+    #       per-player discovery mechanics).
+    #
+    #   Rail C (SECONDARY, accuracy/insight modifier) -- ARIA consciousness
+    #   level (Player.aria_consciousness_level, WO-ARIA-PROGRESSION):
+    #     - Tier 2's extra reveal ALSO requires aria_consciousness_level>=3
+    #       (Awakened) -- "tier-2's second gate"; Tier 0/1 never check this.
+    #     - Every scan's misread chance drops -2 points per consciousness
+    #       level above 1, ON TOP OF the existing per-Sensor-level
+    #       reduction -- mirrors quantum_service.py's own
+    #       MISREAD_REDUCTION_PER_SENSOR_LEVEL mechanic verbatim, with an
+    #       added ARIA term. Floored at 0. The roll itself (and whether it
+    #       fired) is NEVER surfaced to the caller, matching quantum_service.
+    #       scan()'s own choice not to expose misread_pct/misread in its
+    #       response -- telling the player "this reading might be wrong"
+    #       would defeat the fog-of-war point of the mechanic.
+    #
+    #   Rail B (research/tech tree) is PARKED for v1: a real tech-tree
+    #   kernel exists (src/services/tech_tree.py, CRT WO-K0-1) with generic
+    #   point-of-use readers (has_tool/gate_value/tech_modifier), but its
+    #   one exploration-branch node (t.exploration.survey.1, "Orbital
+    #   Survey Suite") is reserved for K1b's PLANETARY grid fog/reveal -- a
+    #   different subsystem. A future scan-specific node (e.g.
+    #   t.exploration.deep_scan.1) can be appended to the catalog cheaply
+    #   (the tree is designed to grow by appending rows -- zero migration
+    #   risk) WITHOUT reusing the reserved survey node.
+    #
+    # Stateless + ephemeral by design (Max-approved): a passive-fill
+    # enhancement, not a permanent per-player discovery -- no persistence
+    # table; the payload is computed fresh on every call and never stored.
+    # Fuzzy-disclosure discipline is a HARD constraint (mirrors the quantum
+    # scan): never more than on-arrival truth, no identities, bands not
+    # counts.
+
+    SCAN_TURN_COST = 2  # canon: turns.md:83, exact.
+    SCAN_TIER1_MIN_RANGE = 2   # [NO-CANON]
+    SCAN_TIER2_MIN_RANGE = 4   # [NO-CANON]
+    SCAN_TIER2_MIN_ARIA_LEVEL = 3  # [NO-CANON] -- Awakened
+    SCAN_MISREAD_BASE_PCT = 15  # [NO-CANON] -- mirrors quantum_service.MISREAD_BASE_PCT
+    SCAN_MISREAD_REDUCTION_PER_SENSOR_LEVEL = 5  # [NO-CANON] -- mirrors quantum_service
+    SCAN_MISREAD_REDUCTION_PER_ARIA_LEVEL = 2  # [NO-CANON] -- new term, this WO
+
+    @staticmethod
+    def _patrol_band(patrol_count: int) -> str:
+        """Fuzzy patrol-strength band, never an exact count (fuzzy-disclosure
+        discipline). [NO-CANON] boundaries."""
+        if patrol_count <= 0:
+            return "none"
+        if patrol_count <= 2:
+            return "light"
+        if patrol_count <= 4:
+            return "moderate"
+        return "heavy"
+
+    @classmethod
+    def _scan_tier(cls, effective_range: int, aria_level: int) -> int:
+        """Pure Rail-A/Rail-C tier resolution -- no DB, directly unit-testable.
+        See the scan_adjacent_sector module comment for the full ladder design."""
+        if effective_range >= cls.SCAN_TIER2_MIN_RANGE:
+            return 2 if aria_level >= cls.SCAN_TIER2_MIN_ARIA_LEVEL else 1
+        if effective_range >= cls.SCAN_TIER1_MIN_RANGE:
+            return 1
+        return 0
+
+    @classmethod
+    def _scan_misread_pct(cls, sensor_level: int, aria_level: int) -> int:
+        """Pure misread-chance formula -- no DB, directly unit-testable.
+        Mirrors quantum_service's MISREAD_BASE_PCT -
+        MISREAD_REDUCTION_PER_SENSOR_LEVEL*sensor_level shape, with an added
+        ARIA term. Floored at 0."""
+        return max(
+            0,
+            cls.SCAN_MISREAD_BASE_PCT
+            - cls.SCAN_MISREAD_REDUCTION_PER_SENSOR_LEVEL * sensor_level
+            - cls.SCAN_MISREAD_REDUCTION_PER_ARIA_LEVEL * max(0, aria_level - 1),
+        )
+
+    def scan_adjacent_sector(self, player_id: uuid.UUID, target_sector_id: int) -> Dict[str, Any]:
+        """Scan a directly-reachable neighbor sector for a paid preview
+        beyond get_available_moves' free {name, type, turn_cost} baseline.
+        See the module comment above this method for the full ladder design.
+        """
+        player = (
+            self.db.query(Player)
+            .filter(Player.id == player_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if not player:
+            return {"success": False, "message": "Player not found"}
+
+        # ADR-0004 continuous regen, inside the row lock, before the
+        # affordability check -- same discipline as every other spend site.
+        regenerate_turns(self.db, player)
+
+        if player.turns < self.SCAN_TURN_COST:
+            return {
+                "success": False,
+                "message": f"Not enough turns to scan (need {self.SCAN_TURN_COST}, have {player.turns})",
+            }
+
+        ship = player.current_ship
+        if not ship:
+            return {"success": False, "message": "No active ship to scan with"}
+
+        # Adjacency: reuse get_available_moves VERBATIM so "adjacent" can
+        # never drift from the free listing's own definition of a neighbor
+        # (both direct warps and warp tunnels count, exactly as they do for
+        # movement itself).
+        available = self.get_available_moves(player_id)
+        neighbor_ids = {w["sector_id"] for w in available.get("warps", [])}
+        neighbor_ids |= {t["sector_id"] for t in available.get("tunnels", [])}
+        if target_sector_id not in neighbor_ids:
+            return {
+                "success": False,
+                "message": "That sector is not adjacent to your current position",
+            }
+
+        target_sector = self.db.query(Sector).filter(Sector.sector_id == target_sector_id).first()
+        if not target_sector:
+            return {"success": False, "message": "Target sector not found"}
+
+        # --- Rail A: effective scanner_range (hull spec + SENSOR upgrade) ---
+        from src.models.ship import ShipSpecification
+        from src.services.ship_upgrade_service import ShipUpgradeService
+
+        spec = (
+            self.db.query(ShipSpecification)
+            .filter(ShipSpecification.type == ship.type)
+            .first()
+        )
+        base_range = spec.scanner_range if spec and spec.scanner_range is not None else 0
+        effective_range = ShipUpgradeService.effective_scanner_range(ship, base_range)
+        # Reuse the established helper (not a hand-rolled upgrades.get) --
+        # same source ShipUpgradeService.effective_scanner_range/
+        # effective_evasion already consult.
+        sensor_level = ShipUpgradeService.get_sensor_level(ship)
+
+        # --- Rail C: ARIA consciousness (Tier-2's second gate + accuracy) ---
+        aria_level = player.aria_consciousness_level or 1
+
+        tier = self._scan_tier(effective_range, aria_level)
+
+        result: Dict[str, Any] = {
+            "sector_id": target_sector_id,
+            "name": target_sector.name,
+            "type": target_sector.type.name,
+            "tier": tier,
+            "hazard_level": target_sector.hazard_level,
+            "radiation_level": target_sector.radiation_level,
+        }
+
+        if tier >= 1:
+            resources = target_sector.resources or {}
+            result["has_asteroids"] = bool(resources.get("has_asteroids", False))
+            result["has_gas_clouds"] = bool(resources.get("gas_clouds"))
+            # Binary presence echo -- any non-self ship (player OR NPC;
+            # NPC-piloted ships carry owner_id NULL) in the target sector.
+            # No count, no identity -- mirrors quantum_service's own echo.
+            other_ships = (
+                self.db.query(Ship)
+                .filter(
+                    Ship.sector_id == target_sector_id,
+                    Ship.is_destroyed == False,  # noqa: E712 -- SQLA boolean compare
+                    or_(Ship.owner_id != player.id, Ship.owner_id.is_(None)),
+                )
+                .count()
+            )
+            result["presence_echo"] = "faint motion" if other_ships > 0 else "silent"
+
+        if tier >= 2:
+            defenses = target_sector.defenses or {}
+            result["mines_present"] = int(defenses.get("mines", 0) or 0) > 0
+            result["patrol_band"] = self._patrol_band(len(defenses.get("patrol_ships") or []))
+            result["has_planet"] = (
+                self.db.query(Planet).filter(Planet.sector_id == target_sector_id).first()
+                is not None
+            )
+            from src.models.station import Station
+            result["has_station"] = (
+                self.db.query(Station).filter(Station.sector_id == target_sector_id).first()
+                is not None
+            )
+
+        # --- Rail C accuracy term: misread roll (mirrors quantum_service) ---
+        # Never surfaced to the caller -- see the module comment above.
+        misread_pct = self._scan_misread_pct(sensor_level, aria_level)
+        if misread_pct and random.random() < misread_pct / 100.0:
+            if "presence_echo" in result:
+                result["presence_echo"] = (
+                    "silent" if result["presence_echo"] != "silent" else "faint motion"
+                )
+            logger.info(
+                "Scan misread: player %s sector %s (misread_pct=%d)",
+                player.id, target_sector_id, misread_pct,
+            )
+
+        spend_turns(player, self.SCAN_TURN_COST)
+        self.db.commit()
+
+        result["success"] = True
+        result["turns_remaining"] = player.turns
+        return result
 
     def scan_for_latent_tunnels(self, player_id: uuid.UUID) -> Dict[str, Any]:
         """WO-LW — reveal the latent warp tunnels touching the player's current
@@ -954,7 +1624,7 @@ class MovementService:
             "revealed": revealed_count,
             "sectors": revealed_sector_numbers,
         }
-    
+
     def get_path_between_sectors(self, start_sector_id: int, end_sector_id: int) -> List[Dict[str, Any]]:
         """
         Find the shortest path between two sectors.
@@ -963,21 +1633,21 @@ class MovementService:
         # Get sectors
         start_sector = self.db.query(Sector).filter(Sector.sector_id == start_sector_id).first()
         end_sector = self.db.query(Sector).filter(Sector.sector_id == end_sector_id).first()
-        
+
         if not start_sector or not end_sector:
             return []
-        
+
         # Simple BFS for path finding
         visited = {start_sector.id: None}  # Maps sector ID to previous sector ID
         queue = [(start_sector, 0)]  # (sector, distance)
-        
+
         while queue:
             current, distance = queue.pop(0)
-            
+
             # If we've reached the destination
             if current.id == end_sector.id:
                 break
-            
+
             # Add all neighbors to the queue. Walk both outgoing edges and
             # incoming bidirectional edges so BFS pathfinding can traverse
             # bang's bidirectional sector_warps in reverse.
@@ -999,27 +1669,27 @@ class MovementService:
                     continue
                 visited[origin.id] = current.id
                 queue.append((origin, distance + 1))
-            
+
             # Check warp tunnels
             tunnels = self.db.query(WarpTunnel).filter(
                 WarpTunnel.origin_sector_id == current.id,
                 WarpTunnel.status == WarpTunnelStatus.ACTIVE
             ).all()
-            
+
             for tunnel in tunnels:
                 dest = self.db.query(Sector).filter(Sector.id == tunnel.destination_sector_id).first()
                 if dest and dest.id not in visited:
                     visited[dest.id] = current.id
                     queue.append((dest, distance + 1))
-        
+
         # If we didn't reach the end sector
         if end_sector.id not in visited:
             return []
-        
+
         # Reconstruct the path
         path = []
         current_id = end_sector.id
-        
+
         while current_id is not None:
             current_sector = self.db.query(Sector).filter(Sector.id == current_id).first()
             if current_sector:
@@ -1028,17 +1698,17 @@ class MovementService:
                     "name": current_sector.name,
                     "type": current_sector.type.name
                 })
-            
+
             current_id = visited[current_id]
-        
+
         # Calculate turn costs between each step
         for i in range(len(path) - 1):
             from_sector_id = path[i]["sector_id"]
             to_sector_id = path[i + 1]["sector_id"]
-            
+
             from_sector = self.db.query(Sector).filter(Sector.sector_id == from_sector_id).first()
             to_sector = self.db.query(Sector).filter(Sector.sector_id == to_sector_id).first()
-            
+
             # Check if direct warp (either direction for bidirectional
             # sector_warps rows) or tunnel.
             if self._is_directly_connected(from_sector, to_sector):
@@ -1051,21 +1721,21 @@ class MovementService:
                     WarpTunnel.destination_sector_id == to_sector.id,
                     WarpTunnel.status == WarpTunnelStatus.ACTIVE
                 ).first()
-                
+
                 if tunnel:
                     path[i + 1]["turn_cost"] = tunnel.turn_cost
                     path[i + 1]["connection_type"] = "tunnel"
                 else:
                     path[i + 1]["turn_cost"] = 999  # Should not happen
                     path[i + 1]["connection_type"] = "unknown"
-        
+
         # Set turn cost for first sector to 0
         if path:
             path[0]["turn_cost"] = 0
             path[0]["connection_type"] = "start"
-        
+
         return path
-    
+
     def _is_directly_connected(self, from_sector: Sector, to_sector: Sector) -> bool:
         """True if there's a usable direct warp from ``from_sector`` to ``to_sector``.
 
@@ -1105,12 +1775,15 @@ class MovementService:
         turn_cost = self._calculate_warp_cost(current_sector, destination_sector, ship)
 
         return True, turn_cost, "Direct warp available"
-    
-    def _has_player_gate(self, current_sector_id: int, destination_sector_id: int) -> bool:
-        """True if an ACTIVE player-built warp gate connects origin ->
-        destination (FIX 7). Player gates are one-way ARTIFICIAL tunnels with
-        created_by_player_id set and a flat 0-turn cost; they outrank a
-        parallel direct warp so the charged cost matches the advertised 0."""
+
+    def _has_player_gate(self, current_sector_id: int, destination_sector_id: int) -> Optional[WarpTunnel]:
+        """The ACTIVE player-built warp gate connecting origin ->
+        destination (FIX 7), or None. Player gates are one-way ARTIFICIAL
+        tunnels with created_by_player_id set and a flat 0-turn cost; they
+        outrank a parallel direct warp so the charged cost matches the
+        advertised 0. Returns the tunnel row itself (not just a bool) so the
+        caller can run access-control + toll collection (WO-GWQ-GATE-TOLL)
+        against the SAME row without a second query."""
         current_sector = self.db.query(Sector).filter(
             Sector.sector_id == current_sector_id
         ).first()
@@ -1118,14 +1791,14 @@ class MovementService:
             Sector.sector_id == destination_sector_id
         ).first()
         if not current_sector or not destination_sector:
-            return False
+            return None
 
         tunnel = self.db.query(WarpTunnel).filter(
             WarpTunnel.origin_sector_id == current_sector.id,
             WarpTunnel.destination_sector_id == destination_sector.id,
             WarpTunnel.status == WarpTunnelStatus.ACTIVE,
         ).first()
-        return tunnel is not None and _is_player_gate(tunnel)
+        return tunnel if tunnel is not None and _is_player_gate(tunnel) else None
 
     def _check_warp_tunnel(self, current_sector_id: int, destination_sector_id: int, ship: Ship) -> Tuple[bool, int, str]:
         """Check if a warp tunnel is available and calculate turn cost."""
@@ -1153,6 +1826,14 @@ class MovementService:
             ).first()
 
         if not tunnel:
+            # WO-ARIA-WARP-RESIDUALS (aria-companion.md:70): before giving up,
+            # check whether the REAL reason no tunnel matched is a genuine
+            # ONE-WAY tunnel running the OTHER way (destination -> current,
+            # is_bidirectional=False) -- the player just tried to go against
+            # a one-way warp, distinct from "nothing connects these sectors
+            # at all". The move still fails identically either way; this
+            # only teaches ARIA the tunnel exists when it's latent.
+            self._handle_reverse_one_way_traversal_attempt(current_sector, destination_sector, ship)
             return False, 0, "No active warp tunnel found"
 
         # WO-WC — lazy-on-read lifetime collapse (async-workers.md § Warp-tunnel
@@ -1168,7 +1849,7 @@ class MovementService:
             # as the player-row lock in move_player_to_sector).
             locked = self.db.query(WarpTunnel).filter(
                 WarpTunnel.id == tunnel.id
-            ).with_for_update().first()
+            ).populate_existing().with_for_update().first()
             if locked is not None and locked.status == WarpTunnelStatus.ACTIVE:
                 locked.status = WarpTunnelStatus.COLLAPSED
                 # The traversal fails, so the caller (move_player_to_sector)
@@ -1203,9 +1884,15 @@ class MovementService:
         if _is_player_gate(tunnel):
             # WG1 access-mode enforcement (warp-gates.md "Access control"): a player-built gate
             # honors its access_requirements mode (PUBLIC/TEAM_ONLY/PRIVATE/WHITELIST/ALLIANCE).
-            # check_traversal_access was dead-stored before this wiring — defined but uncalled, so
-            # any player could traverse a restricted gate. Enforce here, the single move-validation
-            # path. The traverser is the owner of the ship being moved (owner_id == the player).
+            # NOTE (WO-GWQ-GATE-TOLL audit finding): this branch is UNREACHABLE from
+            # move_player_to_sector for a real player-gate move — MovementService._has_player_gate
+            # already matches any ACTIVE player-built gate connecting these two sectors and takes
+            # move_player_to_sector's OWN player-gate branch first (FIX 7's "prefer the 0-turn
+            # gate" precedence), returning before _check_warp_tunnel is ever called. The real
+            # enforcement point (access mode + faction-rep layers + toll) now lives in that
+            # branch. This copy is kept as a harmless defensive backstop (and this function is
+            # still reachable from other callers that don't go through _has_player_gate first),
+            # but do not rely on it as THE enforcement point.
             traverser_id = getattr(ship, "owner_id", None) if ship else None
             if traverser_id is not None:
                 from src.services.warp_gate_service import check_traversal_access, WarpGateError
@@ -1220,10 +1907,16 @@ class MovementService:
         # Get base turn cost
         turn_cost = tunnel.turn_cost
 
-        # Non-warp-capable ships pay a higher cost for advanced tunnel types
-        if tunnel.type.name in ["QUANTUM", "UNSTABLE"] and ship and not getattr(ship, 'warp_capable', False):
-            turn_cost = max(1, int(turn_cost * 1.5))  # 50% surcharge for non-warp-capable ships
-        elif ship and getattr(ship, 'warp_capable', False):
+        # WO-GWQ-TUNNELTYPE: the QUANTUM/UNSTABLE 50% non-warp-capable
+        # surcharge above this comment minted a type-based cost split that
+        # sectors.md:47 does not document (NATURAL/ARTIFICIAL are
+        # "indistinguishable in routing cost and stability") and has been
+        # removed.
+        # NO-CANON: warp-capable ships still get a 20% turn-cost reduction on
+        # any tunnel type. This is ship-based, not tunnel-type-based, so it
+        # survives the type-vocab convergence, but it is undocumented in
+        # sectors.md — flagged for a canon decision, not removed.
+        if ship and getattr(ship, 'warp_capable', False):
             turn_cost = max(1, int(turn_cost * 0.8))  # 20% reduction for warp-capable ships
 
         # Maintenance performance-band SPEED modifier (ships.md:68-75), applied
@@ -1234,7 +1927,61 @@ class MovementService:
         turn_cost = max(1, int(turn_cost * self._maintenance_speed_multiplier(ship)))
 
         return True, turn_cost, "Warp tunnel available"
-    
+
+    def _handle_reverse_one_way_traversal_attempt(
+        self, current_sector: Sector, destination_sector: Sector, ship: Optional[Ship],
+    ) -> None:
+        """WO-ARIA-WARP-RESIDUALS (aria-companion.md:70): called from
+        ``_check_warp_tunnel`` right before it gives up (no forward tunnel,
+        no bidirectional reverse tunnel). Checks whether a genuine ONE-WAY
+        tunnel runs the OTHER way (``destination -> current``,
+        ``is_bidirectional=False``) -- the player just attempted reverse
+        traversal of a one-way warp, which is a materially different case
+        from "nothing connects these sectors at all". If that tunnel is
+        latent, the failed attempt itself teaches ARIA it exists
+        (``revealed_via=TRAVERSAL_ATTEMPT``) via the existing idempotent
+        ``_reveal_warp_to_player`` upsert (never downgrades an already-
+        ``traversed`` row).
+
+        Best-effort and side-effect-only: NEVER changes the move's own
+        outcome -- the caller always returns the same "No active warp
+        tunnel found" failure regardless of what happens here, and any
+        error here is caught, logged, and rolled back rather than
+        propagated.
+
+        Commits its own isolated write (mirrors this same method's sibling
+        ``_tunnel_collapse_due`` early-commit precedent a few dozen lines
+        above): the caller's move has already failed and returns with no
+        further mutation or commit anywhere else in this request, so this
+        reveal must persist on its own here or it is silently lost when
+        the request ends.
+        """
+        try:
+            reverse_one_way = self.db.query(WarpTunnel).filter(
+                WarpTunnel.origin_sector_id == destination_sector.id,
+                WarpTunnel.destination_sector_id == current_sector.id,
+                WarpTunnel.is_bidirectional == False,  # noqa: E712
+                WarpTunnel.status == WarpTunnelStatus.ACTIVE,
+            ).first()
+            if reverse_one_way is None:
+                return
+            if not getattr(reverse_one_way, "is_latent", False) or _is_player_gate(reverse_one_way):
+                return  # non-latent, or a player gate (gates are never latent) -- nothing to reveal
+
+            traverser_id = getattr(ship, "owner_id", None) if ship else None
+            if traverser_id is None:
+                return
+
+            _reveal_warp_to_player(
+                self.db, traverser_id, reverse_one_way, revealed_via=WarpRevealedVia.TRAVERSAL_ATTEMPT,
+            )
+            self.db.commit()
+        except Exception as e:
+            logger.error(
+                "Failed to record traversal-attempt warp reveal (non-fatal, move still fails normally): %s", e,
+            )
+            self.db.rollback()
+
     def _maintenance_speed_multiplier(self, ship: Optional[Ship]) -> float:
         """Turn-cost multiplier from the ship's maintenance performance band's
         SPEED modifier (ships.md:68-75 "Performance bands" — the Speed column).
@@ -1281,7 +2028,14 @@ class MovementService:
             return 1.0
 
     def _calculate_warp_cost(self, from_sector: Sector, to_sector: Sector, ship: Optional[Ship]) -> int:
-        """Calculate turn cost for a direct warp between sectors."""
+        """Calculate turn cost for a direct warp between sectors.
+
+        Uniform per-warp cost (movement.md:13, movement.md:24): 'Ship.current_speed
+        does not change the turn cost of any traversal' and 'A Scout (speed 2.5)
+        and a Cargo Hauler (speed 0.5) both pay the same'. Every hull type pays
+        warp.turn_cost, adjusted only by the ship's maintenance-band speed
+        factor (ships.md:89) — never by ship type or current_speed.
+        """
         # Find the warp connection details. Try the forward direction first;
         # if missing, try the reverse direction with is_bidirectional=true
         # (the bang translator stores A↔B as ONE row per the schema map,
@@ -1300,39 +2054,33 @@ class MovementService:
 
         if not warp:
             return 999  # Very high cost if no direct connection (should not happen)
-        
+
+        return self._warp_cost_from_turn_cost(warp.turn_cost, ship)
+
+    def _warp_cost_from_turn_cost(self, raw_turn_cost: Optional[int], ship: Optional[Ship]) -> int:
+        """Pure cost computation shared by ``_calculate_warp_cost`` (which
+        queries ``sector_warps`` for ``raw_turn_cost``) and WO-QTI-MOVES-
+        BATCH's listing loops (which already hold the row's turn_cost from a
+        batched fetch and must not re-query per edge). Same formula, no I/O.
+
+        ``raw_turn_cost`` is the edge's raw ``sector_warps.turn_cost``
+        (falls back to 1 if falsy, matching the pre-existing
+        ``warp.turn_cost if warp.turn_cost else 1``).
+        """
         # Get base turn cost from the warp
-        base_cost = warp.turn_cost if warp.turn_cost else 1
-        
-        # Adjust based on ship type and capabilities
-        if ship:
-            # Fast ships have reduced movement costs
-            if ship.type == ShipType.FAST_COURIER:
-                base_cost = max(1, int(base_cost * 0.7))  # 30% reduction
-            elif ship.type == ShipType.SCOUT_SHIP:
-                base_cost = max(1, int(base_cost * 0.8))  # 20% reduction
-            
-            # Slower ships have increased movement costs
-            elif ship.type == ShipType.CARGO_HAULER:
-                base_cost = int(base_cost * 1.2)
-            elif ship.type == ShipType.COLONY_SHIP:
-                base_cost = int(base_cost * 1.3)
-            
-            # Apply ship's current speed adjustment
-            if ship.current_speed < ship.base_speed:
-                speed_ratio = ship.current_speed / ship.base_speed
-                base_cost = int(base_cost * (2 - speed_ratio))  # 1.0-2.0x multiplier based on speed
+        base_cost = raw_turn_cost if raw_turn_cost else 1
 
         # Maintenance performance-band SPEED modifier (ships.md:68-75). A worn
         # ship moves slower (costs more turns); a pristine ship moves faster
         # (costs fewer). The neutral "Good" band leaves this exactly 1.0, so a
-        # ship in good condition is unchanged. Applied AFTER the ship-type and
-        # current_speed adjustments, before the floor, as the final cost factor.
+        # ship in good condition is unchanged. This is the ONLY per-ship
+        # adjustment to the uniform warp.turn_cost (movement.md:13/:24) —
+        # never ship type or current_speed.
         base_cost = int(base_cost * self._maintenance_speed_multiplier(ship))
 
         # No turn cost can be less than 1
         return max(1, base_cost)
-    
+
     # Hull damage one armored mine deals to a hostile ship entering the sector.
     # Proposed in ADR-0083 (pending Max bless); deterrent-scale, non-lethal
     # (hull is floored at 1.0 so a minefield cripples but does not destroy —
@@ -1385,6 +2133,9 @@ class MovementService:
     def _execute_movement(self, player: Player, destination_sector_id: int, turn_cost: int) -> Dict[str, Any]:
         """Execute a player's movement to a destination sector."""
         old_sector_id = player.current_sector_id
+        # Snapshot BEFORE the region mutation below, so the WS room-hop can
+        # tell whether this move crossed a region boundary (WO-RT-ROOM-HOP).
+        old_region_id = player.current_region_id
 
         # Fetch the destination up front: the move needs its region for the
         # player sync below, and the response reuses it for sector_info.
@@ -1414,7 +2165,7 @@ class MovementService:
         # already releases; warp/quantum/hangar/tow did not).
         from src.services.docking_service import release as _release_docking_slip
         _release_docking_slip(self.db, None, player)
-        
+
         # Update ship position
         if player.current_ship:
             player.current_ship.sector_id = destination_sector_id
@@ -1459,14 +2210,15 @@ class MovementService:
         # Consume turns
         spend_turns(player, turn_cost)
 
-        # ARIA consciousness hook — movement counts as interaction
+        # ARIA consciousness + relationship hook — movement counts as a
+        # significant interaction (WO-ARIA-PROGRESSION: single canonical
+        # helper, replaces the old interactions-only inline threshold walk).
         try:
-            player.aria_total_interactions += 1
-            thresholds = {50: (2, 1.1), 150: (3, 1.2), 400: (4, 1.35), 1000: (5, 1.5)}
-            for threshold, (level, multiplier) in thresholds.items():
-                if player.aria_total_interactions >= threshold and player.aria_consciousness_level < level:
-                    player.aria_consciousness_level = level
-                    player.aria_bonus_multiplier = multiplier
+            from src.services.aria_personal_intelligence_service import get_aria_intelligence_service
+
+            get_aria_intelligence_service().update_consciousness_and_relationship_sync(
+                str(player.id), self.db
+            )
         except Exception as e:
             logger.error("Failed ARIA hook during movement: %s", e)
 
@@ -1495,6 +2247,42 @@ class MovementService:
                         sector_id=destination_sector.id,
                     )
                 )
+                # ARIA narration — P-A2 first entry to an undiscovered
+                # sector (aria-companion.md:227, WO-ARIA-NARRATE-KERNEL).
+                # Nested in this new-row branch: same idempotency
+                # argument as the ARIAExplorationMap insert above — fires
+                # exactly once per (player, sector). Best-effort, own
+                # try/except so a narration hiccup can never strand the
+                # exploration-map write it rides alongside.
+                try:
+                    _sector_type_desc = {
+                        SectorType.STANDARD: "standard space",
+                        SectorType.NEBULA: "a nebula",
+                        SectorType.ASTEROID_FIELD: "an asteroid field",
+                        SectorType.BLACK_HOLE: "a black hole",
+                        SectorType.STAR_CLUSTER: "a star cluster",
+                        SectorType.VOID: "open void",
+                        SectorType.INDUSTRIAL: "an industrial zone",
+                        SectorType.AGRICULTURAL: "an agricultural belt",
+                        SectorType.FORBIDDEN: "forbidden space",
+                        SectorType.WORMHOLE: "a wormhole",
+                    }.get(destination_sector.type, "standard space")
+                    from src.services.aria_narration_service import (
+                        dispatch_narration_push,
+                        get_aria_narration_service,
+                        resolve_assistance_level,
+                    )
+                    narration_line = get_aria_narration_service().record_event(
+                        "P-A2",
+                        player.id,
+                        assistance_level=resolve_assistance_level(self.db, player.id),
+                        dedupe_key=str(destination_sector.id),
+                        context={"sector_type_desc": _sector_type_desc},
+                    )
+                    if narration_line is not None and narration_line.delivered_immediately:
+                        dispatch_narration_push(player, narration_line)
+                except Exception as e:
+                    logger.error("ARIA narration hook failed (P-A2): %s", e)
                 # Emergent faction-rep (ADR-0032): "First-scan a NEBULA /
                 # BLACK_HOLE / ANOMALY / WARP_STORM sector | +15 Nova Scientific
                 # Institute" (factions-and-teams.md NS table). IDEMPOTENT BY
@@ -1585,36 +2373,47 @@ class MovementService:
         except Exception as e:
             logger.error("Exploration medal dispatch hook failed during movement: %s", e)
 
+        # WO-MONEY-STRAGGLER-NAIVE follow-up: _detonate_sector_mines above
+        # mutates destination_sector.defenses IN-MEMORY (mine count,
+        # mine_owner_id) before this point, on a session opened
+        # autoflush=False (core/database.py:19) -- unflushed on a REPEAT
+        # visit (the ARIA exploration-map hook's only self.db.flush(), :2314,
+        # sits inside its first-visit-only branch and does not fire here).
+        # _update_player_presence's Sector lock now carries
+        # .populate_existing() (closes the players_present identity-map
+        # staleness this same WO fixed), which would otherwise DISCARD that
+        # unflushed mine-detonation mutation on the locked re-read. Flushing
+        # here, immediately before the presence-lock call, persists it (and
+        # any other pending pre-lock Sector mutation from the hooks above)
+        # first, so the populate_existing re-read picks it up fresh instead
+        # of reverting it. Same transaction -- this method still owns the
+        # eventual commit below -- so this is not a premature commit, only
+        # an earlier flush. Mirrors bounty_service.collect_bounty's
+        # WO-BOUNTY-COLLECT-FLUSH precedent for the identical class of bug.
+        self.db.flush()
+
         # Updates player's presence in sector records
         self._update_player_presence(player, old_sector_id, destination_sector_id)
 
-        # Snapshot the moving player's presence-entry payload BEFORE the commit,
-        # while its ORM attributes are still loaded in this session. Mirrors the
-        # entry shape written by _update_player_presence so subscribers receive
-        # the same presence record they would read from sector.players_present.
-        presence_entry = {
-            "player_id": str(player.id),
-            "username": player.username,
-            "ship_id": str(player.current_ship_id) if player.current_ship_id else None,
-            "ship_name": player.current_ship.name if player.current_ship else "None",
-            "ship_type": player.current_ship.type.name if player.current_ship else "None",
-            "team_id": str(player.team_id) if player.team_id else None,
-        }
-        # The WS connection key is the User id (str(user.id) at connect time);
-        # Player.user_id IS that user id, so excluding it suppresses the moving
-        # player's own join/leave echo.
+        # Snapshot the destination region + WS connection key BEFORE the
+        # commit, while destination_sector's ORM attributes are still loaded
+        # in this session. The WS connection key is the User id (str(user.id)
+        # at connect time); Player.user_id IS that user id.
+        new_region_id = destination_sector.region_id
         mover_ws_user_id = str(player.user_id)
 
         # Commit changes
         self.db.commit()
 
-        # Broadcast sector join/leave presence to the OLD and NEW sectors so
-        # other players' clients can update who's-here in real time. Done AFTER
-        # the commit so subscribers never observe pre-commit presence, and
-        # strictly best-effort — a WS hiccup must NOT break the move (mirrors
-        # _dispatch_hostile_detected / the ARIA/medal hooks above).
+        # Room-hop the WS registry to the OLD/NEW sector (and region, if this
+        # move crossed one) so subscribers' who's-here / region-scoped views
+        # stay live instead of frozen at connect-time (WO-RT-ROOM-HOP). Done
+        # AFTER the commit so subscribers never observe pre-commit presence,
+        # and strictly best-effort — a WS hiccup must NOT break the move
+        # (mirrors _dispatch_hostile_detected / the ARIA/medal hooks above).
         self._broadcast_sector_presence(
-            old_sector_id, destination_sector_id, presence_entry, mover_ws_user_id
+            old_sector_id, destination_sector_id, mover_ws_user_id,
+            old_region_id=old_region_id, new_region_id=new_region_id,
         )
 
         # Get sector information for response (sector fetched and
@@ -1626,7 +2425,7 @@ class MovementService:
             "hazard_level": destination_sector.hazard_level,
             "radiation_level": destination_sector.radiation_level
         }
-        
+
         return {
             "success": True,
             "message": f"Moved to Sector {destination_sector_id}",
@@ -1634,7 +2433,7 @@ class MovementService:
             "sector": sector_info,
             "turns_remaining": player.turns
         }
-    
+
     def _update_player_presence(self, player: Player, old_sector_id: int, new_sector_id: int) -> None:
         """Update player presence records in sectors.
 
@@ -1652,6 +2451,7 @@ class MovementService:
             row = (
                 self.db.query(Sector)
                 .filter(Sector.sector_id == sid)
+                .populate_existing()
                 .with_for_update()
                 .first()
             )
@@ -1674,15 +2474,21 @@ class MovementService:
         if new_sector:
             # Add player to new sector's players_present
             players_present = list(new_sector.players_present or [])
-            player_entry = {
-                "player_id": str(player.id),
-                "username": player.username,
-                "ship_id": str(player.current_ship_id) if player.current_ship_id else None,
-                "ship_name": player.current_ship.name if player.current_ship else "None",
-                "ship_type": player.current_ship.type.name if player.current_ship else "None",
-                "team_id": str(player.team_id) if player.team_id else None,
-                "arrived_at": datetime.now().isoformat()
-            }
+            # QUEUE-HEAL-ENTRY-SHAPE (2026-07-16): this is the REFERENCE
+            # SHAPE -- now built through the shared constructor also used by
+            # the presence sweep's heal pass, so the two paths can never
+            # drift apart on key-set or fallback semantics again. See
+            # build_presence_entry's own doc-comment (intrasystem_movement_
+            # service.py) for the naive->aware arrived_at convergence note.
+            from src.services.intrasystem_movement_service import build_presence_entry
+            player_entry = build_presence_entry(
+                player_id=player.id,
+                username=player.username,
+                ship_id=player.current_ship_id,
+                ship_name=player.current_ship.name if player.current_ship else None,
+                ship_type=player.current_ship.type.name if player.current_ship else None,
+                team_id=player.team_id,
+            )
 
             # Check if player is already in the list (shouldn't be, but safety check)
             existing = next((p for p in players_present if p.get("player_id") == str(player.id)), None)
@@ -1692,16 +2498,16 @@ class MovementService:
             players_present.append(player_entry)
             new_sector.players_present = players_present
             flag_modified(new_sector, 'players_present')
-    
+
     def _check_for_encounters(self, player: Player, sector_id: int) -> List[Dict[str, Any]]:
         """Check for encounters upon entering a sector."""
         encounters = []
-        
+
         # Get the destination sector
         sector = self.db.query(Sector).filter(Sector.sector_id == sector_id).first()
         if not sector:
             return encounters
-        
+
         # Check for other players (PvP opportunity)
         other_players = [p for p in sector.players_present if p.get("player_id") != str(player.id)]
         if other_players:
@@ -1710,7 +2516,7 @@ class MovementService:
                 "players": other_players,
                 "threat_level": "varies"
             })
-        
+
         # Check for special sector events
         if sector.type.name in ["BLACK_HOLE", "NEBULA", "ASTEROID_FIELD", "WORMHOLE"]:
             encounters.append({
@@ -1718,38 +2524,326 @@ class MovementService:
                 "hazard": sector.type.name,
                 "threat_level": "medium" if sector.hazard_level < 7 else "high"
             })
-        
-        # Check for sector drones
-        defense_drones = sector.defenses.get('defense_drones', 0) if sector.defenses else 0
-        if defense_drones > 0:
+
+        # Check for sector drones — live hostile deployed Drone rows, mirroring
+        # the attackable set defined in attack_sector_drones
+        # (combat_service.py:1426-1431): same sector, not the moving player's
+        # own drones, still standing (DEPLOYED/DAMAGED, health > 0).
+        hostile_drone_count = self.db.query(Drone).filter(
+            Drone.sector_id == sector.id,
+            Drone.player_id != player.id,
+            Drone.status.in_([DroneStatus.DEPLOYED.value, DroneStatus.DAMAGED.value]),
+            Drone.health > 0,
+        ).count()
+        if hostile_drone_count > 0:
             encounters.append({
                 "type": "drones",
-                "count": defense_drones,
-                "threat_level": "low" if defense_drones < 10 else "medium"
+                "count": hostile_drone_count,
+                "threat_level": "low" if hostile_drone_count < 10 else "medium"
             })
-        
+
+        # Check for faction patrols (Wanted-status detection --
+        # WO-RT-PATROL-ENCOUNTER, sector-presence.md "NPC faction
+        # patrols"). Canon's pseudocode reads sector.defenses['patrol_ships']
+        # as a list of squad dicts, but that key is ALREADY a live SCALAR
+        # INT elsewhere in this codebase -- station siege-defense fire
+        # power (combat_service.py _resolve_port_combat), admin's
+        # security_level rollup, and MILITARY_ZONE seeding
+        # (nexus_generation_service.py / bang_import_service.py) all
+        # read/write it as an int; nexus_generation_service.py even
+        # comments "patrol_ships MUST be a SCALAR INT, never a [list]".
+        # The already-shipped police/pirate squad writer
+        # (npc_spawn_service.py) hit this exact conflict already and
+        # deliberately lands squad rows under a SEPARATE dedicated key --
+        # POLICE_PATROL_DEFENSES_KEY = "police_patrol_ships" -- flagging
+        # the divergence there rather than silently overloading
+        # patrol_ships. This leg follows that precedent.
+        #
+        # NO-CANON / PARKED (flagged to the orchestrator, not silently
+        # invented): the doc's pseudocode also has this leg call
+        # "combat_resolver.attack_player(patrol, player) directly" as
+        # non-optional, IMMEDIATE NPC-initiated combat right here on
+        # sector entry. That part stays parked -- combat_service.py has
+        # no entry point shaped for it (attack_player requires two real
+        # Player rows with a current_ship; a squad row is a plain dict,
+        # not a Player), and more importantly ADR-0042's whole design is
+        # a 2-turn dispatch-then-arrival delay, not an instant fight (see
+        # npc_engagement_service.route_engagement's own module
+        # docstring). Immediate combat here would skip that delay
+        # entirely, not just fill a missing entry point.
+        #
+        # WO-DRIFT-combat-patrol-entry-dispatch (2026-07-10) closes the
+        # REAL gap: detection alone used to leave this leg cosmetic (an
+        # informational "faction_patrol" ping only, no actual police
+        # response). The informational encounter entry below is
+        # unchanged; a matched patrol now ALSO dispatches the real
+        # ADR-0042 response via _maybe_dispatch_police_engagement, which
+        # calls route_engagement (creates the durable PendingEngagement
+        # watcher, arrival_turn_threshold = turn+2) -- never
+        # _maybe_initiate_police_combat, which is npc_engagement_service's
+        # OWN sweep-side ARRIVED-transition combat trigger
+        # (sweep_pending_engagements -> _place_squad ->
+        # _maybe_initiate_police_combat, WO-CMB-NPC-INITIATED-1 lane B,
+        # already wired) and would fire combat through a squad that
+        # hasn't actually arrived in this sector yet.
+        patrols = (sector.defenses or {}).get("police_patrol_ships")
+        any_patrol_matched = False
+        if isinstance(patrols, list):
+            for patrol in patrols:
+                if not isinstance(patrol, dict):
+                    continue
+                threshold = patrol.get("wanted_threshold")
+                if threshold is None:
+                    continue
+                faction_code = patrol.get("faction_code")
+                try:
+                    matched = player.is_wanted_at(faction_code, threshold)
+                except Exception:
+                    continue
+                if matched:
+                    any_patrol_matched = True
+                    encounters.append({
+                        "type": "faction_patrol",
+                        "faction": faction_code,
+                        "squad": patrol.get("squad_kind"),
+                        "ship_count": patrol.get("ship_count"),
+                        "threat_level": "high",
+                        "engagement": "pursuit"
+                    })
+            if any_patrol_matched:
+                # One dispatch per sector-entry, not one per matched squad
+                # entry -- jurisdiction (and therefore which officers get
+                # picked) is derived from the SECTOR itself
+                # (jurisdiction_of), not the individual patrol dict, so a
+                # sector carrying two matched squad rows (e.g. a Federation
+                # entry and a Sentinel entry) would otherwise fire the same
+                # "wanted_status" dispatch twice in one call. The 5-turn
+                # per-offense-type cooldown in route_engagement would
+                # absorb that as a no-op second call anyway, but doing it
+                # once here is the correct shape, not just a safe one.
+                self._maybe_dispatch_police_engagement(player, sector)
+
+        # WO-CMB-NPC-INITIATED-1 lane C (Max ruling, 2026-07-10) — pirate
+        # trigger. VERIFY-FIRST found this leg's police_patrol_ships block
+        # (immediately above) is the SAME deferral this WO closes: its own
+        # comment says auto-firing combat here would override the
+        # documented "no NPC-initiated combat" v1 scope, "so this leg
+        # stops at detection." That deferral is now superseded — but only
+        # for PIRATES here (police stays on the ADR-0042 PendingEngagement
+        # dispatch-then-2-turn-arrival path, wired separately in
+        # npc_engagement_service._maybe_initiate_police_combat / lane B;
+        # the police_patrol_ships block above is untouched, out of scope
+        # for both assigned lanes).
+        #
+        # pirate_patrol_ships (ADR-0047, seeded by npc_spawn_service.py's
+        # PIRATE_CAPTAIN_KIND rosters) carries npc_character_ids directly
+        # — no Wanted-status gate exists or is needed; canon aggression is
+        # unconditional presence-based, not a player-standing predicate
+        # (faction-lore.md: pirates are hostile by default in the
+        # sectors they occupy).
+        #
+        # [NO-CANON] flee threshold: faction-lore.md "Flee if the
+        # defender's combat rating exceeds the Pirate's by >= 2x" gives
+        # no combat-rating definition (📐 Design-only). Reuses the
+        # SAME "ship value as toughness proxy" convention
+        # combat_service.attack_npc_ship's own loot-faucet already
+        # established (ShipSpecification.base_cost) rather than
+        # inventing a new metric — the pirate flees (no initiation) when
+        # the player's hull value is >= 2x the pirate's.
+        #
+        # [NO-CANON] tribute branch: faction-lore.md also describes a
+        # pre-combat tribute demand (pay/flee/fight) this codebase has
+        # NO existing implementation of anywhere (verified — zero hits
+        # for "tribute" in src/). Building that prompt/UI is explicitly
+        # out of scope here (Samantha's ruling): this wires the FIGHT
+        # branch only, unconditionally, as the honest v1 kernel.
+        #
+        # Cargo disposal for a pirate victory: [NO-CANON] v1 is
+        # evaporates-with-log (cargo_stolen is returned in the result
+        # dict for audit but never transferred to the pirate's hold) —
+        # symmetric with lane B's police-confiscation choice, and avoids
+        # inventing a "pirate loot economy" write path this WO wasn't
+        # scoped to build.
+        pirate_patrols = (sector.defenses or {}).get("pirate_patrol_ships")
+        if isinstance(pirate_patrols, list) and player.current_ship is not None:
+            for patrol in pirate_patrols:
+                if not isinstance(patrol, dict):
+                    continue
+                npc_id_strs = patrol.get("npc_character_ids") or []
+                if not npc_id_strs:
+                    continue
+                try:
+                    npc_ids = [uuid.UUID(s) for s in npc_id_strs]
+                except (TypeError, ValueError):
+                    continue
+                event = self._maybe_initiate_pirate_combat(player, sector, npc_ids)
+                if event is not None:
+                    encounters.append(event)
+                # First live pirate patrol in the sector resolves the
+                # encounter for this movement — mirrors lane A/B's own
+                # strictly-1v1 scoping (the resolver is 1v1; a second
+                # squad becomes eligible on a later encounter, not
+                # stacked onto this same arrival).
+                break
+
         return encounters
-    
+
+    def _maybe_dispatch_police_engagement(
+        self, player: Player, sector: Sector, offense_type: str = "wanted_status",
+    ) -> None:
+        """WO-DRIFT-combat-patrol-entry-dispatch: fires the real ADR-0042
+        police response when a wanted player enters a patrolled sector.
+        Deliberately dispatch-only (route_engagement) — never
+        npc_engagement_service._maybe_initiate_police_combat, which is the
+        sweep's own ARRIVED-transition combat trigger and would attack
+        the player through a squad that hasn't actually been placed in
+        this sector yet, skipping ADR-0042's 2-turn arrival delay.
+
+        Dedup vs the PvP path (combat_service.py's own "wanted_status"
+        route_engagement call after a fight): both call sites use the
+        IDENTICAL offense_type string, and route_engagement's own per-
+        offense-type 5-turn cooldown is keyed purely on
+        (player_id, offense_type, recent-turn-window) — agnostic of which
+        caller fired it. A player who warps into a patrolled sector and
+        then attacks someone (or vice versa) within the cooldown window
+        gets exactly one PendingEngagement, not two, with no extra dedup
+        code needed here.
+
+        route_engagement is flush-only by design (its own docstring) and
+        this method runs after _execute_movement's own commit has already
+        landed, so a successful dispatch needs its own commit — same
+        distinct-commit-boundary shape as _maybe_initiate_pirate_combat
+        below. Never raises — a failed dispatch degrades to no
+        PendingEngagement, never breaks the player's already-committed
+        move (route_engagement itself already never raises into its
+        caller, but the commit() here still needs its own guard)."""
+        try:
+            from src.services import npc_engagement_service
+
+            engagement = npc_engagement_service.route_engagement(
+                self.db, player, offense_type, sector
+            )
+            if engagement is not None:
+                self.db.commit()
+        except Exception:
+            logger.exception(
+                "Police engagement dispatch failed for player %s in sector %s "
+                "(non-fatal — the move itself already committed)",
+                player.id, sector.sector_id,
+            )
+
+    def _maybe_initiate_pirate_combat(
+        self, player: Player, sector: Sector, npc_ids: List[uuid.UUID],
+    ) -> Optional[Dict[str, Any]]:
+        """The pirate fight-branch wiring. Never raises — a failed
+        initiation degrades to no encounter entry, matching every other
+        leg in _check_for_encounters (an encounter-detection failure must
+        never break the player's move, which _execute_movement has
+        ALREADY committed by the time this runs).
+
+        Distinct commit boundary from _execute_movement's own (earlier,
+        already-landed) commit: initiate_npc_combat/npc_attack_player is
+        flush-only by design (WO-CMB-NPC-INITIATED-1), so this method issues its OWN
+        commit for the combat's consequences before emitting — mirrors
+        combat_service.attack_player/attack_npc_ship's established
+        "resolve, commit, then emit inline" shape, adapted for a second,
+        later commit in the same request rather than the request's only
+        one (the earlier movement commit already landed and is
+        unaffected either way)."""
+        try:
+            from src.models.npc_character import NPCCharacter
+            from src.models.ship import ShipSpecification
+            from src.services.npc_combat_initiation_service import (
+                build_npc_combat_initiated_event,
+                emit_npc_combat_initiated,
+                initiate_npc_combat,
+            )
+
+            player_ship = player.current_ship
+            player_spec = self.db.query(ShipSpecification).filter(
+                ShipSpecification.type == player_ship.type
+            ).first()
+            player_value = int(getattr(player_spec, "base_cost", 0) or 0)
+
+            # Flee threshold needs at least one candidate NPC's ship value;
+            # peek the first eligible squad member's ship the same way
+            # _select_attacking_npc will (ENGAGED status not required here
+            # — pirates have no arrival-delay lifecycle, unlike police
+            # squads; presence in the roster is itself "on duty"). This
+            # same first_npc/pirate_ship pair IS the single combatant
+            # initiate_npc_combat's signature expects — no separate
+            # selection step needed for a single-element pirate roster.
+            first_npc = self.db.query(NPCCharacter).filter(
+                NPCCharacter.id.in_(npc_ids)
+            ).first()
+            if first_npc is None or first_npc.ship_id is None:
+                return None
+            pirate_ship = self.db.query(Ship).filter(Ship.id == first_npc.ship_id).first()
+            if pirate_ship is None or pirate_ship.is_destroyed:
+                return None
+            pirate_spec = self.db.query(ShipSpecification).filter(
+                ShipSpecification.type == pirate_ship.type
+            ).first()
+            pirate_value = int(getattr(pirate_spec, "base_cost", 0) or 0)
+
+            if pirate_value > 0 and player_value >= 2 * pirate_value:
+                return None  # pirate flees — player is too tough
+
+            result = initiate_npc_combat(
+                self.db, first_npc, player, sector, trigger="pirate_aggression",
+            )
+            if not result.get("success"):
+                return None
+
+            self.db.commit()
+
+            emit_npc_combat_initiated(
+                uuid.UUID(result["combat_log_id"]), first_npc, pirate_ship, player, sector,
+                trigger="pirate_aggression",
+            )
+            event = build_npc_combat_initiated_event(
+                uuid.UUID(result["combat_log_id"]), first_npc, pirate_ship, player, sector,
+                trigger="pirate_aggression",
+            )
+
+            return {
+                "type": "pirate_aggression",
+                "combat_result": result.get("combat_result"),
+                "combat_log_id": result.get("combat_log_id"),
+                "npc_ship_destroyed": result.get("npc_ship_destroyed"),
+                "defender_ship_destroyed": result.get("defender_ship_destroyed"),
+                "threat_level": "high",
+                "engagement": "fight",
+                **{k: v for k, v in event.items() if k not in ("type",)},
+            }
+        except Exception:
+            logger.exception(
+                "Pirate combat initiation failed for player %s in sector %s "
+                "(non-fatal — the move itself already committed)",
+                player.id, sector.sector_id,
+            )
+            return None
+
     def _check_for_tunnel_events(self, player: Player, from_sector_id: int, to_sector_id: int) -> List[Dict[str, Any]]:
         """Check for events during warp tunnel travel."""
         events = []
-        
+
         # Get sectors
         from_sector = self.db.query(Sector).filter(Sector.sector_id == from_sector_id).first()
         to_sector = self.db.query(Sector).filter(Sector.sector_id == to_sector_id).first()
-        
+
         if not from_sector or not to_sector:
             return events
-        
+
         # Get the tunnel
         tunnel = self.db.query(WarpTunnel).filter(
             WarpTunnel.origin_sector_id == from_sector.id,
             WarpTunnel.destination_sector_id == to_sector.id
         ).first()
-        
+
         if not tunnel:
             return events
-        
+
         # Check for tunnel stability issues
         if tunnel.stability < 0.7:
             # Chance of tunnel instability causing issues
@@ -1760,19 +2854,24 @@ class MovementService:
                     "severity": "high" if tunnel.stability < 0.3 else "medium",
                     "effect": "ship_damage"
                 })
-            
-            # For quantum or unstable tunnels, chance of time/space anomalies
-            if tunnel.type.name in ["QUANTUM", "UNSTABLE"]:
+
+                # WO-GWQ-TUNNELTYPE: re-keyed off stability alone. The prior
+                # gate was `tunnel.type.name in ["QUANTUM", "UNSTABLE"]`, a
+                # non-canon type dependency. sector-presence.md:122-123
+                # documents spacetime_anomaly as nested under this same
+                # stability<0.5 branch alongside radiation_exposure, with no
+                # type condition, so any sufficiently unstable tunnel now
+                # qualifies regardless of type.
                 events.append({
                     "type": "spacetime_anomaly",
                     "severity": "medium",
                     "effect": "random"
                 })
-        
+
         # Update tunnel usage counter
         if tunnel.max_uses is not None:
             tunnel.current_uses += 1
-            
+
             # Check if tunnel is about to collapse
             if tunnel.max_uses - tunnel.current_uses <= 3:
                 events.append({
@@ -1781,7 +2880,7 @@ class MovementService:
                     "remaining_uses": tunnel.max_uses - tunnel.current_uses,
                     "effect": "warning"
                 })
-                
+
                 # If this was the last use, collapse the tunnel
                 if tunnel.current_uses >= tunnel.max_uses:
                     tunnel.status = WarpTunnelStatus.COLLAPSED
@@ -1790,5 +2889,5 @@ class MovementService:
                         "severity": "high",
                         "effect": "permanent"
                     })
-        
+
         return events

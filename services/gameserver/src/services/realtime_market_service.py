@@ -30,6 +30,13 @@ from src.models.station import Station
 from src.models.sector import Sector
 from src.models.player import Player
 from src.core.config import settings
+from src.core.commodity_economy import get_commodity_price_ranges
+from src.core.resource_registry_seeder import (
+    CATEGORY_CORE,
+    CATEGORY_RARE,
+    CATEGORY_STRATEGIC,
+    RESOURCE_REGISTRY,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +55,12 @@ class MarketSnapshot:
     bid_ask_spread: float
     sector_prices: Dict[int, float]  # sector_id -> local price
     ai_prediction: Optional[Dict[str, Any]] = None
-    
+    # True for a default snapshot of a registry resource with no canon credit
+    # price (quantum_shards/quantum_crystals/prismatic_ore/lumen_crystals —
+    # see resource_registry_seeder.py). current_price is 0.0 in that case,
+    # never an invented number (WO-ARCH-RES-2H-RUNTIME-VOCAB).
+    no_market_data: bool = False
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
         return {
@@ -62,7 +74,8 @@ class MarketSnapshot:
             "last_transaction": self.last_transaction.isoformat(),
             "bid_ask_spread": self.bid_ask_spread,
             "sector_prices": self.sector_prices,
-            "ai_prediction": self.ai_prediction
+            "ai_prediction": self.ai_prediction,
+            "no_market_data": self.no_market_data
         }
 
 
@@ -95,19 +108,25 @@ class RealTimeMarketService:
         self.cache_hits = 0
         self.cache_misses = 0
         
-        # Commodity configuration (aligned with actual codebase implementation)
-        # Core Commodities (7) - using lowercase_underscore convention
+        # Commodity configuration — derived from the resource registry's
+        # canon category split (RESOURCE_REGISTRY, itself keyed off
+        # commodity_economy.COMMODITY_BASE_PRICES for the priced entries) so
+        # this list can never drift from the seeded catalog again. Pure
+        # Python, import-safe — no DB read (WO-ARCH-RES-2H-RUNTIME-VOCAB;
+        # previously hardcoded lists spelled the rare-material slug after the
+        # legacy PHOTONIC_CRYSTALS enum member instead of canon's
+        # lumen_crystals — see resource_registry_seeder.py's docstring).
+        # Core Commodities (7) - lowercase_underscore canon slugs
         self.valid_commodities = [
-            "ore", "organics", "gourmet_food", "fuel",
-            "equipment", "exotic_technology", "luxury_goods"
+            e["name"] for e in RESOURCE_REGISTRY.values() if e["category"] == CATEGORY_CORE
         ]
         # Strategic Resources (not typically traded on open market)
         self.strategic_resources = [
-            "colonists", "quantum_shards", "quantum_crystals", "combat_drones"
+            e["name"] for e in RESOURCE_REGISTRY.values() if e["category"] == CATEGORY_STRATEGIC
         ]
         # Rare Materials
         self.rare_materials = [
-            "prismatic_ore", "photonic_crystals"
+            e["name"] for e in RESOURCE_REGISTRY.values() if e["category"] == CATEGORY_RARE
         ]
         
         # Market analysis thresholds
@@ -406,29 +425,46 @@ class RealTimeMarketService:
         except Exception as e:
             logger.error(f"Cache storage error: {e}")
     
+    # Registry resources with no canon credit price (definitions.md gives
+    # none — they're harvested/assembled/found, not station-traded; see
+    # resource_registry_seeder.RESOURCE_REGISTRY base_price=None entries).
+    # A default snapshot for these must say "no data", never invent a price.
+    NO_MARKET_DATA_COMMODITIES = (
+        "quantum_shards", "quantum_crystals", "prismatic_ore", "lumen_crystals",
+    )
+
     def _create_default_snapshot(self, commodity: str) -> MarketSnapshot:
-        """Create default snapshot when no data available (prices from RESOURCE_TYPES.md)"""
+        """Create default snapshot when no data available.
+
+        Base prices are the midpoint of each commodity's spec price range
+        (commodity_economy.get_commodity_price_ranges() — the same SoT the
+        trading engine clamps to), keyed on the lowercase canon slug every
+        caller already passes. The previous UPPER_CASE table never matched a
+        caller and silently returned the 100.0 fallback for every commodity
+        (WO-ARCH-RES-2H-RUNTIME-VOCAB)."""
         base_prices = {
-            # Core Commodities (7) - midpoint of price ranges
-            "ORE": 30.0,                    # 15-45 credits
-            "BASIC_FOOD": 16.5,             # 8-25 credits
-            "GOURMET_FOOD": 50.0,           # 30-70 credits
-            "FUEL": 40.0,                   # 20-60 credits
-            "TECHNOLOGY": 85.0,             # 50-120 credits
-            "EXOTIC_TECHNOLOGY": 225.0,     # 150-300 credits
-            "LUXURY_GOODS": 137.5,          # 75-200 credits
-            # Strategic Resources (4)
-            "POPULATION": 50.0,             # 50 credits fixed
-            "QUANTUM_SHARDS": 500.0,        # Very rare
-            "QUANTUM_CRYSTALS": 5000.0,     # Extremely rare
-            "COMBAT_DRONES": 1000.0,        # 1000 credits fixed
-            # Rare Materials (2)
-            "PRISMATIC_ORE": 2000.0,        # Extremely rare
-            "PHOTONIC_CRYSTALS": 1500.0     # Very rare
+            name: (rng["min"] + rng["max"]) / 2.0
+            for name, rng in get_commodity_price_ranges().items()
         }
-        
+
+        if commodity in self.NO_MARKET_DATA_COMMODITIES:
+            return MarketSnapshot(
+                commodity=commodity,
+                current_price=0.0,
+                volume_24h=0,
+                high_24h=0.0,
+                low_24h=0.0,
+                price_change_24h=0.0,
+                price_change_percent=0.0,
+                last_transaction=datetime.now(UTC),
+                bid_ask_spread=0.0,
+                sector_prices={},
+                ai_prediction=None,
+                no_market_data=True,
+            )
+
         base_price = base_prices.get(commodity, 100.0)
-        
+
         return MarketSnapshot(
             commodity=commodity,
             current_price=base_price,

@@ -16,6 +16,8 @@ from src.models.team import Team, TeamRecruitmentStatus
 from src.models.team_member import TeamMember, TeamRole
 from src.models.player import Player
 from src.models.message import Message
+from src.models.sector import Sector
+from src.models.fleet import Fleet, FleetStatus
 from src.models.treasury_transaction import TreasuryTransaction
 from src.services.audit_service import AuditService, AuditAction
 
@@ -84,7 +86,7 @@ class TeamService:
         # Check if player already has a team.
         # Locks the creator row to prevent concurrent create/join race
         # conditions (same lock pattern as ship_upgrades purchases).
-        creator = self.db.query(Player).filter(Player.id == creator_id).with_for_update().first()
+        creator = self.db.query(Player).filter(Player.id == creator_id).populate_existing().with_for_update().first()
         if not creator:
             raise ValueError("Player not found")
         
@@ -147,8 +149,18 @@ class TeamService:
             resource_id=str(team.id),
             details={"team_name": name, "team_id": str(team.id)}
         )
-        
+
+        # Snapshot as plain strs BEFORE commit — ORM attributes expire on
+        # commit, but the WS room-hop fires AFTER (WO-RT-ROOM-HOP). Not in
+        # the WO's original enumeration (join_team / remove_member /
+        # leave_team), but creator.team_id is the identical None->team.id
+        # transition join_team makes — skipping it would leave a team's own
+        # creator failing the ~:921 team-chat revalidation until reconnect.
+        hop_user_id = str(creator.user_id)
+        hop_team_id = str(team.id)
+
         self.db.commit()
+        self._schedule_team_hop(hop_user_id, hop_team_id)
         return team
     
     def get_team(self, team_id: uuid.UUID) -> Optional[Team]:
@@ -191,17 +203,211 @@ class TeamService:
         team = self.get_team(team_id)
         if not team:
             raise ValueError("Team not found")
-        
-        # Check if player is leader
+
+        # Cheap, UNLOCKED early reject (WO-TEAM-DELETE-LOCKORDER+DOUBLECLICK-
+        # REVISE -- both cipher MEDIUM and mack HIGH converged on this same
+        # fix). The route this feeds, DELETE /teams/{team_id}
+        # (api/routes/teams.py), takes an arbitrary team_id from ANY
+        # authenticated player with no membership/leader pre-check of its
+        # own -- delete_team is the only gate. Without an early reject here,
+        # a non-leader (or non-member entirely) forces a SELECT ... FOR
+        # UPDATE on every one of the target team's Fleet rows, PLUS the Team
+        # row itself, before ever reaching the leader check -- a spammable
+        # (the rate limiter is dead code) griefing/contention lever against
+        # a rival team's mid-battle fleet ops, and a straight regression
+        # from the pre-fix code, which rejected non-leaders before any
+        # locking at all. This reads off the unlocked top-of-function
+        # get_team() -- an optimistic filter, not the authoritative
+        # decision -- so a leader_id that's stale by the time this runs
+        # (a concurrent transfer_leadership mid-flight) simply falls through
+        # to the Fleet lock path same as a real leader would; the LOCKED
+        # re-check below (off the populate_existing() Team re-read) remains
+        # the sole source of truth and still closes that TOCTOU. Two checks,
+        # not one moved: this one is cheap-and-optimistic, that one is
+        # authoritative-and-locked.
         if team.leader_id != player_id:
             raise ValueError("Only team leader can delete the team")
-        
+
+        # Lock the team's Fleet rows ascending-by-id (mirrors fleet_service's
+        # own _lock_fleets_ascending idiom exactly -- WO-TEAM-DELETE-FLEET-
+        # GUARD) BEFORE any other mutation, making this the FIRST lock this
+        # method acquires (Fleet-before-everything). team_service.py has
+        # never imported fleet_service, and reaching across services for one
+        # locking helper would be a layering smell this codebase doesn't
+        # otherwise have, so the loop is replicated verbatim rather than
+        # borrowed off a FleetService instance. No caller anywhere locks
+        # Team-then-Fleet, so this can't introduce a new AB-BA; the fleet
+        # side of fleet_service.py's documented "FleetBattle -> Fleet ->
+        # Team -> Player" convention is honored for this new edge.
+        #
+        # Closes a griefing exploit, not just an accidental race: without
+        # this, a losing team's leader could delete their own team WHILE
+        # their fleet is IN_BATTLE (delete_team never checked Fleet.status
+        # at all) -- the cascade silently deletes the Fleet row
+        # (Fleet.team_id is ON DELETE CASCADE), SET-NULLing the live
+        # FleetBattle's attacker_fleet_id/defender_fleet_id (that FK is ON
+        # DELETE SET NULL, not RESTRICT), permanently orphaning the battle
+        # and crashing the surviving player's next round-simulate call with
+        # an uncaught AttributeError. Locking here mirrors disband_fleet's
+        # own guard (fleet_service.py:446-447) and closes the TOCTOU in both
+        # interleavings: if this lock wins first, a concurrent
+        # initiate_battle blocks on it and -- once this transaction commits
+        # -- re-selects to find the fleet gone, raising its own clean
+        # "Invalid fleet IDs"; if initiate_battle's lock wins first, this
+        # call blocks until it commits, then re-reads status == IN_BATTLE
+        # and rejects cleanly below.
+        team_fleet_ids = sorted(
+            fleet.id for fleet in
+            self.db.query(Fleet).filter(Fleet.team_id == team_id).all()
+        )
+        for fid in team_fleet_ids:
+            fleet = (
+                self.db.query(Fleet)
+                .filter(Fleet.id == fid)
+                .populate_existing()
+                .with_for_update()
+                .first()
+            )
+            # Short-circuit (mack LOW): raise on the FIRST in-battle fleet
+            # instead of locking every remaining fleet just to run any()
+            # over a fully-materialized list afterward -- no behavior
+            # change, strictly less lock-hold time on a team with several
+            # fleets.
+            if fleet is not None and fleet.status == FleetStatus.IN_BATTLE.value:
+                raise ValueError("Cannot delete team while a fleet is in an active battle")
+
+        # TOCTOU close (mack HIGH): the .all() gather above is an UNLOCKED,
+        # point-in-time snapshot taken BEFORE any lock is held -- a fleet
+        # CREATED for this team after that snapshot was never in
+        # team_fleet_ids, so the loop above never locked or checked it, and
+        # it could still enter IN_BATTLE before this method's own commit.
+        # Close that window with one more query, scoped directly to
+        # team_id + status == IN_BATTLE rather than an id list, placed as
+        # late as possible before the irreversible cascade (nothing between
+        # here and db.delete(team) below touches Fleet, so nothing can
+        # invalidate this check in between). with_for_update() here (not a
+        # bare .first()) means a concurrent initiate_battle mid-flight on
+        # this exact fleet BLOCKS this call rather than racing past it --
+        # once unblocked, this re-evaluates against the now-committed
+        # truth, same as the per-row loop above already does for fleets it
+        # knew about.
+        still_in_battle = (
+            self.db.query(Fleet)
+            .filter(Fleet.team_id == team_id, Fleet.status == FleetStatus.IN_BATTLE.value)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if still_in_battle is not None:
+            raise ValueError("Cannot delete team while a fleet is in an active battle")
+
+        # Lock the Team row itself, FOR UPDATE, right here -- AFTER the
+        # Fleet lock/recheck above, BEFORE the Player bulk-update below
+        # (WO-TEAM-DELETE-LOCKORDER + WO-TEAM-DELETE-DOUBLECLICK). Without
+        # this, the method's actual lock order was Fleet -> Player (the
+        # bulk UPDATE two lines down row-locks every member) -> Team (only
+        # locked implicitly, at flush, by db.delete(team) far below) --
+        # reversing the "resource-before-player" convention this same
+        # method (and deposit_to_treasury/withdraw_from_treasury, both
+        # `Team` FOR UPDATE before `Player` FOR UPDATE) otherwise holds
+        # everywhere else in this file. That reversal is a latent AB-BA
+        # against any concurrent Team-then-Player locker (e.g.
+        # deposit_to_treasury targeting one of this team's members).
+        # Inserting the lock here restores Fleet -> Team -> Player.
+        #
+        # This lock ALSO closes the double-click race, though which line
+        # the two concurrent calls actually serialize AT depends on whether
+        # the team owns a fleet: two concurrent delete_team calls both pass
+        # the UNLOCKED not-found check above (team.id still exists, neither
+        # has committed yet), and both pass the UNLOCKED early leader-check
+        # above that (same reasoning -- neither has committed). For a
+        # ZERO-FLEET team, both then sail straight through the Fleet-lock
+        # loop/recheck (nothing to lock) and serialize HERE, at the Team
+        # lock. For a FLEET-OWNING team, they instead serialize EARLIER, at
+        # the per-fleet `SELECT ... FOR UPDATE` in the loop above (or its
+        # team-scoped IN_BATTLE recheck) -- the loser blocks on that Fleet
+        # row lock until the winner's commit, at which point the winner's
+        # own `db.delete(team)` has already cascade-deleted the fleet
+        # (Fleet.team_id is ON DELETE CASCADE), so the loser's re-select by
+        # id comes back None, the loop/recheck simply find nothing to flag,
+        # and the loser falls through to THIS Team lock only to find the
+        # Team row gone too. Either way the end-state is identical: the
+        # loser's locked re-read (Fleet's or Team's, whichever it blocks on
+        # first) finds no row, `.first()` returns None, and this raises a
+        # clean "Team not found" below -- not the old behavior, where the
+        # loser sailed on to its own `db.delete(team)` on an already-0-row
+        # PK, tripping SQLAlchemy's `confirm_deleted_rows` into a
+        # `StaleDataError` at commit -- uncaught by the existing `except
+        # IntegrityError` backstop below, surfacing as a raw 500.
+        #
+        # populate_existing() is load-bearing, not decorative: `team` is
+        # ALREADY in this Session's identity map from the unlocked
+        # get_team() read at the top of this method. Without
+        # populate_existing(), this query still issues the SELECT ... FOR
+        # UPDATE and still takes the DB-level row lock, but SQLAlchemy
+        # would hand back that SAME cached Python object with whatever
+        # leader_id it had at the top-of-function read, NOT a refresh from
+        # the row it just locked -- so the leader-check right below would
+        # silently run against stale data despite correctly holding the
+        # lock. Trace: nothing between that top read and this line touches
+        # the Team row (the fleet-gather/recheck above only read/lock
+        # Fleet rows), so no prior flush is needed here -- the
+        # identity-map staleness is the only reason populate_existing() is
+        # required.
+        team = (
+            self.db.query(Team)
+            .filter(Team.id == team_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if team is None:
+            raise ValueError("Team not found")
+
+        # Check if player is leader -- the SECOND, AUTHORITATIVE check
+        # (the first, cheap-and-optimistic one already ran at the very top,
+        # before any locking, purely to reject the common non-leader case
+        # without paying for the Fleet locks -- see the comment there). This
+        # one re-validates against the now-locked, freshly-refreshed row so
+        # a non-leader still gets a clean 403 either way, but a concurrent
+        # transfer_leadership (team_service.py's other `team.leader_id =
+        # ...` writer) that committed in the gap between the top-of-function
+        # read and this lock can't leave a stale leader_id sneaking a
+        # now-ex-leader's delete through.
+        if team.leader_id != player_id:
+            raise ValueError("Only team leader can delete the team")
+
         # Remove all members' team_id
         self.db.query(Player).filter(Player.team_id == team_id).update({"team_id": None})
-        
-        # Delete the team (cascade will handle team_members)
+
+        # Relinquish sector control. Sector.controlling_team_id is a "who
+        # currently holds this" pointer, not team-owned data, but its FK
+        # (unlike Player.team_id / Drone.team_id / PirateKillLog.attacker_team_id
+        # / CargoWreck.original_team_id, all ON DELETE SET NULL) has no
+        # ondelete action -- left unhandled it raises an IntegrityError on
+        # delete. A disbanding team releases its claims same as a leaving
+        # member releases theirs above.
+        self.db.query(Sector).filter(Sector.controlling_team_id == team_id).update(
+            {"controlling_team_id": None}
+        )
+
+        # Detach (don't delete) team chat history. Message.team_id has no
+        # ondelete action either, but message rows are audit-trail data --
+        # messaging.md: "Moderated messages remain in the database ... even
+        # after content removal" -- so nulling team_id clears the FK while
+        # keeping the rows (sender, content, moderation stamps) intact,
+        # same as a direct message with no live recipient still exists.
+        self.db.query(Message).filter(Message.team_id == team_id).update(
+            {"team_id": None}
+        )
+
+        # Delete the team. team_members / TeamReputation / Fleet rows all
+        # cascade via the Team model's own cascade="all, delete-orphan"
+        # relationships (and are mirrored by an ON DELETE CASCADE at the DB
+        # level); Drone.team_id / PirateKillLog.attacker_team_id /
+        # CargoWreck.original_team_id null out via ON DELETE SET NULL.
         self.db.delete(team)
-        
+
         # Audit log
         self.audit_service.log_action(
             user_id=player_id,
@@ -210,8 +416,17 @@ class TeamService:
             resource_id=str(team_id),
             details={"team_name": team.name}
         )
-        
-        self.db.commit()
+
+        try:
+            self.db.commit()
+        except IntegrityError as e:
+            # Belt-and-suspenders: any dependency we haven't accounted for
+            # above surfaces as a clean 4xx instead of an uncaught 500.
+            self.db.rollback()
+            logger.error("delete_team %s hit an unhandled FK dependency: %s", team_id, e)
+            raise ValueError(
+                "Cannot delete team: it still has dependent records that must be resolved first"
+            ) from e
         return True
     
     def get_team_members(self, team_id: uuid.UUID) -> List[Dict[str, Any]]:
@@ -403,8 +618,44 @@ class TeamService:
             resource_id=team.id,
             details={"team_name": team.name, "method": "invitation" if invitation_code else "direct"}
         )
-        
+
+        # Snapshot as plain strs BEFORE commit — ORM attributes expire on
+        # commit, but the WS room-hop fires AFTER (WO-RT-ROOM-HOP).
+        hop_user_id = str(player.user_id)
+        hop_team_id = str(team.id)
+        team_name = team.name
+
+        # ARIA narration — P-A3 team join, Player.team_id null→non-null
+        # (aria-companion.md:228, WO-ARIA-NARRATE-KERNEL). Scoped to THIS
+        # method only (the canonical "join" action) — not the separate
+        # create_team path, which is a distinct action from "joining" per
+        # the event's own name. Dedupe key is the team id: a player who
+        # leaves and later rejoins the SAME team is not re-narrated;
+        # joining a DIFFERENT team narrates again. Best-effort, never
+        # fails the join.
+        try:
+            from src.services.aria_narration_service import (
+                dispatch_narration_push,
+                get_aria_narration_service,
+                resolve_assistance_level,
+            )
+            narration_line = get_aria_narration_service().record_event(
+                "P-A3",
+                player_id,
+                assistance_level=resolve_assistance_level(self.db, player_id),
+                dedupe_key=hop_team_id,
+                context={"team_name": team_name},
+            )
+            # `player`, not `player_id`: dispatch_narration_push reads
+            # .user_id synchronously (before commit expires it) — reuses
+            # the same still-live ORM object hop_user_id above snapshotted.
+            if narration_line is not None and narration_line.delivered_immediately:
+                dispatch_narration_push(player, narration_line)
+        except Exception as e:
+            logger.error("ARIA narration hook failed (P-A3): %s", e)
+
         self.db.commit()
+        self._schedule_team_hop(hop_user_id, hop_team_id)
         return team
     
     def remove_member(self, team_id: uuid.UUID, actor_id: uuid.UUID, 
@@ -438,9 +689,10 @@ class TeamService:
         
         # Update player's team_id
         player = self.db.query(Player).filter(Player.id == member_id).first()
+        hop_user_id = str(player.user_id) if player else None
         if player:
             player.team_id = None
-        
+
         # Send notification
         self._send_notification(
             sender_id=actor_id,
@@ -459,10 +711,12 @@ class TeamService:
             resource_id=team_id,
             details={"removed_member_id": str(member_id)}
         )
-        
+
         self.db.commit()
+        if hop_user_id is not None:
+            self._schedule_team_hop(hop_user_id, None)
         return True
-    
+
     def leave_team(self, player_id: uuid.UUID) -> bool:
         """Leave the current team"""
         player = self.db.query(Player).filter(Player.id == player_id).first()
@@ -513,15 +767,61 @@ class TeamService:
                     priority="urgent"
                 )
             else:
-                # No other members, disband team
-                self.db.delete(team)
-        
+                # No other members -- disband via delete_team (WO-TEAM-
+                # DELETE-FLEET-GUARD-REVISE part 2, cipher CONFIRMED HIGH).
+                # This branch used to call db.delete(team) directly: an
+                # unguarded duplicate of the exact griefing exploit
+                # delete_team was hardened against (no Fleet IN_BATTLE
+                # check at all), and it never nulled
+                # Sector.controlling_team_id / Message.team_id either (the
+                # raw-500 bug WO-TEAM-DELETE-GUARD fixed only in
+                # delete_team). Routing through delete_team ports its FULL
+                # hardening -- the Fleet IN_BATTLE guard + Part-1 TOCTOU
+                # close, Sector/Message cleanup, IntegrityError backstop,
+                # its own DELETE audit log -- atomically, inside
+                # delete_team's own commit.
+                #
+                # delete_team's leader-check (team.leader_id != player_id)
+                # is satisfied here: this branch is reached only when THIS
+                # player IS team.leader_id, and it is never reassigned
+                # except in the new_leader branch above.
+                #
+                # delete_team commits internally, and its own cascade
+                # already (1) deletes this player's OWN TeamMember row
+                # (Team.team_members is cascade="all, delete-orphan" --
+                # the SAME row this method's own self.db.delete(member)
+                # below would otherwise re-target) and (2) nulls this
+                # player's OWN Player.team_id (the bulk
+                # Player.team_id==team_id update matches them -- they are
+                # the team's ONLY remaining member, which is exactly why
+                # this branch was reached). Re-running this method's own
+                # generic member-delete / player.team_id-null / "Member
+                # Left" broadcast / "team.leave" audit log below would (a)
+                # be pure no-op busywork -- there is no other member left
+                # to notify -- and (b) risk touching the `team`/`member`
+                # objects AFTER delete_team's own commit already
+                # expired/cascaded them out from under this session. So
+                # this is a clean early return instead: capture the
+                # room-hop id BEFORE calling delete_team (same
+                # expire-on-commit rationale as the snapshot below), let
+                # delete_team run (a raised ValueError -- e.g. the
+                # IN_BATTLE guard -- propagates straight out exactly like
+                # any other delete_team caller, and nothing in this method
+                # has mutated anything yet), then hop and return.
+                hop_user_id = str(player.user_id)
+                self.delete_team(team.id, player_id)
+                self._schedule_team_hop(hop_user_id, None)
+                return True
+
         # Remove member record
         self.db.delete(member)
-        
+
         # Update player's team_id
         player.team_id = None
-        
+        # Snapshot BEFORE commit — ORM attributes expire on commit, but the
+        # WS room-hop fires AFTER (WO-RT-ROOM-HOP).
+        hop_user_id = str(player.user_id)
+
         # Notify team
         if team:
             self._send_notification(
@@ -540,10 +840,11 @@ class TeamService:
             resource_id=team.id if team else None,
             details={"team_name": team.name if team else "disbanded"}
         )
-        
+
         self.db.commit()
+        self._schedule_team_hop(hop_user_id, None)
         return True
-    
+
     def update_member_role(self, team_id: uuid.UUID, actor_id: uuid.UUID,
                           member_id: uuid.UUID, new_role: str) -> TeamMember:
         """Update a member's role in the team"""
@@ -653,7 +954,34 @@ class TeamService:
             )
             .first()
         )
-    
+
+    @staticmethod
+    def _schedule_team_hop(user_id: str, new_team_id: Optional[str]) -> None:
+        """Best-effort WS team-room hop after a membership change commits
+        (WO-RT-ROOM-HOP). Keeps ConnectionManager.team_connections — and so
+        both team-chat delivery and the revalidation gate in
+        handle_websocket_message's "team" branch — correct without requiring
+        a reconnect: a kicked/left member immediately stops receiving AND
+        sending team chat, a joined member immediately starts.
+
+        Mirrors movement_service._broadcast_sector_presence /
+        hangar_service._schedule_region_hop: import inside the function, grab
+        the running loop, schedule connection_manager.update_user_team with
+        loop.create_task (so it runs after the caller's commit and never
+        blocks the sync team transaction), and swallow any failure (no loop,
+        no socket) so a quiet socket can never break a team operation."""
+        try:
+            import asyncio
+            from src.services.websocket_service import connection_manager
+
+            loop = asyncio.get_running_loop()
+            loop.create_task(connection_manager.update_user_team(user_id, new_team_id))
+        except Exception:
+            logger.debug(
+                "Skipped team WS room-hop (no loop or socket)",
+                exc_info=True,
+            )
+
     def transfer_leadership(self, team_id: uuid.UUID, current_leader_id: uuid.UUID,
                            new_leader_id: uuid.UUID) -> Team:
         """Transfer team leadership to another member"""
