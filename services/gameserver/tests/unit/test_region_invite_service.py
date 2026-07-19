@@ -282,8 +282,12 @@ class TestConsumeInvite:
         db = _LockingDB(invite, region)
         result = await RegionInviteService.consume_invite(db, invite)
         assert result["ok"] is False
-        # status is non-active -> rejected on status (the first under-lock gate).
-        assert result["code"] == "ERR_INVITE_NOT_ACTIVE"
+        # uses >= max_uses reads as EXHAUSTED regardless of how the status column
+        # got stamped -- consume_invite reads status + uses together under the
+        # SAME lock (unlike validate_invite's separate pre-lock convention), so a
+        # row already at the cap and a row a concurrent racer just exhausted are
+        # indistinguishable and get the same, more specific reason.
+        assert result["code"] == "ERR_INVITE_EXHAUSTED"
         db.rollback.assert_awaited()
 
     @pytest.mark.asyncio
@@ -357,7 +361,12 @@ class TestOwnsRegion:
         region_id = uuid.uuid4()
         region = _make_region(region_id=region_id, owner_id=owner)
         db = AsyncMock()
-        db.execute.return_value.scalar_one_or_none.return_value = region
+        # A bare AsyncMock()'s auto-vivified attribute chain resolves
+        # .execute.return_value.scalar_one_or_none() to an un-awaited
+        # coroutine; rebind execute to return a plain (sync) MagicMock.
+        db.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=region))
+        )
         got = await RegionInviteService.owns_region(db, owner, region_id)
         assert got is region
 
@@ -365,7 +374,9 @@ class TestOwnsRegion:
     async def test_non_owner_gets_none(self):
         db = AsyncMock()
         # The AND(id, owner_id) query matches no row for a non-owner.
-        db.execute.return_value.scalar_one_or_none.return_value = None
+        db.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+        )
         got = await RegionInviteService.owns_region(db, uuid.uuid4(), uuid.uuid4())
         assert got is None
 
@@ -383,7 +394,12 @@ class TestMintInvite:
     @pytest.mark.asyncio
     async def test_non_owner_rejected(self, ids):
         db = AsyncMock()
-        db.execute.return_value.scalar_one_or_none.return_value = None  # owns_region None
+        # owns_region None: rebind execute so .scalar_one_or_none() resolves
+        # synchronously instead of returning an un-awaited coroutine (which
+        # is truthy and would let a non-owner slip past the gate).
+        db.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+        )
         result = await RegionInviteService.mint_invite(
             db, ids["owner"], ids["region"]
         )
@@ -541,7 +557,11 @@ class TestRevokeInvite:
         invite = _make_invite(owner_id=ids["owner"], region_id=ids["region"])
         db = AsyncMock()
         db.scalar = AsyncMock(return_value=invite)
-        db.execute.return_value.scalar_one_or_none.return_value = None  # owns_region None
+        # owns_region None: rebind execute so .scalar_one_or_none() resolves
+        # synchronously instead of an un-awaited (truthy) coroutine.
+        db.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+        )
         result = await RegionInviteService.revoke_invite(
             db, ids["owner"], invite.id
         )
@@ -576,7 +596,11 @@ class TestListInvites:
     @pytest.mark.asyncio
     async def test_non_owner_rejected(self):
         db = AsyncMock()
-        db.execute.return_value.scalar_one_or_none.return_value = None  # owns_region None
+        # owns_region None: rebind execute so .scalar_one_or_none() resolves
+        # synchronously instead of an un-awaited (truthy) coroutine.
+        db.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+        )
         result = await RegionInviteService.list_invites(
             db, uuid.uuid4(), uuid.uuid4()
         )
@@ -594,7 +618,12 @@ class TestListInvites:
         ]
         db = AsyncMock()
         # owns_region uses execute().scalar_one_or_none(); list uses
-        # execute().scalars().all(). Configure both on the same mock result.
+        # execute().scalars().all(). Configure both on the same mock result
+        # (execute rebound to an AsyncMock returning a plain MagicMock so its
+        # chained attribute calls resolve synchronously, matching a real
+        # SQLAlchemy Result -- a bare AsyncMock()'s auto-vivified attribute
+        # chain would return an un-awaited coroutine instead).
+        db.execute = AsyncMock(return_value=MagicMock())
         result_mock = db.execute.return_value
         result_mock.scalar_one_or_none.return_value = region
         result_mock.scalars.return_value.all.return_value = invites

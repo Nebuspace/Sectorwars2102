@@ -19,7 +19,10 @@ from src.services.medal_catalog import MEDAL_CATALOG, medals_for_trigger
 SPECIAL_MEDAL_TRIGGERS = {
     "special.orange_cat_society": "cat_mention_first_login",
     "special.honorary_tabby": "honorary_tabby_combo",
-    "special.pioneer_office_pillar": "pioneer_office_civic",
+    # WO-CG3 follow-up (Orchestrator ruling 2026-06-20T23:57, medal_catalog.py:402-411):
+    # re-aligned to canon (medals.md) as the ECONOMIC/SILVER lifetime-colonist
+    # criterion; superseded the original WO-CG3-split "pioneer_office_civic" value.
+    "special.pioneer_office_pillar": "colonists_transported_lifetime",
     "special.ghost_in_the_static": "dark_territory_discovery",
 }
 
