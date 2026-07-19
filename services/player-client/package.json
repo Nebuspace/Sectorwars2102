@@ -36,7 +36,8 @@
     "eslint-plugin-react": "^7.33.2",
     "eslint-plugin-react-hooks": "^7.1.1",
     "typescript": "^6.0.3",
-    "vite": "^8.0.16"
+    "vite": "^8.0.16",
+    "vitest": "^3.2.6"
   },
   "overrides": {
     "undici": ">=7.28.0 <8",
@@ -44,13 +45,17 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext ts,tsx",
     "preview": "vite preview",
+    "test": "vitest run",
+    "test:perf": "vitest run --config vitest.perf.config.ts",
     "test:e2e": "node ./scripts/run-tests.js",
     "test:e2e:ui": "playwright test -c playwright.config.ts --ui",
     "validate-translations": "node ./scripts/validate-translations.js",
-    "extract-strings": "node ./scripts/extract-strings.js"
+    "extract-strings": "node ./scripts/extract-strings.js",
+    "check:tokens": "node ./scripts/check-css-vars.js",
+    "check:tokens:selftest": "node ./scripts/check-css-vars.selftest.js"
   }
 }
