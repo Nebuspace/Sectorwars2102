@@ -1,0 +1,180 @@
+name: ci-build-test
+
+# Cheap, DB-free build/test lanes for all three services. None of these
+# jobs stand up Postgres/Redis or the docker-compose stack — that's
+# out of scope for v1 (see per-job notes below for the follow-up WOs
+# that unblock the deeper gates).
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  player-client:
+    name: player-client (build + test)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # Matches services/player-client/Dockerfile's `FROM node:24-slim`.
+          node-version: "24"
+
+      - name: Install dependencies
+        working-directory: services/player-client
+        # Plain `npm ci` fails here: eslint-plugin-react@7.37.5 caps its
+        # peer eslint at ^9.7, but the installed eslint is 10.6.0 — an
+        # ERESOLVE conflict, reproduced locally. The service's own
+        # Dockerfile already installs with `--legacy-peer-deps` for the
+        # same reason; matching it here instead of silently switching
+        # installers or masking the conflict another way.
+        run: npm ci --legacy-peer-deps
+
+      # WO-CI-TOKEN-GATE: blocking gate, deliberately its own step (not
+      # folded into `npm run lint` — that gate is dead on player-client;
+      # ESLint v10 is flat-config-only and the legacy .eslintrc.js it still
+      # points at is inert, verified separately). Fails the build if any
+      # CSS var(--x) resolves to nothing anywhere in the codebase — see
+      # scripts/check-css-vars.js's own header for the two same-day-shipped
+      # incidents (149 + 108 usage sites, one an invisible keyboard-focus
+      # outline) that motivated this tool. Placed before Build/Test since
+      # it's a pure static source-text check with no build output
+      # dependency — fastest feedback first.
+      - name: CSS custom-property gate (check:tokens)
+        working-directory: services/player-client
+        run: npm run check:tokens
+
+      - name: Build
+        working-directory: services/player-client
+        run: npm run build
+
+      - name: Test
+        working-directory: services/player-client
+        run: npm test
+
+  admin-ui:
+    name: admin-ui (build)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # Matches services/admin-ui/Dockerfile's `FROM node:20-slim`.
+          node-version: "20"
+
+      - name: Install dependencies
+        working-directory: services/admin-ui
+        # Can't use `npm ci` here: unlike player-client's, this lockfile
+        # exists on disk but isn't tracked in git (.gitignore:37 ignores
+        # `services/*/package-lock.json`; player-client's is only tracked
+        # because it was force-added despite that rule), so a clean
+        # checkout in CI has no lockfile for `npm ci` to consume. Falling
+        # back to `npm install --no-save` (this repo's designated
+        # lockfile-absent fallback) instead of switching to a different
+        # installer or committing a lockfile here. Also carries
+        # `--legacy-peer-deps` for the same eslint-plugin-react vs.
+        # eslint 10.x ERESOLVE conflict as player-client.
+        run: npm install --legacy-peer-deps --no-save
+
+      - name: Build
+        working-directory: services/admin-ui
+        # admin-ui's build script is `tsc --noEmit && vite build` — the
+        # type-check gate is already inline here, unlike player-client.
+        run: npm run build
+
+      # No test step: admin-ui has zero vitest/jsdom/RTL test runner today
+      # (Playwright e2e only, which needs a live stack). Gated behind
+      # Max-approved WO-QTI-ADMINUI-TEST-INFRA.
+
+  gameserver:
+    name: gameserver (compile check + DB-free pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # Matches services/gameserver/Dockerfile's `FROM python:3.12-slim`.
+          python-version: "3.12"
+
+      - name: Compile check
+        run: python -m compileall services/gameserver/src -q
+
+      # WO-PINFRA-CI-PYTEST-LANE: install real deps (needed for pytest --
+      # compileall above never imports anything, so it ran dependency-free;
+      # pytest does). Mirrors the Dockerfile's own poetry install (no-root:
+      # this job never installs the gameserver package itself, just its deps).
+      - name: Install dependencies
+        working-directory: services/gameserver
+        run: |
+          pip install --no-cache-dir poetry
+          poetry config virtualenvs.create false
+          poetry install --no-root
+
+      # DB-FREE PER-PUSH LANE (WO-PINFRA-CI-PYTEST-LANE, 2026-07-16): runs
+      # tests/unit with a real pytest process for the first time in CI --
+      # previously only `compileall` ran, which cannot catch a broken
+      # runtime import, a wrong assertion, or any real test failure (a
+      # circular-import regression sat red in tests/unit for ~21 hours
+      # undetected before this lane existed; see the WO's own report for
+      # the incident this closes).
+      #
+      # Strategy: DB-free subset, not a Postgres service container --
+      # 3600+ of tests/unit's ~3650 tests need no real database at all
+      # (pure logic / FakeSession-style unit tests), collect+run in under
+      # two minutes, and need zero new CI infrastructure. The remaining
+      # ~9 files (the `db`/`client`/`admin_auth_headers` fixtures defined
+      # in tests/conftest.py, plus 2 files needing a live Docker daemon for
+      # BangImportService) are auto-skipped by tests/conftest.py's own
+      # `pytest_collection_modifyitems` hook, gated behind
+      # GAMESERVER_CI_DB_FREE=1 so every other invocation (local dev, the
+      # full suite, docker-compose) is completely unaffected. A real-DB
+      # nightly/full lane (service container or otherwise) for that
+      # excluded tier is a separate, explicitly-flagged follow-up decision
+      # -- NOT added here without sign-off.
+      #
+      # A small, separately-tracked list of individually-known-broken tests
+      # (confirmed DB-independent, discovered activating this lane) is also
+      # skipped via the SAME hook -- see tests/conftest.py's own
+      # `_CI_DB_FREE_KNOWN_BROKEN_TESTS` doc-comment for the full list and
+      # per-test root cause. That list is a bug backlog, not a permanent
+      # exclusion -- remove an entry the moment its bug is fixed.
+      #
+      # ARIA_ENCRYPTION_KEY is a real repo secret (staged 2026-07-10 for
+      # exactly this activation); the other four are throwaway dummy values
+      # only used to satisfy src/core/config.py's `_validate_security_config`
+      # at import time -- never used to reach a real service, so no secret
+      # slot needed for them.
+      #
+      # Runtime budget: ~1.5-2 minutes locally for the full DB-free subset
+      # (3484 passed / 193 skipped) -- well inside a per-push budget, no
+      # quick/full tiering needed for this lane itself.
+      - name: Unit tests (DB-free lane)
+        working-directory: services/gameserver
+        env:
+          GAMESERVER_CI_DB_FREE: "1"
+          ENVIRONMENT: testing
+          DATABASE_URL: "postgresql://dummy:dummy@localhost:5432/dummy"
+          JWT_SECRET: "ci-db-free-lane-dummy-secret-32-chars-minimum"
+          ADMIN_USERNAME: "ci-dummy-admin"
+          ADMIN_PASSWORD: "ci-dummy-password-1234"
+          ARIA_ENCRYPTION_KEY: ${{ secrets.ARIA_ENCRYPTION_KEY }}
+        run: python -m pytest tests/unit -q
+
+      # No full-suite / DB-fixture lane yet: tests/integration and
+      # tests/security, plus the DB-fixture and Docker-daemon tiers skipped
+      # above, still need either a live Postgres/Docker-in-Docker service
+      # container or a comparable strategy -- gated behind sign-off
+      # (WO-PINFRA-CI-PYTEST-LANE flagged this fork explicitly rather than
+      # adding one unilaterally).

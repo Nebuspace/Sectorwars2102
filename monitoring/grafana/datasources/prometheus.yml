@@ -1,0 +1,14 @@
+# Grafana datasource provisioning. Mounted read-write by docker-compose.yml
+# (grafana service) at /etc/grafana/provisioning/datasources.
+# https://grafana.com/docs/grafana/latest/administration/provisioning/#datasources
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    # compose-internal service name + port -- both containers share the
+    # nexus-network network, so the grafana container resolves this by name.
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
