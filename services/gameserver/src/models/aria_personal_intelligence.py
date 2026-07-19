@@ -338,7 +338,23 @@ class ARIATradingObservation(Base):
     trade_id = Column(UUID(as_uuid=True), ForeignKey("enhanced_market_transactions.id"), nullable=True)
 
     commodity = Column(String(50), nullable=False)
-    action = Column(SQLEnum(ObservationAction), nullable=False)
+    # name= pins the exact Postgres enum type the migration created
+    # (eb772a1ab433, `aria_observation_action`) -- unpinned, SQLAlchemy
+    # derives the type name from the Python class instead
+    # (`observationaction`), which autogenerate would see as a DIFFERENT
+    # type than the real one and diff spuriously. values_callable matches
+    # the sibling aria_data_stream.py / player_warp_knowledge.py convention
+    # (persist .value, not .name) -- a no-op here since this enum's
+    # member names already equal their values, but pins the contract so a
+    # future member addition can't silently diverge.
+    action = Column(
+        SQLEnum(
+            ObservationAction,
+            name="aria_observation_action",
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
 
     source_station_id = Column(UUID(as_uuid=True), ForeignKey("stations.id"), nullable=False)
     dest_station_id = Column(UUID(as_uuid=True), ForeignKey("stations.id"), nullable=True)  # nullable for buy-only events
@@ -352,7 +368,17 @@ class ARIATradingObservation(Base):
     # Sell-leg only; NULL on buy-leg rows.
     profit = Column(Integer, nullable=True)
     hours_held = Column(Float, nullable=True)
-    outcome_classification = Column(SQLEnum(ObservationOutcome), nullable=True)
+    # Same rationale as `action` above -- pins the migration's real type
+    # name (`aria_observation_outcome`), not SQLAlchemy's derived
+    # `observationoutcome`.
+    outcome_classification = Column(
+        SQLEnum(
+            ObservationOutcome,
+            name="aria_observation_outcome",
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=True,
+    )
 
     observed_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
 

@@ -83,6 +83,10 @@ class User(Base):
         """Write the flat denormalized cache only (grant rows are authoritative)."""
         self._is_admin = bool(value)
 
+    # `cls`, not `self`, is correct here -- this is hybrid_property's
+    # CLASS-level `.expression` variant (always invoked with the class,
+    # never an instance), per SQLAlchemy's own documented idiom. A generic
+    # "first param not named self" lint is a false-positive on this pattern.
     @is_admin.expression
     def is_admin(cls):
         """SQL derived view: any active AdminScopeGrant for this user.

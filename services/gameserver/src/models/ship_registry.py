@@ -37,7 +37,6 @@ import enum
 import uuid
 from datetime import datetime, timezone
 from secrets import choice as _secrets_choice
-from typing import TYPE_CHECKING
 
 from sqlalchemy import Column, DateTime, Enum as SQLEnum, ForeignKey, Integer, String, event, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -45,10 +44,6 @@ from sqlalchemy.orm import relationship
 
 from src.core.database import Base
 from src.models.ship import Ship
-
-if TYPE_CHECKING:
-    from src.models.player import Player
-    from src.models.station import Station
 
 
 class RegistryEventType(str, enum.Enum):
@@ -183,6 +178,18 @@ def _assign_registration_fields(mapper, connection, target):
             if exists is None:
                 break
             candidate = generate_registration_number()
+        else:
+            # All 10 checked candidates collided -- the loop's own
+            # regenerate-on-collision step above still hands us a FRESH,
+            # UNCHECKED candidate here (generated after the 10th check
+            # failed), and without this guard it would be assigned blind,
+            # able to violate the unique constraint. Fail loud instead --
+            # this generator must never emit an unverified number.
+            raise RuntimeError(
+                "Ship registration-number collision retry exhausted (10 "
+                "attempts) -- the REG-XXXX-YYYY keyspace may be saturated "
+                "for this game year"
+            )
         target.registration_number = candidate
     if target.registered_owner_id is None and target.owner_id is not None:
         target.registered_owner_id = target.owner_id
