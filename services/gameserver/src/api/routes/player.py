@@ -285,7 +285,7 @@ async def get_player_ships(
 ):
     """Get all ships owned by the current player"""
     ships = db.query(Ship).filter(Ship.owner_id == player.id).all()
-    
+
     ship_responses = []
     for ship in ships:
         cargo_data = ship.cargo or {}
@@ -322,14 +322,14 @@ async def get_current_ship(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No active ship found"
         )
-    
+
     ship = db.query(Ship).filter(Ship.id == player.current_ship_id).first()
     if not ship:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Current ship not found"
         )
-    
+
     cargo_data = ship.cargo or {}
     cargo_capacity = effective_cargo_capacity(ship)
     return ShipResponse(
@@ -633,13 +633,13 @@ async def move_to_sector(
     # Use MovementService to handle movement properly
     movement_service = MovementService(db)
     result = movement_service.move_player_to_sector(player.id, sector_id)
-    
+
     if not result["success"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=result["message"]
         )
-    
+
     # Return the movement response with turn cost and remaining turns.
     # Forward the encounter/tunnel events the MovementService attached to its
     # result — without these the response_model silently strips them, hiding
@@ -846,10 +846,6 @@ class GenesisPurchaseResponse(BaseModel):
     purchases_remaining: int
     weekly_limit: int
 
-# Flat acquisition price for one Genesis Device. The per-tier sequence cost
-# (25k/75k/250k) is charged separately at deploy.
-GENESIS_DEVICE_PRICE = 25000
-
 @router.post("/genesis/purchase", response_model=GenesisPurchaseResponse)
 async def purchase_genesis_device(
     request: GenesisPurchaseRequest,
@@ -861,8 +857,16 @@ async def purchase_genesis_device(
     Rate-limited to MAX_PURCHASES_PER_WEEK per account (canon). The deploy step
     chooses the tier and charges the sequence cost.
     """
+    # GENESIS_DEVICE_PRICE (the flat acquisition price — distinct from the
+    # per-tier deploy sequence cost, 25k/75k/250k) is defined once in
+    # genesis_service.py and imported here so this route and
+    # GenesisService.get_available_purchases's client-facing
+    # "device_acquisition_cost" readout can never drift apart.
     from src.services.genesis_service import (
-        GenesisService, MAX_PURCHASES_PER_WEEK, GENESIS_MIN_REPUTATION,
+        GENESIS_DEVICE_PRICE,
+        GENESIS_MIN_REPUTATION,
+        MAX_PURCHASES_PER_WEEK,
+        GenesisService,
     )
 
     price = GENESIS_DEVICE_PRICE

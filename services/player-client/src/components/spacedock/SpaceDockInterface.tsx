@@ -303,6 +303,13 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
   // from the rest of this response — GRACEFUL-DEGRADE: null (hide the rep
   // row entirely) unless the server actually sends the field.
   const [genesisRepGate, setGenesisRepGate] = useState<{ required: number; current: number; met: boolean } | null>(null);
+  // Flat one-time acquisition price for a Genesis Device (server-authoritative,
+  // DRY-sourced from GENESIS_DEVICE_PRICE — see genesis_service.py). Distinct
+  // from the per-tier deploy sequence cost. GRACEFUL-DEGRADE: null until the
+  // fetch below lands (or if it fails/omits the field) — the venue disables
+  // the purchase button and shows "—" rather than charging against a guessed
+  // or stale price.
+  const [genesisDevicePrice, setGenesisDevicePrice] = useState<number | null>(null);
 
   // Local genesis tracking for immediate UI feedback
   const [localGenesisDevices, setLocalGenesisDevices] = useState<number | null>(null);
@@ -319,7 +326,14 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
     })
       .then(r => (r.ok ? r.json() : null))
       .then(data => {
-        if (!data) return;
+        if (!data) {
+          // GRACEFUL-DEGRADE: a reopen-fetch-fail must degrade the price too,
+          // not just a first-load failure — otherwise a previously-loaded
+          // price would keep rendering stale/unaffordable-uncharged instead
+          // of "—"/disabled.
+          setGenesisDevicePrice(null);
+          return;
+        }
         if (typeof data.purchases_remaining === 'number') setGenesisWeeklyRemaining(data.purchases_remaining);
         if (typeof data.max_purchases_per_week === 'number') setGenesisWeeklyLimit(data.max_purchases_per_week);
         const gate = data.reputation_gate;
@@ -331,8 +345,13 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
         } else {
           setGenesisRepGate(null);
         }
+        setGenesisDevicePrice(typeof data.device_acquisition_cost === 'number' ? data.device_acquisition_cost : null);
       })
-      .catch(() => {});
+      .catch(() => {
+        // Same reopen-fetch-fail concern as the !data branch above — a
+        // thrown fetch (network error) must not leave a stale prior price.
+        setGenesisDevicePrice(null);
+      });
   }, [activeVenue]);
 
   // Shipyard state
@@ -806,9 +825,9 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
 
   // Genesis Device Purchase function
   // Genesis devices are a single fungible consumable; the tier + credit cost are
-  // chosen at deploy. Acquiring one costs a flat GENESIS_DEVICE_PRICE and is
-  // rate-limited to 3/week (server-enforced).
-  const GENESIS_DEVICE_PRICE = 25000;
+  // chosen at deploy. Acquiring one costs a flat, server-authoritative price
+  // (genesisDevicePrice, read from GET /genesis/available's device_acquisition_cost
+  // — see the effect above) and is rate-limited to 3/week (server-enforced).
 
   // The raw purchase endpoint uses `fetch` directly (not the apiRequest/apiClient
   // wrapper), so it doesn't get that layer's detail-extraction for free. A plain
@@ -833,7 +852,14 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
     const token = getToken();
     if (!token || genesisPurchasing) return;
 
-    const price = GENESIS_DEVICE_PRICE;
+    // GRACEFUL-DEGRADE (#139): the price hasn't loaded (or the server omitted
+    // it) — never guess a price to charge against; block the purchase with a
+    // clear message instead of a white-screen or a silently-wrong charge.
+    if (genesisDevicePrice == null) {
+      setGenesisError('Price unavailable — please reopen the Genesis Store to retry.');
+      return;
+    }
+    const price = genesisDevicePrice;
     if (displayCredits < price) {
       setGenesisError(`Insufficient credits. Need ${price.toLocaleString()}, have ${displayCredits.toLocaleString()}`);
       return;
@@ -884,7 +910,7 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
     } finally {
       setGenesisPurchasing(false);
     }
-  }, [displayCredits, genesisPurchasing, updatePlayerCredits, updateShipGenesis]);
+  }, [displayCredits, genesisPurchasing, genesisDevicePrice, updatePlayerCredits, updateShipGenesis]);
 
   // Fetch current ship data including genesis device info
   const [shipData, setShipData] = useState<{
@@ -1933,7 +1959,7 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
             genesisError={genesisError}
             genesisPurchasing={genesisPurchasing}
             displayCredits={displayCredits}
-            genesisDevicePrice={GENESIS_DEVICE_PRICE}
+            genesisDevicePrice={genesisDevicePrice}
             purchaseGenesisDevice={purchaseGenesisDevice}
             onBack={() => setActiveVenue('hub')}
           />
