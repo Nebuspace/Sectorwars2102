@@ -70,6 +70,15 @@ _GENESIS_BFS_NODE_CAP = 4000
 # (the deployment formation timer is wall-clock, NOT GAME_TIME_SCALE-driven).
 GENESIS_FORMATION_HOURS = float(os.getenv("GENESIS_FORMATION_HOURS", "48"))
 
+# Flat acquisition price for one (fungible) Genesis Device — charged by
+# POST /player/genesis/purchase (player.py). This is a SEPARATE concept from
+# GENESIS_TIERS[tier]["cost"] below: the per-tier sequence cost is charged
+# separately at deploy, once the tier/biome are chosen. The single source of
+# truth lives here; player.py imports it rather than redefining it, so the
+# acquisition price and any client-facing readout of it (get_available_purchases's
+# "device_acquisition_cost") can never drift from what the purchase route charges.
+GENESIS_DEVICE_PRICE = 25000
+
 # Device tier definitions
 GENESIS_TIERS = {
     # PlanetType.TERRA(N) is reserved for the Capital-welcome planet
@@ -997,6 +1006,11 @@ class GenesisService:
             "formation_hours": self.formation_hours,
             "tiers": tiers,
             "reputation_gate": reputation_gate,
+            # The flat one-time acquisition price (see GENESIS_DEVICE_PRICE
+            # above) — distinct from tiers.*.cost, which is the deploy
+            # sequence cost. Read-only readout; DRY-sourced from the same
+            # constant POST /player/genesis/purchase actually charges.
+            "device_acquisition_cost": GENESIS_DEVICE_PRICE,
         }
 
     def get_genesis_quote(self, player_id: UUID, tier: str, registration: str) -> Dict[str, Any]:
