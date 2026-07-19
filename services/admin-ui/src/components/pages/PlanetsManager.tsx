@@ -213,14 +213,22 @@ const PlanetsManager: React.FC = () => {
                   {planet.population.toLocaleString()} / {planet.max_population.toLocaleString()}
                 </td>
                 <td>
-                  <span className={`habitability-score score-${Math.floor((planet.habitability_score || 0) / 20)}`}>
-                    {planet.habitability_score || 'N/A'}%
-                  </span>
+                  {planet.habitability_score != null ? (
+                    <span className={`habitability-score score-${Math.floor(planet.habitability_score / 20)}`}>
+                      {planet.habitability_score}%
+                    </span>
+                  ) : (
+                    <span className="habitability-score score-unknown">—</span>
+                  )}
                 </td>
                 <td>
-                  <span className={`resource-richness richness-${Math.floor((planet.resource_richness || 0) * 2)}`}>
-                    {planet.resource_richness ? `${planet.resource_richness.toFixed(1)}x` : 'N/A'}
-                  </span>
+                  {planet.resource_richness != null ? (
+                    <span className={`resource-richness richness-${Math.floor(planet.resource_richness * 2)}`}>
+                      {planet.resource_richness.toFixed(1)}x
+                    </span>
+                  ) : (
+                    <span className="resource-richness richness-unknown">—</span>
+                  )}
                 </td>
                 <td>
                   <span className={`defense-level level-${Math.floor(planet.defense_level / 20)}`}>
