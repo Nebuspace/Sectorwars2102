@@ -37,25 +37,25 @@ export interface PlayerModel {
   last_login: string | null;
   created_at: string;
 
-  // Asset counts (from API)
-  ships_count: number;
-  planets_count: number;
-  stations_count: number;
+  // Asset counts (from API — null when omitted)
+  ships_count: number | null;
+  planets_count: number | null;
+  stations_count: number | null;
 
   // Computed/derived fields for UI
   status: 'active' | 'inactive' | 'banned';
   assets: {
-    ships_count: number;
-    planets_count: number;
-    stations_count: number;
-    total_value: number;
+    ships_count: number | null;
+    planets_count: number | null;
+    stations_count: number | null;
+    total_value: number | null;
   };
   activity: {
     last_login: string | null;
-    session_count_today: number;
-    actions_today: number;
-    total_trade_volume: number;
-    combat_rating: number;
+    session_count_today: number | null;
+    actions_today: number | null;
+    total_trade_volume: number | null;
+    combat_rating: number | null;
     suspicious_activity: boolean;
   };
 

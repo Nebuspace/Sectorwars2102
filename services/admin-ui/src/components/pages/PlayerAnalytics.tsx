@@ -13,6 +13,11 @@ import {
 } from '../../types/playerManagement';
 import './player-analytics.css';
 
+const asCount = (v: unknown): number | null =>
+  typeof v === 'number' && !Number.isNaN(v) ? v : null;
+const fmtCount = (n: number | null | undefined): string =>
+  n != null ? String(n) : '—';
+
 const PlayerAnalytics: React.FC = () => {
   const [state, setState] = useState<PlayerAnalyticsState>({
     players: [],
@@ -114,17 +119,19 @@ const PlayerAnalytics: React.FC = () => {
         ...player,
         status: player.is_active ? 'active' : 'inactive',
         assets: {
-          ships_count: player.ships_count || 0,
-          planets_count: player.planets_count || 0,
-          stations_count: player.stations_count || 0,
-          total_value: 0 // Will be calculated later
+          ships_count: asCount(player.ships_count),
+          planets_count: asCount(player.planets_count),
+          stations_count: asCount(player.stations_count),
+          // No live valuation endpoint — don't invent 0 credits of value.
+          total_value: null as number | null
         },
         activity: {
           last_login: player.last_login || player.created_at,
-          session_count_today: 0,
-          actions_today: 0,
-          total_trade_volume: 0,
-          combat_rating: 0,
+          // Activity fields below are not returned by comprehensive list — don't invent zeros.
+          session_count_today: null as number | null,
+          actions_today: null as number | null,
+          total_trade_volume: null as number | null,
+          combat_rating: null as number | null,
           suspicious_activity: false
         }
       }));
@@ -467,9 +474,9 @@ const PlayerAnalytics: React.FC = () => {
                             {visibleColumns.assets && (
                               <td>
                                 <div className="flex items-center gap-2 text-sm">
-                                  <span>🚀 {player.assets.ships_count}</span>
-                                  <span>🌍 {player.assets.planets_count}</span>
-                                  <span>🏪 {player.assets.stations_count}</span>
+                                  <span>🚀 {fmtCount(player.assets.ships_count)}</span>
+                                  <span>🌍 {fmtCount(player.assets.planets_count)}</span>
+                                  <span>🏪 {fmtCount(player.assets.stations_count)}</span>
                                 </div>
                               </td>
                             )}
@@ -483,8 +490,8 @@ const PlayerAnalytics: React.FC = () => {
                             {visibleColumns.activity && (
                               <td>
                                 <div className="text-sm">
-                                  <div>Actions: {player.activity.actions_today}</div>
-                                  <div>Combat: {player.activity.combat_rating}</div>
+                                  <div>Actions: {fmtCount(player.activity.actions_today)}</div>
+                                  <div>Combat: {fmtCount(player.activity.combat_rating)}</div>
                                 </div>
                               </td>
                             )}
@@ -773,11 +780,15 @@ const PlayerAnalytics: React.FC = () => {
                       </div>
                       <div>
                         <div className="text-sm text-muted">Combat Rating</div>
-                        <div>{state.selectedPlayer.activity.combat_rating}</div>
+                        <div>{fmtCount(state.selectedPlayer.activity.combat_rating)}</div>
                       </div>
                       <div>
                         <div className="text-sm text-muted">Trade Volume</div>
-                        <div className="font-mono">{state.selectedPlayer.activity.total_trade_volume.toLocaleString()}</div>
+                        <div className="font-mono">
+                          {state.selectedPlayer.activity.total_trade_volume != null
+                            ? state.selectedPlayer.activity.total_trade_volume.toLocaleString()
+                            : '—'}
+                        </div>
                       </div>
                       <div>
                         <div className="text-sm text-muted">Team</div>
@@ -791,15 +802,15 @@ const PlayerAnalytics: React.FC = () => {
                     <div className="space-y-3">
                       <div>
                         <div className="text-sm text-muted">Ships Owned</div>
-                        <div>{state.selectedPlayer.assets.ships_count}</div>
+                        <div>{fmtCount(state.selectedPlayer.assets.ships_count)}</div>
                       </div>
                       <div>
                         <div className="text-sm text-muted">Planets Owned</div>
-                        <div>{state.selectedPlayer.assets.planets_count}</div>
+                        <div>{fmtCount(state.selectedPlayer.assets.planets_count)}</div>
                       </div>
                       <div>
                         <div className="text-sm text-muted">Ports Owned</div>
-                        <div>{state.selectedPlayer.assets.stations_count}</div>
+                        <div>{fmtCount(state.selectedPlayer.assets.stations_count)}</div>
                       </div>
                       <div>
                         <div className="text-sm text-muted">Current Ship</div>
@@ -807,7 +818,11 @@ const PlayerAnalytics: React.FC = () => {
                       </div>
                       <div>
                         <div className="text-sm text-muted">Total Asset Value</div>
-                        <div className="font-mono">{state.selectedPlayer.assets.total_value.toLocaleString()}</div>
+                        <div className="font-mono">
+                          {state.selectedPlayer.assets.total_value != null
+                            ? state.selectedPlayer.assets.total_value.toLocaleString()
+                            : '—'}
+                        </div>
                       </div>
                     </div>
                   </div>
