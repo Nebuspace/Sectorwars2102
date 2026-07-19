@@ -385,7 +385,9 @@ export const CombatOverview: React.FC = () => {
                       <td className="kills">{player.kills}</td>
                       <td className="deaths">{player.deaths}</td>
                       <td className="kd-ratio">{player.kdRatio.toFixed(2)}</td>
-                      <td className="win-rate">{player.winRate || 0}%</td>
+                      <td className="win-rate">
+                        {player.winRate != null ? `${player.winRate}%` : '—'}
+                      </td>
                       <td className="damage">{player.totalDamage.toLocaleString()}</td>
                     </tr>
                   ))

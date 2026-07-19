@@ -515,9 +515,11 @@ const Dashboard: React.FC = () => {
                 </div>
                 <div className="text-center">
                   <div className="text-xl font-semibold text-secondary">
-                    +{dashboardData.player_stats.total_players > 0 
-                      ? Math.round((dashboardData.player_stats.new_this_week / dashboardData.player_stats.total_players) * 100)
-                      : 0}%
+                    {dashboardData.player_stats.total_players != null
+                      && dashboardData.player_stats.total_players > 0
+                      && dashboardData.player_stats.new_this_week != null
+                      ? `+${Math.round((dashboardData.player_stats.new_this_week / dashboardData.player_stats.total_players) * 100)}%`
+                      : '—'}
                   </div>
                   <div className="text-xs text-tertiary">Weekly Growth</div>
                 </div>
