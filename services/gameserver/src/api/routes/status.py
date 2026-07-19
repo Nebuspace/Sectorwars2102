@@ -6,7 +6,7 @@ by frontends to check if the API is up and running.
 import os
 import datetime
 import logging
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Depends
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 from src.core.config import settings
 from src.utils.error_handling import generate_error_id
+from src.auth.dependencies import get_current_admin_user
 
 # Create a dedicated status router without authentication
 router = APIRouter()
@@ -483,24 +484,27 @@ async def containers_health():
     return result
 
 # Database Health Check Endpoint
-@router.get("/database")
-async def database_health():
+def _check_database_health():
     """
-    Check PostgreSQL database health status.
-    This endpoint does not require authentication.
+    Run the PostgreSQL health check and gather full introspection details
+    (connection pool internals, DB size/table/connection counts, host/database
+    name). Shared by the public liveness endpoint (which strips the sensitive
+    fields before returning) and the admin-only detailed endpoint (which
+    returns this dict unchanged). The health DETERMINATION logic here is
+    unchanged from the pre-existing single-endpoint implementation.
     """
     import time
     from sqlalchemy import text, inspect
     from src.core.database import engine
     from src.core.config import settings
     from urllib.parse import urlparse
-    
+
     start_time = time.time()
-    
+
     # Parse database URL for metadata
     db_url = settings.get_db_url()
     parsed = urlparse(db_url)
-    
+
     connected = False
     pool_status = {}
     database_info = {}
@@ -511,7 +515,7 @@ async def database_health():
         # Test database connection and gather metrics
         with engine.connect() as connection:
             connected = True
-            
+
             # Get pool status
             pool = engine.pool
             pool_status = {
@@ -520,33 +524,33 @@ async def database_health():
                 "overflow": pool.overflow(),
                 "total_connections": pool.checkedout() + pool.checkedin()
             }
-            
+
             # Get database statistics
             # Database size in MB
             size_result = connection.execute(text(
                 "SELECT pg_size_pretty(pg_database_size(current_database())) as size, "
                 "pg_database_size(current_database()) / (1024 * 1024) as size_mb"
             )).fetchone()
-            
+
             # Table count
             table_result = connection.execute(text(
                 "SELECT COUNT(*) as table_count FROM information_schema.tables "
                 "WHERE table_schema = 'public'"
             )).fetchone()
-            
+
             # Active connections
             connections_result = connection.execute(text(
                 "SELECT COUNT(*) as active_connections FROM pg_stat_activity "
                 "WHERE state = 'active'"
             )).fetchone()
-            
+
             database_info = {
                 "size_mb": round(float(size_result.size_mb), 2),
                 "size_pretty": size_result.size,
                 "table_count": table_result.table_count,
                 "active_connections": connections_result.active_connections
             }
-            
+
     except Exception as e:
         error_id = generate_error_id()
         logger.error("Database health check failed [error_id=%s]", error_id, exc_info=True)
@@ -565,10 +569,10 @@ async def database_health():
             "table_count": 0,
             "active_connections": 0
         }
-    
+
     response_time = (time.time() - start_time) * 1000
     status = "healthy" if connected else "unavailable"
-    
+
     result = {
         "provider": "postgresql",
         "status": status,
@@ -587,3 +591,41 @@ async def database_health():
             result["error_id"] = error_id
 
     return result
+
+
+@router.get("/database")
+async def database_health():
+    """
+    Check PostgreSQL database health status — PUBLIC liveness only.
+    This endpoint does not require authentication. It runs the same DB
+    health determination as the admin detailed endpoint, but returns ONLY
+    basic liveness (status/response_time/error) — no DB internals (host,
+    database name, connection pool status, size/table/connection counts).
+    See GET /database/detailed (admin-only) for the full introspection.
+    """
+    details = _check_database_health()
+
+    result = {
+        "provider": details["provider"],
+        "status": details["status"],
+        "response_time": details["response_time"],
+        "last_check": details["last_check"],
+    }
+
+    if "error" in details:
+        result["error"] = details["error"]
+        if "error_id" in details:
+            result["error_id"] = details["error_id"]
+
+    return result
+
+
+@router.get("/database/detailed")
+async def database_health_detailed(admin=Depends(get_current_admin_user)):
+    """
+    Check PostgreSQL database health status — ADMIN-ONLY, full internals.
+    Requires admin authentication because the response discloses sensitive
+    database internals (host, database name, connection pool status,
+    database size, table count, active connection count).
+    """
+    return _check_database_health()
