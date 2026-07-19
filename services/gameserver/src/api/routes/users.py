@@ -5,7 +5,8 @@ from uuid import UUID
 from datetime import datetime, UTC
 
 from src.core.database import get_db
-from src.auth.dependencies import get_current_admin_user, admin_or_options
+from src.auth.admin_scopes import PLAYERS_VIEW, SCOPES_GRANT
+from src.auth.dependencies import require_scope
 from src.models.user import User
 from src.models.admin_credentials import AdminCredentials
 from src.schemas.user import User as UserSchema, UserCreate, UserUpdate, AdminCreate
@@ -20,7 +21,7 @@ async def read_users(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(require_scope(PLAYERS_VIEW))
 ):
     """
     Retrieve users.
@@ -43,7 +44,7 @@ async def options_users():
 async def create_user(
     user_data: UserCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(require_scope(SCOPES_GRANT))
 ):
     """
     Create new user.
@@ -86,60 +87,26 @@ async def create_user(
 async def create_admin_user(
     admin_data: AdminCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(require_scope(PLAYERS_VIEW))
 ):
+    """RETIRED (Max 2026-07-17 / ADR-0058): admin-hood is grant-only.
+
+    Use ``POST /api/v1/admin/scopes/grant`` (requires ``admin.scopes.grant``).
     """
-    Create new admin user.
-    """
-    # Check if username already exists
-    db_user = db.query(User).filter(User.username == admin_data.username).first()
-    if db_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Username already registered"
-        )
-    
-    # Check if email already exists
-    if admin_data.email:
-        db_user = db.query(User).filter(User.email == admin_data.email).first()
-        if db_user:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered"
-            )
-    
-    # Create new user
-    new_user = User(
-        username=admin_data.username,
-        email=admin_data.email,
-        is_active=True,
-        is_admin=True,
-        created_at=datetime.now(UTC),
-        updated_at=datetime.now(UTC)
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=(
+            "POST /users/admin is retired. Admin-hood is granted via "
+            "POST /api/v1/admin/scopes/grant (scope admin.scopes.grant)."
+        ),
     )
-    
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    
-    # Create admin credentials
-    password_hash = get_password_hash(admin_data.password)
-    admin_creds = AdminCredentials(
-        user_id=new_user.id,
-        password_hash=password_hash
-    )
-    
-    db.add(admin_creds)
-    db.commit()
-    
-    return new_user
 
 
 @router.get("/{user_id}", response_model=UserSchema)
 async def read_user(
     user_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(require_scope(PLAYERS_VIEW))
 ):
     """
     Get a specific user by id.
@@ -158,7 +125,7 @@ async def update_user(
     user_id: UUID,
     user_data: UserUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(require_scope(SCOPES_GRANT))
 ):
     """
     Update a user.
@@ -211,7 +178,7 @@ async def update_user(
 async def delete_user(
     user_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(require_scope(SCOPES_GRANT))
 ):
     """
     Delete a user (soft delete).
@@ -244,7 +211,7 @@ async def reset_admin_password(
     user_id: UUID,
     password: str = Body(..., min_length=8),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(require_scope(SCOPES_GRANT))
 ):
     """
     Reset password for an admin user.
