@@ -120,12 +120,6 @@
   max-width: 8rem;
 }
 
-.sb-location-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 9rem;
-}
-
 /* [🚀 ship type] — static IDENTITY-adjacent readout beside the name chip
    (WO-HUD-SHIPTYPE). Reuses the frozen shared `.chip` pill
    (cockpit-shell.css) alone, not `.sb-chip` -- that class's `:hover` glow
