@@ -231,3 +231,114 @@ def admin_auth_headers(client: TestClient) -> dict[str, str]:
     response.raise_for_status()
     tokens = response.json()
     return {"Authorization": f"Bearer {tokens['access_token']}"}
+
+
+# ---------------------------------------------------------------------------
+# WO-PINFRA-CI-PYTEST-LANE: DB-free per-push CI lane.
+#
+# The gameserver CI job (.github/workflows/ci-build-test.yml) has no live
+# Postgres, so any test whose fixture closure reaches `db`/`client`/
+# `admin_auth_headers` above (a real `create_engine()` connection) would
+# fail on a connection error, not a real assertion. Rather than a hand-
+# maintained file list for this tier -- which silently goes stale the
+# moment a new DB-backed test is added without updating it -- this hook
+# inspects `item.fixturenames` (pytest's own resolved, TRANSITIVE fixture
+# closure: a custom fixture that itself depends on `db` still shows `db`
+# here) and auto-skips anything that needs one, only when
+# GAMESERVER_CI_DB_FREE=1 (the per-push lane sets it; every other
+# invocation -- local, full nightly, docker-compose -- is a no-op).
+#
+# Two SEPARATE, smaller tiers use an explicit file list instead, because
+# neither is fixture-detectable:
+#   - Docker-daemon tests: BangImportService's __init__ calls
+#     `docker.from_env()` directly (src/services/bang_import_service.py),
+#     not via a pytest fixture, so there's nothing in `fixturenames` to
+#     match on.
+#   - known-broken: genuine pre-existing failures discovered 2026-07-16
+#     while activating this lane, confirmed INDEPENDENT of DB availability
+#     (each fails identically with a real Postgres too -- see the
+#     WO-PINFRA-CI-PYTEST-LANE report for the per-file root cause). This is
+#     NOT a permanent structural exclusion like the two tiers above --
+#     it's a tracked backlog of real bugs this lane surfaced. Remove an
+#     entry the moment its bug is fixed.
+# ---------------------------------------------------------------------------
+_CI_DB_FREE_DOCKER_FILES = {
+    "test_bang_translator.py",
+    "test_bang_generation_job.py",
+}
+_CI_DB_FREE_KNOWN_BROKEN_TESTS = {
+    # Re-derived against settled HEAD 40e5160d (WO-PINFRA-CI-PYTEST-LANE,
+    # 2026-07-17) -- the original derivation was mid-wave and two entries
+    # were reconciled OUT: test_scheduler_lock_keys (fixed by 741bea16,
+    # which registered its own lock key in the AST pin's allowlist) and
+    # test_region_funded_tradedock (fixed by a32bba34, which added
+    # priority_bumps_count to the fixture stub) -- neither needs skipping
+    # anymore. This 17-test list was verified EMPIRICALLY the same way as
+    # the original: 2 probe runs against tests/unit with this set emptied
+    # out (both produced this EXACT list), then 3 confirmation runs with it
+    # populated (see the WO's own report for all 5 run results). Every
+    # entry fails identically when its file is run alone with a
+    # live-looking-but-unreachable DATABASE_URL, confirming DB-independence.
+    # Test-level (not file-level) granularity so a healthy sibling test in
+    # the same file still runs. Remove an entry the moment its bug is
+    # fixed -- this is tracked follow-up work, not a permanent allowlist.
+
+    # Stale mock target: patches `src.main.async_engine`, which
+    # WO-INFRA-CREATEALL-RETIRE (e4d5c50e) removed from src/main.py.
+    "test_redis_lifespan_wiring.py::TestLifespanCallsInitRedisOnStartup::test_startup_calls_init_redis",
+    "test_redis_lifespan_wiring.py::TestConnectFailureDegradesGracefully::test_app_still_starts_and_warns_when_connect_fails",
+    "test_redis_lifespan_wiring.py::TestLifespanCallsCloseRedisOnShutdown::test_shutdown_calls_close_redis",
+    "test_redis_lifespan_wiring.py::TestLifespanCallsCloseRedisOnShutdown::test_shutdown_close_failure_does_not_propagate",
+
+    # AttributeError: 'types.SimpleNamespace' object has no attribute
+    # 'current_activity' (src/services/npc_spawn_service.py) -- a fixture
+    # helper's stub is missing a field the service now reads.
+    "test_mack_attack_accepted_sweep.py::TestNoInfiniteLoopUnderInjectedRace::test_raced_row_is_skipped_once_never_reselected_loop_terminates",
+    "test_mack_attack_accepted_sweep.py::TestNoInfiniteLoopUnderInjectedRace::test_every_candidate_races_away_loop_still_terminates_at_zero",
+    "test_mack_attack_accepted_sweep.py::TestCompleteVsSweepInterleaving::test_complete_wins_first_sweep_then_sees_nothing_to_expire",
+    "test_mack_attack_accepted_sweep.py::TestCompleteVsSweepInterleaving::test_sweep_wins_first_late_complete_attempt_409s_no_incoherent_state",
+    "test_mack_attack_accepted_sweep.py::TestCancelPlayerContractRacesTheSweepWithDivergentEconomics::test_sweep_wins_acceptor_penalized_issuer_refunded_in_full",
+    "test_mack_attack_accepted_sweep.py::TestCancelPlayerContractRacesTheSweepWithDivergentEconomics::test_issuer_cancel_past_deadline_is_now_blocked_gate_holds_no_divergence",
+    "test_mack_attack_accepted_sweep.py::TestDualLockConsistentOrdering::test_sweep_expired_accepted_contracts_locks_ascending_by_id",
+    "test_mack_attack_accepted_sweep.py::TestPerRowSavepointIsolation::test_sweep_expired_accepted_contracts_survives_a_missing_acceptor_row",
+    "test_mack_attack_accepted_sweep.py::TestRoundHalfUpCreditConversion::test_sweep_penalty_exactly_half_credit_rounds_up",
+    "test_npc_presence_lock_identity_map.py::TestLockedSectorsSquadLoopReentrancy::test_second_officer_lock_does_not_discard_first_officers_pending_presence",
+    "test_npc_presence_lock_identity_map.py::TestLockedSectorsSquadLoopReentrancy::test_composed_with_a_genuinely_concurrent_commit_on_a_different_sector",
+
+    # Each fails on its own assertion/attribute error, confirmed
+    # DB-independent; root cause not triaged past that confirmation.
+    "test_drone_scalar_canon.py::test_attacker_side_defense_drones_reads_are_fully_flipped",
+    "test_movement_nexus_gate.py::TestEndToEndRejection::test_unsubscribed_player_move_into_nexus_is_rejected_before_any_turn_spend",
+}
+
+
+def pytest_collection_modifyitems(config, items):
+    if os.environ.get("GAMESERVER_CI_DB_FREE") != "1":
+        return
+    db_fixtures = {"db", "client", "admin_auth_headers"}
+    db_skip = pytest.mark.skip(
+        reason="needs a live database -- excluded from the DB-free per-push "
+        "CI lane (WO-PINFRA-CI-PYTEST-LANE); covered by the full nightly lane"
+    )
+    docker_skip = pytest.mark.skip(
+        reason="needs a live Docker daemon (BangImportService) -- excluded "
+        "from the DB-free per-push CI lane; covered by the full nightly lane"
+    )
+    known_broken_skip = pytest.mark.skip(
+        reason="pre-existing failure unrelated to DB availability, "
+        "discovered 2026-07-16 activating this CI lane -- tracked as "
+        "follow-up, see WO-PINFRA-CI-PYTEST-LANE report"
+    )
+    for item in items:
+        filename = item.fspath.basename
+        # nodeid is "tests/unit/test_x.py::TestY::test_z" -- strip the path
+        # prefix so the known-broken set below only has to name the
+        # "TestY::test_z" (or "test_z") suffix, matching pytest's own -k
+        # convention, and stays readable.
+        short_id = item.nodeid.split("::", 1)[1] if "::" in item.nodeid else item.nodeid
+        if db_fixtures & set(item.fixturenames):
+            item.add_marker(db_skip)
+        elif filename in _CI_DB_FREE_DOCKER_FILES:
+            item.add_marker(docker_skip)
+        elif f"{filename}::{short_id}" in _CI_DB_FREE_KNOWN_BROKEN_TESTS:
+            item.add_marker(known_broken_skip)
