@@ -14,7 +14,8 @@ logger = logging.getLogger(__name__)
 
 from src.core.config import settings
 from src.utils.error_handling import generate_error_id
-from src.auth.dependencies import get_current_admin_user
+from src.auth.admin_scopes import SYSTEM_HEALTH_VIEW
+from src.auth.dependencies import require_scope
 
 # Create a dedicated status router without authentication
 router = APIRouter()
@@ -621,11 +622,11 @@ async def database_health():
 
 
 @router.get("/database/detailed")
-async def database_health_detailed(admin=Depends(get_current_admin_user)):
+async def database_health_detailed(admin=Depends(require_scope(SYSTEM_HEALTH_VIEW))):
     """
     Check PostgreSQL database health status — ADMIN-ONLY, full internals.
-    Requires admin authentication because the response discloses sensitive
-    database internals (host, database name, connection pool status,
-    database size, table count, active connection count).
+    Requires the ``admin.system.health_view`` scope because the response
+    discloses sensitive database internals (host, database name, connection
+    pool status, database size, table count, active connection count).
     """
     return _check_database_health()
