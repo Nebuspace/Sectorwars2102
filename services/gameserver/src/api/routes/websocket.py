@@ -10,7 +10,12 @@ import logging
 
 from pydantic import BaseModel, Field as PydanticField
 from src.core.database import get_db
-from src.auth.dependencies import get_current_user_from_token, get_current_admin_user
+from src.auth.admin_scopes import AUDIT_VIEW, SECURITY_ACT
+from src.auth.dependencies import (
+    get_current_user_from_token,
+    require_scope,
+    user_has_active_scope,
+)
 from src.models.user import User
 from src.models.player import Player
 from src.services.websocket_service import connection_manager, handle_websocket_message, handle_admin_websocket_message
@@ -29,6 +34,15 @@ _ws_rate_limits: Dict[str, list] = defaultdict(list)
 WS_RATE_LIMIT = 100  # messages per window
 WS_RATE_WINDOW = 1.0  # seconds
 
+# Sustained-violation escalation (WO-RT-BUS-HARDENING). Canon (SYSTEMS/
+# realtime-bus.md:230) mandates "Sustained violations escalate to a forced
+# disconnect with close code 4002" but does not define "sustained"
+# numerically. NO-CANON: proposed threshold below, flagged to the
+# Orchestrator — 3 rate-limit violations within a 10s rolling window.
+_ws_violations: Dict[str, list] = defaultdict(list)
+WS_VIOLATION_ESCALATION_THRESHOLD = 3  # NO-CANON
+WS_VIOLATION_ESCALATION_WINDOW = 10.0  # seconds, NO-CANON
+
 
 def _check_ws_rate_limit(user_id: str) -> bool:
     """Return True if under rate limit, False if exceeded."""
@@ -40,6 +54,18 @@ def _check_ws_rate_limit(user_id: str) -> bool:
         return False
     _ws_rate_limits[user_id].append(now)
     return True
+
+
+def _record_ws_violation(user_id: str) -> bool:
+    """Record a rate-limit violation for user_id; return True once sustained
+    violations (WS_VIOLATION_ESCALATION_THRESHOLD within
+    WS_VIOLATION_ESCALATION_WINDOW) cross the escalation threshold, signaling
+    the caller to force-disconnect with close code 4002."""
+    now = time.monotonic()
+    violations = [t for t in _ws_violations[user_id] if now - t < WS_VIOLATION_ESCALATION_WINDOW]
+    violations.append(now)
+    _ws_violations[user_id] = violations
+    return len(violations) >= WS_VIOLATION_ESCALATION_THRESHOLD
 
 
 @router.websocket("/connect")
@@ -97,6 +123,19 @@ async def websocket_endpoint(
 
                 # Rate limit: 100 msg/s per connection
                 if not _check_ws_rate_limit(str(user.id)):
+                    if _record_ws_violation(str(user.id)):
+                        # Sustained violations escalate to a forced disconnect
+                        # (SYSTEMS/realtime-bus.md:230, close code 4002).
+                        logger.warning(
+                            f"WebSocket user {user.id} hit sustained rate-limit "
+                            f"violations; forcing disconnect (code 4002)."
+                        )
+                        await connection_manager.send_personal_message(str(user.id), {
+                            "type": "error",
+                            "message": "Sustained rate limit violations. Disconnecting."
+                        })
+                        await websocket.close(code=4002, reason="sustained rate limit violations")
+                        break
                     await connection_manager.send_personal_message(str(user.id), {
                         "type": "error",
                         "message": "Rate limit exceeded. Max 100 messages per second."
@@ -124,7 +163,20 @@ async def websocket_endpoint(
         except Exception as e:
             logger.error(f"WebSocket error for user {user.id}: {e}")
         finally:
-            await connection_manager.disconnect(str(user.id))
+            # Pass our own socket: if we were the one evicted (superseded by
+            # a newer connection for this user), disconnect() no-ops instead
+            # of scrubbing the successor's registration (WO-RT-EVICTION-SUPERSEDE).
+            disconnected = await connection_manager.disconnect(str(user.id), websocket)
+            if disconnected:
+                # WO-RT-BUS-HARDENING: _ws_rate_limits/_ws_violations are
+                # defaultdicts keyed by user_id that never shed entries on
+                # their own. Gated on disconnect() actually having fired (not
+                # a no-op) — a superseded handler's finally must not wipe out
+                # rate/violation state a live successor connection has
+                # already started accumulating (mirrors the identity guard
+                # that closed the same race for active_connections itself).
+                _ws_rate_limits.pop(str(user.id), None)
+                _ws_violations.pop(str(user.id), None)
     
     except Exception as e:
         logger.error(f"WebSocket connection error: {e}")
@@ -151,7 +203,7 @@ async def admin_websocket_endpoint(
     try:
         # Authenticate admin user from token
         user = await get_current_user_from_token(token, db)
-        if not user or not user.is_admin:
+        if not user or not user_has_active_scope(db, user.id, AUDIT_VIEW):
             await websocket.close(code=4001, reason="Admin authentication required")
             return
         
@@ -193,21 +245,24 @@ async def admin_websocket_endpoint(
         except Exception as e:
             logger.error(f"Admin WebSocket error for {user.id}: {e}")
         finally:
-            await connection_manager.disconnect_admin(str(user.id))
+            # Pass our own socket: if we were the one evicted (superseded by
+            # a newer connection for this admin), disconnect_admin() no-ops
+            # instead of scrubbing the successor's registration (WO-RT-ADMIN-EVICTION).
+            await connection_manager.disconnect_admin(str(user.id), websocket)
                 
     except Exception as e:
         logger.error(f"Admin WebSocket connection error: {str(e)}")
         try:
             await websocket.close(code=4003, reason="Connection initialization failed")
         except Exception:
-            pass
+            logger.debug("admin websocket_endpoint: websocket.close failed during connection-init cleanup", exc_info=True)
 
 
 
 
 @router.get("/stats")
 async def get_websocket_stats(
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(require_scope(AUDIT_VIEW)),
 ) -> dict:
     """Get WebSocket connection statistics (admin only)"""
     return connection_manager.get_connection_stats()
@@ -218,7 +273,7 @@ async def broadcast_message(
     request: BroadcastRequest,
     target_type: str = "global",  # global, sector, team
     target_id: Optional[str] = None,
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(require_scope(SECURITY_ACT)),
 ) -> dict:
     """Broadcast a message to connected users (admin only)"""
 
@@ -252,7 +307,7 @@ async def broadcast_message(
 @router.get("/sector/{sector_id}/players")
 async def get_sector_players(
     sector_id: int,
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(require_scope(AUDIT_VIEW)),
 ) -> dict:
     """Get list of players currently in a specific sector"""
     players = connection_manager.get_sector_players(sector_id)
@@ -266,7 +321,7 @@ async def get_sector_players(
 @router.get("/team/{team_id}/players")
 async def get_team_players(
     team_id: str,
-    current_user: User = Depends(get_current_admin_user),
+    current_user: User = Depends(require_scope(AUDIT_VIEW)),
     db: Session = Depends(get_db)
 ) -> dict:
     """Get list of online players in a specific team"""

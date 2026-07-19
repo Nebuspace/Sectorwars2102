@@ -2,24 +2,81 @@
 Audit logging API endpoints for admin access
 """
 
-from typing import Optional, List
-from datetime import datetime
+import logging
+from typing import Optional, List, Any
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 from fastapi import APIRouter, Depends, Query, HTTPException
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import and_, case
 from sqlalchemy.orm import Session
 
 from src.core.database import get_db
-from src.auth.dependencies import get_current_admin_user
+from src.auth.admin_scopes import AUDIT_VIEW, AUDIT_REVIEW, HIGH_IMPACT_SCOPES
+from src.auth.dependencies import require_scope
 from src.services.audit_service import AuditService
+from src.services.admin_action_log_service import log_admin_action
+from src.models.admin_action_log import AdminActionLog
 from src.models.user import User
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/admin/audit", tags=["audit"])
+
+# Phase E: unreviewed HIGH_IMPACT rows older than this are flagged stale.
+REVIEW_STALE_AFTER = timedelta(days=30)
+
+
+class AdminActionLogItemOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    admin_user_id: Optional[UUID] = None
+    scope_used: Optional[str] = None
+    action: str
+    target_type: Optional[str] = None
+    target_id: Optional[str] = None
+    payload_snapshot: Optional[Any] = None
+    result: Optional[str] = None
+    failure_reason: Optional[str] = None
+    reviewed_by: Optional[UUID] = None
+    reviewed_at: Optional[datetime] = None
+    at: datetime
+
+
+class AdminActionLogPageOut(BaseModel):
+    items: List[AdminActionLogItemOut]
+    total: int
+    page: int
+    limit: int
+    pages: int
+
+
+class ReviewQueueItemOut(AdminActionLogItemOut):
+    """HIGH_IMPACT unreviewed row + 30-day staleness flag (Phase E)."""
+
+    stale: bool
+
+
+class ReviewQueuePageOut(BaseModel):
+    items: List[ReviewQueueItemOut]
+    total: int
+    page: int
+    limit: int
+    pages: int
+
+
+class MarkReviewedOut(BaseModel):
+    id: UUID
+    reviewed_by: Optional[UUID] = None
+    reviewed_at: Optional[datetime] = None
+    already_reviewed: bool
 
 
 @router.post("/log")
 async def create_audit_log(
     request: dict,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(AUDIT_VIEW)),
     db: Session = Depends(get_db)
 ):
     """
@@ -54,6 +111,178 @@ async def create_audit_log(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/actions", response_model=AdminActionLogPageOut)
+async def list_admin_actions(
+    page: int = Query(1, ge=1, le=10000),
+    limit: int = Query(50, ge=1, le=500),
+    admin_user_id: Optional[UUID] = None,
+    action: Optional[str] = None,
+    target_type: Optional[str] = None,
+    target_id: Optional[str] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    admin: User = Depends(require_scope(AUDIT_VIEW)),
+    db: Session = Depends(get_db),
+):
+    """Paginated read-only list over AdminActionLog (RBAC audit trail)."""
+    try:
+        filters = []
+        if admin_user_id is not None:
+            filters.append(AdminActionLog.admin_user_id == admin_user_id)
+        if action is not None:
+            filters.append(AdminActionLog.action == action)
+        if target_type is not None:
+            filters.append(AdminActionLog.target_type == target_type)
+        if target_id is not None:
+            filters.append(AdminActionLog.target_id == target_id)
+        if start_date is not None:
+            filters.append(AdminActionLog.at >= start_date)
+        if end_date is not None:
+            filters.append(AdminActionLog.at <= end_date)
+
+        base = db.query(AdminActionLog)
+        if filters:
+            base = base.filter(and_(*filters))
+
+        total = base.count()
+        offset = (page - 1) * limit
+        rows = (
+            base.order_by(AdminActionLog.at.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        pages = (total + limit - 1) // limit if total else 0
+
+        return AdminActionLogPageOut(
+            items=[AdminActionLogItemOut.model_validate(row) for row in rows],
+            total=total,
+            page=page,
+            limit=limit,
+            pages=pages,
+        )
+    except Exception as e:
+        logger.error("list_admin_actions failed: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to list admin actions")
+
+
+@router.get("/review-queue", response_model=ReviewQueuePageOut)
+async def list_review_queue(
+    page: int = Query(1, ge=1, le=10000),
+    limit: int = Query(50, ge=1, le=500),
+    admin: User = Depends(require_scope(AUDIT_VIEW)),
+    db: Session = Depends(get_db),
+):
+    """Read-only Phase E queue: unreviewed HIGH_IMPACT AdminActionLog rows.
+
+    Newest-first within staleness: rows older than 30 days (``stale``) sort
+    ahead of fresh unreviewed rows. NO mutation verbs on this surface.
+    """
+    try:
+        now = datetime.now(timezone.utc)
+        stale_before = now - REVIEW_STALE_AFTER
+        base = db.query(AdminActionLog).filter(
+            AdminActionLog.reviewed_at.is_(None),
+            AdminActionLog.scope_used.in_(list(HIGH_IMPACT_SCOPES)),
+        )
+        total = base.count()
+        offset = (page - 1) * limit
+        # Stale first (1), then newest-first within each bucket.
+        stale_rank = case((AdminActionLog.at < stale_before, 1), else_=0)
+        rows = (
+            base.order_by(stale_rank.desc(), AdminActionLog.at.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        pages = (total + limit - 1) // limit if total else 0
+        items: List[ReviewQueueItemOut] = []
+        for row in rows:
+            at = row.at
+            if at is not None and at.tzinfo is None:
+                at = at.replace(tzinfo=timezone.utc)
+            stale = bool(at is not None and at < stale_before)
+            base_item = AdminActionLogItemOut.model_validate(row)
+            items.append(ReviewQueueItemOut(**base_item.model_dump(), stale=stale))
+        return ReviewQueuePageOut(
+            items=items,
+            total=total,
+            page=page,
+            limit=limit,
+            pages=pages,
+        )
+    except Exception as e:
+        logger.error("list_review_queue failed: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to list review queue")
+
+
+@router.post("/actions/{action_id}/review", response_model=MarkReviewedOut)
+async def mark_action_reviewed(
+    action_id: UUID,
+    admin: User = Depends(require_scope(AUDIT_REVIEW)),
+    db: Session = Depends(get_db),
+):
+    """Mark a HIGH_IMPACT AdminActionLog row as retrospectively reviewed.
+
+    Gated on ``admin.audit.review`` (27th scope — separation from AUDIT_VIEW).
+    Idempotent: if ``reviewed_at`` is already set, leave the row unchanged and
+    return ``already_reviewed=True`` without appending a second ledger row.
+    First-time review updates ``reviewed_by``/``reviewed_at`` and logs the
+    review action same-txn (C1/C2 lesson). Review itself is NOT HIGH_IMPACT.
+    """
+    try:
+        row = (
+            db.query(AdminActionLog)
+            .filter(AdminActionLog.id == action_id)
+            .with_for_update()
+            .first()
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="Admin action not found")
+        if row.scope_used not in HIGH_IMPACT_SCOPES:
+            raise HTTPException(
+                status_code=400,
+                detail="Only HIGH_IMPACT actions can be marked reviewed",
+            )
+
+        if row.reviewed_at is not None:
+            return MarkReviewedOut(
+                id=row.id,
+                reviewed_by=row.reviewed_by,
+                reviewed_at=row.reviewed_at,
+                already_reviewed=True,
+            )
+
+        now = datetime.now(timezone.utc)
+        row.reviewed_by = admin.id
+        row.reviewed_at = now
+        log_admin_action(
+            db,
+            actor=admin,
+            scope_used=AUDIT_REVIEW,
+            action="audit_review",
+            target_type="admin_action_log",
+            target_id=str(row.id),
+            payload={"scope_used": row.scope_used, "action": row.action},
+            result="success",
+        )
+        db.commit()
+        db.refresh(row)
+        return MarkReviewedOut(
+            id=row.id,
+            reviewed_by=row.reviewed_by,
+            reviewed_at=row.reviewed_at,
+            already_reviewed=False,
+        )
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error("mark_action_reviewed failed: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to mark action reviewed")
+
+
 @router.get("/logs")
 async def get_audit_logs(
     page: int = Query(1, ge=1),
@@ -63,7 +292,7 @@ async def get_audit_logs(
     resource_type: Optional[str] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(AUDIT_VIEW)),
     db: Session = Depends(get_db)
 ):
     """
@@ -123,7 +352,7 @@ async def get_audit_logs(
 async def get_security_violations(
     start_date: Optional[datetime] = None,
     limit: int = Query(100, ge=1, le=500),
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(AUDIT_VIEW)),
     db: Session = Depends(get_db)
 ):
     """
@@ -149,7 +378,7 @@ async def get_security_violations(
 async def get_user_activity_summary(
     user_id: UUID,
     days: int = Query(30, ge=1, le=365),
-    admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(require_scope(AUDIT_VIEW)),
     db: Session = Depends(get_db)
 ):
     """

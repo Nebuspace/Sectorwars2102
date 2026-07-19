@@ -10,8 +10,10 @@ from sqlalchemy.orm import Session
 
 from src.core.database import get_async_session
 from src.services.translation_service import TranslationService, get_translation_service
-from src.auth.dependencies import get_current_user, get_current_admin_user
+from src.auth.admin_scopes import GALAXY_MANAGE, PLAYERS_VIEW
+from src.auth.dependencies import get_current_user, require_scope
 from src.models.user import User
+from src.services.admin_action_log_service import log_admin_action
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +186,7 @@ async def get_ai_language_context(
 @router.get("/admin/progress/{language_code}", response_model=TranslationProgressResponse)
 async def get_translation_progress(
     language_code: str,
-    admin_user: User = Depends(get_current_admin_user),
+    admin_user: User = Depends(require_scope(PLAYERS_VIEW)),
     translation_service: TranslationService = Depends(get_translation_service)
 ):
     """Get translation progress for a language (admin only)"""
@@ -201,11 +203,32 @@ async def set_translation(
     language_code: str,
     namespace: str,
     request: TranslationRequest,
-    admin_user: User = Depends(get_current_admin_user),
+    admin_user: User = Depends(require_scope(GALAXY_MANAGE)),
     translation_service: TranslationService = Depends(get_translation_service)
 ):
     """Set or update a translation (admin only)"""
     try:
+        # Attempt-scoped audit: TranslationService may commit OR roll back
+        # independently (partial-tolerant / _handle_error). Commit the log
+        # first so durability does not ride the service's control flow
+        # (mirrors nexus generate_central_nexus). Intentional: we log the
+        # ATTEMPT, not a result count the early commit cannot guarantee.
+        log_admin_action(
+            translation_service.db,
+            actor=admin_user,
+            scope_used=GALAXY_MANAGE,
+            action="translation_set",
+            target_type="translation",
+            target_id=request.key,
+            payload={
+                "attempt": True,
+                "key": request.key,
+                "namespace": namespace,
+                "language": language_code,
+            },
+            result="attempted",
+        )
+        translation_service.db.commit()
         success = await translation_service.set_translation(
             key=request.key,
             language_code=language_code,
@@ -230,11 +253,31 @@ async def bulk_import_translations(
     language_code: str,
     namespace: str,
     request: BulkTranslationRequest,
-    admin_user: User = Depends(get_current_admin_user),
+    admin_user: User = Depends(require_scope(GALAXY_MANAGE)),
     translation_service: TranslationService = Depends(get_translation_service)
 ):
     """Bulk import translations (admin only)"""
     try:
+        # Attempt-scoped audit — see set_translation. Bulk returns 200 with
+        # error counts even when every item is invalid; without an early
+        # commit the staged AdminActionLog is discarded on session close.
+        log_admin_action(
+            translation_service.db,
+            actor=admin_user,
+            scope_used=GALAXY_MANAGE,
+            action="translation_bulk_import",
+            target_type="translation",
+            target_id=f"{language_code}/{namespace}",
+            payload={
+                "attempt": True,
+                "namespace": namespace,
+                "language": language_code,
+                "overwrite": request.overwrite,
+                "keys_submitted": len(request.translations),
+            },
+            result="attempted",
+        )
+        translation_service.db.commit()
         result = await translation_service.bulk_import_translations(
             translations=request.translations,
             language_code=language_code,
@@ -249,11 +292,23 @@ async def bulk_import_translations(
 
 @router.post("/admin/initialize")
 async def initialize_translation_data(
-    admin_user: User = Depends(get_current_admin_user),
+    admin_user: User = Depends(require_scope(GALAXY_MANAGE)),
     translation_service: TranslationService = Depends(get_translation_service)
 ):
     """Initialize default translation data (admin only)"""
     try:
+        # Attempt-scoped audit — see set_translation.
+        log_admin_action(
+            translation_service.db,
+            actor=admin_user,
+            scope_used=GALAXY_MANAGE,
+            action="translation_initialize",
+            target_type="translation",
+            target_id="defaults",
+            payload={"attempt": True},
+            result="attempted",
+        )
+        translation_service.db.commit()
         success = await translation_service.initialize_default_data()
         if success:
             return {"success": True, "message": "Translation data initialized"}
@@ -266,7 +321,7 @@ async def initialize_translation_data(
 
 @router.get("/admin/languages/all")
 async def get_all_languages(
-    admin_user: User = Depends(get_current_admin_user),
+    admin_user: User = Depends(require_scope(PLAYERS_VIEW)),
     translation_service: TranslationService = Depends(get_translation_service)
 ):
     """Get all languages including inactive ones (admin only)"""

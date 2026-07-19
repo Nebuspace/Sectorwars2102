@@ -12,8 +12,10 @@ from src.core.database import get_async_session
 from src.core.config import settings
 from src.models.user import User
 from src.models.admin_credentials import AdminCredentials
+from src.models.admin_scope_grant import AdminScopeGrant
 from src.core.security import get_password_hash
-from src.auth.dependencies import get_current_admin_user
+from src.auth.admin_scopes import META_SCOPES, SCOPES_GRANT
+from src.auth.dependencies import require_scope
 
 router = APIRouter()
 
@@ -27,12 +29,13 @@ class CreateAdminRequest(BaseModel):
 @router.get("/check-admin-exists")
 async def check_admin_exists(
     username: str = Query(..., description="Username to check"),
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(require_scope(SCOPES_GRANT)),
     db: Session = Depends(get_async_session)
 ):
     """
     Check if an admin user with the given username exists.
-    This endpoint is for testing purposes only. Requires admin authentication.
+    This endpoint is for testing purposes only. Requires scopes.grant
+    (create-admin = grant-only per Max ruling; not PLAYERS_VIEW).
     """
     if not settings.TESTING and not settings.DEVELOPMENT_MODE:
         raise HTTPException(
@@ -47,12 +50,16 @@ async def check_admin_exists(
 @router.post("/create-admin", status_code=status.HTTP_201_CREATED)
 async def create_admin(
     request: CreateAdminRequest,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(require_scope(SCOPES_GRANT)),
     db: Session = Depends(get_async_session)
 ):
     """
     Create an admin user for testing purposes.
-    This endpoint is for testing purposes only. Requires admin authentication.
+    Dev/stage only. Gated on SCOPES_GRANT — minting an admin is grant-equivalent
+    (PLAYERS_VIEW must never reach this surface).
+
+    Same-txn META_SCOPES grants (hub residual on #2): flat is_admin alone would
+    mint a phantom admin after the Phase-C derived flip.
     """
     if not settings.TESTING and not settings.DEVELOPMENT_MODE:
         raise HTTPException(
@@ -83,6 +90,17 @@ async def create_admin(
         password_hash=get_password_hash(request.password)
     )
     db.add(admin_creds)
+
+    # Grant-consistent mint (same pattern as create_default_admin).
+    for scope in META_SCOPES:
+        db.add(
+            AdminScopeGrant(
+                id=uuid4(),
+                user_id=user.id,
+                scope=scope,
+                granted_by=current_admin.id,
+            )
+        )
 
     # Commit the transaction
     db.commit()

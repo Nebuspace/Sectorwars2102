@@ -8,7 +8,7 @@ Five endpoints (per Phase 1D of ``DOCS/PLANS/bang-integration.md``):
 * ``GET  /admin/galaxy/jobs/{job_id}/stream`` — SSE tail of ``log_text``
 * ``DELETE /admin/galaxy/{galaxy_id}``  — hard-delete galaxy (requires header)
 
-All endpoints are admin-only via :func:`get_current_admin`. The legacy
+All endpoints are admin-only via :func:`require_scope` (BANG_REGENERATE). The legacy
 ``POST /admin/galaxy/generate`` (in :mod:`src.api.routes.admin`) is kept
 intact; Phase 4 removes it.
 """
@@ -30,7 +30,8 @@ from fastapi import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import StreamingResponse
 
-from src.auth.dependencies import get_current_admin, get_current_admin_from_header_or_query
+from src.auth.admin_scopes import BANG_REGENERATE
+from src.auth.dependencies import require_scope, require_scope_from_header_or_query
 from src.core.database import get_async_session
 from src.models.bang_generation_job import (
     BangGenerationJob,
@@ -78,7 +79,7 @@ def get_bang_import_service() -> BangImportService:
 async def create_bang_job(
     payload: BangJobCreate,
     background_tasks: BackgroundTasks,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(BANG_REGENERATE)),
     session: AsyncSession = Depends(get_async_session),
     service: BangImportService = Depends(get_bang_import_service),
 ) -> BangJobResponse:
@@ -159,7 +160,7 @@ async def add_player_owned_region(
     galaxy_id: uuid.UUID,
     payload: BangJobCreate,
     background_tasks: BackgroundTasks,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(BANG_REGENERATE)),
     session: AsyncSession = Depends(get_async_session),
     service: BangImportService = Depends(get_bang_import_service),
 ) -> BangJobResponse:
@@ -241,7 +242,7 @@ async def regenerate_galaxy(
     payload: BangJobCreate,
     background_tasks: BackgroundTasks,
     force: bool = False,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(BANG_REGENERATE)),
     session: AsyncSession = Depends(get_async_session),
     service: BangImportService = Depends(get_bang_import_service),
     x_confirm_galaxy_name: Optional[str] = Header(
@@ -349,7 +350,7 @@ async def regenerate_galaxy(
 @router.post("/galaxy/preview")
 async def preview_bang_config(
     config: BangConfig,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(BANG_REGENERATE)),
     service: BangImportService = Depends(get_bang_import_service),
 ) -> Dict[str, Any]:
     """Run bang with ``--validate-only`` and return stats inline."""
@@ -370,7 +371,7 @@ async def preview_bang_config(
 async def list_bang_jobs(
     page: int = 0,
     page_size: int = 20,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(BANG_REGENERATE)),
     session: AsyncSession = Depends(get_async_session),
 ) -> BangJobListResponse:
     """Paginated job history. Excludes `log_text` to keep payloads small."""
@@ -406,7 +407,7 @@ async def list_bang_jobs(
 @router.get("/galaxy/jobs/{job_id}", response_model=BangJobResponse)
 async def get_bang_job(
     job_id: uuid.UUID,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(BANG_REGENERATE)),
     session: AsyncSession = Depends(get_async_session),
 ) -> BangJobResponse:
     job = await session.get(BangGenerationJob, job_id)
@@ -425,7 +426,7 @@ async def stream_bang_job_log(
     job_id: uuid.UUID,
     # SSE uses the header-or-query variant: browser EventSource cannot send
     # a custom Authorization header, so the admin-ui appends ?token=<JWT>.
-    current_admin: User = Depends(get_current_admin_from_header_or_query),
+    current_admin: User = Depends(require_scope_from_header_or_query(BANG_REGENERATE)),
     session: AsyncSession = Depends(get_async_session),
 ) -> StreamingResponse:
     """Server-Sent-Events stream of new lines appended to ``log_text``.
@@ -479,7 +480,7 @@ async def stream_bang_job_log(
 )
 async def hard_delete_galaxy(
     galaxy_id: uuid.UUID,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(BANG_REGENERATE)),
     session: AsyncSession = Depends(get_async_session),
     x_confirm_galaxy_name: Optional[str] = Header(
         default=None,
@@ -558,7 +559,7 @@ async def hard_delete_galaxy(
 
 @router.get("/bang/version")
 async def get_bang_version(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(BANG_REGENERATE)),
 ) -> Dict[str, str]:
     """Return the BANG_VERSION the server is pinned to.
 
