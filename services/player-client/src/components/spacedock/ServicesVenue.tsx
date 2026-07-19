@@ -252,7 +252,7 @@ const ServicesVenue: React.FC<ServicesVenueProps> = ({
               <p>{shipData ? `Insure ${shipData.name} against destruction` : 'Insure your ship against destruction'}</p>
               <div className="service-status">
                 <div className="coverage-row">
-                  Coverage: <strong>{insuranceTier ? (TIER_LABEL[insuranceTier] ?? insuranceTier) : '—'}</strong>
+                  Coverage: <strong>{insuranceTier ? (TIER_LABEL?.[insuranceTier] ?? insuranceTier) : '—'}</strong>
                 </div>
                 Pay a one-time premium; the registered owner is paid out if the hull is destroyed.
               </div>
@@ -273,7 +273,7 @@ const ServicesVenue: React.FC<ServicesVenueProps> = ({
               <p>Protection against ship destruction</p>
               <div className="service-status">
                 <div className="coverage-row">
-                  Coverage: <strong>{insuranceTier ? (TIER_LABEL[insuranceTier] ?? insuranceTier) : '—'}</strong>
+                  Coverage: <strong>{insuranceTier ? (TIER_LABEL?.[insuranceTier] ?? insuranceTier) : '—'}</strong>
                 </div>
               </div>
               <div className="service-unavailable-note">

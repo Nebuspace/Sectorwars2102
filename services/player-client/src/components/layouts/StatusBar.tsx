@@ -329,7 +329,11 @@ const StatusBar: React.FC = () => {
   // tabindex, set below).
   const handleTablistKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const currentIndex = DOSSIER_TABS.findIndex((t) => t.id === activeTab);
-    let nextIndex = currentIndex;
+    // No initializer: every case below assigns it, and the unmatched-key
+    // default returns BEFORE nextIndex is ever read (so an unmatched key
+    // moves neither focus nor the active tab) — the old `= currentIndex`
+    // init was never actually read on any reachable path.
+    let nextIndex: number;
     switch (e.key) {
       case 'ArrowRight':
         nextIndex = (currentIndex + 1) % DOSSIER_TABS.length;
