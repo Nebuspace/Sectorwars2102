@@ -11,6 +11,7 @@ there is no ongoing-combat entity to poll or retreat from mid-fight.
 """
 
 import json
+import logging
 import random
 from typing import Optional
 from uuid import UUID
@@ -30,6 +31,8 @@ from src.services.combat_service import CombatService
 from src.services.movement_service import MovementService
 from src.services.planetary_service import PlanetaryService
 from src.services.turn_service import spend_turns
+
+logger = logging.getLogger(__name__)
 
 # Mounted under the /api/v1 api_router — a "/api/combat" prefix here doubled
 # up to /api/v1/api/combat, which no client called.
@@ -184,11 +187,68 @@ async def engage_combat(
         # is_npc flag via getattr so this code does not depend on the NPC
         # slice's Ship model changes having landed.
         is_npc_ship = ship.owner_id is None or bool(getattr(ship, "is_npc", False))
+
+        # Engage-range proximity (WO-API-A1): same-sector alone was never
+        # "in range" -- the client's own ENGAGE menu item is proximity-gated
+        # (windshieldTableauHelpers.tsx's ENGAGE_RANGE_EM), but nothing
+        # server-side enforced it, so a direct POST /combat/engage could
+        # attack from anywhere in the sector. Evaluated ONLY once we can
+        # independently confirm same-sector here at the route (a cross-
+        # sector distance number is meaningless -- %-space pose is sector-
+        # relative) -- when sectors differ this gate is silently skipped and
+        # CombatService's OWN "Target is not in your sector" precondition
+        # below is left to reject it exactly as it always has, unchanged.
+        # Unlocked pose reads, same soft-precondition idiom as
+        # assert_dock_land_proximity: this never takes a row lock, it only
+        # decides whether to raise before the service's own locked call.
         if is_npc_ship:
+            if ship.sector_id == player.current_sector_id:
+                from src.models.npc_character import NPCCharacter
+                from src.services import intrasystem_movement_service as isp
+
+                npc = db.query(NPCCharacter).filter(NPCCharacter.ship_id == ship.id).first()
+                if npc is None:
+                    # Single-pilot invariant (models/npc_character.py: every
+                    # is_npc Ship has exactly one NPCCharacter) says this
+                    # should never happen -- fail CLOSED rather than let an
+                    # unverifiable position bypass the gate.
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "code": "ERR_TARGET_POSITION_UNVERIFIED",
+                            "message": "Target position could not be verified — try again",
+                        },
+                    )
+                attacker_xy = isp.current_player_pose_xy(player)
+                target_xy = isp.current_npc_pose_xy(npc)
+                if not isp.is_within_engage_range(*attacker_xy, *target_xy):
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "code": "ERR_TARGET_OUT_OF_RANGE",
+                            "message": f"You are too far from {ship.name or 'the target'} "
+                                       "to engage — move closer and try again",
+                        },
+                    )
             result = service.attack_npc_ship(player.id, ship.id)
         else:
             if ship.owner_id == player.id:
                 return CombatEngageResponse(status="error", message="Cannot attack your own ship")
+            defender = db.query(Player).filter(Player.id == ship.owner_id).first()
+            if defender is not None and defender.current_sector_id == player.current_sector_id:
+                from src.services import intrasystem_movement_service as isp
+
+                attacker_xy = isp.current_player_pose_xy(player)
+                defender_xy = isp.current_player_pose_xy(defender)
+                if not isp.is_within_engage_range(*attacker_xy, *defender_xy):
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "code": "ERR_TARGET_OUT_OF_RANGE",
+                            "message": f"You are too far from {ship.name or 'the target'} "
+                                       "to engage — move closer and try again",
+                        },
+                    )
             result = service.attack_player(player.id, ship.owner_id)
     elif request.targetType == "planet":
         result = _execute_planet_assault(db, player, target_id)
@@ -410,6 +470,69 @@ async def attack_sector_drones(
     )
 
 
+# --- Warp-gate destruction (WO-P3-galaxy-gate-destruction) -----------------
+
+class AttackWarpGateRequest(BaseModel):
+    """Request to attack a warp gate."""
+    gateId: str = Field(..., description="UUID of the WarpGate to attack")
+
+
+class AttackWarpGateResponse(BaseModel):
+    """Response from a warp-gate attack."""
+    success: bool
+    message: str
+    destroyed: bool = False
+    gateHpRemaining: Optional[int] = None
+    salvageGranted: Optional[dict] = None
+    turnsConsumed: Optional[int] = None
+    turnsRemaining: Optional[int] = None
+
+
+@router.post("/attack-warp-gate", response_model=AttackWarpGateResponse)
+async def attack_warp_gate(
+    body: AttackWarpGateRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db)
+):
+    """
+    Attack a warp gate (beacon, focus, or active) after its 48-hour
+    invulnerability window (warp-gates.md:323-354).
+
+    A 75-turn engagement resolved against the gate's HP pool using the
+    standard combat-resolver damage stack, plus reputation loss with the
+    owner's faction. Destroying a gate collapses its WarpTunnel, deletes
+    the beacon/gate structure rows, and grants the attacker partial
+    salvage (ORE 500 / EQUIPMENT 250 / LUMEN_CRYSTALS 10) into their ship
+    cargo. Turn cost, locking, and commit are all handled inside
+    CombatService.attack_warp_gate.
+    """
+    try:
+        gate_uuid = UUID(body.gateId)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid gateId") from None
+
+    result = CombatService(db).attack_warp_gate(attacker_id=player.id, gate_id=gate_uuid)
+
+    if not result.get("success"):
+        message = result.get("message", "Warp gate attack failed")
+        status_code = 400
+        if message.startswith("ERR_GATE_INVULNERABLE"):
+            status_code = 400  # validation-class rejection, not a 404/403
+        elif message == "Warp gate not found":
+            status_code = 404
+        raise HTTPException(status_code=status_code, detail=message)
+
+    return AttackWarpGateResponse(
+        success=True,
+        message=result["message"],
+        destroyed=result.get("destroyed", False),
+        gateHpRemaining=result.get("gate_hp_remaining"),
+        salvageGranted=result.get("salvage_granted"),
+        turnsConsumed=result.get("turns_consumed"),
+        turnsRemaining=result.get("turns_remaining"),
+    )
+
+
 # --- Sector Retreat (flee current sector) ---
 
 class SectorRetreatResponse(BaseModel):
@@ -544,12 +667,37 @@ async def retreat_from_sector(
         player.current_sector_id = target_sector.sector_id
         # Keep current_region_id in sync — region-filtered routes like
         # /player/current-sector 404 on a stale region
+        old_region_id = player.current_region_id
         player.current_region_id = target_sector.region_id
         # Keep the ship row in sync too — sector views read Ship.sector_id,
         # and a ship left behind in the fled sector renders a ghost
         if player.current_ship:
             player.current_ship.sector_id = target_sector.sector_id
+        new_region_id = target_sector.region_id
+        mover_user_id = player.user_id
         db.commit()
+
+        # Best-effort WS region-room hop (WO-RT-ROOM-HOP), only when the
+        # retreat actually crossed a region boundary. Mirrors
+        # movement_service._broadcast_sector_presence: import inside the
+        # block, grab the running loop, schedule with loop.create_task (never
+        # blocks the route), swallow any failure (no loop, no socket) so a
+        # quiet socket can never turn a successful retreat into an error.
+        if mover_user_id is not None and old_region_id != new_region_id:
+            try:
+                import asyncio
+                from src.services.websocket_service import connection_manager
+
+                loop = asyncio.get_running_loop()
+                loop.create_task(connection_manager.update_user_region(
+                    str(mover_user_id),
+                    str(new_region_id) if new_region_id is not None else None,
+                ))
+            except Exception:
+                logger.debug(
+                    "Skipped retreat region WS room-hop (no loop or socket)",
+                    exc_info=True,
+                )
 
         return SectorRetreatResponse(
             success=True,

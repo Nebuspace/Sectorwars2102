@@ -64,6 +64,10 @@ class SetPermissionsRequest(BaseModel):
     # accepted on every call and persisted, but only consulted by their mode.
     whitelist: Optional[List[str]] = None
     allies: Optional[List[str]] = None
+    # WO-GWQ-GATE-TOLL: 0-10,000 credits per non-owner traversal. Unlike
+    # mode/whitelist/allies, omitting this preserves whatever toll is
+    # already configured — it is never silently reset to 0.
+    toll: Optional[int] = None
 
 
 class SetPermissionsResponse(BaseModel):
@@ -72,6 +76,33 @@ class SetPermissionsResponse(BaseModel):
     whitelist: List[str]
     allies: List[str]
     is_public: bool
+    toll_amount: int
+
+
+class FactionRepLayer(BaseModel):
+    """NO-CANON storage shape for the faction_rep_min/max layered access
+    gates (warp-gates.md "Access control" -- canon names the layer, not
+    this JSONB shape)."""
+    faction_type: str
+    value: int
+
+
+class SetAccessLayersRequest(BaseModel):
+    """WO-QUALITY-techdebt-gate-access-setters. Each field is OPTIONAL and
+    preserved unchanged when omitted -- matches SetPermissionsRequest's own
+    `toll` field convention (see that class's own comment)."""
+    faction_rep_min: Optional[FactionRepLayer] = None
+    faction_rep_max: Optional[FactionRepLayer] = None
+    # Player UUIDs exempted from this gate's toll — [NO-CANON] key/shape,
+    # see collect_toll's own docstring.
+    toll_bypass: Optional[List[str]] = None
+
+
+class SetAccessLayersResponse(BaseModel):
+    gate_id: str
+    faction_rep_min: Optional[Dict[str, Any]] = None
+    faction_rep_max: Optional[Dict[str, Any]] = None
+    toll_bypass: List[str]
 
 
 class TransferRequest(BaseModel):
@@ -89,6 +120,18 @@ class TransferResponse(BaseModel):
     access_carried_over: str
 
 
+class ConstructionSiteEntry(BaseModel):
+    """ADR-0078 staged-materials progress for a project's currently-active
+    construction site (the Phase-3 site once it exists, else Phase 1)."""
+    site_id: str
+    phase: int
+    status: str
+    required: Dict[str, int]
+    staged: Dict[str, int]
+    turns_applied: int
+    cure_completes_at: Optional[str] = None
+
+
 class ProjectEntry(BaseModel):
     beacon_id: str
     gate_id: Optional[str] = None
@@ -100,10 +143,33 @@ class ProjectEntry(BaseModel):
     invulnerable_until: Optional[str] = None
     harmonization_completes_at: Optional[str] = None
     created_at: Optional[str] = None
+    construction_site: Optional[ConstructionSiteEntry] = None
 
 
 class MyProjectsResponse(BaseModel):
     projects: List[ProjectEntry]
+
+
+class StageMaterialsRequest(BaseModel):
+    ore: Optional[int] = None
+    equipment: Optional[int] = None
+    lumen_crystals: Optional[int] = None
+
+
+class StageMaterialsResponse(BaseModel):
+    site_id: str
+    phase: int
+    status: str
+    required: Dict[str, int]
+    staged: Dict[str, int]
+
+
+class AdvanceConstructionResponse(BaseModel):
+    site_id: str
+    phase: int
+    status: str
+    turns_applied: int
+    cure_completes_at: Optional[str] = None
 
 
 class SectorStructuresResponse(BaseModel):
@@ -118,8 +184,10 @@ async def deploy_beacon(
     db: Session = Depends(get_db),
 ):
     """Phase 1 — deploy a WarpGateBeacon in the current sector. Validation
-    failures cost nothing; on pass charges 50 turns + 10,000 cr + 1,000 ore +
-    500 equipment + 1 Quantum Crystal."""
+    failures cost nothing; on pass charges 50 turns + 10,000 cr + 1 Quantum
+    Crystal, and opens a gate_construction_site for the 1,000 ore + 500
+    equipment structure draw to stage into over multiple runs (ADR-0078 —
+    see stage-materials / advance-construction below)."""
     try:
         result = warp_gate_service.deploy_beacon(db, player, request.destination_sector_id)
         db.commit()
@@ -141,8 +209,10 @@ async def anchor_focus(
     db: Session = Depends(get_db),
 ):
     """Phase 3 Step A — anchor the Warp Jumper at the destination focus.
-    Charges 100 turns + 10,000 cr + 1,000 ore + 500 equipment + 30 lumen
-    crystals; the ship enters HARMONIZING for one canonical hour."""
+    Charges 100 turns + 10,000 cr, drawn against the Phase-3 construction
+    site's staged + cured 1,000 ore + 500 equipment + 30 Lumen Crystals
+    (ADR-0078 — never the Warp Jumper's hold); the ship enters HARMONIZING
+    for one canonical hour."""
     try:
         result = warp_gate_service.anchor_focus(db, player, request.beacon_id)
         db.commit()
@@ -155,6 +225,53 @@ async def anchor_focus(
         harmonization_completes_at=result["harmonization_completes_at"].isoformat(),
         status="HARMONIZING",
     )
+
+
+@router.post("/{site_id}/stage-materials", response_model=StageMaterialsResponse)
+async def stage_materials(
+    site_id: str,
+    request: StageMaterialsRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """ADR-0078 — deposit ore / equipment / Lumen Crystals into a
+    gate_construction_site. Any ship present in the site's sector may
+    deposit (warp-gates.md "Any ship may deposit" — team hauling is the
+    point), not only the beacon's owner; ore/equipment draw from the
+    depositing ship's cargo, Lumen Crystals from the depositing player's own
+    Player.lumen_crystals wallet."""
+    try:
+        result = warp_gate_service.stage_materials(
+            db, player, site_id,
+            {
+                "ore": request.ore,
+                "equipment": request.equipment,
+                "lumen_crystals": request.lumen_crystals,
+            },
+        )
+        db.commit()
+    except WarpGateError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return StageMaterialsResponse(**result)
+
+
+@router.post("/{site_id}/advance-construction", response_model=AdvanceConstructionResponse)
+async def advance_construction(
+    site_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """ADR-0078 — spend 5 turns to commit a fully-staged phase's materials
+    and start its 24-canonical-hour cure; owner-only (staging is a team
+    effort, committing the builder's own turns is not)."""
+    try:
+        result = warp_gate_service.advance_construction(db, player, site_id)
+        db.commit()
+    except WarpGateError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return AdvanceConstructionResponse(**result)
 
 
 @router.get("/mine", response_model=MyProjectsResponse)
@@ -197,19 +314,53 @@ async def set_permissions(
     player: Player = Depends(get_current_player),
     db: Session = Depends(get_db),
 ):
-    """WO-DBB-WG1 — set an active gate's access mode, whitelist and allied
-    teams atomically (owner-only; a gate that isn't yours 404s). The mode is
-    enforced at traversal by warp_gate_service.check_traversal_access."""
+    """WO-DBB-WG1 + WO-GWQ-GATE-TOLL — set an active gate's access mode,
+    whitelist, allied teams, AND toll fee atomically (owner-only; a gate
+    that isn't yours 404s). The mode (plus any faction-rep layers) is
+    enforced at traversal by warp_gate_service.check_traversal_access; the
+    toll is collected by warp_gate_service.collect_toll."""
     try:
         result = warp_gate_service.set_gate_permissions(
             db, player, gate_id,
-            request.mode, request.whitelist, request.allies,
+            request.mode, request.whitelist, request.allies, request.toll,
         )
         db.commit()
     except WarpGateError as e:
         db.rollback()
         raise HTTPException(status_code=e.status_code, detail=e.detail)
     return SetPermissionsResponse(**result)
+
+
+@router.patch("/{gate_id}/access-requirements", response_model=SetAccessLayersResponse)
+async def set_access_layers(
+    gate_id: str,
+    request: SetAccessLayersRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """WO-QUALITY-techdebt-gate-access-setters — set the optional layered
+    access gates (faction reputation minimum/maximum, toll-bypass list) on
+    top of an active gate's base mode (owner-only; a gate that isn't yours
+    404s, identical ownership guard to set_permissions/transfer above —
+    _resolve_owned_active_gate always resolves from the AUTHENTICATED
+    `player`, never a client-supplied id). Each field is a PATCH: omitted
+    fields are left unchanged, matching set_permissions' own `toll` field
+    convention. This makes warp_gate_service.check_traversal_access's
+    faction-rep enforcement and collect_toll's toll_bypass exemption —
+    both already live at traversal/toll time — reachable for the first
+    time; previously nothing ever wrote these keys."""
+    try:
+        result = warp_gate_service.set_gate_access_layers(
+            db, player, gate_id,
+            request.faction_rep_min.model_dump() if request.faction_rep_min else None,
+            request.faction_rep_max.model_dump() if request.faction_rep_max else None,
+            request.toll_bypass,
+        )
+        db.commit()
+    except WarpGateError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return SetAccessLayersResponse(**result)
 
 
 @router.post("/{gate_id}/transfer", response_model=TransferResponse)

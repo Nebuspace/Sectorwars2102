@@ -51,6 +51,8 @@ class PlayerStateResponse(BaseModel):
     # HUD enrichment (WO-PLAYERINFO id=142) — additive read fields:
     turn_regen_per_hour: float = 0.0  # effective turns/hour (turn_service)
     bounty_total: int = 0             # credits on this player's head
+    # WO-ISP: authoritative in-system pose (nullable until first hydrate/burn)
+    intrasystem_pose: Dict[str, Any] | None = None
 
 class ShipResponse(BaseModel):
     id: str
@@ -149,6 +151,7 @@ class SectorResponse(BaseModel):
     type: str
     region_id: str | None = None
     region_name: str | None = None
+    region_type: str | None = None
     hazard_level: int
     radiation_level: float
     resources: Dict[str, Any]
@@ -179,8 +182,15 @@ class MoveOption(BaseModel):
     type: str
     region_id: str | None = None
     region_name: str | None = None
+    region_type: str | None = None
     turn_cost: int
     can_afford: bool
+    # Galaxy-map Euclidean position (same frame as SectorResponse /
+    # Quantum Jump). NAV 3D places one-hop neighbors from these deltas
+    # relative to the current sector — not a schematic equal-radius ring.
+    x_coord: int | None = None
+    y_coord: int | None = None
+    z_coord: int | None = None
     tunnel_type: str = None
     stability: float = None
     # Player warp gates are strictly one-way (tunnel_type "warp_gate",
@@ -191,8 +201,10 @@ class MoveOption(BaseModel):
     # read-only: viewing the move list does NOT discover anything (discovery is
     # the act of *visiting* a sector — flip_formation_discovery), so an
     # undiscovered formation here is withheld to a generic, identity-less anomaly
-    # exactly as on the current sector (WO-CA). is_discovered is a global row
-    # flag, so this leaks nothing a current-sector view wouldn't already.
+    # exactly as on the current sector (WO-CA). Disclosure is per-player
+    # (ADR-0045, is_formation_known_to_player), so this leaks nothing a
+    # current-sector view wouldn't already — and never a formation another
+    # player has discovered but this one hasn't.
     special_formations: List[FormationResponse] = []
 
 class AvailableMovesResponse(BaseModel):
@@ -206,16 +218,40 @@ async def get_player_state(
 ):
     """Get current player state including credits, turns, ship, and location.
 
-    Also triggers a daily turn refresh if the player's turns have not been
-    reset today.  The refresh incorporates both the military-rank bonus and
-    the ARIA consciousness multiplier.
+    Lazily advances the turn pool for real time elapsed via the same
+    ADR-0004 FROZEN HOOK every spend site uses (rank bonus + ARIA
+    consciousness multiplier applied inside it).
     """
-    # Check for daily turn refresh (rank bonus + ARIA multiplier applied)
-    ranking_service = RankingService(db)
-    ranking_service.refresh_daily_turns(player)
-    db.commit()
+    # WO-QTI-STATE-POLL: this is a hot poll — commit ONLY when regen actually
+    # advanced the balance. The no-op branches (no full turn earned yet, or
+    # already at cap) may still bump last_turn_regeneration / resync the
+    # denormalized max_turns cache in memory, but leaving those uncommitted
+    # is safe: an at-cap anchor is re-baselined again the moment any real
+    # spend site runs (before turns can drop below cap), and max_turns is
+    # never read from the stored column — every reader recomputes it fresh
+    # from military_rank. So a skipped commit here loses nothing observable,
+    # and the in-memory `player` object still reflects the fresh value for
+    # THIS response either way.
+    regen_result = turn_service.regenerate_turns(db, player)
+    if regen_result["regenerated"]:
+        db.commit()
 
     max_turns = RankingService.calculate_max_turns(player)
+
+    from src.services import intrasystem_movement_service as isp
+    pose_pub = None
+    if not player.is_docked and not player.is_landed:
+        pose = isp.ensure_player_pose(player, str(player.current_ship_id or player.id))
+        sample = isp.derive_pose(pose)
+        if pose.get("leg") and sample.get("phase") == "idle" and sample.get("leg") is None:
+            pose = {
+                "x_pct": sample["x_pct"], "y_pct": sample["y_pct"],
+                "heading_deg": sample["heading_deg"],
+                "phase": "idle", "burning": False, "leg": None,
+            }
+            isp.set_player_pose(db, player, pose)
+            db.commit()
+        pose_pub = isp.pose_public(player.intrasystem_pose)
 
     return PlayerStateResponse(
         id=str(player.id),
@@ -239,6 +275,7 @@ async def get_player_state(
         military_rank=player.military_rank,
         turn_regen_per_hour=turn_service.effective_regen_per_hour(db, player),
         bounty_total=BountyService(db).total_active_bounty_on(player),
+        intrasystem_pose=pose_pub,
     )
 
 @router.get("/ships", response_model=List[ShipResponse])
@@ -329,10 +366,12 @@ async def repair_player_ship(
     Charges the full restore-to-max cost atomically, then restores hull and
     shields to max via ShipService.repair_ship (Basic = full restore).
     """
-    # Lock the player row so the credit charge is race-safe.
+    # Lock the player row so the credit charge is race-safe. populate_existing()
+    # refreshes the identity-mapped object from the DB row under the lock —
+    # without it, get_current_player's earlier unlocked load is returned stale.
     locked_player = db.query(Player).filter(
         Player.id == player.id
-    ).with_for_update().first()
+    ).populate_existing().with_for_update().first()
 
     if not locked_player.is_docked or not locked_player.current_port_id:
         raise HTTPException(
@@ -473,8 +512,10 @@ async def get_current_sector(
     # Player-facing region label: display_name ("Terran Space"), not the
     # internal import-scoped name ("bang-<uuid>-terran_space")
     region_name = None
+    region_type = None
     if sector.region:
         region_name = sector.region.display_name or sector.region.name
+        region_type = sector.region.region_type
 
     # Enrich NPC presence entries with LIVE activity + mission + archetype so
     # the client can render ships honestly (a transiting ship cruises out; a
@@ -482,44 +523,37 @@ async def get_current_sector(
     # archetype rather than guessing from the ship name. Archetype is also
     # stored in the JSONB entry at spawn time (npc_spawn_service._presence_entry),
     # but enriching it here guarantees the authoritative value for legacy JSONB
-    # rows that pre-date the archetype field.
-    present = list(sector.players_present or [])
-    npc_ids = [e.get("player_id") for e in present
-               if isinstance(e, dict) and e.get("is_npc") and e.get("player_id")]
-    if npc_ids:
-        from src.models.npc_character import NPCCharacter
-        npcs = db.query(NPCCharacter).filter(NPCCharacter.id.in_(npc_ids)).all()
-        by_id = {str(n.id): n for n in npcs}
-        enriched = []
-        for e in present:
-            if isinstance(e, dict) and e.get("is_npc"):
-                n = by_id.get(str(e.get("player_id")))
-                if n is not None:
-                    e = dict(e)
-                    act = n.current_activity
-                    e["activity"] = (act.name if hasattr(act, "name") else str(act)) if act else None
-                    e["mission"] = (n.daily_schedule or {}).get("mission") or "commerce"
-                    e["archetype"] = n.archetype.name if n.archetype else None
-            enriched.append(e)
-        present = enriched
+    # rows that pre-date the archetype field. ALSO re-derives every entry's
+    # `pose` (NPC and human) from the authoritative Player/NPCCharacter row
+    # rather than trusting the write-time mirror (P0-FIX-PRESENCE-MIRROR --
+    # see intrasystem_movement_service.enrich_presence_with_live_pose's own
+    # doc-comment; shared with sectors.py's own _enrich_players_present).
+    from src.services import intrasystem_movement_service as isp
+    present = isp.enrich_presence_with_live_pose(db, list(sector.players_present or []))
 
-    # Special-formation discovery + disclosure (WO-CA). Viewing the current
-    # sector scans it: any formation anchored here or whose interior includes
-    # this sector is first-observed (is_discovered False→True, name back-filled),
-    # mirroring how GET /sectors/{id}/system discovers planets on view. Then
-    # serialize — identity (name+type) is disclosed ONLY for discovered
-    # formations; undiscovered ones surface as a generic, identity-less anomaly.
+    # Special-formation discovery + disclosure (WO-CA; per-player since
+    # ADR-0045). Viewing the current sector scans it: any formation anchored
+    # here or whose interior includes this sector is first-observed BY THIS
+    # PLAYER (a PlayerFormationKnowledge row is recorded; the global
+    # is_discovered aggregate flips False→True on the first-ever discoverer
+    # and the name is back-filled), mirroring how GET /sectors/{id}/system
+    # discovers planets on view. Then serialize — identity (name+type) is
+    # disclosed ONLY for formations THIS player has discovered; undiscovered
+    # ones surface as a generic, identity-less anomaly.
     from src.services.special_formation_service import (
         flip_formation_discovery,
         find_formations_for_sector,
         is_formation_investigated,
+        is_formation_known_to_player,
     )
     flip_formation_discovery(db, player, sector)
     db.commit()  # persist the discovery flip (mirrors /system)
 
     formation_responses = []
     for f in find_formations_for_sector(db, sector):
-        discovered = bool(f.is_discovered)
+        # ADR-0045: disclosure is per-player, not the formation's global
+        # is_discovered aggregate — see is_formation_known_to_player.
+        discovered = is_formation_known_to_player(db, player.id, f.id)
         formation_responses.append(FormationResponse(
             id=str(f.id),
             is_discovered=discovered,
@@ -538,6 +572,7 @@ async def get_current_sector(
         type=sector.type.value if hasattr(sector.type, 'value') else str(sector.type),
         region_id=str(sector.region_id) if sector.region_id else None,
         region_name=region_name,
+        region_type=region_type,
         hazard_level=sector.hazard_level,
         radiation_level=sector.radiation_level,
         resources=sector.resources or {},
@@ -638,6 +673,7 @@ async def get_available_moves(
     from src.services.special_formation_service import (
         find_formations_for_sector,
         is_formation_investigated,
+        is_formation_known_to_player,
     )
 
     def _serialize_neighbour_formations(neighbour_sector) -> List[FormationResponse]:
@@ -645,7 +681,9 @@ async def get_available_moves(
             return []
         out = []
         for f in find_formations_for_sector(db, neighbour_sector):
-            discovered = bool(f.is_discovered)
+            # ADR-0045: disclosure is per-player, not the formation's global
+            # is_discovered aggregate — see is_formation_known_to_player.
+            discovered = is_formation_known_to_player(db, player.id, f.id)
             out.append(FormationResponse(
                 id=str(f.id),
                 is_discovered=discovered,
@@ -676,8 +714,12 @@ async def get_available_moves(
             type=warp["type"],
             region_id=str(sector.region_id) if sector and sector.region_id else None,
             region_name=region_name,
+            region_type=sector.region.region_type if sector and sector.region else None,
             turn_cost=warp["turn_cost"],
             can_afford=warp["can_afford"],
+            x_coord=sector.x_coord if sector is not None else None,
+            y_coord=sector.y_coord if sector is not None else None,
+            z_coord=sector.z_coord if sector is not None else None,
             special_formations=_serialize_neighbour_formations(sector)
         ))
 
@@ -694,8 +736,12 @@ async def get_available_moves(
             type=tunnel["type"],
             region_id=str(sector.region_id) if sector and sector.region_id else None,
             region_name=region_name,
+            region_type=sector.region.region_type if sector and sector.region else None,
             turn_cost=tunnel["turn_cost"],
             can_afford=tunnel["can_afford"],
+            x_coord=sector.x_coord if sector is not None else None,
+            y_coord=sector.y_coord if sector is not None else None,
+            z_coord=sector.z_coord if sector is not None else None,
             tunnel_type=tunnel.get("tunnel_type"),
             stability=tunnel.get("stability"),
             one_way=tunnel.get("one_way"),
@@ -730,6 +776,55 @@ async def scan_latent_tunnels(
         revealed=int(result.get("revealed", 0)),
         sectors=result.get("sectors", []),
     )
+
+
+# WO-PROG-SECTOR-SCAN-1 — paid enrichment scan of an adjacent sector (turns.md:83).
+# See MovementService.scan_adjacent_sector's module comment for the full
+# scaling-ladder design (ship scanner_range primary, ARIA consciousness
+# secondary). Stateless — no fields here persist anything; the response is a
+# fresh reveal on every call, never a per-player unlock.
+class ScanAdjacentSectorResponse(BaseModel):
+    success: bool
+    message: str = ""
+    sector_id: int | None = None
+    name: str | None = None
+    type: str | None = None
+    tier: int | None = None
+    hazard_level: int | None = None
+    radiation_level: float | None = None
+    # Tier 1+
+    has_asteroids: bool | None = None
+    has_gas_clouds: bool | None = None
+    presence_echo: str | None = None
+    # Tier 2+
+    mines_present: bool | None = None
+    patrol_band: str | None = None
+    has_planet: bool | None = None
+    has_station: bool | None = None
+    turns_remaining: int = 0
+
+
+@router.post("/scan/{sector_id}", response_model=ScanAdjacentSectorResponse)
+async def scan_adjacent_sector(
+    sector_id: int,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db)
+):
+    """Scan an adjacent sector for a paid preview beyond the free
+    /available-moves {name, type, turn_cost} baseline. 2 turns
+    (turns.md:83); reveal depth scales with the scanning ship's sensor
+    reach and the player's ARIA consciousness level — see
+    MovementService.scan_adjacent_sector for the full design."""
+    movement_service = MovementService(db)
+    result = movement_service.scan_adjacent_sector(player.id, sector_id)
+
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result.get("message", "Scan failed"),
+        )
+
+    return ScanAdjacentSectorResponse(**result)
 
 
 # Genesis Device Purchase

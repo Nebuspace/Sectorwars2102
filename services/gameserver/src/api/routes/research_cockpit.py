@@ -17,6 +17,10 @@ consume these EXACTLY — do not drift the shapes):
   GET  /research/offers   -> the live generated offers (§5.7) — NEVER a catalogue
   POST /research/contracts/start  -> accept an offer / start a kind (existing start_contract)
   POST /research/contracts/cancel -> cancel an active/accepted directive (existing cancel_contract)
+  POST /research/tech/{node_id}/unlock -> spend banked RP on a tech_tree node (existing
+    unlock_node, WO-PLN-UNLOCK-1). ``cockpit`` additionally carries an ADDITIVE
+    ``techTree`` array (per-node locked/affordable/unlocked state) so the frozen
+    fields above are unchanged and the unlock UI has one read surface to poll.
 
 All endpoints are player-authed (get_current_player). The writes wrap the EXISTING
 research_service pipeline (start_contract / cancel_contract) — this router adds NO
@@ -61,6 +65,20 @@ class CancelContractRequest(BaseModel):
     contractId: str
 
 
+# --- Status-code map for unlock_node's failure messages (WO-PLN-UNLOCK-1) ----
+# unlock_node/can_unlock never mutates on a failure path — every branch below is
+# a zero-deduction 4xx. Unknown node is the one case worth a distinct code (404,
+# the target doesn't exist); the rest (already-unlocked, missing prereqs) share
+# 400 the same way /contracts/start folds its non-credit failures together.
+def _unlock_status_code(message: str) -> int:
+    low = message.lower()
+    if "unknown tech node" in low:
+        return 404
+    if "insufficient" in low:
+        return 402  # mirrors /contracts/start's credit-insufficiency mapping
+    return 400
+
+
 # --- Helpers (pure reads) ---------------------------------------------------
 
 def _empire_raw_rp_per_day(db: Session, player: Player) -> float:
@@ -101,6 +119,39 @@ def _empire_world_rollup(db: Session, player: Player) -> Dict[str, int]:
         else:
             frontier += 1     # frontier + contested both still "in play"
     return {"frontier": frontier, "done": done}
+
+
+def _tech_tree_state(current_player: Player) -> List[Dict[str, Any]]:
+    """Per-node locked/affordable/unlocked state for the whole static catalog
+    (WO-PLN-UNLOCK-1). Pure read of ``research_service.tech_tree.TECH_NODES`` +
+    the player's ledger — mutates nothing, matches the file's other read-only
+    cockpit helpers. Folded into ``GET /cockpit`` (additive field) rather than a
+    dedicated route so the existing single-fetch/live-refresh wiring
+    (researchEventSignal -> fetchAll) keeps the unlock UI current for free."""
+    led = research_service.ledger_of(current_player)
+    unlocked_ids = set(led.get("unlocked", []))
+    banked = int(led.get("rp", 0) or 0)
+
+    nodes: List[Dict[str, Any]] = []
+    for node_id, node in research_service.tech_tree.TECH_NODES.items():
+        prereqs = node.get("prereqs", [])
+        prereqs_met = all(p in unlocked_ids for p in prereqs)
+        rp_cost = int(node["cost"].get("rp", 0))
+        is_unlocked = node_id in unlocked_ids
+        nodes.append({
+            "id": node_id,
+            "name": node["name"],
+            "branch": node["branch"],
+            "tier": node["tier"],
+            "rpCost": rp_cost,
+            "prereqs": prereqs,
+            "unlocked": is_unlocked,
+            "prereqsMet": prereqs_met,
+            # Only meaningful pre-unlock; an unlocked node is never "affordable"
+            # again (no re-purchase path).
+            "affordable": (not is_unlocked) and prereqs_met and banked >= rp_cost,
+        })
+    return nodes
 
 
 # --- Endpoints --------------------------------------------------------------
@@ -172,6 +223,8 @@ async def get_cockpit(
         "worldsDone": worlds["done"],
         "governorHeadroom": governor_headroom,
         "softCap": soft_cap_out,
+        # Additive (WO-PLN-UNLOCK-1) — the frozen fields above are unchanged.
+        "techTree": _tech_tree_state(current_player),
     }
 
 
@@ -289,3 +342,38 @@ async def cancel_contract_endpoint(
 
     db.commit()
     return {"success": True}
+
+
+@router.post("/tech/{node_id}/unlock")
+async def unlock_tech_node_endpoint(
+    node_id: str,
+    current_player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Spend banked RP to unlock a tech_tree node (WO-PLN-UNLOCK-1).
+
+    Wraps the EXISTING research_service.unlock_node — it locks the player row,
+    re-checks prereqs/cost under the lock, deducts the RP, and appends the node.
+    This router adds no economy logic; unlock_node is the single writer and we
+    commit on success. A failure (unknown node, already unlocked, missing
+    prereqs, insufficient RP) deducts nothing and is surfaced as a 4xx carrying
+    unlock_node's human message verbatim (see ``_unlock_status_code``).
+
+    Response is intentionally minimal ({success, nodeId, bankedRp,
+    unlockedNodes, message}) — GET /cockpit's additive ``techTree`` field is the
+    full per-node read surface; the client re-polls it after a successful
+    unlock the same way it already does after accepting a contract.
+    """
+    result = research_service.unlock_node(db, current_player.id, node_id)
+    if not result.get("success"):
+        msg = result.get("message", "Could not unlock tech node.")
+        raise HTTPException(status_code=_unlock_status_code(msg), detail=msg)
+
+    db.commit()
+    return {
+        "success": True,
+        "nodeId": result.get("node_id"),
+        "bankedRp": result.get("rp_remaining"),
+        "unlockedNodes": result.get("unlocked"),
+        "message": result.get("message"),
+    }

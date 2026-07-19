@@ -8,6 +8,7 @@ import uuid
 from typing import Any, Dict, Optional, Union
 from datetime import datetime
 from fastapi import HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy.exc import SQLAlchemyError, IntegrityError
@@ -64,6 +65,13 @@ def sanitize_error_message(error: Exception, show_details: bool = False) -> str:
     if isinstance(error, SQLAlchemyError):
         return "Database operation failed"
 
+    # FastAPI request validation (body/query/path) — not a pydantic
+    # ValidationError subclass, so it needs its own branch. Field-level
+    # detail (loc/msg/type, no raw submitted values) is attached separately
+    # in create_error_response via the `validation_errors` key.
+    if isinstance(error, RequestValidationError):
+        return "Invalid request data"
+
     # HTTP exceptions should return their detail message
     if isinstance(error, (HTTPException, StarletteHTTPException)):
         return str(error.detail) if error.detail else "An error occurred"
@@ -106,9 +114,28 @@ def log_error_securely(
     }
     
     if request:
+        # QUEUE-ERRHANDLER-WS (2026-07-16): `request` may be a Starlette
+        # WebSocket, not an HTTP Request, when a handler raises during a WS
+        # connection -- Starlette's exception middleware dispatches to the
+        # SAME registered handler for both connection kinds. `.url`,
+        # `.headers`, `.query_params`, `.client`, and `.scope` are all
+        # defined on the shared `HTTPConnection` base BOTH inherit from, so
+        # every other field below is already WS-safe -- but `.method` is
+        # HTTP-only (there is no HTTP verb on a WebSocket connection), so a
+        # bare access here crashed the error-LOGGING path itself (observed
+        # live during reload cycles: an AttributeError masking whatever the
+        # original error was). getattr-with-sentinel + scope["type"]
+        # fallback keeps the HTTP path byte-identical (every real Request
+        # always has `.method`, so `getattr` always returns it unchanged)
+        # while logging the meaningful equivalent for WS -- "websocket",
+        # from `scope["type"]`, since there's no verb to report.
+        method = getattr(request, "method", None)
+        if method is None:
+            method = getattr(request, "scope", {}).get("type", "unknown")
+
         # Safe request information (no sensitive headers/params)
         context.update({
-            "method": request.method,
+            "method": method,
             "path": request.url.path,
             "user_agent": request.headers.get("user-agent", "unknown")[:200],
             "client_ip": get_client_ip(request),
@@ -176,7 +203,7 @@ def create_error_response(
     # Determine status code
     if isinstance(error, (HTTPException, StarletteHTTPException)):
         status_code = error.status_code
-    elif isinstance(error, ValidationError):
+    elif isinstance(error, (ValidationError, RequestValidationError)):
         status_code = 422
     elif isinstance(error, PermissionError):
         status_code = 403
@@ -201,10 +228,16 @@ def create_error_response(
         "timestamp": datetime.utcnow().isoformat(),
     }
 
-    # Add validation details for ValidationError. Each field is rebuilt
-    # from primitives + capped so the response cannot inherit any raw
-    # exception payload (defense-in-depth for py/stack-trace-exposure).
-    if isinstance(error, ValidationError) and show_details:
+    # Add field-level validation details for both pydantic ValidationError
+    # and FastAPI's RequestValidationError (body/query/path validation —
+    # NOT a ValidationError subclass, so it needs to be named explicitly).
+    # Always attached (not gated behind show_details): field locations are
+    # never sensitive on their own. Each entry is rebuilt from primitives
+    # (loc/msg/type only — never err.get("input"), which pydantic v2
+    # populates with the raw submitted value) + capped, so the response
+    # cannot inherit any raw exception payload (defense-in-depth for
+    # py/stack-trace-exposure and to keep submitted values out of logs/UI).
+    if isinstance(error, (ValidationError, RequestValidationError)):
         response_data["validation_errors"] = [
             {
                 "field": ".".join(str(loc) for loc in err["loc"])[:200],
@@ -247,47 +280,51 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
 
 async def validation_exception_handler(request: Request, exc: ValidationError) -> JSONResponse:
     """Handler for Pydantic validation errors"""
-    
+
     user_id = getattr(request.state, 'user_id', None)
     show_details = getattr(request.app.state, 'debug', False)
-    
+
     return create_error_response(exc, request, user_id, show_details)
 
 
-class ErrorHandlingMiddleware:
-    """Middleware to catch and handle errors consistently"""
-    
-    def __init__(self, app):
-        self.app = app
-    
-    async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-        
-        try:
-            await self.app(scope, receive, send)
-        except Exception as exc:
-            # Create a minimal request object for logging
-            request = Request(scope, receive)
-            
-            # Log the error
-            error_id = log_error_securely(exc, request)
-            
-            # Send error response
-            response = create_error_response(exc, request)
-            await response(scope, receive, send)
+async def request_validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Handler for FastAPI request validation errors (body/query/path).
+
+    NOT a pydantic ValidationError subclass, so it needs its own
+    registration — see create_error_response for the shared field-level
+    (no raw payload) validation_errors handling.
+    """
+
+    user_id = getattr(request.state, 'user_id', None)
+    show_details = getattr(request.app.state, 'debug', False)
+
+    return create_error_response(exc, request, user_id, show_details)
+
+
+async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError) -> JSONResponse:
+    """Handler for SQLAlchemy database errors."""
+
+    user_id = getattr(request.state, 'user_id', None)
+    show_details = getattr(request.app.state, 'debug', False)
+
+    return create_error_response(exc, request, user_id, show_details)
 
 
 def setup_error_handling(app):
     """Setup comprehensive error handling for FastAPI app"""
-    
-    # Add exception handlers
+
+    # Add exception handlers. Every 500-class and 422 path funnels through
+    # create_error_response so it carries the documented envelope
+    # {error, message, error_id, timestamp} + X-Error-ID header
+    # (sw2102-docs FINDINGS.md 2026-06-14 entry — the player-client's
+    # apiRequest fallback logic was built against it).
     app.add_exception_handler(HTTPException, http_exception_handler)
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
+    app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
     app.add_exception_handler(ValidationError, validation_exception_handler)
+    app.add_exception_handler(SQLAlchemyError, sqlalchemy_exception_handler)
     app.add_exception_handler(Exception, global_exception_handler)
-    
+
     # Set debug flag based on environment
     from src.core.config import settings
     app.state.debug = settings.DEBUG

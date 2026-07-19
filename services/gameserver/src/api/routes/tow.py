@@ -64,7 +64,9 @@ async def request_tow(
     carry a Tractor Beam (tow_capable)."""
     target_uuid = _parse_uuid(body.target_ship_id)
 
-    locked_player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    locked_player = (
+        db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
+    )
     if not locked_player or locked_player.current_ship_id is None:
         raise HTTPException(status_code=400, detail="No active ship to tow with")
 
@@ -101,7 +103,9 @@ async def accept_tow(
     target's owner may accept a tow on it."""
     hauler_uuid = _parse_uuid(body.hauler_id)
 
-    locked_player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    locked_player = (
+        db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
+    )
     if not locked_player or locked_player.current_ship_id is None:
         raise HTTPException(status_code=400, detail="No active ship to be towed")
 
@@ -169,7 +173,9 @@ async def detach(
     TOWED pilot may detach; attackers who are neither party cannot. The detacher
     is identified by their active ship: if it's the hauler, detach directly; if
     it's the towed ship, find its hauler and detach that."""
-    locked_player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    locked_player = (
+        db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
+    )
     if not locked_player or locked_player.current_ship_id is None:
         raise HTTPException(status_code=400, detail="No active ship")
 
@@ -197,7 +203,9 @@ async def detach(
     hauler = svc.find_hauler_towing(my_ship.id)
     if hauler is not None:
         # Re-lock the hauler row before mutating its tow_state.
-        hauler = db.query(Ship).filter(Ship.id == hauler.id).with_for_update().first()
+        hauler = (
+            db.query(Ship).filter(Ship.id == hauler.id).populate_existing().with_for_update().first()
+        )
         try:
             result = svc.detach(hauler)
         except TowError as e:

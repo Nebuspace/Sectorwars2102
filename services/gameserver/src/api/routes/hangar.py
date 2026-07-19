@@ -68,7 +68,9 @@ async def request_dock(
     active ship."""
     carrier_uuid = _parse_uuid(carrier_id)
 
-    locked_player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    locked_player = (
+        db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
+    )
     if not locked_player:
         raise HTTPException(status_code=404, detail="Player not found")
 
@@ -197,7 +199,9 @@ async def undock(
 ):
     """The docked pilot resumes control of their CURRENT ship in the Carrier's
     current sector. 1 turn. No Carrier consent."""
-    locked_player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    locked_player = (
+        db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
+    )
     if not locked_player or locked_player.current_ship_id is None:
         raise HTTPException(status_code=400, detail="No active ship to undock")
 
@@ -231,7 +235,9 @@ async def disembark(
 ):
     """When the Carrier is docked at a station, the passenger steps off to the
     port at 0 turns."""
-    locked_player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    locked_player = (
+        db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
+    )
     if not locked_player or locked_player.current_ship_id is None:
         raise HTTPException(status_code=400, detail="No active ship to disembark")
 
