@@ -4,23 +4,6 @@ import { useGame } from '../../contexts/GameContext';
 import type { Planet, Building, BuildingType } from '../../types/planetary';
 import './building-manager.css';
 
-/**
- * The ACTUAL cost the gameserver charges for a building upgrade — credits only.
- * Mirrors planetary_service._calculate_upgrade_cost (credits =
- * 1000·(target−current)·(target+current)/2) and its upgrade flow, which checks
- * and deducts ONLY player.credits — fuel/organics/equipment are never spent.
- * (The per-building BUILDING_INFO.upgradeCost tables show a different,
- * unenforced credit figure plus fictional resource costs; this is the honest
- * one a player is actually gated on.) Time: the server takes 1 hour per level.
- */
-const serverUpgradeCost = (currentLevel: number): { credits: number; timeHours: number } => {
-  const target = currentLevel + 1;
-  return {
-    credits: Math.floor((1000 * (target - currentLevel) * (target + currentLevel)) / 2),
-    timeHours: target - currentLevel,
-  };
-};
-
 interface BuildingManagerProps {
   planet: Planet;
   onUpdate?: (planet: Planet) => void;
@@ -164,8 +147,16 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({
 
   // Calculate if player can afford upgrade — against REAL credits and the
   // server's actual gate (credits only; resources are never charged).
+  // building.nextUpgradeCost is server-authoritative (WO-API-PHASE1 B4,
+  // computed via the exact fn the upgrade commit path charges) — no client
+  // formula to drift out of sync with it.
   const canAffordUpgrade = (building: Building): { canAfford: boolean; missing: string[] } => {
-    const cost = serverUpgradeCost(building.level);
+    const cost = building.nextUpgradeCost;
+    if (!cost) {
+      // No priced next level (already at the server's level cap, or the
+      // field failed to load) — nothing safe to charge against.
+      return { canAfford: false, missing: ['pricing unavailable'] };
+    }
     const playerCredits = playerState?.credits ?? 0;
     const missing: string[] = [];
     if (playerCredits < cost.credits) {
@@ -339,20 +330,31 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({
                   <div className="upgrade-section">
                     <div className="upgrade-cost">
                       <h5>Upgrade to Level {building.level + 1}:</h5>
-                      {/* Show the REAL cost the server charges (credits only) +
-                          the player's actual balance — no fictional resource
-                          costs the upgrade never spends. */}
-                      <div className="cost-items">
-                        <span className={`cost-item${(playerState?.credits ?? 0) < serverUpgradeCost(building.level).credits ? ' insufficient' : ''}`}>
-                          💰 {serverUpgradeCost(building.level).credits.toLocaleString()} credits
-                        </span>
-                        <span className="cost-item balance">
-                          (you have {(playerState?.credits ?? 0).toLocaleString()})
-                        </span>
-                        <span className="cost-item time">
-                          ⏱️ {serverUpgradeCost(building.level).timeHours}h
-                        </span>
-                      </div>
+                      {/* Show the REAL cost the server charges (credits only,
+                          from building.nextUpgradeCost — server-authoritative,
+                          WO-API-PHASE1 B4) + the player's actual balance — no
+                          fictional resource costs the upgrade never spends. */}
+                      {building.nextUpgradeCost ? (
+                        <div className="cost-items">
+                          <span className={`cost-item${(playerState?.credits ?? 0) < building.nextUpgradeCost.credits ? ' insufficient' : ''}`}>
+                            💰 {building.nextUpgradeCost.credits.toLocaleString()} credits
+                          </span>
+                          <span className="cost-item balance">
+                            (you have {(playerState?.credits ?? 0).toLocaleString()})
+                          </span>
+                          <span className="cost-item time">
+                            {/* This UI always requests exactly one level at a
+                                time, and the server charges 1h per level
+                                (BUILDING_UPGRADE_HOURS_PER_LEVEL) — so the
+                                build timer here is always 1h. */}
+                            ⏱️ 1h
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="cost-items">
+                          <span className="cost-item insufficient">Pricing unavailable</span>
+                        </div>
+                      )}
                     </div>
 
                     <button

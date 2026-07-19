@@ -25,6 +25,7 @@ from src.services.planetary_service import (
     PlanetaryService,
     max_colonists_for,
     max_population_for,
+    defense_unit_price,
 )
 
 router = APIRouter(prefix="/planets", tags=["planets"])
@@ -1546,6 +1547,52 @@ async def get_planet_defenses(
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/{planet_id}/defenses/pricing")
+async def get_defense_pricing(
+    planet_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db)
+):
+    """Server-authoritative per-unit prices to ADD planetary defense units
+    (WO-API-PHASE1 B3; ADR-0076 scaled pricing). Read-only preview, priced via
+    the EXACT defense_unit_price(unit_type, citadel_level, planet_type) fn the
+    PUT .../defenses commit path (update_defenses) charges, so the client's
+    affordability preview can never drift from what a Save will actually cost
+    -- advisory only, the commit route re-validates and remains the true charge.
+
+    Owner-gated: mirrors update_defenses' own player_planets ownership check
+    (not a public planet-info read) -- a preview of what THIS player would pay
+    to garrison THIS planet, not another player's business. Not-found and
+    not-owned are both denied identically (403) so existence isn't leaked
+    through the status code, matching the ownership check's own semantics.
+    The response exposes ONLY unit_type -> price, nothing else.
+    """
+    from src.models.planet import player_planets
+    try:
+        pid = UUID(planet_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid planet ID format")
+
+    planet = db.query(Planet).join(
+        player_planets,
+        Planet.id == player_planets.c.planet_id
+    ).filter(
+        Planet.id == pid,
+        player_planets.c.player_id == player.id
+    ).first()
+    if not planet:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the planet's owner can view its defense pricing",
+        )
+
+    return {
+        "turrets": defense_unit_price("turrets", planet.citadel_level, planet.type),
+        "shields": defense_unit_price("shields", planet.citadel_level, planet.type),
+        "fighters": defense_unit_price("fighters", planet.citadel_level, planet.type),
+    }
 
 
 class ConstructBuildingRequest(BaseModel):
