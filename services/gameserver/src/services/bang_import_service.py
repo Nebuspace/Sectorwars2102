@@ -37,10 +37,10 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import random
 import time
 import uuid
-from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -51,6 +51,7 @@ from requests.exceptions import ReadTimeout
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.commodity_economy import base_price as _commodity_base_price
 from src.core.market_bootstrap import build_market_prices
 from src.core.station_class_map import apply_class_pattern
 from src.models.bang_generation_job import (
@@ -71,6 +72,15 @@ from src.models.station import (
     StationType,
 )
 from src.schemas.bang_config import BangConfig, RegionType
+# Station-protection security-tier seeding (WO-STN-SEC-1, FEATURES/economy/
+# station-protection.md § Security tiers). Lives in src.core.station_
+# security_tiers (WO-TD-NEXGEN-1) so nexus_generation_service can seed the
+# same rule without importing this module (which pulls in the docker SDK at
+# module scope). Re-imported here so every existing `from
+# src.services.bang_import_service import _derive_station_security_tier` call
+# site (this module's own _apply_region, plus
+# tests/unit/test_station_security_seeding.py) keeps working unchanged.
+from src.core.station_security_tiers import _derive_station_security_tier
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +90,11 @@ logger = logging.getLogger(__name__)
 
 #: Pinned bang image tag used by :meth:`BangImportService.invoke_bang`.
 #: Overridable via the ``BANG_VERSION`` env var (set by Phase 2 Dockerfile work).
-DEFAULT_BANG_IMAGE = "docker.io/drxelanull/sw2102-bang:1.3.0"
+#: Default (1.3.3) is CLI-mode -- matches compose's BANG_VERSION lockstep pin.
+#: 1.3.0's old entrypoint enters a db-writer phase that needs network; that
+#: phase is incompatible with invoke_bang's network_mode="none"
+#: (WO-BANG-NETMODE-1) -- do not default this back below 1.3.1.
+DEFAULT_BANG_IMAGE = f"docker.io/drxelanull/sw2102-bang:{os.environ.get('BANG_VERSION', '1.3.3')}"
 
 #: PG advisory-lock key used to serialise concurrent generation jobs.
 #: Lives here (not in the schema package) so the translator and any future
@@ -105,17 +119,20 @@ COMMODITY_WIRE_ORDER: Tuple[str, ...] = (
 
 #: Per-commodity baseline used when bang's payload omits a key. The numbers
 #: mirror :class:`Station.commodities` default so a freshly-imported station
-#: has the same shape as one created by direct ORM construction.
+#: has the same shape as one created by direct ORM construction. base_price
+#: derives from the WO-Y / ADR-0082 single source of truth (src.core.
+#: commodity_economy) — WO-ARCH-RES-2 dedup; capacity/production_rate/
+#: price_variance remain local bootstrap shape, not price econ.
 _COMMODITY_DEFAULTS: Dict[str, Dict[str, Any]] = {
-    "ore": {"base_price": 15, "capacity": 5000, "production_rate": 100, "price_variance": 20},
-    "organics": {"base_price": 18, "capacity": 3000, "production_rate": 80, "price_variance": 25},
-    "equipment": {"base_price": 35, "capacity": 2000, "production_rate": 50, "price_variance": 30},
-    "fuel": {"base_price": 12, "capacity": 4000, "production_rate": 120, "price_variance": 15},
-    "luxury_goods": {"base_price": 100, "capacity": 800, "production_rate": 20, "price_variance": 40},
-    "gourmet_food": {"base_price": 80, "capacity": 600, "production_rate": 15, "price_variance": 35},
-    "exotic_technology": {"base_price": 250, "capacity": 200, "production_rate": 5, "price_variance": 50},
-    "colonists": {"base_price": 50, "capacity": 500, "production_rate": 10, "price_variance": 10},
-    "precious_metals": {"base_price": 130, "capacity": 400, "production_rate": 8, "price_variance": 30},
+    "ore": {"base_price": _commodity_base_price("ore"), "capacity": 5000, "production_rate": 100, "price_variance": 20},
+    "organics": {"base_price": _commodity_base_price("organics"), "capacity": 3000, "production_rate": 80, "price_variance": 25},
+    "equipment": {"base_price": _commodity_base_price("equipment"), "capacity": 2000, "production_rate": 50, "price_variance": 30},
+    "fuel": {"base_price": _commodity_base_price("fuel"), "capacity": 4000, "production_rate": 120, "price_variance": 15},
+    "luxury_goods": {"base_price": _commodity_base_price("luxury_goods"), "capacity": 800, "production_rate": 20, "price_variance": 40},
+    "gourmet_food": {"base_price": _commodity_base_price("gourmet_food"), "capacity": 600, "production_rate": 15, "price_variance": 35},
+    "exotic_technology": {"base_price": _commodity_base_price("exotic_technology"), "capacity": 200, "production_rate": 5, "price_variance": 50},
+    "colonists": {"base_price": _commodity_base_price("colonists"), "capacity": 500, "production_rate": 10, "price_variance": 10},
+    "precious_metals": {"base_price": _commodity_base_price("precious_metals"), "capacity": 400, "production_rate": 8, "price_variance": 30},
 }
 
 #: Lossy bang→gameserver planet-type mapping (per schema map §2.6).
@@ -131,6 +148,26 @@ _PLANET_TYPE_MAP: Dict[str, PlanetType] = {
 #: bang Port.class → gameserver StationType (heuristic; matches legacy
 #: GalaxyGenerator weighting tables). CLASS_0 stays TRADING since SpaceDocks
 #: route via :attr:`Station.is_spacedock` per Q2.
+#:
+#: WO-P2-econ-blackmarket-venue-spawn Leg A: class 8 (``StationClass.CLASS_8``,
+#: "Black Hole" — a PRICING tier, ``station_class_map.py``'s premium-buyer +20%
+#: rule) had a ``8: StationType.BLACK_MARKET`` entry here that conflated it
+#: with the venue TYPE the contraband-trading kernel gates on
+#: (``contraband_service.py``'s ``_is_black_market_venue``). That conflation
+#: was live: ~12.5% of every randomly-rolled bang port lands on class 8
+#: (``sw2102-bang/src/content.ts`` rolls ``rangeInt(1, 8)`` inclusive), so
+#: every imported region was minting real ``StationType.BLACK_MARKET``
+#: stations at random Black-Hole-class ports, untethered from canon's
+#: intended Frontier-zone/Fringe-Alliance placement (confirmed live on stage:
+#: 393 mis-typed rows, 12.2%, matching the predicted roll rate). Removed —
+#: class 8 now falls through to the ``.get(klass, StationType.TRADING)``
+#: default below, same as classes 4-7. The *separate*, legitimate mapping of
+#: classes 8 AND 9 to the ``TraderArchetype.BLACK_MARKET`` HAGGLING
+#: PERSONALITY (``core/trader_personalities.archetype_for_station_class`` —
+#: a suspicious/opportunistic negotiation style, pinned by
+#: ``test_haggle_service.py``) and class 8's premium-buyer PRICING
+#: (``station_class_map.py``'s ``is_premium_buyer``) are UNTOUCHED — both are
+#: correct and orthogonal to the venue-type bug fixed here.
 _STATION_TYPE_BY_CLASS: Dict[int, StationType] = {
     0: StationType.TRADING,
     1: StationType.MINING,
@@ -140,7 +177,6 @@ _STATION_TYPE_BY_CLASS: Dict[int, StationType] = {
     5: StationType.TRADING,
     6: StationType.TRADING,
     7: StationType.TRADING,
-    8: StationType.BLACK_MARKET,
 }
 
 #: Security level by cluster type. Mirrors the spirit of the legacy generator
@@ -170,14 +206,17 @@ _SECURITY_BY_CLUSTER_TYPE: Dict[ClusterType, int] = {
 #: (generation.md:99 — the RATIO, not the absolute base).
 _GX1_RESOURCE_RICH_YIELD_RATIO: float = 1.5
 
-#: RESOURCE_RICH asteroid base ore/precious_metals/radioactives. INVENTED
+#: RESOURCE_RICH asteroid base ore/precious_metals/quantum_shards. INVENTED
 #: NO-CANON launch base (the +50% above is applied ON TOP of this baseline, then
 #: composed with the zone multiplier). bang carries no per-sector yield to
 #: multiply, so this is the baseline being scaled (master §3.1c / MAX-MEMO N3).
+#: Third key is `quantum_shards`, matching WO-ARCH-RES-2I's ghost-vocabulary
+#: purge on Sector.resources.asteroid_yield (sector.py / mining harvest
+#: contract) -- NOT the retired `radioactives` slug.
 _GX1_RESOURCE_RICH_BASE: Dict[str, int] = {
     "ore": 1000,
     "precious_metals": 400,
-    "radioactives": 200,
+    "quantum_shards": 200,
 }
 
 #: RESOURCE_RICH per-sector asteroid probability (NO-CANON ~0.5). Probabilistic,
@@ -270,8 +309,8 @@ def _gx1_sector_bias(
                     "precious_metals": _compose(
                         _GX1_RESOURCE_RICH_BASE["precious_metals"]
                     ),
-                    "radioactives": _compose(
-                        _GX1_RESOURCE_RICH_BASE["radioactives"]
+                    "quantum_shards": _compose(
+                        _GX1_RESOURCE_RICH_BASE["quantum_shards"]
                     ),
                 },
                 "gas_clouds": [],
@@ -285,7 +324,6 @@ def _gx1_sector_bias(
             _GX1_MILITARY_PATROL_MIN, _GX1_MILITARY_PATROL_MAX
         )
         defenses = {
-            "defense_drones": 0,
             "owner_id": None,
             "owner_name": None,
             "team_id": None,
@@ -310,12 +348,76 @@ def _gx1_sector_bias(
 
     return resources, defenses, controlling_faction, force_nebula
 
+
+#: Canon color/hex table + the [NO-CANON] density-boundary derivation now
+#: live in one SHARED home (WO-GWQ-NEXUS-NEBULA-FIELDS lifted them out so
+#: nexus_generation_service can derive the identical colors for its
+#: synthetic nebula clusters instead of duplicating the cutpoint table).
+#: Re-imported under their original private names here so nothing else in
+#: this module (or its existing tests) needs to change.
+from src.services.nebula_color import (  # noqa: E402
+    NEBULA_COLOR_HEX as _NEBULA_COLOR_HEX,
+    derive_nebula_color as _derive_nebula_color,
+)
+
+
+def _finalize_cluster_nebula_fields(
+    cluster_specs: List["ClusterSpec"],
+    cluster_nebula_samples: Dict[int, Dict[str, List[Any]]],
+) -> None:
+    """Mutating finalization pass (WO-DBB-QR4 + WO-SB-QH2) over one region's
+    ``cluster_specs``, called once ``_translate_region`` has finished
+    sampling every sector.
+
+    For each cluster with sampled nebula sectors: ``quantum_field_strength``
+    = the mean of the cluster's per-sector densities (the only quantitative
+    nebula attribute the bang payload carries); ``nebula_type``/
+    ``color_hex`` = the canon color (and its hex) derived from that mean via
+    :func:`_derive_nebula_color` / ``_NEBULA_COLOR_HEX`` — NOT bang's raw
+    'normal'/'magnetic' type. nebula_type therefore depends ONLY on density:
+    a tie (or any split) among a cluster's raw-type sample counts has no
+    effect on the outcome. A cluster with no nebula samples leaves all three
+    fields at their ``None`` default.
+    """
+    for cs in cluster_specs:
+        samples = cluster_nebula_samples.get(cs.cluster_int_id)
+        if not samples or not samples["types"]:
+            continue
+        densities = samples["densities"]
+        if not densities:
+            continue
+        mean_density = sum(densities) / len(densities)
+        cs.quantum_field_strength = mean_density
+        cs.nebula_type = _derive_nebula_color(mean_density)
+        cs.color_hex = _NEBULA_COLOR_HEX[cs.nebula_type]
+
+
 #: Bang region-type → expected sector count (sanity check only).
 _EXPECTED_SECTOR_COUNT: Dict[RegionType, Optional[int]] = {
     "player_owned": None,
     "terran_space": 300,
     "central_nexus": 5000,
 }
+
+#: WO-BANG-ONEWAY-RATE: GLOSSARY.md's canonical one-way-warp fraction
+#: target (~5%). Every BangConfig construction site below pins this
+#: EXPLICITLY rather than relying on bang's own CLI default (also 5% per
+#: `--help`) -- an implicit cross-repo default is fragile (round-3 census
+#: passed `one_way_warp_percent: null` with no explicit value anywhere in
+#: OUR config).
+#: [NO-CANON] tolerance/verdict: pinning this INPUT value does NOT reliably
+#: produce a ~5% OUTPUT fraction. Direct empirical testing against the
+#: live bang CLI (v1.3.4, 1000-sector player_owned samples, seed 42)
+#: measured 29.6% / 32.9% / 44.6% one-way warps at input 0 / 5 / 25
+#: respectively -- input=5 alone reproduces the ~32% census finding almost
+#: exactly, it does not fix it. Excluding bang's structurally-always-
+#: one-way "latent" (quantum-tunnel) warps, NORMAL warps alone still
+#: measured 25.0% one-way at input=0. This is bang's own generation-
+#: algorithm behavior (sw2102-bang, a separate repo/lane), not a
+#: translator or job-config mapping bug -- pinning this constant is the
+#: best available lever from our side; closing the gap to canon's actual
+#: ~5% OUTPUT needs a bang-repo investigation, flagged separately.
+CANON_ONE_WAY_WARP_PERCENT = 5.0
 
 #: BangConfig snake_case field → bang CLI kebab-case flag. Only optional
 #: flags with a 1:1 CLI surface live here; the three required fields
@@ -494,6 +596,9 @@ class PlanetSpec:
     citadel_level: int
     citadel_drone_capacity: int
     citadel_safe_credits: int
+    # Capital welcome worlds (New Earth et al.) — public population source;
+    # never claimable. Default False; terran_space invariant sets True.
+    is_population_hub: bool = False
 
 
 @dataclass
@@ -515,11 +620,13 @@ class ClusterSpec:
     is_discovered: bool
     is_hidden: bool
     special_features: List[str]
-    # Structured nebula fields (WO-DBB-QR4). The bang payload has nebula data
-    # PER-SECTOR only; these capture the cluster's dominant/representative
-    # nebula, derived from its member sectors during _translate_region. They
-    # default unset (cluster has no nebula sectors) → all three stay None.
-    # color_hex has no payload source and is always None for now.
+    # Structured nebula fields (WO-DBB-QR4, color-derived per WO-SB-QH2). The
+    # bang payload has nebula data PER-SECTOR only; these capture the
+    # cluster's dominant/representative nebula, derived from its member
+    # sectors during _translate_region: nebula_type is the canon color
+    # derived from mean density (_derive_nebula_color), color_hex is its
+    # canonical hex (_NEBULA_COLOR_HEX). They default unset (cluster has no
+    # nebula sectors) → all three stay None.
     nebula_type: Optional[str] = None
     quantum_field_strength: Optional[float] = None
     color_hex: Optional[str] = None
@@ -706,6 +813,10 @@ class BangImportService:
                     stdout=True,
                     stderr=True,
                     stdin_open=True,
+                    # WO-BANG-NETMODE-1: bang is CPU-only galaxy generation with
+                    # zero network needs — least-privilege on every host, not a
+                    # workaround for any one host's broken bridge.
+                    network_mode="none",
                 )
             except docker_errors.ImageNotFound as exc:
                 raise RuntimeError(
@@ -804,6 +915,23 @@ class BangImportService:
         REGION_ORDER: Tuple[RegionType, ...] = (
             "terran_space", "player_owned", "central_nexus",
         )
+        # WO-BANG-CAPITAL-DEDUP: bang names EVERY region's Capital-sector
+        # planet 'Earth' (sw2102-bang/src/content.ts:346-354) -- each
+        # region-type invocation is generated independently with no
+        # cross-region awareness, so it can't know 'Earth' is already taken
+        # elsewhere in the SAME galaxy. terran_space is exempt: its capital
+        # is already uniquely renamed to 'New Earth' by
+        # _apply_terran_space_invariants below (that name is OURS, not
+        # bang-emitted -- bang's own payload for terran_space ALSO says
+        # 'Earth'; the starter-invariant override is a pre-existing,
+        # unrelated mechanic that happens to also solve terran_space's
+        # collision as a side effect). This loop has galaxy-wide visibility
+        # (all regions in one call, in canonical REGION_ORDER), so it is the
+        # correct place to dedupe -- bang itself, one repo over, cannot.
+        # [NO-CANON] rename pattern -- ships.md/DATA_MODELS name no
+        # disambiguation scheme; "<name> (<Region Type>)" is this fix's pin,
+        # flagged for design sign-off.
+        seen_capital_planet_names = {"New Earth"}
         running_offset = 0
         for region_type in REGION_ORDER:
             universe = universes.get(region_type)
@@ -814,6 +942,27 @@ class BangImportService:
                 # Enforce the legacy starter-region invariants per the
                 # GalaxyGenerator audit's "Top 3 risks".
                 plan = self._apply_terran_space_invariants(plan, warnings)
+            else:
+                capital_planet = next(
+                    (p for p in plan.planets if p.sector_int_id == plan.capital_sector_number),
+                    None,
+                )
+                if capital_planet is not None and capital_planet.name in seen_capital_planet_names:
+                    original_name = capital_planet.name
+                    capital_planet.name = (
+                        f"{original_name} ({region_type.replace('_', ' ').title()})"
+                    )
+                    warnings.append({
+                        "category": "CAPITAL_DEDUP",
+                        "code": "WARN-CAPITAL-DEDUP",
+                        "message": (
+                            f"Renamed duplicate capital planet '{original_name}' in "
+                            f"{region_type} to '{capital_planet.name}' (galaxy already "
+                            f"has a planet named '{original_name}')"
+                        ),
+                    })
+                if capital_planet is not None:
+                    seen_capital_planet_names.add(capital_planet.name)
             # ADR-0041 Phase 10.5: seed TradeDocks per region quota
             plan = self._apply_tradedock_seeding(region_type, plan, warnings)
             if running_offset:
@@ -940,9 +1089,14 @@ class BangImportService:
         # sector adjacency graph (sector_warps); to actually make the
         # galaxy navigable end-to-end we wire the spoke regions to
         # central_nexus here. Per ADR-0043 each spoke's endpoint is its
-        # Frontier Gateway Plaza landing sector, and the tunnel is a NATURAL,
-        # LATENT warp (invisible until a Warp Jumper scan reveals it) — not a
-        # constructed gate. The Nexus side anchors on the hub's gate sector.
+        # Frontier Gateway Plaza landing sector, and the tunnel is a NATURAL
+        # warp — not a constructed gate. It is NOT latent: per ruling
+        # (orchestrator, 2026-07-10), Terran + Nexus are pre-discovered for
+        # every player, so this sanctioned Nexus attachment gateway is
+        # visible from the start. ADR-0034's "latent until a Warp Jumper
+        # scan" pattern still governs ordinary in-region natural tunnels
+        # (see the sector_warps import below) — just not this cross-region
+        # gateway. The Nexus side anchors on the hub's gate sector.
         nexus_attachment = attachment_by_region.get("central_nexus")
         if nexus_attachment is not None:
             for spoke_rt in ("player_owned", "terran_space"):
@@ -1007,7 +1161,11 @@ class BangImportService:
 
         # Inter-region tunnel: new region ↔ central_nexus. Mirrors apply()'s
         # ADR-0043 pattern — spoke endpoint is the Frontier landing sector,
-        # tunnel is NATURAL + latent (hidden until a Warp Jumper scan).
+        # tunnel is NATURAL. NOT latent: per ruling (orchestrator,
+        # 2026-07-10), Terran + Nexus are pre-discovered for every player, so
+        # this sanctioned Nexus attachment gateway is visible from the start
+        # — ADR-0034's "latent until a Warp Jumper scan" pattern governs
+        # ordinary in-region natural tunnels only, not this gateway.
         if nexus_gate_id is not None:
             spoke_endpoint = attachment.nexus_landing_sector_id or new_gate
             session.add(WarpTunnel(
@@ -1016,11 +1174,11 @@ class BangImportService:
                 destination_sector_id=nexus_gate_id,
                 type=WarpTunnelType.NATURAL,
                 is_bidirectional=True,
-                is_latent=True,
+                is_latent=False,
                 description=(
                     "Natural Nexus warp linking new player_owned region "
-                    "(Frontier Gateway Plaza) to central_nexus — latent until "
-                    "revealed by a Warp Jumper scan."
+                    "(Frontier Gateway Plaza) to central_nexus — pre-discovered "
+                    "gateway, visible to every player (Terran + Nexus canon)."
                 ),
             ))
 
@@ -1108,6 +1266,7 @@ class BangImportService:
                     seed=params.seed,
                     sectors=params.sectors,
                     region_type="player_owned",
+                    one_way_warp_percent=CANON_ONE_WAY_WARP_PERCENT,
                 )
                 parsed = await asyncio.to_thread(self.invoke_bang, sub_config, 300)
                 await self._append_log(
@@ -1417,6 +1576,7 @@ class BangImportService:
                             else (_EXPECTED_SECTOR_COUNT[region_type] or params.sectors)
                         ),
                         region_type=region_type,
+                        one_way_warp_percent=CANON_ONE_WAY_WARP_PERCENT,
                     )
                     parsed = await asyncio.to_thread(self.invoke_bang, sub_config, 300)
                     universes[region_type] = parsed
@@ -1500,8 +1660,9 @@ class BangImportService:
                 is_hidden=cs.is_hidden,
                 special_features=cs.special_features,
                 # WO-DBB-QR4: structured cluster nebula (dominant/representative,
-                # derived from member sectors in _translate_region). color_hex
-                # has no payload source → None.
+                # derived from member sectors in _translate_region). Per
+                # WO-SB-QH2, nebula_type/color_hex are density-derived canon
+                # colors, not bang's raw type — see _derive_nebula_color.
                 nebula_type=cs.nebula_type,
                 quantum_field_strength=cs.quantum_field_strength,
                 color_hex=cs.color_hex,
@@ -1577,6 +1738,17 @@ class BangImportService:
                 )
             )
 
+        # WO-STN-SEC-1: sector→cluster-type lookup so the security-tier
+        # derivation below can see "is this station in a frontier/lawless
+        # cluster" without a second DB round-trip (region_plan already carries
+        # both lists in memory).
+        cluster_type_by_cluster_int: Dict[int, ClusterType] = {
+            cs.cluster_int_id: cs.type for cs in region_plan.clusters
+        }
+        cluster_int_by_sector_int: Dict[int, int] = {
+            ss.sector_id: ss.cluster_int_id for ss in region_plan.sectors
+        }
+
         created_stations: List[Station] = []
         for stsp in region_plan.stations:
             station_kwargs = dict(
@@ -1597,6 +1769,29 @@ class BangImportService:
             # (None falls through to the model's BORDER default).
             if stsp.trader_personality is not None:
                 station_kwargs["trader_personality"] = stsp.trader_personality
+            # WO-CMB-PORT-DEF-SEED-1: class-scaled defenses (replaces the
+            # flat Column default) for every freshly-imported station.
+            station_kwargs["defenses"] = Station.default_defenses_for_class(stsp.station_class)
+            # WO-STN-SEC-1: station-protection security tier (FEATURES/economy/
+            # station-protection.md § Security tiers) — see
+            # _derive_station_security_tier's docstring for the canon anchors
+            # vs NO-CANON default. Fresh construction, so no flag_modified
+            # needed (unlike an UPDATE against an already-flushed row).
+            cluster_int_id = cluster_int_by_sector_int.get(stsp.sector_int_id)
+            station_cluster_type = (
+                cluster_type_by_cluster_int.get(cluster_int_id)
+                if cluster_int_id is not None
+                else None
+            )
+            station_kwargs["security"] = {
+                "tier": _derive_station_security_tier(
+                    region_type=region_plan.region_type,
+                    cluster_type=station_cluster_type,
+                    station_class=stsp.station_class,
+                    is_spacedock=stsp.is_spacedock,
+                    tradedock_tier=stsp.tradedock_tier,
+                )
+            }
             station = Station(**station_kwargs)
             session.add(station)
             created_stations.append(station)
@@ -1621,6 +1816,11 @@ class BangImportService:
                 citadel_level=ps.citadel_level,
                 citadel_drone_capacity=ps.citadel_drone_capacity,
                 citadel_safe_credits=ps.citadel_safe_credits,
+                # Belt-and-braces: flag OR pop ≥1M (same threshold land/claim/
+                # pioneer already use) so a missed invariant can't strand the hub.
+                is_population_hub=bool(
+                    ps.is_population_hub or (ps.population or 0) >= 1_000_000
+                ),
             )
             session.add(planet)
 
@@ -1713,13 +1913,17 @@ class BangImportService:
         spoke_attachment: Optional["RegionAttachment"],
         nexus_attachment: "RegionAttachment",
     ) -> None:
-        """ADR-0043: wire one spoke region to the Nexus as a natural latent warp.
+        """ADR-0043: wire one spoke region to the Nexus as a natural warp.
 
         The spoke endpoint is its Frontier Gateway Plaza landing sector (falls
         back to the spoke's gate anchor if landing selection degraded). The
         tunnel is ``type = NATURAL``, ``is_bidirectional = True`` (cross-region
-        travel + return), ``is_latent = True`` (hidden until a Warp Jumper scan
-        per ADR-0034). No-op if the spoke wasn't imported.
+        travel + return), ``is_latent = False``: per ruling (orchestrator,
+        2026-07-10), Terran + Nexus are pre-discovered for every player, so
+        the sanctioned Nexus attachment gateway is visible from the start —
+        ADR-0034's "latent until a Warp Jumper scan" pattern governs ordinary
+        in-region natural tunnels, not this cross-region gateway. No-op if
+        the spoke wasn't imported.
         """
         if spoke_attachment is None:
             return
@@ -1733,10 +1937,11 @@ class BangImportService:
             destination_sector_id=nexus_attachment.gate_sector_id,
             type=WarpTunnelType.NATURAL,
             is_bidirectional=True,
-            is_latent=True,
+            is_latent=False,
             description=(
                 f"Natural Nexus warp linking {spoke_rt} (Frontier Gateway Plaza) "
-                "to central_nexus — latent until revealed by a Warp Jumper scan."
+                "to central_nexus — pre-discovered gateway, visible to every "
+                "player (Terran + Nexus canon)."
             ),
         ))
 
@@ -1920,6 +2125,7 @@ class BangImportService:
                             else (_EXPECTED_SECTOR_COUNT[region_type] or params.sectors)
                         ),
                         region_type=region_type,
+                        one_way_warp_percent=CANON_ONE_WAY_WARP_PERCENT,
                     )
                     parsed = await asyncio.to_thread(
                         self.invoke_bang, sub_config, 300
@@ -2302,21 +2508,10 @@ class BangImportService:
             for planet_payload in sector_payload.get("planets") or []:
                 planet_specs.append(self._build_planet_spec(sid, planet_payload))
 
-        # WO-DBB-QR4: finalize each cluster's dominant/representative nebula
-        # from the per-sector samples gathered above. nebula_type = the most
-        # frequent type among the cluster's nebula sectors (ties broken by
-        # first-seen via Counter.most_common); quantum_field_strength = the mean
-        # density of those sectors (the only quantitative nebula attribute the
-        # bang payload carries). color_hex has no payload source → stays None.
-        # A cluster with no nebula sectors leaves all three fields None.
-        for cs in cluster_specs:
-            samples = cluster_nebula_samples.get(cs.cluster_int_id)
-            if not samples or not samples["types"]:
-                continue
-            cs.nebula_type = Counter(samples["types"]).most_common(1)[0][0]
-            densities = samples["densities"]
-            if densities:
-                cs.quantum_field_strength = sum(densities) / len(densities)
+        # WO-DBB-QR4 + WO-SB-QH2: finalize each cluster's dominant/representative
+        # nebula from the per-sector samples gathered above. See
+        # _finalize_cluster_nebula_fields.
+        _finalize_cluster_nebula_fields(cluster_specs, cluster_nebula_samples)
 
         # Warps. Defensively dedupe on the (from, to) pair: sector_warps has
         # composite pkey (source_sector_id, destination_sector_id) and bang
@@ -2395,10 +2590,28 @@ class BangImportService:
         is_spacedock = bool(port.get("isSpaceDock", False))
         station_class = StationClass(klass) if klass in {c.value for c in StationClass} else StationClass.CLASS_0
         if is_spacedock:
-            # Per the legacy SpaceDock recipe — full service hub flags.
+            # Per the legacy SpaceDock recipe — full service hub flags. A
+            # spacedock is a dedicated NPC-neutral hub (TradeDock-style) --
+            # the explicit black_market flag below never applies to it,
+            # mirroring how it already takes precedence over the class-
+            # based type table.
             station_type = StationType.SHIPYARD
         else:
             station_type = _STATION_TYPE_BY_CLASS.get(klass, StationType.TRADING)
+            # WO-P2-econ-blackmarket-venue-spawn Leg C, Part 1 (import-map):
+            # an EXPLICIT `black_market: true` flag on the port manifest
+            # overrides the class-derived type to BLACK_MARKET. Deliberately
+            # NOT class-derived (Leg A fixed exactly this conflation for
+            # class 8 -- reintroducing an implicit class->BLACK_MARKET rule
+            # here would resurrect the same bug under a different name).
+            # Graceful on absence: no flag -> station_type is whatever the
+            # class table already produced, byte-identical to before this
+            # WO -- safe to ship ahead of the bang sidecar actually emitting
+            # the flag (a no-op until then). bang-side emission + the
+            # canon placement rule for WHERE the flag gets set are the
+            # cross-repo half of this WO, not built here.
+            if bool(port.get("black_market", False)):
+                station_type = StationType.BLACK_MARKET
 
         name = str(port.get("name", f"Station {sector_id}"))
         commodities = _build_full_commodities(port.get("commodities") or {})
@@ -2571,6 +2784,7 @@ class BangImportService:
                 citadel_level=0,
                 citadel_drone_capacity=0,
                 citadel_safe_credits=0,
+                is_population_hub=True,
             ),
         )
 
@@ -2859,6 +3073,8 @@ def _build_default_services(is_spacedock: bool) -> Dict[str, Any]:
         "refining_facility": False,
         "luxury_amenities": False,
     }
+
+
 
 
 def _coerce_formation_type(value: str) -> SpecialFormationType:

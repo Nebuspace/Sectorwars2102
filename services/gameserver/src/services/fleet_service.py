@@ -100,6 +100,51 @@ class FleetService:
         ships = fleet.total_ships or 0
         return min(0.20, max(0.0, (ships - 2) * 0.025))
 
+    def get_coordination_bonus(self, ship_id: UUID) -> float:
+        """
+        Return the cached coordination_bonus of the fleet a ship is
+        currently enrolled in as a FleetMember, or 0.0 if the ship isn't
+        fleet-enrolled.
+
+        Ship-keyed (not player-keyed): the bonus belongs to whichever SHIP
+        is actually fighting, not to who owns it -- a player piloting a
+        ship that ISN'T fleet-enrolled gets no bonus even if they
+        separately own an enrolled ship elsewhere, and an NPC-controlled
+        ship (never a FleetMember -- fleets are Team-owned player
+        structures) transparently resolves to 0.0 with no special-casing
+        needed by the caller.
+
+        Reads the SAME static value _compute_coordination_bonus writes on
+        roster-change events (create/add/remove/KIA) -- never recomputes
+        here, per fleet-coordination.md:95 ("the combat resolver reads the
+        cached value").
+
+        Defensive on the whole read (mirrors combat_service._medal_combat_
+        damage_bonus / _sector_combat_modifier): a fleet-lookup hiccup —
+        including a caller whose session/mock isn't wired for a FleetMember
+        query at all — must never break combat resolution, so any failure
+        degrades to 0.0 rather than propagating. The isinstance checks below
+        are deliberate, not just a None-guard: a permissive test double
+        (e.g. an unconfigured MagicMock session used elsewhere in the combat
+        suite for unrelated purposes) can return a truthy, numeric-coercible
+        stand-in for `.first()` without ever raising, silently smuggling in
+        a nonzero bonus — isinstance anchors this to a genuine FleetMember
+        row backed by a genuine Fleet, never a stand-in that merely "looks"
+        truthy.
+        """
+        try:
+            member = self.db.query(FleetMember).filter(
+                FleetMember.ship_id == ship_id
+            ).first()
+            if not isinstance(member, FleetMember) or not isinstance(member.fleet, Fleet):
+                return 0.0
+            return max(0.0, float(member.fleet.coordination_bonus or 0.0))
+        except Exception as e:  # never let a fleet-lookup hiccup break combat
+            logger.error(
+                "Coordination-bonus read failed (continuing without): %s", e
+            )
+            return 0.0
+
     # Fleet Management Methods
 
     def create_fleet(
@@ -150,8 +195,17 @@ class FleetService:
         role: FleetRole = FleetRole.ATTACKER
     ) -> FleetMember:
         """Add a ship to a fleet."""
-        # Validate fleet
-        fleet = self.db.query(Fleet).filter(Fleet.id == fleet_id).first()
+        # Lock the fleet row before checking status (WO-FLEET-ROUND-INTEGRITY
+        # sub-part (c)): the route (fleets.py add-ship) already read this
+        # Fleet UNLOCKED for its team-ownership check on this same session;
+        # _lock_fleets_ascending's populate_existing() forces this lock to
+        # re-read live rather than returning the stale pre-lock identity-map
+        # object. Closes a TOCTOU against initiate_battle's enroll flip: an
+        # unlocked status check here could otherwise still pass FORMING/READY
+        # in the gap between initiate_battle's own lock-held status mutation
+        # and its commit.
+        locked_fleets = self._lock_fleets_ascending({fleet_id})
+        fleet = locked_fleets.get(fleet_id)
         if not fleet:
             raise ValueError(f"Fleet {fleet_id} not found")
 
@@ -196,8 +250,31 @@ class FleetService:
         logger.info(f"Added ship {ship_id} to fleet {fleet_id}")
         return member
 
-    def remove_ship_from_fleet(self, fleet_id: UUID, ship_id: UUID) -> bool:
-        """Remove a ship from a fleet."""
+    def remove_ship_from_fleet(
+        self, fleet_id: UUID, ship_id: UUID, *, commit: bool = True
+    ) -> bool:
+        """Remove a ship from a fleet.
+
+        If the removed member held the FLAGSHIP role, promotes a successor
+        in the SAME transaction (WO-FLEET-CASUALTY-SUCCESSION,
+        fleet-tactics.md:80 — "leadership transitions to the next-most-senior
+        member"). This is the single shared removal path for BOTH a manual
+        removal (fleets.py route) and a combat KIA (_record_ship_casualty),
+        so hooking succession here covers both triggers without duplication.
+        See _promote_flagship_successor for the NO-CANON seniority kernel.
+
+        commit (WO-FLEET-ROUND-INTEGRITY sub-part (b)): True (default) issues
+        an immediate self.db.commit() here — the manual-removal route
+        (fleets.py DELETE /{fleet_id}/remove-ship/{ship_id}) is the ONLY
+        other caller (verified by grep) and relies on this for its existing,
+        UNCHANGED observable behavior. False flush()es only, folding the
+        removal into the CALLER's own transaction — used exclusively by the
+        mid-battle KIA path (_record_ship_casualty, itself only ever invoked
+        from simulate_battle_round's fire loop) so a mid-round casualty no
+        longer commits mid-flight and releases the FleetBattle/Fleet
+        FOR-UPDATE locks simulate_battle_round acquired at its top — see that
+        method's own comment for the double-pay exploit this closes.
+        """
         member = self.db.query(FleetMember).filter(
             and_(
                 FleetMember.fleet_id == fleet_id,
@@ -209,6 +286,8 @@ class FleetService:
             return False
 
         fleet = member.fleet
+        was_flagship = (member.role or "") == FleetRole.FLAGSHIP.value
+        fallen_pilot_id = member.player_id
         self.db.delete(member)
 
         # Recalculate fleet stats
@@ -224,11 +303,74 @@ class FleetService:
         if fleet.total_ships == 0:
             fleet.status = FleetStatus.DISBANDED.value
             fleet.disbanded_at = datetime.utcnow()
+        elif was_flagship:
+            self._promote_flagship_successor(fleet, fallen_pilot_id)
 
-        self.db.commit()
+        if commit:
+            self.db.commit()
+        else:
+            self.db.flush()
 
         logger.info(f"Removed ship {ship_id} from fleet {fleet_id}")
         return True
+
+    def _promote_flagship_successor(
+        self,
+        fleet: Fleet,
+        fallen_pilot_id: Optional[UUID],
+    ) -> Optional[FleetMember]:
+        """Promote the next-most-senior surviving member to FLAGSHIP after
+        the prior flagship's FleetMember row was removed (destroyed OR
+        manually removed — see remove_ship_from_fleet, the single caller).
+
+        NO-CANON KERNEL (flagged for a DECISIONS.md ruling): fleet-tactics.md
+        only says "leadership transitions to the next-most-senior member"
+        (target spec) without defining "seniority". This kernel treats
+        seniority as earliest FleetMember.joined_at, ties broken by the
+        lowest member id (str-compared UUID — a stable, deterministic
+        tie-break, not a canon ruling). Swapping the definition later is a
+        one-line change to the sort key below.
+
+        If the fallen flagship's pilot (fallen_pilot_id — the removed
+        member's OWN player_id, who is the commander under normal operation
+        per "The commander is automatically the flagship's pilot") held
+        Fleet.commander_id, command transfers to the promoted member's
+        player_id in the SAME transaction — the fleet is never left without
+        both a flagship AND a commander while a successor exists.
+
+        Queries FleetMember fresh (not fleet.members) because the caller's
+        session.delete() on the old flagship member is only guaranteed to be
+        reflected via SQLAlchemy's autoflush-on-query, not in an
+        already-loaded in-memory relationship collection.
+
+        Returns the promoted FleetMember, or None if no member remains (the
+        caller only reaches this branch when fleet.total_ships > 0, so this
+        is a defensive no-op guard, not the expected path).
+        """
+        remaining = self.db.query(FleetMember).filter(
+            FleetMember.fleet_id == fleet.id
+        ).all()
+        if not remaining:
+            return None
+
+        successor = min(
+            remaining,
+            key=lambda m: (m.joined_at or datetime.min, str(m.id))
+        )
+        successor.role = FleetRole.FLAGSHIP.value
+
+        transferred_command = False
+        if fallen_pilot_id is not None and fleet.commander_id == fallen_pilot_id:
+            fleet.commander_id = successor.player_id
+            transferred_command = True
+
+        logger.info(
+            "Flagship succession: fleet %s promotes member %s (player %s) to "
+            "FLAGSHIP%s",
+            fleet.id, successor.id, successor.player_id,
+            " + transferred command" if transferred_command else "",
+        )
+        return successor
 
     def set_fleet_formation(self, fleet_id: UUID, formation: str) -> Fleet:
         """Change fleet formation."""
@@ -293,7 +435,11 @@ class FleetService:
 
     def disband_fleet(self, fleet_id: UUID) -> bool:
         """Disband a fleet."""
-        fleet = self.db.query(Fleet).filter(Fleet.id == fleet_id).first()
+        # Lock the fleet row before checking status (WO-FLEET-ROUND-INTEGRITY
+        # sub-part (c)) — same TOCTOU-vs-initiate_battle rationale as
+        # add_ship_to_fleet above.
+        locked_fleets = self._lock_fleets_ascending({fleet_id})
+        fleet = locked_fleets.get(fleet_id)
         if not fleet:
             return False
 
@@ -349,10 +495,17 @@ class FleetService:
     def resupply_fleet(self, fleet_id: UUID, player_id: UUID) -> Dict[str, Any]:
         """Pay credits to raise a docked fleet's supply_level back toward max.
 
-        This is the recovery counterpart to the WO-R decay tick (which only ever
-        LOWERS supply); it is the only path that RAISES Fleet.supply_level, so a
-        depleted fleet is no longer permanently combat-locked once it can reach a
-        friendly station. DOES NOT touch decay or _calculate_formation_bonus.
+        CORRECTION (WO-FLEET-CASUALTY-SUCCESSION): this method previously
+        claimed to be "the recovery counterpart to the WO-R decay tick" —
+        that decay tick does not exist. Grep-verified: Fleet.supply_level is
+        written NOWHERE else in the codebase (no scheduler job, no per-round
+        combat write, no admin override) — this method is the SOLE writer of
+        Fleet.supply_level, in EITHER direction. Supply never drops on its
+        own; it starts at the model default (100) and only ever moves via a
+        resupply purchase here. Whether supply SHOULD decay over time (and if
+        so, by what rate/trigger) is an open design question tracked as
+        WO-FLEET-SUPPLY-SINK — that is where the decay question lives, not
+        here. DOES NOT touch decay (there is none) or _calculate_formation_bonus.
 
         Requirements (all enforced; reject before mutating any state):
           - The fleet exists and is not disbanded.
@@ -369,10 +522,14 @@ class FleetService:
         Raises ValueError on any precondition failure.
         """
         # Lock the fleet row so concurrent resupply/decay/battle transitions are
-        # serialized against this top-up.
+        # serialized against this top-up. WO-MONEY-REREAD-SERVICES: the route
+        # already read this Fleet row unlocked (fleets.py:601) on this same
+        # session, so populate_existing() forces this locked re-read to
+        # actually refresh from the DB instead of returning the identity-
+        # mapped (possibly stale) instance.
         fleet = self.db.query(Fleet).filter(
             Fleet.id == fleet_id
-        ).with_for_update().first()
+        ).populate_existing().with_for_update().first()
         if not fleet:
             raise ValueError(f"Fleet {fleet_id} not found")
 
@@ -394,9 +551,13 @@ class FleetService:
             raise ValueError("Only a member of the fleet can resupply it")
 
         # Row-lock the paying player; read docking + credits under the lock.
+        # WO-MONEY-REREAD-SERVICES: player was already loaded unlocked by the
+        # route's get_current_player dependency on this same session;
+        # populate_existing() forces this lock to re-read live credits rather
+        # than returning the stale identity-mapped instance.
         player = self.db.query(Player).filter(
             Player.id == player_id
-        ).with_for_update().first()
+        ).populate_existing().with_for_update().first()
         if not player:
             raise ValueError(f"Player {player_id} not found")
 
@@ -488,18 +649,74 @@ class FleetService:
 
     # Fleet Battle Methods
 
+    def _lock_fleets_ascending(self, fleet_ids) -> Dict[UUID, Fleet]:
+        """Lock every Fleet row in one ascending-id pass — deterministic order
+        so concurrent fleet-battle-lifecycle calls sharing a fleet pair can't
+        deadlock (WO-FLEET-BATTLE-LOCKS; mirrors _lock_players_ascending's
+        N-row pattern from WO-FLEET-KILL-LOCK-ORDER / WO-COMBAT-DUAL-LOCK-
+        ORDER — raw UUID `<` comparison order matches Postgres's default UUID
+        ordering, so this is safe against a concurrent same-pair lock attempt
+        regardless of which fleet is "attacker" vs "defender" in each call).
+
+        populate_existing() is required at every call site that reaches this
+        helper: initiate_battle and simulate_battle_round are both entered
+        after their route has already read one or both Fleet rows UNLOCKED
+        on the SAME session (fleets.py's commander-authz / battle-membership
+        checks) — without it, the SELECT ... FOR UPDATE still executes and
+        still acquires the DB-level lock, but returns the STALE pre-lock
+        Python object from the identity map instead of refreshing it,
+        silently defeating the point of locking (see resupply_fleet's
+        established precedent for the same pattern, WO-MONEY-REREAD-
+        SERVICES). Naive here (no upstream flush): none of these call sites
+        mutates a Fleet row between its route's read and this lock.
+
+        WO-FLEET-ROUND-INTEGRITY sub-part (c) added two more callers:
+        add_ship_to_fleet and disband_fleet now also lock their single
+        target fleet through this same helper before checking
+        Fleet.status — closing a TOCTOU where either could read the status
+        UNLOCKED and race initiate_battle's enroll flip (a ship could join,
+        or the fleet could disband, in the gap between initiate_battle's own
+        FOR-UPDATE status mutation and its commit).
+        """
+        locked: Dict[UUID, Fleet] = {}
+        for fid in sorted(fleet_ids):
+            fleet = self.db.query(Fleet).filter(Fleet.id == fid).populate_existing().with_for_update().first()
+            if fleet is not None:
+                locked[fid] = fleet
+        return locked
+
     def initiate_battle(
         self,
         attacker_fleet_id: UUID,
         defender_fleet_id: UUID
     ) -> FleetBattle:
         """Initiate a battle between two fleets."""
-        # Validate fleets
-        attacker = self.db.query(Fleet).filter(Fleet.id == attacker_fleet_id).first()
-        defender = self.db.query(Fleet).filter(Fleet.id == defender_fleet_id).first()
+        # Self-attack guard (WO-FLEET-BATTLE-LOCKS), BEFORE the lock: the
+        # friendly-fire team_id check below only accidentally blocks a fleet
+        # from battling itself (attacker IS defender, so attacker.team_id ==
+        # defender.team_id trivially — UNLESS team_id is None, in which case
+        # `attacker.team_id is not None` is False and a teamless/rogue fleet
+        # slips through unblocked). This is an explicit, load-bearing guard
+        # that closes that gap, not a duplicate — and it belongs ahead of the
+        # lock so a malformed self-attack never pays for a lock acquisition.
+        if attacker_fleet_id == defender_fleet_id:
+            raise ValueError("A fleet cannot initiate battle against itself")
+
+        # Lock BOTH fleet rows, ascending by id, in one pass (WO-FLEET-
+        # BATTLE-LOCKS — the fleet-battle lifecycle never row-locked Fleet
+        # rows, so two near-simultaneous initiate_battle calls sharing one
+        # fleet could both pass the unlocked IN_BATTLE check below and
+        # double-enroll it). See _lock_fleets_ascending for the ordering +
+        # populate_existing rationale.
+        locked_fleets = self._lock_fleets_ascending({attacker_fleet_id, defender_fleet_id})
+        attacker = locked_fleets.get(attacker_fleet_id)
+        defender = locked_fleets.get(defender_fleet_id)
 
         if not attacker or not defender:
             raise ValueError("Invalid fleet IDs")
+
+        if attacker.team_id is not None and attacker.team_id == defender.team_id:
+            raise ValueError("Friendly-fire prevention: fleets on the same team cannot battle")
 
         if attacker.status == FleetStatus.IN_BATTLE.value:
             raise ValueError("Attacker fleet is already in battle")
@@ -524,7 +741,9 @@ class FleetService:
             defender_ships_initial=defender.total_ships
         )
 
-        # Update fleet statuses
+        # Update fleet statuses — safe under the lock acquired above: no
+        # concurrent initiate_battle sharing either fleet can be mid-flight
+        # past its own lock acquisition right now.
         attacker.status = FleetStatus.IN_BATTLE.value
         defender.status = FleetStatus.IN_BATTLE.value
 
@@ -570,20 +789,146 @@ class FleetService:
         Returns a dict with round results including damage dealt,
         ships destroyed/retreated, and remaining counts per side.
         """
-        # Lock battle row to prevent concurrent round simulation
-        battle = self.db.query(FleetBattle).filter(FleetBattle.id == battle_id).with_for_update().first()
+        # Lock battle row to prevent concurrent round simulation.
+        # populate_existing() forces this locked re-read to bypass the
+        # identity-map cache: the route pre-reads `battle` unlocked to
+        # authorize the caller before calling into this method, so without
+        # it this query would return the stale pre-lock object.
+        battle = self.db.query(FleetBattle).filter(
+            FleetBattle.id == battle_id
+        ).populate_existing().with_for_update().first()
         if not battle:
             raise ValueError(f"Battle {battle_id} not found")
 
         if battle.ended_at:
             raise ValueError("Battle has already ended")
 
-        attacker = battle.attacker_fleet
-        defender = battle.defender_fleet
+        # Lock the participating Fleet rows too (WO-FLEET-BATTLE-LOCKS),
+        # ascending by id via the same helper/order as initiate_battle. The
+        # FleetBattle lock above already serializes concurrent round-sims of
+        # THIS battle, but formation/supply are read every round for damage
+        # math (_calculate_formation_bonus), and update_fleet_formation
+        # (fleets.py PATCH /{fleet_id}/formation -> set_fleet_formation) has
+        # NO in-battle guard and NO lock of its own — it's a plain unlocked
+        # UPDATE reachable mid-battle by the fleet commander. Holding
+        # FOR UPDATE here forces that UPDATE to block until this round
+        # commits (a Postgres row lock is contended by ANY writer, not just
+        # another FOR UPDATE reader).
+        #
+        # WO-FLEET-ROUND-INTEGRITY (fixed): this protection USED TO be
+        # bounded, not whole-round — remove_ship_from_fleet:286 called
+        # self.db.commit() mid-flight, inside THIS method's own fire loop,
+        # the moment a casualty occurred (_record_ship_casualty ->
+        # remove_ship_from_fleet), releasing the FleetBattle + both Fleet
+        # locks acquired here early (expire_on_commit=True also expired the
+        # loaded objects), so a racing double-submitted simulate-round call
+        # (or a concurrent set_fleet_formation) could slip through the
+        # unlocked tail — worst case, two racing calls both satisfied
+        # _should_end_battle and both ran the team-treasury loot transfer in
+        # _end_battle. Closed by THREE changes: (1) _end_battle is now
+        # idempotent (ended_at guard, caller-agnostic); (2)
+        # remove_ship_from_fleet's casualty call now passes commit=False
+        # (flush-only) so this method's own final commit below (or
+        # _end_battle's) is the round's SOLE commit — the locks acquired
+        # here are genuinely held for the WHOLE round; (3) add_ship_to_fleet
+        # / disband_fleet now lock the Fleet row before their status check
+        # (closes the same TOCTOU against initiate_battle's enroll flip).
+        #
+        # Uses the raw FK columns (not the .attacker_fleet/.defender_fleet
+        # relationships) so this doesn't itself trigger an unlocked
+        # relationship load before the lock. populate_existing() is still
+        # required regardless: fleets.py's simulate_battle_round route
+        # (~line 290) already accessed battle.attacker_fleet /
+        # .defender_fleet UNLOCKED on this same session (for its "player has
+        # ships in this battle" check) before calling in here — see
+        # _lock_fleets_ascending for the staleness rationale. Naive (no
+        # upstream flush): nothing mutates either Fleet row between that
+        # route read and this lock.
+        attacker_fleet_id = battle.attacker_fleet_id
+        defender_fleet_id = battle.defender_fleet_id
+        fleet_ids = {fid for fid in (attacker_fleet_id, defender_fleet_id) if fid is not None}
+        locked_fleets = self._lock_fleets_ascending(fleet_ids)
+        attacker = locked_fleets.get(attacker_fleet_id)
+        defender = locked_fleets.get(defender_fleet_id)
 
-        # Get active ships (hull > 0, not destroyed)
-        attacker_ships = self._get_active_fleet_ships(attacker)
-        defender_ships = self._get_active_fleet_ships(defender)
+        # Lock both participating Team rows too (WO-FLEET-TREASURY-LOCK
+        # sub-part (a) REVISION), HOISTED here -- right after the Fleet
+        # lock, BEFORE the fire loop below can reach
+        # _distribute_fleet_kill_rewards -> _lock_players_ascending.
+        #
+        # The un-hoisted shape (Team locked only inside _apply_battle_loot,
+        # at the END of the method) was a SHIP-BLOCKER, not a fast-follow:
+        # the 70%-loss battle-end threshold fires the SAME round a kill
+        # tallies, so the mid-round Player lock from the kill-reward path
+        # ALWAYS precedes the battle-end Team lock on that closing round --
+        # Player-then-Team, the REVERSE of team_service.py's own internal
+        # Team-then-Player order (deposit_to_treasury / withdraw_from_
+        # treasury / transfer_to_player) and this codebase's documented
+        # resource-before-player deadlock contract (trading.py:513,
+        # planet_grid.py:245, auth.py:549). A concurrent team-treasury call
+        # from a player who is also a kill-reward participant/target is a
+        # real, player-triggerable AB-BA deadlock on the ordinary attrition-
+        # ending path -- not an edge case. Hoisting the Team lock to HERE
+        # restores FleetBattle -> Fleet -> Team -> Player as this
+        # transaction's full, contract-compliant lock order.
+        #
+        # Accepted, deliberate cost: EVERY simulate_battle_round call now
+        # acquires both Team locks up front, not just the round that
+        # actually ends the battle -- an ordinary formation/damage round
+        # that never touches treasury still pays for this acquisition. That
+        # is the honest price of the deadlock contract; the alternative
+        # (locking Team only when the round happens to end) can't be made
+        # conditional without re-introducing the exact race this closes,
+        # since whether THIS round ends the battle is only known after the
+        # fire loop -- by which point a kill may have already locked Player.
+        #
+        # _apply_battle_loot's OWN _lock_teams_ascending call is left
+        # completely unchanged and still fires unconditionally on every
+        # path into it:
+        #   - Round path (here): by the time _apply_battle_loot runs, these
+        #     same Team rows are already held by THIS transaction -- its
+        #     call is a same-transaction re-acquisition, a Postgres no-op
+        #     (a transaction never blocks on its own held lock).
+        #   - Admin path (admin_fleets.intervene_in_battle -> _end_battle ->
+        #     _apply_battle_loot): never routes through this method, so
+        #     never locks a Player at all -- _apply_battle_loot's call is
+        #     the ONLY Team lock on that path, and with no Player lock
+        #     anywhere in that transaction there is no Player-before-Team
+        #     edge to guard against there.
+        team_ids = {
+            fleet.team_id
+            for fleet in (attacker, defender)
+            if fleet is not None and fleet.team_id is not None
+        }
+        if team_ids:
+            self._lock_teams_ascending(team_ids)
+
+        # Get active ships (hull > 0, not destroyed).
+        #
+        # WO-SIMROUND-NONE-GUARD (defense-in-depth): ``attacker`` / ``defender``
+        # can be None here — ``attacker_fleet_id`` / ``defender_fleet_id`` is a
+        # SET-NULL FK, and while WO-TEAM-DELETE-FLEET-GUARD (7da7d306) closed
+        # the known delete_team/leave_team orphan paths, nothing structurally
+        # prevents a FUTURE fleet-delete path (e.g. an admin tool) from
+        # orphaning a fleet mid-battle. ``_get_active_fleet_ships`` does
+        # ``for member in fleet.members`` with no None-check, so an
+        # unconditional call here would raise an uncaught AttributeError — not
+        # a ValueError, so the route's ``except ValueError`` wouldn't catch it,
+        # producing a raw 500. Guard with the SAME ``if fleet else []`` idiom
+        # ``_end_battle`` already uses for this exact case (below) rather than
+        # inventing a new pattern.
+        #
+        # Falling into the existing "no ships left" branch on the next line is
+        # deliberately the RIGHT outcome, not just a crash-avoidance shortcut:
+        # a vanished fleet is indistinguishable, combat-wise, from a fleet
+        # reduced to zero active ships — ``_end_battle`` already resolves that
+        # case correctly (the surviving side wins, or a draw if both are
+        # empty), and it is itself already None-fleet-safe (its own
+        # ``attacker``/``defender`` reads and the ``_apply_battle_loot`` /
+        # status-update calls below it are all guarded). No behavior changes
+        # on the normal both-fleets-present path.
+        attacker_ships = self._get_active_fleet_ships(attacker) if attacker else []
+        defender_ships = self._get_active_fleet_ships(defender) if defender else []
 
         if not attacker_ships or not defender_ships:
             return self._end_battle(battle)
@@ -602,7 +947,16 @@ class FleetService:
             "attacker_damage": 0,
             "defender_damage": 0,
             "ships_destroyed": [],
-            "ships_retreated": []
+            "ships_retreated": [],
+            # Per-shot ledger (WO-FLEET-CASUALTY-SUCCESSION): {ship_id, damage,
+            # killed} for every LANDED shot this round, keyed by the FIRING
+            # ship. Persisted verbatim into FleetBattle.battle_log alongside
+            # the rest of round_results (existing append below), and summed
+            # by _ship_battle_contribution to populate
+            # FleetBattleCasualty.damage_dealt/kills when a ship becomes a
+            # casualty. A miss never reaches this list (a miss deals no
+            # damage, so it has nothing to attribute).
+            "shots": [],
         }
 
         # Attackers fire at defenders
@@ -610,8 +964,11 @@ class FleetService:
             if random.random() < 0.7 and defender_ships:  # 70% hit chance
                 damage = self._calculate_ship_damage(ship, attacker_bonus, attacker)
                 target = random.choice(defender_ships)
-                self._apply_damage_to_ship(target, damage, battle, round_results)
+                target_destroyed = self._apply_damage_to_ship(target, damage, battle, round_results)
                 round_results["attacker_damage"] += damage
+                round_results["shots"].append({
+                    "ship_id": str(ship.id), "damage": damage, "killed": target_destroyed
+                })
                 # Remove destroyed ships mid-round
                 defender_ships = [s for s in defender_ships if (self._get_ship_combat_stat(s, "hull", 0) or 0) > 0]
 
@@ -626,8 +983,11 @@ class FleetService:
             if random.random() < 0.7 and attacker_ships:  # 70% hit chance
                 damage = self._calculate_ship_damage(ship, defender_bonus, defender)
                 target = random.choice(attacker_ships)
-                self._apply_damage_to_ship(target, damage, battle, round_results)
+                target_destroyed = self._apply_damage_to_ship(target, damage, battle, round_results)
                 round_results["defender_damage"] += damage
+                round_results["shots"].append({
+                    "ship_id": str(ship.id), "damage": damage, "killed": target_destroyed
+                })
                 # Remove destroyed ships mid-round
                 attacker_ships = [s for s in attacker_ships if (self._get_ship_combat_stat(s, "hull", 0) or 0) > 0]
 
@@ -882,8 +1242,14 @@ class FleetService:
         damage: int,
         battle: FleetBattle,
         round_results: Dict[str, Any]
-    ):
-        """Apply damage to a ship, reducing shields first then hull."""
+    ) -> bool:
+        """Apply damage to a ship, reducing shields first then hull.
+
+        Returns True iff THIS call destroyed the ship — the caller (the two
+        fire loops in simulate_battle_round) uses it to attribute kill credit
+        to the FIRING ship's own "shots" ledger entry (WO-FLEET-CASUALTY-
+        SUCCESSION), separate from this ship's own casualty bookkeeping below.
+        """
         # Apply target's defense formation bonus to reduce incoming damage
         member = self.db.query(FleetMember).filter(
             FleetMember.ship_id == ship.id
@@ -929,30 +1295,82 @@ class FleetService:
                 # _record_ship_casualty, owns the is_destroyed flag along with
                 # the escape-pod swap, emergency-cargo transfer, and insurance
                 # payout — giving FLEET kills parity with SOLO kills.
-                self._record_ship_casualty(ship, battle, destroyed=True)
+                self._record_ship_casualty(ship, battle, destroyed=True, round_results=round_results)
                 round_results["ships_destroyed"].append({
                     "ship_id": str(ship.id),
                     "ship_name": ship.name,
                     "player": ship.owner.username if ship.owner else "Unknown"
                 })
+                return True
             else:
                 self._set_ship_combat_stat(ship, "hull", current_hull)
 
                 # Check for retreat (hull below 30% of max)
                 if max_hull > 0 and current_hull < max_hull * 0.3:
                     if random.random() < 0.3:  # 30% chance to retreat when heavily damaged
-                        self._record_ship_casualty(ship, battle, destroyed=False)
+                        self._record_ship_casualty(ship, battle, destroyed=False, round_results=round_results)
                         round_results["ships_retreated"].append({
                             "ship_id": str(ship.id),
                             "ship_name": ship.name,
                             "player": ship.owner.username if ship.owner else "Unknown"
                         })
 
+        return False
+
+    def _ship_battle_contribution(
+        self,
+        ship_id: UUID,
+        battle: FleetBattle,
+        round_results: Optional[Dict[str, Any]],
+    ) -> Tuple[int, int]:
+        """Sum a ship's OWN damage_dealt + kills across the whole battle so
+        far: every prior round already persisted in battle.battle_log, plus
+        shots fired so far in the CURRENT (in-progress, not-yet-appended)
+        round. Read-only, no DB access — pure over battle.battle_log +
+        round_results, both plain JSON-shaped Python structures.
+
+        Used by _record_ship_casualty to populate
+        FleetBattleCasualty.damage_dealt/kills when THIS ship itself becomes
+        a casualty (WO-FLEET-CASUALTY-SUCCESSION). A ship that never fires a
+        landed shot (or whose shots are all misses) correctly resolves to
+        (0, 0).
+
+        NOTE (discovered during design, not a defect introduced here): a
+        fleet-battle round always fires attackers before defenders, so the
+        side that ultimately WINS a decisive engagement necessarily retains
+        at least one living, undamaged-this-round member whose own
+        contribution is never captured by any casualty row — casualties are
+        recorded only for ships that are destroyed or retreat (invariant 9,
+        fleet-coordination.md), never for survivors. This means SUM(damage_
+        dealt) across a battle's casualty rows will generally be <=
+        battle.attacker_damage_dealt + battle.defender_damage_dealt, with
+        equality only when every ship that ever landed a shot also became a
+        casualty. This is a structural property of the round-resolution
+        algorithm (out of this WO's scope to change), not a bug in this
+        accumulation.
+        """
+        sid = str(ship_id)
+        damage_dealt = 0
+        kills = 0
+
+        prior_log = battle.battle_log if isinstance(battle.battle_log, list) else []
+        all_rounds = list(prior_log) + [{"results": round_results or {}}]
+        for entry in all_rounds:
+            shots = (entry.get("results") or {}).get("shots") or []
+            for shot in shots:
+                if shot.get("ship_id") == sid:
+                    damage_dealt += int(shot.get("damage", 0) or 0)
+                    if shot.get("killed"):
+                        kills += 1
+
+        return damage_dealt, kills
+
     def _record_ship_casualty(
         self,
         ship: Ship,
         battle: FleetBattle,
-        destroyed: bool
+        destroyed: bool,
+        round_results: Optional[Dict[str, Any]] = None,
     ):
         """Record a ship casualty in the battle via FleetBattleCasualty."""
         member = self.db.query(FleetMember).filter(
@@ -970,6 +1388,13 @@ class FleetService:
         # ship.type is an enum — store its string value
         ship_type_str = ship.type.value if hasattr(ship.type, 'value') else str(ship.type)
 
+        # WO-FLEET-CASUALTY-SUCCESSION: this SHIP's own accumulated damage
+        # dealt + kills scored (as a FIRER) up to this casualty event — was
+        # always hard-0 before (never populated). See
+        # _ship_battle_contribution for the accumulation + its documented
+        # survivor-asymmetry caveat.
+        damage_dealt, kills = self._ship_battle_contribution(ship.id, battle, round_results)
+
         casualty = FleetBattleCasualty(
             battle_id=battle.id,
             ship_id=ship.id,
@@ -981,6 +1406,8 @@ class FleetService:
             destroyed=destroyed,
             retreated=not destroyed,
             damage_taken=max_hull - current_hull,
+            damage_dealt=damage_dealt,
+            kills=kills,
             battle_phase=battle.phase
         )
 
@@ -1091,9 +1518,26 @@ class FleetService:
                 # safe and complete.
                 self._distribute_fleet_kill_rewards(ship, killer_fleet)
 
-        # Remove ship from fleet if destroyed
+        # Remove ship from fleet if destroyed. commit=False (WO-FLEET-ROUND-
+        # INTEGRITY sub-part (b)): this call runs mid-fire-loop inside
+        # simulate_battle_round, which already holds the FleetBattle/Fleet
+        # FOR-UPDATE locks for the round — an immediate commit here would
+        # release them early (see simulate_battle_round's own comment).
+        # Flush-only folds the removal into the round's own final commit (or
+        # _end_battle's, if this casualty also ends the battle).
         if destroyed:
-            self.remove_ship_from_fleet(member.fleet_id, ship.id)
+            self.remove_ship_from_fleet(member.fleet_id, ship.id, commit=False)
+
+    def _lock_players_ascending(self, player_ids) -> Dict[UUID, Player]:
+        """Lock every Player row in one ascending-id pass — deterministic order
+        so concurrent fleet kills on a shared pair can't deadlock (WO-FLEET-KILL-
+        LOCK-ORDER; the N-row generalization of WO-COMBAT-DUAL-LOCK-ORDER)."""
+        locked: Dict[UUID, Player] = {}
+        for pid in sorted(player_ids):
+            player = self.db.query(Player).filter(Player.id == pid).populate_existing().with_for_update().first()
+            if player is not None:
+                locked[pid] = player
+        return locked
 
     def _distribute_fleet_kill_rewards(
         self,
@@ -1172,14 +1616,37 @@ class FleetService:
             bounty_service = BountyService(self.db)
 
             # --- BOUNTY: per-member ledger resolution -------------------------
-            # Lock the killed (target) player's row ONCE for the whole loop so
-            # the JSONB read/clear and reputation reads are serialized against
-            # concurrent kills (collect_bounty_share locks each HUNTER row, not
-            # the target — the target lock belongs here, mirroring solo's
-            # collect_bounty which locks both).
-            killed_player = self.db.query(Player).filter(
-                Player.id == killed_player_id
-            ).with_for_update().first()
+            # WO-BOUNTY-COLLECT-FLUSH (fleet twin): killed_player was loaded
+            # UNLOCKED via ship.owner above and MUTATED IN-MEMORY by
+            # ShipService.destroy_ship (insurance payout player.credits +=
+            # compensation, escape-pod reseat player.current_ship_id) before
+            # this lock — unflushed on this autoflush=False session, since the
+            # intervening cargo-wreck flush only fires on a NON-empty hold.
+            # The .populate_existing() below (closing the stale-identity-map
+            # re-read) would otherwise DISCARD those pending mutations on
+            # every empty-cargo kill. Flushing here, immediately before the
+            # lock call, persists them first so the populate_existing re-read
+            # picks them up fresh instead of clobbering them.
+            self.db.flush()
+
+            # Lock EVERY involved Player row (killed target + all distinct
+            # participants) in ONE ascending-id batch, upfront, before any
+            # per-participant work begins (WO-FLEET-KILL-LOCK-ORDER). The prior
+            # shape locked killed_player first, then let collect_bounty_share
+            # lock each hunter in killer_fleet.members iteration order — NOT
+            # ascending-id — so two concurrent fleet kills sharing a pair of
+            # players with reversed killed/participant roles could lock that
+            # pair in opposite orders and deadlock (classic AB-BA). Locking
+            # ascending-id here closes that: any two overlapping batches
+            # converge on the same acquisition order regardless of which
+            # player is "killed" and which is "participant" in each battle.
+            # collect_bounty_share's own hunter-row lock (bounty_service.py)
+            # is now a redundant re-lock of an already-held row — safe same-tx
+            # Postgres no-op, left as defense-in-depth. This also serializes
+            # the killed (target) player's JSONB read/clear and reputation
+            # reads against concurrent kills, same as before.
+            locked_players = self._lock_players_ascending(set(participant_ids) | {killed_player_id})
+            killed_player = locked_players.get(killed_player_id)
 
             had_bounty = False
             # Designate the LAST participant to claim the pay-once-then-cleared
@@ -1263,9 +1730,14 @@ class FleetService:
                             and is_good_standing(killed_player)):
                         grey_service = GreyFlagService(self.db)
                         for pid in penalized_ids:
+                            # .populate_existing(): row is already FOR-UPDATE-
+                            # held from the upfront ascending-id batch
+                            # (_lock_players_ascending above) + upstream
+                            # flushes — no flush needed here.
                             member = (
                                 self.db.query(Player)
                                 .filter(Player.id == pid)
+                                .populate_existing()
                                 .with_for_update()
                                 .first()
                             )
@@ -1371,8 +1843,201 @@ class FleetService:
             reason=f"Combat loot {'won' if won else 'lost'} (battle {getattr(battle, 'id', None)})",
         ))
 
+    def _battle_end_result(self, battle: FleetBattle) -> Dict[str, Any]:
+        """Build the ``battle_ongoing: False`` result shape from an ALREADY-
+        ended battle's current column state. Shared by ``_end_battle``'s
+        idempotent short-circuit and its own tail (both return the identical
+        shape) so the two can never drift apart."""
+        duration = str(battle.ended_at - battle.started_at) if battle.started_at else "unknown"
+        return {
+            "battle_id": str(battle.id),
+            "winner": battle.winner,
+            "duration": duration,
+            "attacker_losses": (battle.attacker_ships_destroyed or 0) + (battle.attacker_ships_retreated or 0),
+            "defender_losses": (battle.defender_ships_destroyed or 0) + (battle.defender_ships_retreated or 0),
+            "credits_looted": battle.credits_looted or 0,
+            "battle_ongoing": False,
+        }
+
+    def _lock_teams_ascending(self, team_ids) -> Dict[UUID, Team]:
+        """Lock every Team row in one ascending-id pass — deterministic order,
+        mirroring ``_lock_fleets_ascending`` / ``_lock_players_ascending``'s
+        same N-row pattern (raw UUID ``<`` comparison order matches
+        Postgres's default UUID ordering).
+
+        WO-FLEET-TREASURY-LOCK sub-part (a): closes a treasury lost-update.
+        ``_apply_battle_loot`` used to read/write ``attacker.team.
+        treasury_credits`` / ``defender.team.treasury_credits`` through the
+        Fleet -> Team relationship completely UNLOCKED — the FleetBattle +
+        both Fleet FOR-UPDATE locks the caller holds (``simulate_battle_
+        round``) do not cover the FK-related Team rows. A concurrent
+        ``team_service.deposit_to_treasury`` / ``withdraw_from_treasury`` /
+        ``transfer_to_player`` call — which DOES lock its Team row via
+        ``with_for_update()`` before mutating ``treasury_<resource>`` via
+        ``setattr`` — could race this unlocked read/write and have its
+        committed delta silently clobbered by a stale-snapshot absolute
+        write from here (classic lost-update).
+
+        populate_existing() is required for the same reason as the sibling
+        helpers: forces the locked re-read to bypass the identity map and
+        pick up the live row rather than any Team snapshot already cached
+        on this session (e.g. from an earlier ``.team`` relationship
+        access), matching resupply_fleet's established WO-MONEY-REREAD-
+        SERVICES precedent.
+        """
+        locked: Dict[UUID, Team] = {}
+        for tid in sorted(team_ids):
+            team = self.db.query(Team).filter(Team.id == tid).populate_existing().with_for_update().first()
+            if team is not None:
+                locked[tid] = team
+        return locked
+
+    def _apply_battle_loot(
+        self,
+        battle: FleetBattle,
+        attacker: Optional[Fleet],
+        defender: Optional[Fleet],
+    ) -> None:
+        """Transfer the winner's loot (10% of the LOSER's team treasury) and
+        ledger it, mutating ``battle.credits_looted`` + both teams'
+        ``treasury_credits`` in place. A draw, or a winner whose opposing
+        fleet/team no longer resolves, is a no-op (``credits_looted`` stays
+        at its 0 default).
+
+        Extracted from ``_end_battle`` (WO-FLEET-ROUND-INTEGRITY) purely to
+        keep that method's cyclomatic complexity in check when it grew the
+        idempotency guard — behavior is byte-identical to the inline block
+        this replaces, not a redesign. Only ``_end_battle`` calls this, and
+        only once ``battle.winner`` has already been decided.
+
+        WO-FLEET-TREASURY-LOCK sub-part (a): locks BOTH involved Team rows
+        (via ``_lock_teams_ascending``, off the raw ``Fleet.team_id`` FK —
+        not the ``.team`` relationship, so this never itself triggers an
+        unlocked relationship load before the lock, mirroring how
+        ``simulate_battle_round`` reads the raw fleet-id FKs off ``battle``
+        instead of its relationships) BEFORE any ``treasury_credits`` read
+        below. Gated on ``battle.winner`` being decisive (``"attacker"`` /
+        ``"defender"``): a drawn battle never read or wrote either Team row
+        even before this fix, so it locks nothing here either — no wasted
+        FOR-UPDATE acquisition on the no-op path. Same-team case (both
+        fleets' ``team_id`` equal — currently blocked at ``initiate_battle``,
+        kept defensive here since ``_end_battle`` is also reachable from the
+        admin force-winner path) dedupes to ONE lock: the ``team_ids`` set
+        collapses the duplicate id, so ``attacker_team`` and
+        ``defender_team`` below resolve to the SAME Team object and the
+        credit-then-debit nets to a wash on that one row — never a double
+        lock attempt on the same id.
+
+        NAIVE-SAFE — no upstream ``flush()`` needed ahead of this lock
+        (full caller trace, WO-FLEET-TREASURY-LOCK): every path that reaches
+        this method was audited for a PRIOR mutation of either Team row on
+        THIS session before the lock:
+          - Round path — ``simulate_battle_round`` -> ``_end_battle`` ->
+            here: ``simulate_battle_round`` locks FleetBattle + both Fleet
+            rows off raw FK ids and never assigns through ``.team``; its
+            calling route (``fleets.py`` ``POST .../simulate-round``) only
+            queries ``FleetBattle`` + ``FleetMember`` for the membership
+            check, never touches ``Team``.
+          - Admin path — ``admin_fleets.intervene_in_battle`` (``end_battle``
+            / ``force_winner`` actions) -> ``_end_battle`` -> here: reads
+            ``battle`` unlocked, sets ``battle.winner`` directly, and calls
+            straight into ``_end_battle`` — no Fleet or Team touched first.
+          - Mid-round callees on the round path (``_apply_damage_to_ship`` ->
+            ``_record_ship_casualty`` -> ``_distribute_fleet_kill_rewards``
+            -> ``bounty_service`` / ``personal_reputation_service`` /
+            ``grey_flag_service``) mutate Player/Bounty/Reputation rows, but
+            grepping every one of those modules plus this whole file turns
+            up ZERO ``Team`` touches outside this method's own four
+            ``treasury_credits`` assignments (the only other ``Team`` query
+            in fleet_service.py is ``create_fleet``'s unrelated existence
+            check, never reached from the battle chain).
+        So there is no pending-unflushed Team mutation for
+        ``populate_existing()`` to discard here — a plain locked re-read is
+        sufficient, matching ``_lock_fleets_ascending``'s own naive-safe
+        precedent.
+
+        LOCK-ORDERING (RESOLVED — WO-FLEET-TREASURY-LOCK REVISION): the
+        round path's Player-before-Team hazard flagged in the original
+        sub-part (a) build is CLOSED. ``simulate_battle_round`` now locks
+        both Team rows itself, HOISTED to right after its own Fleet lock —
+        see the comment block there — which is BEFORE the fire loop can
+        reach the mid-round kill-reward Player lock
+        (``_lock_players_ascending`` in ``_distribute_fleet_kill_rewards``).
+        That restores FleetBattle -> Fleet -> Team -> Player as the round
+        transaction's full order, matching ``team_service.py``'s own
+        Team-then-Player order (``deposit_to_treasury`` / ``withdraw_from_
+        treasury`` / ``transfer_to_player``) and this codebase's documented
+        resource-before-player deadlock contract. This method's own
+        ``_lock_teams_ascending`` call above is therefore, on the round
+        path, a same-transaction RE-acquisition of rows already held by the
+        hoist — a documented Postgres no-op (a transaction never blocks on
+        a lock it already holds), regardless of the fact that it runs after
+        the fire loop's Player lock in call order. On the admin path
+        (``admin_fleets.intervene_in_battle`` -> ``_end_battle`` -> here,
+        which never goes through ``simulate_battle_round`` and never locks
+        a Player), this call remains the ONLY Team lock, with no Player
+        edge to guard against there either.
+        """
+        # Only lock when the winner is decisive (attacker/defender) --
+        # matches the original code's own zero-Team-touch behavior on a
+        # draw (neither branch below fires), so a drawn battle never pays
+        # for a Team row lock it will never read or write.
+        team_ids = set()
+        if battle.winner in ("attacker", "defender"):
+            team_ids = {
+                fleet.team_id
+                for fleet in (attacker, defender)
+                if fleet is not None and fleet.team_id is not None
+            }
+        locked_teams = self._lock_teams_ascending(team_ids) if team_ids else {}
+        attacker_team = locked_teams.get(attacker.team_id) if attacker else None
+        defender_team = locked_teams.get(defender.team_id) if defender else None
+
+        if battle.winner == "attacker" and defender and defender_team:
+            loot = (defender_team.treasury_credits or 0) // 10
+            battle.credits_looted = loot
+            if attacker and attacker_team:
+                attacker_team.treasury_credits = (attacker_team.treasury_credits or 0) + loot
+            if loot > 0:
+                defender_team.treasury_credits = (defender_team.treasury_credits or 0) - loot
+                # WO-TT review HIGH: ledger the combat-loot treasury moves (same txn).
+                self._record_combat_loot(attacker, attacker_team if attacker else None, loot, won=True, battle=battle)
+                self._record_combat_loot(attacker, defender_team, loot, won=False, battle=battle)
+
+        elif battle.winner == "defender" and attacker and attacker_team:
+            loot = (attacker_team.treasury_credits or 0) // 10
+            battle.credits_looted = loot
+            if defender and defender_team:
+                defender_team.treasury_credits = (defender_team.treasury_credits or 0) + loot
+            if loot > 0:
+                attacker_team.treasury_credits = (attacker_team.treasury_credits or 0) - loot
+                # WO-TT review HIGH: ledger the combat-loot treasury moves (same txn).
+                self._record_combat_loot(defender, defender_team if defender else None, loot, won=True, battle=battle)
+                self._record_combat_loot(defender, attacker_team, loot, won=False, battle=battle)
+
     def _end_battle(self, battle: FleetBattle) -> Dict[str, Any]:
-        """End a fleet battle and determine the winner."""
+        """End a fleet battle and determine the winner.
+
+        IDEMPOTENT (WO-FLEET-ROUND-INTEGRITY sub-part (a)): a battle that has
+        already ended (``battle.ended_at`` set) short-circuits to the SAME
+        result shape WITHOUT re-running the winner/loot/status mutations
+        below. Closes the live double-pay exploit (cipher HIGH,
+        WO-FLEET-BATTLE-LOCKS gate finding): a double-submitted
+        ``POST /fleets/battles/{id}/simulate-round`` (the route checks only
+        fleet-membership, no idempotency key) could race the unlocked tail of
+        ``simulate_battle_round`` and have BOTH racing calls independently
+        satisfy ``_should_end_battle`` -> BOTH reach here -> the team-treasury
+        loot transfer below would run twice (attacker credited twice,
+        defender debited twice). Caller-agnostic by construction (this is the
+        single ``ended_at`` guard on the method itself, not something each
+        caller has to remember): also covers the independent unlocked reach
+        from ``admin_fleets.py``'s ``intervene_in_battle`` (``end_battle`` /
+        ``force_winner`` actions), which calls ``_end_battle`` directly with
+        no ``ended_at`` guard of its own before this fix.
+        """
+        if battle.ended_at is not None:
+            return self._battle_end_result(battle)
+
         battle.ended_at = datetime.utcnow()
         battle.phase = BattlePhase.AFTERMATH.value
 
@@ -1404,28 +2069,7 @@ class FleetService:
         else:
             battle.winner = "draw"
 
-        # Calculate loot for winner (10% of loser team treasury)
-        if battle.winner == "attacker" and defender and defender.team:
-            loot = (defender.team.treasury_credits or 0) // 10
-            battle.credits_looted = loot
-            if attacker and attacker.team:
-                attacker.team.treasury_credits = (attacker.team.treasury_credits or 0) + loot
-            if loot > 0:
-                defender.team.treasury_credits = (defender.team.treasury_credits or 0) - loot
-                # WO-TT review HIGH: ledger the combat-loot treasury moves (same txn).
-                self._record_combat_loot(attacker, attacker.team if attacker else None, loot, won=True, battle=battle)
-                self._record_combat_loot(attacker, defender.team, loot, won=False, battle=battle)
-
-        elif battle.winner == "defender" and attacker and attacker.team:
-            loot = (attacker.team.treasury_credits or 0) // 10
-            battle.credits_looted = loot
-            if defender and defender.team:
-                defender.team.treasury_credits = (defender.team.treasury_credits or 0) + loot
-            if loot > 0:
-                attacker.team.treasury_credits = (attacker.team.treasury_credits or 0) - loot
-                # WO-TT review HIGH: ledger the combat-loot treasury moves (same txn).
-                self._record_combat_loot(defender, defender.team if defender else None, loot, won=True, battle=battle)
-                self._record_combat_loot(defender, attacker.team, loot, won=False, battle=battle)
+        self._apply_battle_loot(battle, attacker, defender)
 
         # Update fleet statuses. The former post-battle -20 to Fleet.morale is
         # REMOVED (WO-BS2, reverts WO-AS). Max ruled Fleet.morale fully inert —
@@ -1459,17 +2103,7 @@ class FleetService:
 
         self.db.commit()
 
-        duration = str(battle.ended_at - battle.started_at) if battle.started_at else "unknown"
-
-        return {
-            "battle_id": str(battle.id),
-            "winner": battle.winner,
-            "duration": duration,
-            "attacker_losses": (battle.attacker_ships_destroyed or 0) + (battle.attacker_ships_retreated or 0),
-            "defender_losses": (battle.defender_ships_destroyed or 0) + (battle.defender_ships_retreated or 0),
-            "credits_looted": battle.credits_looted or 0,
-            "battle_ongoing": False
-        }
+        return self._battle_end_result(battle)
 
     # Query Methods
 
