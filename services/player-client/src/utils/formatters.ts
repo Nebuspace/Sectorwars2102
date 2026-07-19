@@ -28,3 +28,22 @@ export const formatShipType = (type: string): string => {
     .toLowerCase()
     .replace(/\b\w/g, c => c.toUpperCase());
 };
+
+/**
+ * Format a sector/move `region_type` enum value ("terran_space",
+ * "central_nexus", "player_owned" — models/region.py RegionType) to its
+ * display form ("Terran Space"). WO-T1D-LANEB: this is the ONLY sanctioned
+ * derivation for the glass locrow region chip — never parse it out of
+ * `region_name` (rejected 2026-07-13: the dev-seeded name's "<galaxy> —
+ * <Type>" em-dash suffix, e.g. "Stage2 Genesis R4 — Terran Space", is a
+ * bang-import naming convention, not a guaranteed prod format; parsing it
+ * is fragile). Nullish/empty input returns null so the caller can render
+ * nothing instead of a guess.
+ */
+export const formatRegionType = (regionType: string | null | undefined): string | null => {
+  if (!regionType) return null;
+  return regionType
+    .replace(/_/g, ' ')
+    .toLowerCase()
+    .replace(/\b\w/g, c => c.toUpperCase());
+};

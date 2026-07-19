@@ -312,7 +312,22 @@ main {
 .status-amber { color: #ffb000; }
 .status-success { color: #00ff41; }
 
-.status-bar {
+/* WO-UI5-CANON-PASS(C): scoped to `.terminal-content` (the ancestor these
+   `.status-*` siblings share in this file's own "System Status Panel"
+   block, immediately above) so this generic 8px progress-bar rule stops
+   colliding at the top level with the unrelated real `.status-bar`
+   components in statusbar.css/siege-status-monitor.css/spacedock.css (see
+   statusbar.css's doc-comment for the full collision history). No live
+   element currently instantiates a `.status-bar`/`.status-bar-fill` pair
+   under `.terminal-content` — this was already dead before the fix, and a
+   CONCURRENT landing-page extraction mid-flight during this same pass
+   (components/landing/LandingPage.tsx + landing.css, its own unrelated
+   "landing-*" design system) has now also moved App.tsx's rendering off
+   this whole `.terminal-*`/`.status-*` block entirely, so it's dead twice
+   over. Scoping (rather than deleting) keeps it inert-but-collision-safe
+   without making a deletion call on a block another in-flight lane may
+   already be about to prune — out of this pass's scope either way. */
+.terminal-content .status-bar {
   width: 100%;
   height: 8px;
   background: rgba(0, 0, 0, 0.4);
@@ -321,7 +336,7 @@ main {
   margin-bottom: 1rem;
 }
 
-.status-bar-fill {
+.terminal-content .status-bar-fill {
   height: 100%;
   background: linear-gradient(90deg, #ffb000, #ff6b00);
   transition: width 0.5s ease;
