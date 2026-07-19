@@ -457,6 +457,12 @@ def _presence_entry(npc: NPCCharacter, ship: Ship) -> Dict[str, Any]:
         # without guessing from the ship name) + the trader scruples axis.
         "archetype": npc.archetype.name if npc.archetype else None,
         "notoriety": npc.notoriety,
+        # Live schedule fields — windshield/SSV motion reads these so contacts
+        # don't all freeze as identical SLEEP glyphs until a later enrich pass.
+        "activity": (
+            npc.current_activity.name if npc.current_activity else None
+        ),
+        "mission": (npc.daily_schedule or {}).get("mission") or None,
     }
 
 
@@ -757,10 +763,15 @@ def materialize_from_bang(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
             flag_modified(sector, "players_present")
 
             # Presence write 2: squad row under the kind's defenses key —
-            # ADR-0047 shape for pirates (holding_id omitted: the
-            # PirateHolding table is Design-only, canon gap); canon
+            # ADR-0047 shape for pirates. holding_id is now representable
+            # (the PirateHolding table shipped under WO-PIRATE-ECO-1) but
+            # written None here: this v1 spawn path never anchors a squad
+            # to a holding row (pirate_captain rosters are standalone),
+            # so there is nothing to link yet — ECO-2 (holding-anchored
+            # squad spawning) is what actually populates it. Canon
             # police-forces.md squad shape for police (adds
-            # wanted_threshold / scheduled_clear_at).
+            # wanted_threshold / scheduled_clear_at) is unrelated to
+            # holdings and unaffected.
             squad_row: Dict[str, Any] = {
                 "patrol_id": str(uuid.uuid4()),
                 "faction_code": faction_code,
@@ -780,6 +791,10 @@ def materialize_from_bang(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
             if cfg.is_police:
                 squad_row["wanted_threshold"] = POLICE_WANTED_THRESHOLD
                 squad_row["scheduled_clear_at"] = None
+            else:
+                # ADR-0047 pirate shape -- holding_id populated by ECO-2
+                # once holding-anchored squads spawn (see comment above).
+                squad_row["holding_id"] = None
             defenses = dict(sector.defenses or {})
             patrols = list(defenses.get(cfg.defenses_key) or [])
             patrols.append(squad_row)
@@ -1199,6 +1214,179 @@ def handle_npc_ship_destroyed(
 
     sector_id = npc.current_sector_id
     now = datetime.now(UTC)
+    npc_id_str = str(npc.id)
+
+    # Row lock + presence/defenses cleanup, done FIRST and under a single
+    # with_for_update() (WO-PIRATE-ECO-2 TOCTOU fix, consolidated from what
+    # used to be two separate reads of this sector: an early UNLOCKED peek
+    # feeding the kill-log block below, and a later locked pass doing the
+    # actual removal). This is JSONB read-modify-write, so it must
+    # serialize against concurrent writers — the kill-log feeder now reads
+    # squad_holding_id / squad_cleared out of THIS SAME locked pass instead
+    # of a separate earlier unlocked query, so two near-simultaneous final
+    # kills from the same squad serialize on this row lock rather than both
+    # observing the pre-removal npc_character_ids list.
+    #
+    # WO-NPC-KIA-PRESENCE (PRESENCE-TWIN gate, cipher HIGH; mack confirmed
+    # atomicity/non-vacuousness). THREE distinct call chains reach this
+    # re-lock in the SAME request-scoped session — exhaustive caller trace,
+    # not just the two most obvious ones:
+    #
+    #   (a) DIRECT -- combat_service.attack_npc_ship (~:1267) and
+    #       .npc_attack_player (~:1814) each read this SAME Sector row
+    #       UNLOCKED earlier in their own body (feeding a combat-log
+    #       region-snapshot / sector-defenses read) before ever calling
+    #       into this handler.
+    #   (b) POLICE-COMBAT -- npc_engagement_service._sweep_one's ARRIVED
+    #       branch calls _place_squad (places the squad in THIS SAME dest
+    #       sector via npc_movement_service.add_npc_presence, unflushed
+    #       after _locked_sectors' own internal flush point) immediately
+    #       followed, in the SAME uncommitted transaction/savepoint, by
+    #       _maybe_initiate_police_combat -> npc_combat_initiation_service.
+    #       initiate_npc_combat -> CombatService.npc_attack_player --
+    #       which reaches HERE if the squad's officer loses the fight.
+    #   (c) PIRATE-AGGRESSION -- movement_service._maybe_initiate_pirate_
+    #       combat (~:2711, the pirate_aggression sector-entry trigger
+    #       ~:2768) -> the SAME initiate_npc_combat -> npc_attack_player ->
+    #       HERE, when the player kills the pirate that just engaged them.
+    #
+    # (a) and (c) are the plain staleness case -- an earlier unlocked read
+    # (or, for (c), an unlocked attribute touch after _execute_movement's
+    # own prior commit) caches this Sector in the identity map; a bare
+    # .with_for_update() would return that stale copy instead of picking
+    # up a concurrent presence writer's committed change (evades sector-
+    # scan/COMMS). .populate_existing() closes that for all three.
+    #
+    # FLUSH-FIRST, not naive: (b) is the reentrancy that makes the flush
+    # load-bearing. A bare .populate_existing() re-lock on the shared dest
+    # sector would DISCARD the just-placed officer's pending presence
+    # entry (the identical squad-loop self-clobber class of bug
+    # _locked_sectors' own WO-NPC-PRESENCE-TWIN fix closes one level up).
+    # (c) has NO pre-lock Sector mutation of its own -- pirate rosters are
+    # static/seeded (no add_npc_presence call anywhere in
+    # _maybe_initiate_pirate_combat's body) -- so the flush is
+    # covered-but-not-load-bearing there; documented for exhaustiveness,
+    # not because (c) needs it. db.flush() as the first statement of this
+    # locking block persists any such pending pre-lock Sector mutation
+    # (this call's own or an earlier same-session caller's) so the
+    # populate_existing() re-read observes it instead of reverting it --
+    # caller-agnostic by construction, so it covers all three chains (and
+    # any future one) without re-auditing this site per new caller --
+    # mirrors npc_movement_service._locked_sectors' identical precedent
+    # for this exact bug class.
+    squad_holding_id = None
+    squad_cleared = False
+    if sector_id is not None:
+        db.flush()
+        sector = (
+            db.query(Sector)
+            .filter(Sector.sector_id == sector_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if sector is not None:
+            players_present = [
+                p for p in (sector.players_present or [])
+                if p.get("player_id") != npc_id_str
+            ]
+            sector.players_present = players_present
+            flag_modified(sector, "players_present")
+
+            defenses = dict(sector.defenses or {})
+            for defenses_key in PATROL_DEFENSES_KEYS:
+                if defenses_key not in defenses:
+                    continue
+                patrols: List[Dict[str, Any]] = []
+                for patrol in (defenses.get(defenses_key) or []):
+                    ids = patrol.get("npc_character_ids") or []
+                    if npc_id_str not in ids:
+                        patrols.append(patrol)
+                        continue
+                    remaining = [nid for nid in ids if nid != npc_id_str]
+                    if defenses_key == PIRATE_PATROL_DEFENSES_KEY:
+                        # The kill-log feeder's ONLY read of this squad's
+                        # membership -- taken under this row's lock.
+                        squad_holding_id = patrol.get("holding_id")
+                        squad_cleared = not remaining
+                    if remaining:
+                        updated = dict(patrol)
+                        updated["npc_character_ids"] = remaining
+                        updated["ship_count"] = len(remaining)
+                        patrols.append(updated)
+                    # canon: empty squad rows are deleted
+                defenses[defenses_key] = patrols
+            sector.defenses = defenses
+            flag_modified(sector, "defenses")
+
+    # Kill-log feeder (WO-PIRATE-ECO-1 lane C) — SAVEPOINT-scoped so a flush
+    # failure rolls back only this insert, never the caller's open unit of
+    # work (this handler runs inside the combat worker's transaction; an
+    # unguarded failed flush would poison the session and make the caller's
+    # terminal commit raise PendingRollbackError — mirrors bounty_service.
+    # _write_claim / npc_scheduler_service's per-row savepoint idiom).
+    # Placed before the respawn/KIA branch below so a downstream failure in
+    # that branch can never cost the kill record, on the rare path where
+    # one is actually written.
+    #
+    # Canon: SYSTEMS/pirate-ecosystem.md:95-120 — PirateKillLog tracks
+    # HOLDING-CLEAR events, not individual ship kills (disposition is
+    # captured/cleared OF A HOLDING; logging every raider kill at weight
+    # >=1 would corrupt the suppression math — a floor-hitting number of
+    # ordinary ship kills would wrongly tank a region's growth target).
+    # So: a HOSTILE_RAIDER death only feeds the log when its squad row
+    # carries a non-null holding_id AND this kill empties that squad (the
+    # holding's last defender falls) — a genuine "cleared" event.
+    # CAPTURED rows belong to ECO-3's attempt_capture, not this feeder.
+    # holding_id is always None at spawn time today (see the squad_row
+    # comment above) — no holding-anchored squad exists until ECO-2, so
+    # this branch is an honest, currently-unreachable kernel in
+    # production: it starts firing the moment ECO-2 spawns
+    # holding-anchored squads, with no further change needed here.
+    if npc.archetype == NPCArchetype.HOSTILE_RAIDER and squad_holding_id is not None and squad_cleared:
+        try:
+            from src.models.pirate_holding import PirateHolding, PirateHoldingTier
+            from src.models.pirate_kill_log import (
+                PirateKillDisposition,
+                PirateKillLog,
+            )
+
+            holding = (
+                db.query(PirateHolding)
+                .filter(PirateHolding.id == squad_holding_id)
+                .first()
+            )
+            if holding is not None:
+                tier_kill_weight = {
+                    PirateHoldingTier.CAMP: 1,
+                    PirateHoldingTier.OUTPOST: 3,
+                    PirateHoldingTier.STRONGHOLD: 10,
+                }
+                attacker_team_id = None
+                if killed_by_player_id is not None:
+                    from src.models.player import Player
+
+                    attacker_team_id = (
+                        db.query(Player.team_id)
+                        .filter(Player.id == killed_by_player_id)
+                        .scalar()
+                    )
+                with db.begin_nested():
+                    db.add(PirateKillLog(
+                        region_id=holding.region_id,
+                        holding_id=holding.id,
+                        tier=holding.tier,
+                        kill_weight=tier_kill_weight.get(holding.tier, 1),
+                        attacker_player_id=killed_by_player_id,
+                        attacker_team_id=attacker_team_id,
+                        disposition=PirateKillDisposition.CLEARED,
+                    ))
+                    db.flush()
+        except Exception:
+            logger.exception(
+                "PirateKillLog feeder failed for NPC %s (ship %s) — non-fatal",
+                npc.id, ship_id,
+            )
 
     if npc.archetype in RESPAWN_PERMITTED_ARCHETYPES:
         npc.status = NPCStatus.RESPAWNING
@@ -1269,47 +1457,9 @@ def handle_npc_ship_destroyed(
                 "at": now.isoformat(),
             }
 
-    if sector_id is not None:
-        # Row lock: the presence cleanup below is JSONB read-modify-write —
-        # serialize against concurrent writers.
-        sector = (
-            db.query(Sector)
-            .filter(Sector.sector_id == sector_id)
-            .with_for_update()
-            .first()
-        )
-        if sector is not None:
-            npc_id_str = str(npc.id)
-
-            players_present = [
-                p for p in (sector.players_present or [])
-                if p.get("player_id") != npc_id_str
-            ]
-            sector.players_present = players_present
-            flag_modified(sector, "players_present")
-
-            defenses = dict(sector.defenses or {})
-            for defenses_key in PATROL_DEFENSES_KEYS:
-                if defenses_key not in defenses:
-                    continue
-                patrols: List[Dict[str, Any]] = []
-                for patrol in (defenses.get(defenses_key) or []):
-                    remaining = [
-                        nid for nid in (patrol.get("npc_character_ids") or [])
-                        if nid != npc_id_str
-                    ]
-                    if npc_id_str not in (patrol.get("npc_character_ids") or []):
-                        patrols.append(patrol)
-                    elif remaining:
-                        updated = dict(patrol)
-                        updated["npc_character_ids"] = remaining
-                        updated["ship_count"] = len(remaining)
-                        patrols.append(updated)
-                    # canon: empty squad rows are deleted
-                defenses[defenses_key] = patrols
-            sector.defenses = defenses
-            flag_modified(sector, "defenses")
-
+    # players_present / defenses cleanup already happened under the row
+    # lock acquired up top (WO-PIRATE-ECO-2 TOCTOU fix) -- no second
+    # sector fetch here.
     db.flush()
     logger.info(
         "NPC %s (%s) KIA — ship %s destroyed in sector %s",

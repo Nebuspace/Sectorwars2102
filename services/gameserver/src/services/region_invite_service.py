@@ -409,6 +409,15 @@ class RegionInviteService:
 
         # Re-check EVERYTHING under the lock — a concurrent consume/revoke/expiry
         # may have changed state between validate and this lock acquisition.
+        # EXHAUSTED is checked ahead of the generic non-active branch: uses >=
+        # max_uses reads as ERR_INVITE_EXHAUSTED regardless of whether the status
+        # column has already been stamped 'exhausted' by a winning concurrent
+        # consumer or the row simply started that way — this is the loser's
+        # promised outcome per the docstring above. Revoked/expired-stamped rows
+        # (status not yet 'exhausted') still fall through to ERR_INVITE_NOT_ACTIVE.
+        if invite.status == RegionInviteStatus.EXHAUSTED.value:
+            await db.rollback()
+            return {"ok": False, "code": "ERR_INVITE_EXHAUSTED"}
         if invite.status != RegionInviteStatus.ACTIVE.value:
             await db.rollback()
             return {"ok": False, "code": "ERR_INVITE_NOT_ACTIVE"}

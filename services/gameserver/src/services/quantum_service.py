@@ -59,6 +59,9 @@ from src.models.ship import Ship, ShipSpecification, ShipStatus, ShipType
 from src.models.sector import Sector, SectorType, sector_warps
 from src.models.station import Station
 from src.models.cluster import Cluster
+from src.models.region import Region
+from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus, WarpTunnelType
+from src.models.player_warp_knowledge import PlayerWarpKnowledge, WarpLayer, WarpRevealedVia
 from src.services.ship_upgrade_service import ShipUpgradeService
 from src.services.emergent_reputation_service import apply_emergent_action
 
@@ -123,6 +126,16 @@ _HARVEST_YIELD_BANDS: Dict[str, Tuple[int, int]] = {
     "obsidian": (0, 1),   # field 0-20   | shard yield 0-1 (rare x5 crit ~2%)
 }
 
+# § Lumen Crystal sourcing (quantum-resources.md:226-232, WO-GWQ-LUMEN-FAUCET):
+# "Emerald nebulae: 1% per harvest. ... Crimson nebulae: 0.2% per harvest. ...
+# Azure and Violet nebulae do not drop Lumen Crystals." Amber/Obsidian carry no
+# documented rate (📐 Design-only harvest properties in the canon color table)
+# so they fall through .get()'s 0.0 default alongside azure/violet.
+LUMEN_DROP_RATES: Dict[str, float] = {
+    "emerald": 0.01,
+    "crimson": 0.002,
+}
+
 # § Faction reputation hooks: "Harvest Quantum Shards in any nebula | +1 Nova
 # Scientific Institute rep per 3 Shards harvested." Nova = FactionType.EXPLORERS
 # (emergent_reputation_service FACTION code map). One emergent-action dispatch
@@ -138,6 +151,18 @@ HARVEST_NS_EMERGENT_ACTION = "HARVEST_NEBULA_SHARDS_NS"
 # secure RNG"). Module-level SystemRandom per the stdlib guidance, mirroring
 # mining_service / contraband_service.
 _RNG = random.SystemRandom()
+
+
+def _roll_lumen_drop(nebula_type: str) -> bool:
+    """True if this harvest's nebula color rolls a Lumen Crystal drop, per
+    quantum-resources.md:226-232 (Emerald 1% / Crimson 0.2% / all other
+    colors never). Short-circuits `_RNG.random()` entirely for a 0%-rate
+    color rather than relying on `random() < 0.0` always being false, so an
+    un-rollable color can never drop regardless of what the RNG returns.
+    Split out of harvest_nebula to keep that function's own branch count
+    under the project's C901 complexity gate."""
+    lumen_rate = LUMEN_DROP_RATES.get(nebula_type, 0.0)
+    return lumen_rate > 0 and _RNG.random() < lumen_rate
 
 # Range bands in inter-sector spacings: (min, max). Projection uses the
 # band midpoint; the committed range (misfire ceiling) is the band max.
@@ -814,10 +839,12 @@ def harvest_nebula(db: Session, player_id: uuid.UUID) -> Dict[str, Any]:
     then spends ``HARVEST_NEBULA_TURN_COST`` turns (rejecting with
     ``insufficient_turns`` before any shards are granted), rolls the shard yield
     from the canon band for the cluster's nebula type (secrets RNG) with the 2%
-    crit (×2, or ×5 for Obsidian), credits ``player.quantum_shards``, awards
-    Nova Scientific Institute rep (+1 per 3 shards), and arms the 2h cooldown
-    (canonical, scaled via scaled_deadline the same way scan/jump compute
-    theirs).
+    crit (×2, or ×5 for Obsidian), rolls a Lumen Crystal drop off the SAME RNG
+    (Emerald 1% / Crimson 0.2%, all other colors never — quantum-resources.md
+    :226-232), credits ``player.quantum_shards`` (and ``player.lumen_crystals``
+    on a Lumen hit), awards Nova Scientific Institute rep (+1 per 3 shards),
+    and arms the 2h cooldown (canonical, scaled via scaled_deadline the same
+    way scan/jump compute theirs).
 
     KERNEL SCOPE: the per-sector soft-cap depletion (Max-gated) is deferred —
     not implemented here. FLUSH-ONLY: the route owns db.commit().
@@ -875,9 +902,12 @@ def harvest_nebula(db: Session, player_id: uuid.UUID) -> Dict[str, Any]:
     band = _HARVEST_YIELD_BANDS.get(nebula_type)
     if band is None:
         # The sector is NEBULA but its cluster carries no recognised nebula
-        # type (un-persisted nebula_type — quantum-resources.md flags this as a
-        # 🚧 Partial: "per-cluster nebula_type ... not yet persisted"). Reject
-        # cleanly rather than guessing a band.
+        # type. persistence itself is shipped (fd1e9b8); this now fires only
+        # for real uncharted clusters: imported before fd1e9b8 (nebula_type
+        # NULL), or imported before WO-SB-QH2 (bang_import_service persisted
+        # bang's raw 'normal'/'magnetic' type, which this six-color band map
+        # doesn't key on — WO-SB-QH2 derives the canon color at import time
+        # instead). Reject cleanly rather than guessing a band.
         raise QuantumError(
             "not_a_nebula: this nebula's field type is uncharted — no harvest band"
         )
@@ -908,6 +938,12 @@ def harvest_nebula(db: Session, player_id: uuid.UUID) -> Dict[str, Any]:
     if crit:
         shard_yield *= crit_multiplier
 
+    # LUMEN ROLL (§ Resolution step 5, quantum-resources.md:226-232): Emerald
+    # 1%, Crimson 0.2%, all other colors never — see _roll_lumen_drop.
+    lumen_dropped = _roll_lumen_drop(nebula_type)
+    if lumen_dropped:
+        player.lumen_crystals = (player.lumen_crystals or 0) + 1
+
     # CREDIT — player's quantum-shard ledger (§ Storage: dedicated player
     # quantum-shard count; quantum_service reads player.quantum_shards).
     player.quantum_shards = (player.quantum_shards or 0) + shard_yield
@@ -931,8 +967,9 @@ def harvest_nebula(db: Session, player_id: uuid.UUID) -> Dict[str, Any]:
     db.flush()  # route owns the commit
 
     logger.info(
-        "Player %s harvested nebula sector %s (%s): %d shards (crit=%s, ns_blocks=%d)",
-        player.id, sector.sector_id, nebula_type, shard_yield, crit, ns_blocks,
+        "Player %s harvested nebula sector %s (%s): %d shards (crit=%s, ns_blocks=%d, "
+        "lumen_dropped=%s)",
+        player.id, sector.sector_id, nebula_type, shard_yield, crit, ns_blocks, lumen_dropped,
     )
 
     return {
@@ -940,6 +977,8 @@ def harvest_nebula(db: Session, player_id: uuid.UUID) -> Dict[str, Any]:
         "crit": crit,
         "nebula_type": nebula_type,
         "quantum_shards": player.quantum_shards,
+        "lumen_dropped": lumen_dropped,
+        "lumen_crystals": player.lumen_crystals or 0,
         "turns_spent": HARVEST_NEBULA_TURN_COST,
         "remaining_turns": player.turns or 0,
         "harvest_cooldown_until": _iso_or_none(ship.quantum_harvest_cooldown_until),
@@ -956,6 +995,91 @@ MINIMAP_RANGE_SPACINGS = 25.0
 # 25-spacing sphere; the client plots a ~16-spacing viewport anyway, so
 # the nearest 400 always cover everything it can draw.
 MINIMAP_SECTOR_CAP = 400
+
+
+def _resolve_nexus_warp_marker(db: Session, player: Player) -> Optional[Dict[str, Any]]:
+    """ADR-0064 R-V3 — the Nexus warp marker for the player's CURRENT region
+    (``Player.current_region_id``, kept in sync on every move/jump — see
+    movement_service.py:1428-1431 and this module's own jump() at :741),
+    filtered to PERSONAL discovery ONLY.
+
+    Per ADR-0043 the Region ↔ Central Nexus connection is a natural, latent
+    ``WarpTunnel`` anchored at the region's Frontier Gateway Plaza landing
+    sector (``Region.nexus_warp_sector`` — a region-LOCAL ``Sector.sector_
+    number``, written by bang import only, read by nothing until this WO).
+    ADR-0064 R-V3's own filter pseudocode is explicit: "the Nexus warp marker
+    is NOT public — it requires personal discovery, regardless of corp
+    share" — a corp-shared row does not unlock it, on purpose, so a free-tier
+    player who cannot traverse the Nexus warp can't piggyback on a Galactic-
+    Citizen corp-mate's discovery just by scanning nothing themselves. This
+    is why the check below excludes a knowledge row whose provenance is
+    STILL ``CORP_SHARE`` (``_reveal_warp_to_player`` upgrades that provenance
+    to personal the moment this same player later scans the tunnel
+    themselves, so the check stays correct over time without a separate
+    subscription-tier read here).
+
+    Returns ``None`` when the region has no Nexus warp, its tunnel can't be
+    resolved, or the viewer hasn't personally discovered it yet.
+    """
+    if player.current_region_id is None:
+        return None
+    region = db.query(Region).filter(Region.id == player.current_region_id).first()
+    if region is None or region.nexus_warp_sector is None:
+        return None
+
+    landing_sector = db.query(Sector).filter(
+        Sector.region_id == region.id,
+        Sector.sector_number == region.nexus_warp_sector,
+    ).first()
+    if landing_sector is None:
+        return None
+
+    # Disambiguate the Nexus tunnel from any ordinary intra-region NATURAL
+    # tunnel that also happens to touch the landing sector: the Nexus side
+    # is the endpoint whose OWN region is the Central Nexus hub.
+    candidates = db.query(WarpTunnel).filter(
+        WarpTunnel.status == WarpTunnelStatus.ACTIVE,
+        WarpTunnel.type == WarpTunnelType.NATURAL,
+        or_(
+            WarpTunnel.origin_sector_id == landing_sector.id,
+            WarpTunnel.destination_sector_id == landing_sector.id,
+        ),
+    ).all()
+    tunnel: Optional[WarpTunnel] = None
+    for candidate in candidates:
+        other_id = (
+            candidate.destination_sector_id
+            if candidate.origin_sector_id == landing_sector.id
+            else candidate.origin_sector_id
+        )
+        other_sector = db.query(Sector).filter(Sector.id == other_id).first()
+        other_region = (
+            db.query(Region).filter(Region.id == other_sector.region_id).first()
+            if other_sector is not None else None
+        )
+        if other_region is not None and other_region.is_central_nexus:
+            tunnel = candidate
+            break
+    if tunnel is None:
+        return None
+
+    row = db.query(PlayerWarpKnowledge).filter(
+        PlayerWarpKnowledge.player_id == player.id,
+        PlayerWarpKnowledge.warp_layer == WarpLayer.WARP_TUNNELS,
+        PlayerWarpKnowledge.warp_id == tunnel.id,
+    ).first()
+    if row is None or not row.is_known or row.revealed_via == WarpRevealedVia.CORP_SHARE:
+        return None
+
+    # sector_id (GLOBAL) mirrors the get_available_moves / MoveOption
+    # convention for an already-known warp's destination — NOT the fuzzy
+    # position-only "sectors" list below, whose deliberate no-sector-id rule
+    # (ADR-0031) governs undiscovered scan targets, not a marker the viewer
+    # has already personally discovered.
+    return {
+        "sector_id": landing_sector.sector_id,
+        "region_sector_number": region.nexus_warp_sector,
+    }
 
 
 def get_minimap(db: Session, player: Player) -> Dict[str, Any]:
@@ -1022,6 +1146,9 @@ def get_minimap(db: Session, player: Player) -> Dict[str, Any]:
             {"dx": dx, "dy": dy, "dz": dz}
             for _, dx, dy, dz in nearby
         ],
+        # ADR-0064 R-V3: present only once the viewer has PERSONALLY
+        # discovered the Nexus warp — see _resolve_nexus_warp_marker.
+        "nexus_warp_marker": _resolve_nexus_warp_marker(db, player),
     }
 
 
@@ -1071,4 +1198,7 @@ def get_status(db: Session, player: Player) -> Dict[str, Any]:
         "can_jump": can_jump,
         "is_warp_jumper": is_warp_jumper,
         "sensor_level": sensor_level,
+        # ADR-0064 R-V3: present only once the viewer has PERSONALLY
+        # discovered the Nexus warp — see _resolve_nexus_warp_marker.
+        "nexus_warp_marker": _resolve_nexus_warp_marker(db, player),
     }

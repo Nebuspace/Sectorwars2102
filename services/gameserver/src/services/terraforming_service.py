@@ -117,7 +117,7 @@ class TerraformingService:
             )
 
         level_config = TERRAFORMING_LEVELS[level]
-        planet = self._get_owned_planet(planet_id, player_id)
+        planet = self._get_owned_planet(planet_id, player_id, lock=True)
 
         # Validate planet is eligible for terraforming
         if planet.habitability_score >= TERRAFORMING_MIN_TARGET:
@@ -146,7 +146,7 @@ class TerraformingService:
             )
 
         # Lock player for credit deduction race prevention
-        player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
+        player = self.db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
         if not player:
             raise ValueError("Player not found")
 
@@ -423,7 +423,7 @@ class TerraformingService:
         Returns:
             Dict with cancellation details
         """
-        planet = self._get_owned_planet(planet_id, player_id)
+        planet = self._get_owned_planet(planet_id, player_id, lock=True)
 
         if not planet.terraforming_active:
             raise ValueError("No active terraforming project on this planet")
@@ -436,7 +436,7 @@ class TerraformingService:
         refund_amount = int(original_credit_cost * TERRAFORMING_CANCEL_REFUND)
 
         # Credit the refund
-        player = self.db.query(Player).filter(Player.id == player_id).first()
+        player = self.db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
         if not player:
             raise ValueError("Player not found")
 

@@ -1,15 +1,27 @@
-"""Special-formation discovery (WO-CA).
+"""Special-formation discovery (WO-CA; per-player since ADR-0045 /
+WO-GWQ-FORMATION-KNOWLEDGE).
 
 Mirrors the planet/feature discovery pattern (discovery_service.py): a player
 arriving in — or scanning — a sector that is a formation's anchor, or any of its
-interior sectors, flips that formation's ``is_discovered`` False→True and back-
-fills its public ``name`` column from ``properties["name"]`` (the bang importer
-only ever wrote the name into the JSONB, never the dedicated column — see
-bang_import_service.py).
+interior sectors, personally discovers that formation (records a
+``PlayerFormationKnowledge`` row -- ADR-0045, mirrors ``PlayerWarpKnowledge``
+for the warp-knowledge layer). ``SpecialFormation.is_discovered`` is a global
+aggregate (first-ever-discovery flag) still flipped False→True on the FIRST
+player to ever discover a formation, and still triggers the one-time public
+``name`` back-fill from ``properties["name"]`` (the bang importer only ever
+wrote the name into the JSONB, never the dedicated column — see
+bang_import_service.py) -- but it no longer gates disclosure to any individual
+player; see ``is_formation_known_to_player``, the real per-player gate. One
+player's visit must never reveal a formation's identity to every other player.
 
-Discovery is first-observe and idempotent: an already-discovered formation is a
-no-op. Flush-only — the caller owns the commit (so the flip rides the move's own
-single commit, exactly like the ARIA / medal hooks in movement_service).
+Discovery is first-observe and idempotent PER PLAYER: a formation this player
+already knows is a no-op (no duplicate row, no re-flip). A concurrent double-
+visit from two sessions for the same (player, formation) races on the table's
+UNIQUE constraint; the loser's INSERT is SAVEPOINT-scoped so its
+``IntegrityError`` rolls back only that insert, never the caller's open
+transaction (mirrors ``medal_service.award_medal``). Flush-only — the caller
+owns the commit (so the flip rides the move's own single commit, exactly like
+the ARIA / medal hooks in movement_service).
 
 The reverse "which formations contain this sector" lookup is NOT a SQLAlchemy
 relationship — interior membership lives in the ``interior_sector_ids`` ARRAY,
@@ -28,10 +40,16 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.sector import Sector
-from src.models.special_formation import SpecialFormation, SpecialFormationType
+from src.models.special_formation import (
+    SpecialFormation,
+    SpecialFormationType,
+    PlayerFormationKnowledge,
+    FormationRevealedVia,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,28 +122,83 @@ def find_formations_for_sector(db: Session, sector: Sector) -> List[SpecialForma
     )
 
 
-def flip_formation_discovery(db: Session, player, sector: Sector) -> int:
-    """Discover any undiscovered formation that includes ``sector``.
-
-    For each matching, not-yet-discovered formation: set ``is_discovered=True``
-    and, if the dedicated ``name`` column is still NULL, back-fill it from
-    ``properties["name"]`` (the bang importer's only home for the name). Idempotent
-    — already-discovered formations are skipped. Flush-only; caller commits.
-
-    Returns the count of formations newly discovered (0 on a no-op visit).
+def is_formation_known_to_player(db: Session, player_id, formation_id) -> bool:
+    """True if ``player_id`` has personally discovered ``formation_id``
+    (ADR-0045 -- the per-player disclosure gate). This answers "does THIS
+    player know about this formation"; ``SpecialFormation.is_discovered``
+    remains a global aggregate (first-ever-discovery flag + name back-fill
+    trigger) and no longer answers that question for any individual player.
     """
-    flipped = 0
+    return (
+        db.query(PlayerFormationKnowledge)
+        .filter(
+            PlayerFormationKnowledge.player_id == player_id,
+            PlayerFormationKnowledge.formation_id == formation_id,
+        )
+        .first()
+        is not None
+    )
+
+
+def flip_formation_discovery(db: Session, player, sector: Sector) -> int:
+    """Discover, for ``player`` personally, any formation that includes
+    ``sector`` and that this player has not already discovered (ADR-0045).
+
+    For each matching formation not yet known to this player: record a
+    ``PlayerFormationKnowledge`` row (idempotent -- a concurrent double-visit
+    from two sessions for the same (player, formation) races on the table's
+    UNIQUE(player_id, formation_id) constraint; the loser's INSERT is
+    SAVEPOINT-scoped so its ``IntegrityError`` rolls back only that insert,
+    never the caller's open transaction, and is treated as an already-known
+    no-op -- mirrors ``medal_service.award_medal``). Also flips the
+    formation's global ``is_discovered`` (first-ever-discovery aggregate,
+    still written) and, if the dedicated ``name`` column is still NULL,
+    back-fills it from ``properties["name"]`` (the bang importer's only home
+    for the name).
+
+    Re-visiting a formation this player already knows is a pure no-op — no
+    duplicate row, no re-flip, no re-count. Flush-only; caller commits.
+
+    Returns the count of formations newly discovered BY THIS PLAYER this
+    call (0 on a no-op / idempotent revisit).
+    """
+    newly_known = 0
     for formation in find_formations_for_sector(db, sector):
-        if formation.is_discovered:
+        if is_formation_known_to_player(db, player.id, formation.id):
             continue
-        formation.is_discovered = True
-        # Back-fill the public name column from the JSONB the importer populated.
-        if not formation.name:
+
+        # Global aggregate: first-ever discovery (by any player) flips the
+        # flag and back-fills the name once. Independent of per-player state
+        # (idempotent: a no-op if some earlier player already flipped it).
+        if not formation.is_discovered:
+            formation.is_discovered = True
             props = formation.properties or {}
             jsonb_name = props.get("name")
-            if jsonb_name:
+            if not formation.name and jsonb_name:
                 formation.name = jsonb_name
-        flipped += 1
+
+        knowledge = PlayerFormationKnowledge(
+            player_id=player.id,
+            formation_id=formation.id,
+            revealed_via=FormationRevealedVia.VISIT,
+        )
+        try:
+            with db.begin_nested():
+                db.add(knowledge)
+                db.flush()
+        except IntegrityError:
+            # Lost the race to a concurrent visit from another session for
+            # the same (player, formation) -- already known now, not a new
+            # discovery for this call. begin_nested already rolled back to
+            # the savepoint; nothing else lost.
+            logger.info(
+                "flip_formation_discovery: player %s already knows formation %s "
+                "(race resolved by UNIQUE)",
+                getattr(player, "id", None), formation.id,
+            )
+            continue
+
+        newly_known += 1
         logger.info(
             "Player %s discovered formation %s (%s) in sector %s",
             getattr(player, "id", None),
@@ -133,9 +206,9 @@ def flip_formation_discovery(db: Session, player, sector: Sector) -> int:
             formation.type.name if formation.type else "?",
             sector.sector_id,
         )
-    if flipped:
+    if newly_known:
         db.flush()
-    return flipped
+    return newly_known
 
 
 # Key under which investigation state is recorded in the formation's
@@ -162,10 +235,12 @@ def investigate_formation(
     """Investigate a DISCOVERED special-formation, granting a one-time reward.
 
     Preconditions (raised as exceptions the route maps to HTTP status):
-      * the formation must exist AND be discovered (``is_discovered``) — else
-        ``FormationNotDiscoveredError`` (404). Discovery is a global row flag set
-        by visiting/scanning the formation's sector (see flip_formation_discovery);
-        an undiscovered formation is withheld from the player entirely, so
+      * the formation must exist AND be discovered BY THIS PLAYER (ADR-0045,
+        ``is_formation_known_to_player``) — else ``FormationNotDiscoveredError``
+        (404). Discovery is per-player, set by visiting/scanning the
+        formation's sector (see flip_formation_discovery); a formation this
+        player has not personally discovered is withheld from them entirely
+        — even if some other player has already discovered it — so
         investigating one is indistinguishable from "not found".
       * the formation must not already be investigated — else
         ``FormationAlreadyInvestigatedError`` (409). Investigation is one-time;
@@ -197,9 +272,10 @@ def investigate_formation(
         .first()
     )
 
-    # 404 — not found OR not yet discovered (identity is withheld pre-discovery,
-    # so both collapse to the same "you don't know this exists" response).
-    if formation is None or not formation.is_discovered:
+    # 404 — not found OR not yet discovered BY THIS PLAYER (ADR-0045; identity
+    # is withheld pre-discovery per-player, so both collapse to the same "you
+    # don't know this exists" response — even if another player already does).
+    if formation is None or not is_formation_known_to_player(db, player.id, formation_id):
         raise FormationNotDiscoveredError(
             "Formation not found or not yet discovered."
         )
