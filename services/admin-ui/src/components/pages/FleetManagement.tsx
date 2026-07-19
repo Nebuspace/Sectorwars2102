@@ -70,7 +70,7 @@ const FleetManagement: React.FC = () => {
   // Pagination
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
-  const [totalCount, setTotalCount] = useState(0);
+  const [totalCount, setTotalCount] = useState<number | null>(null);
   const limit = 50;
   
   // Forms
@@ -103,8 +103,8 @@ const FleetManagement: React.FC = () => {
       const data = response.data as any;
       
       setShips(data.ships || []);
-      setTotalCount(data.total_count || 0);
-      setTotalPages(data.total_pages || 1);
+      setTotalCount(typeof data.total_count === 'number' ? data.total_count : null);
+      setTotalPages(typeof data.total_pages === 'number' ? data.total_pages : 1);
       
       // Calculate stats
       if (data.ships && data.ships.length > 0) {
@@ -446,7 +446,8 @@ const FleetManagement: React.FC = () => {
                     ← Previous
                   </button>
                   <div className="text-sm">
-                    Page {page} of {totalPages} ({totalCount} ships)
+                    Page {page} of {totalPages}
+                    {totalCount != null ? ` (${totalCount} ships)` : ' (total unknown)'}
                   </div>
                   <button 
                     onClick={() => setPage(page + 1)} 
@@ -475,8 +476,12 @@ const FleetManagement: React.FC = () => {
                   <span className="dashboard-stat-icon">🚀</span>
                   <h4 className="dashboard-stat-title">Total Ships</h4>
                 </div>
-                <div className="dashboard-stat-value">{totalCount.toLocaleString()}</div>
-                <div className="dashboard-stat-description">All ships in galaxy</div>
+                <div className="dashboard-stat-value">
+                  {totalCount != null ? totalCount.toLocaleString() : '—'}
+                </div>
+                <div className="dashboard-stat-description">
+                  {totalCount != null ? 'All ships in galaxy' : 'Galaxy total unavailable'}
+                </div>
               </div>
               
               <div className="dashboard-stat-card">
