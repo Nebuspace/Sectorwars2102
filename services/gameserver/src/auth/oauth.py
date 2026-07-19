@@ -335,7 +335,9 @@ async def create_player_for_user(
     
     # Set the starter ship as current ship
     player.current_ship_id = starter_ship.id
-    
+    from src.services.ship_service import sync_current_pilot
+    sync_current_pilot(player, starter_ship)  # QUEUE-REGISTRY-PILOT-WIRING: no old ship (brand-new player)
+
     return player
 
 

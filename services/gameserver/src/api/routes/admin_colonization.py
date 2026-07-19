@@ -12,7 +12,8 @@ from pydantic import BaseModel, Field
 import logging
 
 from src.core.database import get_db
-from src.auth.dependencies import get_current_admin
+from src.auth.admin_scopes import GALAXY_MANAGE, REGIONS_VIEW
+from src.auth.dependencies import require_scope
 from src.models.user import User
 from src.models.player import Player
 from src.models.planet import Planet, PlanetType, PlanetStatus
@@ -20,6 +21,7 @@ from src.models.genesis_device import GenesisDevice, PlanetFormation
 from src.models.ship import Ship
 from src.models.sector import Sector
 from src.models.team import Team
+from src.services.admin_action_attempt import admin_action_attempt
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -144,7 +146,7 @@ class PlanetTickResult(BaseModel):
 async def get_colony_production(
     timeRange: str = Query("day", pattern="^(hour|day|week|month)$"),
     resource: str = Query("all", pattern="^(all|energy|minerals|food|water)$"),
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(REGIONS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get colony production data for monitoring"""
@@ -356,7 +358,7 @@ async def get_colony_production(
 
 @router.get("/colonization/genesis-devices")
 async def get_genesis_devices(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(REGIONS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get genesis device tracking data"""
@@ -562,7 +564,7 @@ async def get_genesis_devices(
 
 @router.get("/colonization/planets")
 async def get_admin_colonization_planets(
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(REGIONS_VIEW)),
     db: Session = Depends(get_db)
 ):
     """Get planetary management data for admin"""
@@ -752,13 +754,13 @@ async def get_admin_colonization_planets(
 # Canon: SYSTEMS/planetary-production-tick.md "Inputs" lists
 # `POST /api/v1/admin/planets/{id}/tick` as the manual admin trigger for the
 # production tick. This router mounts at /admin, so the path below resolves to
-# exactly that under the /api/v1 prefix. Gated by the SAME get_current_admin
-# dependency every other route in this file uses (no new RBAC/gating invented).
+# exactly that under the /api/v1 prefix. Mutates production/siege/terraform —
+# GALAXY_MANAGE (REGIONS_VIEW is read-only).
 
 @router.post("/planets/{planet_id}/tick", response_model=PlanetTickResult)
 async def tick_planet_production(
     planet_id: str,
-    current_admin: User = Depends(get_current_admin),
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
     db: Session = Depends(get_db)
 ):
     """Force-advance one planet's commodity production and return the DB delta.
@@ -806,15 +808,25 @@ async def tick_planet_production(
         # CRT WO-K1a cutover: the admin /tick drives the full planetary tick via settle()
         # (production + siege + terraform + research faucet, each idempotent on its own anchor).
         from src.services.structures import settle
-        changed = settle(planet, db=db).changed
-        # Commit even on the no-unit-but-anchor-advanced path so the durable anchor advance
-        # persists (settle() reports changed there too); rollback only when truly nothing changed
-        # to release the row lock.
-        if changed:
-            db.commit()
-            db.refresh(planet)
-        else:
-            db.rollback()
+        with admin_action_attempt(
+            db,
+            actor=current_admin,
+            scope_used=GALAXY_MANAGE,
+            action="planet_tick",
+            target_type="planet",
+            target_id=str(planet_id),
+            payload={},
+        ) as attempt:
+            changed = settle(planet, db=db).changed
+            # Commit only when something changed; no-op releases the lock with no
+            # audit row (matches prior log-then-rollback-on-noop behavior).
+            if changed:
+                attempt.succeed(payload={"changed": True})
+                db.refresh(planet)
+            else:
+                db.rollback()
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
         logger.error(f"Error ticking production for planet {planet_id}: {e}")
