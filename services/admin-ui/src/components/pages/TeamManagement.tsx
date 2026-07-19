@@ -268,8 +268,14 @@ export const TeamManagement: React.FC = () => {
                         <h3>Team Credits Comparison</h3>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '12px' }}>
                           {teams.slice(0, 10).map(team => {
-                            const maxCredits = Math.max(...teams.map(t => t.total_credits || 0), 1);
-                            const widthPct = ((team.total_credits || 0) / maxCredits) * 100;
+                            const knownCredits = teams
+                              .map(t => t.total_credits)
+                              .filter((c): c is number => typeof c === 'number');
+                            const maxCredits = Math.max(...knownCredits, 1);
+                            const hasCredits = typeof team.total_credits === 'number';
+                            const widthPct = hasCredits
+                              ? (team.total_credits / maxCredits) * 100
+                              : 0;
                             return (
                               <div key={team.id} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                 <span style={{ minWidth: '100px', fontSize: '0.85rem', color: team.id === selectedTeam.id ? '#60a5fa' : '#9ca3af' }}>
@@ -285,7 +291,7 @@ export const TeamManagement: React.FC = () => {
                                   }} />
                                 </div>
                                 <span style={{ minWidth: '60px', textAlign: 'right', fontSize: '0.8rem', color: '#9ca3af' }}>
-                                  {(team.total_credits || 0).toLocaleString()}
+                                  {hasCredits ? team.total_credits.toLocaleString() : EM_DASH}
                                 </span>
                               </div>
                             );
