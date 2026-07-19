@@ -1,35 +1,44 @@
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { useGame, type MoveOption } from '../../contexts/GameContext';
+import { useGame, type MoveOption, type SpecialFormationSummary } from '../../contexts/GameContext';
 import { useAutopilot } from '../../contexts/AutopilotContext';
+import { WindshieldFlightProvider, useWindshieldFlight } from '../../contexts/WindshieldFlightContext';
 import { useFirstLogin } from '../../contexts/FirstLoginContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
+import { useShellSlots } from '../layouts/ShellContext';
 // import { useTheme } from '../../themes/ThemeProvider'; // Available for future use
-import GameLayout from '../layouts/GameLayout';
 import TradingInterface from '../trading/TradingInterface';
 import SpaceDockInterface from '../spacedock/SpaceDockInterface';
 import PortOfficeVenue from '../spacedock/PortOfficeVenue';
+import ContractBoardVenue from '../spacedock/ContractBoardVenue';
 import PopulationCenterInterface from '../planetary/PopulationCenterInterface';
-import TacticalCard from '../tactical/TacticalCard';
 import SolarSystemViewscreen from '../tactical/SolarSystemViewscreen';
+import WindshieldTableau from '../tactical/WindshieldTableau';
 import PlanetPortPair from '../tactical/PlanetPortPair';
 import NavigationMap from '../tactical/NavigationMap';
+import { chartToNavSectors } from '../tactical/navChartTransform';
+import Galaxy3DRenderer from '../galaxy/Galaxy3DRenderer';
+import AutopilotHud from '../hud/AutopilotHud';
 import QuantumDriveConsole from '../quantum/QuantumDriveConsole';
 import GatewrightPanel from '../gatewright/GatewrightPanel';
-import CommsMailbox from '../comms/CommsMailbox';
-import CitizenshipBadge from '../governance/CitizenshipBadge';
-import RegionInvitePanel from '../governance/RegionInvitePanel';
+import TacticalMonitor from '../tactical/TacticalMonitor';
+import SolarSalvagePage from '../tactical/pages/SolarSalvagePage';
 import CockpitColonyManagement from '../cockpit/CockpitColonyManagement';
+import DeckPageTabs from '../cockpit/DeckPageTabs';
 import type { ProductionLine } from '../cockpit/ProductionPanel';
 import type { PerColonistRates, ProdRole } from '../cockpit/CoupledColonistSliders';
 import SafeVaultPanel from '../cockpit/SafeVaultPanel';
-import { regionOwnerAPI } from '../../services/api';
+import { navAPI, type NavChartResponse, sectorAPI, type SectorWreck } from '../../services/api';
 import apiClient from '../../services/apiClient';
+import { projectedWarpBearing, subscribeWarpDepart, WARP_TURN_MS } from '../../services/warpCinematicBus';
+import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { TurnsIcon } from '../icons/TurnsIcon';
+import { formatRegionType } from '../../utils/formatters';
 import './game-dashboard.css';
 import './cockpit.css';
 import '../tactical/tactical-layout.css';
 import '../quantum/quantum-drive.css';
+import '../galaxy/styles/galaxy-3d.css';
 
 // Planet type icons (shared by the landed console and the claim ceremony)
 const PLANET_TYPE_ICONS: Record<string, string> = {
@@ -46,6 +55,54 @@ const getPlanetIcon = (type?: string): string =>
 // One accent class per planet type — the colors live in cockpit.css
 const getPlanetTintClass = (type?: string): string =>
   `planet-tint-${(type || 'unknown').toLowerCase().replace(/[^a-z_]+/g, '_')}`;
+
+/** Decorative (non-colonizable) body row label — SOLAR SYSTEM[SYSTEM]'s
+ *  STAR/barren-body sensor rows (WO-UI-MAX-BATCH-1 item 9). `kind` is one
+ *  of the backend's real PlanetType values (models/planet.py); decorative
+ *  bodies from GET /sectors/{id}/contents are always drawn from the
+ *  uninhabitable subset (BARREN/ICE/VOLCANIC/DESERT/GAS_GIANT — see
+ *  celestial_service.py's BODY_KIND_WEIGHTS), so "uninhabitable" is always
+ *  an honest note here, not a guess. */
+const barrenBodyLabel = (kind: string): { name: string; note: string } => ({
+  name: (kind || 'UNCHARTED').toUpperCase().replace(/_/g, ' '),
+  note: 'uninhabitable',
+});
+
+/** SOLAR SYSTEM[SYSTEM]'s hazard-as-rows (WO-UI-MAX-BATCH-1 item 8, revised
+ *  by Max #21: terse rows here, the numeric breakdown moved to its own
+ *  HAZARD tab below). Named rows come from the sector's own TYPE — a real,
+ *  narrow enum (models/sector.py's SectorSpecialType) — using ITS OWN code
+ *  comments as the note text (not invented flavor; c.f. HazardAnalysisCard
+ *  .tsx's file-header note that the ratified prototype's h.type/h.fx have
+ *  "no real-data analogue in this codebase's Sector model"). Anything else
+ *  with hazard_level>0 gets the one generic fallback row the WO's own brief
+ *  anticipates ("if a sector's hazard data doesn't map to a named object,
+ *  render a GENERIC hazard row") — the common case, since most sectors are
+ *  type STANDARD/NORMAL with a nonzero hazard_level from the security-tier
+ *  formula, not one of the four exotic types below. */
+const HAZARD_TYPE_ROWS: Record<string, { icon: string; label: string; note: string }> = {
+  NEBULA: { icon: '☁', label: 'NEBULA', note: 'affects sensors and combat' },
+  BLACK_HOLE: { icon: '🕳', label: 'BLACK HOLE', note: 'gravitational effects — danger' },
+  RADIATION_ZONE: { icon: '☢', label: 'RADIATION ZONE', note: 'damages ships over time' },
+  WARP_STORM: { icon: '⚡', label: 'WARP STORM', note: 'disrupts warp tunnels' },
+};
+const hazardRowsFor = (
+  sector: { type?: string; hazard_level?: number; radiation_level?: number } | null
+): Array<{ key: string; icon: string; label: string; note: string }> => {
+  if (!sector) return [];
+  const typeKey = (sector.type || '').toUpperCase();
+  const named = HAZARD_TYPE_ROWS[typeKey];
+  if (named) return [{ key: typeKey, ...named }];
+  if ((sector.hazard_level ?? 0) > 0 || (sector.radiation_level ?? 0) > 0) {
+    return [{
+      key: 'GENERIC',
+      icon: '⚠',
+      label: 'HAZARD DETECTED',
+      note: 'see the HAZARD tab for the full analysis',
+    }];
+  }
+  return [];
+};
 
 /**
  * HudChip — windshield HUD glass chip.
@@ -530,7 +587,15 @@ const TerraformHeaderPanel: React.FC<{
   );
 };
 
-const GameDashboard: React.FC = () => {
+// GameDashboard (below) is a thin wrapper mounting WindshieldFlightProvider
+// — the shared flight-state store rows/locrow/the windshield tableau all
+// now read from (WO-UI2-FLIGHT-FEEL). It has to be an ANCESTOR of the hook
+// call in GameDashboardInner (a component cannot consume a context provided
+// by its own returned children), so the split lives here rather than deeper
+// in the JSX tree. GameLayout — this component's OWN ancestor via the
+// /game route's Outlet — was the other candidate mount point, but this WO's
+// scope keeps the provider mount inside GameDashboard.tsx.
+const GameDashboardInner: React.FC = () => {
   const {
     playerState,
     currentShip,
@@ -567,11 +632,28 @@ const GameDashboard: React.FC = () => {
     refineQuantumCharge,
     error
   } = useGame();
-  
+  const { getIcon: getResourceIcon, getLabel: getResourceLabel } = useResourceCatalog();
+
   const autopilot = useAutopilot();
+  const flight = useWindshieldFlight();
+
+  // WO-UI2-FLIGHT-FEEL seam fix — the SOLAR SYSTEM page's per-body rows
+  // (PlanetPortPair + the asteroid-field HARVEST row) and the locrow's
+  // 🛑 ALL STOP chip now all read the SAME shared WindshieldFlightContext
+  // the windshield tableau itself drives, not `autopilot.status` (that read
+  // the wrong, unrelated inter-sector autopilot engine — see
+  // WindshieldFlightContext.tsx's header). `flight.isFlying` is a superset
+  // of the old signal (local glide OR real autopilot engaged), so this
+  // doesn't drop the "block a row mid real course" behavior, it just also
+  // covers the local click-to-glide case that never flipped these before.
+  // `handleHalt` mirrors the locrow chip's own onClick exactly
+  // (`flight.allStop()`, which itself still calls autopilot.abort('all
+  // stop') AND freezes any local glide).
+  const flying = flight.isFlying;
+  const handleHalt = () => flight.allStop();
 
   const { requiresFirstLogin } = useFirstLogin();
-  const { sectorPlayers, isConnected } = useWebSocket();
+  const { sectorPlayers } = useWebSocket();
 
   // Autopilot plot input state (NAV monitor destination field)
   const [plotTarget, setPlotTarget] = useState('');
@@ -579,6 +661,60 @@ const GameDashboard: React.FC = () => {
   const [movementResult, setMovementResult] = useState<any>(null);
   const [dockingResult, setDockingResult] = useState<any>(null);
   const [landingResult, setLandingResult] = useState<any>(null);
+
+  // Warp cinematic trigger handed to the flight windshield (WindshieldTableau).
+  // handleMove bumps the token the moment a jump is committed; the windshield
+  // owns the actual charge → launch → arrival sequence. This is just an upper
+  // bound after which the (stateless) trigger prop is retired, comfortably
+  // longer than the whole cinematic. (Local, not imported, so WindshieldTableau
+  // can stay mocked in tests.)
+  const WARP_CINEMATIC_MAX_MS = 16000;
+  const warpTokenRef = useRef(0);
+  const warpClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [warpDepart, setWarpDepart] = useState<{
+    token: number;
+    bearingDeg: number;
+    destinationSectorId: number;
+  } | null>(null);
+
+  const armWarpDepart = useCallback((destinationSectorId: number) => {
+    const prefersReduced =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReduced) return;
+    const destination = [...availableMoves.warps, ...availableMoves.tunnels]
+      .find((move) => move.sector_id === destinationSectorId);
+    const fallbackBearing = (destinationSectorId * 47) % 360;
+    const hasProjectedCoords =
+      currentSector != null
+      && typeof currentSector.x_coord === 'number'
+      && typeof currentSector.y_coord === 'number'
+      && destination != null
+      && typeof destination.x_coord === 'number'
+      && typeof destination.y_coord === 'number';
+    const bearingDeg = hasProjectedCoords
+      ? projectedWarpBearing(
+          { x: currentSector.x_coord, y: currentSector.y_coord },
+          { x: destination.x_coord!, y: destination.y_coord! },
+          fallbackBearing,
+        )
+      : fallbackBearing;
+    warpTokenRef.current += 1;
+    setWarpDepart({
+      token: warpTokenRef.current,
+      bearingDeg,
+      destinationSectorId,
+    });
+    if (warpClearTimerRef.current) clearTimeout(warpClearTimerRef.current);
+    warpClearTimerRef.current = setTimeout(() => setWarpDepart(null), WARP_CINEMATIC_MAX_MS);
+  }, [availableMoves, currentSector]);
+
+  // ARIA autopilot hops fire through the bus so they get the same windshield
+  // charge → launch → arrive cinematic as manual helm jumps.
+  useEffect(() => subscribeWarpDepart((req) => {
+    armWarpDepart(req.destinationSectorId);
+  }), [armWarpDepart]);
 
   // Asteroid-harvest feedback (WO-UI-MINING): the harvest action result banner.
   // {success} carries the yield (ore/pm/shards), turns spent + remaining, and a
@@ -596,6 +732,17 @@ const GameDashboard: React.FC = () => {
   const [investigatedFormationIds, setInvestigatedFormationIds] = useState<Set<string>>(new Set());
   const [investigatingFormationId, setInvestigatingFormationId] = useState<string | null>(null);
   const [investigateResult, setInvestigateResult] = useState<any>(null);
+
+  // Shell portal targets (WO-UI0-SHELL-TRANSPLANT): GameLayout's `.band`/
+  // `.deck` slots, published via context. `bandEl`/`deckEl` are null until
+  // GameLayout mounts them (or if this component is ever rendered without a
+  // real GameLayout ancestor, e.g. the GameDashboard.*.test.tsx suite, which
+  // mocks GameLayout out entirely) -- the two portal sites below fall back
+  // to rendering their content INLINE (exactly where it always rendered) in
+  // that case, so those tests keep seeing the identical DOM shape they
+  // always have; in production the very next commit after GameLayout's
+  // callback-refs fire portals correctly, same commit as first paint.
+  const { bandEl, deckEl } = useShellSlots();
 
   // Ghost-on-approach for the HUD glass chips: they are pointer-events:none
   // (clicks pass through to the scene), so :hover can never fire on them.
@@ -652,79 +799,47 @@ const GameDashboard: React.FC = () => {
 
   // Docked trading-station terminal: trade desk or the Port Office registry.
   // SpaceDocks/TradeDocks reach the Port Office through their own venue hub.
-  const [stationTerminal, setStationTerminal] = useState<'trade' | 'portoffice'>('trade');
+  const [stationTerminal, setStationTerminal] = useState<'trade' | 'portoffice' | 'contracts'>('trade');
   useEffect(() => {
     setStationTerminal('trade');
   }, [playerState?.current_port_id]);
 
-  // Docked chrome minimize: a few seconds after docking, collapse the
-  // station-bay windshield (low-value scenery) so the station console — the
-  // buy/sell desk + venues, the reason you docked — gets ~85% of the band and
-  // fits without scrolling. Auto-fires once per dock; the player can expand/
-  // re-minimize manually. Resets on undock.
-  const [dockedChromeMin, setDockedChromeMin] = useState(false);
-  useEffect(() => {
-    if (!playerState?.is_docked) { setDockedChromeMin(false); return; }
-    setDockedChromeMin(false); // start expanded so the dock "lands" visibly
-    const t = window.setTimeout(() => setDockedChromeMin(true), 3500);
-    return () => window.clearTimeout(t);
-  }, [playerState?.is_docked, playerState?.current_port_id]);
 
-  // Same pattern for the planet-surface scene: a few seconds after landing the
-  // low-value surface vista collapses to a thin strip, handing the band to the
-  // planetary console (parity with the docked station bay). Resets on liftoff.
-  const [landedChromeMin, setLandedChromeMin] = useState(false);
-  useEffect(() => {
-    if (!playerState?.is_landed) { setLandedChromeMin(false); return; }
-    setLandedChromeMin(false); // start expanded so the surface "lands" visibly
-    const t = window.setTimeout(() => setLandedChromeMin(true), 3500);
-    return () => window.clearTimeout(t);
-  }, [playerState?.is_landed, playerState?.current_planet_id]);
-
-  // NAV monitor mode: Warp Jumpers get a second mode — the Quantum Drive
-  // console — behind a two-position switch in the NAV header. Every other
-  // ship type sees exactly the classic warp graph, no switch.
+  // NAV monitor mode (WO-UI2-DECK-RECONCILE, §05: [COURSE · CHART · DRIVE]):
+  // COURSE (adjacent-exit MOVE + plotted-course PLOT/ENGAGE, its own page --
+  // was crammed into the shared header), CHART (the astrogation chart, was
+  // "WARP GRAPH"), DRIVE (Warp-Jumper-only quantum console, was "QUANTUM
+  // DRIVE" -- still WJ-gated, non-WJ hulls never see this tab).
   const isWarpJumper = currentShip?.type === 'WARP_JUMPER';
-  const [navMode, setNavMode] = useState<'graph' | 'quantum'>('graph');
+  const [navMode, setNavMode] = useState<'course' | 'chart' | 'drive'>('course');
+  // CHART render mode -- 2D force-graph (NavigationMap, default) or 3D
+  // (Galaxy3DRenderer). Independent of navMode: only meaningful while
+  // navMode==='chart' -- WO-UI2-CHART-MONITOR.
+  const [navChartMode, setNavChartMode] = useState<'2d' | '3d'>('2d');
+
+  // SOLAR SYSTEM monitor mode (WO-UI2-DECK-RECONCILE, §05: [SYSTEM ·
+  // SALVAGE · SIGNALS]; 4th page HAZARD added WO-UI-MAX-BATCH-1 Max #21):
+  // SYSTEM (the dense sensor-row list — bodies/stations/formations/wrecks,
+  // hazards appearing only as terse un-numbered rows), SALVAGE (wreck rows),
+  // SIGNALS (discovered formations), HAZARD (the numeric deep-dive — hazard
+  // level/radiation%/NO-TRANSIT notes/description — the content that used to
+  // be SYSTEM's own `.system-hazard-fold` block, now its own competing page:
+  // choosing HAZARD swaps out the sensor list, by design, same DeckPageTabs
+  // single-active-page behavior every other page here already has).
+  const [systemPage, setSystemPage] = useState<'system' | 'salvage' | 'signals' | 'hazard'>('system');
   const [showGatewright, setShowGatewright] = useState(false);
 
-  // Region-owner invite control (WO-IL4). There is no ownership flag on
-  // PlayerState, so probe GET /api/v1/regions/my-region once on mount: 200 =>
-  // this player owns a region (trigger + panel render); 404 => not an owner
-  // (one quiet probe per session, no trigger ever shown). The owned region id
-  // is taken from the probe response and handed to the invite panel.
-  const [ownedRegionId, setOwnedRegionId] = useState<string | null>(null);
-  const [ownedRegionName, setOwnedRegionName] = useState<string | null>(null);
-  const [showRegionInvites, setShowRegionInvites] = useState(false);
+  // Region-owner invite/tradedock/governance state + probe RELOCATED to
+  // components/governance/RegionOwnerControls.tsx (WO-UI0-STATUSBAR
+  // integration) — it now mounts inside StatusBar's LocationDropdown, an
+  // ancestor of this component, and is fully self-contained there.
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const region = await regionOwnerAPI.getMyRegion();
-        if (cancelled || !region?.id) return;
-        setOwnedRegionId(String(region.id));
-        setOwnedRegionName(region.display_name || region.name || null);
-      } catch {
-        // 404 (not an owner) or transient error — leave the trigger hidden.
-        if (!cancelled) {
-          setOwnedRegionId(null);
-          setOwnedRegionName(null);
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const isRegionOwner = ownedRegionId !== null;
-
-  // Swapping off the Warp Jumper drops back to the warp graph and closes
-  // the Gatewright panel — neither exists without the quantum drive.
+  // Swapping off the Warp Jumper drops back to COURSE and closes the
+  // Gatewright panel — neither the DRIVE page nor Gatewright exist without
+  // the quantum drive.
   useEffect(() => {
     if (!isWarpJumper) {
-      setNavMode('graph');
+      setNavMode('course');
       setShowGatewright(false);
     }
   }, [isWarpJumper]);
@@ -819,6 +934,100 @@ const GameDashboard: React.FC = () => {
     }
   }, [shipsInSector, selectedShipId]);
 
+  // SCAN layer feed (WO-UI2-LIVING-WINDSHIELD): the flight windshield's SCAN
+  // toggle renders sector wrecks alongside special_formations. Also the
+  // SOLAR SYSTEM monitor's SALVAGE page (WO-UI2-DECK-RECONCILE) -- one
+  // shared fetch, not two, `refetchSectorWrecks` exposed so a completed/
+  // failed salvage can refresh the list without a second independent GET.
+  // No context cache exists for wrecks (unlike planets/stations/ships) --
+  // mirrors the navChart effect above (cancelled-flag guard, keyed on
+  // sector_id) but a failed/absent fetch resolves to [] rather than keeping
+  // stale data, since a wreck list has no meaningful "last known" fallback
+  // across a sector change.
+  const [sectorWrecks, setSectorWrecks] = useState<SectorWreck[]>([]);
+  const refetchSectorWrecks = useCallback(() => {
+    if (currentSector?.sector_id == null) {
+      setSectorWrecks([]);
+      return;
+    }
+    sectorAPI.sectorWrecks(currentSector.sector_id)
+      .then((rows) => setSectorWrecks(rows))
+      .catch(() => setSectorWrecks([]));
+  }, [currentSector?.sector_id]);
+  useEffect(() => {
+    let cancelled = false;
+    if (currentSector?.sector_id == null) {
+      setSectorWrecks([]);
+      return;
+    }
+    sectorAPI.sectorWrecks(currentSector.sector_id)
+      .then((rows) => { if (!cancelled) setSectorWrecks(rows); })
+      .catch(() => { if (!cancelled) setSectorWrecks([]); });
+    return () => { cancelled = true; };
+  }, [currentSector?.sector_id]);
+
+  // SCAN toggle (WO-UI5-RETIREMENT+GLASS item 3): lifted OUT of
+  // SolarSystemViewscreen (was SSV-local state) so its button can live in
+  // the SOLAR SYSTEM monitor's SYSTEM page instead of the glass — SSV is
+  // now a controlled component for this flag, mirroring the established
+  // selectedShipId/onSelectShip cross-boundary pattern above. The FUNCTION
+  // (gating the wreck/formation glyphs) is unchanged; only the trigger
+  // moved.
+  const [scanActive, setScanActive] = useState(false);
+
+  // Uninhabitable-body declutter filter (T1-B, Max ruling): DEFAULT OFF —
+  // every decorative body shows by default, matching every other sensor
+  // toggle's honest-by-default convention. Scoped to the SAME decorative
+  // (`real:false`) bodies `solarStatic.bodies` already carries and
+  // barrenBodyLabel already tags "uninhabitable" — the one place in this
+  // codebase that note is an honest, non-guessed fact (see that function's
+  // own doc-comment). Real DB planets (planetsInSector/PlanetPortPair) are
+  // NEVER "uninhabitable" bodies for this filter's purposes — they're
+  // colonizable game objects, not decorative flavor, so they're untouched
+  // by this toggle even at habitability_score 0.
+  const [hideUninhabitable, setHideUninhabitable] = useState(false);
+
+  // STAR + decorative-body sensor rows (WO-UI-MAX-BATCH-1 item 9: "the
+  // SYSTEM page = the full sensor list mirroring the windshield objects").
+  // WindshieldTableau.tsx already fetches this exact GET /sectors/{id}
+  // /contents static-composition snapshot for the flight scene, but that
+  // file is committed/off-limits for this WO and owns no shared context to
+  // read instead of a second GET -- its own file-header doc-comment notes
+  // the endpoint was "unioned into the one consolidated read-only endpoint
+  // the backend shipped specifically anticipating this FE pass" (i.e. more
+  // than one reader was always the plan). Cheap, deterministic, server-side
+  // seeded-per-sector -- a second GET per sector change is a fine cost for
+  // this decorative addition. Only `star` + the DECORATIVE (`real:false`)
+  // bodies are kept: real (`real:true`) bodies are already the DB planets
+  // planetsInSector/PlanetPortPair render below -- duplicating them here
+  // would double-list. Silent-catch (no console.error, unlike
+  // WindshieldTableau's own louder failure log): this is purely decorative,
+  // "no STAR/barren rows" is a fine degrade, and several sibling GameDashboard
+  // test files assert console.error was never called.
+  const [solarStatic, setSolarStatic] = useState<{
+    star: { label: string } | null;
+    bodies: Array<{ kind: string }>;
+  } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setSolarStatic(null);
+    if (currentSector?.sector_id == null) return undefined;
+    apiClient.get(`/api/v1/sectors/${currentSector.sector_id}/contents`)
+      .then((res) => {
+        if (cancelled) return;
+        const d = res.data || {};
+        const rawBodies = Array.isArray(d.bodies) ? d.bodies : [];
+        setSolarStatic({
+          star: d.star?.label ? { label: String(d.star.label) } : null,
+          bodies: rawBodies
+            .filter((b: any) => !b?.real)
+            .map((b: any) => ({ kind: String(b?.kind || '') })),
+        });
+      })
+      .catch(() => { if (!cancelled) setSolarStatic(null); });
+    return () => { cancelled = true; };
+  }, [currentSector?.sector_id]);
+
   // NAV map sectors: one node per destination sector. A sector reachable by
   // BOTH a warp and a tunnel used to be listed twice (duplicate React keys in
   // NavigationMap + phantom overlapping nodes), so build through a Map keyed
@@ -836,7 +1045,7 @@ const GameDashboard: React.FC = () => {
         : `Sector ${move.sector_number || move.sector_id}`;
     };
 
-    const byId = new Map<number, { id: number; name: string; type?: string; connected_sectors: number[] }>();
+    const byId = new Map<number, { id: number; name: string; type?: string; connected_sectors: number[]; depth?: number }>();
 
     // Current sector (connections deduped — a dual warp+tunnel destination
     // would otherwise draw the same edge twice)
@@ -847,7 +1056,8 @@ const GameDashboard: React.FC = () => {
       connected_sectors: [...new Set([
         ...availableMoves.warps.map(w => w.sector_id),
         ...availableMoves.tunnels.map(t => t.sector_id)
-      ])]
+      ])],
+      depth: 0
     });
 
     // Available warp destinations
@@ -857,7 +1067,8 @@ const GameDashboard: React.FC = () => {
         id: warp.sector_id,
         name: destinationName(warp),
         type: warp.type,
-        connected_sectors: [currentSector.sector_id]
+        connected_sectors: [currentSector.sector_id],
+        depth: 1
       });
     });
 
@@ -869,12 +1080,84 @@ const GameDashboard: React.FC = () => {
         id: tunnel.sector_id,
         name: destinationName(tunnel),
         type: 'nebula',
-        connected_sectors: [currentSector.sector_id]
+        connected_sectors: [currentSector.sector_id],
+        depth: 1
       });
     });
 
     return Array.from(byId.values());
   }, [currentSector, availableMoves]);
+
+  // Deep known-graph feed (WO-NAV-MULTIHOP-FEED sub-part b): GET /nav/chart
+  // returns the player's FULL known-space graph (visited ∪ corp-shared ∪
+  // current), scanner-bounded and node-capped by chartToNavSectors.
+  // `bounded=true` (WO-NAV-CHART-POLISH sub-part e) opts into the SERVER's
+  // own scanner-depth bound (CHART_BOUNDED_DEPTH_CEILING=12) on top of the
+  // client-side BFS+cap chartToNavSectors already applies -- a real ship
+  // with a narrower effective scanner range now gets a visibly narrower
+  // chart response, not just a client-truncated view of an unbounded one.
+  // No-ship players (never true for a piloted cockpit view) are unaffected
+  // per nav_service's own no-ship-is-unbounded guard. Fetched on mount and
+  // refetched whenever the current sector changes (a warp/tunnel move can
+  // grow the known set). scannerRange (the client-side BFS depth cap
+  // passed to chartToNavSectors below) is passed as `undefined` (util
+  // defaults to 12) -- neither ship.scanner_range nor ShipUpgradeService.
+  // effective_scanner_range is exposed anywhere in the player-client API
+  // surface today (grepped services/api.ts + contexts/), so there is no
+  // live client-side value to pass; the server-side bound above is real
+  // regardless. On a failed refetch the PREVIOUS chart is kept rather than
+  // cleared -- still-valid known data, and the merge below always falls
+  // back to the unaffected 1-hop `navSectors` regardless of chart state,
+  // so the map is never blanked.
+  const [navChart, setNavChart] = useState<NavChartResponse | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    navAPI.getChart(true)
+      .then((chart) => { if (!cancelled) setNavChart(chart); })
+      .catch(() => { /* non-fatal -- keep last-known chart, see comment above */ });
+    return () => { cancelled = true; };
+  }, [currentSector?.sector_id]);
+
+  // Scanner-bounded BFS neighborhood + frontier stubs + one-way edges, per
+  // chartToNavSectors. Frontier rendering is ON (WO-NAV-CHART-POLISH) --
+  // deepChartSectors' own `type: 'frontier'` entries flow straight into
+  // the merge below now, rendered by NavigationMap as a distinct glyph.
+  const { sectors: deepChartSectors, oneWayEdges } = useMemo(() => {
+    if (!navChart || !currentSector) {
+      return { sectors: [], frontierIds: [] as number[], truncated: false, oneWayEdges: [] as { from: number; to: number }[] };
+    }
+    return chartToNavSectors(navChart, currentSector.sector_id);
+  }, [navChart, currentSector?.sector_id]);
+
+  // MERGE (not replace) the deep graph into the 1-hop navSectors feed.
+  // A literal replace would break Accept #4: /nav/chart classifies a
+  // player's UNVISITED adjacent destinations as frontier, so a fresh
+  // player's map would go nearly empty and unvisited-but-adjacent moves
+  // (still clickable via availableMoves) would vanish. The 1-hop entries
+  // are kept byte-for-byte (name/type), only their connected_sectors gets
+  // unioned with the deep graph's -- deeper nodes render (untraversable,
+  // since availableMoves only ever lists true 1-hop destinations) but the
+  // existing adjacency/click-to-move surface is untouched. A deep-chart
+  // entry whose id ALREADY has a clickable 1-hop entry (the Accept #4
+  // collision -- nav_service classifies an unvisited adjacent destination
+  // as frontier even though availableMoves lists it as directly warpable)
+  // never downgrades that entry to a frontier stub; a genuinely
+  // frontier-ONLY id (no 1-hop entry) is added as a new distinct-glyph
+  // node (WO-NAV-CHART-POLISH sub-parts b/d).
+  const mergedNavSectors = useMemo(() => {
+    const byId = new Map<number, { id: number; name: string; type?: string; connected_sectors: number[]; depth?: number }>();
+    navSectors.forEach(s => byId.set(s.id, { ...s, connected_sectors: [...s.connected_sectors] }));
+    deepChartSectors.forEach(s => {
+      const existing = byId.get(s.id);
+      if (existing) {
+        existing.connected_sectors = Array.from(new Set([...existing.connected_sectors, ...s.connected_sectors]));
+        if (existing.depth === undefined) existing.depth = s.depth;
+      } else {
+        byId.set(s.id, { id: s.id, name: s.name, type: s.type, connected_sectors: [...s.connected_sectors], depth: s.depth });
+      }
+    });
+    return Array.from(byId.values());
+  }, [navSectors, deepChartSectors]);
 
   // Stable identity for the NavigationMap prop: an inline array literal would
   // be a new reference every render, re-running the map's node-init effect.
@@ -897,6 +1180,30 @@ const GameDashboard: React.FC = () => {
     return costs;
   }, [availableMoves]);
 
+  // NAV[COURSE] adjacent-exit rows (WO-UI2-DECK-RECONCILE, §05: "COURSE:
+  // adjacent exits → MOVE ▸ (1 click = 1 hop)"). One row per 1-hop
+  // destination, warp entries win over a same-sector tunnel entry (mirrors
+  // moveCosts' + navSectors' dedup rule above) -- the destination name
+  // gets a region suffix only when the exit crosses region boundaries,
+  // same display rule navSectors' own destinationName applies.
+  const adjacentExits = useMemo(() => {
+    if (!currentSector) return [] as MoveOption[];
+    const byId = new Map<number, MoveOption>();
+    const nameFor = (move: MoveOption): string => {
+      const showRegion = move.region_id && move.region_id !== currentSector.region_id;
+      return showRegion
+        ? `${move.name} · ${move.region_name}`
+        : move.name;
+    };
+    availableMoves.warps.forEach(warp => {
+      if (!byId.has(warp.sector_id)) byId.set(warp.sector_id, { ...warp, name: nameFor(warp) });
+    });
+    availableMoves.tunnels.forEach(tunnel => {
+      if (!byId.has(tunnel.sector_id)) byId.set(tunnel.sector_id, { ...tunnel, name: nameFor(tunnel) });
+    });
+    return Array.from(byId.values());
+  }, [currentSector, availableMoves]);
+
   // Latch the first real (non-zero) sector_id so the docked/landed canvas
   // scenes seed from it on a COLD load instead of seeding from 0 and then
   // popping to a different terrain once currentSector arrives a tick later.
@@ -914,6 +1221,15 @@ const GameDashboard: React.FC = () => {
       ? planetsInSector?.find((p: any) => p.id === playerState?.current_planet_id) || null
       : null
   ), [playerState?.is_landed, playerState?.current_planet_id, planetsInSector]);
+
+  // WO-UI2-WINDSHIELD-TABLEAU (Max refinement 5b): "undock emerges at the
+  // host's position" — a ref that survives the landed/docked→flight unmount
+  // boundary (GameDashboard itself never unmounts across that transition,
+  // unlike WindshieldTableau which remounts fresh each time) so the
+  // tableau's next flight-mode mount can seed the ship marker AT the planet
+  // it just lifted off from, instead of a generic seeded resting anchor.
+  const lastLandedPlanetIdRef = useRef<string | null>(null);
+  if (landedPlanet?.id) lastLandedPlanetIdRef.current = landedPlanet.id;
 
   const isLandedPlanetMine = !!(landedPlanet && playerState && landedPlanet.owner_id === playerState.id);
 
@@ -1299,10 +1615,14 @@ const GameDashboard: React.FC = () => {
     }
   };
   // Planet stockpile keys (fuel/organics/equipment) -> safe commodity keys.
+  // The SET stays a literal array — it's ADR-0082's fixed 3-commodity
+  // safe-storable list, not the open resource catalog — but icon/name for
+  // each key now come from the shared catalog (WO-ARCH-RES-3-FE-CATALOG)
+  // instead of a locally-duplicated dict.
   const SAFE_COMMODITIES: { stock: 'fuel' | 'organics' | 'equipment'; safe: string; icon: string; name: string }[] = [
-    { stock: 'fuel', safe: 'fuel_ore', icon: '⛽', name: 'Fuel Ore' },
-    { stock: 'organics', safe: 'organics', icon: '🌿', name: 'Organics' },
-    { stock: 'equipment', safe: 'equipment', icon: '⚙️', name: 'Equipment' },
+    { stock: 'fuel', safe: 'fuel_ore', icon: getResourceIcon('fuel_ore'), name: getResourceLabel('fuel_ore') },
+    { stock: 'organics', safe: 'organics', icon: getResourceIcon('organics'), name: getResourceLabel('organics') },
+    { stock: 'equipment', safe: 'equipment', icon: getResourceIcon('equipment'), name: getResourceLabel('equipment') },
   ];
 
   const moveCommoditySafe = async (dir: 'store' | 'take', safeKey: string, amount: number) => {
@@ -1433,6 +1753,19 @@ const GameDashboard: React.FC = () => {
     }
   };
 
+  // QUEUE-UX-OVERLAY-CONSISTENCY REVISE: light focus-hygiene helper (NOT a
+  // focus-trap system) for the 4 dismiss-only toast/celebration overlays
+  // below. A keyboard user focused on an overlay's dismiss button (or the
+  // overlay itself) loses focus to nowhere the instant it unmounts --
+  // restore it to document.body (the floor; no stable cockpit landmark ref
+  // is guaranteed mounted in every game mode these can appear in) right
+  // before the dismissing setState, on every path: auto-dismiss timer,
+  // button click, overlay click, overlay Enter/Space.
+  const dismissOverlay = (setter: (value: null) => void) => {
+    document.body.focus();
+    setter(null);
+  };
+
   // --- Claim ceremony / refusal notice ---
   const [claimCelebration, setClaimCelebration] = useState<{
     planetName: string;
@@ -1444,7 +1777,7 @@ const GameDashboard: React.FC = () => {
 
   useEffect(() => {
     if (!claimCelebration) return;
-    const timer = setTimeout(() => setClaimCelebration(null), 10000);
+    const timer = setTimeout(() => dismissOverlay(setClaimCelebration), 10000);
     return () => clearTimeout(timer);
   }, [claimCelebration]);
 
@@ -1488,7 +1821,7 @@ const GameDashboard: React.FC = () => {
 
   useEffect(() => {
     if (!formationDiscovery) return;
-    const timer = setTimeout(() => setFormationDiscovery(null), 7000);
+    const timer = setTimeout(() => dismissOverlay(setFormationDiscovery), 7000);
     return () => clearTimeout(timer);
   }, [formationDiscovery]);
 
@@ -1631,6 +1964,11 @@ const GameDashboard: React.FC = () => {
       : null
   ), [playerState?.is_docked, playerState?.current_port_id, stationsInSector]);
 
+  // WO-UI2-WINDSHIELD-TABLEAU (Max refinement 5b) — see the matching
+  // lastLandedPlanetIdRef comment above; same idiom, the docked host.
+  const lastDockedStationIdRef = useRef<string | null>(null);
+  if (dockedStation?.id) lastDockedStationIdRef.current = dockedStation.id;
+
   // Determine if player is docked at a SpaceDock (has special services like genesis_dealer)
   const isDockedAtSpaceDock = useMemo(() => {
     if (!playerState?.is_docked || !playerState?.current_port_id || !stationsInSector) {
@@ -1697,7 +2035,7 @@ const GameDashboard: React.FC = () => {
   useEffect(() => {
     if (harvestTimerRef.current) clearTimeout(harvestTimerRef.current);
     if (harvestResult) {
-      harvestTimerRef.current = setTimeout(() => setHarvestResult(null), 6000);
+      harvestTimerRef.current = setTimeout(() => dismissOverlay(setHarvestResult), 6000);
     }
     return () => { if (harvestTimerRef.current) clearTimeout(harvestTimerRef.current); };
   }, [harvestResult]);
@@ -1706,17 +2044,40 @@ const GameDashboard: React.FC = () => {
   useEffect(() => {
     if (investigateTimerRef.current) clearTimeout(investigateTimerRef.current);
     if (investigateResult) {
-      investigateTimerRef.current = setTimeout(() => setInvestigateResult(null), 7000);
+      investigateTimerRef.current = setTimeout(() => dismissOverlay(setInvestigateResult), 7000);
     }
     return () => { if (investigateTimerRef.current) clearTimeout(investigateTimerRef.current); };
   }, [investigateResult]);
 
 
   const handleMove = async (sectorId: number) => {
+    // Manual helm always wins over ARIA autopilot — a live engage loop was
+    // racing Move clicks (warp cinematic from one hop, move from another,
+    // or a refused hop after the bubble already played).
+    autopilot.abort('manual helm action');
+
+    armWarpDepart(sectorId);
+    // Hold the hop until the RCS turn finishes. Firing moveToSector immediately
+    // lets a fast round-trip abort `turning` and the hull never re-orients.
+    const prefersReduced =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (!prefersReduced) {
+      await new Promise<void>((resolve) => setTimeout(resolve, WARP_TURN_MS));
+    }
     try {
       const result = await moveToSector(sectorId);
+      if (result && result.success === false) {
+        // Move refused — drop the cinematic so we don't sit in "launch"
+        // with no sector change.
+        setWarpDepart(null);
+        setMovementResult(result);
+        return;
+      }
       setMovementResult(result);
     } catch (error) {
+      setWarpDepart(null);
       console.error('Error moving to sector:', error);
     }
   };
@@ -1911,6 +2272,66 @@ const GameDashboard: React.FC = () => {
     }
   };
 
+  // Shared formation-badge-with-Investigate-control list — was reused by the
+  // windshield's FORMATIONS HudChip AND the SOLAR SYSTEM monitor's SIGNALS
+  // page (WO-UI2-DECK-MONITORS); the glass copy was retired at WO-UI5-
+  // RETIREMENT+GLASS (the locrow + annunciator's HAZARD segment own the
+  // glass now), so this closure (over investigatedFormationIds/
+  // investigatingFormationId/handleInvestigateFormation) now has the one
+  // SIGNALS-page call site below — kept as its own function rather than
+  // inlined, since a second consumer could return.
+  const renderFormationList = (formations: SpecialFormationSummary[]) => (
+    <div className="hud-features">
+      {formations.map(f => {
+        const investigated = investigatedFormationIds.has(f.id);
+        const investigating = investigatingFormationId === f.id;
+        return (
+          <div
+            key={f.id}
+            style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}
+          >
+            <span
+              className={`hud-badge${f.is_discovered ? '' : ' undiscovered'}`}
+              title={f.is_discovered ? f.type?.replace(/_/g, ' ') : 'Unidentified anomaly — scan or explore to reveal'}
+            >
+              {f.is_discovered
+                ? `${(f.name || 'UNNAMED').toUpperCase()}${f.type ? ` · ${f.type.replace(/_/g, ' ').toUpperCase()}` : ''}`
+                : '❔ UNKNOWN ANOMALY'}
+            </span>
+            {f.is_discovered && (
+              <button
+                type="button"
+                onClick={() => handleInvestigateFormation(f.id)}
+                disabled={investigated || investigating}
+                title={investigated
+                  ? 'Already investigated'
+                  : 'Investigate this anomaly for a one-time reward'}
+                style={{
+                  pointerEvents: 'auto',
+                  padding: '0.15rem 0.45rem',
+                  fontSize: '0.6rem',
+                  fontWeight: 700,
+                  letterSpacing: '0.08em',
+                  textTransform: 'uppercase',
+                  fontFamily: "'Courier New', monospace",
+                  borderRadius: '3px',
+                  background: investigated ? 'rgba(120, 130, 150, 0.1)' : 'rgba(0, 217, 255, 0.15)',
+                  border: `1px solid ${investigated ? 'rgba(120, 130, 150, 0.35)' : 'rgba(0, 217, 255, 0.45)'}`,
+                  color: investigated ? 'rgba(180, 190, 210, 0.6)' : '#00d9ff',
+                  textShadow: investigated ? 'none' : '0 0 6px rgba(0, 217, 255, 0.5)',
+                  cursor: (investigated || investigating) ? 'not-allowed' : 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {investigating ? '🔬 …' : investigated ? '✓ INVESTIGATED' : '🔬 INVESTIGATE'}
+              </button>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+
   // If the player needs to complete the first login experience, the FirstLoginContainer
   // component will be shown by the App component, so we don't need to render the dashboard
   if (requiresFirstLogin) {
@@ -1918,12 +2339,11 @@ const GameDashboard: React.FC = () => {
   }
 
   return (
-    <GameLayout>
+    <div className="game-dashboard cockpit-mode">
       {/* WO-INVERTED-L: the windshield band is ALWAYS present (the 34px
           green-bar collapse is retired). Docked/landed now EXPAND the console
           via .console-expand on the container (GameLayout), not by collapsing
           the scene — so .docked-min/.landed-min are no longer applied here. */}
-      <div className="game-dashboard cockpit-mode">
         {/* System Alerts - Float over cockpit */}
         {error && (
           <div className="cockpit-alert error">
@@ -1951,11 +2371,34 @@ const GameDashboard: React.FC = () => {
         {claimCelebration && (
           <div
             className="claim-celebration-overlay"
-            role="dialog"
+            /* role="status" (not "dialog"/"alert"): this overlay auto-dismisses
+               on a timer AND dismisses on click-anywhere -- both prove it's a
+               non-modal transient announcement, not a blocking dialog. No
+               aria-modal (the background isn't inert -- the game keeps
+               running) and no focus trap (trapping a user inside something
+               that vanishes on its own in 10s would be hostile). Not "alert"
+               either -- a colony-established celebration is positive, not an
+               assertive interruption. Matches the 3 cockpit-alert toasts'
+               own role="status" (QUEUE-UX-OVERLAY-CONSISTENCY REVISE). */
+            role="status"
             aria-label="Colony established"
-            onClick={() => setClaimCelebration(null)}
+            onClick={() => dismissOverlay(setClaimCelebration)}
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                dismissOverlay(setClaimCelebration);
+              }
+            }}
           >
             <div className="claim-celebration-card">
+              <button
+                className="claim-celebration-dismiss"
+                onClick={(e) => { e.stopPropagation(); dismissOverlay(setClaimCelebration); }}
+                aria-label="Dismiss colony established notice"
+              >
+                ×
+              </button>
               <div className="claim-scanline" aria-hidden="true"></div>
               <div className="claim-banner">🏴 COLONY ESTABLISHED</div>
               <div className="claim-planet-icon">{getPlanetIcon(claimCelebration.planetType)}</div>
@@ -2032,9 +2475,25 @@ const GameDashboard: React.FC = () => {
           <div
             className="cockpit-alert success"
             role="status"
-            onClick={() => setFormationDiscovery(null)}
+            onClick={() => dismissOverlay(setFormationDiscovery)}
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                dismissOverlay(setFormationDiscovery);
+              }
+            }}
           >
-            <div className="alert-header">🌀 FORMATION DISCOVERED</div>
+            <div className="alert-header">
+              <span>🌀 FORMATION DISCOVERED</span>
+              <button
+                className="alert-dismiss"
+                onClick={(e) => { e.stopPropagation(); dismissOverlay(setFormationDiscovery); }}
+                aria-label="Dismiss formation discovery notice"
+              >
+                ×
+              </button>
+            </div>
             <div className="alert-message">
               {formationDiscovery.name.toUpperCase()}
               {formationDiscovery.type
@@ -2050,10 +2509,24 @@ const GameDashboard: React.FC = () => {
           <div
             className={`cockpit-alert ${harvestResult.success ? 'success' : 'error'}`}
             role="status"
-            onClick={() => setHarvestResult(null)}
+            onClick={() => dismissOverlay(setHarvestResult)}
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                dismissOverlay(setHarvestResult);
+              }
+            }}
           >
             <div className="alert-header">
-              {harvestResult.success ? '⛏️ HARVEST COMPLETE' : '⛏️ HARVEST FAILED'}
+              <span>{harvestResult.success ? '⛏️ HARVEST COMPLETE' : '⛏️ HARVEST FAILED'}</span>
+              <button
+                className="alert-dismiss"
+                onClick={(e) => { e.stopPropagation(); dismissOverlay(setHarvestResult); }}
+                aria-label="Dismiss harvest result"
+              >
+                ×
+              </button>
             </div>
             {harvestResult.success ? (
               <>
@@ -2085,10 +2558,24 @@ const GameDashboard: React.FC = () => {
           <div
             className={`cockpit-alert ${investigateResult.success ? 'success' : 'error'}`}
             role="status"
-            onClick={() => setInvestigateResult(null)}
+            onClick={() => dismissOverlay(setInvestigateResult)}
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                dismissOverlay(setInvestigateResult);
+              }
+            }}
           >
             <div className="alert-header">
-              {investigateResult.success ? '🔬 ANOMALY INVESTIGATED' : '🔬 INVESTIGATION FAILED'}
+              <span>{investigateResult.success ? '🔬 ANOMALY INVESTIGATED' : '🔬 INVESTIGATION FAILED'}</span>
+              <button
+                className="alert-dismiss"
+                onClick={(e) => { e.stopPropagation(); dismissOverlay(setInvestigateResult); }}
+                aria-label="Dismiss investigation result"
+              >
+                ×
+              </button>
             </div>
             {investigateResult.success ? (
               <div className="alert-message">
@@ -2106,7 +2593,15 @@ const GameDashboard: React.FC = () => {
           </div>
         )}
 
-        {/* WINDSHIELD - Full immersive viewport with HUD overlays */}
+        {/* WINDSHIELD - Full immersive viewport with HUD overlays.
+            WO-UI0-SHELL-TRANSPLANT: portaled into GameLayout's `.band` slot
+            (falls back to inline if bandEl isn't published yet — see the
+            bandEl/deckEl doc-comment above). TWO changes only in this whole
+            file per the WO: this IIFE wrap and the matching one around
+            .cockpit-console below — none of the JSX between the open/close
+            tags of either is touched. */}
+        {(() => {
+        const windshieldNode = (
         <div className="cockpit-windshield" ref={windshieldRef}>
           {/* LANDED STATE — planet-surface vista scene. GLASS LAW: the band
               hosts canvas scenery + absolutely-anchored HUD chips ONLY. The
@@ -2142,22 +2637,13 @@ const GameDashboard: React.FC = () => {
                 <div className="frame-corner bottom-right"></div>
               </div>
 
-              {/* HUD chips — fixed anchors, never flow layout */}
-              <HudChip id="landed" className="top-left" pill={<>🪐 {landedPlanet?.name || 'Planet'}</>}>
-                <div className="hud-label">LANDED — PLANETARY SURFACE</div>
-                <div className="hud-value hud-chip-name" title={landedPlanet?.name || undefined}>
-                  {getPlanetIcon(landedPlanet?.type)} {landedPlanet?.name || 'Unknown Planet'}
-                </div>
-                <div className="hud-value-secondary">
-                  {landedPlanet?.type?.replace(/_/g, ' ').toUpperCase() || 'UNKNOWN TYPE'}
-                </div>
-                {/* id=152: show the SECTOR on the landed card too (consistent
-                    with the in-flight card's prominent "SECTOR n"). */}
-                <div className="hud-value-secondary">
-                  SECTOR {currentSector ? (currentSector.sector_number || currentSector.sector_id) : '—'}
-                </div>
-              </HudChip>
-
+              {/* HUD chips — fixed anchors, never flow layout. The top-left
+                  id="landed" chip (planet name/type + sector) was RETIRED at
+                  the WO-UI0-STATUSBAR integration step — it was part of the
+                  overlap-defect canvas-chip system; its readouts (planet
+                  name/type, sector number) now live in StatusBar's
+                  LocationDropdown (components/layouts/LocationDropdown.tsx),
+                  which is scene-aware and shows them whenever is_landed. */}
               <HudChip id="owner" className="top-right" pill={<>👤 {ownerText}</>}>
                 <div className="hud-label">👤 OWNER</div>
                 <div className="hud-value hud-chip-name">{ownerText}</div>
@@ -2177,23 +2663,18 @@ const GameDashboard: React.FC = () => {
                 </div>
               </HudChip>
 
-              {/* Expanded-surface corner controls — Minimize Surface + Lift Off
-                  grouped as an absolute corner cluster OVER the vista (Max +
-                  Orchestrator placement decision) so neither pushes/overlaps the
-                  surface viewport. Scoped to the landed render, so the shared
-                  docked-bay minimize button is unaffected. Lift Off must stay
-                  reachable here because the green landed-min-bar (the other Lift
-                  Off) is display:none until the surface minimizes — the two
-                  chromes are mutually exclusive, so exactly one Lift Off shows. */}
+              {/* Surface corner control — LIFT OFF, an absolute corner cluster
+                  OVER the vista (Max + Orchestrator placement decision) so it
+                  never pushes/overlaps the surface viewport. The MINIMIZE
+                  SURFACE button + the green landed-min-bar it used to reveal
+                  are DELETED (WO-UI5-RETIREMENT+GLASS): GameDashboard never
+                  applied the `.cockpit-mode.landed-min` class either toggled,
+                  so the min-bar was permanently display:none and MINIMIZE
+                  SURFACE a dead click (already force-hidden by cockpit.css's
+                  own `.bay-minimize-btn { display: none !important; }`) —
+                  LIFT OFF is the one control that was ever reachable, so it's
+                  the one that survives, unconditionally. */}
               <div className="landed-surface-controls">
-                <button
-                  type="button"
-                  className="bay-minimize-btn"
-                  onClick={() => setLandedChromeMin(true)}
-                  title="Minimize the surface view — expand the planetary console"
-                >
-                  ▴ MINIMIZE SURFACE
-                </button>
                 <button
                   type="button"
                   className="landed-min-liftoff expanded"
@@ -2204,145 +2685,67 @@ const GameDashboard: React.FC = () => {
                   {helmBusy ? '🚀 DEPARTING…' : '🚀 LIFT OFF & DEPART'}
                 </button>
               </div>
-
-              {/* Collapsed strip (shown only when minimized via CSS): planet
-                  identity + expand affordance. */}
-              <div className="landed-min-bar">
-                <span className="landed-min-name">
-                  🪐 LANDED — {(landedPlanet?.name || 'Planet').toUpperCase()}
-                </span>
-                {citadelInfo?.is_upgrading && (() => {
-                  const startMs = citadelInfo.upgrade_started_at ? new Date(citadelInfo.upgrade_started_at).getTime() : null;
-                  const endMs = citadelInfo.upgrade_complete_at ? new Date(citadelInfo.upgrade_complete_at).getTime() : null;
-                  const pct = (startMs && endMs && endMs > startMs)
-                    ? Math.min(100, Math.max(0, ((nowMs - startMs) / (endMs - startMs)) * 100)) : 0;
-                  const remainMs = endMs ? Math.max(0, endMs - nowMs) : 0;
-                  return <span className="landed-min-build" title="Citadel construction in progress">🏗️ {Math.round(pct)}% · {fmtBuildCountdown(remainMs)}</span>;
-                })()}
-                <span className="landed-min-actions">
-                  <button
-                    type="button"
-                    className="landed-min-expand"
-                    onClick={() => setLandedChromeMin(false)}
-                    title="Expand the surface view"
-                  >
-                    ⤢ EXPAND SURFACE
-                  </button>
-                  {/* The single landing-level LIFT OFF lives here on the green
-                      bar (WO 129-C); the gray helm-rail landed line and the
-                      vitals-strip Lift Off were removed so there is exactly one. */}
-                  <button
-                    type="button"
-                    className="landed-min-liftoff"
-                    onClick={handleLeavePlanet}
-                    disabled={helmBusy}
-                    title="Lift off and depart this planet"
-                  >
-                    {helmBusy ? '🚀 DEPARTING…' : '🚀 LIFT OFF & DEPART'}
-                  </button>
-                </span>
-              </div>
             </>
             );
           })()}
 
-          {/* DOCKED STATE — station bay scene. GLASS LAW: canvas scenery +
-              absolutely-anchored HUD chips ONLY; UNDOCK lives on the helm
-              rail, the trade/SpaceDock instruments stay in the console. */}
+          {/* DOCKED STATE — station face, not a cockpit scene (WO-UI3-
+              STATION-MODE). No SolarSystemViewscreen mount + no windshield-
+              frame vignette here anymore — docked has its own flat identity
+              band (`.station-face-bay-band`, game-layout.css, scoped under
+              `.game-container.mode-station`) instead of a 3D bay canvas.
+              Salvaged verbatim: the ⚓ CLAMPED HudChip (id="baystatus").
+              DROPPED (not resurrected): the bay-minimize-btn/docked-min-bar
+              pair that used to live here — already dead code before this WO
+              (the `.cockpit-mode.docked-min` class it targeted was never
+              applied to any element; the landed sibling's own dead
+              min-bar/minimize pair is deleted outright above, see that
+              comment). GameLayout's manual windshield-minimize/
+              expand toggle (id=151, `--band-h`) this band used to
+              collapse/grow with is ITSELF retired (WO-UI0-SHELL-TRANSPLANT
+              — the band is now a fixed 8.5em height in station mode,
+              cockpit-shell.css/game-layout.css, not a player-resizable
+              one) — no minimize/expand affordance applies to this band
+              anymore, by design. UNDOCK lives on the helm rail /
+              SpaceDockInterface's persistent frame button, not here. */}
           {playerState?.is_docked && (
-            <>
-              <SolarSystemViewscreen
-                sectorId={sceneSectorId}
-                scene="docked"
-                isSpaceDock={isDockedAtSpaceDock}
-              />
-
-              {/* Cockpit frame vignette */}
-              <div className="windshield-frame">
-                <div className="frame-corner top-left"></div>
-                <div className="frame-corner top-right"></div>
-                <div className="frame-corner bottom-left"></div>
-                <div className="frame-corner bottom-right"></div>
-              </div>
-
-              {/* HUD chips — fixed anchors, never flow layout */}
-              <HudChip
-                id="station"
-                className="top-left"
-                pill={<>{isDockedAtSpaceDock ? '🚀' : '🏪'} {dockedStation?.name || (isDockedAtSpaceDock ? 'SpaceDock' : 'Trading Station')}</>}
-              >
-                <div className="hud-label">
-                  {isDockedAtSpaceDock ? '🚀 DOCKED — SPACEDOCK' : '🏪 DOCKED — STATION'}
-                </div>
-                <div className="hud-value hud-chip-name" title={dockedStation?.name || undefined}>
-                  {dockedStation?.name || (isDockedAtSpaceDock ? 'SpaceDock' : 'Trading Station')}
-                </div>
-                <div className="hud-value-secondary">
-                  {dockedStation?.type?.replace(/_/g, ' ').toUpperCase() ||
-                    (isDockedAtSpaceDock ? 'SPACEDOCK' : 'TRADING STATION')}
-                </div>
-              </HudChip>
-
+            <div className="station-face-bay-band" role="region" aria-label="Docked station">
+              <span className="station-face-bay-band-name" role="heading" aria-level={2}>
+                {isDockedAtSpaceDock ? '🚀' : '🏪'} DOCKED — {(dockedStation?.name || (isDockedAtSpaceDock ? 'SpaceDock' : 'Trading Station')).toUpperCase()}
+              </span>
               <HudChip id="baystatus" className="top-right" pill={<>⚓ CLAMPED</>}>
                 <div className="hud-label">BAY STATUS</div>
                 <div className="hud-value hud-chip-name hud-chip-ok">CLAMPS ENGAGED</div>
               </HudChip>
-
-              {/* Manual minimize — collapse the bay scenery to give the console
-                  the band (only shown while the bay is expanded). */}
-              <button
-                type="button"
-                className="bay-minimize-btn"
-                onClick={() => setDockedChromeMin(true)}
-                title="Minimize the bay view — expand the station console"
-              >
-                ▴ MINIMIZE BAY
-              </button>
-
-              {/* Collapsed strip (shown only when minimized via CSS): station
-                  identity + expand affordance. */}
-              <div className="docked-min-bar">
-                <span className="docked-min-name">
-                  {isDockedAtSpaceDock ? '🚀' : '🏪'} DOCKED — {(dockedStation?.name || (isDockedAtSpaceDock ? 'SpaceDock' : 'Trading Station')).toUpperCase()}
-                </span>
-                <button
-                  type="button"
-                  className="docked-min-expand"
-                  onClick={() => setDockedChromeMin(false)}
-                  title="Expand the docking-bay view"
-                >
-                  ⤢ EXPAND BAY
-                </button>
-              </div>
-            </>
+            </div>
           )}
 
           {/* SPACE VIEW - Normal flight mode */}
           {!playerState?.is_docked && !playerState?.is_landed && currentSector && (
             <>
-              {/* Space viewport - edge to edge */}
-              <SolarSystemViewscreen
+              {/* Space viewport - edge to edge. WO-UI2-WINDSHIELD-TABLEAU:
+                  the flight-mode windshield-band scene is now the static DOM
+                  tableau (Max, live-playtest #4), not SolarSystemViewscreen's
+                  canvas orrery — SolarSystemViewscreen itself is untouched
+                  and still owns the 'docked'/'landed' mounts below. See
+                  WindshieldTableau.tsx's file header for the verify-first
+                  note on why 'flight' scene there is now unreachable dead
+                  code rather than an edited path. */}
+              <WindshieldTableau
                 sectorId={currentSector.sector_id}
-                sectorType={currentSector.type?.toLowerCase() || 'normal'}
-                sectorName={currentSector.name}
                 hazardLevel={currentSector.hazard_level}
-                radiationLevel={currentSector.radiation_level}
-                stations={stationsInSector}
                 planets={planetsInSector}
                 ships={shipsInSector}
-                onEntityClick={(entity) => {
-                  // Legacy fallback viewport only (SectorViewport): the
-                  // procedural scene now opens an info popup on click and
-                  // routes actions through onRequestLand/onRequestDock.
-                  if (entity.type === 'planet') {
-                    handleLand(entity.id);
-                  } else if (entity.type === 'station') {
-                    handleDock(entity.id);
-                  }
-                }}
                 onRequestLand={handleLand}
                 onRequestDock={handleDock}
                 selectedShipId={selectedShipId}
+                onSelectShip={setSelectedShipId}
+                wrecks={sectorWrecks}
+                formations={currentSector.special_formations ?? []}
+                scanActive={scanActive}
+                lastDockedStationId={lastDockedStationIdRef.current}
+                lastLandedPlanetId={lastLandedPlanetIdRef.current}
+                warpDepart={warpDepart}
               />
 
               {/* Cockpit frame vignette */}
@@ -2353,129 +2756,72 @@ const GameDashboard: React.FC = () => {
                 <div className="frame-corner bottom-right"></div>
               </div>
 
-              {/* HUD Overlays */}
-              <HudChip
-                id="location"
-                className="top-left"
-                pill={<>◈ SECTOR {currentSector.sector_number || currentSector.sector_id}</>}
-              >
-                <div className="hud-label">LOCATION</div>
-                <div className="hud-value">
-                  SECTOR {currentSector.sector_number || currentSector.sector_id}
-                </div>
-                {currentSector.region_name && (
-                  <div className="hud-region-name" title={currentSector.region_name}>
-                    {currentSector.region_name}
-                  </div>
+              {/* ARIA Autopilot course — daisy-chained dots on a line,
+                  origin → destination. Self-hides on arrival (unmounts). */}
+              <AutopilotHud />
+
+              {/* HUD Overlays. The top-left id="location" chip (sector/
+                  region/CitizenshipBadge + region-owner controls) was
+                  RETIRED at the WO-UI0-STATUSBAR integration step — it was
+                  the overlap-defect canvas-chip system. Its location
+                  readouts (sector number/type, region name, CitizenshipBadge)
+                  now live in StatusBar's LocationDropdown
+                  (components/layouts/LocationDropdown.tsx); its owner
+                  controls (GOVERNANCE / region picker / INVITE CONTROL /
+                  TRADEDOCK CONSTRUCTION + both portal modals) are now
+                  components/governance/RegionOwnerControls.tsx, mounted
+                  inside that same LocationDropdown. */}
+
+              {/* LOCROW (WO-UI5-RETIREMENT+GLASS item 1; further simplified
+                  WO-UI-MAX-BATCH-1 items 1-3): top-left glass chips, now down
+                  to a single region-flavor chip + a conditional ALL STOP.
+                  Sector identity (number/type) and the region's full name
+                  already live in the status bar's LocationDropdown
+                  (components/layouts/LocationDropdown.tsx — sectorLabel/
+                  sectorTypeLabel/regionLabel, "canon"), so the sector-name
+                  chip and the NEBULA-type chip this row used to carry are
+                  gone as pure duplication, not data loss. The HAZARD chip is
+                  gone too — its OWN open-state/ref/HazardAnalysisCard mount
+                  (locrowHazardCardOpen etc.) was a second, redundant trigger
+                  for the exact same card Annunciator.tsx's HAZARD segment
+                  already opens from its own local state; that segment is the
+                  one surviving entry point (still open behind the click,
+                  unaffected by this change). Hazard/radiation detail now
+                  additionally has a full deep-dive home at SOLAR SYSTEM
+                  monitor's own HAZARD tab (below) — the glass was never
+                  its only route.
+
+                  WO-T1D-LANEB: the chip shows the region TYPE display-name
+                  ("Terran Space"), never the dev-seeded region_name ("Stage2
+                  Genesis R4 — Terran Space") that used to render here — that
+                  full dev name stays intact as MFD-B's REGION detail row
+                  (unrelated file, out of this lane). Derived ONLY from the
+                  canonical region_type enum via formatRegionType (utils/
+                  formatters.ts) — never parsed out of region_name (rejected
+                  2026-07-13 as fragile). Renders nothing when region_type is
+                  absent (e.g. a player with no region) rather than a guess. */}
+              <div className="locrow">
+                {formatRegionType(currentSector.region_type) && (
+                  <span className="loc">{formatRegionType(currentSector.region_type)}</span>
                 )}
-                <CitizenshipBadge
-                  regionId={currentSector.region_id}
-                  regionName={currentSector.region_name}
-                />
-                {isRegionOwner && (
+                {/* WO-UI2-FLIGHT-FEEL: reads the SAME shared flight store
+                    the SOLAR SYSTEM rows now do (flying/handleHalt, above)
+                    — flight.isFlying covers a real autopilot course AND the
+                    windshield's own local click-to-glide; flight.allStop()
+                    still calls autopilot.abort('all stop') under the hood. */}
+                {flying && (
                   <button
                     type="button"
-                    className="hud-region-invite-btn"
-                    onClick={() => setShowRegionInvites(true)}
-                    title="Manage region invites"
+                    className="loc"
+                    style={{ color: '#FFB3BC', borderColor: '#5A2630', cursor: 'pointer' }}
+                    onClick={handleHalt}
+                    aria-label="Abort autopilot and hold position"
+                    title="Abort autopilot and hold position"
                   >
-                    ◆ INVITE CONTROL
+                    🛑 ALL STOP
                   </button>
                 )}
-                <div className="hud-value-secondary">
-                  {currentSector.type ? currentSector.type.replace(/_/g, ' ').toUpperCase() : 'STANDARD'}
-                </div>
-              </HudChip>
-
-              {currentSector.hazard_level > 0 && (
-                <HudChip
-                  id="hazard"
-                  className="top-right hazard"
-                  pill={<>⚠ {currentSector.hazard_level}/10</>}
-                >
-                  <div className="hud-label">⚠️ HAZARD</div>
-                  <div className="hud-value danger">{currentSector.hazard_level}/10</div>
-                  <div className="hud-bar">
-                    <div className="hud-bar-fill danger" style={{ width: `${currentSector.hazard_level * 10}%` }}></div>
-                  </div>
-                </HudChip>
-              )}
-
-              {currentSector.radiation_level > 0 && (
-                <HudChip
-                  id="radiation"
-                  className="bottom-right radiation"
-                  pill={<>☢ {(currentSector.radiation_level * 100).toFixed(1)}%</>}
-                >
-                  <div className="hud-label">☢️ RADIATION</div>
-                  <div className="hud-value warning">{(currentSector.radiation_level * 100).toFixed(1)}%</div>
-                  <div className="hud-bar">
-                    <div className="hud-bar-fill warning" style={{ width: `${currentSector.radiation_level * 100}%` }}></div>
-                  </div>
-                </HudChip>
-              )}
-
-              {currentSector.special_formations && currentSector.special_formations.length > 0 && (
-                <HudChip
-                  id="formations"
-                  className="bottom-left formations"
-                  pill={<>🌀 {currentSector.special_formations.length}</>}
-                >
-                  <div className="hud-label">🌀 FORMATIONS</div>
-                  <div className="hud-features">
-                    {currentSector.special_formations.map(f => {
-                      // WO-UI-ANOMALY: a discovered formation carries an Investigate
-                      // control (one-time reward). Undiscovered → label only, no
-                      // control. Already-investigated this session → disabled.
-                      const investigated = investigatedFormationIds.has(f.id);
-                      const investigating = investigatingFormationId === f.id;
-                      return (
-                        <div
-                          key={f.id}
-                          style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}
-                        >
-                          <span
-                            className={`hud-badge${f.is_discovered ? '' : ' undiscovered'}`}
-                            title={f.is_discovered ? f.type?.replace(/_/g, ' ') : 'Unidentified anomaly — scan or explore to reveal'}
-                          >
-                            {f.is_discovered
-                              ? `${(f.name || 'UNNAMED').toUpperCase()}${f.type ? ` · ${f.type.replace(/_/g, ' ').toUpperCase()}` : ''}`
-                              : '❔ UNKNOWN ANOMALY'}
-                          </span>
-                          {f.is_discovered && (
-                            <button
-                              type="button"
-                              onClick={() => handleInvestigateFormation(f.id)}
-                              disabled={investigated || investigating}
-                              title={investigated
-                                ? 'Already investigated'
-                                : 'Investigate this anomaly for a one-time reward'}
-                              style={{
-                                pointerEvents: 'auto',
-                                padding: '0.15rem 0.45rem',
-                                fontSize: '0.6rem',
-                                fontWeight: 700,
-                                letterSpacing: '0.08em',
-                                textTransform: 'uppercase',
-                                fontFamily: "'Courier New', monospace",
-                                borderRadius: '3px',
-                                background: investigated ? 'rgba(120, 130, 150, 0.1)' : 'rgba(0, 217, 255, 0.15)',
-                                border: `1px solid ${investigated ? 'rgba(120, 130, 150, 0.35)' : 'rgba(0, 217, 255, 0.45)'}`,
-                                color: investigated ? 'rgba(180, 190, 210, 0.6)' : '#00d9ff',
-                                textShadow: investigated ? 'none' : '0 0 6px rgba(0, 217, 255, 0.5)',
-                                cursor: (investigated || investigating) ? 'not-allowed' : 'pointer',
-                                whiteSpace: 'nowrap',
-                              }}
-                            >
-                              {investigating ? '🔬 …' : investigated ? '✓ INVESTIGATED' : '🔬 INVESTIGATE'}
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </HudChip>
-              )}
+              </div>
 
               {currentSector.special_features && currentSector.special_features.length > 0 && (
                 <div className="hud-overlay bottom-left features" style={{ display: 'none' }}>
@@ -2498,21 +2844,30 @@ const GameDashboard: React.FC = () => {
             </>
           )}
         </div>
+        );
+        return bandEl ? createPortal(windshieldNode, bandEl) : windshieldNode;
+        })()}
 
-        {/* CONSOLE - Metal panel with embedded monitors */}
+        {/* CONSOLE - Metal panel with embedded monitors.
+            WO-UI0-SHELL-TRANSPLANT: portaled into GameLayout's `.deck` slot
+            (falls back to inline if deckEl isn't published yet — see the
+            bandEl/deckEl doc-comment above). */}
+        {(() => {
+        const consoleNode = (
         <div className="cockpit-console">
-          {/* DOCKED STATE: Show SpaceDock or Trading Interface */}
+          {/* DOCKED STATE: the station-face venue workspace (WO-UI3-STATION-
+              MODE) — replaces the flight-monitor bezel wrapper
+              (.console-monitor.trading-monitor.full-width + .monitor-bezel
+              rivets, cockpit.css) with `.station-face-workspace`
+              (game-layout.css, scoped under `.game-container.mode-station`).
+              Everything below the bezel (QuantumRefineryStrip, monitor-
+              screen, tabs, TradingInterface/SpaceDockInterface/venues) is
+              the shipped venue workspace, salvaged verbatim. */}
           {playerState?.is_docked ? (
-            <div className="console-monitor trading-monitor full-width">
+            <div className="station-face-workspace">
               {isWarpJumper && (
                 <QuantumRefineryStrip status={quantumStatus} onRefine={refineQuantumCharge} />
               )}
-              <div className="monitor-bezel">
-                <div className="bezel-corner tl"></div>
-                <div className="bezel-corner tr"></div>
-                <div className="bezel-corner bl"></div>
-                <div className="bezel-corner br"></div>
-              </div>
               <div className="monitor-screen">
                 <div
                   className="screen-hud-header station-venue-header"
@@ -2542,6 +2897,15 @@ const GameDashboard: React.FC = () => {
                         onClick={() => setStationTerminal('portoffice')}
                       >
                         🏛️ PORT OFFICE
+                      </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={stationTerminal === 'contracts'}
+                        className={`venue-tab${stationTerminal === 'contracts' ? ' active' : ''}`}
+                        onClick={() => setStationTerminal('contracts')}
+                      >
+                        📋 CONTRACTS
                       </button>
                     </div>
                   )}
@@ -2575,27 +2939,56 @@ const GameDashboard: React.FC = () => {
                       onCreditsSet={() => { refreshPlayerState(); }}
                       onBack={() => setStationTerminal('trade')}
                     />
+                  ) : stationTerminal === 'contracts' && playerState?.current_port_id ? (
+                    <ContractBoardVenue
+                      stationId={playerState.current_port_id}
+                      stationName={
+                        stationsInSector?.find((s: any) => s.id === playerState?.current_port_id)?.name ||
+                        'Trading Station'
+                      }
+                      credits={playerState?.credits ?? 0}
+                      onCreditsSet={() => { refreshPlayerState(); }}
+                      onBack={() => setStationTerminal('trade')}
+                    />
                   ) : (
                     <TradingInterface onClose={() => {}} />
                   )}
                 </div>
               </div>
             </div>
-          ) : playerState?.is_landed && landedPlanet?.is_population_hub ? (
+          ) : playerState?.is_landed && (
+            landedPlanet?.is_population_hub
+            || (landedPlanet?.population ?? 0) >= 1_000_000
+          ) ? (
             /* LANDED ON A POPULATION HUB: the Capital Sector welcome +
-               Pioneer Office, not the generic owned-colony console. */
-            <PopulationCenterInterface planet={landedPlanet} />
+               Pioneer Office, not the generic owned-colony console.
+               Pop ≥1M fallback mirrors server land/claim/pioneer — a missed
+               is_population_hub flag must not show ownership-gated Load/Unload.
+               `.surface-face-workspace` (WO-UI4-SURFACE-MODE, game-layout.css)
+               places it the same way the owned-colony branch below is placed;
+               PopulationCenterInterface owns its own `.console-monitor
+               .population-center-monitor.full-width` + `.monitor-bezel`
+               markup internally (out of this WO's file scope) — game-
+               layout.css neutralizes the bezel and stretches the console-
+               monitor to fill the workspace, purely in CSS, so this wrapper
+               is the only change needed here. */
+            <div className="surface-face-workspace">
+              <PopulationCenterInterface planet={landedPlanet} />
+            </div>
           ) : playerState?.is_landed ? (
-            /* LANDED STATE: Show Comprehensive Planetary Operations Terminal */
-            <div className="console-monitor planetary-ops-monitor full-width">
-              <div className="monitor-bezel">
-                <div className="bezel-corner tl"></div>
-                <div className="bezel-corner tr"></div>
-                <div className="bezel-corner bl"></div>
-                <div className="bezel-corner br"></div>
-              </div>
+            /* LANDED STATE: Show Comprehensive Planetary Operations Terminal.
+               `.surface-face-workspace` (WO-UI4-SURFACE-MODE) replaces the
+               flight-monitor bezel wrapper (`.console-monitor.planetary-ops-
+               monitor.full-width` + `.monitor-bezel` rivets, cockpit.css) —
+               the same mechanical swap DOCKED already got (WO-UI3-STATION-
+               MODE's `.station-face-workspace`). `.monitor-screen` and
+               everything inside it (CockpitColonyManagement included) is
+               salvaged verbatim, unchanged. */
+            <div className="surface-face-workspace">
               <div className="monitor-screen">
-                <div className="screen-hud-header">PLANETARY OPERATIONS COMMAND</div>
+                <div className="screen-hud-header" role="region" aria-label="Planetary Operations">
+                  <span role="heading" aria-level={2}>PLANETARY OPERATIONS COMMAND</span>
+                </div>
                 <div className="screen-hud-content planetary-ops-content">
                   {(() => {
                     const currentPlanet = planetsInSector?.find((p: any) => p.id === playerState?.current_planet_id);
@@ -2747,10 +3140,13 @@ const GameDashboard: React.FC = () => {
                               poll (landedPlanetDetail) via the projected lines — no
                               extra fetch. */}
                           {isLandedPlanetMine && currentPlanet && (() => {
+                            // SET stays fixed (the production stockpile is the same
+                            // 3-column planet contract as SAFE_COMMODITIES above);
+                            // icon/name now come from the shared resource catalog.
                             const prodLines: ProductionLine[] = ([
-                              { key: 'fuel' as const, icon: '⛽', name: 'Fuel' },
-                              { key: 'organics' as const, icon: '🌿', name: 'Organics' },
-                              { key: 'equipment' as const, icon: '⚙️', name: 'Equipment' },
+                              { key: 'fuel' as const, icon: getResourceIcon('fuel'), name: getResourceLabel('fuel') },
+                              { key: 'organics' as const, icon: getResourceIcon('organics'), name: getResourceLabel('organics') },
+                              { key: 'equipment' as const, icon: getResourceIcon('equipment'), name: getResourceLabel('equipment') },
                             ]).map(({ key, icon, name }) => {
                               const ss = storageStatus(key);
                               // Store-to-safe affordance: same computation the Safe
@@ -3012,329 +3408,597 @@ const GameDashboard: React.FC = () => {
           ) : (
             <>
               {/* LEFT MONITOR: Navigation */}
-              <div className="console-monitor nav-monitor">
-                <div className="monitor-bezel">
-                  <div className="bezel-corner tl"></div>
-                  <div className="bezel-corner tr"></div>
-                  <div className="bezel-corner bl"></div>
-                  <div className="bezel-corner br"></div>
+              <div className="mon nav-monitor">
+                {/* NAV header (WO-UI2-DECK-RECONCILE, §05: [COURSE · CHART ·
+                    DRIVE]) — unified for every hull, no more per-page
+                    plot-row crammed into the shared header (moved into
+                    COURSE's own content below). DRIVE is WJ-gated;
+                    non-Warp-Jumper hulls still see 2 pages (COURSE/CHART),
+                    so the rail always renders regardless of hull type.
+                    WO-UI0-SHELL-TRANSPLANT (Leaf L3): the page-switch
+                    softkeys moved out of this header to a bottom `.skrow`
+                    (artifact `monNav()`) — the header now shows only the
+                    monitor title + a live "N CHARTED EXIT(S)" sub-status,
+                    reusing the same `adjacentExits` COURSE already reads. */}
+                <div className="mhead">
+                  <span className="mtitle">NAV</span>
+                  <span className="hsub">{adjacentExits.length} CHARTED EXIT{adjacentExits.length === 1 ? '' : 'S'}</span>
                 </div>
-                <div className="monitor-screen">
-                  {isWarpJumper ? (
-                    <div className="screen-hud-header nav-header-with-modes">
-                      <span>NAV</span>
-                      <div className="nav-mode-switch" role="tablist" aria-label="NAV display mode">
-                        <button
-                          className={`nav-mode-btn ${navMode === 'graph' ? 'active' : ''}`}
-                          role="tab"
-                          aria-selected={navMode === 'graph'}
-                          onClick={() => setNavMode('graph')}
-                        >
-                          WARP GRAPH
-                        </button>
-                        <button
-                          className={`nav-mode-btn quantum ${navMode === 'quantum' ? 'active' : ''}`}
-                          role="tab"
-                          aria-selected={navMode === 'quantum'}
-                          onClick={() => setNavMode('quantum')}
-                        >
-                          QUANTUM DRIVE
-                        </button>
-                      </div>
-                      {/* Destination plot row — sits in the NAV header for all ship types */}
-                      <div className="nav-plot-row">
-                        <input
-                          type="number"
-                          className="nav-plot-input"
-                          placeholder="SECTOR #"
-                          value={plotTarget}
-                          onChange={(e) => setPlotTarget(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              const id = parseInt(plotTarget, 10);
-                              if (!isNaN(id) && id > 0) autopilot.plotCourse(id);
-                            }
-                          }}
-                          aria-label="Destination sector number"
-                          min={1}
-                        />
-                        <button
-                          className="nav-plot-btn"
-                          disabled={autopilot.status === 'plotting' || !plotTarget || isNaN(parseInt(plotTarget, 10))}
-                          onClick={() => {
-                            const id = parseInt(plotTarget, 10);
-                            if (!isNaN(id) && id > 0) autopilot.plotCourse(id);
-                          }}
-                          title="Plot course to destination sector"
-                        >
-                          {autopilot.status === 'plotting' ? '…' : 'PLOT'}
-                        </button>
-                        {/* Autopilot engage / abort — shown when a course is plotted */}
-                        {autopilot.course && autopilot.status !== 'arrived' && (
-                          autopilot.status === 'engaged' ? (
-                            <button
-                              className="nav-autopilot-abort"
-                              onClick={() => autopilot.abort('manual abort')}
-                              disabled={helmBusy}
-                              aria-disabled={helmBusy}
-                              aria-label={helmBusy ? 'Abort unavailable — helm is busy' : 'Abort autopilot'}
-                              title="Abort autopilot"
-                            >
-                              🛑 ABORT · HOP {autopilot.currentHopIndex + 1}/{autopilot.course.hops.length}{helmBusy ? ' (busy)' : ''}
-                            </button>
-                          ) : (
-                            <button
-                              className="nav-autopilot-engage"
-                              onClick={() => autopilot.engage()}
-                              disabled={helmBusy}
-                              aria-disabled={helmBusy}
-                              aria-label={helmBusy ? 'Autopilot unavailable — helm is busy' : `Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
-                              title={`Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
-                            >
-                              🧭 ENGAGE · {autopilot.course.hops.length} HOP{autopilot.course.hops.length !== 1 ? 'S' : ''}{helmBusy ? ' (busy)' : ''}
-                            </button>
-                          )
-                        )}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="screen-hud-header nav-header-with-plot">
-                      NAV
-                      {/* Destination plot row — non-Warp-Jumper variant */}
-                      <div className="nav-plot-row">
-                        <input
-                          type="number"
-                          className="nav-plot-input"
-                          placeholder="SECTOR #"
-                          value={plotTarget}
-                          onChange={(e) => setPlotTarget(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              const id = parseInt(plotTarget, 10);
-                              if (!isNaN(id) && id > 0) autopilot.plotCourse(id);
-                            }
-                          }}
-                          aria-label="Destination sector number"
-                          min={1}
-                        />
-                        <button
-                          className="nav-plot-btn"
-                          disabled={autopilot.status === 'plotting' || !plotTarget || isNaN(parseInt(plotTarget, 10))}
-                          onClick={() => {
-                            const id = parseInt(plotTarget, 10);
-                            if (!isNaN(id) && id > 0) autopilot.plotCourse(id);
-                          }}
-                          title="Plot course to destination sector"
-                        >
-                          {autopilot.status === 'plotting' ? '…' : 'PLOT'}
-                        </button>
-                        {/* Autopilot engage / abort — shown when a course is plotted */}
-                        {autopilot.course && autopilot.status !== 'arrived' && (
-                          autopilot.status === 'engaged' ? (
-                            <button
-                              className="nav-autopilot-abort"
-                              onClick={() => autopilot.abort('manual abort')}
-                              disabled={helmBusy}
-                              aria-disabled={helmBusy}
-                              aria-label={helmBusy ? 'Abort unavailable — helm is busy' : 'Abort autopilot'}
-                              title="Abort autopilot"
-                            >
-                              🛑 ABORT · HOP {autopilot.currentHopIndex + 1}/{autopilot.course.hops.length}{helmBusy ? ' (busy)' : ''}
-                            </button>
-                          ) : (
-                            <button
-                              className="nav-autopilot-engage"
-                              onClick={() => autopilot.engage()}
-                              disabled={helmBusy}
-                              aria-disabled={helmBusy}
-                              aria-label={helmBusy ? 'Autopilot unavailable — helm is busy' : `Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
-                              title={`Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
-                            >
-                              🧭 ENGAGE · {autopilot.course.hops.length} HOP{autopilot.course.hops.length !== 1 ? 'S' : ''}{helmBusy ? ' (busy)' : ''}
-                            </button>
-                          )
-                        )}
-                      </div>
-                    </div>
-                  )}
-                  <div className="screen-hud-content">
-                  {isWarpJumper && navMode === 'quantum' ? (
+                <div
+                  className="mbody"
+                  role="tabpanel"
+                  id={`nav-panel-${navMode}`}
+                  aria-labelledby={`nav-tab-${navMode}`}
+                >
+                {navMode === 'drive' ? (
                     <QuantumDriveConsole onOpenGatewright={() => setShowGatewright(true)} />
-                  ) : (
+                  ) : !currentSector ? (
+                    <div className="nav-scan-state">
+                      {!navScanTimedOut ? (
+                        <>
+                          <div className="nav-scan-spinner" aria-hidden="true"></div>
+                          <span className="nav-scan-text">SCANNING SECTOR...</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="nav-scan-text warning">SECTOR SCAN TIMED OUT — NO TELEMETRY</span>
+                          <button className="nav-scan-retry" onClick={handleRetryScan}>
+                            ⟳ RETRY SCAN
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  ) : navMode === 'course' ? (
                     <>
-                      {!currentSector && (
-                        <div className="nav-scan-state">
-                          {!navScanTimedOut ? (
-                            <>
-                              <div className="nav-scan-spinner" aria-hidden="true"></div>
-                              <span className="nav-scan-text">SCANNING SECTOR...</span>
-                            </>
-                          ) : (
-                            <>
-                              <span className="nav-scan-text warning">SECTOR SCAN TIMED OUT — NO TELEMETRY</span>
-                              <button className="nav-scan-retry" onClick={handleRetryScan}>
-                                ⟳ RETRY SCAN
+                      {/* Adjacent exits — 1 click = 1 hop (§05 COURSE). */}
+                      <div className="nav-course-section">
+                        <div className="nav-course-section-title">ADJACENT EXITS</div>
+                        {adjacentExits.length === 0 ? (
+                          <div className="empty-state">No charted exits</div>
+                        ) : (
+                          adjacentExits.map((exit) => (
+                            <div key={exit.sector_id} className="nav-exit-row">
+                              <span className="nav-exit-name">→ {exit.name}</span>
+                              <span className="nav-exit-cost"><TurnsIcon /> {exit.turn_cost}</span>
+                              <button
+                                type="button"
+                                className="nav-exit-move-btn"
+                                onClick={() => handleMove(exit.sector_id)}
+                                disabled={!exit.can_afford}
+                                title={exit.can_afford ? `Move to ${exit.name}` : 'Insufficient turns'}
+                              >
+                                MOVE ▸
                               </button>
-                            </>
+                            </div>
+                          ))
+                        )}
+                      </div>
+
+                      {/* Plotted multi-hop course + PLOT/ENGAGE — relocated
+                          out of the shared header (§05 COURSE: "plotted
+                          course + 🧭 ENGAGE"). */}
+                      <div className="nav-course-section">
+                        <div className="nav-course-section-title">COURSE</div>
+                        <div className="nav-course-plot-row">
+                          <input
+                            type="number"
+                            className="nav-plot-input"
+                            placeholder="SECTOR #"
+                            value={plotTarget}
+                            onChange={(e) => setPlotTarget(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                const id = parseInt(plotTarget, 10);
+                                if (!isNaN(id) && id > 0) autopilot.plotCourse(id);
+                              }
+                            }}
+                            aria-label="Destination sector number"
+                            min={1}
+                          />
+                          <button
+                            className="nav-plot-btn"
+                            disabled={autopilot.status === 'plotting' || !plotTarget || isNaN(parseInt(plotTarget, 10))}
+                            onClick={() => {
+                              const id = parseInt(plotTarget, 10);
+                              if (!isNaN(id) && id > 0) autopilot.plotCourse(id);
+                            }}
+                            title="Plot course to destination sector"
+                          >
+                            {autopilot.status === 'plotting' ? '…' : 'PLOT'}
+                          </button>
+                          {/* Autopilot engage / abort — shown when a course is plotted */}
+                          {autopilot.course && autopilot.status !== 'arrived' && (
+                            autopilot.status === 'engaged' ? (
+                              <button
+                                className="nav-autopilot-abort"
+                                onClick={() => autopilot.abort('manual abort')}
+                                disabled={helmBusy}
+                                aria-disabled={helmBusy}
+                                aria-label={helmBusy ? 'Abort unavailable — helm is busy' : 'Abort autopilot'}
+                                title="Abort autopilot"
+                              >
+                                🛑 ABORT · HOP {autopilot.currentHopIndex + 1}/{autopilot.course.hops.length}{helmBusy ? ' (busy)' : ''}
+                              </button>
+                            ) : (
+                              <button
+                                className="nav-autopilot-engage"
+                                onClick={() => autopilot.engage()}
+                                disabled={helmBusy}
+                                aria-disabled={helmBusy}
+                                aria-label={helmBusy ? 'Autopilot unavailable — helm is busy' : `Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
+                                title={`Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
+                              >
+                                🧭 ENGAGE · {autopilot.course.hops.length} HOP{autopilot.course.hops.length !== 1 ? 'S' : ''}{helmBusy ? ' (busy)' : ''}
+                              </button>
+                            )
                           )}
                         </div>
-                      )}
-                      {currentSector && (
+                        {/* Course summary — total turns + progress; the old
+                            ≤6-chip breadcrumb is retired in favor of the
+                            polyline overlay drawn directly on the CHART page,
+                            which shows the COMPLETE route regardless of hop
+                            count (WO-NAV-COURSE-OVERLAY). */}
+                        {(() => {
+                          const apCourse = autopilot.course;
+                          const apLastPlot = autopilot.lastPlot;
+                          const hopIdx = autopilot.currentHopIndex;
+                          // Unreachable refusal — show inline warning
+                          if (apLastPlot !== null && apLastPlot.reachable === false) {
+                            const unreach = apLastPlot as import('../../contexts/AutopilotContext').CourseUnreachable;
+                            const nearest = unreach.nearest_known;
+                            return (
+                              <div
+                                className="nav-course-strip nav-course-unreachable"
+                                role="alert"
+                              >
+                                BEYOND CHARTED SPACE — NEAREST KNOWN APPROACH:{' '}
+                                {nearest ? `SECTOR ${nearest.sector_id}` : 'UNKNOWN'}
+                              </div>
+                            );
+                          }
+                          // Reachable course summary — CHART draws the route itself
+                          if (apCourse && apCourse.hops.length > 0) {
+                            const legNumber = Math.min(hopIdx + 1, apCourse.hops.length);
+                            return (
+                              <div className="nav-course-strip">
+                                <div className="nav-course-meta" role="status" aria-live="polite">
+                                  <TurnsIcon /> {apCourse.total_turns} · LEG {legNumber}/{apCourse.hops.length}
+                                </div>
+                              </div>
+                            );
+                          }
+                          return null;
+                        })()}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      {/* CHART — the astrogation chart (§05: "window onto the
+                          LIVING ASTROGATION CHART"). 2D/3D toggle relocated
+                          here from the shared header (WO-UI2-CHART-MONITOR's
+                          toggle was already chart-only in behavior, just
+                          header-shared in markup). */}
+                      <div className="nav-chart-toolbar">
+                        <button
+                          type="button"
+                          className="nav-plot-btn"
+                          style={{ opacity: navChartMode === '2d' ? 1 : 0.45 }}
+                          aria-pressed={navChartMode === '2d'}
+                          aria-label="2D star chart view"
+                          onClick={() => setNavChartMode('2d')}
+                          title="2D star chart"
+                        >
+                          2D
+                        </button>
+                        <button
+                          type="button"
+                          className="nav-plot-btn"
+                          style={{ opacity: navChartMode === '3d' ? 1 : 0.45 }}
+                          aria-pressed={navChartMode === '3d'}
+                          aria-label="3D galaxy view"
+                          onClick={() => setNavChartMode('3d')}
+                          title="3D galaxy view"
+                        >
+                          3D
+                        </button>
+                      </div>
+                      {navChartMode === '3d' ? (
+                        // Galaxy3DRenderer loads the UNBOUNDED known chart
+                        // (visited fog-of-war trail) + merges current exits.
+                        // Sensor ≥1 also reveals one-hop frontier stubs.
+                        <Galaxy3DRenderer
+                          className="nav-3d-view"
+                          onSectorSelect={(sector) => handleMove(sector.sector_id)}
+                        />
+                      ) : (
                         <NavigationMap
                           currentSectorId={currentSector.sector_id}
-                          sectors={navSectors}
+                          sectors={mergedNavSectors}
                           availableMoves={affordableMoveIds}
                           moveCosts={moveCosts}
                           onNavigate={handleMove}
                           width={440}
                           height={300}
+                          course={autopilot.course?.hops ?? null}
+                          currentHopIndex={autopilot.currentHopIndex}
+                          oneWayEdges={oneWayEdges}
                         />
                       )}
-                      {/* Course strip — rendered below the warp graph whenever a course exists */}
-                      {(() => {
-                        const apCourse = autopilot.course;
-                        const apLastPlot = autopilot.lastPlot;
-                        const hopIdx = autopilot.currentHopIndex;
-                        // Unreachable refusal — show inline warning
-                        if (apLastPlot !== null && apLastPlot.reachable === false) {
-                          const unreach = apLastPlot as import('../../contexts/AutopilotContext').CourseUnreachable;
-                          const nearest = unreach.nearest_known;
-                          return (
-                            <div className="nav-course-strip nav-course-unreachable">
-                              BEYOND CHARTED SPACE — NEAREST KNOWN APPROACH:{' '}
-                              {nearest ? `SECTOR ${nearest.sector_id}` : 'UNKNOWN'}
-                            </div>
-                          );
-                        }
-                        // Reachable course breadcrumb strip
-                        if (apCourse && apCourse.hops.length > 0) {
-                          const hops = apCourse.hops;
-                          const MAX_VISIBLE = 6;
-                          const showEllipsis = hops.length > MAX_VISIBLE + 1;
-                          const visibleHops = showEllipsis ? hops.slice(0, MAX_VISIBLE) : hops;
-                          return (
-                            <div className="nav-course-strip">
-                              <div className="nav-course-breadcrumb">
-                                {visibleHops.map((hop, i) => (
-                                  <span
-                                    key={hop.sector_id}
-                                    className={`nav-course-hop${i < hopIdx ? ' nav-course-hop-done' : i === hopIdx ? ' nav-course-hop-current' : ''}`}
-                                    title={hop.name}
-                                  >
-                                    {hop.sector_id}
-                                  </span>
-                                ))}
-                                {showEllipsis && (
-                                  <>
-                                    <span className="nav-course-ellipsis">…</span>
-                                    <span
-                                      className={`nav-course-hop${hops.length - 1 < hopIdx ? ' nav-course-hop-done' : hops.length - 1 === hopIdx ? ' nav-course-hop-current' : ''}`}
-                                      title={hops[hops.length - 1].name}
-                                    >
-                                      {hops[hops.length - 1].sector_id}
-                                    </span>
-                                  </>
-                                )}
-                              </div>
-                              <div className="nav-course-meta">
-                                <TurnsIcon /> {apCourse.total_turns} · {hops.length} HOPS
-                              </div>
-                            </div>
-                          );
-                        }
-                        return null;
-                      })()}
                     </>
                   )}
-                  </div>
                 </div>
-              </div>
-
-              {/* CENTER MONITOR: Planetary Systems */}
-              <div className="console-monitor planetary-monitor">
-                <div className="monitor-bezel">
-                  <div className="bezel-corner tl"></div>
-                  <div className="bezel-corner tr"></div>
-                  <div className="bezel-corner bl"></div>
-                  <div className="bezel-corner br"></div>
-                </div>
-                <div className="monitor-screen">
-                  <div className="screen-hud-header">PLANETARY</div>
-                  <div className="screen-hud-content">
-                  {/* Show planets paired with stations (by index) */}
-                  {planetsInSector.map((planet, index) => (
-                    <PlanetPortPair
-                      key={planet.id}
-                      planet={planet}
-                      station={stationsInSector?.[index] || null}
-                      onLandOnPlanet={handleLand}
-                      onClaimPlanet={handleClaim}
-                      onDockAtStation={handleDock}
-                      isLanded={playerState?.is_landed || false}
-                      isDocked={playerState?.is_docked || false}
-                    />
-                  ))}
-                  {/* Show any extra stations not paired with planets */}
-                  {stationsInSector.slice(planetsInSector.length).map((station) => (
-                    <PlanetPortPair
-                      key={station.id}
-                      planet={null}
-                      station={station}
-                      onLandOnPlanet={handleLand}
-                      onDockAtStation={handleDock}
-                      isLanded={playerState?.is_landed || false}
-                      isDocked={playerState?.is_docked || false}
-                    />
-                  ))}
-                  {/* Empty state when neither planets nor stations.
-                      Asteroid fields get a HARVEST trigger; all other empty
-                      sectors get the generic "nothing detected" label. */}
-                  {planetsInSector.length === 0 && stationsInSector.length === 0 && (
-                    currentSector?.type?.toUpperCase() === 'ASTEROID_FIELD' ? (
-                      <div className="planetary-asteroid-state">
-                        <div className="planetary-asteroid-label">⚫ ASTEROID FIELD</div>
-                        <button
-                          className="planetary-harvest-btn"
-                          onClick={handleHarvest}
-                          disabled={helmBusy || harvestBusy}
-                          aria-disabled={helmBusy || harvestBusy}
-                          aria-label={helmBusy ? 'Harvest unavailable — helm is busy' : 'Deploy the mining laser to harvest ore from the asteroid field'}
-                          title="Deploy the mining laser to harvest ore from the asteroid field"
-                        >
-                          {harvestBusy ? '⛏️ MINING…' : helmBusy ? '⛏️ HARVEST (busy)' : '⛏️ HARVEST'}
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="empty-state">No planetary bodies or stations detected</div>
-                    )
-                  )}
-                  </div>
-                </div>
-              </div>
-
-              {/* RIGHT MONITOR: COMMS — CONTACTS (sector presence) / HAILS
-                  (player-to-player mailbox). CommsMailbox owns the header
-                  (mode switch + unread badge) and content. */}
-              <div className="console-monitor comms-monitor">
-                <div className="monitor-bezel">
-                  <div className="bezel-corner tl"></div>
-                  <div className="bezel-corner tr"></div>
-                  <div className="bezel-corner bl"></div>
-                  <div className="bezel-corner br"></div>
-                </div>
-                <div className="monitor-screen">
-                  <CommsMailbox
-                    contacts={sectorContacts}
-                    selectedShipId={selectedShipId}
-                    onSelectContact={(c) =>
-                      setSelectedShipId(c?.ship_id ? String(c.ship_id) : null)
-                    }
+                <div className="skrow">
+                  <DeckPageTabs
+                    pages={[
+                      { id: 'course', label: 'COURSE' },
+                      { id: 'chart', label: 'CHART' },
+                      { id: 'drive', label: 'DRIVE', available: isWarpJumper },
+                    ]}
+                    activeId={navMode}
+                    onSelect={(id) => setNavMode(id as 'course' | 'chart' | 'drive')}
+                    ariaLabel="NAV display mode"
+                    accent="#00d9ff"
+                    idBase="nav"
                   />
                 </div>
               </div>
+
+              {/* CENTER MONITOR: Solar System (formerly "Planetary Systems",
+                  §05 [SYSTEM · SALVAGE · SIGNALS · HAZARD], WO-UI2-DECK-
+                  RECONCILE, HAZARD added WO-UI-MAX-BATCH-1 Max #21) */}
+              <div className="mon system-monitor">
+                {/* WO-UI0-SHELL-TRANSPLANT (Leaf L3): header now shows only
+                    the title + the live sector name as its sub-status; the
+                    SYSTEM/SALVAGE/SIGNALS/HAZARD softkeys moved to a bottom
+                    `.skrow` (artifact `monSys()`). */}
+                <div className="mhead">
+                  <span className="mtitle">SOLAR SYSTEM</span>
+                  {/* Sector name (e.g. "Terra") removed from the header —
+                      Max 2026-07-14: title alone; the locrow already shows
+                      where you are. */}
+                  {/* Uninhabitable-body filter (T1-B, Max ruling): DEFAULT
+                      OFF — every decorative body visible until toggled ON.
+                      Lives in the header (not a content row) so it persists
+                      across SYSTEM/SALVAGE/SIGNALS/HAZARD, mirroring the
+                      SCAN toggle's `.act`/aria-pressed idiom (below) rather
+                      than inventing a new control style. aria-label is a
+                      STABLE literal (not a per-state ternary like SCAN's) —
+                      aria-pressed alone carries the on/off state, so the
+                      accessible name always contains the visible text
+                      (WCAG 2.5.3 Label-in-Name; a dynamic label broke this
+                      in the ON state, caught by the a11y gate). `title`
+                      stays a per-state hover hint — it doesn't drive the
+                      accessible name. */}
+                  <button
+                    type="button"
+                    className={`act system-filter-toggle${hideUninhabitable ? ' buy' : ''}`}
+                    onClick={() => setHideUninhabitable((prev) => !prev)}
+                    aria-pressed={hideUninhabitable}
+                    aria-label="Hide uninhabitable bodies"
+                    title={hideUninhabitable
+                      ? 'Show uninhabitable (barren/decorative) bodies'
+                      : 'Hide uninhabitable (barren/decorative) bodies'}
+                  >
+                    🌑 HIDE UNINHABITABLE{hideUninhabitable && solarStatic?.bodies.length
+                      ? ` — ${solarStatic.bodies.length}` : ''}
+                  </button>
+                </div>
+                <div
+                  className="mbody"
+                  role="tabpanel"
+                  id={`system-panel-${systemPage}`}
+                  aria-labelledby={`system-tab-${systemPage}`}
+                >
+                {systemPage === 'system' ? (
+                    <>
+                      {/* STAR + decorative-body sensor rows (WO-UI-MAX-BATCH-1
+                          item 9) — dim, no action, matching the target
+                          screenshot's "✳ K-CLASS ORANGE — primary" / "○ CINDER
+                          — scorched rock — barren" rows. Absent entirely while
+                          the /contents fetch above hasn't resolved (or failed)
+                          — no loading placeholder, since this is decorative
+                          sensor flavor, not primary content. The STAR row is
+                          NEVER gated by hideUninhabitable — it's the system's
+                          primary reference body, not one of the barren/
+                          decorative bodies the filter declutters. */}
+                      {solarStatic?.star && (
+                        <div className="row">
+                          <b>☀ {solarStatic.star.label.toUpperCase()}</b>
+                          <span className="dim">primary</span>
+                        </div>
+                      )}
+                      {!hideUninhabitable && solarStatic?.bodies.map((body, index) => {
+                        const { name, note } = barrenBodyLabel(body.kind);
+                        return (
+                          <div className="row" key={`solar-body-${index}`}>
+                            <b>{getPlanetIcon(body.kind)} {name}</b>
+                            <span className="dim">{note}</span>
+                          </div>
+                        );
+                      })}
+                      {/* SCAN toggle (WO-UI5-RETIREMENT+GLASS item 3) — was a
+                          standalone `.ssv-scan-toggle` button on the glass
+                          (SolarSystemViewscreen-local state); relocated here
+                          as the artifact's own `.row`/`.act` action-row
+                          idiom, wired to the SAME lifted `scanActive` flag
+                          the flight SolarSystemViewscreen mount above now
+                          receives as a controlled prop. Function unchanged —
+                          reveals/hides sector wrecks + special_formations as
+                          SCAN glyphs on the viewport; only the button moved.
+                          `.buy` (not `.armed`) is the ON accent -- mirrors
+                          the artifact's own two-way-toggle idiom (the colony
+                          autoVault switch: `class="act ${sel?'buy':''}"`),
+                          not the danger/flashing HALT/ENGAGE use of
+                          `.armed`, since a sensor sweep isn't an urgent
+                          state. */}
+                      <div className="row system-scan-row">
+                        <b>SENSOR SWEEP</b>
+                        <button
+                          type="button"
+                          className={`act${scanActive ? ' buy' : ''}`}
+                          onClick={() => setScanActive((prev) => !prev)}
+                          aria-pressed={scanActive}
+                          aria-label={scanActive ? 'Sensor scan active — showing wrecks and formations' : 'Sensor scan off — wrecks and formations hidden'}
+                          title={scanActive ? 'Disable sensor scan — hide wrecks and anomalies' : 'Enable sensor scan — reveal wrecks and anomalies'}
+                        >
+                          📡 SCAN{scanActive ? ` — ${sectorWrecks.length + (currentSector?.special_formations?.length ?? 0)}` : ''}
+                        </button>
+                      </div>
+                      {/* Show planets paired with stations (by index) */}
+                      {planetsInSector.map((planet, index) => {
+                        const station = stationsInSector?.[index] || null;
+                        return (
+                          <PlanetPortPair
+                            key={planet.id}
+                            planet={planet}
+                            station={station}
+                            onLandOnPlanet={handleLand}
+                            onClaimPlanet={handleClaim}
+                            onDockAtStation={handleDock}
+                            // Per-body "here" match (demo L1348 `G.at===o.id`) —
+                            // NOT the old sector-wide isLanded/isDocked broadcast,
+                            // which marked every row landed/docked whenever the
+                            // player was at ANY body in a multi-planet sector.
+                            isLanded={playerState?.current_planet_id === planet.id}
+                            isDocked={!!station && playerState?.current_port_id === station.id}
+                            atDestination={
+                              flight.arrivedTargetId === planet.id
+                              || (!!station && flight.arrivedTargetId === station.id)
+                            }
+                            flying={flying}
+                            onHalt={handleHalt}
+                            onApproach={flight.approach}
+                          />
+                        );
+                      })}
+                      {/* Show any extra stations not paired with planets */}
+                      {stationsInSector.slice(planetsInSector.length).map((station) => (
+                        <PlanetPortPair
+                          key={station.id}
+                          planet={null}
+                          station={station}
+                          onLandOnPlanet={handleLand}
+                          onDockAtStation={handleDock}
+                          isLanded={false}
+                          isDocked={playerState?.current_port_id === station.id}
+                          atDestination={flight.arrivedTargetId === station.id}
+                          flying={flying}
+                          onHalt={handleHalt}
+                          onApproach={flight.approach}
+                        />
+                      ))}
+                      {/* Empty state when neither planets nor stations.
+                          Asteroid fields get a HARVEST trigger; all other empty
+                          sectors get the generic "nothing detected" label. */}
+                      {planetsInSector.length === 0 && stationsInSector.length === 0 && (
+                        currentSector?.type?.toUpperCase() === 'ASTEROID_FIELD' ? (
+                          <div className="planetary-asteroid-state">
+                            <b className="planetary-asteroid-label">⚫ ASTEROID FIELD</b>
+                            {flying ? (
+                              // Demo L1352 field-row branch: here?HARVEST:(flying?HALT:APPROACH) —
+                              // under burn, the row offers HALT instead of HARVEST (same
+                              // autopilot.abort('all stop') the locrow ALL STOP chip uses).
+                              <button
+                                type="button"
+                                className="act armed"
+                                onClick={handleHalt}
+                                aria-label="Halt — abort autopilot and hold position"
+                                title="Under burn — halt before harvesting"
+                              >
+                                🛑 HALT ▸
+                              </button>
+                            ) : (
+                              <button
+                                className="planetary-harvest-btn"
+                                onClick={handleHarvest}
+                                disabled={helmBusy || harvestBusy}
+                                aria-disabled={helmBusy || harvestBusy}
+                                aria-label={helmBusy ? 'Harvest unavailable — helm is busy' : 'Deploy the mining laser to harvest ore from the asteroid field'}
+                                title="Deploy the mining laser to harvest ore from the asteroid field"
+                              >
+                                {harvestBusy ? '⛏️ MINING…' : helmBusy ? '⛏️ HARVEST (busy)' : '⛏️ HARVEST'}
+                              </button>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="empty-state">No planetary bodies or stations detected</div>
+                        )
+                      )}
+                      {/* Formation + wreck sensor rows (WO-UI-MAX-BATCH-1 item
+                          9 — "the full sensor list mirroring the windshield
+                          objects"), gated on the SAME `scanActive` flag the
+                          windshield's own glyphs use — SCAN reveals presence
+                          here exactly like it does on the glass; the toggle
+                          above would otherwise have zero visible effect on
+                          this page. Formation identity masking mirrors
+                          renderFormationList's own convention (undiscovered →
+                          "❔ UNKNOWN ANOMALY", no action) — SURVEY reuses the
+                          SAME handleInvestigateFormation the SIGNALS page's
+                          INVESTIGATE button calls, not a new action. Wrecks
+                          get APPROACH ▸, which opens the SALVAGE page (its
+                          quantity-select UI can't collapse into one row) —
+                          the SAME shared sectorWrecks feed SALVAGE renders
+                          from, not a second fetch. */}
+                      {scanActive && currentSector?.special_formations?.map((f) => {
+                        const investigated = investigatedFormationIds.has(f.id);
+                        const investigating = investigatingFormationId === f.id;
+                        const label = f.is_discovered ? (f.name || 'UNNAMED').toUpperCase() : 'UNKNOWN ANOMALY';
+                        return (
+                          <div className="row" key={`formation-${f.id}`}>
+                            <b>
+                              {f.is_discovered ? '☁' : '❔'} {label}
+                              {f.is_discovered && f.type && (
+                                <span className="dim"> · {f.type.replace(/_/g, ' ').toUpperCase()}</span>
+                              )}
+                            </b>
+                            {f.is_discovered && (
+                              <button
+                                type="button"
+                                className="act"
+                                onClick={() => handleInvestigateFormation(f.id)}
+                                disabled={investigated || investigating}
+                                aria-label={investigated ? `${label} already surveyed` : `Survey ${label}`}
+                                title={investigated ? 'Already investigated' : 'Investigate this anomaly for a one-time reward'}
+                              >
+                                {investigating ? '🔭 …' : investigated ? '✓ SURVEYED' : '🔭 SURVEY ▸'}
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                      {scanActive && sectorWrecks.map((wreck) => (
+                        <div className="row" key={`wreck-${wreck.id}`}>
+                          <b>⌀ {(wreck.destroyed_ship_type || 'WRECK').replace(/_/g, ' ').toUpperCase()}</b>
+                          <button
+                            type="button"
+                            className="act"
+                            onClick={() => setSystemPage('salvage')}
+                            aria-label={`Approach the ${(wreck.destroyed_ship_type || 'wreck').replace(/_/g, ' ')} wreck — open SALVAGE`}
+                            title="Approach — open the SALVAGE page to recover cargo"
+                          >
+                            🧭 APPROACH ▸
+                          </button>
+                        </div>
+                      ))}
+                      {/* Hazards as terse, un-numbered object rows (WO-UI-
+                          MAX-BATCH-1 item 8, revised Max #21): the numeric
+                          hazard_level/radiation_level/NO-TRANSIT breakdown
+                          moved OFF this page entirely, onto its own HAZARD
+                          tab below — never a %-block or a bare number here. */}
+                      {hazardRowsFor(currentSector).map((hazard) => (
+                        <div className="row" key={`hazard-${hazard.key}`}>
+                          <b>{hazard.icon} {hazard.label}</b>
+                          <span className="dim">{hazard.note}</span>
+                        </div>
+                      ))}
+                    </>
+                  ) : systemPage === 'salvage' ? (
+                    <SolarSalvagePage wrecks={sectorWrecks} onSalvaged={refetchSectorWrecks} />
+                  ) : systemPage === 'signals' ? (
+                    /* SIGNALS — discovered formations → INVESTIGATE (§05).
+                       renderFormationList used to also be shared with the
+                       windshield's FORMATIONS HudChip, retired at WO-UI5-
+                       RETIREMENT+GLASS — this is now its one call site. */
+                    !currentSector ? (
+                      <div className="empty-state">No sector telemetry</div>
+                    ) : currentSector.special_formations && currentSector.special_formations.length > 0 ? (
+                      renderFormationList(currentSector.special_formations)
+                    ) : (
+                      <div className="empty-state">No signals or formations charted in this sector</div>
+                    )
+                  ) : (
+                    /* HAZARD — the numeric deep-dive (WO-UI-MAX-BATCH-1 Max
+                       #21): hazard_level/radiation_level bars + NO-TRANSIT
+                       badges + description, relocated verbatim off SYSTEM's
+                       old `.system-hazard-fold` (same currentSector fields
+                       HazardAnalysisCard's floating quick-glance already
+                       surfaces — this is the full-page home, not a second
+                       data source). Deliberately competes with SYSTEM for
+                       this panel — choosing HAZARD hides the sensor list,
+                       same single-active-page behavior every DeckPageTabs
+                       page here already has. */
+                    !currentSector ? (
+                      <div className="empty-state">No sector telemetry</div>
+                    ) : (
+                      <div className="system-hazard-fold">
+                        <div className="system-hazard-fold-title">HAZARD ANALYSIS</div>
+                        <div className="system-hazard-metric">
+                          <div className="hud-label">⚠️ HAZARD</div>
+                          <div className={`hud-value${currentSector.hazard_level > 0 ? ' danger' : ''}`}>
+                            {currentSector.hazard_level}/10
+                          </div>
+                          <div className="hud-bar">
+                            <div className="hud-bar-fill danger" style={{ width: `${currentSector.hazard_level * 10}%` }}></div>
+                          </div>
+                        </div>
+                        <div className="system-hazard-metric">
+                          <div className="hud-label">☢️ RADIATION</div>
+                          <div className={`hud-value${currentSector.radiation_level > 0 ? ' warning' : ''}`}>
+                            {(currentSector.radiation_level * 100).toFixed(1)}%
+                          </div>
+                          <div className="hud-bar">
+                            <div className="hud-bar-fill warning" style={{ width: `${currentSector.radiation_level * 100}%` }}></div>
+                          </div>
+                        </div>
+                        {currentSector.special_features && currentSector.special_features.length > 0 && (
+                          <div className="system-hazard-metric">
+                            <div className="hud-label">NO-TRANSIT NOTES</div>
+                            <div className="hud-features">
+                              {currentSector.special_features.map(feature => (
+                                <span key={feature} className="hud-badge">
+                                  {feature.replace(/_/g, ' ').toUpperCase()}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {currentSector.description && (
+                          <div className="hud-description-text">{currentSector.description}</div>
+                        )}
+                      </div>
+                    )
+                  )}
+                </div>
+                <div className="skrow">
+                  <DeckPageTabs
+                    pages={[
+                      { id: 'system', label: 'SYSTEM' },
+                      { id: 'salvage', label: 'SALVAGE' },
+                      { id: 'signals', label: 'SIGNALS' },
+                      { id: 'hazard', label: 'HAZARD' },
+                    ]}
+                    activeId={systemPage}
+                    onSelect={(id) => setSystemPage(id as 'system' | 'salvage' | 'signals' | 'hazard')}
+                    ariaLabel="SOLAR SYSTEM display mode"
+                    accent="#9333ea"
+                    idBase="system"
+                  />
+                </div>
+              </div>
+
+              {/* TACTICAL — [TARGET · THREAT] (§05, WO-UI2-DECK-RECONCILE).
+                  The former COMMS monitor's CONTACTS list now lives at
+                  TACTICAL[TARGET] (`sectorContacts`, unchanged merge/feed);
+                  the deck no longer has a standalone COMMS monitor — HAILS/
+                  composer moved to the MFD-B COMM lane. TacticalMonitor owns
+                  its own header + content, same self-contained pattern
+                  CommsMailbox used for COMMS. WO-UI0-SHELL-TRANSPLANT (Leaf
+                  L3): TacticalMonitor now renders its OWN full `.mon` block
+                  (artifact `monTac()`) — no wrapper divs needed here, same
+                  as NAV/SOLAR SYSTEM rendering their own `.mon` above. */}
+              <TacticalMonitor
+                contacts={sectorContacts}
+                selectedShipId={selectedShipId}
+                onSelectContact={(c) =>
+                  setSelectedShipId(c?.ship_id ? String(c.ship_id) : null)
+                }
+              />
             </>
           )}
         </div>
+        );
+        return deckEl ? createPortal(consoleNode, deckEl) : consoleNode;
+        })()}
 
         {/* Colonist transfer quantity modal — portal escapes the cockpit stacking context */}
         {transferModal && landedPlanet && createPortal(
@@ -3470,28 +4134,26 @@ const GameDashboard: React.FC = () => {
           document.body
         )}
 
-        {/* Region-owner invite control — portal overlay, same shell pattern as
-            the Gatewright panel above. Gated on confirmed region ownership. */}
-        {showRegionInvites && isRegionOwner && ownedRegionId && createPortal(
-          <div
-            className="region-invite-overlay"
-            onClick={() => setShowRegionInvites(false)}
-          >
-            <div className="region-invite-shell" onClick={(e) => e.stopPropagation()}>
-              <RegionInvitePanel
-                regionId={ownedRegionId}
-                regionName={ownedRegionName}
-                onClose={() => setShowRegionInvites(false)}
-              />
-            </div>
-          </div>,
-          document.body
-        )}
+        {/* Region-owner invite/tradedock portal modals RELOCATED to
+            components/governance/RegionOwnerControls.tsx (WO-UI0-STATUSBAR
+            integration) — it carries its own state + both portals now,
+            mounted inside StatusBar's LocationDropdown. */}
 
         {/* ARIA assistant is mounted globally in GameLayout for all /game routes */}
       </div>
-    </GameLayout>
   );
 };
+
+// WO-UI2-FLIGHT-FEEL — the provider mount: wraps GameDashboardInner (the
+// windshield tableau mount, the SOLAR SYSTEM monitor's rows, and the
+// locrow's ALL STOP chip are all descendants of it) so all three consume
+// ONE shared WindshieldFlightContext instance. Inside AutopilotProvider's
+// scope (App.tsx, above the /game route tree) — the context's own allStop()
+// calls useAutopilot() internally.
+const GameDashboard: React.FC = () => (
+  <WindshieldFlightProvider>
+    <GameDashboardInner />
+  </WindshieldFlightProvider>
+);
 
 export default GameDashboard;

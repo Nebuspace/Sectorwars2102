@@ -1,6 +1,5 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import GameLayout from '../layouts/GameLayout';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import { useSettings } from '../../contexts/SettingsContext';
 import './settings-page.css';
@@ -32,7 +31,6 @@ const SettingsPage: React.FC = () => {
   const currentPercent = `${Math.round(uiScale * 100)}%`;
 
   return (
-    <GameLayout>
       <CockpitInstrument
         title="SETTINGS"
         accent="#00D9FF"
@@ -84,7 +82,6 @@ const SettingsPage: React.FC = () => {
           </section>
         </div>
       </CockpitInstrument>
-    </GameLayout>
   );
 };
 

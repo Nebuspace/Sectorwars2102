@@ -282,10 +282,19 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({
             const affordCheck = canAffordUpgrade(building);
 
             return (
-              <div 
-                key={building.type} 
+              <div
+                key={building.type}
                 className={`building-card ${selectedBuilding?.type === building.type ? 'selected' : ''} ${isUpgrading ? 'upgrading' : ''}`}
                 onClick={() => setSelectedBuilding(building)}
+                role="button"
+                tabIndex={0}
+                aria-pressed={selectedBuilding?.type === building.type}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setSelectedBuilding(building);
+                  }
+                }}
               >
                 <div className="building-header">
                   <span className="building-icon">{info.icon}</span>

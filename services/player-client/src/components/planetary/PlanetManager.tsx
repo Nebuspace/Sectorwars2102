@@ -3,17 +3,18 @@ import { gameAPI } from '../../services/api';
 import { useGame } from '../../contexts/GameContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import type { Planet } from '../../types/planetary';
-import GameLayout from '../layouts/GameLayout';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import { useEmbedded } from '../cockpit/EmbeddedContext';
 import EmptyState from '../common/EmptyState';
+import { resourceIcon } from '../../services/resourceCatalog';
 import './planet-manager.css';
 
 /* COLONIAL REGISTRY console shell (Law 3) — module-level so the monitor
    frame keeps its identity across scanning/error/empty/registry branches
    (the scan spinner swaps INSIDE the frame, never unmounting it).
-   When EMBEDDED (id=144, inside PlayerInfo) it renders just the framed
-   instrument and skips GameLayout so two cockpit shells never nest. */
+   Renders just the framed instrument — no GameLayout wrapper (removed
+   WO-UI0-PERSISTENT-SHELL lane C1; the persistent shell already wraps
+   every /game/* route, so a second cockpit shell here would nest). */
 const ColonialShell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const embedded = useEmbedded();
   const instrument = (
@@ -21,7 +22,7 @@ const ColonialShell: React.FC<{ children: React.ReactNode }> = ({ children }) =>
       {children}
     </CockpitInstrument>
   );
-  return embedded ? instrument : <GameLayout>{instrument}</GameLayout>;
+  return embedded ? instrument : instrument;
 };
 
 /**
@@ -112,9 +113,9 @@ const COLUMNS: { key: SortKey; label: string; align?: 'left' | 'right' }[] = [
   { key: 'sector', label: 'Sector', align: 'left' },
   { key: 'citadel', label: 'Citadel', align: 'right' },
   { key: 'population', label: 'Population / Cap', align: 'right' },
-  { key: 'fuel', label: '⛽ Fuel', align: 'right' },
-  { key: 'organics', label: '🌿 Org', align: 'right' },
-  { key: 'equipment', label: '⚙️ Equip', align: 'right' },
+  { key: 'fuel', label: `${resourceIcon('fuel')} Fuel`, align: 'right' },
+  { key: 'organics', label: `${resourceIcon('organics')} Org`, align: 'right' },
+  { key: 'equipment', label: `${resourceIcon('equipment')} Equip`, align: 'right' },
   { key: 'habitability', label: 'Hab', align: 'right' },
   { key: 'efficiency', label: 'Eff', align: 'right' },
 ];

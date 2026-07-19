@@ -1,0 +1,379 @@
+// @vitest-environment jsdom
+/**
+ * GameDashboard — flying deck collapsed to the CANONICAL 3 monitors
+ * (WO-UI2-DECK-RECONCILE, cockpit-redesign-v10 §05): SOLAR SYSTEM · NAV ·
+ * TACTICAL, no more standalone COMMS monitor / 4th TACTICAL threat-band
+ * column. Covers the GameDashboard-level wiring the page-component unit
+ * tests (TacticalTargetPage/TacticalThreatPage/SolarSalvagePage.test.tsx,
+ * GameDashboard.chartMonitor/navMultihop.test.tsx's COURSE/CHART split)
+ * don't reach on their own: monitor COUNT, SOLAR's SYSTEM/SALVAGE/SIGNALS
+ * tab wiring (hazard fold-in, shared wreck fetch, formation SIGNALS), NAV
+ * COURSE's adjacent-exit MOVE wiring, and TACTICAL receiving the same
+ * merged sectorContacts feed COMMS used to.
+ *
+ * Mirrors GameDashboard.navMultihop.test.tsx's seam: jsdom + react-dom/
+ * client createRoot + act(), no RTL, useAutopilot mocked directly (no real
+ * AutopilotProvider -- this file never plots/engages a course).
+ */
+import React, { act } from 'react';
+import { createRoot } from 'react-dom/client';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { SectorWreck } from '../../../services/api';
+import { WARP_TURN_MS } from '../../../services/warpCinematicBus';
+
+const mockGetChart = vi.fn();
+const mockGetMyRegion = vi.fn();
+const mockSectorWrecks = vi.fn();
+vi.mock('../../../services/api', () => ({
+  navAPI: { getChart: (...a: unknown[]) => mockGetChart(...a) },
+  regionOwnerAPI: { getMyRegion: (...a: unknown[]) => mockGetMyRegion(...a) },
+  sectorAPI: {
+    sectorWrecks: (...a: unknown[]) => mockSectorWrecks(...a),
+    salvageWreck: vi.fn(),
+  },
+  combatAPI: { engage: vi.fn(), getStatus: vi.fn() },
+  greyStatusAPI: { getStatus: () => Promise.resolve({ isGrey: false, kind: null, greyUntil: null, remainingSeconds: 0, clearFineCredits: null }) },
+}));
+
+vi.mock('react-router-dom', () => ({
+  useNavigate: () => vi.fn(),
+}));
+
+vi.mock('../../layouts/GameLayout', () => ({
+  default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+}));
+
+vi.mock('../../trading/TradingInterface', () => ({ default: () => <div /> }));
+vi.mock('../../spacedock/SpaceDockInterface', () => ({ default: () => <div /> }));
+vi.mock('../../spacedock/PortOfficeVenue', () => ({ default: () => <div /> }));
+vi.mock('../../spacedock/ContractBoardVenue', () => ({ default: () => <div /> }));
+vi.mock('../../planetary/PopulationCenterInterface', () => ({ default: () => <div /> }));
+vi.mock('../../tactical/SolarSystemViewscreen', () => ({ default: () => <div /> }));
+// WO-UI2-WINDSHIELD-TABLEAU: flight-mode mount is now WindshieldTableau.
+vi.mock('../../tactical/WindshieldTableau', () => ({ default: () => <div /> }));
+vi.mock('../../tactical/PlanetPortPair', () => ({ default: () => <div /> }));
+vi.mock('../../tactical/NavigationMap', () => ({ default: () => <div data-testid="navmap-stub" /> }));
+vi.mock('../../galaxy/Galaxy3DRenderer', () => ({ default: () => <div /> }));
+vi.mock('../../quantum/QuantumDriveConsole', () => ({ default: () => <div /> }));
+vi.mock('../../gatewright/GatewrightPanel', () => ({ default: () => <div /> }));
+vi.mock('../../governance/CitizenshipBadge', () => ({ default: () => <div /> }));
+vi.mock('../../governance/RegionInvitePanel', () => ({ default: () => <div /> }));
+vi.mock('../../governance/RegionTradeDockPanel', () => ({ default: () => <div /> }));
+vi.mock('../../cockpit/CockpitColonyManagement', () => ({ default: () => <div /> }));
+vi.mock('../../cockpit/SafeVaultPanel', () => ({ default: () => <div /> }));
+
+vi.mock('../../../hooks/useResourceCatalog', () => ({
+  useResourceCatalog: () => ({ catalog: [], loading: false, getLabel: (n: string) => n, getIcon: () => '📦', getColor: () => '#fff' }),
+}));
+
+const SECTOR_100: any = {
+  id: 100, sector_id: 100, sector_number: 100, name: 'Sol', type: 'STANDARD',
+  region_id: null, region_name: null, hazard_level: 6, radiation_level: 0.2,
+  resources: {}, players_present: [], special_features: ['NEBULA'],
+  special_formations: [{ id: 'f1', is_discovered: true, is_anchor: true, name: 'Whisper Cloud', type: 'NEBULA_CLUSTER', is_investigated: false }],
+  description: 'A quiet stretch of charted space.',
+};
+
+function makeGameState(overrides: Record<string, unknown> = {}) {
+  return {
+    playerState: {
+      id: 'player-1', username: 'tester', credits: 1000, turns: 50,
+      current_sector_id: 100, is_docked: false, is_landed: false,
+      defense_drones: 0, attack_drones: 0, mines: 0,
+      personal_reputation: 0, reputation_tier: 'Neutral', name_color: '#fff',
+      military_rank: 'Cadet',
+    },
+    currentShip: {
+      id: 'ship-1', name: 'Tester', type: 'SCOUT', sector_id: 100,
+      cargo: {}, cargo_capacity: 100, current_speed: 1, base_speed: 1,
+      combat: {}, maintenance: {}, is_flagship: true, purchase_value: 0,
+      current_value: 0, genesis_devices: 0, max_genesis_devices: 0,
+    },
+    currentSector: SECTOR_100,
+    planetsInSector: [],
+    stationsInSector: [],
+    availableMoves: {
+      warps: [{ sector_id: 101, sector_number: 101, name: 'Sector 101', type: 'STANDARD', turn_cost: 1, can_afford: true }],
+      tunnels: [],
+    },
+    moveToSector: vi.fn().mockResolvedValue({}),
+    dockAtStation: vi.fn(),
+    undockFromStation: vi.fn(),
+    claimPlanet: vi.fn(),
+    landOnPlanet: vi.fn(),
+    leavePlanet: vi.fn(),
+    renamePlanet: vi.fn(),
+    getPlanetDetails: vi.fn().mockResolvedValue(null),
+    transferColonists: vi.fn(),
+    updatePlanetAllocation: vi.fn(),
+    getCitadelInfo: vi.fn().mockResolvedValue(null),
+    upgradeCitadel: vi.fn(),
+    cancelCitadelUpgrade: vi.fn(),
+    getDefenseBuildings: vi.fn().mockResolvedValue({ buildings: [] }),
+    buildDefenseBuilding: vi.fn(),
+    depositToSafe: vi.fn(),
+    withdrawFromSafe: vi.fn(),
+    depositCommodityToSafe: vi.fn(),
+    withdrawCommodityFromSafe: vi.fn(),
+    setCitadelAutoDeposit: vi.fn(),
+    getPlanetDefenseInfo: vi.fn().mockResolvedValue(null),
+    upgradeShields: vi.fn(),
+    exploreCurrentLocation: vi.fn().mockResolvedValue(undefined),
+    getAvailableMoves: vi.fn().mockResolvedValue(undefined),
+    refreshPlayerState: vi.fn().mockResolvedValue(undefined),
+    sendPlayerMessage: vi.fn(),
+    deployMines: vi.fn(),
+    updatePlayerCredits: vi.fn(),
+    quantumStatus: null,
+    refineQuantumCharge: vi.fn(),
+    error: null,
+    ...overrides,
+  };
+}
+
+let gameState: ReturnType<typeof makeGameState>;
+vi.mock('../../../contexts/GameContext', () => ({
+  useGame: () => gameState,
+}));
+
+vi.mock('../../../contexts/AutopilotContext', () => ({
+  useAutopilot: () => ({
+    course: null, lastPlot: null, status: 'idle', pauseReason: null,
+    currentHopIndex: 0, plotCourse: vi.fn(), engage: vi.fn(), abort: vi.fn(),
+  }),
+}));
+
+vi.mock('../../../contexts/FirstLoginContext', () => ({
+  useFirstLogin: () => ({ requiresFirstLogin: false }),
+}));
+
+vi.mock('../../../contexts/WebSocketContext', () => ({
+  useWebSocket: () => ({ sectorPlayers: [] }),
+}));
+
+import GameDashboard from '../GameDashboard';
+
+const WRECK: SectorWreck = {
+  id: 'wreck-1', original_owner_id: null, original_owner_name: 'Crimson Corsair',
+  destroyed_ship_type: 'LIGHT_FREIGHTER', cause: 'combat', created_at: '2026-01-01T00:00:00Z',
+  age_seconds: 60, cargo: { ore: 10 }, would_flag_suspect: false,
+};
+
+describe('GameDashboard — flying deck collapsed to 3 monitors (WO-UI2-DECK-RECONCILE)', () => {
+  let container: HTMLElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    mockGetChart.mockReset();
+    mockGetMyRegion.mockReset();
+    mockGetMyRegion.mockRejectedValue(new Error('not a region owner'));
+    mockGetChart.mockResolvedValue({ sectors: [], edges: [], frontier: [] });
+    mockSectorWrecks.mockReset();
+    mockSectorWrecks.mockResolvedValue([]);
+
+    gameState = makeGameState();
+
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  const flush = async () => {
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  };
+
+  const click = async (el: Element) => {
+    await act(async () => {
+      el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+  };
+
+  const mount = async () => {
+    await act(async () => {
+      root.render(<GameDashboard />);
+    });
+    await flush();
+  };
+
+  const clickTab = async (label: string) => {
+    const btn = Array.from(container.querySelectorAll('.deck-tab-btn')).find((b) => b.textContent === label);
+    expect(btn, `expected a "${label}" tab button`).toBeTruthy();
+    await click(btn!);
+  };
+
+  it('renders EXACTLY 3 flying deck-monitors: SOLAR SYSTEM, NAV, TACTICAL — no COMMS monitor', async () => {
+    await mount();
+
+    const monitors = container.querySelectorAll('.mon');
+    expect(monitors.length).toBe(3);
+    expect(container.querySelector('.mon.system-monitor')).toBeTruthy();
+    expect(container.querySelector('.mon.nav-monitor')).toBeTruthy();
+    expect(container.querySelector('.mon.tactical-monitor')).toBeTruthy();
+    expect(container.querySelector('.mon.comms-monitor')).toBeNull();
+  });
+
+  it('SOLAR SYSTEM: SYSTEM page has a 4-tab rail (SYSTEM · SALVAGE · SIGNALS · HAZARD) and shows hazards as a terse row — no numbers on this page (WO-UI-MAX-BATCH-1 Max #21)', async () => {
+    await mount();
+
+    const solar = container.querySelector('.mon.system-monitor')!;
+    const tabs = Array.from(solar.querySelectorAll('.deck-tab-btn')).map((b) => b.textContent);
+    expect(tabs).toEqual(['SYSTEM', 'SALVAGE', 'SIGNALS', 'HAZARD']);
+
+    // The old numeric fold is gone from SYSTEM — relocated to its own
+    // HAZARD tab (below). SECTOR_100 is type STANDARD with hazard_level>0
+    // and no named hazard type, so it gets the ONE generic fallback row
+    // the WO's brief itself anticipates ("if a sector's hazard data
+    // doesn't map to a named object, render a GENERIC hazard row").
+    expect(solar.querySelector('.system-hazard-fold')).toBeNull();
+    expect(solar.textContent).not.toContain('6/10');
+    expect(solar.textContent).not.toContain('20.0%');
+    expect(solar.textContent).toContain('HAZARD DETECTED');
+    // Formations do NOT render on SYSTEM's SIGNALS-style badge list anymore
+    // — they moved to SIGNALS. (SCAN is off in this fixture by default, so
+    // the new scanActive-gated formation sensor row is absent too —
+    // covered on its own in GameDashboard.solarSensorList.test.tsx.)
+    expect(solar.textContent).not.toContain('WHISPER CLOUD');
+  });
+
+  it('SOLAR SYSTEM: HAZARD tab carries the numeric hazard/radiation/no-transit/description detail relocated off SYSTEM, and competes with it for the panel', async () => {
+    await mount();
+    const solar = container.querySelector('.mon.system-monitor')!;
+    await clickTab('HAZARD');
+
+    expect(solar.querySelector('.system-hazard-fold')).toBeTruthy();
+    expect(solar.textContent).toContain('6/10'); // hazard_level
+    expect(solar.textContent).toContain('20.0%'); // radiation_level
+    expect(solar.textContent).toContain('NEBULA'); // special_features NO-TRANSIT note
+    expect(solar.textContent).toContain('A quiet stretch of charted space.');
+    // Choosing HAZARD swaps the panel — SYSTEM's own sensor-sweep row is gone.
+    expect(solar.querySelector('.system-scan-row')).toBeNull();
+  });
+
+  it('SOLAR SYSTEM: SIGNALS page shows discovered formations with INVESTIGATE (moved off the old HAZARDS page)', async () => {
+    await mount();
+    const solar = container.querySelector('.mon.system-monitor')!;
+    await clickTab('SIGNALS');
+
+    expect(solar.textContent).toContain('WHISPER CLOUD');
+    const investigateBtn = Array.from(solar.querySelectorAll('button')).find((b) => b.textContent?.includes('INVESTIGATE'));
+    expect(investigateBtn).toBeTruthy();
+  });
+
+  it('SOLAR SYSTEM: SALVAGE page renders the shared sectorWrecks feed and refetches it after salvaging', async () => {
+    mockSectorWrecks.mockResolvedValue([WRECK]);
+    await mount();
+    // The SCAN-layer fetch fires once on mount regardless of active tab.
+    expect(mockSectorWrecks).toHaveBeenCalledTimes(1);
+
+    const solar = container.querySelector('.mon.system-monitor')!;
+    await clickTab('SALVAGE');
+
+    expect(solar.querySelector('.solar-salvage-wreck-row')?.textContent).toContain('Light Freighter');
+  });
+
+  it('NAV: COURSE page lists adjacent exits with MOVE wired to moveToSector (1 click = 1 hop)', async () => {
+    await mount();
+
+    const nav = container.querySelector('.mon.nav-monitor')!;
+    const tabs = Array.from(nav.querySelectorAll('.deck-tab-btn')).map((b) => b.textContent);
+    expect(tabs).toEqual(['COURSE', 'CHART']); // non-Warp-Jumper hull -- no DRIVE tab
+
+    const exitRow = nav.querySelector('.nav-exit-row')!;
+    expect(exitRow.textContent).toContain('Sector 101');
+    await click(exitRow.querySelector('.nav-exit-move-btn')!);
+
+    // GameDashboard.handleMove now arms the warp cinematic and HOLDS the hop
+    // for WARP_TURN_MS (the RCS re-orient) before committing moveToSector --
+    // a fast round-trip used to abort the turn before the hull visibly
+    // re-oriented. Real-timer wait past that hold (matches this file's own
+    // real-setTimeout `flush`/`click` helpers -- no fake timers in this file).
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, WARP_TURN_MS + 200));
+    });
+
+    expect(gameState.moveToSector).toHaveBeenCalledWith(101);
+  }, 15000);
+
+  it('NAV: CHART page is a separate tab and the graph is not visible on COURSE', async () => {
+    await mount();
+    const nav = container.querySelector('.mon.nav-monitor')!;
+    expect(nav.querySelector('[data-testid="navmap-stub"]')).toBeNull();
+
+    await clickTab('CHART');
+    expect(nav.querySelector('[data-testid="navmap-stub"]')).toBeTruthy();
+  });
+
+  it('TACTICAL: receives the merged sectorContacts feed COMMS used to (TARGET is the default page)', async () => {
+    gameState = makeGameState({
+      currentSector: {
+        ...SECTOR_100,
+        players_present: [
+          { player_id: 'p1', ship_id: 's1', username: 'Vega', is_npc: false, reputation_tier: 'Lawful', personal_reputation: 40 },
+        ],
+      },
+    });
+    await mount();
+
+    const tactical = container.querySelector('.mon.tactical-monitor')!;
+    expect(tactical.textContent).toContain('TACTICAL');
+    expect(tactical.querySelector('.target-contact-list')).toBeTruthy();
+    expect(tactical.textContent).toContain('Vega');
+  });
+
+  it('SOLAR SYSTEM column renders the full monitor name with no ellipsis-clipping class regression', async () => {
+    await mount();
+    const label = container.querySelector('.mon.system-monitor .mhead .mtitle')!;
+    expect(label.textContent).toBe('SOLAR SYSTEM');
+  });
+
+  // ---- WO-UI0-SHELL-TRANSPLANT (Leaf L3): re-emitted monitor anatomy -----
+
+  it('NAV + SOLAR SYSTEM: .mon > .mhead(.mtitle[+.hsub]) + .mbody + bottom .skrow — NAV keeps a live hsub, SOLAR SYSTEM is title-only', async () => {
+    await mount();
+
+    // SOLAR SYSTEM's header dropped its sector-name sub-status (Max,
+    // 2026-07-14: "title alone; the locrow already shows where you are" --
+    // GameDashboard.tsx's own mhead comment). NAV's live "N CHARTED EXIT(S)"
+    // hsub is unaffected by that ruling and still renders.
+    for (const [selector, title, hsub] of [
+      ['.mon.nav-monitor', 'NAV', '1 CHARTED EXIT'],
+      ['.mon.system-monitor', 'SOLAR SYSTEM', null],
+    ] as const) {
+      const mon = container.querySelector(selector)!;
+      expect(mon, `expected ${selector}`).toBeTruthy();
+
+      const children = Array.from(mon.children).map((el) => el.className);
+      expect(children, `${selector} direct children`).toEqual(['mhead', 'mbody', 'skrow']);
+
+      expect(mon.querySelector('.mhead .mtitle')!.textContent).toBe(title);
+      if (hsub === null) {
+        expect(mon.querySelector('.mhead .hsub'), `${selector} .hsub`).toBeNull();
+      } else {
+        expect(mon.querySelector('.mhead .hsub')!.textContent).toBe(hsub);
+      }
+
+      // Softkeys relocated out of the header to the bottom .skrow.
+      expect(mon.querySelector('.mhead [role="tablist"]')).toBeNull();
+      const rail = mon.querySelector('.skrow [role="tablist"].deck-tab-rail')!;
+      expect(rail, `${selector} .skrow tablist`).toBeTruthy();
+
+      // Roving tabindex intact post-relocation.
+      const tabs = Array.from(rail.querySelectorAll('[role="tab"]')) as HTMLButtonElement[];
+      expect(tabs.filter((t) => t.tabIndex === 0).length).toBe(1);
+      expect(tabs.filter((t) => t.tabIndex === -1).length).toBe(tabs.length - 1);
+    }
+  });
+});

@@ -45,7 +45,7 @@ const PopulationCenterInterface: React.FC<Props> = ({ planet }) => {
         <div className="bezel-corner br"></div>
       </div>
       <div className="monitor-screen">
-        <div className="screen-hud-header">
+        <div className="screen-hud-header" role="heading" aria-level={2}>
           CAPITAL SECTOR · POPULATION HUB
         </div>
         <div className="screen-hud-content population-center-content">
