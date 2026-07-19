@@ -28,7 +28,17 @@ permissions:
 
 jobs:
   schema-parity:
-    name: schema parity (fresh migration chain)
+    # Reported check/status context must be the exact literal string
+    # "schema-parity" -- master's classic branch protection
+    # (required_status_checks.contexts) waits on that exact name and has
+    # no fuzzy match. GitHub Actions derives a job's check-run name from
+    # this `name:` field (falling back to the job id, "schema-parity",
+    # only if `name:` were omitted) -- there is no workflow-name prefix
+    # for a non-matrix job. Previously "schema parity (fresh migration
+    # chain)", which never matched the required context, leaving every
+    # PR to master stuck PENDING forever. The real fresh-migration-chain
+    # parity logic below is unchanged -- only this display name moved.
+    name: schema-parity
     runs-on: ubuntu-latest
 
     services:
