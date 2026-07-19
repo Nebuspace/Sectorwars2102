@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ConversationDetail, DialogueExchangeDetail } from '../../types/firstLogin';
+import { ConversationDetail } from '../../types/firstLogin';
 
 interface ConversationDetailModalProps {
   conversation: ConversationDetail | null;
@@ -319,7 +319,7 @@ export const ConversationDetailModal: React.FC<ConversationDetailModalProps> = (
           {/* Dialogue exchanges */}
           <div className="dialogue-exchanges">
             <h3>💬 Conversation Timeline</h3>
-            {exchanges.map((exchange, idx) => (
+            {exchanges.map((exchange) => (
               <div key={exchange.id} className="exchange-card">
                 <div className="exchange-header">
                   <span className="exchange-number">Question {exchange.sequence_number}</span>

@@ -378,16 +378,6 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     }
   };
   
-  const defaultGalaxyConfig: GalaxyGenerationConfig = {
-    resource_distribution: 'balanced',
-    hazard_levels: 'moderate',
-    connectivity: 'normal',
-    station_density: 0.15,
-    planet_density: 0.25,
-    warp_tunnel_probability: 0.1,
-    faction_territory_size: 25
-  };
-
   // Legacy generateGalaxy was removed in the bang cutover (Phase 4A).
   // Galaxy generation is now handled via the bang flow:
   //   AdminContext.bangGalaxy → POST /api/v1/admin/galaxy/jobs

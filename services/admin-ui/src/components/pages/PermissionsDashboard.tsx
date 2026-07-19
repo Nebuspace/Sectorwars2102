@@ -61,7 +61,7 @@ export const PermissionsDashboard: React.FC = () => {
     <div className="permissions-dashboard">
       <PageHeader
         title="Permissions & Access Control"
-        subtitle="Manage roles, permissions, and user access"
+        subtitle="View user access; role catalog APIs are not implemented"
       />
 
       <div className="permissions-tabs">
@@ -70,14 +70,14 @@ export const PermissionsDashboard: React.FC = () => {
           onClick={() => setActiveTab('roles')}
         >
           <i className="fas fa-user-tag"></i>
-          Role Management
+          Roles — unavailable
         </button>
         <button
           className={`tab ${activeTab === 'matrix' ? 'active' : ''}`}
           onClick={() => setActiveTab('matrix')}
         >
           <i className="fas fa-th"></i>
-          Permission Matrix
+          Matrix — design-only
         </button>
         <button
           className={`tab ${activeTab === 'users' ? 'active' : ''}`}
@@ -103,7 +103,7 @@ export const PermissionsDashboard: React.FC = () => {
         {activeTab === 'users' && (
           <div className="user-permissions">
             <div className="user-permissions-header">
-              <h2>User Permission Management</h2>
+              <h2>User permissions (read-only)</h2>
               <div className="search-box">
                 <i className="fas fa-search"></i>
                 <input
@@ -226,23 +226,18 @@ export const PermissionsDashboard: React.FC = () => {
                         )}
                       </div>
 
-                      <div className="user-actions">
-                        <button
-                          className="btn btn-secondary"
-                          disabled
-                          title="Endpoint offline — /api/v1/admin/users/:id/permissions not implemented"
-                        >
-                          <i className="fas fa-edit"></i>
-                          Edit Permissions
-                        </button>
-                        <button
-                          className="btn btn-danger"
-                          disabled
-                          title="Endpoint offline — /api/v1/admin/users/:id/permissions not implemented"
-                        >
-                          <i className="fas fa-ban"></i>
-                          Revoke All Access
-                        </button>
+                      <div
+                        role="note"
+                        className="user-actions"
+                        style={{
+                          margin: '12px 0 0', padding: '10px 12px',
+                          background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)',
+                          borderRadius: '6px', color: '#fbbf24', fontSize: '0.82rem', lineHeight: 1.4
+                        }}
+                      >
+                        Permission edit / revoke is unavailable: the backend endpoint{' '}
+                        <code style={{ color: '#fde68a' }}>PUT/DELETE /api/v1/admin/users/:id/permissions</code>{' '}
+                        is not implemented. Roles and custom permissions above are read-only.
                       </div>
                     </div>
                   </div>

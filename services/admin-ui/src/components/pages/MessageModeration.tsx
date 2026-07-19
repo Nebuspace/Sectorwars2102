@@ -45,6 +45,7 @@ interface FlaggedMessagesResponse {
 
 interface ActiveSender {
   player_id: string;
+  nickname?: string | null;
   message_count: number;
 }
 
@@ -73,6 +74,12 @@ const recipientLabel = (message: FlaggedMessage): string => {
   if (message.recipient_id) return message.recipient_id;
   return '—';
 };
+
+// NO-CANON (flagged to DECISIONS): fallback display when a sender's nickname
+// is missing/null — a truncated UUID rather than 'Unknown', so the row still
+// carries a stable, at-a-glance identifier an admin can search on.
+const senderLabel = (playerId: string, nickname?: string | null): string =>
+  nickname ?? `${playerId.slice(0, 8)}…`;
 
 const MessageModeration: React.FC = () => {
   const toast = useToast();
@@ -176,39 +183,6 @@ const MessageModeration: React.FC = () => {
           Review flagged player communications and act on reports across the galaxy.
         </p>
       </header>
-
-      {/* Statistics summary */}
-      <section className="msgmod-section">
-        {statsError && <div className="msgmod-inline-error">{statsError}</div>}
-        {stats && (
-          <div className="msgmod-stats-grid">
-            <div className="msgmod-stat-card">
-              <span className="msgmod-stat-label">Total Messages</span>
-              <span className="msgmod-stat-value">
-                {stats.total_messages.toLocaleString()}
-              </span>
-            </div>
-            <div className="msgmod-stat-card">
-              <span className="msgmod-stat-label">Today</span>
-              <span className="msgmod-stat-value">
-                {stats.messages_today.toLocaleString()}
-              </span>
-            </div>
-            <div className="msgmod-stat-card">
-              <span className="msgmod-stat-label">This Week</span>
-              <span className="msgmod-stat-value">
-                {stats.messages_this_week.toLocaleString()}
-              </span>
-            </div>
-            <div className="msgmod-stat-card msgmod-stat-flagged">
-              <span className="msgmod-stat-label">Flagged</span>
-              <span className="msgmod-stat-value">
-                {stats.flagged_messages.toLocaleString()}
-              </span>
-            </div>
-          </div>
-        )}
-      </section>
 
       {/* Review queue */}
       <section className="msgmod-section">
@@ -346,6 +320,39 @@ const MessageModeration: React.FC = () => {
         )}
       </section>
 
+      {/* Statistics summary */}
+      <section className="msgmod-section">
+        {statsError && <div className="msgmod-inline-error">{statsError}</div>}
+        {stats && (
+          <div className="msgmod-stats-grid">
+            <div className="msgmod-stat-card">
+              <span className="msgmod-stat-label">Total Messages</span>
+              <span className="msgmod-stat-value">
+                {stats.total_messages.toLocaleString()}
+              </span>
+            </div>
+            <div className="msgmod-stat-card">
+              <span className="msgmod-stat-label">Today</span>
+              <span className="msgmod-stat-value">
+                {stats.messages_today.toLocaleString()}
+              </span>
+            </div>
+            <div className="msgmod-stat-card">
+              <span className="msgmod-stat-label">This Week</span>
+              <span className="msgmod-stat-value">
+                {stats.messages_this_week.toLocaleString()}
+              </span>
+            </div>
+            <div className="msgmod-stat-card msgmod-stat-flagged">
+              <span className="msgmod-stat-label">Flagged</span>
+              <span className="msgmod-stat-value">
+                {stats.flagged_messages.toLocaleString()}
+              </span>
+            </div>
+          </div>
+        )}
+      </section>
+
       {/* Most active senders (from stats) */}
       {stats && stats.most_active_senders.length > 0 && (
         <section className="msgmod-section">
@@ -363,7 +370,9 @@ const MessageModeration: React.FC = () => {
               <tbody>
                 {stats.most_active_senders.map((sender) => (
                   <tr key={sender.player_id}>
-                    <td className="msgmod-sender">{sender.player_id}</td>
+                    <td className="msgmod-sender" title={sender.player_id}>
+                      {senderLabel(sender.player_id, sender.nickname)}
+                    </td>
                     <td>{sender.message_count.toLocaleString()}</td>
                   </tr>
                 ))}

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Line, Bar, Doughnut } from 'react-chartjs-2';
+import { Line, Doughnut } from 'react-chartjs-2';
 import { useAuth } from '../../contexts/AuthContext';
 import './production-monitoring.css';
 
@@ -52,7 +52,7 @@ interface ProductionStats {
 }
 
 export const ProductionMonitoring: React.FC = () => {
-  const { user } = useAuth();
+  useAuth();
   const [timeRange, setTimeRange] = useState<'hour' | 'day' | 'week' | 'month'>('day');
   const [selectedResource, setSelectedResource] = useState<'all' | 'energy' | 'minerals' | 'food' | 'water'>('all');
   const [productionHistory, setProductionHistory] = useState<ProductionData[]>([]);
@@ -61,6 +61,7 @@ export const ProductionMonitoring: React.FC = () => {
   const [stats, setStats] = useState<ProductionStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     loadProductionData();
@@ -80,16 +81,27 @@ export const ProductionMonitoring: React.FC = () => {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to load production data');
+        setError(
+          response.status === 404
+            ? 'Production monitoring endpoint not implemented — /api/v1/admin/colonization/production returned 404'
+            : `Failed to load production data (HTTP ${response.status})`
+        );
+        setProductionHistory([]);
+        setTrends([]);
+        setAlerts([]);
+        setStats(null);
+        return;
       }
 
       const data = await response.json();
-      setProductionHistory(data.history);
-      setTrends(data.trends);
-      setAlerts(data.alerts);
-      setStats(data.stats);
+      setProductionHistory(data.history ?? []);
+      setTrends(data.trends ?? []);
+      setAlerts(data.alerts ?? []);
+      setStats(data.stats ?? null);
+      setError(null);
     } catch (err) {
       console.error('Error loading production data:', err);
+      setError('Gameserver unreachable — network error fetching production data');
       setProductionHistory([]);
       setTrends([]);
       setAlerts([]);
@@ -194,6 +206,34 @@ export const ProductionMonitoring: React.FC = () => {
     return <div className="production-monitoring loading">Loading production data...</div>;
   }
 
+  if (error) {
+    return (
+      <div className="production-monitoring">
+        <div className="monitoring-header">
+          <h2>Production Monitoring</h2>
+        </div>
+        <div
+          role="alert"
+          style={{
+            margin: '0 0 16px 0',
+            padding: '10px 12px',
+            background: 'rgba(239, 68, 68, 0.12)',
+            border: '1px solid rgba(239, 68, 68, 0.35)',
+            borderRadius: '6px',
+            color: '#fca5a5',
+            fontSize: '0.85rem',
+            lineHeight: 1.4,
+          }}
+        >
+          {error}
+        </div>
+        <button type="button" className="refresh-button" onClick={() => { setLoading(true); loadProductionData(); }}>
+          Retry
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="production-monitoring">
       <div className="monitoring-header">
@@ -230,6 +270,29 @@ export const ProductionMonitoring: React.FC = () => {
       </div>
 
       <div className="monitoring-grid">
+        <div className="alerts-container">
+          <h3>Production Alerts</h3>
+          <div className="alerts-list">
+            {alerts.map(alert => (
+              <div
+                key={alert.id}
+                className={`alert-item ${alert.severity}`}
+                style={{ borderLeftColor: getSeverityColor(alert.severity) }}
+              >
+                <div className="alert-header">
+                  <span className="alert-icon">{getAlertIcon(alert.type)}</span>
+                  <span className="alert-colony">{alert.colony}</span>
+                  <span className="alert-time">
+                    {new Date(alert.timestamp).toLocaleTimeString()}
+                  </span>
+                </div>
+                <div className="alert-message">{alert.message}</div>
+                <div className="alert-resource">Resource: {alert.resource}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
         <div className="chart-container production-chart">
           <h3>Production Over Time</h3>
           <div style={{ position: 'relative', height: '300px', width: '100%' }}>
@@ -312,29 +375,6 @@ export const ProductionMonitoring: React.FC = () => {
                 },
               }}
             />
-          </div>
-        </div>
-
-        <div className="alerts-container">
-          <h3>Production Alerts</h3>
-          <div className="alerts-list">
-            {alerts.map(alert => (
-              <div
-                key={alert.id}
-                className={`alert-item ${alert.severity}`}
-                style={{ borderLeftColor: getSeverityColor(alert.severity) }}
-              >
-                <div className="alert-header">
-                  <span className="alert-icon">{getAlertIcon(alert.type)}</span>
-                  <span className="alert-colony">{alert.colony}</span>
-                  <span className="alert-time">
-                    {new Date(alert.timestamp).toLocaleTimeString()}
-                  </span>
-                </div>
-                <div className="alert-message">{alert.message}</div>
-                <div className="alert-resource">Resource: {alert.resource}</div>
-              </div>
-            ))}
           </div>
         </div>
 

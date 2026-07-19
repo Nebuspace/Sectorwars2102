@@ -178,6 +178,34 @@ const CentralNexusManager: React.FC = () => {
               )}
             </div>
 
+            {/* Quick Actions */}
+            <div className="quick-actions">
+              <h3>Quick Actions</h3>
+              <div className="action-buttons">
+                <button
+                  onClick={() => loadNexusStatus()}
+                  className="action-button refresh"
+                  disabled={loading}
+                >
+                  Refresh Status
+                </button>
+                <button
+                  onClick={() => loadStats()}
+                  className="action-button refresh"
+                  disabled={loading}
+                >
+                  Refresh Stats
+                </button>
+              </div>
+              {!nexusStatus?.exists && (
+                <div className="info-card" style={{ marginTop: '16px' }}>
+                  <p>
+                    Central Nexus auto-generates when you create a new galaxy.
+                    Use the &quot;Bang a New Galaxy!&quot; button on the Universe Management page.
+                  </p>
+                </div>
+              )}
+            </div>
             {/* Statistics Cards */}
             {stats && nexusStatus?.exists && (
               <div className="stats-grid">
@@ -218,34 +246,6 @@ const CentralNexusManager: React.FC = () => {
               </div>
             )}
 
-            {/* Quick Actions */}
-            <div className="quick-actions">
-              <h3>Quick Actions</h3>
-              <div className="action-buttons">
-                <button
-                  onClick={() => loadNexusStatus()}
-                  className="action-button refresh"
-                  disabled={loading}
-                >
-                  Refresh Status
-                </button>
-                <button
-                  onClick={() => loadStats()}
-                  className="action-button refresh"
-                  disabled={loading}
-                >
-                  Refresh Stats
-                </button>
-              </div>
-              {!nexusStatus?.exists && (
-                <div className="info-card" style={{ marginTop: '16px' }}>
-                  <p>
-                    Central Nexus auto-generates when you create a new galaxy.
-                    Use the "Bang a New Galaxy!" button on the Universe Management page.
-                  </p>
-                </div>
-              )}
-            </div>
           </div>
         )}
 

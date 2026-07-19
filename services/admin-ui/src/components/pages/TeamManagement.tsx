@@ -136,48 +136,6 @@ export const TeamManagement: React.FC = () => {
         </div>
       )}
       
-      {/* Team Statistics Dashboard */}
-      {teamStats && (
-        <div className="team-stats-grid">
-          <div className="stat-card primary">
-            <h3>Total Teams</h3>
-            <div className="stat-value">{teamStats.totalTeams}</div>
-            <div className="stat-change">{teamStats.activeTeams} active</div>
-          </div>
-          <div className="stat-card">
-            <h3>Total Members</h3>
-            <div className="stat-value">{teamStats.totalMembers}</div>
-            <div className="stat-label">across all teams</div>
-          </div>
-          <div className="stat-card">
-            <h3>Average Team Size</h3>
-            <div className="stat-value">
-              {Number.isFinite(teamStats.averageTeamSize) ? teamStats.averageTeamSize.toFixed(1) : EM_DASH}
-            </div>
-            <div className="stat-label">members per team</div>
-          </div>
-          <div className="stat-card">
-            <h3>Active Alliances</h3>
-            <div className="stat-value">{teamStats.totalAlliances}</div>
-            <div className="stat-label">diplomatic agreements</div>
-          </div>
-          <div className="stat-card highlight">
-            <h3>Most Powerful</h3>
-            <div className="stat-value">{teamStats.mostPowerfulTeam?.name || 'N/A'}</div>
-            <div className="stat-label">by combat rating</div>
-          </div>
-          <div className="stat-card highlight">
-            <h3>Largest Team</h3>
-            <div className="stat-value">{teamStats.largestTeam?.name || 'N/A'}</div>
-            <div className="stat-label">
-              {teamStats.largestTeam?.memberCount !== undefined
-                ? `${teamStats.largestTeam.memberCount} members`
-                : EM_DASH}
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Search and Filter Controls */}
       <div className="team-controls">
         <div className="search-box">
@@ -310,8 +268,14 @@ export const TeamManagement: React.FC = () => {
                         <h3>Team Credits Comparison</h3>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '12px' }}>
                           {teams.slice(0, 10).map(team => {
-                            const maxCredits = Math.max(...teams.map(t => t.total_credits || 0), 1);
-                            const widthPct = ((team.total_credits || 0) / maxCredits) * 100;
+                            const knownCredits = teams
+                              .map(t => t.total_credits)
+                              .filter((c): c is number => typeof c === 'number');
+                            const maxCredits = Math.max(...knownCredits, 1);
+                            const hasCredits = typeof team.total_credits === 'number';
+                            const widthPct = hasCredits
+                              ? (team.total_credits / maxCredits) * 100
+                              : 0;
                             return (
                               <div key={team.id} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                 <span style={{ minWidth: '100px', fontSize: '0.85rem', color: team.id === selectedTeam.id ? '#60a5fa' : '#9ca3af' }}>
@@ -327,7 +291,7 @@ export const TeamManagement: React.FC = () => {
                                   }} />
                                 </div>
                                 <span style={{ minWidth: '60px', textAlign: 'right', fontSize: '0.8rem', color: '#9ca3af' }}>
-                                  {(team.total_credits || 0).toLocaleString()}
+                                  {hasCredits ? team.total_credits.toLocaleString() : EM_DASH}
                                 </span>
                               </div>
                             );
@@ -424,44 +388,14 @@ export const TeamManagement: React.FC = () => {
                     <div
                       role="note"
                       style={{
-                        margin: '0 0 12px 0', padding: '10px 12px',
+                        margin: 0, padding: '10px 12px',
                         background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)',
                         borderRadius: '6px', color: '#fbbf24', fontSize: '0.82rem', lineHeight: 1.4
                       }}
                     >
                       Team admin actions are unavailable: the backend endpoint{' '}
                       <code style={{ color: '#fde68a' }}>{TEAM_ACTION_ENDPOINT}</code> is not implemented.
-                      These controls are shown to document intended capability.
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                      <button
-                        disabled
-                        title={`Disabled — missing backend endpoint ${TEAM_ACTION_ENDPOINT}`}
-                        style={{ padding: '8px 16px', background: '#374151', color: '#6b7280', border: '1px solid #4b5563', borderRadius: '6px', cursor: 'not-allowed', textAlign: 'left', opacity: 0.6 }}
-                      >
-                        {selectedTeam.is_active ? 'Deactivate Team' : 'Activate Team'}
-                      </button>
-                      <button
-                        disabled
-                        title={`Disabled — missing backend endpoint ${TEAM_ACTION_ENDPOINT}`}
-                        style={{ padding: '8px 16px', background: '#374151', color: '#6b7280', border: '1px solid #4b5563', borderRadius: '6px', cursor: 'not-allowed', textAlign: 'left', opacity: 0.6 }}
-                      >
-                        Change Team Leader
-                      </button>
-                      <button
-                        disabled
-                        title={`Disabled — missing backend endpoint ${TEAM_ACTION_ENDPOINT}`}
-                        style={{ padding: '8px 16px', background: '#374151', color: '#6b7280', border: '1px solid #4b5563', borderRadius: '6px', cursor: 'not-allowed', textAlign: 'left', opacity: 0.6 }}
-                      >
-                        Modify Reputation
-                      </button>
-                      <button
-                        disabled
-                        title={`Disabled — missing backend endpoint ${TEAM_ACTION_ENDPOINT}`}
-                        style={{ padding: '8px 16px', background: 'rgba(239, 68, 68, 0.15)', color: '#9ca3af', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '6px', cursor: 'not-allowed', textAlign: 'left', opacity: 0.6 }}
-                      >
-                        Dissolve Team
-                      </button>
+                      This panel does not invent disabled Activate / Leader / Reputation / Dissolve controls.
                     </div>
                   </div>
                 </div>
@@ -470,6 +404,49 @@ export const TeamManagement: React.FC = () => {
           </>
         )}
       </div>
+      {/* Team Statistics Dashboard */}
+      {teamStats && (
+        <div className="team-stats-grid">
+          <div className="stat-card primary">
+            <h3>Total Teams</h3>
+            <div className="stat-value">{teamStats.totalTeams}</div>
+            <div className="stat-change">{teamStats.activeTeams} active</div>
+          </div>
+          <div className="stat-card">
+            <h3>Total Members</h3>
+            <div className="stat-value">{teamStats.totalMembers}</div>
+            <div className="stat-label">across all teams</div>
+          </div>
+          <div className="stat-card">
+            <h3>Average Team Size</h3>
+            <div className="stat-value">
+              {Number.isFinite(teamStats.averageTeamSize) ? teamStats.averageTeamSize.toFixed(1) : EM_DASH}
+            </div>
+            <div className="stat-label">members per team</div>
+          </div>
+          <div className="stat-card">
+            <h3>Active Alliances</h3>
+            <div className="stat-value">{teamStats.totalAlliances}</div>
+            <div className="stat-label">diplomatic agreements</div>
+          </div>
+          <div className="stat-card highlight">
+            <h3>Most Powerful</h3>
+            <div className="stat-value">{teamStats.mostPowerfulTeam?.name || 'N/A'}</div>
+            <div className="stat-label">by combat rating</div>
+          </div>
+          <div className="stat-card highlight">
+            <h3>Largest Team</h3>
+            <div className="stat-value">{teamStats.largestTeam?.name || 'N/A'}</div>
+            <div className="stat-label">
+              {teamStats.largestTeam?.memberCount !== undefined
+                ? `${teamStats.largestTeam.memberCount} members`
+                : EM_DASH}
+            </div>
+          </div>
+        </div>
+      )}
+
+
     </div>
   );
 };

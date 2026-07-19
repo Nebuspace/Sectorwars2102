@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
+import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import './colony-overview.css';
 
 interface Colony {
@@ -50,6 +51,7 @@ interface RawColony {
   max_population?: number;
   habitability_score?: number;
   resource_richness?: number;
+  morale?: number;
   defense_level?: number;
   colonized_at?: string | null;
   fuel_ore?: number;
@@ -77,7 +79,8 @@ interface ColonyStats {
 }
 
 export const ColonyOverview: React.FC = () => {
-  const { user, token } = useAuth();
+  const { token } = useAuth();
+  const { getIcon, getLabel } = useResourceCatalog();
   const [colonies, setColonies] = useState<Colony[]>([]);
   const [stats, setStats] = useState<ColonyStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -124,46 +127,64 @@ export const ColonyOverview: React.FC = () => {
       );
 
       // Map colony data from our colonies endpoint
-      const mappedColonies: Colony[] = colonizedPlanets.map((colony) => ({
-        id: colony.id,
-        name: colony.name,
-        planetId: colony.id,
-        planetName: colony.name,
-        sectorId: colony.sector_id.toString(),
-        sectorName: `Sector ${colony.sector_id}`,
-        playerId: colony.owner_id || '',
-        playerName: colony.owner_name || 'No Colony',
-        teamId: '',
-        teamName: '',
-        population: colony.population || 0,
-        maxPopulation: colony.max_population || 0,
-        morale: Math.min(100, colony.habitability_score || 50),
-        infrastructure: Math.min(100, (colony.defense_level || 0) * 10),
-        defenseRating: colony.defense_level || 0,
-        productionEfficiency: Math.min(100, (colony.resource_richness || 0) * 100 || 50),
-        resources: {
-          energy: colony.fuel_ore || 0,
-          minerals: colony.equipment || 0,
-          food: colony.organics || 0,
-          // habitability_score is stored on a 0-100 scale; shown as a %, labelled
-          // "Habitability" in the UI so it isn't read as a unit count.
-          water: Math.min(100, Math.round(colony.habitability_score || 0))
-        },
-        buildings: {
-          residential: colony.farm_level || 0,
-          industrial: colony.factory_level || 0,
-          research: colony.research_level || 0,
-          defense: colony.mine_level || 0
-        },
-        // Status is derived from morale on the same 0-100 scale + threshold
-        // (morale < 50) used for the "troubled" summary stat below, so the
-        // per-card badge stays consistent with the aggregate counts.
-        status: colony.owner_id
-          ? (Math.min(100, colony.habitability_score || 50) < 50 ? 'troubled' : 'active')
-          : 'abandoned',
-        foundedAt: colony.colonized_at || new Date().toISOString(),
-        lastActivity: colony.colonized_at || new Date().toISOString()
-      }));
+      const mappedColonies: Colony[] = colonizedPlanets.map((colony) => {
+        // Honest morale: read the real siege-morale field the API now
+        // serves; fall back to habitability_score only when morale is
+        // absent (e.g. an older/pre-deploy API response) — a genuine zero
+        // must read as zero, never get floored up to a fake "healthy" mid.
+        const moraleValue = typeof colony.morale === 'number'
+          ? Math.max(0, Math.min(100, colony.morale))
+          : typeof colony.habitability_score === 'number'
+            ? Math.max(0, Math.min(100, colony.habitability_score))
+            : 0;
+
+        return {
+          id: colony.id,
+          name: colony.name,
+          planetId: colony.id,
+          planetName: colony.name,
+          sectorId: colony.sector_id.toString(),
+          sectorName: `Sector ${colony.sector_id}`,
+          playerId: colony.owner_id || '',
+          playerName: colony.owner_name || 'No Colony',
+          teamId: '',
+          teamName: '',
+          population: colony.population || 0,
+          maxPopulation: colony.max_population || 0,
+          morale: moraleValue,
+          infrastructure: Math.min(100, (colony.defense_level || 0) * 10),
+          defenseRating: colony.defense_level || 0,
+          productionEfficiency: typeof colony.resource_richness === 'number'
+            ? Math.min(100, Math.max(0, colony.resource_richness * 100))
+            : 0,
+          resources: {
+            energy: colony.fuel_ore || 0,
+            minerals: colony.equipment || 0,
+            food: colony.organics || 0,
+            // habitability_score is stored on a 0-100 scale; shown as a %, labelled
+            // "Habitability" in the UI so it isn't read as a unit count. Same
+            // typeof-checked idiom as moraleValue above — one field, one rule.
+            water: typeof colony.habitability_score === 'number'
+              ? Math.min(100, Math.max(0, Math.round(colony.habitability_score)))
+              : 0
+          },
+          buildings: {
+            residential: colony.farm_level || 0,
+            industrial: colony.factory_level || 0,
+            research: colony.research_level || 0,
+            defense: colony.mine_level || 0
+          },
+          // Status is derived from the SAME honest morale value computed
+          // above + threshold (morale < 50) used for the "troubled" summary
+          // stat below, so the per-card badge stays consistent with the
+          // aggregate counts.
+          status: colony.owner_id
+            ? (moraleValue < 50 ? 'troubled' : 'active')
+            : 'abandoned',
+          foundedAt: colony.colonized_at || new Date().toISOString(),
+          lastActivity: colony.colonized_at || new Date().toISOString()
+        };
+      });
       
       setColonies(mappedColonies);
       
@@ -254,28 +275,6 @@ export const ColonyOverview: React.FC = () => {
     <div className="colony-overview">
       <div className="overview-header">
         <h2>Colony Overview</h2>
-        <div className="header-stats">
-          <div className="stat-card">
-            <span className="stat-label">Total Colonies</span>
-            <span className="stat-value">{stats?.totalColonies || 0}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Active</span>
-            <span className="stat-value success">{stats?.activeColonies || 0}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Total Population</span>
-            <span className="stat-value">{formatNumber(stats?.totalPopulation || 0)}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Avg Morale</span>
-            <span className="stat-value">{Math.round(stats?.averageMorale || 0)}%</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Troubled</span>
-            <span className="stat-value error">{stats?.troubledColonies || 0}</span>
-          </div>
-        </div>
       </div>
 
       <div className="colony-controls">
@@ -392,28 +391,28 @@ export const ColonyOverview: React.FC = () => {
             </div>
             <div className="colony-resources">
               <div className="resource">
-                <span className="resource-icon">⚡</span>
+                <span className="resource-icon">{getIcon('fuel_ore')}</span>
                 <span className="resource-value">
                   {formatNumber(colony.resources.energy)}
                   <span className="resource-unit"> units</span>
                 </span>
-                <span className="resource-name">Fuel Ore</span>
+                <span className="resource-name">{getLabel('fuel_ore')}</span>
               </div>
               <div className="resource">
-                <span className="resource-icon">💎</span>
+                <span className="resource-icon">{getIcon('equipment')}</span>
                 <span className="resource-value">
                   {formatNumber(colony.resources.minerals)}
                   <span className="resource-unit"> units</span>
                 </span>
-                <span className="resource-name">Equipment</span>
+                <span className="resource-name">{getLabel('equipment')}</span>
               </div>
               <div className="resource">
-                <span className="resource-icon">🌾</span>
+                <span className="resource-icon">{getIcon('organics')}</span>
                 <span className="resource-value">
                   {formatNumber(colony.resources.food)}
                   <span className="resource-unit"> units</span>
                 </span>
-                <span className="resource-name">Organics</span>
+                <span className="resource-name">{getLabel('organics')}</span>
               </div>
               <div className="resource">
                 <span className="resource-icon">💧</span>
@@ -427,6 +426,29 @@ export const ColonyOverview: React.FC = () => {
           </div>
         ))}
       </div>
+
+      <div className="header-stats">
+          <div className="stat-card">
+            <span className="stat-label">Total Colonies</span>
+            <span className="stat-value">{stats?.totalColonies || 0}</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Active</span>
+            <span className="stat-value success">{stats?.activeColonies || 0}</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Total Population</span>
+            <span className="stat-value">{formatNumber(stats?.totalPopulation || 0)}</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Avg Morale</span>
+            <span className="stat-value">{Math.round(stats?.averageMorale || 0)}%</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Troubled</span>
+            <span className="stat-value error">{stats?.troubledColonies || 0}</span>
+          </div>
+        </div>
 
       {selectedColony && (
         <div className="colony-detail-modal" onClick={() => setSelectedColony(null)}>
@@ -483,14 +505,22 @@ export const ColonyOverview: React.FC = () => {
                 </div>
               </div>
 
-              <div className="detail-section">
-                <h3>Actions</h3>
-                <div className="action-buttons">
-                  <p style={{ color: 'var(--text-tertiary)', fontSize: '0.85rem', margin: 0 }}>
-                    Colony actions (view planet, contact owner, view history, send
-                    resources) are not yet available — no backend exists for them.
-                  </p>
-                </div>
+              <div
+                role="note"
+                style={{
+                  margin: '12px 0 0 0',
+                  padding: '10px 12px',
+                  background: 'rgba(234, 179, 8, 0.12)',
+                  border: '1px solid rgba(234, 179, 8, 0.35)',
+                  borderRadius: '6px',
+                  color: '#fbbf24',
+                  fontSize: '0.82rem',
+                  lineHeight: 1.4,
+                }}
+              >
+                Colony detail actions (view planet, contact owner, view history, send resources)
+                are unavailable — no admin backend exists for them. This drawer does not invent
+                an Actions button bar.
               </div>
             </div>
           </div>

@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../utils/auth';
 import { PlayerModel } from '../../types/playerManagement';
-import { useToast, useConfirm } from '../../contexts/ToastContext';
 import './player-detail-editor.css';
 
 interface PlayerDetailEditorProps {
@@ -23,8 +22,6 @@ interface PlayerEditData {
 }
 
 const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose, onSave }) => {
-  const toast = useToast();
-  const confirm = useConfirm();
   const [editData, setEditData] = useState<PlayerEditData>({
     username: player.username,
     email: player.email,
@@ -42,6 +39,10 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
   const [availableTeams, setAvailableTeams] = useState<any[]>([]);
   const [availableRegions, setAvailableRegions] = useState<any[]>([]);
   const [unsavedChanges, setUnsavedChanges] = useState(false);
+
+  // Honesty: player-scoped emergency route does not exist (only ship-scoped
+  // at admin_ships.py:205). Do not invent teleport/rescue/reset/clear chrome.
+  const EMERGENCY_ENDPOINT = 'POST /api/v1/admin/players/{id}/emergency';
 
   useEffect(() => {
     loadAvailableTeams();
@@ -149,40 +150,6 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
     } catch (error: any) {
       console.error('Failed to update player:', error);
       const errorMessage = error.response?.data?.detail || 'Failed to update player';
-      setErrors([errorMessage]);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleEmergencyAction = async (action: string) => {
-    if (!(await confirm({
-      title: 'Emergency Action',
-      message: `Are you sure you want to ${action} this player?`,
-      danger: true,
-      confirmLabel: 'Proceed',
-    }))) {
-      return;
-    }
-
-    setLoading(true);
-    try {
-      await api.post(`/api/v1/admin/players/${player.id}/emergency`, {
-        action: action,
-        reason: `Admin emergency action: ${action}`
-      });
-
-      // Refresh the player data
-      if (action === 'teleport_home') {
-        handleFieldChange('current_sector_id', 1); // Assuming sector 1 is home
-      } else if (action === 'reset_turns') {
-        handleFieldChange('turns', 1000); // Default turn reset
-      }
-
-      toast.success(`${action} completed successfully`);
-    } catch (error: any) {
-      console.error(`Failed to ${action}:`, error);
-      const errorMessage = error.response?.data?.detail || `Failed to ${action}`;
       setErrors([errorMessage]);
     } finally {
       setLoading(false);
@@ -343,35 +310,17 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
 
         <div className="editor-section">
           <h4>Emergency Operations</h4>
-          <div className="emergency-controls">
-            <button 
-              onClick={() => handleEmergencyAction('teleport_home')}
-              className="emergency-btn teleport"
-              disabled={loading}
-            >
-              🏠 Teleport to Home
-            </button>
-            <button 
-              onClick={() => handleEmergencyAction('reset_turns')}
-              className="emergency-btn turns"
-              disabled={loading}
-            >
-              🔄 Reset Turns
-            </button>
-            <button 
-              onClick={() => handleEmergencyAction('rescue_ship')}
-              className="emergency-btn rescue"
-              disabled={loading}
-            >
-              🚁 Rescue Ship
-            </button>
-            <button 
-              onClick={() => handleEmergencyAction('clear_debt')}
-              className="emergency-btn debt"
-              disabled={loading}
-            >
-              💳 Clear Debt
-            </button>
+          <div
+            role="note"
+            style={{
+              margin: '0', padding: '10px 12px',
+              background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)',
+              borderRadius: '6px', color: '#fbbf24', fontSize: '0.82rem', lineHeight: 1.4
+            }}
+          >
+            Emergency operations are unavailable: the backend endpoint{' '}
+            <code style={{ color: '#fde68a' }}>{EMERGENCY_ENDPOINT}</code> is not implemented.
+            This editor does not invent teleport / reset-turns / rescue / clear-debt controls.
           </div>
         </div>
 
@@ -379,7 +328,7 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
         <div className="editor-section aria-assistant-section">
           <h4>🤖 ARIA Personal Assistant</h4>
           <div className="aria-subtitle">
-            Autonomous Resource Intelligence Assistant - {player.username}'s Personal AI
+            Autonomous Resource Intelligence Assistant - {player.username}&apos;s Personal AI
           </div>
 
           {player.aria ? (
@@ -448,25 +397,17 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
                 </div>
               )}
 
-              <div className="aria-controls">
-                <button
-                  onClick={() => toast.info('ARIA data reset functionality will be implemented')}
-                  className="aria-btn reset"
-                >
-                  🔄 Reset ARIA Learning
-                </button>
-                <button
-                  onClick={() => toast.info('ARIA retrain functionality will be implemented')}
-                  className="aria-btn retrain"
-                >
-                  🧠 Retrain Personal Model
-                </button>
-                <button
-                  onClick={() => toast.info('ARIA export functionality will be implemented')}
-                  className="aria-btn export"
-                >
-                  📊 Export ARIA Data
-                </button>
+              <div
+                role="note"
+                className="aria-controls"
+                style={{
+                  margin: '12px 0 0', padding: '10px 12px',
+                  background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)',
+                  borderRadius: '6px', color: '#fbbf24', fontSize: '0.82rem', lineHeight: 1.4
+                }}
+              >
+                ARIA reset / retrain / export actions are unavailable: no admin API exists for them.
+                Metrics above are read-only from the player payload.
               </div>
             </>
           ) : (
@@ -474,7 +415,7 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
               <div className="empty-state-icon">🤖</div>
               <h5>ARIA Data Collection Not Started</h5>
               <p>
-                This player's ARIA personal intelligence system has not collected any data yet.
+                This player&apos;s ARIA personal intelligence system has not collected any data yet.
                 ARIA will begin learning once the player:
               </p>
               <ul>
@@ -483,7 +424,7 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
                 <li>Makes strategic decisions in the game</li>
               </ul>
               <p className="text-muted">
-                Data collection is automatic and privacy-protected. Each player's ARIA is
+                Data collection is automatic and privacy-protected. Each player&apos;s ARIA is
                 completely isolated and learns only from their personal gameplay.
               </p>
             </div>
@@ -495,19 +436,23 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
           <div className="assets-readonly">
             <div className="asset-item">
               <span className="asset-label">Ships Owned:</span>
-              <span className="asset-value">{player.assets.ships_count}</span>
+              <span className="asset-value">{player.assets.ships_count ?? '—'}</span>
             </div>
             <div className="asset-item">
               <span className="asset-label">Planets Owned:</span>
-              <span className="asset-value">{player.assets.planets_count}</span>
+              <span className="asset-value">{player.assets.planets_count ?? '—'}</span>
             </div>
             <div className="asset-item">
               <span className="asset-label">Ports Owned:</span>
-              <span className="asset-value">{player.assets.stations_count}</span>
+              <span className="asset-value">{player.assets.stations_count ?? '—'}</span>
             </div>
             <div className="asset-item">
               <span className="asset-label">Total Asset Value:</span>
-              <span className="asset-value credits">{player.assets.total_value.toLocaleString()}</span>
+              <span className="asset-value credits">
+                {player.assets.total_value != null
+                  ? player.assets.total_value.toLocaleString()
+                  : '—'}
+              </span>
             </div>
           </div>
         </div>

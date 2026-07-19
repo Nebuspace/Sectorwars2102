@@ -58,8 +58,11 @@ const EventManagement: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [typeFilter, setTypeFilter] = useState<string>('all');
+  const PAGE_SIZE = 20;
   const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
+  /** null when API omits total_pages — do not invent "of 1". */
+  const [totalPages, setTotalPages] = useState<number | null>(null);
+  const [hasMore, setHasMore] = useState(false);
 
   // New event form state
   const [newEvent, setNewEvent] = useState({
@@ -94,8 +97,16 @@ const EventManagement: React.FC = () => {
       });
       
       const data = response.data as any;
-      setEvents(Array.isArray(data?.events) ? data.events : []);
-      setTotalPages(typeof data?.total_pages === 'number' ? data.total_pages : 1);
+      const list = Array.isArray(data?.events) ? data.events : [];
+      setEvents(list);
+      if (typeof data?.total_pages === 'number') {
+        setTotalPages(data.total_pages);
+        setHasMore(page < data.total_pages);
+      } else {
+        // Bare/partial page payloads — no invented "Page X of 1".
+        setTotalPages(null);
+        setHasMore(list.length >= PAGE_SIZE);
+      }
       
       // Fetch event statistics
       const statsResponse = await api.get('/api/v1/admin/events/stats');
@@ -267,32 +278,6 @@ const EventManagement: React.FC = () => {
         subtitle="Create and manage dynamic game events"
       />
       
-      {/* Event Statistics */}
-      {eventStats && (
-        <div className="event-stats-grid">
-          <div className="event-stat-card">
-            <h3 className="event-stat-title">Total Events</h3>
-            <span className="event-stat-value">{eventStats.total_events.toLocaleString()}</span>
-          </div>
-          <div className="event-stat-card">
-            <h3 className="event-stat-title">Active</h3>
-            <span className="event-stat-value">{eventStats.active_events.toLocaleString()}</span>
-          </div>
-          <div className="event-stat-card">
-            <h3 className="event-stat-title">Scheduled</h3>
-            <span className="event-stat-value">{eventStats.scheduled_events.toLocaleString()}</span>
-          </div>
-          <div className="event-stat-card">
-            <h3 className="event-stat-title">Participants</h3>
-            <span className="event-stat-value">{eventStats.total_participants.toLocaleString()}</span>
-          </div>
-          <div className="event-stat-card">
-            <h3 className="event-stat-title">Rewards Given</h3>
-            <span className="event-stat-value">{eventStats.rewards_distributed.toLocaleString()}</span>
-          </div>
-        </div>
-      )}
-
       <div className="events-content">
         {/* Events Controls */}
         <div className="events-controls">
@@ -579,15 +564,46 @@ const EventManagement: React.FC = () => {
           >
             Previous
           </button>
-          <span>Page {page} of {totalPages}</span>
+          <span title={totalPages == null ? 'API returned no total_pages — sequential paging only' : undefined}>
+            {totalPages != null
+              ? `Page ${page} of ${totalPages}`
+              : <>Page {page}{hasMore ? '+' : ''}<span style={{ opacity: 0.7 }}> · no total from API</span></>}
+          </span>
           <button 
             onClick={() => setPage(page + 1)} 
-            disabled={page === totalPages}
+            disabled={totalPages != null ? page >= totalPages : !hasMore}
           >
             Next
           </button>
         </div>
       </div>
+      {/* Event Statistics */}
+      {eventStats && (
+        <div className="event-stats-grid">
+          <div className="event-stat-card">
+            <h3 className="event-stat-title">Total Events</h3>
+            <span className="event-stat-value">{eventStats.total_events.toLocaleString()}</span>
+          </div>
+          <div className="event-stat-card">
+            <h3 className="event-stat-title">Active</h3>
+            <span className="event-stat-value">{eventStats.active_events.toLocaleString()}</span>
+          </div>
+          <div className="event-stat-card">
+            <h3 className="event-stat-title">Scheduled</h3>
+            <span className="event-stat-value">{eventStats.scheduled_events.toLocaleString()}</span>
+          </div>
+          <div className="event-stat-card">
+            <h3 className="event-stat-title">Participants</h3>
+            <span className="event-stat-value">{eventStats.total_participants.toLocaleString()}</span>
+          </div>
+          <div className="event-stat-card">
+            <h3 className="event-stat-title">Rewards Given</h3>
+            <span className="event-stat-value">{eventStats.rewards_distributed.toLocaleString()}</span>
+          </div>
+        </div>
+      )}
+
+
     </div>
   );
 };

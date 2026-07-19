@@ -121,15 +121,6 @@ const AITradingDashboard: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
-  const handleModelAction = async (modelId: string, action: 'start' | 'stop' | 'train') => {
-    try {
-      await api.post(`/api/v1/admin/ai/models/${modelId}/${action}`);
-      await fetchData();
-    } catch (err) {
-      console.error(`Failed to ${action} model:`, err);
-      alert(`Failed to ${action} model`);
-    }
-  };
 
   const getStatusColor = (status: string | null) => {
     if (status == null) return '';
@@ -162,7 +153,7 @@ const AITradingDashboard: React.FC = () => {
     <div className="ai-trading-dashboard">
       <PageHeader 
         title="AI Trading Intelligence" 
-        subtitle="Monitor and manage ARIA - the AI trading assistant"
+        subtitle="Monitor ARIA trading activity and model stats (read-only)"
       />
 
       {/* Connection Status */}
@@ -182,39 +173,6 @@ const AITradingDashboard: React.FC = () => {
         </div>
       )}
 
-      {/* System Overview */}
-      {metrics && (
-        <div className="system-overview">
-          <div className="metric-card">
-            <h3>Total Predictions</h3>
-            <div className="metric-value">{metrics.totalPredictions != null ? metrics.totalPredictions.toLocaleString() : '—'}</div>
-            <div className="metric-label">Lifetime</div>
-          </div>
-          <div className="metric-card">
-            <h3>Average Accuracy</h3>
-            <div className="metric-value">{metrics.avgAccuracy != null ? `${metrics.avgAccuracy.toFixed(1)}%` : '—'}</div>
-            <div className="metric-trend">Model Performance</div>
-          </div>
-          <div className="metric-card">
-            <h3>Active Profiles</h3>
-            <div className="metric-value">{metrics.activeProfiles.toLocaleString()}</div>
-            <div className="metric-label">Players Using AI</div>
-          </div>
-          <div className="metric-card">
-            <h3>Acceptance Rate</h3>
-            <div className="metric-value">{metrics.recommendationAcceptance != null ? `${metrics.recommendationAcceptance.toFixed(1)}%` : '—'}</div>
-            <div className="metric-label">Recommendations Followed</div>
-          </div>
-          <div className={`metric-card ${getStatusColor(metrics.modelHealth)}`}>
-            <h3>System Health</h3>
-            <div className="metric-value">{metrics.modelHealth != null ? metrics.modelHealth.toUpperCase() : '—'}</div>
-            <div className="metric-label">
-              {metrics.queuedJobs != null && metrics.processingRate != null ? `${metrics.queuedJobs} jobs queued • ${metrics.processingRate}/min` : 'no job queue exists'}
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Tab Navigation */}
       <div className="tab-navigation">
         <button 
@@ -227,7 +185,7 @@ const AITradingDashboard: React.FC = () => {
           className={`tab-button ${selectedTab === 'models' ? 'active' : ''}`}
           onClick={() => setSelectedTab('models')}
         >
-          AI Models
+          AI Models — read-only
         </button>
         <button 
           className={`tab-button ${selectedTab === 'predictions' ? 'active' : ''}`}
@@ -239,7 +197,7 @@ const AITradingDashboard: React.FC = () => {
           className={`tab-button ${selectedTab === 'profiles' ? 'active' : ''}`}
           onClick={() => setSelectedTab('profiles')}
         >
-          Player Profiles
+          Player Profiles — partial
         </button>
         <button 
           className={`tab-button ${selectedTab === 'market-predictions' ? 'active' : ''}`}
@@ -257,7 +215,7 @@ const AITradingDashboard: React.FC = () => {
           className={`tab-button ${selectedTab === 'behavior-analytics' ? 'active' : ''}`}
           onClick={() => setSelectedTab('behavior-analytics')}
         >
-          Behavior Analytics
+          Behavior — aggregate
         </button>
       </div>
 
@@ -269,11 +227,15 @@ const AITradingDashboard: React.FC = () => {
             <div className="info-grid">
               <div className="info-card">
                 <h3>🤖 ARIA Status</h3>
-                <p>The AI Trading Assistant is operational and learning from {metrics?.activeProfiles || 0} active player profiles.</p>
+                <p>
+                  ARIA admin surface is read-only: model start/stop/train and per-player
+                  scoring APIs are not live. Aggregate metrics below reflect whatever the
+                  server returns (often empty / em-dash).
+                </p>
                 <ul>
-                  <li>Price Prediction Model: {models.find(m => m.type === 'price_prediction')?.status || 'Unknown'}</li>
-                  <li>Route Optimization: {models.find(m => m.type === 'route_optimization')?.status || 'Unknown'}</li>
-                  <li>Behavior Analysis: {models.find(m => m.type === 'behavior_analysis')?.status || 'Unknown'}</li>
+                  <li>Price Prediction Model: {models.find(m => m.type === 'price_prediction')?.status || '—'}</li>
+                  <li>Route Optimization: {models.find(m => m.type === 'route_optimization')?.status || '—'}</li>
+                  <li>Behavior Analysis: {models.find(m => m.type === 'behavior_analysis')?.status || '—'}</li>
                 </ul>
               </div>
               
@@ -285,8 +247,16 @@ const AITradingDashboard: React.FC = () => {
 
               <div className="info-card">
                 <h3>🚀 Recent Activity</h3>
-                <p>Processing {metrics?.processingRate || 0} predictions per minute</p>
-                <p>{metrics?.queuedJobs || 0} jobs in queue</p>
+                <p>
+                  {metrics?.processingRate != null
+                    ? `Processing ${metrics.processingRate} predictions per minute`
+                    : 'No prediction-rate telemetry'}
+                </p>
+                <p>
+                  {metrics?.queuedJobs != null
+                    ? `${metrics.queuedJobs} jobs in queue`
+                    : 'No job-queue telemetry'}
+                </p>
               </div>
             </div>
           </div>
@@ -294,7 +264,16 @@ const AITradingDashboard: React.FC = () => {
 
         {selectedTab === 'models' && (
           <div className="models-section">
-            <h2>AI Model Management</h2>
+            <h2>AI Models — unavailable to manage</h2>
+            {models.length === 0 ? (
+              <div className="info-card" style={{ marginTop: '12px' }}>
+                <p>
+                  No AI model registry exists server-side — GET /api/v1/admin/ai/models
+                  returns an empty list, and start/stop/train actions respond 501.
+                  This tab does not invent Start / Stop / Retrain controls.
+                </p>
+              </div>
+            ) : (
             <div className="models-grid">
               {models.map(model => (
                 <div key={model.id} className="model-card">
@@ -328,35 +307,21 @@ const AITradingDashboard: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="model-actions">
-                    {model.status === 'active' && (
-                      <>
-                        <button 
-                          className="btn btn-warning"
-                          onClick={() => handleModelAction(model.id, 'stop')}
-                        >
-                          Stop
-                        </button>
-                        <button 
-                          className="btn btn-primary"
-                          onClick={() => handleModelAction(model.id, 'train')}
-                        >
-                          Retrain
-                        </button>
-                      </>
-                    )}
-                    {model.status === 'inactive' && (
-                      <button 
-                        className="btn btn-success"
-                        onClick={() => handleModelAction(model.id, 'start')}
-                      >
-                        Start
-                      </button>
-                    )}
+                  <div
+                    role="note"
+                    className="model-actions"
+                    style={{
+                      marginTop: '8px', padding: '8px 10px',
+                      background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)',
+                      borderRadius: '6px', color: '#fbbf24', fontSize: '0.78rem', lineHeight: 1.4
+                    }}
+                  >
+                    Start / Stop / Retrain unavailable: POST /api/v1/admin/ai/models/:id/start|stop|train returns 501 (no model registry). Stats above are read-only.
                   </div>
                 </div>
               ))}
             </div>
+            )}
           </div>
         )}
 
@@ -405,7 +370,7 @@ const AITradingDashboard: React.FC = () => {
 
         {selectedTab === 'profiles' && (
           <div className="profiles-section">
-            <h2>Player AI Profiles</h2>
+            <h2>Player AI Profiles — scoring unavailable</h2>
             <div className="profiles-table">
               <table>
                 <thead>
@@ -453,11 +418,45 @@ const AITradingDashboard: React.FC = () => {
 
         {selectedTab === 'behavior-analytics' && (
           <div className="behavior-analytics-section">
-            <h2>Player Behavior Analytics</h2>
+            <h2>Player Behavior — aggregate only</h2>
             <PlayerBehaviorAnalytics />
           </div>
         )}
       </div>
+      {/* System Overview */}
+      {metrics && (
+        <div className="system-overview">
+          <div className="metric-card">
+            <h3>Total Predictions</h3>
+            <div className="metric-value">{metrics.totalPredictions != null ? metrics.totalPredictions.toLocaleString() : '—'}</div>
+            <div className="metric-label">Lifetime</div>
+          </div>
+          <div className="metric-card">
+            <h3>Average Accuracy</h3>
+            <div className="metric-value">{metrics.avgAccuracy != null ? `${metrics.avgAccuracy.toFixed(1)}%` : '—'}</div>
+            <div className="metric-trend">When accuracy telemetry exists</div>
+          </div>
+          <div className="metric-card">
+            <h3>Active Profiles (count only)</h3>
+            <div className="metric-value">{metrics.activeProfiles.toLocaleString()}</div>
+            <div className="metric-label">Rows returned — scoring unavailable</div>
+          </div>
+          <div className="metric-card">
+            <h3>Acceptance Rate</h3>
+            <div className="metric-value">{metrics.recommendationAcceptance != null ? `${metrics.recommendationAcceptance.toFixed(1)}%` : '—'}</div>
+            <div className="metric-label">Reported when telemetry exists</div>
+          </div>
+          <div className={`metric-card ${getStatusColor(metrics.modelHealth)}`}>
+            <h3>System Health</h3>
+            <div className="metric-value">{metrics.modelHealth != null ? metrics.modelHealth.toUpperCase() : '—'}</div>
+            <div className="metric-label">
+              {metrics.queuedJobs != null && metrics.processingRate != null ? `${metrics.queuedJobs} jobs queued • ${metrics.processingRate}/min` : 'no job queue exists'}
+            </div>
+          </div>
+        </div>
+      )}
+
+
     </div>
   );
 };

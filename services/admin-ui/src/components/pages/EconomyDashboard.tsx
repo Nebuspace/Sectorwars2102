@@ -1,8 +1,10 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import * as d3 from 'd3';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
 import { useEconomyUpdates } from '../../contexts/WebSocketContext';
+import { useResourceCatalog } from '../../hooks/useResourceCatalog';
+import { useToast, useConfirm } from '../../contexts/ToastContext';
 import './economy-dashboard.css';
 
 interface MarketData {
@@ -23,6 +25,24 @@ interface EconomicMetrics {
   most_traded_commodity: string;
   economic_health_score: number;
 }
+
+/**
+ * A persistent PriceAlert row created via POST /admin/economy/create-alert.
+ * The backend exposes create + delete for these rows but no list/GET
+ * endpoint, so this dashboard tracks only what it created this session
+ * (returned alert_id from the create response) rather than fabricating a
+ * full roster.
+ */
+interface CreatedPriceAlert {
+  id: string;
+  station_id: string;
+  port_name: string;
+  commodity: string;
+  alert_type: string;
+  threshold_value: number;
+}
+
+const ALERT_TYPE_OPTIONS = ['price_spike', 'price_drop', 'high_volume', 'low_supply'] as const;
 
 /** Response shape of GET /api/v1/admin/economy/dashboard-summary */
 interface DashboardSummary {
@@ -285,7 +305,55 @@ const EconomyDashboard: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
 
-  const commodities = ['Food', 'Tech', 'Ore', 'Fuel', 'Minerals', 'Electronics', 'Weapons', 'Medical'];
+  // Persistent price-alert CRUD (WO-ADM-ECONDASH-FE) — session-tracked, see
+  // CreatedPriceAlert doc comment above.
+  const [createdAlerts, setCreatedAlerts] = useState<CreatedPriceAlert[]>([]);
+  const [alertForm, setAlertForm] = useState({
+    station_id: '',
+    commodity: '',
+    alert_type: ALERT_TYPE_OPTIONS[0] as string,
+    threshold_value: ''
+  });
+
+  const toast = useToast();
+  const confirmDialog = useConfirm();
+
+  // Sourced from the resource registry catalog (WO-ARCH-RES-3-FE-CATALOG)
+  // instead of the old stale mock list — every value the old list carried
+  // (Food/Tech/Minerals/Electronics/Weapons/Medical) never matched a real
+  // MarketPrice.commodity value, so this filter was never actually
+  // functional. `name` is the wire value market-data's commodity_filter
+  // expects (matches models/station.py's DEFAULT_COMMODITIES keys); `label`
+  // is the display text. See services/resourceCatalog.ts for the known gap
+  // (admin sessions may not be able to reach this endpoint; the filter just
+  // degrades to "All Commodities" only, never crashes).
+  const { catalog: resourceCatalog, getLabel: getResourceLabel } = useResourceCatalog();
+  const commodities = resourceCatalog.map((r) => r.name);
+
+  // Unique stations present in the current market data, for the alert-create
+  // station picker (no dedicated station-list endpoint is wired here).
+  const stationsInMarket = useMemo(() => {
+    const seen = new Map<string, { station_id: string; port_name: string; sector_name: string }>();
+    for (const item of marketData) {
+      if (!seen.has(item.station_id)) {
+        seen.set(item.station_id, {
+          station_id: item.station_id,
+          port_name: item.port_name,
+          sector_name: item.sector_name
+        });
+      }
+    }
+    return Array.from(seen.values()).sort((a, b) => a.port_name.localeCompare(b.port_name));
+  }, [marketData]);
+
+  const commoditiesAtSelectedStation = useMemo(() => {
+    if (!alertForm.station_id) return [];
+    return Array.from(new Set(
+      marketData
+        .filter(item => item.station_id === alertForm.station_id)
+        .map(item => item.commodity)
+    ));
+  }, [marketData, alertForm.station_id]);
 
   // WebSocket handlers
   const handleMarketUpdate = useCallback((data: any) => {
@@ -310,7 +378,7 @@ const EconomyDashboard: React.FC = () => {
     setPriceAlerts(prev => [data, ...prev].slice(0, 10)); // Keep last 10 alerts
   }, []);
 
-  const handleIntervention = useCallback((data: any) => {
+  const handleIntervention = useCallback((_data: any) => {
     // Refresh market data after intervention
     fetchEconomicData();
   }, []);
@@ -390,9 +458,15 @@ const EconomyDashboard: React.FC = () => {
     setLoading(false);
   };
 
-  const handlePriceIntervention = async (stationId: string, commodity: string, newPrice: number) => {
+  const handlePriceIntervention = async (stationId: string, commodity: string, oldPrice: number, newPrice: number) => {
+    const ok = await confirmDialog({
+      title: 'Adjust market price',
+      message: `Set ${commodity} buy price from ${oldPrice.toLocaleString()} to ${newPrice.toLocaleString()} credits at this station?`
+    });
+    if (!ok) return;
+
     try {
-      await api.post('/api/v1/admin/economy/intervention', {
+      const response = await api.post('/api/v1/admin/economy/intervention', {
         intervention_type: 'price_adjustment',
         parameters: {
           station_id: stationId,
@@ -400,9 +474,122 @@ const EconomyDashboard: React.FC = () => {
           new_price: newPrice
         }
       });
-      fetchEconomicData();
+      if (response.status === 200) {
+        toast.success(`${commodity} buy price updated to ${newPrice.toLocaleString()} credits`);
+        fetchEconomicData();
+      } else {
+        toast.error('Price intervention failed.');
+      }
     } catch (error: any) {
-      setError(error.response?.data?.detail || 'Price intervention failed.');
+      toast.error(error.response?.data?.detail || 'Price intervention failed.');
+    }
+  };
+
+  const handleInjectSupply = async (stationId: string, commodity: string, portName: string) => {
+    const amountStr = prompt(`Units of ${commodity} to inject at ${portName}:`, '100');
+    if (amountStr === null) return;
+    const amount = parseInt(amountStr, 10);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      toast.error('Enter a valid positive quantity.');
+      return;
+    }
+
+    const ok = await confirmDialog({
+      title: 'Inject market supply',
+      message: `Inject ${amount.toLocaleString()} units of ${commodity} into ${portName}'s stock?`
+    });
+    if (!ok) return;
+
+    try {
+      const response = await api.post('/api/v1/admin/economy/intervention', {
+        intervention_type: 'inject_liquidity',
+        parameters: {
+          station_id: stationId,
+          resources: { [commodity]: amount }
+        }
+      });
+      if (response.status === 200) {
+        toast.success(`Injected ${amount.toLocaleString()} units of ${commodity} at ${portName}`);
+        fetchEconomicData();
+      } else {
+        toast.error('Supply injection failed.');
+      }
+    } catch (error: any) {
+      toast.error(error.response?.data?.detail || 'Supply injection failed.');
+    }
+  };
+
+  const handleCreateAlert = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const { station_id, commodity, alert_type, threshold_value } = alertForm;
+    if (!station_id || !commodity || !threshold_value) {
+      toast.error('Station, commodity, and threshold are required.');
+      return;
+    }
+    const thresholdNum = parseFloat(threshold_value);
+    if (!Number.isFinite(thresholdNum)) {
+      toast.error('Threshold must be a number.');
+      return;
+    }
+
+    const station = stationsInMarket.find(s => s.station_id === station_id);
+    const portName = station?.port_name || station_id;
+
+    const ok = await confirmDialog({
+      title: 'Create price alert',
+      message: `Create a "${alert_type}" alert for ${commodity} at ${portName} with threshold ${thresholdNum}?`
+    });
+    if (!ok) return;
+
+    try {
+      const response = await api.post('/api/v1/admin/economy/create-alert', {
+        station_id,
+        commodity,
+        alert_type,
+        threshold_value: thresholdNum
+      });
+      if (response.status === 200) {
+        setCreatedAlerts(prev => [
+          {
+            id: response.data.alert_id,
+            station_id,
+            port_name: portName,
+            commodity,
+            alert_type,
+            threshold_value: thresholdNum
+          },
+          ...prev
+        ]);
+        toast.success('Price alert created successfully');
+        setAlertForm({ station_id: '', commodity: '', alert_type: ALERT_TYPE_OPTIONS[0], threshold_value: '' });
+        fetchEconomicData();
+      } else {
+        toast.error('Failed to create price alert');
+      }
+    } catch (error: any) {
+      toast.error(error.response?.data?.detail || 'Failed to create price alert');
+    }
+  };
+
+  const handleDeleteAlert = async (alert: CreatedPriceAlert) => {
+    const ok = await confirmDialog({
+      title: 'Delete price alert',
+      message: `Delete the ${alert.alert_type} alert for ${alert.commodity} at ${alert.port_name}?`,
+      danger: true
+    });
+    if (!ok) return;
+
+    try {
+      const response = await api.delete(`/api/v1/admin/economy/alerts/${alert.id}`);
+      if (response.status === 200) {
+        setCreatedAlerts(prev => prev.filter(a => a.id !== alert.id));
+        toast.success('Price alert deleted successfully');
+        fetchEconomicData();
+      } else {
+        toast.error('Failed to delete price alert');
+      }
+    } catch (error: any) {
+      toast.error(error.response?.data?.detail || 'Failed to delete price alert');
     }
   };
 
@@ -442,6 +629,97 @@ const EconomyDashboard: React.FC = () => {
             </div>
           )}
           
+          {/* Market Data Controls */}
+          <div className="market-controls">
+            <div className="commodity-filter">
+              <label htmlFor="commodity-select">Filter by Commodity:</label>
+              <select 
+                id="commodity-select"
+                value={selectedCommodity} 
+                onChange={(e) => setSelectedCommodity(e.target.value)}
+              >
+                <option value="all">All Commodities</option>
+                {commodities.map(commodity => (
+                  <option key={commodity} value={commodity}>{getResourceLabel(commodity)}</option>
+                ))}
+              </select>
+            </div>
+            
+            <button onClick={fetchEconomicData} className="refresh-btn">
+              🔄 Refresh Data
+            </button>
+          </div>
+
+          {/* Market Data Table */}
+          <div className="market-data-section">
+            <h3>Market Data</h3>
+            <div className="market-table-container">
+              <table className="market-table">
+                <thead>
+                  <tr>
+                    <th>Port</th>
+                    <th>Sector</th>
+                    <th>Commodity</th>
+                    <th>Buy Price</th>
+                    <th>Sell Price</th>
+                    <th>Quantity</th>
+                    <th>Profit Margin</th>
+                    <th>Last Updated</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredMarketData.map((item, index) => {
+                    const profitMargin = ((item.sell_price - item.buy_price) / item.buy_price * 100);
+                    return (
+                      <tr key={index}>
+                        <td data-label="Port">{item.port_name}</td>
+                        <td data-label="Sector">{item.sector_name}</td>
+                        <td data-label="Commodity">
+                          <span className={`commodity-badge ${item.commodity.toLowerCase()}`}>
+                            {item.commodity}
+                          </span>
+                        </td>
+                        <td data-label="Buy Price" className="price">{item.buy_price.toLocaleString()}</td>
+                        <td data-label="Sell Price" className="price">{item.sell_price.toLocaleString()}</td>
+                        <td data-label="Quantity">{item.quantity.toLocaleString()}</td>
+                        <td data-label="Profit Margin" className={`profit-margin ${profitMargin > 20 ? 'high' : profitMargin > 10 ? 'medium' : 'low'}`}>
+                          {profitMargin.toFixed(1)}%
+                        </td>
+                        <td data-label="Last Updated">{new Date(item.last_updated).toLocaleTimeString()}</td>
+                        <td data-label="Actions">
+                          <div className="action-btn-group">
+                            <button
+                              className="action-btn intervention"
+                              onClick={() => {
+                                const newPriceStr = prompt(`Set new buy price for ${item.commodity}:`, item.buy_price.toString());
+                                if (newPriceStr === null) return;
+                                const newPrice = parseFloat(newPriceStr);
+                                if (!Number.isFinite(newPrice) || newPrice <= 0) {
+                                  toast.error('Enter a valid positive price.');
+                                  return;
+                                }
+                                handlePriceIntervention(item.station_id, item.commodity, item.buy_price, newPrice);
+                              }}
+                            >
+                              💱 Intervene
+                            </button>
+                            <button
+                              className="action-btn inject"
+                              onClick={() => handleInjectSupply(item.station_id, item.commodity, item.port_name)}
+                            >
+                              📦 Inject
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
           {/* Economic Health Metrics */}
           <div className="metrics-grid">
             {metrics && (
@@ -554,83 +832,96 @@ const EconomyDashboard: React.FC = () => {
             </div>
           )}
 
-          {/* Market Data Controls */}
-          <div className="market-controls">
-            <div className="commodity-filter">
-              <label htmlFor="commodity-select">Filter by Commodity:</label>
-              <select 
-                id="commodity-select"
-                value={selectedCommodity} 
-                onChange={(e) => setSelectedCommodity(e.target.value)}
-              >
-                <option value="all">All Commodities</option>
-                {commodities.map(commodity => (
-                  <option key={commodity} value={commodity}>{commodity}</option>
-                ))}
-              </select>
-            </div>
-            
-            <button onClick={fetchEconomicData} className="refresh-btn">
-              🔄 Refresh Data
-            </button>
-          </div>
+          {/* Manage Price Alerts (persistent PriceAlert CRUD) */}
+          <div className="alert-manage-section">
+            <h3>Manage Price Alerts</h3>
+            <form className="alert-create-form" onSubmit={handleCreateAlert}>
+              <div className="alert-form-grid">
+                <div className="form-group">
+                  <label htmlFor="alert-station">Station</label>
+                  <select
+                    id="alert-station"
+                    value={alertForm.station_id}
+                    onChange={(e) => setAlertForm({ ...alertForm, station_id: e.target.value, commodity: '' })}
+                  >
+                    <option value="">Select a station…</option>
+                    {stationsInMarket.map(station => (
+                      <option key={station.station_id} value={station.station_id}>
+                        {station.port_name} ({station.sector_name})
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-          {/* Market Data Table */}
-          <div className="market-data-section">
-            <h3>Market Data</h3>
-            <div className="market-table-container">
-              <table className="market-table">
-                <thead>
-                  <tr>
-                    <th>Port</th>
-                    <th>Sector</th>
-                    <th>Commodity</th>
-                    <th>Buy Price</th>
-                    <th>Sell Price</th>
-                    <th>Quantity</th>
-                    <th>Profit Margin</th>
-                    <th>Last Updated</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredMarketData.map((item, index) => {
-                    const profitMargin = ((item.sell_price - item.buy_price) / item.buy_price * 100);
-                    return (
-                      <tr key={index}>
-                        <td data-label="Port">{item.port_name}</td>
-                        <td data-label="Sector">{item.sector_name}</td>
-                        <td data-label="Commodity">
-                          <span className={`commodity-badge ${item.commodity.toLowerCase()}`}>
-                            {item.commodity}
-                          </span>
-                        </td>
-                        <td data-label="Buy Price" className="price">{item.buy_price.toLocaleString()}</td>
-                        <td data-label="Sell Price" className="price">{item.sell_price.toLocaleString()}</td>
-                        <td data-label="Quantity">{item.quantity.toLocaleString()}</td>
-                        <td data-label="Profit Margin" className={`profit-margin ${profitMargin > 20 ? 'high' : profitMargin > 10 ? 'medium' : 'low'}`}>
-                          {profitMargin.toFixed(1)}%
-                        </td>
-                        <td data-label="Last Updated">{new Date(item.last_updated).toLocaleTimeString()}</td>
-                        <td data-label="Actions">
-                          <button 
-                            className="action-btn intervention"
-                            onClick={() => {
-                              const newPrice = prompt(`Set new buy price for ${item.commodity}:`, item.buy_price.toString());
-                              if (newPrice) {
-                                handlePriceIntervention(item.station_id, item.commodity, parseFloat(newPrice));
-                              }
-                            }}
-                          >
-                            💱 Intervene
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                <div className="form-group">
+                  <label htmlFor="alert-commodity">Commodity</label>
+                  <select
+                    id="alert-commodity"
+                    value={alertForm.commodity}
+                    onChange={(e) => setAlertForm({ ...alertForm, commodity: e.target.value })}
+                    disabled={!alertForm.station_id}
+                  >
+                    <option value="">Select a commodity…</option>
+                    {commoditiesAtSelectedStation.map(commodity => (
+                      <option key={commodity} value={commodity}>{getResourceLabel(commodity)}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="form-group">
+                  <label htmlFor="alert-type">Alert Type</label>
+                  <select
+                    id="alert-type"
+                    value={alertForm.alert_type}
+                    onChange={(e) => setAlertForm({ ...alertForm, alert_type: e.target.value })}
+                  >
+                    {ALERT_TYPE_OPTIONS.map(type => (
+                      <option key={type} value={type}>{type.replace('_', ' ')}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="form-group">
+                  <label htmlFor="alert-threshold">Threshold Value</label>
+                  <input
+                    id="alert-threshold"
+                    type="number"
+                    step="any"
+                    value={alertForm.threshold_value}
+                    onChange={(e) => setAlertForm({ ...alertForm, threshold_value: e.target.value })}
+                    placeholder="e.g. 15"
+                  />
+                </div>
+              </div>
+
+              <div className="alert-form-actions">
+                <button type="submit" className="refresh-btn">➕ Create Alert</button>
+              </div>
+            </form>
+
+            {createdAlerts.length > 0 ? (
+              <div className="created-alerts-list">
+                {createdAlerts.map(alert => (
+                  <div key={alert.id} className="created-alert-item">
+                    <div className="created-alert-meta">
+                      <span className="commodity-badge">{alert.commodity}</span>
+                      <span>{alert.alert_type.replace('_', ' ')} @ {alert.port_name}</span>
+                      <span className="alert-time">threshold {alert.threshold_value}</span>
+                    </div>
+                    <button
+                      className="action-btn delete"
+                      onClick={() => handleDeleteAlert(alert)}
+                    >
+                      🗑️ Delete
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="health-empty">
+                No alerts created this session yet.
+              </div>
+            )}
           </div>
 
           {/* Economic Analysis Charts */}
