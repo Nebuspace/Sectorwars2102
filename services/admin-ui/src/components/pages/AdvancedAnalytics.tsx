@@ -19,7 +19,7 @@ export const AdvancedAnalytics: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'reports' | 'predictive' | 'performance' | 'export'>('reports');
   const [generatedReports, setGeneratedReports] = useState<ReportResult[]>([]);
   const [selectedReport, setSelectedReport] = useState<ReportResult | null>(null);
-  const [exportFormat, setExportFormat] = useState<'csv' | 'json' | 'excel' | 'pdf'>('csv');
+  const [exportFormat, setExportFormat] = useState<'csv' | 'json'>('csv');
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
   // Load saved templates from localStorage on mount
@@ -90,6 +90,56 @@ export const AdvancedAnalytics: React.FC = () => {
     }
   };
 
+  const handleExportData = useCallback(async (datasetId: string) => {
+    try {
+      const response = await fetch(
+        `/api/v1/admin/analytics/export?dataset=${datasetId}&format=${exportFormat}`,
+        {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('accessToken')}` }
+        }
+      );
+
+      if (!response.ok) {
+        setSaveMessage(
+          response.status === 400
+            ? `Export failed — ${(await response.json().catch(() => ({ detail: `HTTP ${response.status}` }))).detail}`
+            : `Export failed — HTTP ${response.status}`
+        );
+        setTimeout(() => setSaveMessage(null), 6000);
+        return;
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      const ext = exportFormat === 'json' ? 'json' : 'csv';
+      link.download = `${datasetId}-export.${ext}`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      setSaveMessage(`${datasetId} data exported as ${ext.toUpperCase()}`);
+      setTimeout(() => setSaveMessage(null), 3000);
+    } catch (error) {
+      console.error('Export error:', error);
+      setSaveMessage('Export failed — gameserver unreachable (network error)');
+      setTimeout(() => setSaveMessage(null), 6000);
+    }
+  }, [exportFormat]);
+
+  const handleDownloadReport = useCallback((report: ReportResult) => {
+    const blob = new Blob([JSON.stringify(report.data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${report.name.replace(/\s+/g, '-').toLowerCase()}-${report.id}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, []);
+
   const exportOptions = [
     { id: 'players', name: 'Player Data', description: 'Export all player information including stats and activity' },
     { id: 'economy', name: 'Economy Data', description: 'Export transaction history and market data' },
@@ -103,7 +153,7 @@ export const AdvancedAnalytics: React.FC = () => {
     <div className="advanced-analytics">
       <PageHeader
         title="Advanced Analytics"
-        subtitle="Generate custom reports, view predictions, and export data"
+        subtitle="Custom reports, performance metrics, and data export"
       />
 
       <div className="analytics-tabs">
@@ -119,7 +169,7 @@ export const AdvancedAnalytics: React.FC = () => {
           onClick={() => setActiveTab('predictive')}
         >
           <i className="fas fa-chart-line"></i>
-          Predictive Analytics
+          Predictive — unavailable
         </button>
         <button
           className={`tab ${activeTab === 'performance' ? 'active' : ''}`}
@@ -177,11 +227,15 @@ export const AdvancedAnalytics: React.FC = () => {
                         </span>
                       </div>
                       <div className="report-actions">
-                        <button className="btn-icon" title="Download">
+                        <button
+                          className="btn-icon"
+                          title="Download"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDownloadReport(report);
+                          }}
+                        >
                           <i className="fas fa-download"></i>
-                        </button>
-                        <button className="btn-icon" title="Share">
-                          <i className="fas fa-share"></i>
                         </button>
                       </div>
                     </div>
@@ -205,24 +259,39 @@ export const AdvancedAnalytics: React.FC = () => {
             <div className="export-header">
               <h2>Data Export Center</h2>
               <p>Export your game data in various formats for external analysis</p>
+              <p style={{ fontSize: '13px', opacity: 0.85, marginTop: '8px' }}>
+                Soft-deleted player accounts are excluded from player metrics and from
+                players / ships exports (same filter as the analytics aggregates).
+              </p>
             </div>
 
-            <div className="alert alert-warning">
-              <span className="alert-icon">⚠️</span>
-              <span className="alert-message">
-                Data export endpoint offline — /api/v1/admin/analytics/export not implemented. Export is disabled.
-              </span>
-            </div>
+            {saveMessage && (
+              <div style={{
+                padding: '10px 16px',
+                marginBottom: '12px',
+                borderRadius: '6px',
+                background: saveMessage.includes('failed') || saveMessage.includes('Failed') ? '#7f1d1d' : '#14532d',
+                color: saveMessage.includes('failed') || saveMessage.includes('Failed') ? '#fca5a5' : '#86efac',
+                border: `1px solid ${saveMessage.includes('failed') || saveMessage.includes('Failed') ? '#991b1b' : '#166534'}`,
+                fontSize: '14px'
+              }}>
+                {saveMessage}
+              </div>
+            )}
 
             <div className="export-format">
               <h3>Select Export Format</h3>
+              <p style={{ fontSize: '13px', opacity: 0.85, marginBottom: '12px' }}>
+                Server supports <strong>CSV</strong> and <strong>JSON</strong> only.
+                Excel/PDF are not offered here — no server generator exists for them.
+              </p>
               <div className="format-options">
                 <label className={`format-option ${exportFormat === 'csv' ? 'selected' : ''}`}>
                   <input
                     type="radio"
                     value="csv"
                     checked={exportFormat === 'csv'}
-                    onChange={(e) => setExportFormat(e.target.value as any)}
+                    onChange={(e) => setExportFormat(e.target.value as 'csv' | 'json')}
                   />
                   <i className="fas fa-file-csv"></i>
                   <span>CSV</span>
@@ -233,33 +302,11 @@ export const AdvancedAnalytics: React.FC = () => {
                     type="radio"
                     value="json"
                     checked={exportFormat === 'json'}
-                    onChange={(e) => setExportFormat(e.target.value as any)}
+                    onChange={(e) => setExportFormat(e.target.value as 'csv' | 'json')}
                   />
                   <i className="fas fa-file-code"></i>
                   <span>JSON</span>
                   <small>JavaScript Object Notation</small>
-                </label>
-                <label className={`format-option ${exportFormat === 'excel' ? 'selected' : ''}`}>
-                  <input
-                    type="radio"
-                    value="excel"
-                    checked={exportFormat === 'excel'}
-                    onChange={(e) => setExportFormat(e.target.value as any)}
-                  />
-                  <i className="fas fa-file-excel"></i>
-                  <span>Excel</span>
-                  <small>Microsoft Excel format</small>
-                </label>
-                <label className={`format-option ${exportFormat === 'pdf' ? 'selected' : ''}`}>
-                  <input
-                    type="radio"
-                    value="pdf"
-                    checked={exportFormat === 'pdf'}
-                    onChange={(e) => setExportFormat(e.target.value as any)}
-                  />
-                  <i className="fas fa-file-pdf"></i>
-                  <span>PDF</span>
-                  <small>Portable Document Format</small>
                 </label>
               </div>
             </div>
@@ -285,8 +332,7 @@ export const AdvancedAnalytics: React.FC = () => {
                     </div>
                     <button
                       className="btn btn-primary"
-                      disabled
-                      title="Export endpoint offline — /api/v1/admin/analytics/export not implemented"
+                      onClick={() => handleExportData(option.id)}
                     >
                       <i className="fas fa-download"></i>
                       Export

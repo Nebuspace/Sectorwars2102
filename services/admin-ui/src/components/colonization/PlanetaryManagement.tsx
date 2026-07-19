@@ -74,11 +74,12 @@ interface TerraformingProject {
 }
 
 export const PlanetaryManagement: React.FC = () => {
-  const { user } = useAuth();
+  useAuth();
   const [planets, setPlanets] = useState<Planet[]>([]);
   const [stats, setStats] = useState<PlanetStats | null>(null);
   const [terraformingProjects, setTerraformingProjects] = useState<TerraformingProject[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [selectedPlanet, setSelectedPlanet] = useState<Planet | null>(null);
   const [filterType, setFilterType] = useState<string>('all');
   const [filterOwnership, setFilterOwnership] = useState<string>('all');
@@ -101,16 +102,25 @@ export const PlanetaryManagement: React.FC = () => {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to load planetary data');
+        setError(
+          response.status === 404
+            ? 'Planetary management endpoint not implemented — /api/v1/admin/colonization/planets returned 404'
+            : `Failed to load planetary data (HTTP ${response.status})`
+        );
+        setPlanets([]);
+        setStats(null);
+        setTerraformingProjects([]);
+        return;
       }
 
       const data = await response.json();
-      setPlanets(data.planets);
-      setStats(data.stats);
-      setTerraformingProjects(data.terraformingProjects);
+      setPlanets(data.planets ?? []);
+      setStats(data.stats ?? null);
+      setTerraformingProjects(data.terraformingProjects ?? []);
+      setError(null);
     } catch (err) {
       console.error('Error loading planetary data:', err);
-      // Don't use mock data - show real error state
+      setError('Gameserver unreachable — network error fetching planetary data');
       setPlanets([]);
       setStats(null);
       setTerraformingProjects([]);
@@ -224,32 +234,38 @@ export const PlanetaryManagement: React.FC = () => {
     return <div className="planetary-management loading">Loading planetary data...</div>;
   }
 
+  if (error) {
+    return (
+      <div className="planetary-management">
+        <div className="management-header">
+          <h2>Planetary Management</h2>
+        </div>
+        <div
+          role="alert"
+          style={{
+            margin: '0 0 16px 0',
+            padding: '10px 12px',
+            background: 'rgba(239, 68, 68, 0.12)',
+            border: '1px solid rgba(239, 68, 68, 0.35)',
+            borderRadius: '6px',
+            color: '#fca5a5',
+            fontSize: '0.85rem',
+            lineHeight: 1.4,
+          }}
+        >
+          {error}
+        </div>
+        <button type="button" className="refresh-button" onClick={() => { setLoading(true); loadPlanetaryData(); }}>
+          Retry
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="planetary-management">
       <div className="management-header">
         <h2>Planetary Management</h2>
-        <div className="header-stats">
-          <div className="stat-card">
-            <span className="stat-label">Total Planets</span>
-            <span className="stat-value">{stats?.totalPlanets || 0}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Discovered</span>
-            <span className="stat-value">{stats?.discoveredPlanets || 0}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Colonized</span>
-            <span className="stat-value success">{stats?.colonizedPlanets || 0}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Contested</span>
-            <span className="stat-value error">{stats?.contestedPlanets || 0}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Avg Habitability</span>
-            <span className="stat-value">{Math.round(stats?.averageHabitability || 0)}%</span>
-          </div>
-        </div>
       </div>
 
       <div className="management-controls">
@@ -420,6 +436,29 @@ export const PlanetaryManagement: React.FC = () => {
         </div>
       </div>
 
+      <div className="header-stats">
+          <div className="stat-card">
+            <span className="stat-label">Total Planets</span>
+            <span className="stat-value">{stats?.totalPlanets || 0}</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Discovered</span>
+            <span className="stat-value">{stats?.discoveredPlanets || 0}</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Colonized</span>
+            <span className="stat-value success">{stats?.colonizedPlanets || 0}</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Contested</span>
+            <span className="stat-value error">{stats?.contestedPlanets || 0}</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Avg Habitability</span>
+            <span className="stat-value">{Math.round(stats?.averageHabitability || 0)}%</span>
+          </div>
+        </div>
+
       {selectedPlanet && (
         <div className="planet-detail-modal" onClick={() => setSelectedPlanet(null)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
@@ -497,15 +536,22 @@ export const PlanetaryManagement: React.FC = () => {
                 />
               </div>
 
-              <div className="detail-section">
-                <h3>Actions</h3>
-                <div className="action-buttons">
-                  <p style={{ color: 'var(--text-tertiary)', fontSize: '0.85rem', margin: 0 }}>
-                    Planet actions (view colonies, monitor resources, mark for
-                    colonization, resolve conflict, start terraforming) are not yet
-                    available — no backend exists for them.
-                  </p>
-                </div>
+              <div
+                role="note"
+                style={{
+                  margin: '12px 0 0 0',
+                  padding: '10px 12px',
+                  background: 'rgba(234, 179, 8, 0.12)',
+                  border: '1px solid rgba(234, 179, 8, 0.35)',
+                  borderRadius: '6px',
+                  color: '#fbbf24',
+                  fontSize: '0.82rem',
+                  lineHeight: 1.4,
+                }}
+              >
+                Planet detail actions (view colonies, monitor resources, mark for colonization,
+                resolve conflict, start terraforming) are unavailable — no admin backend exists
+                for them. This drawer does not invent an Actions button bar.
               </div>
             </div>
           </div>

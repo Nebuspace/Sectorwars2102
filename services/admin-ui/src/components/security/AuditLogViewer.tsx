@@ -138,7 +138,7 @@ export const AuditLogViewer: React.FC<AuditLogViewerProps> = ({ filters = {}, on
   return (
     <div className="audit-log-viewer">
       <div className="audit-header">
-        <h2>Audit Logs</h2>
+        <h2>Legacy HTTP Audit Trail</h2>
         <div className="audit-actions">
           <div className="search-box">
             <i className="fas fa-search"></i>

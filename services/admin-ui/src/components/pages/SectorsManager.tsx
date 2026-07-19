@@ -40,6 +40,8 @@ const SectorsManager: React.FC = () => {
   const [totalSectors, setTotalSectors] = useState<number>(0);
   const [selectedSector, setSelectedSector] = useState<Sector | null>(null);
   const [sectorLoading, setSectorLoading] = useState<boolean>(false);
+  const [sectorFetchError, setSectorFetchError] = useState<string | null>(null);
+  const [sectorRetryKey, setSectorRetryKey] = useState(0);
   
   // Modal state
   const [editingSector, setEditingSector] = useState<Sector | null>(null);
@@ -94,9 +96,17 @@ const SectorsManager: React.FC = () => {
         const data = response.data as { sectors: Sector[]; total?: number; total_count?: number; };
         setSectors(data.sectors || []);
         setTotalSectors(data.total ?? data.total_count ?? (data.sectors || []).length);
-      } catch (error) {
+        setSectorFetchError(null);
+      } catch (error: any) {
         console.error('Error fetching sectors:', error);
-        // If the API call fails, use empty array
+        const status = error?.response?.status;
+        setSectorFetchError(
+          status === 404
+            ? 'Sectors list endpoint not implemented — request returned 404'
+            : status
+              ? `Failed to load sectors (HTTP ${status})`
+              : 'Gameserver unreachable — network error fetching sectors'
+        );
         setSectors([]);
         setTotalSectors(0);
       } finally {
@@ -113,7 +123,8 @@ const SectorsManager: React.FC = () => {
     filterHasPlanet, 
     filterDiscovered, 
     searchQuery, 
-    currentPage
+    currentPage,
+    sectorRetryKey
   ]);
   
   // Load clusters when region is selected
@@ -222,6 +233,20 @@ const SectorsManager: React.FC = () => {
         {error && (
           <div className="alert alert-error">
             {error}
+          </div>
+        )}
+
+        {sectorFetchError && (
+          <div className="alert alert-error" role="alert">
+            {sectorFetchError}{' '}
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{ marginLeft: '8px' }}
+              onClick={() => setSectorRetryKey((k) => k + 1)}
+            >
+              Retry
+            </button>
           </div>
         )}
         

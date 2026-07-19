@@ -15,7 +15,7 @@ export const PermissionMatrix: React.FC<PermissionMatrixProps> = () => {
   return (
     <div className="permission-matrix">
       <div className="matrix-header">
-        <h2>Permission Matrix</h2>
+        <h2>Permission Matrix — design-only</h2>
       </div>
       <div className="alert alert-warning">
         <span className="alert-icon">⚠️</span>

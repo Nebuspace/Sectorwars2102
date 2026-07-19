@@ -79,13 +79,15 @@ const PlanetsManager: React.FC = () => {
     setIsModalOpen(true);
   };
 
-  // Planet deletion is disabled: there is no backend route for
-  // DELETE /api/v1/admin/planets/{id}. The control stays visible but inert
-  // (and surfaces an inline notice) until the endpoint is implemented.
-  const PLANET_DELETE_ENDPOINT = 'DELETE /api/v1/admin/planets/{id}';
-
-  const handleDeletePlanet = (_planet: Planet) => {
-    setError(`Planet deletion is unavailable: the backend endpoint ${PLANET_DELETE_ENDPOINT} is not implemented.`);
+  const handleDeletePlanet = async (planet: Planet) => {
+    if (!window.confirm(`Delete planet "${planet.name}"? This cannot be undone.`)) return;
+    try {
+      await api.delete(`/api/v1/admin/planets/${planet.id}`);
+      setPlanets(prev => prev.filter(p => p.id !== planet.id));
+      setTotalPlanets(prev => prev - 1);
+    } catch (err: any) {
+      setError(err.response?.data?.detail || `Failed to delete planet "${planet.name}"`);
+    }
   };
 
   const handleModalClose = () => {
@@ -127,7 +129,7 @@ const PlanetsManager: React.FC = () => {
   if (loading) {
     return (
       <div className="page-container">
-        <PageHeader title="Planets Manager" subtitle="Comprehensive Planet Administration" />
+        <PageHeader title="Planets Manager" subtitle="List and edit planets" />
         <div className="loading-container">
           <div className="loading-spinner"></div>
           <p>Loading planets...</p>
@@ -138,7 +140,7 @@ const PlanetsManager: React.FC = () => {
 
   return (
     <div className="page-container">
-      <PageHeader title="Planets Manager" subtitle="Comprehensive Planet Administration" />
+      <PageHeader title="Planets Manager" subtitle="List and edit planets" />
       
       {error && (
         <div className="error-message">
@@ -211,14 +213,22 @@ const PlanetsManager: React.FC = () => {
                   {planet.population.toLocaleString()} / {planet.max_population.toLocaleString()}
                 </td>
                 <td>
-                  <span className={`habitability-score score-${Math.floor((planet.habitability_score || 0) / 20)}`}>
-                    {planet.habitability_score || 'N/A'}%
-                  </span>
+                  {planet.habitability_score != null ? (
+                    <span className={`habitability-score score-${Math.floor(planet.habitability_score / 20)}`}>
+                      {planet.habitability_score}%
+                    </span>
+                  ) : (
+                    <span className="habitability-score score-unknown">—</span>
+                  )}
                 </td>
                 <td>
-                  <span className={`resource-richness richness-${Math.floor((planet.resource_richness || 0) * 2)}`}>
-                    {planet.resource_richness ? `${planet.resource_richness.toFixed(1)}x` : 'N/A'}
-                  </span>
+                  {planet.resource_richness != null ? (
+                    <span className={`resource-richness richness-${Math.floor(planet.resource_richness * 2)}`}>
+                      {planet.resource_richness.toFixed(1)}x
+                    </span>
+                  ) : (
+                    <span className="resource-richness richness-unknown">—</span>
+                  )}
                 </td>
                 <td>
                   <span className={`defense-level level-${Math.floor(planet.defense_level / 20)}`}>
@@ -235,26 +245,24 @@ const PlanetsManager: React.FC = () => {
                   <div className="action-buttons">
                     <button 
                       className="view-btn" 
-                      title="View Details"
+                      type="button"
                       onClick={() => handleViewPlanet(planet)}
                     >
-                      👁️
+                      View
                     </button>
                     <button 
                       className="edit-btn" 
-                      title="Edit Planet"
+                      type="button"
                       onClick={() => handleEditPlanet(planet)}
                     >
-                      ✏️
+                      Edit
                     </button>
                     <button
                       className="delete-btn"
-                      title={`Disabled — missing backend endpoint ${PLANET_DELETE_ENDPOINT}`}
-                      disabled
-                      style={{ opacity: 0.5, cursor: 'not-allowed' }}
+                      type="button"
                       onClick={() => handleDeletePlanet(planet)}
                     >
-                      🗑️
+                      Delete
                     </button>
                   </div>
                 </td>

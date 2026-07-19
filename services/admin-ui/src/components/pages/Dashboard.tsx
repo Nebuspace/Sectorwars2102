@@ -25,19 +25,25 @@ interface SystemHealth {
 }
 
 interface PlayerStats {
-  total_players: number;
-  active_sessions: number;
-  new_today: number;
-  new_this_week: number;
+  total_players: number | null;
+  active_sessions: number | null;
+  new_today: number | null;
+  new_this_week: number | null;
 }
 
 interface UniverseStats {
-  total_sectors: number;
-  total_planets: number;
-  total_ports: number;
-  total_ships: number;
-  total_warp_tunnels?: number;
+  total_sectors: number | null;
+  total_planets: number | null;
+  total_ports: number | null;
+  total_ships: number | null;
+  total_warp_tunnels: number | null;
 }
+
+const fmtStat = (n: number | null | undefined): string =>
+  n != null && !Number.isNaN(n) ? n.toLocaleString() : '—';
+
+const asStat = (v: unknown): number | null =>
+  typeof v === 'number' && !Number.isNaN(v) ? v : null;
 
 interface DashboardData {
   system_health: SystemHealth;
@@ -71,14 +77,6 @@ const Dashboard: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
   const [auditFeed, setAuditFeed] = useState<AuditFeedState>({ status: 'loading' });
-
-  // Get API URL helper
-  const getApiUrl = () => {
-    if (import.meta.env.VITE_API_URL) {
-      return import.meta.env.VITE_API_URL;
-    }
-    return '';
-  };
 
   const fetchDashboardData = async () => {
     try {
@@ -137,17 +135,17 @@ const Dashboard: React.FC = () => {
       const dashboardData: DashboardData = {
         system_health: systemHealth,
         player_stats: {
-          total_players: stats.total_players || 0,
-          active_sessions: stats.active_sessions || 0,
-          new_today: stats.new_players_today || 0,
-          new_this_week: stats.new_players_week || 0
+          total_players: asStat(stats.total_players),
+          active_sessions: asStat(stats.active_sessions),
+          new_today: asStat(stats.new_players_today),
+          new_this_week: asStat(stats.new_players_week)
         },
         universe_stats: {
-          total_sectors: stats.total_sectors || 0,
-          total_planets: stats.total_planets || 0,
-          total_ports: stats.total_ports || 0,
-          total_ships: stats.total_ships || 0,
-          total_warp_tunnels: stats.total_warp_tunnels || 0
+          total_sectors: asStat(stats.total_sectors),
+          total_planets: asStat(stats.total_planets),
+          total_ports: asStat(stats.total_ports),
+          total_ships: asStat(stats.total_ships),
+          total_warp_tunnels: asStat(stats.total_warp_tunnels)
         },
         last_updated: new Date().toISOString()
       };
@@ -163,8 +161,8 @@ const Dashboard: React.FC = () => {
           ai: { status: 'unavailable', healthy: 0, total: 2 },
           gameserver: { status: 'unavailable', response_time: 0 }
         },
-        player_stats: { total_players: 0, active_sessions: 0, new_today: 0, new_this_week: 0 },
-        universe_stats: { total_sectors: 0, total_planets: 0, total_ports: 0, total_ships: 0, total_warp_tunnels: 0 },
+        player_stats: { total_players: null, active_sessions: null, new_today: null, new_this_week: null },
+        universe_stats: { total_sectors: null, total_planets: null, total_ports: null, total_ships: null, total_warp_tunnels: null },
         last_updated: new Date().toISOString()
       });
       setAuditFeed({ status: 'error', message: 'Unable to load recent audit events.' });
@@ -231,15 +229,6 @@ const Dashboard: React.FC = () => {
     return entry.resource_type || (entry.resource_id ? entry.resource_id.slice(0, 8) : null);
   };
 
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'healthy': return '✓';
-      case 'degraded': return '⚠';
-      case 'unavailable': return '✗';
-      default: return '?';
-    }
-  };
-
   if (isLoading) {
     return (
       <div className="page-container">
@@ -271,6 +260,65 @@ const Dashboard: React.FC = () => {
       <PageHeader title="Dashboard" subtitle="Game Galaxy Overview" />
 
       <div className="page-content">
+        {/* Quick Access Section */}
+        <section className="section">
+          <div className="section-header">
+            <div>
+              <h3 className="section-title">Quick Access</h3>
+              <p className="section-subtitle">Commonly used administrative functions</p>
+            </div>
+          </div>
+          <div className="grid grid-auto-fit gap-6">
+            <Link to="/users" className="card card-interactive">
+              <div className="card-body">
+                <div className="flex items-center gap-4">
+                  <div className="text-3xl">👥</div>
+                  <div className="flex-1">
+                    <h4 className="font-semibold text-primary mb-1">Users</h4>
+                    <p className="text-sm text-tertiary">Manage player accounts and permissions</p>
+                  </div>
+                </div>
+              </div>
+            </Link>
+            
+            <Link to="/universe" className="card card-interactive">
+              <div className="card-body">
+                <div className="flex items-center gap-4">
+                  <div className="text-3xl">🌌</div>
+                  <div className="flex-1">
+                    <h4 className="font-semibold text-primary mb-1">Universe</h4>
+                    <p className="text-sm text-tertiary">Generate and manage the game universe</p>
+                  </div>
+                </div>
+              </div>
+            </Link>
+            
+            <Link to="/sectors" className="card card-interactive">
+              <div className="card-body">
+                <div className="flex items-center gap-4">
+                  <div className="text-3xl">🔳</div>
+                  <div className="flex-1">
+                    <h4 className="font-semibold text-primary mb-1">Sectors</h4>
+                    <p className="text-sm text-tertiary">Configure sectors, planets and stations</p>
+                  </div>
+                </div>
+              </div>
+            </Link>
+            
+            <Link to="/analytics" className="card card-interactive">
+              <div className="card-body">
+                <div className="flex items-center gap-4">
+                  <div className="text-3xl">📊</div>
+                  <div className="flex-1">
+                    <h4 className="font-semibold text-primary mb-1">Analytics</h4>
+                    <p className="text-sm text-tertiary">View detailed reports and metrics</p>
+                  </div>
+                </div>
+              </div>
+            </Link>
+          </div>
+        </section>
+
         {/* System Health Overview */}
         <section className="section">
           <div className="section-header">
@@ -393,15 +441,15 @@ const Dashboard: React.FC = () => {
                 <h4 className="dashboard-stat-title">Players</h4>
               </div>
               <div className="dashboard-stat-value">
-                {dashboardData.player_stats.total_players.toLocaleString()}
+                {fmtStat(dashboardData.player_stats.total_players)}
               </div>
               <div className="flex justify-between">
                 <div className="text-center">
-                  <div className="text-xl font-semibold text-secondary">{dashboardData.player_stats.active_sessions}</div>
+                  <div className="text-xl font-semibold text-secondary">{fmtStat(dashboardData.player_stats.active_sessions)}</div>
                   <div className="text-xs text-tertiary">Online</div>
                 </div>
                 <div className="text-center">
-                  <div className="text-xl font-semibold text-secondary">{dashboardData.player_stats.new_today}</div>
+                  <div className="text-xl font-semibold text-secondary">{fmtStat(dashboardData.player_stats.new_today)}</div>
                   <div className="text-xs text-tertiary">New Today</div>
                 </div>
               </div>
@@ -414,21 +462,21 @@ const Dashboard: React.FC = () => {
               </div>
               <Link to="/universe/sectors" className="block text-center mb-4 hover:opacity-80 transition-opacity">
                 <div className="dashboard-stat-value">
-                  {dashboardData.universe_stats.total_sectors.toLocaleString()}
+                  {fmtStat(dashboardData.universe_stats.total_sectors)}
                 </div>
                 <div className="text-xs text-tertiary">Sectors →</div>
               </Link>
               <div className="grid grid-cols-3 gap-2">
                 <Link to="/universe/planets" className="text-center hover:opacity-80 transition-opacity">
-                  <div className="text-lg font-semibold text-secondary">{dashboardData.universe_stats.total_planets}</div>
+                  <div className="text-lg font-semibold text-secondary">{fmtStat(dashboardData.universe_stats.total_planets)}</div>
                   <div className="text-xs text-tertiary">Planets →</div>
                 </Link>
                 <Link to="/universe/stations" className="text-center hover:opacity-80 transition-opacity">
-                  <div className="text-lg font-semibold text-secondary">{dashboardData.universe_stats.total_ports || 0}</div>
+                  <div className="text-lg font-semibold text-secondary">{fmtStat(dashboardData.universe_stats.total_ports)}</div>
                   <div className="text-xs text-tertiary">Ports →</div>
                 </Link>
                 <Link to="/universe/warptunnels" className="text-center hover:opacity-80 transition-opacity">
-                  <div className="text-lg font-semibold text-secondary">{dashboardData.universe_stats.total_warp_tunnels || 0}</div>
+                  <div className="text-lg font-semibold text-secondary">{fmtStat(dashboardData.universe_stats.total_warp_tunnels)}</div>
                   <div className="text-xs text-tertiary">Warp Tunnels →</div>
                 </Link>
               </div>
@@ -440,7 +488,7 @@ const Dashboard: React.FC = () => {
                 <h4 className="dashboard-stat-title">Fleet</h4>
               </div>
               <div className="dashboard-stat-value">
-                {dashboardData.universe_stats.total_ships.toLocaleString()}
+                {fmtStat(dashboardData.universe_stats.total_ships)}
               </div>
               <div className="text-xs text-tertiary" style={{ textAlign: 'center' }}>Total Ships</div>
             </div>
@@ -451,23 +499,27 @@ const Dashboard: React.FC = () => {
                 <h4 className="dashboard-stat-title">Growth</h4>
               </div>
               <div className="dashboard-stat-value">
-                {dashboardData.player_stats.new_this_week}
+                {fmtStat(dashboardData.player_stats.new_this_week)}
               </div>
               <div className="text-xs text-tertiary mb-4">New This Week</div>
               <div className="flex justify-between">
                 <div className="text-center">
                   <div className="text-xl font-semibold text-secondary">
-                    {dashboardData.player_stats.total_players > 0 
-                      ? Math.round((dashboardData.player_stats.active_sessions / dashboardData.player_stats.total_players) * 100)
-                      : 0}%
+                    {dashboardData.player_stats.total_players != null
+                      && dashboardData.player_stats.total_players > 0
+                      && dashboardData.player_stats.active_sessions != null
+                      ? `${Math.round((dashboardData.player_stats.active_sessions / dashboardData.player_stats.total_players) * 100)}%`
+                      : '—'}
                   </div>
                   <div className="text-xs text-tertiary">Active Rate</div>
                 </div>
                 <div className="text-center">
                   <div className="text-xl font-semibold text-secondary">
-                    +{dashboardData.player_stats.total_players > 0 
-                      ? Math.round((dashboardData.player_stats.new_this_week / dashboardData.player_stats.total_players) * 100)
-                      : 0}%
+                    {dashboardData.player_stats.total_players != null
+                      && dashboardData.player_stats.total_players > 0
+                      && dashboardData.player_stats.new_this_week != null
+                      ? `+${Math.round((dashboardData.player_stats.new_this_week / dashboardData.player_stats.total_players) * 100)}%`
+                      : '—'}
                   </div>
                   <div className="text-xs text-tertiary">Weekly Growth</div>
                 </div>
@@ -536,64 +588,6 @@ const Dashboard: React.FC = () => {
           </div>
         </section>
 
-        {/* Quick Access Section */}
-        <section className="section">
-          <div className="section-header">
-            <div>
-              <h3 className="section-title">Quick Access</h3>
-              <p className="section-subtitle">Commonly used administrative functions</p>
-            </div>
-          </div>
-          <div className="grid grid-auto-fit gap-6">
-            <Link to="/users" className="card card-interactive">
-              <div className="card-body">
-                <div className="flex items-center gap-4">
-                  <div className="text-3xl">👥</div>
-                  <div className="flex-1">
-                    <h4 className="font-semibold text-primary mb-1">Users</h4>
-                    <p className="text-sm text-tertiary">Manage player accounts and permissions</p>
-                  </div>
-                </div>
-              </div>
-            </Link>
-            
-            <Link to="/universe" className="card card-interactive">
-              <div className="card-body">
-                <div className="flex items-center gap-4">
-                  <div className="text-3xl">🌌</div>
-                  <div className="flex-1">
-                    <h4 className="font-semibold text-primary mb-1">Universe</h4>
-                    <p className="text-sm text-tertiary">Generate and manage the game universe</p>
-                  </div>
-                </div>
-              </div>
-            </Link>
-            
-            <Link to="/sectors" className="card card-interactive">
-              <div className="card-body">
-                <div className="flex items-center gap-4">
-                  <div className="text-3xl">🔳</div>
-                  <div className="flex-1">
-                    <h4 className="font-semibold text-primary mb-1">Sectors</h4>
-                    <p className="text-sm text-tertiary">Configure sectors, planets and stations</p>
-                  </div>
-                </div>
-              </div>
-            </Link>
-            
-            <Link to="/analytics" className="card card-interactive">
-              <div className="card-body">
-                <div className="flex items-center gap-4">
-                  <div className="text-3xl">📊</div>
-                  <div className="flex-1">
-                    <h4 className="font-semibold text-primary mb-1">Analytics</h4>
-                    <p className="text-sm text-tertiary">View detailed reports and metrics</p>
-                  </div>
-                </div>
-              </div>
-            </Link>
-          </div>
-        </section>
       </div>
     </div>
   );

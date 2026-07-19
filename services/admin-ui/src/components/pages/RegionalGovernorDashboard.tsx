@@ -12,6 +12,7 @@ interface Region {
   governance_type: string;
   tax_rate: number;
   voting_threshold: number;
+  governance_quorum_pct?: number;
   economic_specialization: string;
   total_sectors: number;
   active_players_30d: number;
@@ -23,6 +24,21 @@ interface Region {
   aesthetic_theme: Record<string, any>;
   trade_bonuses: Record<string, number>;
 }
+
+interface RegionalMember {
+  player_id: string;
+  username: string;
+  membership_type: string;
+  reputation_score: number;
+  local_rank: string | null;
+  voting_power: number;
+  joined_at: string;
+  last_visit: string;
+  total_visits: number;
+}
+
+// Canon citizen-tier voting_power target (SYSTEMS/regional-governance.md:71-76).
+const CITIZEN_DEFAULT_VOTING_POWER = 1.5;
 
 interface RegionalStats {
   total_population: number;
@@ -88,10 +104,11 @@ const RegionalGovernorDashboard: React.FC = () => {
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [elections, setElections] = useState<Election[]>([]);
   const [treaties, setTreaties] = useState<Treaty[]>([]);
+  const [members, setMembers] = useState<RegionalMember[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'governance' | 'economy' | 'policies' | 'elections' | 'diplomacy' | 'culture'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'governance' | 'economy' | 'policies' | 'elections' | 'diplomacy' | 'culture' | 'members'>('overview');
   const isAdmin = user?.is_admin || false;
 
   // Policy creation state
@@ -101,14 +118,6 @@ const RegionalGovernorDashboard: React.FC = () => {
     title: '',
     description: '',
     proposed_changes: {}
-  });
-
-  // Cultural configuration state
-  const [culturalConfig, setCulturalConfig] = useState({
-    theme: 'default',
-    motto: '',
-    traditions: '',
-    language: 'universal'
   });
 
   // Economic configuration state
@@ -124,7 +133,8 @@ const RegionalGovernorDashboard: React.FC = () => {
     governance_type: 'autocracy',
     voting_threshold: 0.51,
     election_frequency_days: 90,
-    constitutional_text: ''
+    constitutional_text: '',
+    governance_quorum_pct: 0.33
   });
 
   useEffect(() => {
@@ -139,7 +149,8 @@ const RegionalGovernorDashboard: React.FC = () => {
         loadRegionalStats(),
         loadPolicies(),
         loadElections(),
-        loadTreaties()
+        loadTreaties(),
+        loadMembers()
       ]);
     } catch (err) {
       setError('Failed to load regional data');
@@ -168,7 +179,8 @@ const RegionalGovernorDashboard: React.FC = () => {
           governance_type: data.governance_type,
           voting_threshold: data.voting_threshold,
           election_frequency_days: data.election_frequency_days || 90,
-          constitutional_text: data.constitutional_text || ''
+          constitutional_text: data.constitutional_text || '',
+          governance_quorum_pct: data.governance_quorum_pct ?? 0.33
         });
         return;
       }
@@ -209,7 +221,8 @@ const RegionalGovernorDashboard: React.FC = () => {
               governance_type: firstRegion.governance_type || 'autocracy',
               voting_threshold: firstRegion.voting_threshold || 0.51,
               election_frequency_days: firstRegion.election_frequency_days || 90,
-              constitutional_text: firstRegion.constitutional_text || ''
+              constitutional_text: firstRegion.constitutional_text || '',
+              governance_quorum_pct: firstRegion.governance_quorum_pct ?? 0.33
             });
           }
         }
@@ -272,6 +285,20 @@ const RegionalGovernorDashboard: React.FC = () => {
       }
     } catch (err) {
       console.error('Failed to load treaties:', err);
+    }
+  };
+
+  const loadMembers = async () => {
+    try {
+      const response = await fetch('/api/v1/regions/my-region/members', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setMembers(data);
+      }
+    } catch (err) {
+      console.error('Failed to load regional members:', err);
     }
   };
 
@@ -363,6 +390,43 @@ const RegionalGovernorDashboard: React.FC = () => {
     }
   };
 
+  const handleMemberFieldChange = (playerId: string, field: 'voting_power' | 'local_rank', value: string | number) => {
+    setMembers(prev => prev.map(m => m.player_id === playerId ? { ...m, [field]: value } : m));
+  };
+
+  const updateMemberDials = async (playerId: string) => {
+    const member = members.find(m => m.player_id === playerId);
+    if (!member) return;
+
+    setLoading(true);
+    try {
+      const response = await fetch(`/api/v1/regions/my-region/members/${playerId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          voting_power: member.voting_power,
+          local_rank: member.local_rank || null
+        })
+      });
+
+      if (response.ok) {
+        setSuccess(`Updated governance dials for ${member.username}`);
+        await loadMembers();
+      } else {
+        const error = await response.json();
+        setError(error.detail || 'Failed to update member dials');
+      }
+    } catch (err) {
+      setError('Network error occurred');
+      console.error('Update member dials error:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const startElection = async (position: string) => {
     setLoading(true);
     try {
@@ -393,12 +457,14 @@ const RegionalGovernorDashboard: React.FC = () => {
     }
   };
 
-  const formatNumber = (num: number) => {
-    return num?.toLocaleString() || '0';
+  const formatNumber = (num: number | null | undefined) => {
+    if (num == null || Number.isNaN(num)) return '—';
+    return num.toLocaleString();
   };
 
-  const formatCurrency = (amount: number) => {
-    return `${amount?.toLocaleString() || '0'} credits`;
+  const formatCurrency = (amount: number | null | undefined) => {
+    if (amount == null || Number.isNaN(amount)) return '—';
+    return `${amount.toLocaleString()} credits`;
   };
 
   const formatPercentage = (value: number) => {
@@ -449,7 +515,8 @@ const RegionalGovernorDashboard: React.FC = () => {
       governance_type: selectedRegion.governance_type || 'autocracy',
       voting_threshold: selectedRegion.voting_threshold || 0.51,
       election_frequency_days: 90,
-      constitutional_text: selectedRegion.constitutional_text || ''
+      constitutional_text: selectedRegion.constitutional_text || '',
+      governance_quorum_pct: selectedRegion.governance_quorum_pct ?? 0.33
     });
   };
 
@@ -505,81 +572,32 @@ const RegionalGovernorDashboard: React.FC = () => {
       )}
 
       <div className="governor-tabs">
-        {['overview', 'governance', 'economy', 'policies', 'elections', 'diplomacy', 'culture'].map(tab => (
+        {(['overview', 'governance', 'economy', 'policies', 'elections', 'members', 'diplomacy', 'culture'] as const).map(tab => {
+          const tabLabel: Record<typeof tab, string> = {
+            overview: 'Overview',
+            governance: 'Governance',
+            economy: 'Economy',
+            policies: 'Policies',
+            elections: 'Elections',
+            members: 'Members',
+            diplomacy: 'Diplomacy — limited',
+            culture: 'Culture — read-only',
+          };
+          return (
           <button
             key={tab}
             className={`tab-button ${activeTab === tab ? 'active' : ''}`}
-            onClick={() => setActiveTab(tab as any)}
+            onClick={() => setActiveTab(tab)}
           >
-            {tab.charAt(0).toUpperCase() + tab.slice(1)}
+            {tabLabel[tab]}
           </button>
-        ))}
+          );
+        })}
       </div>
 
       <div className="governor-content">
         {activeTab === 'overview' && (
           <div className="overview-tab">
-            {/* Regional Overview */}
-            <div className="overview-grid">
-              <div className="stat-card">
-                <h4>Total Population</h4>
-                <div className="stat-value">{formatNumber(stats?.total_population || 0)}</div>
-                <div className="stat-breakdown">
-                  <div>Citizens: {formatNumber(stats?.citizen_count || 0)}</div>
-                  <div>Residents: {formatNumber(stats?.resident_count || 0)}</div>
-                  <div>Visitors: {formatNumber(stats?.visitor_count || 0)}</div>
-                </div>
-              </div>
-
-              <div className="stat-card">
-                <h4>Territory</h4>
-                <div className="stat-value">{formatNumber(region.total_sectors)}</div>
-                <div className="stat-label">Sectors</div>
-                <div className="stat-breakdown">
-                  <div>Planets: {formatNumber(stats?.planets_count || 0)}</div>
-                  <div>Ports: {formatNumber(stats?.stations_count || 0)}</div>
-                </div>
-              </div>
-
-              <div className="stat-card">
-                <h4>Economy</h4>
-                <div className="stat-value">{formatCurrency(stats?.total_revenue || 0)}</div>
-                <div className="stat-label">Total Revenue</div>
-                <div className="stat-breakdown">
-                  <div>Trade Volume (30d): {formatCurrency(stats?.trade_volume_30d || 0)}</div>
-                  <div>Tax Rate: {formatPercentage(region.tax_rate)}</div>
-                </div>
-              </div>
-
-              <div className="stat-card">
-                <h4>Governance</h4>
-                <div className="stat-value">{formatNumber(stats?.active_elections || 0)}</div>
-                <div className="stat-label">Active Elections</div>
-                <div className="stat-breakdown">
-                  <div>Pending Policies: {formatNumber(stats?.pending_policies || 0)}</div>
-                  <div>Treaties: {formatNumber(stats?.treaties_count || 0)}</div>
-                </div>
-              </div>
-
-              <div className="stat-card">
-                <h4>Military</h4>
-                <div className="stat-value">{formatNumber(stats?.ships_count || 0)}</div>
-                <div className="stat-label">Total Ships</div>
-                <div className="stat-breakdown">
-                  <div>Avg. Reputation: {stats?.average_reputation?.toFixed(1) || '0.0'}</div>
-                </div>
-              </div>
-
-              <div className="stat-card">
-                <h4>Activity</h4>
-                <div className="stat-value">{formatNumber(region.active_players_30d)}</div>
-                <div className="stat-label">Active Players (30d)</div>
-                <div className="stat-breakdown">
-                  <div>Specialization: {region.economic_specialization || 'None'}</div>
-                </div>
-              </div>
-            </div>
-
             {/* Quick Actions */}
             <div className="quick-actions">
               <h3>Quick Actions</h3>
@@ -597,12 +615,6 @@ const RegionalGovernorDashboard: React.FC = () => {
                   Manage Elections
                 </button>
                 <button
-                  onClick={() => setActiveTab('diplomacy')}
-                  className="action-button secondary"
-                >
-                  Diplomatic Relations
-                </button>
-                <button
                   onClick={loadRegionalData}
                   className="action-button refresh"
                   disabled={loading}
@@ -611,6 +623,68 @@ const RegionalGovernorDashboard: React.FC = () => {
                 </button>
               </div>
             </div>
+            {/* Regional Overview */}
+            <div className="overview-grid">
+              <div className="stat-card">
+                <h4>Total Population</h4>
+                <div className="stat-value">{formatNumber(stats?.total_population)}</div>
+                <div className="stat-breakdown">
+                  <div>Citizens: {formatNumber(stats?.citizen_count)}</div>
+                  <div>Residents: {formatNumber(stats?.resident_count)}</div>
+                  <div>Visitors: {formatNumber(stats?.visitor_count)}</div>
+                </div>
+              </div>
+
+              <div className="stat-card">
+                <h4>Territory</h4>
+                <div className="stat-value">{formatNumber(region.total_sectors)}</div>
+                <div className="stat-label">Sectors</div>
+                <div className="stat-breakdown">
+                  <div>Planets: {formatNumber(stats?.planets_count)}</div>
+                  <div>Ports: {formatNumber(stats?.stations_count)}</div>
+                </div>
+              </div>
+
+              <div className="stat-card">
+                <h4>Economy</h4>
+                <div className="stat-value">{formatCurrency(stats?.total_revenue)}</div>
+                <div className="stat-label">Total Revenue</div>
+                <div className="stat-breakdown">
+                  <div>Trade Volume (30d): {formatCurrency(stats?.trade_volume_30d)}</div>
+                  <div>Tax Rate: {formatPercentage(region.tax_rate)}</div>
+                </div>
+              </div>
+
+              <div className="stat-card">
+                <h4>Governance</h4>
+                <div className="stat-value">{formatNumber(stats?.active_elections)}</div>
+                <div className="stat-label">Active Elections</div>
+                <div className="stat-breakdown">
+                  <div>Pending Policies: {formatNumber(stats?.pending_policies)}</div>
+                  <div>Treaties: {formatNumber(stats?.treaties_count)}</div>
+                </div>
+              </div>
+
+              <div className="stat-card">
+                <h4>Military</h4>
+                <div className="stat-value">{formatNumber(stats?.ships_count)}</div>
+                <div className="stat-label">Total Ships</div>
+                <div className="stat-breakdown">
+                  <div>Avg. Reputation: {stats?.average_reputation != null ? stats.average_reputation.toFixed(1) : '—'}</div>
+                </div>
+              </div>
+
+              <div className="stat-card">
+                <h4>Activity</h4>
+                <div className="stat-value">{formatNumber(region.active_players_30d)}</div>
+                <div className="stat-label">Active Players (30d)</div>
+                <div className="stat-breakdown">
+                  <div>Specialization: {region.economic_specialization || 'None'}</div>
+                </div>
+              </div>
+            </div>
+
+
           </div>
         )}
 
@@ -643,6 +717,19 @@ const RegionalGovernorDashboard: React.FC = () => {
                   onChange={(e) => setGovernanceConfig(prev => ({...prev, voting_threshold: parseFloat(e.target.value)}))}
                 />
                 <small>Percentage of votes required to pass policies ({formatPercentage(governanceConfig.voting_threshold)})</small>
+              </div>
+
+              <div className="form-group">
+                <label>Quorum Participation Threshold</label>
+                <input
+                  type="number"
+                  min="0.25"
+                  max="0.60"
+                  step="0.01"
+                  value={governanceConfig.governance_quorum_pct}
+                  onChange={(e) => setGovernanceConfig(prev => ({...prev, governance_quorum_pct: parseFloat(e.target.value)}))}
+                />
+                <small>Share of eligible voters required for a vote to count ({formatPercentage(governanceConfig.governance_quorum_pct)}, must stay between 25% and 60%)</small>
               </div>
 
               <div className="form-group">
@@ -924,9 +1011,88 @@ const RegionalGovernorDashboard: React.FC = () => {
           </div>
         )}
 
+        {activeTab === 'members' && (
+          <div className="members-tab">
+            <h3>Regional Members</h3>
+            <div className="form-group">
+              <small>
+                Voting power ranges 0.0–5.0 (citizen tier target {CITIZEN_DEFAULT_VOTING_POWER.toFixed(1)});
+                setting a member to 0.0 revokes their voting rights. Local rank is a free-text title (max 50 characters).
+              </small>
+            </div>
+
+            <div className="members-list">
+              {members.length > 0 ? (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Username</th>
+                      <th>Type</th>
+                      <th>Reputation</th>
+                      <th>Local Rank</th>
+                      <th>Voting Power</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {members.map(member => (
+                      <tr key={member.player_id}>
+                        <td>{member.username}</td>
+                        <td>{member.membership_type}</td>
+                        <td>{formatNumber(member.reputation_score)}</td>
+                        <td>
+                          <input
+                            type="text"
+                            maxLength={50}
+                            value={member.local_rank || ''}
+                            onChange={(e) => handleMemberFieldChange(member.player_id, 'local_rank', e.target.value)}
+                            style={{ width: '140px', padding: '6px 8px' }}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            min="0.0"
+                            max="5.0"
+                            step="0.1"
+                            value={member.voting_power}
+                            onChange={(e) => handleMemberFieldChange(member.player_id, 'voting_power', parseFloat(e.target.value))}
+                            style={{ width: '80px', padding: '6px 8px' }}
+                          />
+                        </td>
+                        <td>
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            <button
+                              onClick={() => handleMemberFieldChange(member.player_id, 'voting_power', CITIZEN_DEFAULT_VOTING_POWER)}
+                              className="action-button small secondary"
+                              disabled={loading}
+                              title={`Set voting power to the citizen default (${CITIZEN_DEFAULT_VOTING_POWER})`}
+                            >
+                              Citizen Default
+                            </button>
+                            <button
+                              onClick={() => updateMemberDials(member.player_id)}
+                              className="action-button small primary"
+                              disabled={loading}
+                            >
+                              Save
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="no-data">No members found</div>
+              )}
+            </div>
+          </div>
+        )}
+
         {activeTab === 'diplomacy' && (
           <div className="diplomacy-tab">
-            <h3>Diplomatic Relations</h3>
+            <h3>Diplomatic Relations — limited</h3>
             
             <div className="treaties-list">
               <h4>Active Treaties</h4>
@@ -939,7 +1105,6 @@ const RegionalGovernorDashboard: React.FC = () => {
                       <th>Signed</th>
                       <th>Expires</th>
                       <th>Status</th>
-                      <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -956,9 +1121,6 @@ const RegionalGovernorDashboard: React.FC = () => {
                             {treaty.status}
                           </span>
                         </td>
-                        <td>
-                          <button className="action-button small" disabled title="Treaty detail view is not yet available">View Details</button>
-                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -968,28 +1130,49 @@ const RegionalGovernorDashboard: React.FC = () => {
               )}
             </div>
 
-            <div className="diplomatic-actions">
-              <h4>Diplomatic Actions</h4>
-              <div className="tab-unavailable-note">
-                Diplomatic actions (trade agreements, defense pacts, cultural exchange,
-                diplomatic messages) are not yet available — the server has no regional
-                diplomacy endpoint. Existing treaties are listed above when present.
-              </div>
+            <div
+              role="note"
+              style={{
+                margin: '16px 0 0 0',
+                padding: '10px 12px',
+                background: 'rgba(234, 179, 8, 0.12)',
+                border: '1px solid rgba(234, 179, 8, 0.35)',
+                borderRadius: '6px',
+                color: '#fbbf24',
+                fontSize: '0.82rem',
+                lineHeight: 1.4,
+              }}
+            >
+              Diplomatic actions (trade agreements, defense pacts, cultural exchange,
+              diplomatic messages) are unavailable — no regional diplomacy endpoint.
+              Existing treaties are listed above when present. This tab does not invent
+              an Actions button bar.
             </div>
           </div>
         )}
 
         {activeTab === 'culture' && (
           <div className="culture-tab">
-            <h3>Cultural Identity</h3>
+            <h3>Cultural Identity — read-only</h3>
 
-            <div className="culture-config">
-              <div className="tab-unavailable-note">
-                Regional cultural identity (theme, motto, traditions, language) is set by a
-                region's <strong>owner</strong> from their own region console. There is currently
-                no admin endpoint to edit cultural identity for a selected region, so this control
-                is disabled here. Current values, when present, are shown in region details above.
-              </div>
+            <div
+              role="note"
+              style={{
+                margin: '0 0 12px 0',
+                padding: '10px 12px',
+                background: 'rgba(234, 179, 8, 0.12)',
+                border: '1px solid rgba(234, 179, 8, 0.35)',
+                borderRadius: '6px',
+                color: '#fbbf24',
+                fontSize: '0.82rem',
+                lineHeight: 1.4,
+              }}
+            >
+              Regional cultural identity (theme, motto, traditions, language) is set by a
+              region&apos;s <strong>owner</strong> from their region console. There is no
+              admin endpoint to edit it for a selected region — this tab does not invent
+              edit controls. Current values, when present, are shown below.
+            </div>
               {region?.aesthetic_theme?.variant || region?.language_pack?.variant ? (
                 <div className="culture-current">
                   <div className="stat-breakdown">
@@ -998,7 +1181,6 @@ const RegionalGovernorDashboard: React.FC = () => {
                   </div>
                 </div>
               ) : null}
-            </div>
           </div>
         )}
       </div>

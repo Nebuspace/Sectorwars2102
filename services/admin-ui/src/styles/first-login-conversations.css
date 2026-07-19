@@ -310,6 +310,11 @@
   color: var(--text-secondary);
 }
 
+.page-info-hint {
+  font-size: 0.75rem;
+  opacity: 0.75;
+}
+
 /* Conversation Detail Modal */
 .conversation-modal {
   position: fixed;

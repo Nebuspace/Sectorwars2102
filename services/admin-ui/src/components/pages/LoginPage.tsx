@@ -1,12 +1,15 @@
 import React from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import LoginForm from '../auth/LoginForm';
 
 const LoginPage: React.FC = () => {
   const navigate = useNavigate();
-  
+  const location = useLocation();
+
   const handleLoginSuccess = () => {
-    navigate('/dashboard');
+    // If we were redirected here from a protected deep link, return there
+    // instead of always landing on the dashboard.
+    navigate(location.state?.from?.pathname ?? '/dashboard', { replace: true });
   };
   
   return (

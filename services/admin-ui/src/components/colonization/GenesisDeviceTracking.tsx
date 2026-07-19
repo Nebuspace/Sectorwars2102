@@ -56,11 +56,12 @@ interface GenesisAlert {
 }
 
 export const GenesisDeviceTracking: React.FC = () => {
-  const { user } = useAuth();
+  useAuth();
   const [devices, setDevices] = useState<GenesisDevice[]>([]);
   const [stats, setStats] = useState<GenesisStats | null>(null);
   const [alerts, setAlerts] = useState<GenesisAlert[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [selectedDevice, setSelectedDevice] = useState<GenesisDevice | null>(null);
@@ -82,16 +83,25 @@ export const GenesisDeviceTracking: React.FC = () => {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to load Genesis device data');
+        setError(
+          response.status === 404
+            ? 'Genesis devices endpoint not implemented — /api/v1/admin/colonization/genesis-devices returned 404'
+            : `Failed to load Genesis device data (HTTP ${response.status})`
+        );
+        setDevices([]);
+        setStats(null);
+        setAlerts([]);
+        return;
       }
 
       const data = await response.json();
-      setDevices(data.devices);
-      setStats(data.stats);
-      setAlerts(data.alerts);
+      setDevices(data.devices ?? []);
+      setStats(data.stats ?? null);
+      setAlerts(data.alerts ?? []);
+      setError(null);
     } catch (err) {
       console.error('Error loading Genesis data:', err);
-      // Don't use mock data - show real error state
+      setError('Gameserver unreachable — network error fetching Genesis device data');
       setDevices([]);
       setStats(null);
       setAlerts([]);
@@ -144,32 +154,38 @@ export const GenesisDeviceTracking: React.FC = () => {
     return <div className="genesis-tracking loading">Loading Genesis device data...</div>;
   }
 
+  if (error) {
+    return (
+      <div className="genesis-tracking">
+        <div className="tracking-header">
+          <h2>Genesis Device Tracking</h2>
+        </div>
+        <div
+          role="alert"
+          style={{
+            margin: '0 0 16px 0',
+            padding: '10px 12px',
+            background: 'rgba(239, 68, 68, 0.12)',
+            border: '1px solid rgba(239, 68, 68, 0.35)',
+            borderRadius: '6px',
+            color: '#fca5a5',
+            fontSize: '0.85rem',
+            lineHeight: 1.4,
+          }}
+        >
+          {error}
+        </div>
+        <button type="button" className="refresh-button" onClick={() => { setLoading(true); loadGenesisData(); }}>
+          Retry
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="genesis-tracking">
       <div className="tracking-header">
         <h2>Genesis Device Tracking</h2>
-        <div className="header-stats">
-          <div className="stat-card">
-            <span className="stat-label">Total Devices</span>
-            <span className="stat-value">{stats?.totalDevices || 0}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Active</span>
-            <span className="stat-value success">{stats?.activeDevices || 0}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Deployed This Week</span>
-            <span className="stat-value">{stats?.deployedThisWeek || 0}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Success Rate</span>
-            <span className="stat-value">{Math.round(stats?.successRate || 0)}%</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Avg Power</span>
-            <span className="stat-value">{Math.round(stats?.averagePowerLevel || 0)}%</span>
-          </div>
-        </div>
       </div>
 
       <div className="tracking-controls">
@@ -300,6 +316,29 @@ export const GenesisDeviceTracking: React.FC = () => {
         ))}
       </div>
 
+      <div className="header-stats">
+          <div className="stat-card">
+            <span className="stat-label">Total Devices</span>
+            <span className="stat-value">{stats?.totalDevices || 0}</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Active</span>
+            <span className="stat-value success">{stats?.activeDevices || 0}</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Deployed This Week</span>
+            <span className="stat-value">{stats?.deployedThisWeek || 0}</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Success Rate</span>
+            <span className="stat-value">{Math.round(stats?.successRate || 0)}%</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Avg Power</span>
+            <span className="stat-value">{Math.round(stats?.averagePowerLevel || 0)}%</span>
+          </div>
+        </div>
+
       {selectedDevice && (
         <div className="device-detail-modal" onClick={() => setSelectedDevice(null)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
@@ -353,15 +392,22 @@ export const GenesisDeviceTracking: React.FC = () => {
                 )}
               </div>
 
-              <div className="detail-section">
-                <h3>Actions</h3>
-                <div className="action-buttons">
-                  <p style={{ color: 'var(--text-tertiary)', fontSize: '0.85rem', margin: 0 }}>
-                    Device actions (track location, view owner, monitor activity,
-                    disable device, investigate destruction) are not yet available —
-                    no backend exists for them.
-                  </p>
-                </div>
+              <div
+                role="note"
+                style={{
+                  margin: '12px 0 0 0',
+                  padding: '10px 12px',
+                  background: 'rgba(234, 179, 8, 0.12)',
+                  border: '1px solid rgba(234, 179, 8, 0.35)',
+                  borderRadius: '6px',
+                  color: '#fbbf24',
+                  fontSize: '0.82rem',
+                  lineHeight: 1.4,
+                }}
+              >
+                Device detail actions (track location, view owner, monitor activity, disable
+                device, investigate destruction) are unavailable — no admin backend exists for
+                them. This drawer does not invent an Actions button bar.
               </div>
             </div>
           </div>
