@@ -45,15 +45,10 @@ router = APIRouter(prefix="/ships", tags=["ship-upgrades"])
 _REPUTATION_RANK = {level: rank for rank, level in enumerate(ReputationLevel)}
 
 
-def _player_reputation_level(db: Session, player_id, faction_type) -> ReputationLevel:
-    """The player's current ReputationLevel with the given FactionType.
-
-    Resolves the FactionType to its Faction row and reads the player's
-    Reputation row (mirrors apply_faction_rep_delta's resolution path). A
-    player with no Reputation row for that faction is at the seeded default
-    of NEUTRAL.
-    """
-    faction = db.query(Faction).filter(Faction.faction_type == faction_type).first()
+def _player_reputation_level_for_faction(db: Session, player_id, faction: Optional[Faction]) -> ReputationLevel:
+    """The player's current ReputationLevel with `faction` (or NEUTRAL if
+    `faction` is None, or the player has no Reputation row for it — the
+    seeded default)."""
     if faction is None:
         return ReputationLevel.NEUTRAL
     rep = (
@@ -64,6 +59,60 @@ def _player_reputation_level(db: Session, player_id, faction_type) -> Reputation
     if rep is None or rep.current_level is None:
         return ReputationLevel.NEUTRAL
     return rep.current_level
+
+
+def _player_reputation_level(db: Session, player_id, faction_type) -> ReputationLevel:
+    """The player's current ReputationLevel with the given FactionType.
+
+    Resolves the FactionType to its Faction row and reads the player's
+    Reputation row (mirrors apply_faction_rep_delta's resolution path). A
+    player with no Reputation row for that faction is at the seeded default
+    of NEUTRAL.
+    """
+    faction = db.query(Faction).filter(Faction.faction_type == faction_type).first()
+    return _player_reputation_level_for_faction(db, player_id, faction)
+
+
+def _station_controlling_faction(db: Session, station: Station) -> Optional[Faction]:
+    """Resolve a station's controlling Faction row.
+
+    Station.faction_affiliation carries the faction DISPLAY NAME, matched
+    against Faction.name — the established resolution pattern shared by
+    docking_service._player_faction_rep_for_station, construction_service, and
+    emergent_reputation_service.trade_volume_action_for_faction_name (all key
+    off Faction.name, NOT the FACTION_CODE_TO_TYPE slug map used by
+    check_faction_eligibility above for ship-purchase faction_requirements —
+    that is a different registry with a different key space). None for an
+    unaffiliated station or a name that doesn't resolve to a seeded Faction row.
+    """
+    faction_name = getattr(station, "faction_affiliation", None)
+    if not faction_name:
+        return None
+    return db.query(Faction).filter(Faction.name == faction_name).first()
+
+
+def check_friendly_port(db: Session, player_id, station: Station):
+    """Return (ok: bool, reason: Optional[str]) for the insurance "friendly
+    port" gate (ship-insurance.md:48 "Buying insurance ... requires at least
+    NEUTRAL reputation with the controlling faction").
+
+    NO-CANON: a station with no controlling faction (no faction_affiliation,
+    or a name that doesn't resolve to a seeded Faction row) has no faction to
+    be unfriendly with, so it always passes. Canon's "friendly port" language
+    presumes an affiliated station and is silent on unaffiliated ones —
+    flagged to DECISIONS.
+    """
+    faction = _station_controlling_faction(db, station)
+    if faction is None:
+        return True, None
+
+    player_level = _player_reputation_level_for_faction(db, player_id, faction)
+    if _REPUTATION_RANK[player_level] < _REPUTATION_RANK[ReputationLevel.NEUTRAL]:
+        return False, (
+            f"ERR_UNFRIENDLY_PORT: insurance requires at least NEUTRAL standing "
+            f"with {faction.name} (you are {player_level.value})"
+        )
+    return True, None
 
 
 def check_faction_eligibility(db: Session, player_id, spec: ShipSpecification):
@@ -158,8 +207,9 @@ class InsurancePurchaseRequest(BaseModel):
 INSURANCE_PREMIUM_PCT = {"BASIC": 0.10, "STANDARD": 0.17, "PREMIUM": 0.22}
 INSURANCE_NET_PAYOUT_PCT = {"BASIC": 0.45, "STANDARD": 0.65, "PREMIUM": 0.75}
 INSURANCE_TIER_ORDER = ["NONE", "BASIC", "STANDARD", "PREMIUM"]
-# Non-insurable hulls: no policy is ever written (ADR-0029).
-NON_INSURABLE_TYPES = {ShipType.WARP_JUMPER, ShipType.ESCAPE_POD}
+# Non-insurable hulls (ADR-0029): a registry flag, not a route-level set — see
+# ShipSpecification.insurable (models/ship.py) and its seeder
+# (ship_specifications_seeder.py _NON_INSURABLE_TYPES).
 
 # Mercantile-Guild emergent-rep rewards for buying ship insurance
 # (factions-and-teams.md MG table: BASIC +2 / STANDARD +5 / PREMIUM +10, each
@@ -202,25 +252,29 @@ def _station_offers_insurance(station: Station) -> bool:
     """A station sells insurance if it advertises the service (SpaceDocks and
     Tier-A/B TradeDocks per bang seeding).
 
-    NOTE: canon (ship-insurance.md) also requires the player to have >= NEUTRAL
-    reputation with the station's controlling faction ("friendly port"). That
-    refinement is a documented follow-up — no station-service path enforces
-    faction standing today and players default to NEUTRAL — so v1 gates on the
-    service being offered.
+    This is the service-availability gate only. The "friendly port" faction-
+    standing requirement (ship-insurance.md:48) is a separate check —
+    see check_friendly_port — applied after this one.
     """
     services = station.services or {}
     return bool(services.get("insurance"))
 
 
-def _insurance_status(ship: Ship) -> dict:
-    """Build the insurance status payload for a ship (current tier + buyable tiers)."""
+def _insurance_status(ship: Ship, spec: Optional[ShipSpecification]) -> dict:
+    """Build the insurance status payload for a ship (current tier + buyable tiers).
+
+    `spec` is the ship's ShipSpecification row (ShipSpecification.insurable is
+    the registry source of truth for non-insurable hulls, ADR-0029). A missing
+    spec (mis-seeded data) fails closed — treated as non-insurable rather than
+    silently defaulting to insurable.
+    """
     pv = ship.purchase_value or 0
     current = (ship.insurance or {}).get("type", "NONE")
     if current not in INSURANCE_TIER_ORDER:
         current = "NONE"
     current_idx = INSURANCE_TIER_ORDER.index(current)
     current_premium = int(pv * INSURANCE_PREMIUM_PCT[current]) if current in INSURANCE_PREMIUM_PCT else 0
-    insurable = ship.type not in NON_INSURABLE_TYPES
+    insurable = bool(spec and spec.insurable)
 
     tiers = []
     for tier in ("BASIC", "STANDARD", "PREMIUM"):
@@ -343,7 +397,7 @@ async def purchase_ship(
         )
 
     # Lock the player row to prevent concurrent purchases double-spending credits
-    player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
 
     # Must be docked at a station
     if not player.is_docked or not player.current_port_id:
@@ -448,6 +502,8 @@ async def purchase_ship(
     if player.current_ship_id is None:
         player.current_ship_id = ship.id
         ship.is_flagship = True
+        from src.services.ship_service import sync_current_pilot
+        sync_current_pilot(player, ship)  # QUEUE-REGISTRY-PILOT-WIRING: no old ship (player had none)
     else:
         ship.is_flagship = False
 
@@ -487,7 +543,7 @@ async def set_active_ship(
     except (ValueError, AttributeError, TypeError):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ship not found")
 
-    locked_player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    locked_player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
     ship = db.query(Ship).filter(Ship.id == ship_uuid, Ship.owner_id == player.id).first()
     if not ship:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ship not found")
@@ -512,7 +568,19 @@ async def set_active_ship(
             detail="Lift off before switching ships",
         )
 
+    old_ship = None
+    if locked_player.current_ship_id is not None and locked_player.current_ship_id != ship.id:
+        old_ship = db.query(Ship).filter(Ship.id == locked_player.current_ship_id).first()
+
     locked_player.current_ship_id = ship.id
+    from src.services.ship_service import sync_current_pilot
+    # QUEUE-REGISTRY-PILOT-WIRING: this is the canonical eject+board pair in
+    # one action (ship-registry.md's "Eject and board" -- "clients typically
+    # chain these as a single 'switch ship' UX action... no separate 'swap'
+    # endpoint"). old_ship is the hull the player was piloting immediately
+    # before this switch -- its pilot pointer clears; ship's pilot pointer
+    # is set to this player.
+    sync_current_pilot(locked_player, ship, old_ship=old_ship)
     db.commit()
     return {
         "message": f"{ship.name} is now your active ship",
@@ -546,7 +614,8 @@ async def get_ship_insurance(
     """Current insurance coverage for one of the player's ships plus the buyable
     tiers (premium cost = upgrade difference; net payout per ADR-0061/0081)."""
     ship = _resolve_owned_ship(ship_id, player, db)
-    return _insurance_status(ship)
+    spec = db.query(ShipSpecification).filter(ShipSpecification.type == ship.type).first()
+    return _insurance_status(ship, spec)
 
 
 @router.post("/{ship_id}/insurance")
@@ -561,7 +630,9 @@ async def purchase_ship_insurance(
     Premium is paid upfront (ADR-0081); upgrades cost the difference between
     tiers; coverage attaches to the hull for its lifetime. No downgrades, no
     refunds, no claims (ship-insurance.md). Warp Jumpers / Escape Pods are
-    non-insurable (ADR-0029).
+    non-insurable (ADR-0029; ShipSpecification.insurable). "Friendly port"
+    requires >= NEUTRAL reputation with the station's controlling faction
+    (ship-insurance.md:48).
     """
     tier = request.tier.strip().upper()
     if tier not in INSURANCE_PREMIUM_PCT:
@@ -571,12 +642,14 @@ async def purchase_ship_insurance(
         )
 
     # Lock the player row first (credits), then resolve + lock the ship row.
-    locked_player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    locked_player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
     ship = _resolve_owned_ship(ship_id, locked_player, db, lock=True)
 
     if ship.is_destroyed:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{ship.name} is destroyed")
-    if ship.type in NON_INSURABLE_TYPES:
+
+    spec = db.query(ShipSpecification).filter(ShipSpecification.type == ship.type).first()
+    if spec is None or not spec.insurable:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"{ship.type.value.replace('_', ' ').title()} hulls are non-insurable",
@@ -599,6 +672,13 @@ async def purchase_ship_insurance(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This station does not offer insurance services",
         )
+
+    # "Friendly port": the player must hold >= NEUTRAL reputation with the
+    # station's controlling faction to buy or upgrade insurance here
+    # (ship-insurance.md:48). Checked before any credits move.
+    friendly, friendly_reason = check_friendly_port(db, locked_player.id, station)
+    if not friendly:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=friendly_reason)
 
     # No downgrades, no same-tier repurchase; upgrades pay the difference.
     current = (ship.insurance or {}).get("type", "NONE")
@@ -659,7 +739,7 @@ async def purchase_ship_insurance(
     db.commit()
     db.refresh(ship)
 
-    status_payload = _insurance_status(ship)
+    status_payload = _insurance_status(ship, spec)
     return {
         "message": f"{ship.name} insured at {tier} ({cost:,} cr)",
         "premium_paid": cost,
@@ -951,7 +1031,7 @@ async def repair_ship_maintenance(
             detail=f"Invalid repair tier '{request.tier}'. Valid: basic, emergency, premium",
         )
 
-    locked_player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    locked_player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
     ship = _resolve_owned_ship(ship_id, locked_player, db, lock=True)
     if ship.is_destroyed:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{ship.name} is destroyed")

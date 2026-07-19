@@ -52,7 +52,10 @@ async def registry_lookup(
     holdings (empty list) are never charged.
     """
     # Lock the caller's row so concurrent lookups can't double-spend the fee.
-    player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    # populate_existing() refreshes the identity-mapped object from the DB row
+    # under the lock — without it, get_current_player's earlier unlocked load
+    # is returned stale, defeating the lock.
+    player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
 
     if player.personal_reputation >= 0:
         raise HTTPException(

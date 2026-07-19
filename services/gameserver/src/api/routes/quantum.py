@@ -11,11 +11,12 @@ is mounted in api.py WITHOUT an extra prefix, yielding /api/v1/quantum/*.
 Mounting is owned by Section B — this module only exposes ``router``.
 """
 import logging
+from datetime import datetime, UTC
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from typing import Literal
 
 from src.auth.dependencies import get_current_player
 from src.core.database import get_db
@@ -58,6 +59,40 @@ class HarvestRequest(BaseModel):
     """Empty body — the nebula sector, fitted harvester, and cooldown are all
     validated server-side from the player's current state."""
     pass
+
+
+async def _emit_quantum_harvest(
+    user_id: Any,
+    sector_id: int,
+    nebula_type: str,
+    shards: int,
+    crit: bool,
+) -> None:
+    """Push canon Resolution step 6's real-time harvest event to the
+    harvesting player's socket (quantum-resources.md § Resolution: "Emit a
+    real-time event on the WebSocket bus so the client UI updates without
+    polling").
+
+    DEFENSIVE: called from the route AFTER db.commit() — this body swallows
+    any failure so a dead socket can never disturb an already-committed
+    harvest (trading.py's _emit_transaction_completed precedent). PERSONAL
+    ONLY: send_personal_message delivers exclusively to this user's socket,
+    keyed on str(user_id) (movement_service.py:484-505 precedent)."""
+    try:
+        from src.services.websocket_service import connection_manager
+        await connection_manager.send_personal_message(
+            str(user_id),
+            {
+                "type": "quantum_harvest",
+                "timestamp": datetime.now(UTC).isoformat(),
+                "sector_id": sector_id,
+                "nebula_type": nebula_type,
+                "shards": shards,
+                "crit": crit,
+            },
+        )
+    except Exception:
+        logger.debug("quantum_harvest WS push skipped", exc_info=True)
 
 
 # Endpoints
@@ -151,10 +186,20 @@ async def quantum_harvest(
 
     THIS ROUTE OWNS THE COMMIT: harvest_nebula flushes only, so a successful
     harvest must commit here or the credited shards / armed cooldown silently
-    roll back; any failure rolls back."""
+    roll back; any failure rolls back. Canon Resolution step 6: a successful,
+    committed harvest also emits a real-time 'quantum_harvest' WebSocket
+    event to the harvesting player — post-commit and non-fatal, so a dead
+    socket never turns a good harvest into a 500."""
     try:
         result = quantum_service.harvest_nebula(db, player.id)
         db.commit()
+        await _emit_quantum_harvest(
+            player.user_id,
+            player.current_sector_id,
+            result["nebula_type"],
+            result["shard_yield"],
+            result["crit"],
+        )
         return result
     except QuantumError as e:
         db.rollback()

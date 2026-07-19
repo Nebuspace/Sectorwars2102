@@ -348,6 +348,20 @@ async def claim_planet(
             detail="Planet is not accessible from your current location"
         )
 
+    # Server-gated proximity (Max, 2026-07-17: "a claim that lands is a
+    # landing" -- claim auto-lands the player on success, so it gets the
+    # SAME gate /planets/land and /trading/dock already enforce, not a
+    # separate copy. See intrasystem_movement_service.assert_dock_land_
+    # proximity's own doc-comment for the threshold rationale (a tunable
+    # dial, not fixed).
+    from src.services.intrasystem_movement_service import assert_dock_land_proximity
+
+    assert_dock_land_proximity(
+        db, player,
+        sector_id=planet.sector_id, target_kind="planet", target_id=str(planet.id),
+        target_label=planet.name, action_word="claim",
+    )
+
     # Check if planet is already owned
     if planet.owner_id is not None:
         raise HTTPException(
@@ -388,7 +402,7 @@ async def claim_planet(
 
     # Lock the player row to prevent concurrent credit races
     # (mirrors trading.py's with_for_update pattern)
-    player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
 
     # Founding-grant fee: "10,000 credits investment (the founding-grant fee
     # paid to the destination claim)" — colonization.md, Traditional colonization
@@ -687,7 +701,7 @@ async def abandon_planet_route(
         )
 
     # Re-read the player under a row lock to mutate landed-state safely.
-    player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
 
     try:
         result = abandonment_service.abandon_planet(db, planet, player)
@@ -743,7 +757,7 @@ async def reclaim_planet_route(
     if not planet:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Planet not found")
 
-    player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
     ship = (
         db.query(Ship)
         .filter(Ship.id == player.current_ship_id, Ship.owner_id == player.id)
@@ -945,7 +959,7 @@ async def transfer_colonists(
     # ship/planet pair (mirrors trading.py's with_for_update pattern).
     # Same lock_timeout (set LOCAL above) applies — fail fast, don't hang.
     try:
-        player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+        player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
     except OperationalError:
         db.rollback()
         raise HTTPException(
@@ -1333,6 +1347,20 @@ async def land_on_planet(
             detail="Planet is not accessible from your current location"
         )
 
+    # Server-gated proximity (WO-ISP-DOCKPROX): the client already hides the
+    # LAND button beyond DOCK_LAND_PROXIMITY_RANGE_EM (WindshieldTableau.tsx's
+    # own DOCK_RANGE_EM) -- this closes the bypass of calling the route
+    # directly from anywhere else in the sector. See
+    # intrasystem_movement_service.assert_dock_land_proximity's own
+    # doc-comment for the threshold rationale (a tunable dial, not fixed).
+    from src.services.intrasystem_movement_service import assert_dock_land_proximity
+
+    assert_dock_land_proximity(
+        db, player,
+        sector_id=planet.sector_id, target_kind="planet", target_id=str(planet.id),
+        target_label=planet.name, action_word="land",
+    )
+
     # RESTRICTED worlds are off-limits; UNINHABITABLE rocks are landable
     # (environment suits, sealed habitats — same rationale as the claim gate)
     if planet.status == PlanetStatus.RESTRICTED:
@@ -1353,7 +1381,7 @@ async def land_on_planet(
     if planet.formation_status == "forming":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This planet is still forming and cannot be landed on yet. Check formation status at GET /genesis/status/{planet_id}"
+            detail="This planet is still forming and cannot be landed on yet."
         )
 
     # Check if planet is unclaimed - require claiming first.
@@ -1368,7 +1396,7 @@ async def land_on_planet(
     if planet.owner_id is None and not is_population_hub:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This planet is unclaimed. You must claim it first before landing. Use POST /planets/{id}/claim"
+            detail="This planet is unclaimed — claim it before you can land."
         )
 
     # Landing-rights ACL (WO-G16). Owner + hubs always pass; otherwise the
@@ -1522,7 +1550,7 @@ async def get_planet_defenses(
 
 class ConstructBuildingRequest(BaseModel):
     """Defense building construction request."""
-    buildingType: str = Field(..., pattern="^(orbital_platform|turret_network|scanner_array|rail_gun|planetary_defense_grid)$")
+    buildingType: str = Field(..., pattern="^(orbital_platform|turret_network|scanner_array|rail_gun|planetary_defense_grid|planet_minefield)$")
 
 
 @router.get("/{planet_id}/buildings/available")
@@ -2052,7 +2080,7 @@ async def cancel_terraforming(
 
     # Lock the player row to prevent concurrent credit races on the refund
     # (mirrors the claim route's with_for_update pattern)
-    player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
 
     from src.services.terraforming_service import TerraformingService
     service = TerraformingService(db)

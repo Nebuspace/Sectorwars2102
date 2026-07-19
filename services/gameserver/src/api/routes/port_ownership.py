@@ -22,6 +22,7 @@ detail) on invalid actions. The router owns commit/rollback:
     resolve_listing(db, listing) -> dict               # lazy resolve, then payload
     my_stations(db, player) -> {'stations': [...]}
     set_tax_rate(db, station, player, rate) -> dict
+    set_fee_distribution(db, station, player, defense_pct, owner_pct) -> dict
     withdraw_treasury(db, station, player, amount) -> dict
     takeover_status(db, station, player) -> dict       # lazy monthly evaluation
     launch_takeover(db, station, player) -> dict
@@ -80,6 +81,15 @@ class ServiceChargeRequest(BaseModel):
 class StorageRentalRequest(BaseModel):
     # Canon storage rental: 1,000-10,000 cr/day per slot.
     per_day: int = Field(..., ge=1_000, le=10_000)
+
+
+class FeeDistributionRequest(BaseModel):
+    # Canon fee-distribution rebalance bounds (port-ownership.md:224-243).
+    # Operating is immutable at 30% and not settable here; the sum-to-1.0
+    # cross-field invariant (defense_pct + owner_pct + 0.30 == 1.0) can't be
+    # expressed by Field bounds alone, so it's enforced service-side.
+    defense_pct: float = Field(..., ge=0.30, le=0.60)
+    owner_pct: float = Field(..., ge=0.10, le=0.50)
 
 
 class WithdrawRequest(BaseModel):
@@ -420,6 +430,37 @@ async def set_storage_rental(
     }
 
 
+@router.post("/stations/{station_id}/fee-distribution")
+async def set_fee_distribution(
+    station_id: str,
+    request: FeeDistributionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Rebalance the station's defense/owner fee-distribution split (owner
+    only, canon defense 30-60%, owner 10-50%, operating fixed at 30% — the
+    three buckets must sum to 100%)."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.set_fee_distribution(
+            db, station, current_player, request.defense_pct, request.owner_pct
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    operating_pct = port_ownership_service.OPERATING_PCT
+    return {
+        "message": (
+            f"Fee distribution at {station.name} set to "
+            f"{request.defense_pct:.0%} defense / {request.owner_pct:.0%} owner "
+            f"/ {operating_pct:.0%} operating"
+        ),
+        **result,
+    }
+
+
 @router.post("/stations/{station_id}/withdraw")
 async def withdraw_treasury(
     station_id: str,
@@ -428,7 +469,9 @@ async def withdraw_treasury(
     current_user: User = Depends(get_current_user),
     current_player: Player = Depends(get_current_player),
 ):
-    """Withdraw credits from the station treasury (solo owner only this pass)."""
+    """Withdraw credits from the station treasury (solo owner only this
+    pass; canon caps every withdrawal at 90% of the current balance so a
+    10% operating cushion always remains)."""
     station = _get_station_or_404(db, station_id)
     try:
         result = port_ownership_service.withdraw_treasury(

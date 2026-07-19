@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 
-from src.core.database import get_async_session, get_db
+from src.core.database import get_db
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
 from src.models.fleet import FleetRole, FleetStatus
@@ -129,7 +129,7 @@ from src.models.ship import Ship
 async def create_fleet(
     request: CreateFleetRequest,
     player: Player = Depends(get_current_player),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Create a new fleet for the player's team."""
     if not player.team_id:
@@ -172,7 +172,7 @@ async def create_fleet(
 @router.get("/", response_model=List[FleetResponse])
 async def get_team_fleets(
     player: Player = Depends(get_current_player),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Get all fleets for the player's team."""
     if not player.team_id:
@@ -209,7 +209,7 @@ async def get_team_fleets(
 @router.get("/my-fleets", response_model=List[FleetResponse])
 async def get_my_fleets(
     player: Player = Depends(get_current_player),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Get all fleets where the player has ships."""
     service = FleetService(db)
@@ -246,7 +246,7 @@ async def get_my_fleets(
 async def get_team_battles(
     active_only: bool = Query(False),
     player: Player = Depends(get_current_player),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Get all battles involving the player's team."""
     if not player.team_id:
@@ -277,7 +277,7 @@ async def get_team_battles(
 async def simulate_battle_round(
     battle_id: UUID,
     player: Player = Depends(get_current_player),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Simulate one round of fleet battle."""
     # Verify player is involved in the battle
@@ -321,7 +321,7 @@ async def simulate_battle_round(
 async def get_fleet(
     fleet_id: UUID,
     player: Player = Depends(get_current_player),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Get details of a specific fleet."""
     service = FleetService(db)
@@ -363,7 +363,7 @@ async def get_fleet(
 async def get_fleet_members(
     fleet_id: UUID,
     player: Player = Depends(get_current_player),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Get all members of a fleet."""
     fleet = db.query(Fleet).filter(Fleet.id == fleet_id).first()
@@ -398,7 +398,7 @@ async def add_ship_to_fleet(
     fleet_id: UUID,
     request: AddShipRequest,
     player: Player = Depends(get_current_player),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Add a ship to a fleet."""
     fleet = db.query(Fleet).filter(Fleet.id == fleet_id).first()
@@ -443,7 +443,7 @@ async def remove_ship_from_fleet(
     fleet_id: UUID,
     ship_id: UUID,
     player: Player = Depends(get_current_player),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Remove a ship from a fleet."""
     fleet = db.query(Fleet).filter(Fleet.id == fleet_id).first()
@@ -472,7 +472,7 @@ async def update_fleet_formation(
     fleet_id: UUID,
     formation: str = Query(..., pattern="^(standard|aggressive|defensive|flanking|turtle)$"),
     player: Player = Depends(get_current_player),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Update fleet formation."""
     fleet = db.query(Fleet).filter(Fleet.id == fleet_id).first()
@@ -495,7 +495,7 @@ async def update_fleet_commander(
     fleet_id: UUID,
     commander_id: UUID,
     player: Player = Depends(get_current_player),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Assign a new fleet commander."""
     fleet = db.query(Fleet).filter(Fleet.id == fleet_id).first()
@@ -519,7 +519,7 @@ async def update_fleet_commander(
 async def disband_fleet(
     fleet_id: UUID,
     player: Player = Depends(get_current_player),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Disband a fleet."""
     fleet = db.query(Fleet).filter(Fleet.id == fleet_id).first()
@@ -548,7 +548,7 @@ async def initiate_battle(
     fleet_id: UUID,
     request: BattleInitiateRequest,
     player: Player = Depends(get_current_player),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Initiate a battle with another fleet."""
     fleet = db.query(Fleet).filter(Fleet.id == fleet_id).first()
@@ -586,9 +586,9 @@ async def resupply_fleet(
     fleet_id: UUID,
     player: Player = Depends(get_current_player),
     # WO-U: FleetService is SYNC (.query().with_for_update()/.commit()), so this
-    # route uses the SYNC session (get_db), unlike the sibling fleet routes which
-    # declare get_async_session against the same sync service — a pre-existing
-    # module-wide async/sync mismatch flagged to the orchestrator, not fixed here.
+    # route uses the SYNC session (get_db) — as of DEFECT-fleet-battle-asyncsession,
+    # every other route in this module was swapped to match (was previously
+    # wired against get_async_session, a module-wide async/sync mismatch).
     db: Session = Depends(get_db)
 ):
     """Pay credits to raise a docked fleet's supply level back toward full.

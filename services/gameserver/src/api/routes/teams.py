@@ -19,6 +19,8 @@ from src.models.team import TeamRecruitmentStatus
 from src.models.message import Message
 from src.services.team_service import TeamService
 from src.services.message_service import MessageService
+from src.services import team_reputation_service
+from src.services.movement_service import share_warp_knowledge_with_team
 
 
 router = APIRouter(prefix="/teams", tags=["teams"])
@@ -710,10 +712,16 @@ async def get_team_messages(
     if not permissions["is_member"]:
         raise HTTPException(status_code=403, detail="You are not a member of this team")
     
-    # Get team messages
+    # Get team messages. moderation_status IS NULL excludes moderator-
+    # deleted messages (WO-RT-MOD-AUDIT-KERNEL) -- this route bypasses
+    # MessageService.get_team_messages (which already carries this filter)
+    # with its own direct query, so the exclusion has to be repeated here.
     messages = (
         db.query(Message)
-        .filter(Message.team_id == team_id)
+        .filter(
+            Message.team_id == team_id,
+            Message.moderation_status.is_(None)
+        )
         .order_by(Message.sent_at.desc())
         .offset(skip)
         .limit(limit)
@@ -808,25 +816,39 @@ async def declare_war(
 ):
     """Declare war on another team. Requires team leader."""
     from src.models.team import Team
-    # Lock both teams to prevent concurrent war declaration races
-    team = db.query(Team).filter(Team.id == team_id).with_for_update().first()
+
+    # Parse + validate the target team ID BEFORE acquiring any lock -- an
+    # invalid id must never reach the lock stage at all.
+    target_id = request.target_team_id
+    try:
+        target_uuid = UUID(target_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail="Invalid target team ID")
+
+    # Cannot declare war on yourself -- checked before locking too, so a
+    # self-target never attempts to lock the same row twice.
+    if str(team_id) == target_id:
+        raise HTTPException(status_code=400, detail="Cannot declare war on your own team")
+
+    # Lock both teams in ASCENDING-id order (never caller-order) to avoid an
+    # AB-BA deadlock against fleet_service._lock_teams_ascending's ascending-
+    # id Team locks taken during a concurrent battle round -- mirrors that
+    # helper's own idiom exactly (WO-DECLARE-WAR-LOCK-ORDER).
+    locked = {}
+    for tid in sorted((team_id, target_uuid)):
+        row = db.query(Team).filter(Team.id == tid).populate_existing().with_for_update().first()
+        if row is not None:
+            locked[tid] = row
+
+    team = locked.get(team_id)
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
     if team.leader_id != current_player.id:
         raise HTTPException(status_code=403, detail="Only team leader can declare war")
 
-    # Lock target team
-    target_id = request.target_team_id
-    try:
-        target_team = db.query(Team).filter(Team.id == UUID(target_id)).with_for_update().first()
-    except (ValueError, AttributeError):
-        raise HTTPException(status_code=400, detail="Invalid target team ID")
+    target_team = locked.get(target_uuid)
     if not target_team:
         raise HTTPException(status_code=404, detail="Target team not found")
-
-    # Cannot declare war on yourself
-    if str(team_id) == target_id:
-        raise HTTPException(status_code=400, detail="Cannot declare war on your own team")
 
     # Store war declaration in member_roles JSONB (used as general metadata store)
     from sqlalchemy.orm.attributes import flag_modified
@@ -957,3 +979,98 @@ async def ceasefire(
     db.commit()
 
     return {"success": True, "message": "Ceasefire declared", "ceased_by": str(current_player.id)}
+
+
+# --------------------------------------------------------------------------- #
+# Team reputation (WO-RT-TEAM-REP) -- factions-and-teams.md:392-399.
+# --------------------------------------------------------------------------- #
+
+class UpdateReputationMethodRequest(BaseModel):
+    method: str
+
+
+def _raise_for_team_reputation(exc: team_reputation_service.TeamReputationError) -> None:
+    if isinstance(exc, team_reputation_service.TeamReputationCooldownError):
+        raise HTTPException(
+            status_code=409,
+            detail={"message": str(exc), "retry_after": exc.retry_after.isoformat()},
+        )
+    if isinstance(exc, team_reputation_service.TeamReputationPermissionError):
+        raise HTTPException(status_code=403, detail=str(exc))
+    raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/{team_id}/reputation")
+async def get_team_reputation(
+    team_id: UUID,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Standings + method + next_recalculation (WO-RT-TEAM-REP). Requires
+    membership on this team -- mirrors get_treasury_balance's own
+    membership gate; canon does not specify team-reputation visibility
+    rules, [NO-CANON]."""
+    if not player.team_id or str(player.team_id) != str(team_id):
+        raise HTTPException(status_code=403, detail="You are not a member of this team")
+
+    team_service = TeamService(db)
+    team = team_service.get_team(team_id)
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    result = team_reputation_service.get_team_reputation(db, team)
+    db.commit()
+    return result
+
+
+@router.put("/{team_id}/reputation-method")
+async def update_team_reputation_method(
+    team_id: UUID,
+    body: UpdateReputationMethodRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Leader-only method switch; 7-day cooldown -> 409 with retry_after
+    in the payload (WO-RT-TEAM-REP, factions-and-teams.md:399). Forces an
+    immediate recalculation on success."""
+    team_service = TeamService(db)
+    team = team_service.get_team(team_id)
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    try:
+        result = team_reputation_service.switch_method(db, team, body.method, player.id)
+    except team_reputation_service.TeamReputationError as exc:
+        db.rollback()
+        _raise_for_team_reputation(exc)
+    else:
+        db.commit()
+        return result
+
+
+# --------------------------------------------------------------------------- #
+# Warp knowledge sharing (WO-ARIA-WARP-RESIDUALS) -- aria-companion.md:71.
+# --------------------------------------------------------------------------- #
+
+@router.post("/{team_id}/share-warp-knowledge")
+async def share_warp_knowledge(
+    team_id: UUID,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Deliberate, one-time bulk share of the caller's own known warps
+    (revealed or traversed) with every OTHER current member of this team
+    (WO-ARIA-WARP-RESIDUALS, aria-companion.md:71). Membership-gated only
+    -- sharing your own discoveries needs no special role. Distinct from
+    the automatic per-reveal team fan-out that already fires on every NEW
+    scan/traversal reveal (movement_service._propagate_warp_reveal_to_team,
+    WO-GWQ-WARPSHARE) -- this is the manual catch-up action for knowledge
+    the caller already held before that (or before a teammate joined); no
+    ongoing sync, later joiners get nothing retroactively (aria-
+    companion.md:65)."""
+    if not player.team_id or str(player.team_id) != str(team_id):
+        raise HTTPException(status_code=403, detail="You are not a member of this team")
+
+    result = share_warp_knowledge_with_team(db, player.id, team_id)
+    db.commit()
+    return result

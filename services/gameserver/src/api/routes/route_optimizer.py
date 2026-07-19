@@ -9,15 +9,18 @@ request an optimal route from a start sector under a chosen objective:
 """
 
 import logging
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
 
 from src.core.database import get_async_db
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
+from src.models.route_optimization_run import RouteOptimizationRun
 from src.services.route_optimizer import (
     RouteOptimizer,
     RouteObjective,
@@ -105,6 +108,67 @@ class RouteOptimizeResponse(BaseModel):
     opportunities: List[OpportunityResponse]
 
 
+class RouteHistoryEntryResponse(BaseModel):
+    """One recorded row from ``route_optimization_runs``, mapped 1:1."""
+
+    id: str
+    objective: str
+    start_sector: str
+    end_sector: Optional[str]
+    sectors: List[str]
+    total_profit: float
+    total_distance: int
+    total_time_hours: float
+    cargo_efficiency: float
+    route_confidence: float
+    status: str
+    created_at: datetime
+
+
+_HISTORY_LIMIT_MAX = 50
+
+
+async def _record_optimization_run(
+    db: AsyncSession,
+    *,
+    player_id,
+    objective: str,
+    start_sector: str,
+    end_sector: Optional[str],
+    sectors: List[str],
+    total_profit: float,
+    total_distance: int,
+    total_time_hours: float,
+    cargo_efficiency: float,
+    route_confidence: float,
+) -> None:
+    """
+    Best-effort telemetry write for the NH18 admin feed. Never raises into
+    the caller — a logging failure must not fail the player's request.
+    """
+    try:
+        db.add(
+            RouteOptimizationRun(
+                player_id=player_id,
+                objective=objective,
+                start_sector=start_sector,
+                end_sector=end_sector,
+                sectors=sectors,
+                total_profit=total_profit,
+                total_distance=total_distance,
+                total_time_hours=total_time_hours,
+                cargo_efficiency=cargo_efficiency,
+                route_confidence=route_confidence,
+            )
+        )
+        await db.commit()
+    except Exception as exc:
+        logger.error(
+            f"Failed to record route optimization run for player {player_id}: {exc}"
+        )
+        await db.rollback()
+
+
 # ------------------------------------------------------------------
 # Routes
 # ------------------------------------------------------------------
@@ -160,6 +224,19 @@ async def optimize_route(
                 )
 
             sectors = [str(sid) for sid in path]
+            await _record_optimization_run(
+                db,
+                player_id=current_player.id,
+                objective=objective,
+                start_sector=request.start_sector_id,
+                end_sector=request.end_sector_id,
+                sectors=sectors,
+                total_profit=0.0,
+                total_distance=max(0, len(sectors) - 1),
+                total_time_hours=0.0,
+                cargo_efficiency=0.0,
+                route_confidence=1.0,
+            )
             return RouteOptimizeResponse(
                 objective=objective,
                 route_type="direct" if len(sectors) < 3 else "linear",
@@ -194,6 +271,19 @@ async def optimize_route(
                 ),
             )
 
+        await _record_optimization_run(
+            db,
+            player_id=current_player.id,
+            objective=objective,
+            start_sector=request.start_sector_id,
+            end_sector=request.end_sector_id,
+            sectors=route.sectors,
+            total_profit=route.total_profit,
+            total_distance=route.total_distance,
+            total_time_hours=route.total_time_hours,
+            cargo_efficiency=route.cargo_efficiency,
+            route_confidence=route.route_confidence,
+        )
         return RouteOptimizeResponse(
             objective=objective,
             route_type=route.route_type,
@@ -233,3 +323,60 @@ async def optimize_route(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to optimize route",
         )
+
+
+@router.get("/history", response_model=List[RouteHistoryEntryResponse])
+async def get_route_history(
+    limit: int = Query(
+        10,
+        gt=0,
+        le=_HISTORY_LIMIT_MAX,
+        description="Max rows to return (capped at 50)",
+    ),
+    current_player: Player = Depends(get_current_player),
+    db: AsyncSession = Depends(get_async_db),
+):
+    """
+    List the current player's own recorded route-optimization runs
+    (``route_optimization_runs``, WO-SB-RO2), newest first.
+
+    Read-only telemetry, scoped to the caller: never another player's
+    rows, regardless of what ``limit`` is passed.
+    """
+    try:
+        capped_limit = min(limit, _HISTORY_LIMIT_MAX)
+        query = (
+            select(RouteOptimizationRun)
+            .where(RouteOptimizationRun.player_id == current_player.id)
+            .order_by(desc(RouteOptimizationRun.created_at))
+            .limit(capped_limit)
+        )
+        result = await db.execute(query)
+        runs = result.scalars().all()
+
+        return [
+            RouteHistoryEntryResponse(
+                id=str(run.id),
+                objective=run.objective,
+                start_sector=run.start_sector,
+                end_sector=run.end_sector,
+                sectors=list(run.sectors or []),
+                total_profit=run.total_profit,
+                total_distance=run.total_distance,
+                total_time_hours=run.total_time_hours,
+                cargo_efficiency=run.cargo_efficiency,
+                route_confidence=run.route_confidence,
+                status=run.status,
+                created_at=run.created_at,
+            )
+            for run in runs
+        ]
+
+    except Exception as e:
+        logger.error(
+            f"Error fetching route history for player {current_player.id}: {e}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve route history",
+        ) from e

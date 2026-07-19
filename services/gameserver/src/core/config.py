@@ -1,6 +1,7 @@
 import logging
 import os
 from typing import Optional
+from cryptography.fernet import Fernet
 from pydantic import PostgresDsn, Field
 from pydantic_settings import BaseSettings
 
@@ -28,6 +29,16 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))  # Reduced to 1 hour
     REFRESH_TOKEN_EXPIRE_DAYS: int = int(os.environ.get("REFRESH_TOKEN_EXPIRE_DAYS", "7"))  # Reduced to 7 days
 
+    # ARIA personal-memory encryption key (WO-DRIFT-aria-rt-mem-encryption-
+    # key). Same discipline as JWT_SECRET above: a persistent, stack-loaded
+    # secret, never a per-boot/per-instantiation generated throwaway -- a
+    # rotating key would permanently orphan every previously-encrypted
+    # ARIAPersonalMemory row (Fernet raises InvalidToken decrypting under a
+    # different key). No default -- MUST be set. Value is a url-safe
+    # base64-encoded 32-byte Fernet key, e.g. the output of
+    # `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
+    ARIA_ENCRYPTION_KEY: str = os.environ.get("ARIA_ENCRYPTION_KEY")  # No default - MUST be set
+
     # Admin credentials - CRITICAL: These MUST be set in production
     ADMIN_USERNAME: str = os.environ.get("ADMIN_USERNAME")  # No default - MUST be set
     ADMIN_PASSWORD: str = os.environ.get("ADMIN_PASSWORD")  # No default - MUST be set
@@ -43,6 +54,20 @@ class Settings(BaseSettings):
             raise ValueError("JWT_SECRET environment variable is required for security")
         if len(self.JWT_SECRET) < 32:
             raise ValueError("JWT_SECRET must be at least 32 characters for security")
+        if not self.ARIA_ENCRYPTION_KEY:
+            raise ValueError("ARIA_ENCRYPTION_KEY environment variable is required for security")
+        try:
+            # Validate with the exact constructor the service uses, so
+            # "valid at boot" == "usable by ARIAPersonalIntelligenceService"
+            # -- a malformed key (trailing newline, truncated paste, wrong
+            # length) must fail loud HERE, not lazily as a confusing 500 on
+            # the first ARIA-touching request. Never include the key value
+            # itself in the error message.
+            Fernet(self.ARIA_ENCRYPTION_KEY)
+        except Exception:
+            raise ValueError(
+                "ARIA_ENCRYPTION_KEY must be a valid url-safe base64-encoded 32-byte Fernet key"
+            ) from None
         if not self.ADMIN_USERNAME:
             raise ValueError("ADMIN_USERNAME environment variable is required")
         if not self.ADMIN_PASSWORD:
@@ -53,6 +78,26 @@ class Settings(BaseSettings):
             logger.warning(
                 "SECURITY WARNING: REDIS_URL is using the default dev-only password. "
                 "Set REDIS_URL with a strong password for production deployments."
+            )
+        # WO-ARIA-PROMPT-DEFENSE addendum: a runtime tripwire for the exact
+        # unsafe combination flagged in that WO's NO-CANON #1 -- LLM chat
+        # live with the load-bearing content classifiers (ADR-0057 A-V1
+        # layers 3+5) still dark. Deliberately a WARN, not a raise: the two
+        # flags stay independently togglable by design (coupling them would
+        # break the mock-isolation this WO's test suite depends on), so a
+        # deploy CAN legitimately run this combination during staged
+        # rollout -- it just must never be mistaken for "fully protected."
+        # "ARIA-DEFENSE-MISCONFIG" is a deliberately greppable token for
+        # log-based alerting.
+        if self.ARIA_LLM_CHAT_ENABLED and not self.ARIA_PROMPT_CLASSIFIER_ENABLED:
+            logger.warning(
+                "ARIA-DEFENSE-MISCONFIG: ARIA_LLM_CHAT_ENABLED is true but "
+                "ARIA_PROMPT_CLASSIFIER_ENABLED is false. ARIA's LLM chat "
+                "path is LIVE without the load-bearing input/output content "
+                "classifiers (ADR-0057 A-V1 layers 3+5) -- only the cheap "
+                "pre-filters (NFKC normalization, JSON-envelope breakout "
+                "detection, versioned pattern list) are protecting it. "
+                "Go-live requires BOTH flags set true together."
             )
     
     # AI Provider Configuration
@@ -66,6 +111,27 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = os.environ.get("OPENAI_MODEL", "gpt-3.5-turbo")
     ANTHROPIC_MODEL: str = os.environ.get("ANTHROPIC_MODEL", "claude-3-sonnet-20240229")
     AI_DIALOGUE_ENABLED: bool = os.environ.get("AI_DIALOGUE_ENABLED", "true").lower() == "true"
+
+    # ARIA LLM-backed chat (WO-ARIA-CHAT-LLM). BUILT DARK per Max's GO:
+    # defaults false, so ARIA's chat path stays byte-identical to the
+    # existing keyword/template engine until this is explicitly flipped —
+    # zero spend, zero behavior change, until then.
+    ARIA_LLM_CHAT_ENABLED: bool = os.environ.get("ARIA_LLM_CHAT_ENABLED", "false").lower() == "true"
+
+    # ADR-0057 A-V1 layers 3+5 -- the load-bearing input/output content
+    # classifiers wrapping the LLM provider call (WO-ARIA-PROMPT-DEFENSE).
+    # BUILT DARK, same convention as ARIA_LLM_CHAT_ENABLED above: defaults
+    # false so a pre-existing/unmocked test exercising _try_llm_chat_
+    # response never risks a real classifier provider call. [NO-CANON] --
+    # this is a SEPARATE flag from ARIA_LLM_CHAT_ENABLED, not a
+    # sub-setting of it. Per this WO's own mission ("never LLM chat on
+    # regex-only defense"), operational go-live MUST flip this ALONGSIDE
+    # (or before) ARIA_LLM_CHAT_ENABLED -- flagged prominently for the
+    # orchestrator/Max, since two independent flags both defaulting off
+    # creates exactly the gap the WO exists to close if only one is ever
+    # flipped. Layers 1/2/4 (NFKC, envelope, pattern-list) are NOT gated
+    # by this flag -- they are cheap, local, and always on.
+    ARIA_PROMPT_CLASSIFIER_ENABLED: bool = os.environ.get("ARIA_PROMPT_CLASSIFIER_ENABLED", "false").lower() == "true"
 
     # Living NPC System — gates the npc_scheduler_service lifespan task
     # (Loops A/B/C). Default off so prod stays static until proven on dev.
