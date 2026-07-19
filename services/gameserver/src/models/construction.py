@@ -17,8 +17,12 @@ with `phase_deadline` NULL means the phase clock is PAUSED — its milestone is
 unpaid and/or its resource checkpoint is unmet (the status payload reports
 exactly what is needed).
 
-This is a new table; `Base.metadata.create_all` (run at startup) covers all
-environments — no Alembic migration is needed.
+CORRECTION (WO-P2-economy-docking-priority-bump, 2026-07-16): this table IS
+now under real Alembic control (e7c4a1b9d602's own docstring documents the
+"no Alembic migration is needed" claim above as a phantom-table trap -- a
+fresh DB that skips the `Base.metadata.create_all` fallback path hits
+"relation construction_reservations does not exist"). New columns need a
+genuine additive migration, same as every other model.
 """
 import uuid
 
@@ -88,6 +92,12 @@ class ConstructionReservation(Base):
     # Credit redistributed from a forfeited hold's deposit (50% to the
     # next-in-queue reservation); applied against future milestone payments.
     queue_bonus_credit = Column(Integer, nullable=False, default=0)
+
+    # Cumulative weight of purchased priority bumps (FEATURES/economy/
+    # docking-slips.md:118-127 -- 5%/25%/60%/100% of total_cost tiers),
+    # feeding the queue's sort key (construction_service._sorted_queue,
+    # DESC). 0 = no bumps purchased, byte-unchanged promotion order.
+    priority_bumps_count = Column(Integer, nullable=False, default=0)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(

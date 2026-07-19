@@ -51,13 +51,13 @@ class Galaxy(Base):
         "station_density": 10,           # Percentage of sectors with stations (5-15% per spec)
         "planet_density": 3,          # Percentage of sectors with planets (2-5% per spec)
         "one_way_warp_percentage": 5, # Percentage of one-way warps (2-8% per spec)
-        "resource_distribution": {    # Overall resource distribution
-            "ore": 25,
-            "organics": 20,
-            "equipment": 15,
-            "luxury_goods": 10,
-            "medical_supplies": 15,
-            "technology": 15
+        "resource_distribution": {    # Overall resource distribution (canon slugs only —
+            # ghost slugs medical_supplies/technology removed WO-ARCH-RES-2I-A; freed 30
+            # points redistributed proportionally over the surviving 4, sum stays 100)
+            "ore": 36,
+            "organics": 29,
+            "equipment": 21,
+            "luxury_goods": 14
         }
     })
     

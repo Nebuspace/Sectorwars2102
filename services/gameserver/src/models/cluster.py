@@ -53,13 +53,13 @@ class Cluster(Base):
     economic_focus = Column(ARRAY(String), nullable=False, default=[])  # Primary economic activities
     resources = Column(JSONB, nullable=False, default={
         "primary_resources": [],
-        "resource_distribution": {
-            "ore": 20,
-            "organics": 15,
-            "equipment": 10,
-            "luxury_goods": 5,
-            "medical_supplies": 10,
-            "technology": 10
+        "resource_distribution": {  # canon slugs only — ghost slugs medical_supplies/
+            # technology removed WO-ARCH-RES-2I-A; freed 20 points redistributed
+            # proportionally over the surviving 4, sum stays 70 (this file's convention)
+            "ore": 28,
+            "organics": 21,
+            "equipment": 14,
+            "luxury_goods": 7
         },
         "special_resources": []
     })
@@ -89,16 +89,19 @@ class Cluster(Base):
     description = Column(String, nullable=True)
     is_hidden = Column(Boolean, nullable=False, default=False)
 
-    # Structured nebula fields (WO-DBB-QR4). The bang payload carries nebula
-    # data PER-SECTOR only (sector.nebula = {type, density}); there is no
-    # cluster-level nebula block. These columns capture the cluster's
-    # *dominant* (representative) nebula, derived at import time from its member
-    # sectors: nebula_type = the most common nebula type among the cluster's
-    # nebula sectors; quantum_field_strength = the mean density of those
-    # sectors (the only quantitative nebula attribute the payload provides).
-    # color_hex has no source in the bang payload — it is left NULL until a
-    # source for it exists. All three are additive + nullable: a cluster with
-    # no nebula sectors leaves all three NULL.
+    # Structured nebula fields (WO-DBB-QR4, color-derived per WO-SB-QH2,
+    # generator path per WO-GWQ-NEXUS-NEBULA-FIELDS). Neither writer carries a
+    # cluster-level nebula block in its source data — bang emits nebula
+    # PER-SECTOR only (sector.nebula = {type, density}); nexus generation's
+    # synthetic sectors carry only a bare NEBULA sector-type flag. Both derive
+    # these three fields from a 0-100 field-strength value through the shared
+    # src.services.nebula_color.derive_nebula_color: nebula_type = the canon
+    # color that value maps to (NOT bang's raw 'normal'/'magnetic' type, and
+    # never a majority vote); quantum_field_strength = that same value (bang's
+    # mean per-sector density; nexus's NO-CANON uniform roll); color_hex =
+    # nebula_type's canonical hex from src.services.nebula_color.NEBULA_COLOR_HEX
+    # (never left NULL once nebula_type is set). All three are additive +
+    # nullable: a cluster with no nebula sectors leaves all three NULL.
     nebula_type = Column(String(50), nullable=True)
     quantum_field_strength = Column(Float, nullable=True)
     color_hex = Column(String(20), nullable=True)
