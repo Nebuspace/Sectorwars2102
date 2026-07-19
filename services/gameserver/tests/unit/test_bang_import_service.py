@@ -19,6 +19,7 @@ import pytest
 
 from src.schemas.bang_config import BangConfig
 from src.services.bang_import_service import (
+    CANON_ONE_WAY_WARP_PERCENT,
     COMMODITY_WIRE_ORDER,
     BangImportService,
     ParsedUniverse,
@@ -361,6 +362,65 @@ class TestPlanetOwnerDirectMap:
         assert spec.owner_id is None
 
 
+@pytest.mark.unit
+class TestPlanetInventoryPassthrough:
+    """WO-BANG-PLANET-SEED verify-first: the translator correctly maps
+    ore/organics/equipment/colonists/maxColonists from the payload whenever
+    bang provides varied values. Pins that _build_planet_spec is NOT the
+    source of the flat-0/flat-1000 census finding -- direct empirical
+    testing against the live bang CLI (v1.3.4, seed 42) plus the checked-in
+    v1.3.0 fixture BOTH show 100% of emitted planets flat, and
+    sw2102-bang/src/content.ts:133-159's makePlanet() hardcodes these five
+    fields with zero variation -- a payload-side gap in a separate repo,
+    not built here per the WO's explicit scope."""
+
+    def test_nonzero_varied_inventory_passes_through_unchanged(
+        self, service: BangImportService
+    ) -> None:
+        bang_planet = {
+            "name": "Rich World",
+            "type": "oceanic",
+            "owner": None,
+            "habitabilityScore": 72,
+            "maxPopulation": 72000,
+            "maxColonists": 4500,
+            "ore": 12000,
+            "organics": 3300,
+            "equipment": 900,
+            "colonists": 250,
+            "citadel": None,
+        }
+        spec = service._build_planet_spec(  # pylint: disable=protected-access
+            sector_id=7, p=bang_planet
+        )
+        assert spec.max_colonists == 4500
+        assert spec.fuel_ore == 12000
+        assert spec.organics == 3300
+        assert spec.equipment == 900
+        assert spec.colonists == 250
+
+    def test_current_bang_payload_is_flat_across_the_fixture(
+        self, service: BangImportService, parsed_player_owned: ParsedUniverse
+    ) -> None:
+        """Regression/evidence pin, not a bug in OUR code: the checked-in
+        v1.3.0 fixture -- captured bang CLI output -- has EVERY planet at
+        maxColonists=1000, ore=organics=equipment=colonists=0. If bang ever
+        starts emitting varied values, this test will fail and should be
+        deleted (it exists to document the current payload-side gap, not to
+        enforce it)."""
+        plan = service.translate(
+            {"player_owned": parsed_player_owned},
+            region_metadata={"galaxy_name": "T"},
+        )
+        planets = plan.regions["player_owned"].planets
+        assert len(planets) > 0
+        assert {p.max_colonists for p in planets} == {1000}
+        assert {p.fuel_ore for p in planets} == {0}
+        assert {p.organics for p in planets} == {0}
+        assert {p.equipment for p in planets} == {0}
+        assert {p.colonists for p in planets} == {0}
+
+
 # ---------------------------------------------------------------------------
 # Q6 — Postgres enum extension passes through 3 island-formation types
 # ---------------------------------------------------------------------------
@@ -485,6 +545,8 @@ class TestTerranSpaceStarterInvariants:
         ]
         assert len(s1_planets) == 1
         assert s1_planets[0].name == "New Earth"
+        assert s1_planets[0].is_population_hub is True
+        assert s1_planets[0].population >= 1_000_000
         assert s1_planets[0].max_population == 8_000_000_000
 
     def test_sector_ten_spacedock_class_eleven(
@@ -505,6 +567,261 @@ class TestTerranSpaceStarterInvariants:
         # Legacy SpaceDock service flags
         for flag in ("ship_dealer", "ship_upgrades", "drone_shop", "genesis_dealer", "mine_dealer", "insurance"):
             assert sdock.services[flag] is True
+
+
+@pytest.mark.unit
+class TestClass8VenueTypeVsHagglingArchetype:
+    """WO-P2-econ-blackmarket-venue-spawn Leg A regression pin.
+
+    ``_STATION_TYPE_BY_CLASS`` used to carry ``8: StationType.BLACK_MARKET``
+    -- conflating ``StationClass.CLASS_8`` ("Black Hole", a PRICING tier:
+    premium buyer, ``station_class_map.py``'s ``is_premium_buyer``) with the
+    illegal-goods VENUE TYPE ``contraband_service.py`` gates on. Live on
+    stage: 393 stations (12.2% of the fleet) were mis-typed BLACK_MARKET this
+    way -- matching bang's ``rangeInt(1, 8)`` port-class roll (~12.5% land on
+    8). Fixed by dropping the entry so class 8 falls through to the
+    ``.get(klass, StationType.TRADING)`` default, same as classes 4-7.
+
+    This pins the TWO-ENUM DISTINCTION so nobody re-conflates them: a class-8
+    port must import as ``StationType.TRADING`` (the venue type) while STILL
+    resolving the LEGITIMATE ``TraderArchetype.BLACK_MARKET`` haggling
+    personality (``core/trader_personalities.archetype_for_station_class`` --
+    untouched, classes 8 AND 9 both map there) and the class-8 premium-buyer
+    pricing pattern (``station_class_map.py`` -- also untouched, keyed on
+    ``StationClass`` not ``StationType``)."""
+
+    @staticmethod
+    def _class_8_port() -> Dict[str, Any]:
+        return {"class": 8, "name": "Void's Edge", "commodities": {}}
+
+    def test_class_8_port_imports_as_trading_venue_type(self, service: BangImportService) -> None:
+        from src.models.station import StationClass, StationType
+
+        spec = service._build_station_spec(
+            sector_id=42, port=self._class_8_port(), universe_seed=1,
+        )
+
+        assert spec.station_class == StationClass.CLASS_8
+        assert spec.station_type == StationType.TRADING  # NOT BLACK_MARKET -- the fixed conflation
+
+    def test_class_8_port_still_gets_the_black_market_haggling_archetype(
+        self, service: BangImportService,
+    ) -> None:
+        spec = service._build_station_spec(
+            sector_id=42, port=self._class_8_port(), universe_seed=1,
+        )
+
+        # The SEPARATE, legitimate mapping is untouched -- class 8 still
+        # gets the suspicious/opportunistic BLACK_MARKET haggling
+        # personality, just not the venue TYPE.
+        assert spec.trader_personality["type"] == "BLACK_MARKET"
+
+    def test_class_8_port_still_gets_premium_buyer_trading_pattern(
+        self, service: BangImportService,
+    ) -> None:
+        spec = service._build_station_spec(
+            sector_id=42, port=self._class_8_port(), universe_seed=1,
+        )
+
+        # station_class_map.py's premium-buyer pattern is keyed on
+        # StationClass, not StationType -- also untouched by this fix.
+        for commodity in ("ore", "organics", "equipment", "fuel"):
+            assert spec.commodities[commodity]["buys"] is True
+            assert spec.commodities[commodity]["sells"] is False
+
+
+@pytest.mark.unit
+class TestExplicitBlackMarketFlagImportMap:
+    """WO-P2-econ-blackmarket-venue-spawn Leg C, Part 1 -- the import-map
+    half. An EXPLICIT ``black_market: true`` flag on the bang port manifest
+    overrides the class-derived type to BLACK_MARKET. Deliberately NOT
+    class-derived -- Leg A fixed exactly that conflation for class 8;
+    reintroducing an implicit class rule here would resurrect the same bug
+    under a different name. Graceful on absence: no flag -> byte-identical
+    to the class table's own output (this WO's whole point is that shipping
+    Part 1 ahead of bang actually emitting the flag is a safe no-op)."""
+
+    def test_explicit_flag_overrides_class_derived_type(self, service: BangImportService) -> None:
+        from src.models.station import StationType
+
+        port = {"class": 3, "name": "Shadow Berth", "commodities": {}, "black_market": True}
+        spec = service._build_station_spec(sector_id=7, port=port, universe_seed=1)
+
+        # Class 3 alone maps to INDUSTRIAL (_STATION_TYPE_BY_CLASS) -- the
+        # explicit flag wins over that class-derived default.
+        assert spec.station_type == StationType.BLACK_MARKET
+
+    def test_flag_absent_is_a_no_op_class_table_unchanged(self, service: BangImportService) -> None:
+        from src.models.station import StationType
+
+        port = {"class": 3, "name": "Ordinary Berth", "commodities": {}}
+        spec = service._build_station_spec(sector_id=7, port=port, universe_seed=1)
+
+        assert spec.station_type == StationType.INDUSTRIAL  # class table's own default, untouched
+
+    def test_flag_false_is_also_a_no_op(self, service: BangImportService) -> None:
+        from src.models.station import StationType
+
+        port = {"class": 3, "name": "Ordinary Berth", "commodities": {}, "black_market": False}
+        spec = service._build_station_spec(sector_id=7, port=port, universe_seed=1)
+
+        assert spec.station_type == StationType.INDUSTRIAL
+
+    def test_flag_never_overrides_a_spacedock(self, service: BangImportService) -> None:
+        """A spacedock is a dedicated NPC-neutral hub -- is_spacedock already
+        takes precedence over the class table, and the explicit flag must
+        not bypass that precedence either."""
+        from src.models.station import StationType
+
+        port = {
+            "class": 3, "name": "Should Stay Shipyard", "commodities": {},
+            "isSpaceDock": True, "black_market": True,
+        }
+        spec = service._build_station_spec(sector_id=7, port=port, universe_seed=1)
+
+        assert spec.station_type == StationType.SHIPYARD
+        assert spec.is_spacedock is True
+
+    def test_flag_still_wins_on_the_already_fixed_class_8(self, service: BangImportService) -> None:
+        """Class 8 alone now falls through to TRADING (Leg A) -- the
+        explicit flag is a genuinely SEPARATE, additive path that still
+        applies on top of that fixed default when a real venue is meant to
+        be placed there."""
+        from src.models.station import StationType
+
+        port = {"class": 8, "name": "Void's Edge", "commodities": {}, "black_market": True}
+        spec = service._build_station_spec(sector_id=7, port=port, universe_seed=1)
+
+        assert spec.station_type == StationType.BLACK_MARKET
+
+
+@pytest.mark.unit
+class TestCapitalPlanetDedup:
+    """WO-BANG-CAPITAL-DEDUP: bang names EVERY region's Capital-sector
+    planet 'Earth' independently (sw2102-bang/src/content.ts:346-354,
+    makePlanet's hardcoded literal) -- each region-type invocation is
+    generated separately with no cross-region awareness, so it cannot know
+    'Earth' is already claimed elsewhere in the same galaxy. translate()
+    has galaxy-wide visibility (all regions in one call, canonical
+    REGION_ORDER) and is the correct place to dedupe."""
+
+    @staticmethod
+    def _minimal_universe(capital_planet_name: str) -> Dict[str, Any]:
+        sector = {
+            "id": 1,
+            "position": {"x": 0, "y": 0, "z": 0},
+            "warps": [],
+            "port": None,
+            "planets": [
+                {
+                    "name": capital_planet_name,
+                    "type": "earth",
+                    "owner": None,
+                    "habitabilityScore": 100,
+                    "maxPopulation": 100000,
+                    "maxColonists": 1000,
+                    "ore": 0,
+                    "organics": 0,
+                    "equipment": 0,
+                    "colonists": 0,
+                    "citadel": None,
+                }
+            ],
+            "navHazards": [],
+            "nebula": None,
+            "beacon": None,
+            "explored": True,
+        }
+        cluster = {
+            "id": 1,
+            "name": "Test",
+            "type": "STANDARD",
+            "sectorRangeStart": 1,
+            "sectorRangeEnd": 1,
+            "sectorCount": 1,
+            "coords": {"x": 0, "y": 0, "z": 0},
+            "warpStability": 1.0,
+            "economicValue": 50,
+            "recommendedShipClass": "any",
+            "maxWarps": 6,
+            "isDiscovered": True,
+            "isHidden": False,
+        }
+        return {
+            "version": "1.3.0",
+            "seed": 1,
+            "totalSectors": 1,
+            "sectors": {"1": sector},
+            "warps": [],
+            "specialLocations": [],
+            "fedspaceSectors": [],
+            "config": {},
+            "createdAt": "2026-05-31T00:00:00Z",
+            "clusters": [cluster],
+            "specialFormations": [],
+            "npcRosters": [],
+            # capitalSector omitted -- defaults to 1 (the offset-anchor
+            # capital), matching the single sector in this minimal universe.
+        }
+
+    def test_second_colliding_regions_capital_planet_is_renamed(
+        self, service: BangImportService
+    ) -> None:
+        player_owned = ParsedUniverse(
+            region_type="player_owned", raw=self._minimal_universe("Earth")
+        )
+        central_nexus = ParsedUniverse(
+            region_type="central_nexus", raw=self._minimal_universe("Earth")
+        )
+        plan = service.translate(
+            {"player_owned": player_owned, "central_nexus": central_nexus},
+            region_metadata={"galaxy_name": "T"},
+        )
+
+        po_capital = plan.regions["player_owned"].planets[0]
+        cn_capital = plan.regions["central_nexus"].planets[0]
+
+        # REGION_ORDER processes player_owned before central_nexus, so
+        # player_owned claims the un-renamed "Earth" first.
+        assert po_capital.name == "Earth"
+        assert cn_capital.name != "Earth"
+        assert cn_capital.name == "Earth (Central Nexus)"
+
+    def test_single_non_terran_region_is_never_renamed(
+        self, service: BangImportService
+    ) -> None:
+        player_owned = ParsedUniverse(
+            region_type="player_owned", raw=self._minimal_universe("Earth")
+        )
+        plan = service.translate(
+            {"player_owned": player_owned},
+            region_metadata={"galaxy_name": "T"},
+        )
+        assert plan.regions["player_owned"].planets[0].name == "Earth"
+
+    def test_terran_spaces_new_earth_override_never_collides(
+        self, service: BangImportService, parsed_terran_space: ParsedUniverse
+    ) -> None:
+        """terran_space's capital is ALREADY uniquely 'New Earth' via its
+        own pre-existing starter-invariant override (unrelated to this
+        fix -- that name is ours, not bang-emitted; bang's own
+        terran_space payload also says 'Earth'). Confirms it never
+        collides with a later non-terran region's raw 'Earth', and that a
+        non-terran region processed AFTER terran_space is still the FIRST
+        claimant of plain 'Earth' (not renamed)."""
+        player_owned = ParsedUniverse(
+            region_type="player_owned", raw=self._minimal_universe("Earth")
+        )
+        plan = service.translate(
+            {"terran_space": parsed_terran_space, "player_owned": player_owned},
+            region_metadata={"galaxy_name": "T"},
+        )
+        ts_capital = next(
+            p for p in plan.regions["terran_space"].planets if p.sector_int_id == 1
+        )
+        po_capital = plan.regions["player_owned"].planets[0]
+        assert ts_capital.name == "New Earth"
+        assert po_capital.name == "Earth"
 
 
 # ---------------------------------------------------------------------------
@@ -642,6 +959,36 @@ class TestCliFlagMapping:
         assert "--max-warps" not in args
         assert "--port-percent" not in args
         assert "--planet-percent" not in args
+
+
+@pytest.mark.unit
+class TestOneWayWarpPercentPin:
+    """WO-BANG-ONEWAY-RATE: GLOSSARY.md's canonical ~5% one-way-warp target
+    is pinned explicitly rather than relying on bang's own CLI default.
+    NOTE (see the constant's own doc-comment): pinning this INPUT does NOT
+    reliably produce a ~5% OUTPUT fraction -- direct empirical testing
+    against the live bang CLI measured 29.6%/32.9%/44.6% one-way at input
+    0/5/25, a bang-side generation-algorithm behavior. This test pins the
+    CONSTANT and its CLI wire-up only, not an output-fraction guarantee
+    (that would require a real bang invocation, out of this DB-free unit
+    suite's scope)."""
+
+    def test_canon_constant_is_five_percent(self) -> None:
+        assert CANON_ONE_WAY_WARP_PERCENT == 5.0
+
+    def test_pinned_constant_emits_the_matching_cli_flag(
+        self, service: BangImportService
+    ) -> None:
+        config = BangConfig(
+            seed=42,
+            sectors=1000,
+            region_type="player_owned",
+            one_way_warp_percent=CANON_ONE_WAY_WARP_PERCENT,
+        )
+        args = service._build_bang_args(config)  # pylint: disable=protected-access
+        assert "--one-way-warps" in args
+        idx = args.index("--one-way-warps")
+        assert args[idx + 1] == "5.0"
 
 
 # ---------------------------------------------------------------------------
