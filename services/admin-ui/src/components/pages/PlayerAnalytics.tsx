@@ -155,16 +155,19 @@ const PlayerAnalytics: React.FC = () => {
         ...prev,
         players: transformedPlayers,
         totalCount: rawData.total_count || transformedPlayers.length,
+        // Honesty #89: never coerce missing real-time fields to 0 — null → em-dash.
+        // Banned count is not on the analytics envelope; do not invent it from
+        // the current page's player list.
         metrics: {
-          total_active_players: analyticsData.total_active_players || 0,
-          total_credits_circulation: analyticsData.total_credits_circulation || 0,
-          average_session_time: analyticsData.average_session_time || 0,
-          new_players_today: analyticsData.new_players_today || 0,
-          player_retention_rate: analyticsData.player_retention_rate_7d || 0,
-          players_online_now: analyticsData.players_online_now || 0,
-          total_players: analyticsData.total_players || 0,
-          banned_players: transformedPlayers.filter((p: any) => p.status === 'banned').length,
-          suspicious_activity_alerts: analyticsData.suspicious_activity_alerts || 0
+          total_active_players: asCount(analyticsData.total_active_players),
+          total_credits_circulation: asCount(analyticsData.total_credits_circulation),
+          average_session_time: asCount(analyticsData.average_session_time),
+          new_players_today: asCount(analyticsData.new_players_today),
+          player_retention_rate: asCount(analyticsData.player_retention_rate_7d),
+          players_online_now: asCount(analyticsData.players_online_now),
+          total_players: asCount(analyticsData.total_players),
+          banned_players: null,
+          suspicious_activity_alerts: asCount(analyticsData.suspicious_activity_alerts),
         },
         loading: false
       }));
@@ -645,27 +648,27 @@ const PlayerAnalytics: React.FC = () => {
                 <div className="section-header">
                   <div>
                     <h3 className="section-title">📊 Player Metrics</h3>
-                    <p className="section-subtitle">Real-time player analytics and performance indicators</p>
+                    <p className="section-subtitle">From /admin/analytics/real-time when the endpoint answers</p>
                   </div>
                 </div>
                 
                 <div className="grid grid-auto-fit-sm gap-4">
-                  <div className={`dashboard-stat-card${analyticsAvailable ? '' : ' stat-not-tracked'}`} data-variant="primary">
+                  <div className={`dashboard-stat-card${analyticsAvailable && state.metrics.total_active_players != null ? '' : ' stat-not-tracked'}`} data-variant="primary">
                     <div className="dashboard-stat-header">
                       <span className="dashboard-stat-icon">👥</span>
                       <h4 className="dashboard-stat-title">Active Players</h4>
                     </div>
-                    <div className="dashboard-stat-value">{analyticsAvailable ? state.metrics.total_active_players.toLocaleString() : <>&mdash;</>}</div>
-                    <div className="dashboard-stat-description">{analyticsAvailable ? `Online: ${state.metrics.players_online_now}` : 'Analytics endpoint unavailable'}</div>
+                    <div className="dashboard-stat-value">{analyticsAvailable && state.metrics.total_active_players != null ? state.metrics.total_active_players.toLocaleString() : <>&mdash;</>}</div>
+                    <div className="dashboard-stat-description">{analyticsAvailable && state.metrics.players_online_now != null ? `Online: ${state.metrics.players_online_now}` : (analyticsAvailable ? 'Online count unavailable' : 'Analytics endpoint unavailable')}</div>
                   </div>
 
-                  <div className={`dashboard-stat-card${analyticsAvailable ? '' : ' stat-not-tracked'}`}>
+                  <div className={`dashboard-stat-card${analyticsAvailable && state.metrics.total_credits_circulation != null ? '' : ' stat-not-tracked'}`}>
                     <div className="dashboard-stat-header">
                       <span className="dashboard-stat-icon">💰</span>
                       <h4 className="dashboard-stat-title">Total Credits</h4>
                     </div>
-                    <div className="dashboard-stat-value">{analyticsAvailable ? state.metrics.total_credits_circulation.toLocaleString() : <>&mdash;</>}</div>
-                    <div className="dashboard-stat-description">{analyticsAvailable ? 'In Circulation' : 'Analytics endpoint unavailable'}</div>
+                    <div className="dashboard-stat-value">{analyticsAvailable && state.metrics.total_credits_circulation != null ? state.metrics.total_credits_circulation.toLocaleString() : <>&mdash;</>}</div>
+                    <div className="dashboard-stat-description">{analyticsAvailable && state.metrics.total_credits_circulation != null ? 'In Circulation' : (analyticsAvailable ? 'Credits circulation unavailable' : 'Analytics endpoint unavailable')}</div>
                   </div>
 
                   <div className="dashboard-stat-card stat-not-tracked">
@@ -677,13 +680,13 @@ const PlayerAnalytics: React.FC = () => {
                     <div className="dashboard-stat-description">No session tracking yet</div>
                   </div>
 
-                  <div className={`dashboard-stat-card${analyticsAvailable ? '' : ' stat-not-tracked'}`}>
+                  <div className={`dashboard-stat-card${analyticsAvailable && state.metrics.new_players_today != null ? '' : ' stat-not-tracked'}`}>
                     <div className="dashboard-stat-header">
                       <span className="dashboard-stat-icon">🆕</span>
                       <h4 className="dashboard-stat-title">New Players</h4>
                     </div>
-                    <div className="dashboard-stat-value">{analyticsAvailable ? state.metrics.new_players_today : <>&mdash;</>}</div>
-                    <div className="dashboard-stat-description">{analyticsAvailable ? 'Today' : 'Analytics endpoint unavailable'}</div>
+                    <div className="dashboard-stat-value">{analyticsAvailable && state.metrics.new_players_today != null ? state.metrics.new_players_today : <>&mdash;</>}</div>
+                    <div className="dashboard-stat-description">{analyticsAvailable && state.metrics.new_players_today != null ? 'Today' : (analyticsAvailable ? 'New-player count unavailable' : 'Analytics endpoint unavailable')}</div>
                   </div>
 
                   <div className="dashboard-stat-card stat-not-tracked">
@@ -695,13 +698,13 @@ const PlayerAnalytics: React.FC = () => {
                     <div className="dashboard-stat-description">No retention telemetry surfaced yet</div>
                   </div>
 
-                  <div className={`dashboard-stat-card${analyticsAvailable ? '' : ' stat-not-tracked'}`} data-variant="warning">
+                  <div className={`dashboard-stat-card${analyticsAvailable && state.metrics.suspicious_activity_alerts != null ? '' : ' stat-not-tracked'}`} data-variant="warning">
                     <div className="dashboard-stat-header">
                       <span className="dashboard-stat-icon">🚨</span>
                       <h4 className="dashboard-stat-title">Security Alerts</h4>
                     </div>
-                    <div className="dashboard-stat-value">{analyticsAvailable ? state.metrics.suspicious_activity_alerts : <>&mdash;</>}</div>
-                    <div className="dashboard-stat-description">{analyticsAvailable ? 'Suspicious Activity' : 'Analytics endpoint unavailable'}</div>
+                    <div className="dashboard-stat-value">{analyticsAvailable && state.metrics.suspicious_activity_alerts != null ? state.metrics.suspicious_activity_alerts : <>&mdash;</>}</div>
+                    <div className="dashboard-stat-description">{analyticsAvailable && state.metrics.suspicious_activity_alerts != null ? 'Suspicious Activity' : (analyticsAvailable ? 'Alert count unavailable' : 'Analytics endpoint unavailable')}</div>
                   </div>
                 </div>
               </section>
