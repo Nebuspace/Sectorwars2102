@@ -54,15 +54,27 @@ from src.api.routes.registry import router as registry_router
 from src.api.routes.bang_galaxy import router as bang_galaxy_router
 from src.api.routes.construction import router as construction_router
 from src.api.routes.port_ownership import router as port_ownership_router
+from src.api.routes.station_security import router as station_security_router
 from src.api.routes.ranking import router as ranking_router
 from src.api.routes.quantum import router as quantum_router
 from src.api.routes.refining import router as refining_router
+from src.api.routes.recovery import router as recovery_router
 from src.api.routes.warp_gates import router as warp_gates_router
 from src.api.routes.nav import router as nav_router
 from src.api.routes.medals import router as medals_router
 from src.api.routes.haggle import router as haggle_router
 from src.api.routes.research_cockpit import router as research_cockpit_router
 from src.api.routes.black_market import router as black_market_router
+from src.api.routes.resources import router as resources_router  # WO-ARCH-RES-1-KERNEL (router carries /resources prefix)
+from src.api.routes.pirate_ecosystem import router as pirate_ecosystem_router  # WO-PIRATE-ECO-1
+from src.api.routes.contracts import router as contracts_router  # WO-ECON-CONTRACT-1-KERNEL
+from src.api.routes.admin_contract_disputes import router as admin_contract_disputes_router  # WO-CONTRACT-6
+from src.api.routes.admin_multi_account import router as admin_multi_account_router  # WO-PADMIN-multiacct-review
+from src.api.routes.admin_scopes import router as admin_scopes_router  # RBAC Phase B grant/revoke
+from src.api.routes.beacons import router as beacons_router  # WO-P4-play-beacon-kernel
+from src.api.routes.storage import router as storage_router  # WO-STORE-DEPOSIT-FLOW
+from src.api.routes.intrasystem import router as intrasystem_router  # WO-ISP
+from src.api.routes.admin_reports import router as admin_reports_router  # WO-PADMIN-analytics
 from src.core.config import settings
 
 # Main API router - note that the version is now in the main API_V1_STR prefix
@@ -139,6 +151,9 @@ api_router.include_router(construction_router, tags=["construction"])
 # Port ownership: listings/auctions, owner powers, economic takeover
 # (router carries its own /port-ownership prefix)
 api_router.include_router(port_ownership_router, tags=["port-ownership"])
+# Station-protection security-tier ladder: upgrade/downgrade/status
+# (WO-STN-SEC-1; router carries its own /station-security prefix)
+api_router.include_router(station_security_router, tags=["station-security"])
 # Military ranking, medals, reputation, and bounties
 # (router carries its own /ranking prefix)
 api_router.include_router(ranking_router, tags=["ranking"])
@@ -154,6 +169,10 @@ api_router.include_router(quantum_router, tags=["quantum"])
 # ONLY player-driven source of Quantum Crystals (router carries its own
 # /refining prefix; distinct from the 1:1 /quantum/refine-charge jump charge)
 api_router.include_router(refining_router, tags=["refining"])
+# One-way-stranding recovery: Federation distress beacon (any hull, -10 rep,
+# 24h cooldown) + Warp Jumper Slipdrive (quantum_jump_capable hulls, charge +
+# fuel-scaled escape) (router carries its own /recovery prefix)
+api_router.include_router(recovery_router, tags=["recovery"])
 # Player warp gates: three-phase construction ritual (ADR-0029) + sector
 # structure listing (router carries its own /warp-gates prefix; traversal
 # itself rides the normal /player/move endpoints via MovementService)
@@ -169,6 +188,33 @@ api_router.include_router(bang_galaxy_router, prefix="/admin", tags=["admin-bang
 # sell with detection roll (router carries its own /trading prefix → endpoints at
 # /trading/black-market/...)
 api_router.include_router(black_market_router, tags=["black-market"])
+# Resource registry catalog (WO-ARCH-RES-1-KERNEL): read-only seeded canon
+# resource list (router carries its own /resources prefix → GET /resources).
+api_router.include_router(resources_router, tags=["resources"])
+# Pirate ecosystem read API (WO-PIRATE-ECO-1): region-scoped population/
+# target/cleansed-state snapshot (router carries its own /regions prefix →
+# GET /regions/{region_id}/pirate-ecosystem).
+api_router.include_router(pirate_ecosystem_router, tags=["pirate-ecosystem"])
+# Trade contracts (WO-ECON-CONTRACT-1-KERNEL): board/mine/{id} reads +
+# accept/complete/abandon on NPC-issued cargo_delivery contracts (router
+# carries its own /contracts prefix). Player-issued posting, insurance,
+# bulk-partial deliver, cancel, and disputes are later build steps.
+api_router.include_router(contracts_router, tags=["contracts"])
+api_router.include_router(admin_contract_disputes_router, tags=["admin-contract-disputes"])
+api_router.include_router(admin_multi_account_router, tags=["admin-multi-account"])  # WO-PADMIN-multiacct-review
+api_router.include_router(admin_scopes_router, tags=["admin-scopes"])  # RBAC Phase B grant/revoke
+# Message beacons (WO-P4-play-beacon-kernel): deploy/read/salvage a
+# physical "message in a bottle" in a sector (router carries its own
+# /beacons prefix).
+api_router.include_router(beacons_router, tags=["beacons"])
+# Storage lockers (WO-STORE-DEPOSIT-FLOW): rent a locker at a contract's
+# destination station, deposit cargo in installments, auto-complete on
+# full quantity (router carries its own /storage prefix).
+api_router.include_router(storage_router, tags=["storage"])
+# Intra-system helm (WO-ISP): authoritative burn/halt/pose (router carries
+# /helm/intrasystem prefix).
+api_router.include_router(intrasystem_router, tags=["intrasystem"])
+api_router.include_router(admin_reports_router, tags=["admin-reports"])  # WO-PADMIN-analytics
 
 # Only include test routes in development/test environments
 if settings.TESTING or settings.DEVELOPMENT_MODE:

@@ -9,13 +9,13 @@ from pydantic import BaseModel, Field, ValidationError
 from datetime import datetime, timezone
 import json
 
-from src.auth.dependencies import get_current_user, get_current_player
+from src.auth.admin_scopes import SUBSCRIPTIONS_VIEW
+from src.auth.dependencies import get_current_user, get_current_player, require_scope
 from src.core.database import get_async_session
 from src.models.user import User
 from src.models.player import Player
 from src.models.region import Region
 from src.services.paypal_service import paypal_service, PayPalWebhookEvent, SubscriptionTier
-from src.services.regional_auth_service import regional_auth, RegionalPermission
 
 import logging
 
@@ -414,30 +414,11 @@ async def check_region_name_availability(
 
 @router.get("/admin/subscriptions")
 async def admin_get_all_subscriptions(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_scope(SUBSCRIPTIONS_VIEW)),
     session: AsyncSession = Depends(get_async_session)
 ):
-    """Admin endpoint to view all subscriptions (requires admin permissions)"""
+    """Admin endpoint to view all subscriptions (requires admin.subscriptions.view)."""
     try:
-        # Check if user has admin permissions
-        current_player = await session.execute(
-            select(Player).where(Player.user_id == current_user.id)
-        )
-        player = current_player.scalar_one_or_none()
-        
-        if not player:
-            raise HTTPException(status_code=404, detail="Player not found")
-        
-        # Check galaxy admin permission
-        has_permission = await regional_auth.check_regional_permission(
-            str(current_user.id),
-            "any",  # Galaxy-level permission
-            RegionalPermission.GALAXY_ADMIN_FULL
-        )
-        
-        if not has_permission:
-            raise HTTPException(status_code=403, detail="Admin access required")
-        
         # Get all regions with subscriptions
         result = await session.execute(
             select(Region).where(Region.paypal_subscription_id.isnot(None))
