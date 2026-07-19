@@ -374,7 +374,20 @@ class AITradingService:
         db.add(profile)
         await db.commit()
         await db.refresh(profile)
-        
+        # This session has expire_on_commit=True (the async_sessionmaker
+        # default, unset in core/database.py), so the commit above expired
+        # EVERY object attached to `db` -- including `player`, which the
+        # caller (get_trading_recommendations) goes on to read
+        # (player.current_sector_id) in the three _generate_* calls right
+        # after this returns. Without this refresh, that later read is a
+        # sync lazy-reload attempt on an async session and raises
+        # MissingGreenlet ("greenlet_spawn has not been called"), exactly
+        # the pattern already documented at enhanced_ai_service.py:476-481
+        # for the `assistant` object -- this is the same defect class, one
+        # level down, for `player`. Only reachable on a fresh DB / new
+        # player, since an existing profile row skips this branch entirely.
+        await db.refresh(player)
+
         return profile
     
     async def _generate_market_opportunities(
