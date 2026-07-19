@@ -1,0 +1,55 @@
+name: ci-lint
+
+# Blocking gate: catches NameError-class bugs (undefined names, orphaned
+# renames) that py_compile can't see but a full type-checker isn't needed
+# for either. Companion report-only job surfaces the wider style backlog
+# without blocking merges on it (baseline: ~6.7k pre-existing hits at
+# authoring time).
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ruff-f821-blocking:
+    name: ruff F821 (blocking)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # Matches services/gameserver/Dockerfile's `FROM python:3.12-slim`
+          # (the actual deploy target; pyproject's `python = "^3.11"` is a
+          # wider dependency floor, not the pinned runtime).
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install "ruff>=0.0.287,<0.15.21"
+
+      - name: ruff check --select F821
+        run: ruff check --select F821 services/gameserver/src
+
+  ruff-full-report:
+    name: ruff full (report-only)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install "ruff>=0.0.287,<0.15.21"
+
+      - name: ruff check (full ruleset, non-blocking)
+        continue-on-error: true
+        run: ruff check services/gameserver/src

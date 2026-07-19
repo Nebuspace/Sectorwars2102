@@ -1,0 +1,32 @@
+# Prometheus config for the sectorwars-prometheus container.
+# Mounted read-only by docker-compose.yml (prometheus service) at
+# /etc/prometheus/prometheus.yml and loaded via --config.file.
+#
+# NO-CANON: scrape_interval/evaluation_interval of 15s is a starting default,
+# not a ratified value -- revisit once real scrape targets exist and their
+# metric volume/cardinality is known.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Prometheus scraping itself -- proves the config loads and the stack is
+  # live end to end (prometheus_build_info, prometheus_tsdb_*, up{job="prometheus"}).
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # -- Pending targets --
+  # gameserver and region-manager do not expose Prometheus-format /metrics
+  # yet (region-manager's /metrics returns plain JSON today, not the
+  # text-exposition format Prometheus scrapes). Wiring a real exporter is
+  # separately gated under WO-OPS-METRICS-EXPORTER. Uncomment once that
+  # lands; target names are the compose service names on nexus-network.
+  #
+  # - job_name: central-nexus-server
+  #   static_configs:
+  #     - targets: ['central-nexus-server:8080']
+  #
+  # - job_name: region-manager
+  #   static_configs:
+  #     - targets: ['region-manager:8080']

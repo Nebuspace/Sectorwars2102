@@ -1,0 +1,46 @@
+{
+  "title": "Sectorwars Overview",
+  "uid": "sectorwars-overview",
+  "editable": true,
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "tags": ["sectorwars", "starter"],
+  "panels": [
+    {
+      "id": 1,
+      "title": "Prometheus target up",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "up{job=\"prometheus\"}",
+          "legendFormat": "{{job}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "TSDB samples appended (rate, 5m)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "rate(prometheus_tsdb_head_samples_appended_total[5m])",
+          "legendFormat": "samples/s",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

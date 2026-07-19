@@ -1,0 +1,16 @@
+# Grafana dashboard provider config. Mounted read-write by docker-compose.yml
+# (grafana service) at /etc/grafana/provisioning/dashboards -- the same
+# directory this file lives in, so `path` below points at itself.
+# https://grafana.com/docs/grafana/latest/administration/provisioning/#dashboards
+apiVersion: 1
+
+providers:
+  - name: default
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
