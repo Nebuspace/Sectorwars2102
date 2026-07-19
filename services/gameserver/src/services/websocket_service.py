@@ -13,6 +13,30 @@ logger = logging.getLogger(__name__)
 # in-memory registry key. Reported to the Orchestrator.
 MAX_TOPIC_NAME_LENGTH = 128
 
+# Canon: SYSTEMS/realtime-bus.md "Rate limits" table — "Topic subscriptions
+# per socket | 50 | binding" — and the "Subscription spam" failure mode:
+# "Server caps subscriptions per socket (e.g. 50 topics); excess returns
+# subscription_rejected." (WO-RT-BUS-HARDENING)
+MAX_TOPICS_PER_USER = 50
+
+# WO-P1-BUS-RACE-CRITICAL (MEDIUM finding, Mack): send_personal_message's
+# local-hit-suppresses-bus-publish optimization assumes a local send_text()
+# "success" means real delivery -- but a half-open dead socket (network
+# drop without a clean close) can return True (OS-buffered) even though
+# the peer never receives it, and the single-socket-per-user eviction only
+# runs on the WORKER the user reconnects TO, never signaling the STALE
+# worker to drop its own now-orphaned entry. A "delivered" local hit whose
+# heartbeat is older than this window is treated as untrustworthy and ALSO
+# published to the bus -- a rare harmless duplicate (the local send may
+# have genuinely succeeded) beats silent loss for up to the full 300s
+# heartbeat-sweep interval (cleanup_stale_connections' own timeout_seconds
+# default) if the user has since reconnected to a different worker.
+# Comfortably above the 30s heartbeat cadence (realtime-bus.md's connection
+# lifecycle) to avoid false positives from ordinary jitter, well under the
+# 300s sweep timeout so this still catches staleness meaningfully faster
+# than waiting for the full sweep.
+LOCAL_DELIVERY_TRUST_WINDOW_SECONDS = 60
+
 
 class ConnectionManager:
     """Manages WebSocket connections for real-time multiplayer features"""
@@ -39,15 +63,35 @@ class ConnectionManager:
         # Store admin connections separately
         self.admin_connections: Dict[str, WebSocket] = {}
         self.admin_metadata: Dict[str, Dict[str, Any]] = {}
+        # WO-P1-REALTIME-BUS-FANOUT: lazily-started, once-per-process
+        # cross-worker bus subscriber task. None until the first connect()
+        # call claims it (see _ensure_bus_subscriber_started).
+        self._bus_subscriber_task: Optional[asyncio.Task] = None
 
     async def connect(self, websocket: WebSocket, user_id: str, user_data: Dict[str, Any]):
         """Accept a new WebSocket connection"""
         await websocket.accept()
-        
-        # If user already connected, disconnect old connection
+
+        # WO-P1-REALTIME-BUS-FANOUT: this is the one choke point every
+        # connection route funnels through -- the plain player route
+        # (api/routes/websocket.py) calls connect() directly, and
+        # EnhancedWebSocketService.connect() (enhanced_websocket_service.py)
+        # calls straight through to it too -- so anchoring the lazy
+        # subscriber-start here (rather than duplicating it in each route)
+        # covers every connection path with one call.
+        await self._ensure_bus_subscriber_started()
+
+        # If user already connected, evict the old connection. Close with
+        # 4001/reason="superseded" (canon reuses 4001 for both auth failure
+        # and eviction — realtime-bus.md:70 — the reason string is the
+        # discriminator) so the client can tell this apart from an auth
+        # rejection and skip its reconnect-with-refresh path
+        # (WO-RT-EVICTION-SUPERSEDE). The route's finally block passes its
+        # own socket to disconnect(), so the evicted handler can't turn
+        # around and scrub this new connection's registration.
         if user_id in self.active_connections:
             try:
-                await self.active_connections[user_id].close()
+                await self.active_connections[user_id].close(code=4001, reason="superseded")
             except Exception as e:
                 logger.warning(f"Error closing existing connection for user {user_id}: {e}")
         
@@ -100,11 +144,30 @@ class ConnectionManager:
                 "timestamp": datetime.now(UTC).isoformat()
             }, exclude_user=user_id)
     
-    async def disconnect(self, user_id: str):
-        """Remove a WebSocket connection"""
+    async def disconnect(self, user_id: str, websocket: Optional[WebSocket] = None) -> bool:
+        """Remove a WebSocket connection.
+
+        `websocket`, when passed, must be the exact socket the caller owns
+        (the route's finally block passes its own connection object). If a
+        newer socket has since replaced it in active_connections, this is a
+        no-op — an evicted handler's finally must never scrub the socket
+        that superseded it (WO-RT-EVICTION-SUPERSEDE). Internal prune paths
+        that only know the user_id (e.g. send-failure cleanup) call this
+        with websocket=None and keep the prior unconditional behavior.
+
+        Returns True iff this call actually performed the teardown (identity
+        matched, or no identity was given), False on the no-op/stale-handler
+        path. WO-RT-BUS-HARDENING: the route uses this to gate pruning its
+        own per-user rate-limit/violation dicts — a superseded handler's
+        finally must not wipe out the state a live successor connection has
+        already started accumulating (the same eviction race this identity
+        check was built to close, applied to a second piece of per-user state).
+        """
         if user_id not in self.active_connections:
-            return
-        
+            return False
+        if websocket is not None and self.active_connections[user_id] is not websocket:
+            return False
+
         metadata = self.connection_metadata.get(user_id, {})
         current_sector = metadata.get("current_sector")
         team_id = metadata.get("team_id")
@@ -152,9 +215,50 @@ class ConnectionManager:
                 "sector_id": current_sector,
                 "timestamp": datetime.now(UTC).isoformat()
             })
-    
+
+        return True
+
     async def send_personal_message(self, user_id: str, message: Dict[str, Any]):
-        """Send a message to a specific user"""
+        """Send a message to a specific user -- this worker's local socket
+        first; if not found here, OR found but stale (see
+        _local_delivery_is_untrusted), fan out via the cross-worker bus
+        too (WO-P1-REALTIME-BUS-FANOUT)."""
+        delivered = await self._deliver_personal_local(user_id, message)
+        if not delivered or self._local_delivery_is_untrusted(user_id):
+            # realtime-bus.md invariant 1 (single socket per user_id): a
+            # user not found in THIS worker's active_connections is either
+            # fully offline or connected to a DIFFERENT worker -- fan out
+            # via the bus so whichever worker actually holds their socket
+            # can deliver it. A "delivered" local hit whose heartbeat is
+            # stale ALSO publishes -- see LOCAL_DELIVERY_TRUST_WINDOW_
+            # SECONDS: a rare harmless duplicate beats silent loss. Best-
+            # effort either way: see _publish_to_bus.
+            await self._publish_to_bus("personal", user_id, message)
+        return delivered
+
+    def _local_delivery_is_untrusted(self, user_id: str) -> bool:
+        """True when a local send_text() 'success' for user_id shouldn't
+        be trusted on its own -- their last_heartbeat on THIS worker is
+        older than LOCAL_DELIVERY_TRUST_WINDOW_SECONDS. No metadata / no
+        heartbeat timestamp is treated as trustworthy (not stale): this is
+        only consulted right after _deliver_personal_local found a live
+        active_connections entry, so a missing heartbeat here would be an
+        unrelated data gap, not evidence of a half-open dead socket."""
+        metadata = self.connection_metadata.get(user_id)
+        if not metadata:
+            return False
+        last_heartbeat = metadata.get("last_heartbeat")
+        if last_heartbeat is None:
+            return False
+        age_seconds = (datetime.now(UTC) - last_heartbeat).total_seconds()
+        return age_seconds > LOCAL_DELIVERY_TRUST_WINDOW_SECONDS
+
+    async def _deliver_personal_local(self, user_id: str, message: Dict[str, Any]) -> bool:
+        """The original send_personal_message body -- local sockets on
+        THIS worker only. Reused by the bus dispatcher (_handle_bus_
+        envelope) so a remote-origin personal event is delivered locally
+        without being re-published (which would ping-pong the same event
+        across every worker forever)."""
         if user_id in self.active_connections:
             try:
                 await self.active_connections[user_id].send_text(json.dumps(message))
@@ -163,30 +267,175 @@ class ConnectionManager:
                 logger.error(f"Error sending message to user {user_id}: {e}")
                 await self.disconnect(user_id)
         return False
-    
+
     async def broadcast_to_sector(self, sector_id: int, message: Dict[str, Any], exclude_user: Optional[str] = None):
-        """Broadcast a message to all users in a specific sector"""
+        """Broadcast a message to all users in a specific sector -- this
+        worker's local sector members AND, unconditionally, the cross-
+        worker bus (WO-P1-REALTIME-BUS-FANOUT). Unlike send_personal_
+        message this is NOT conditional on a local miss: a sector's
+        occupants can be split across however many workers they happen to
+        be connected to, so this worker having zero (or some) local
+        members says nothing about whether OTHER workers have members
+        too -- every broadcast must always reach the bus."""
+        await self._deliver_sector_local(sector_id, message, exclude_user)
+        await self._publish_to_bus("sector", sector_id, message, exclude_user=exclude_user)
+
+    async def _deliver_sector_local(self, sector_id: int, message: Dict[str, Any], exclude_user: Optional[str] = None):
+        """The original broadcast_to_sector body -- local sockets on THIS
+        worker only. Reused by the bus dispatcher for a remote-origin
+        sector event (never re-published, same ping-pong concern as
+        _deliver_personal_local)."""
         if sector_id not in self.sector_connections:
             return
-        
+
         # Add sector context to message
         message["sector_id"] = sector_id
-        
+
         disconnect_users = []
         for user_id in self.sector_connections[sector_id]:
             if exclude_user and user_id == exclude_user:
                 continue
-            
+
             try:
                 await self.active_connections[user_id].send_text(json.dumps(message))
             except Exception as e:
                 logger.error(f"Error broadcasting to user {user_id} in sector {sector_id}: {e}")
                 disconnect_users.append(user_id)
-        
+
         # Clean up failed connections
         for user_id in disconnect_users:
             await self.disconnect(user_id)
-    
+
+    # --- Cross-process bus fan-out (WO-P1-REALTIME-BUS-FANOUT) -------------
+
+    async def _publish_to_bus(
+        self,
+        kind: str,
+        target: Any,
+        message: Dict[str, Any],
+        exclude_user: Optional[str] = None,
+    ) -> None:
+        """Best-effort cross-worker fan-out via redis_pubsub_service.
+        Mirrors realtime-bus.md invariant 4 (every send is non-blocking
+        with respect to the originating service) -- a Redis outage or
+        import failure degrades cross-worker delivery silently, never
+        raises into the caller, which has ALREADY completed local
+        delivery by the time this runs."""
+        try:
+            from src.services.redis_pubsub_service import get_pubsub_service
+
+            pubsub_service = await get_pubsub_service()
+            await pubsub_service.publish_bus_event(kind, target, message, exclude_user=exclude_user)
+        except Exception:
+            logger.debug("Bus publish failed (cross-worker fanout degraded)", exc_info=True)
+
+    async def _handle_bus_envelope(self, envelope: Dict[str, Any]) -> None:
+        """Dispatch a cross-worker bus envelope to THIS worker's local
+        sockets only -- never re-publishes (that would ping-pong the same
+        event across every worker forever). Skips envelopes this SAME
+        worker published (it already delivered locally, synchronously,
+        before calling publish_bus_event) -- the duplicate-delivery guard
+        requested for WO-P1-REALTIME-BUS-FANOUT. A malformed or unknown-
+        shape envelope is logged and dropped, never raised (this runs
+        inside redis_pubsub_service.subscribe_bus's per-message try/except,
+        but stays defensive on its own terms too)."""
+        try:
+            from src.services.redis_pubsub_service import get_pubsub_service
+
+            pubsub_service = await get_pubsub_service()
+        except Exception:
+            return
+        if envelope.get("origin_worker_id") == pubsub_service.worker_id:
+            return
+
+        kind = envelope.get("kind")
+        message = envelope.get("message")
+        if not isinstance(message, dict):
+            logger.warning("Bus envelope missing/invalid message payload: %r", envelope)
+            return
+
+        # INFO, not debug, on the two success paths below: a genuine
+        # cross-worker delivery is rare in normal operation (stage runs
+        # single-worker today -- this is canon-conformance / multi-worker
+        # readiness, not a live bug) and dev's default log level is INFO
+        # (main.py only enables DEBUG when settings.DEBUG is set), so this
+        # is the observable signal the live 2-worker deploy-window proof
+        # greps for.
+        if kind == "personal":
+            target = envelope.get("target")
+            await self._deliver_personal_local(target, message)
+            logger.info(
+                "Bus envelope from worker %s delivered locally (kind=personal, target=%s)",
+                envelope.get("origin_worker_id"), target,
+            )
+        elif kind == "sector":
+            try:
+                sector_id = int(envelope.get("target"))
+            except (TypeError, ValueError):
+                logger.warning("Bus sector envelope has a non-int target: %r", envelope)
+                return
+            await self._deliver_sector_local(sector_id, message, envelope.get("exclude_user"))
+            logger.info(
+                "Bus envelope from worker %s delivered locally (kind=sector, target=%s)",
+                envelope.get("origin_worker_id"), sector_id,
+            )
+        else:
+            logger.warning("Bus envelope has an unknown kind: %r", kind)
+
+    async def _ensure_bus_subscriber_started(self) -> None:
+        """Claim the once-per-process bus subscriber task. Claimed
+        synchronously (no `await` between the None-check and the
+        assignment) so concurrent connect() calls racing during worker
+        startup can't each spawn their own duplicate listener -- two
+        listeners on the same channel would double-dispatch every bus
+        envelope to this worker's local sockets."""
+        if self._bus_subscriber_task is not None:
+            return
+        self._bus_subscriber_task = asyncio.ensure_future(self._run_bus_subscriber_loop())
+
+    async def _run_bus_subscriber_loop(self) -> None:
+        """Persistent, once-per-process cross-worker bus listener.
+        Retries forever with a short backoff on ANY failure to reach a
+        listening state -- whether Redis was never reachable at the very
+        first attempt (get_pubsub_service()/ping failing) or a connection
+        that WAS listening dropped mid-session (subscribe_bus's listen()
+        generator ending) -- so a merely TRANSIENT unavailability at
+        worker-boot time is never mistaken for a permanent one.
+
+        WO-P1-BUS-RACE-CRITICAL (Mack's finding): the previous shape split
+        this into a one-shot `_start_bus_subscriber` (single try, gave up
+        FOREVER on any failure -- including the get_pubsub_service()
+        single-flight race this WO also fixes) feeding a separate
+        forever-retrying `_run_bus_subscriber_loop` that only the
+        one-shot's success path ever reached. A transient failure at the
+        FIRST attempt -- the race, or Redis genuinely still booting when
+        this worker's first client connects -- permanently starved that
+        worker's cross-worker fanout for its whole process lifetime, with
+        nothing left to ever retry (_ensure_bus_subscriber_started's own
+        claim-guard prevents a second task from ever being spawned).
+        Collapsing into ONE loop that retries on every kind of failure,
+        not just the after-a-successful-start kind, closes that gap
+        without reopening the double-listener race the claim-guard
+        exists to prevent (still exactly one task, still claimed
+        synchronously).
+
+        subscribe_bus itself already survives per-message errors
+        (malformed JSON, callback exceptions) without exiting; this outer
+        loop only needs to catch it exiting entirely, or failing before
+        it ever starts listening."""
+        while True:
+            try:
+                from src.services.redis_pubsub_service import get_pubsub_service
+
+                pubsub_service = await get_pubsub_service()
+                if pubsub_service.redis_client is None:
+                    raise RuntimeError("redis_pubsub_service has no live client")
+                await pubsub_service.redis_client.ping()
+                await pubsub_service.subscribe_bus(self._handle_bus_envelope)
+            except Exception:
+                logger.debug("Bus subscriber unavailable, retrying in 5s", exc_info=True)
+            await asyncio.sleep(5)
+
     async def broadcast_to_team(self, team_id: str, message: Dict[str, Any], exclude_user: Optional[str] = None):
         """Broadcast a message to all users in a specific team"""
         if team_id not in self.team_connections:
@@ -266,19 +515,41 @@ class ConnectionManager:
 
     # --- Generic topic pub/sub (WO-DBB-RT5) --------------------------------
 
-    def subscribe_topic(self, user_id: str, topic: str):
+    def count_topic_subscriptions(self, user_id: str) -> int:
+        """Count how many distinct topics user_id is currently subscribed to.
+
+        O(topics), not O(1) — no reverse per-user index exists (mirrors the
+        rest of this registry, which is all topic -> set-of-users). Topic
+        counts are small enough in practice that this is fine; introduce a
+        reverse index only if profiling says otherwise."""
+        return sum(1 for subscribers in self.topic_subscriptions.values() if user_id in subscribers)
+
+    def subscribe_topic(self, user_id: str, topic: str) -> bool:
         """Subscribe a connected user to a generic topic.
 
         WO-DBB-RT5 — opt a user into a named topic so a later publish_topic()
         reaches them. Idempotent (a set). Only subscribes already-connected
         users so a topic set never references a dead connection; teardown lives
         in disconnect(). Mirrors the team_connections registry idiom (a
-        topic -> set-of-user_ids map)."""
+        topic -> set-of-user_ids map).
+
+        WO-RT-BUS-HARDENING: enforces canon's MAX_TOPICS_PER_USER cap (50,
+        binding per SYSTEMS/realtime-bus.md's Rate limits table). A topic the
+        user is already subscribed to never consumes a fresh slot (idempotent
+        re-subscribe always succeeds). Returns True if the subscription is
+        registered (new or already-present), False if the cap was hit — the
+        caller (handle_websocket_message) sends a subscription_rejected frame
+        and does not register."""
         if not topic or user_id not in self.active_connections:
-            return
+            return False
+        if topic in self.topic_subscriptions and user_id in self.topic_subscriptions[topic]:
+            return True
+        if self.count_topic_subscriptions(user_id) >= MAX_TOPICS_PER_USER:
+            return False
         if topic not in self.topic_subscriptions:
             self.topic_subscriptions[topic] = set()
         self.topic_subscriptions[topic].add(user_id)
+        return True
 
     def unsubscribe_topic(self, user_id: str, topic: str):
         """Unsubscribe a user from a generic topic (WO-DBB-RT5)."""
@@ -344,31 +615,13 @@ class ConnectionManager:
             # Broadcast globally for major events
             await self.broadcast_global(message)
     
-    async def send_new_message_notification(self, recipient_user_id: str, message_data: Dict[str, Any]):
-        """Send new message notification to a specific user"""
-        notification = {
-            "type": "new_message",
-            "timestamp": datetime.now(UTC).isoformat(),
-            **message_data
-        }
-        await self.send_personal_message(recipient_user_id, notification)
-    
-    async def send_ship_status_change(self, user_id: str, ship_data: Dict[str, Any]):
-        """Send ship status change to ship owner"""
-        message = {
-            "type": "ship_status_change",
-            "timestamp": datetime.now(UTC).isoformat(),
-            **ship_data
-        }
-        await self.send_personal_message(user_id, message)
-
     async def send_turn_pool_update(self, user_id: str, turn_data: Dict[str, Any]):
         """Push an authoritative turn-pool snapshot to the pool's owner.
 
         The promised SYSTEMS/turn-regeneration.md "Authoritative push": a
         player-scoped ``turn_pool_updated`` frame emitted by ``regenerate_turns``
         whenever lazy regen actually credits turns (N>0), so connected clients
-        refresh the pool without polling. Mirrors send_ship_status_change /
+        refresh the pool without polling. Mirrors send_hostile_detected /
         send_personal_message (typed message, personal scope). ``user_id`` is the
         owning User's id string (the key send_personal_message routes on)."""
         message = {
@@ -384,9 +637,9 @@ class ConnectionManager:
         A Long-Range Scanner Array (citadel_service DEFENSE_BUILDINGS
         "scanner_array", effect detection_range_sectors) on the owner's planet
         picks up a hostile ship moving within detection range of the planet's
-        sector. Mirrors send_turn_pool_update / send_ship_status_change (typed
-        message, personal scope). ``owner_user_id`` is the owning User's id
-        string (the key send_personal_message routes on); ``payload`` carries
+        sector. Mirrors send_turn_pool_update (typed message, personal scope).
+        ``owner_user_id`` is the owning User's id string (the key
+        send_personal_message routes on); ``payload`` carries
         ``{sector_id, detection_range, ship_id, detected_player_id}``."""
         message = {
             "type": "hostile_detected",
@@ -408,20 +661,6 @@ class ConnectionManager:
             await self.broadcast_to_admins(message)
         else:
             # Broadcast to all users
-            await self.broadcast_global(message)
-    
-    async def send_fleet_update(self, fleet_id: str, fleet_data: Dict[str, Any], team_id: str = None):
-        """Send fleet update to team members or global"""
-        message = {
-            "type": "fleet_update",
-            "fleet_id": fleet_id,
-            "timestamp": datetime.now(UTC).isoformat(),
-            **fleet_data
-        }
-        
-        if team_id:
-            await self.broadcast_to_team(team_id, message)
-        else:
             await self.broadcast_global(message)
     
     async def send_market_update(self, market_data: Dict[str, Any], sector_id: int = None):
@@ -482,10 +721,16 @@ class ConnectionManager:
         """Accept a new admin WebSocket connection"""
         await websocket.accept()
         
-        # If admin already connected, disconnect old connection
+        # If admin already connected, evict the old connection. Close with
+        # 4001/reason="superseded" (mirrors connect()'s player-side fix,
+        # WO-RT-EVICTION-SUPERSEDE) so the client can tell this apart from an
+        # auth rejection and skip its reconnect-with-refresh path
+        # (WO-RT-ADMIN-EVICTION). The route's finally block passes its own
+        # socket to disconnect_admin(), so the evicted handler can't turn
+        # around and scrub this new connection's registration.
         if admin_id in self.admin_connections:
             try:
-                await self.admin_connections[admin_id].close()
+                await self.admin_connections[admin_id].close(code=4001, reason="superseded")
             except Exception as e:
                 logger.warning(f"Error closing existing admin connection for {admin_id}: {e}")
         
@@ -507,15 +752,28 @@ class ConnectionManager:
             "timestamp": datetime.now(UTC).isoformat()
         })
     
-    async def disconnect_admin(self, admin_id: str):
-        """Remove an admin WebSocket connection"""
+    async def disconnect_admin(self, admin_id: str, websocket: Optional[WebSocket] = None):
+        """Remove an admin WebSocket connection.
+
+        `websocket`, when passed, must be the exact socket the caller owns
+        (the route's finally block passes its own connection object). If a
+        newer socket has since replaced it in admin_connections, this is a
+        no-op — an evicted handler's finally must never scrub the socket
+        that superseded it (WO-RT-ADMIN-EVICTION, mirrors disconnect()'s
+        player-side fix in WO-RT-EVICTION-SUPERSEDE). Internal prune paths
+        that only know the admin_id (e.g. send-failure cleanup, stale-heartbeat
+        sweep) call this with websocket=None and keep the prior unconditional
+        behavior.
+        """
         if admin_id not in self.admin_connections:
             return
-        
+        if websocket is not None and self.admin_connections[admin_id] is not websocket:
+            return
+
         # Remove from active connections
         del self.admin_connections[admin_id]
         del self.admin_metadata[admin_id]
-        
+
         logger.info(f"Admin {admin_id} disconnected from WebSocket")
     
     async def send_admin_message(self, admin_id: str, message: Dict[str, Any]):
@@ -669,6 +927,44 @@ class ConnectionManager:
         # Update metadata
         metadata["current_region"] = new_region
 
+    async def update_user_team(self, user_id: str, new_team_id: Optional[str]):
+        """Move a connected user between team rooms on a team-membership change.
+
+        WO-RT-ROOM-HOP — keep team_connections correct when a player joins,
+        creates, is kicked from, or leaves a team, so team chat
+        (broadcast_to_team) and the revalidation gate in
+        handle_websocket_message's "team" chat branch (this file, ~line 921:
+        ``if user_id in connection_manager.team_connections.get(team_id,
+        set())``) stay correct without requiring a reconnect — a kicked
+        member immediately stops receiving AND sending team chat. Mirrors
+        update_user_region for regions: leave the old team set, join the new.
+        ``new_team_id`` may be None (player left/was removed and has no
+        team). No-op for an unknown user."""
+        if user_id not in self.connection_metadata:
+            return
+
+        metadata = self.connection_metadata[user_id]
+        old_team = metadata.get("team_id")
+        new_team = str(new_team_id) if new_team_id is not None else None
+
+        if old_team == new_team:
+            return
+
+        # Remove from old team
+        if old_team and old_team in self.team_connections:
+            self.team_connections[old_team].discard(user_id)
+            if not self.team_connections[old_team]:
+                del self.team_connections[old_team]
+
+        # Add to new team
+        if new_team:
+            if new_team not in self.team_connections:
+                self.team_connections[new_team] = set()
+            self.team_connections[new_team].add(user_id)
+
+        # Update metadata
+        metadata["team_id"] = new_team
+
     def get_sector_players(self, sector_id: int) -> List[Dict[str, Any]]:
         """Get list of players currently in a sector"""
         if sector_id not in self.sector_connections:
@@ -781,7 +1077,7 @@ class ConnectionManager:
                 try:
                     await ws.close(code=4008, reason="Heartbeat timeout")
                 except Exception:
-                    pass
+                    logger.debug(f"cleanup_stale_connections: ws.close failed for stale user {user_id}", exc_info=True)
             await self.disconnect(user_id)
 
             # WO-G1: announce that a stale socket was dropped. disconnect()
@@ -827,7 +1123,7 @@ class ConnectionManager:
                 try:
                     await ws.close(code=4008, reason="Heartbeat timeout")
                 except Exception:
-                    pass
+                    logger.debug(f"cleanup_stale_connections: ws.close failed for stale admin {admin_id}", exc_info=True)
             await self.disconnect_admin(admin_id)
 
         if stale_users or stale_admins:
@@ -850,7 +1146,32 @@ async def handle_websocket_message(user_id: str, message_data: Dict[str, Any]):
             "type": "heartbeat_ack",
             "timestamp": datetime.now(UTC).isoformat()
         })
-    
+
+        # ARIA narration backlog drain (WO-ARIA-NARRATE-KERNEL lane C). The
+        # kernel's global ceiling is one line/minute/player; the client's
+        # own heartbeat cadence is 30s (services/websocket.ts), comfortably
+        # inside that window, so piggybacking the drain here needs no new
+        # scheduler infrastructure. A line the ceiling allows the moment it
+        # fires is already pushed immediately by dispatch_narration_push at
+        # the emit-hook call site (trading.py/movement_service.py/
+        # ranking_service.py/team_service.py) -- this only flushes what
+        # landed in the per-player BACKLOG queue while the ceiling was
+        # still closed. Best-effort: the kernel itself never raises, but a
+        # malformed metadata blob must never break the heartbeat ack above
+        # (already sent).
+        try:
+            from src.services.aria_narration_service import get_aria_narration_service
+
+            metadata = connection_manager.connection_metadata.get(user_id, {})
+            player_id = metadata.get("user_data", {}).get("player_id")
+            if player_id:
+                for due_line in get_aria_narration_service().drain_due_lines(player_id):
+                    await connection_manager.send_personal_message(user_id, due_line.to_payload())
+        except Exception:
+            logger.debug(
+                "Skipped aria_narration heartbeat drain for user %s", user_id, exc_info=True,
+            )
+
     elif message_type == "chat_message":
         # Handle chat messages
         target_type = message_data.get("target_type", "sector")  # sector, team, global
@@ -891,7 +1212,45 @@ async def handle_websocket_message(user_id: str, message_data: Dict[str, Any]):
         
         elif target_type == "global":
             await connection_manager.broadcast_global(chat_message, exclude_user=user_id)
-    
+
+        elif target_type == "private":
+            # WO-RT-BUS-HARDENING: the ephemeral "Private" room from
+            # OPERATIONS/realtime.md#3-rooms ("direct player-to-player"),
+            # NOT the persistent mailbox (message_service.py / POST
+            # /api/v1/messages, already wired to a WS priority-delivery
+            # push per FINDINGS.md 2026-06-12). This is live-only chat: if
+            # the recipient isn't connected right now, nothing is stored —
+            # the sender is pointed at the persistent mailbox instead.
+            # Payload key / echo semantics are NO-CANON (no wire-format spec
+            # exists for this room yet); kept minimal, flagged to the
+            # Orchestrator.
+            target_user_id = str(message_data.get("target_user_id") or "").strip()
+            if not target_user_id or target_user_id == user_id:
+                await connection_manager.send_personal_message(user_id, {
+                    "type": "error",
+                    "message": "Private chat requires a valid target_user_id"
+                })
+                return
+
+            if not await _private_chat_recipient_exists(target_user_id):
+                await connection_manager.send_personal_message(user_id, {
+                    "type": "error",
+                    "message": "Recipient not found"
+                })
+                return
+
+            if target_user_id not in connection_manager.active_connections:
+                await connection_manager.send_personal_message(user_id, {
+                    "type": "error",
+                    "code": "recipient_offline",
+                    "message": "Recipient is offline. Send a persistent message via the mailbox instead."
+                })
+                return
+
+            chat_message["target_user_id"] = target_user_id
+            await connection_manager.send_personal_message(target_user_id, chat_message)
+            await connection_manager.send_personal_message(user_id, chat_message)
+
     elif message_type == "request_sector_players":
         # Send list of players in current sector
         metadata = connection_manager.connection_metadata.get(user_id, {})
@@ -931,7 +1290,20 @@ async def handle_websocket_message(user_id: str, message_data: Dict[str, Any]):
                 "message": "Invalid topic name"
             })
             return
-        connection_manager.subscribe_topic(user_id, topic)
+        accepted = connection_manager.subscribe_topic(user_id, topic)
+        if not accepted:
+            # WO-RT-BUS-HARDENING: canon's per-socket subscription cap (50,
+            # SYSTEMS/realtime-bus.md Rate limits table) was hit — reject and
+            # do not register (realtime-bus.md's "Subscription spam" failure
+            # mode names this exact frame type).
+            await connection_manager.send_personal_message(user_id, {
+                "type": "subscription_rejected",
+                "topic": topic,
+                "reason": f"Subscription limit reached ({MAX_TOPICS_PER_USER} topics max)",
+                "current_count": connection_manager.count_topic_subscriptions(user_id),
+                "timestamp": datetime.now(UTC).isoformat()
+            })
+            return
         await connection_manager.send_personal_message(user_id, {
             "type": "topic_subscribed",
             "topic": topic,
@@ -956,14 +1328,54 @@ async def handle_websocket_message(user_id: str, message_data: Dict[str, Any]):
         logger.warning(f"Unknown WebSocket message type: {message_type} from user {user_id}")
 
 
+async def _private_chat_recipient_exists(target_user_id: str) -> bool:
+    """Check that target_user_id names a real, non-deleted User row.
+
+    WO-RT-BUS-HARDENING: private chat needs to tell "no such user" apart from
+    "real user, just not connected right now" (the latter steers the sender
+    toward the persistent mailbox instead). This handler is otherwise DB-free,
+    operating only on the in-memory ConnectionManager registries; opens its
+    own short-lived session the same way handle_aria_chat does below."""
+    import uuid as _uuid
+
+    try:
+        target_uuid = _uuid.UUID(str(target_user_id))
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+    try:
+        from sqlalchemy import select
+
+        from src.core.database import AsyncSessionLocal
+        from src.models.user import User
+
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(User.id).where(User.id == target_uuid, User.deleted.is_(False))
+            )
+            return result.scalar_one_or_none() is not None
+    except Exception as e:
+        logger.error(f"Private-chat recipient lookup failed for {target_user_id}: {e}")
+        return False
+
+
 async def handle_aria_chat(user_id: str, message_data: Dict[str, Any]):
     """Route a player's ARIA chat message to the AI service and return an
     aria_response. The plain WS endpoint uses the sync connection manager, but
     EnhancedAIService needs an AsyncSession, so we open one here. AI safety —
     input sanitization, prompt-injection filtering, and response sanitization —
     lives INSIDE EnhancedAIService.process_natural_language_query (the same
-    proven path the /enhanced-ai/chat REST route uses); we do not bypass it."""
+    proven path the /enhanced-ai/chat REST route uses); we do not bypass it.
+
+    WO-ARIA-COST-CAPS: rate/cost gating does NOT live inside EnhancedAIService
+    (verified -- no cost/security_service reference anywhere in that module)
+    and did not previously run on this path at all. Wired here to mirror
+    api/routes/enhanced_ai.py's chat_with_ai exactly -- content-safety and
+    rate-limit failures stay hard `error` frames; a cost-cap hit degrades to
+    an `aria_response` carrying `degraded`/`scope`, never a hard error."""
     import uuid as _uuid
+
+    from src.services.ai_security_service import get_security_service
 
     metadata = connection_manager.connection_metadata.get(user_id, {})
     user_data = metadata.get("user_data", {})
@@ -978,6 +1390,73 @@ async def handle_aria_chat(user_id: str, message_data: Dict[str, Any]):
             "message": "ARIA request missing player context or message content",
         })
         return
+
+    # WO-ARIA-TRUST-PERSIST: short-lived session solely to fetch/seed/write-
+    # through the trust ladder -- separate from the LATER AsyncSessionLocal
+    # opened below for EnhancedAIService, matching this function's own
+    # established "open one here" per-concern session pattern.
+    from src.core.database import AsyncSessionLocal as _TrustAsyncSessionLocal
+    from src.models.player import Player as _Player
+
+    security_service = get_security_service()
+    async with _TrustAsyncSessionLocal() as _trust_db:
+        player_row = await _trust_db.get(_Player, _uuid.UUID(str(player_id)))
+        is_safe, violations = security_service.validate_input(
+            content, str(player_id), str(conversation_id or "ws-aria-chat"),
+            seed_from=player_row,
+        )
+        if player_row is not None:
+            for _col, _val in security_service.get_trust_columns(str(player_id)).items():
+                setattr(player_row, _col, _val)
+            # EXPLICIT commit -- AsyncSessionLocal never auto-commits (same
+            # verified behavior as get_db()/get_async_session()); an
+            # uncommitted mutation would be lost on the early `return`
+            # below, exactly the path where a NEW block is most likely to
+            # have just triggered (see first_login.py's identical fix).
+            await _trust_db.commit()
+
+    if not is_safe:
+        logger.warning(f"ARIA WS security violation by player {player_id}: {[v.violation_type.value for v in violations]}")
+        await connection_manager.send_personal_message(user_id, {
+            "type": "error",
+            "message": "Input validation failed due to security policy",
+        })
+        return
+
+    if not security_service.check_rate_limits(str(player_id)):
+        await connection_manager.send_personal_message(user_id, {
+            "type": "error",
+            "message": "Rate limit exceeded. Please wait before making another request.",
+        })
+        return
+
+    estimated_cost = security_service.estimate_ai_cost(content)
+    cost_result = security_service.check_cost_limits_detailed(str(player_id), estimated_cost)
+    if not cost_result.allowed:
+        logger.info(
+            "ARIA WS cost cap hit for player %s: %s (scope=%s)",
+            player_id, cost_result.error_code, cost_result.scope,
+        )
+        await connection_manager.send_personal_message(user_id, {
+            "type": "aria_response",
+            "conversation_id": conversation_id,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "data": {
+                # Plain operational notice, NOT in-character narration --
+                # flavor text is a later ARIA WO's job per dispatch.
+                "message": "ARIA's advanced response is temporarily unavailable. Please try again later.",
+                "confidence": 0,
+                "context_used": context_type,
+                "actions": [],
+                "suggestions": [],
+                "learning_note": None,
+                "degraded": True,
+                "scope": cost_result.scope,
+            },
+        })
+        return
+
+    sanitized_content = security_service.sanitize_input(content)
 
     try:
         from src.core.database import AsyncSessionLocal
@@ -994,10 +1473,14 @@ async def handle_aria_chat(user_id: str, message_data: Dict[str, Any]):
             # the service can continue the thread when it is a valid id.
             result = await ai_service.process_natural_language_query(
                 player_id=_uuid.UUID(str(player_id)),
-                user_input=content,
+                user_input=sanitized_content,
                 conversation_id=conversation_id,
             )
             await adb.commit()
+
+        # Simplified real-cost tracking (matches first_login.py's own
+        # "actual_cost = estimated_cost -- Simplified for now" convention).
+        security_service.track_cost(str(player_id), estimated_cost)
 
         await connection_manager.send_personal_message(user_id, {
             "type": "aria_response",
@@ -1010,6 +1493,13 @@ async def handle_aria_chat(user_id: str, message_data: Dict[str, Any]):
                 "actions": [],
                 "suggestions": [],
                 "learning_note": None,
+                # WO-ARIA-CHAT-LLM: absent from result (== None here)
+                # whenever ARIA_LLM_CHAT_ENABLED is off -- the flag-off pin.
+                "mode": result.get("mode"),
+                # Max's GO amendment: a Resonance-ledger accounting SEAM --
+                # hook point only, always None until a future post-ADR-0092
+                # WO builds the ledger itself.
+                "ledger_entry": result.get("ledger_entry"),
             },
         })
     except Exception as e:
