@@ -1798,6 +1798,12 @@ def status_payload(
             name: {"amount": amounts[name], "paid": bool((reservation.milestones or {}).get(name))}
             for name in MILESTONE_ORDER
         },
+        # Advisory only — the authoritative refund is recomputed by cancel() at
+        # commit time via this same cancel_refund() fn (DRY, no parallel formula).
+        "estimated_refund": cancel_refund(
+            reservation.credits_paid or 0,
+            bool((reservation.milestones or {}).get("hull_complete")),
+        ),
         "resources_required": required,
         "resources_delivered": delivered,
         "uses_specialized_slip": bool(reservation.uses_specialized_slip),
