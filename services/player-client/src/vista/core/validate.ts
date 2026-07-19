@@ -244,7 +244,7 @@ export function randomVistaInput(seed: string, type: PlanetType): VistaInput {
     secondary = { kind: secKind, color: STAR_COLORS[secKind] };
   }
 
-  // Moons: 0–3 (spread is: 0=40%, 1=30%, 2=20%, 3=10%)
+  // Moons: 0–3, uniform distribution across 0,1,2,3 (rng.int is inclusive-uniform).
   const moonCount = rng.int(0, 3);
   const moons: NonNullable<VistaInput['celestial']['moons']> = [];
   for (let i = 0; i < moonCount; i++) {
