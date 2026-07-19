@@ -161,6 +161,13 @@ CATCHUP_EVAL_LIMIT = 3              # lazy month catch-up: evaluate at most the
 MIN_TAX_RATE = 0.0
 MAX_TAX_RATE = 0.25
 
+# Canon "Treasury & cash flow > Owner withdrawals" (port-ownership.md:361-367):
+# every sweep must retain at least 10% of the CURRENT balance as an operating
+# cushion, so at most 90% can leave in one withdrawal. v1 has no separate
+# scheduled-sweep engine, so this cap applies uniformly to manual withdrawals
+# too (canon: "manual ad-hoc withdrawals subject to the same 90% cap").
+TREASURY_CUSHION_PCT = 0.10
+
 # ---------------------------------------------------------------------------
 # Owner revenue-stream levers (canon FEATURES/economy/port-ownership "Revenue
 # streams" table, port-ownership.md:154-161). Every owner-tunable value below is
@@ -204,9 +211,11 @@ _ACTIVE_CAMPAIGN_STATUSES = ("building", "eligible", "countered", "disputed")
 # ---------------------------------------------------------------------------
 # Fee distribution (canon FEATURES/economy/port-ownership "Fee distribution",
 # sourced from station-protection.md): every credit of station revenue splits
-# 40% defense / 30% owner / 30% operating. Operating is IMMUTABLE at 30%;
-# defense and owner are owner-tunable within bounds (not exposed this pass —
-# defaults stand). The OWNER bucket accrues to station.treasury_balance (the
+# 40% defense / 30% owner / 30% operating by default. Operating is IMMUTABLE
+# at 30%; defense and owner are owner-tunable within bounds via
+# set_fee_distribution() (port-ownership.md:224-243), stored in the EXISTING
+# Station.price_modifiers JSONB (no migration — mirrors the price-adjustment
+# lever). The OWNER bucket accrues to station.treasury_balance (the
 # withdrawable column the owner sweeps). The DEFENSE and OPERATING buckets are
 # accrued into station.ownership JSONB sub-ledgers (defense_fund / operating_fund)
 # because the Station model has only the single treasury_balance column — see
@@ -216,6 +225,20 @@ _ACTIVE_CAMPAIGN_STATUSES = ("building", "eligible", "countered", "disputed")
 DEFENSE_PCT = 0.40
 OWNER_PCT = 0.30
 OPERATING_PCT = 0.30
+
+# Owner-tunable rebalance bounds (canon port-ownership.md:228-241). Operating
+# is fixed and NOT settable; defense + owner + OPERATING_PCT must sum to 1.0.
+FEE_DEFENSE_PCT_MIN = 0.30
+FEE_DEFENSE_PCT_MAX = 0.60
+FEE_OWNER_PCT_MIN = 0.10
+FEE_OWNER_PCT_MAX = 0.50
+FEE_SPLIT_SUM_EPSILON = 1e-6   # float-sum tolerance for the ==1.0 invariant
+
+# price_modifiers JSONB sub-keys for the fee-distribution rebalance. An
+# absent key means "use the canon default for that bucket" (a legacy or
+# never-rebalanced station reads as an exact 40/30/30 split).
+FEE_DEFENSE_PCT_KEY = "fee_defense_pct"
+FEE_OWNER_PCT_KEY = "fee_owner_pct"
 
 # ---------------------------------------------------------------------------
 # Operating costs (canon "Operating costs" + "Treasury & cash flow"). v1 models
@@ -311,6 +334,14 @@ def tier_allows_purchase(tier: Optional[str]) -> bool:
 def clamp_price(value: float) -> int:
     """Canon price clamp: [250,000, 2,000,000] credits."""
     return int(max(PRICE_FLOOR, min(PRICE_CEILING, value)))
+
+
+def treasury_withdrawal_cap(balance: int) -> int:
+    """Canon cushion cap (Treasury & cash flow > Owner withdrawals,
+    port-ownership.md:361-367): at most 90% of the CURRENT balance may leave
+    in one withdrawal, so >=10% (TREASURY_CUSHION_PCT) always remains.
+    Exact integer floor of 0.9 x balance — avoids float rounding on money."""
+    return (max(0, int(balance)) * 9) // 10
 
 
 def business_price_with_treasury(business_raw: float, treasury: int) -> int:
@@ -429,17 +460,55 @@ def self_cancelling_fraction(
     return matched / total
 
 
-def split_revenue(gross: int) -> Tuple[int, int, int]:
-    """Canon 40/30/30 fee distribution. Returns (defense, owner, operating).
-    Integer floors on defense and operating; the OWNER bucket takes the
-    remainder so the three buckets always sum EXACTLY to `gross` (no credits
-    minted or lost to rounding). gross <= 0 -> all zeros."""
+def split_revenue(
+    gross: int,
+    defense_pct: float = DEFENSE_PCT,
+    owner_pct: float = OWNER_PCT,
+    operating_pct: float = OPERATING_PCT,
+) -> Tuple[int, int, int]:
+    """Fee-distribution split (canon 40/30/30 defaults; owner-tunable via
+    set_fee_distribution — pass a station's effective pcts from
+    _effective_fee_split_pcts). Returns (defense, owner, operating). Integer
+    floors on defense and operating; the OWNER bucket takes the remainder so
+    the three buckets always sum EXACTLY to `gross` (no credits minted or
+    lost to rounding), even if the three pcts don't themselves sum to
+    exactly 1.0 (e.g. independently read-side-clamped hand-edited JSONB).
+    gross <= 0 -> all zeros."""
     if gross <= 0:
         return 0, 0, 0
-    defense = int(gross * DEFENSE_PCT)
-    operating = int(gross * OPERATING_PCT)
+    defense = int(gross * defense_pct)
+    operating = int(gross * operating_pct)
     owner = gross - defense - operating
     return defense, owner, operating
+
+
+def _effective_fee_split_pcts(station: Station) -> Tuple[float, float, float]:
+    """Effective (defense_pct, owner_pct, operating_pct) fee-split for THIS
+    station: reads the owner's rebalanced price_modifiers override (canon
+    "Fee distribution", port-ownership.md:224-243) when present, defaulting
+    to the canon 40/30/30 split. Each override is independently READ-SIDE
+    CLAMPED to its canon bound (mirrors docking_service's defensive re-clamp
+    of the owner revenue levers) so a hand-edited or legacy out-of-range
+    JSONB value can never widen the canon bounds. Operating is ALWAYS the
+    fixed 30% — never read from JSONB even if a key exists there."""
+    mods = station.price_modifiers or {}
+    raw_defense = mods.get(FEE_DEFENSE_PCT_KEY)
+    if raw_defense is None:
+        defense_pct = DEFENSE_PCT
+    else:
+        try:
+            defense_pct = max(FEE_DEFENSE_PCT_MIN, min(FEE_DEFENSE_PCT_MAX, float(raw_defense)))
+        except (TypeError, ValueError):
+            defense_pct = DEFENSE_PCT
+    raw_owner = mods.get(FEE_OWNER_PCT_KEY)
+    if raw_owner is None:
+        owner_pct = OWNER_PCT
+    else:
+        try:
+            owner_pct = max(FEE_OWNER_PCT_MIN, min(FEE_OWNER_PCT_MAX, float(raw_owner)))
+        except (TypeError, ValueError):
+            owner_pct = OWNER_PCT
+    return defense_pct, owner_pct, OPERATING_PCT
 
 
 def maintenance_for_days(acquisition_cost: int, days: int) -> int:
@@ -620,6 +689,22 @@ def _transfer_station(
         "acquisition_method": method,
     }
     flag_modified(station, "ownership")
+
+    # Station-protection acquisition default (WO-STN-SEC-1 lane 2; canon
+    # FEATURES/economy/station-protection.md "Security tiers": "Player-owned
+    # stations default to Basic ... the owner can upgrade tier at any time").
+    # Only an UNCONFIGURED station (security NULL/non-dict, which the
+    # security_level property already reads as tier "none" per WO-CB1's
+    # conservative default) is bumped to basic on acquisition. An
+    # already-tiered station (a re-sold Standard/Premium station, or an
+    # insolvency auto-relist) keeps its tier as-is — acquisition is NEVER a
+    # downgrade.
+    # Lazy import (mirrors _dispatch_port_medals / docking_service._realize_fee)
+    # to avoid a service-layer import cycle — station_security_service owns the
+    # acquisition-default rule (DB-free, unit-tested there).
+    from src.services.station_security_service import apply_acquisition_default
+    if apply_acquisition_default(station):
+        flag_modified(station, "security")
 
     # ADR-0053 WR14: guarantee the station's market book exists in THIS
     # transaction — a station changing hands at runtime must never land in a
@@ -1067,24 +1152,90 @@ def set_storage_rental(
     }
 
 
+def _fee_distribution_payload(station: Station) -> Dict[str, Any]:
+    """The effective fee-distribution split for THIS station, in the shape
+    both set_fee_distribution and revenue_summary's "fee_distribution" key
+    return."""
+    defense_pct, owner_pct, operating_pct = _effective_fee_split_pcts(station)
+    return {
+        "station_id": str(station.id),
+        "defense_pct": defense_pct,
+        "owner_pct": owner_pct,
+        "operating_pct": operating_pct,
+    }
+
+
+def set_fee_distribution(
+    db: Session, station: Station, owner: Player, defense_pct: float, owner_pct: float
+) -> Dict[str, Any]:
+    """Owner lever: rebalance the defense/owner buckets of the fee-
+    distribution split (canon port-ownership.md "Fee distribution",
+    :224-243). Operating is FIXED at 30% and not settable here; defense_pct
+    must fall in [0.30, 0.60], owner_pct in [0.10, 0.50], and the three
+    buckets (defense_pct + owner_pct + the fixed OPERATING_PCT) must sum to
+    1.0 within FEE_SPLIT_SUM_EPSILON. Persists into the EXISTING
+    price_modifiers JSONB (no migration); split_revenue reads this
+    station's override via _effective_fee_split_pcts wherever revenue is
+    realized or reported. Owner-gated under the station lock; no commit."""
+    station = _lock_station(db, station.id)
+    _require_owner(station, owner)
+    if not (FEE_DEFENSE_PCT_MIN <= defense_pct <= FEE_DEFENSE_PCT_MAX):
+        raise PortOwnershipError(
+            400,
+            f"Defense share must be between {FEE_DEFENSE_PCT_MIN:.0%} and "
+            f"{FEE_DEFENSE_PCT_MAX:.0%} (got {defense_pct:.0%})",
+        )
+    if not (FEE_OWNER_PCT_MIN <= owner_pct <= FEE_OWNER_PCT_MAX):
+        raise PortOwnershipError(
+            400,
+            f"Owner share must be between {FEE_OWNER_PCT_MIN:.0%} and "
+            f"{FEE_OWNER_PCT_MAX:.0%} (got {owner_pct:.0%})",
+        )
+    total = defense_pct + owner_pct + OPERATING_PCT
+    if abs(total - 1.0) > FEE_SPLIT_SUM_EPSILON:
+        raise PortOwnershipError(
+            400,
+            f"Defense ({defense_pct:.0%}) + owner ({owner_pct:.0%}) + the fixed "
+            f"operating share ({OPERATING_PCT:.0%}) must sum to 100% (got {total:.0%})",
+        )
+    modifiers = _price_modifiers(station)
+    modifiers[FEE_DEFENSE_PCT_KEY] = float(defense_pct)
+    modifiers[FEE_OWNER_PCT_KEY] = float(owner_pct)
+    flag_modified(station, "price_modifiers")
+    db.flush()
+    logger.info(
+        "Station %s fee distribution set to defense=%.2f owner=%.2f "
+        "(operating fixed %.2f) by %s",
+        station.id, defense_pct, owner_pct, OPERATING_PCT, owner.id,
+    )
+    return _fee_distribution_payload(station)
+
+
 def withdraw_treasury(
     db: Session, station: Station, owner: Player, amount: int
 ) -> Dict[str, Any]:
     """Withdraw from the station treasury to the owner (solo owner only
-    this pass — no co-ownership shares yet)."""
+    this pass — no co-ownership shares yet). Canon cushion (port-ownership.md
+    "Owner withdrawals"): the treasury must retain at least a 10% operating
+    cushion on every sweep, so at most 90% of the CURRENT balance may leave
+    in one withdrawal (v1 has no separate scheduled-sweep engine, so manual
+    ad-hoc withdrawals are held to the same 90% cap per canon)."""
     station = _lock_station(db, station.id)
     _require_owner(station, owner)
     if amount <= 0:
         raise PortOwnershipError(400, "Withdrawal amount must be positive")
-    if amount > (station.treasury_balance or 0):
+    balance = station.treasury_balance or 0
+    cap = treasury_withdrawal_cap(balance)
+    if amount > cap:
         raise PortOwnershipError(
             400,
-            f"Treasury holds {station.treasury_balance or 0:,} credits; "
-            f"cannot withdraw {amount:,}",
+            f"Treasury holds {balance:,} credits; a mandatory 10% operating "
+            f"cushion must remain, so at most {cap:,} credits (90%) can be "
+            f"withdrawn — requested {amount:,}",
         )
     locked = _lock_players_ascending(db, [owner.id])
     owner = locked[owner.id]
-    station.treasury_balance = (station.treasury_balance or 0) - amount
+    station.treasury_balance = balance - amount
     owner.credits += amount
     db.flush()
     logger.info("Treasury withdrawal: %s credits from station %s to %s", amount, station.id, owner.id)
@@ -1123,7 +1274,10 @@ def revenue_summary(db: Session, station: Station, days: int = 30) -> Dict[str, 
     }
     gross = sum(v["volume"] for v in by_type.values())
     estimated_tax = int(gross * (station.tax_rate or 0.0))
-    split_def, split_owner, split_op = split_revenue(estimated_tax)
+    defense_pct, owner_pct, operating_pct = _effective_fee_split_pcts(station)
+    split_def, split_owner, split_op = split_revenue(
+        estimated_tax, defense_pct, owner_pct, operating_pct
+    )
     return {
         "station_id": str(station.id),
         "window_canonical_days": days,
@@ -1131,11 +1285,13 @@ def revenue_summary(db: Session, station: Station, days: int = 30) -> Dict[str, 
         "gross_volume": gross,
         "tax_rate": station.tax_rate,
         "estimated_tax_collected": estimated_tax,
-        # Canon 40/30/30 fee distribution applied to the estimated tax take.
+        # This station's EFFECTIVE fee distribution (canon 40/30/30 default,
+        # owner-tunable via set_fee_distribution) applied to the estimated
+        # tax take.
         "fee_distribution": {
-            "defense_pct": DEFENSE_PCT,
-            "owner_pct": OWNER_PCT,
-            "operating_pct": OPERATING_PCT,
+            "defense_pct": defense_pct,
+            "owner_pct": owner_pct,
+            "operating_pct": operating_pct,
             "estimated_defense": split_def,
             "estimated_owner": split_owner,
             "estimated_operating": split_op,
@@ -1174,9 +1330,11 @@ def _bucket(station: Station, key: str) -> int:
 def realize_port_revenue(
     db: Session, station: Station, gross: int, now: Optional[datetime] = None
 ) -> Dict[str, Any]:
-    """Distribute `gross` station revenue per the canon 40/30/30 split under
-    the station lock: defense -> ownership['defense_fund'], owner ->
-    treasury_balance (withdrawable), operating -> ownership['operating_fund'].
+    """Distribute `gross` station revenue per THIS station's effective fee-
+    distribution split (canon 40/30/30 default, owner-tunable via
+    set_fee_distribution — see _effective_fee_split_pcts) under the station
+    lock: defense -> ownership['defense_fund'], owner -> treasury_balance
+    (withdrawable), operating -> ownership['operating_fund'].
 
     This is the REALIZATION HOOK for port trade revenue (tariff/tax, docking
     fees, service charges). It is currently UNWIRED: trade tax is realized
@@ -1195,7 +1353,29 @@ def realize_port_revenue(
             "gross": 0, "defense": 0, "owner": 0, "operating": 0,
             "treasury_balance": station.treasury_balance or 0,
         }
-    defense, owner, operating = split_revenue(int(gross))
+    defense_pct, owner_pct, operating_pct = _effective_fee_split_pcts(station)
+    defense, owner, operating = split_revenue(int(gross), defense_pct, owner_pct, operating_pct)
+
+    # Station-protection recurring upkeep (WO-STN-SEC-1 lane 2; canon
+    # FEATURES/economy/station-protection.md "Tier upgrade cost > Recurring
+    # upkeep": ~5/10/20% of station revenue by security tier). NO-CANON
+    # (flagged for bless): skimmed OFF the OWNER's cut at fee-realize time —
+    # never an extra deduction from gross, and never touching the
+    # defense_fund / operating_fund buckets. Rationale: the 40% defense_fund
+    # split already funds SIEGE infrastructure (port-ownership.md); this
+    # separate skim funds the docked-ship-protection tier
+    # (station-protection.md) the owner is paying an ongoing premium to
+    # maintain — the two are complementary per that doc's own Status note.
+    # min(owner, ...) guarantees the owner leg (and therefore the
+    # treasury_balance increment below) can never go negative from this —
+    # "treasury floored at 0" for this transaction. A station with no
+    # configured tier (upkeep_pct 0.0) is byte-identical to the pre-upkeep
+    # behavior.
+    upkeep = 0
+    if station.owner_id is not None:
+        from src.services.station_security_service import upkeep_for_gross
+        upkeep = min(owner, upkeep_for_gross(int(gross), station.security_level))
+        owner -= upkeep
 
     ledger = _ledger(station)
     if station.owner_id is None:
@@ -1208,6 +1388,11 @@ def realize_port_revenue(
         ledger["defense_fund"] = _bucket(station, "defense_fund") + defense
         ledger["operating_fund"] = _bucket(station, "operating_fund") + operating
         station.treasury_balance = (station.treasury_balance or 0) + owner
+        if upkeep:
+            security = station.security if isinstance(station.security, dict) else {}
+            security["upkeep_collected"] = int(security.get("upkeep_collected", 0) or 0) + upkeep
+            station.security = security
+            flag_modified(station, "security")
     flag_modified(station, "ownership")
     db.flush()
     return {
@@ -1216,6 +1401,7 @@ def realize_port_revenue(
         "defense": defense,
         "owner": owner,
         "operating": operating,
+        "security_upkeep": upkeep,
         "defense_fund": _bucket(station, "defense_fund"),
         "operating_fund": _bucket(station, "operating_fund"),
         "treasury_balance": station.treasury_balance or 0,

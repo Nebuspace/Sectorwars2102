@@ -628,7 +628,7 @@ def unlock_node(db: Session, player_id: Any, node_id: str) -> Dict[str, Any]:
     ``unlocked``, and flushes. The CALLER commits (mirrors citadel_service's
     deduct-and-flush, commit-at-route pattern).
     """
-    player = db.query(Player).filter(Player.id == player_id).with_for_update().first()
+    player = db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
     if not player:
         return {"success": False, "message": "Player not found"}
 
@@ -785,9 +785,13 @@ def sweep_research_faucet(db: Session, planet: Planet, *, _via_settle: bool = Fa
 
         # Lock the owner LAST, and re-check first-sweep status under the lock
         # (another sweep/op may have stamped swept_at between the peek and here).
+        # populate_existing(): the request's own get_current_player load left this
+        # Player row UNLOCKED in the identity map; without a forced refresh here
+        # the locked re-read would silently return that stale cached object.
         player = (
             db.query(Player)
             .filter(Player.id == planet.owner_id)
+            .populate_existing()
             .with_for_update()
             .first()
         )
@@ -845,9 +849,12 @@ def sweep_research_faucet(db: Session, planet: Planet, *, _via_settle: bool = Fa
     # --- Steady-state per-planet drain --------------------------------------
     # Lock the owner in the SAME transaction as the held planet lock
     # (planet-then-player — shipped invariant).
+    # populate_existing(): same identity-map-staleness guard as the first-sweep
+    # branch above — the request's unlocked Player load must be refreshed here.
     player = (
         db.query(Player)
         .filter(Player.id == planet.owner_id)
+        .populate_existing()
         .with_for_update()
         .first()
     )
@@ -1277,7 +1284,7 @@ def start_contract(
         if planet.owner_id is not None and str(planet.owner_id) != str(player_id):
             return {"success": False, "message": "You do not own the target planet."}
 
-    player = db.query(Player).filter(Player.id == player_id).with_for_update().first()
+    player = db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
     if player is None:
         return {"success": False, "message": "Player not found."}
 
@@ -1510,7 +1517,7 @@ def cancel_contract(db: Session, player_id: Any, contract_id: str,
     if now.tzinfo is None:
         now = now.replace(tzinfo=UTC)
 
-    player = db.query(Player).filter(Player.id == player_id).with_for_update().first()
+    player = db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
     if player is None:
         return {"success": False, "message": "Player not found."}
 

@@ -1,23 +1,53 @@
 """
-Warp-gate construction service (ADR-0029 + FEATURES/galaxy/warp-gates.md).
+Warp-gate construction service (ADR-0029 + ADR-0078 + FEATURES/galaxy/
+warp-gates.md).
 
 Three-phase ritual, all lazily settled — there is no background worker:
 
   deploy_beacon  — Phase 1: validations (free), then 50 turns + 10,000 cr +
-                   1,000 ore + 500 equipment + 1 Quantum Crystal. Beacon enters
-                   the 48h invulnerability/expiry window (ADR-0011).
-  anchor_focus   — Phase 3 Step A: 100 turns + 10,000 cr + 1,000 ore +
-                   500 equipment + 30 lumen crystals. Warp Jumper enters
-                   HARMONIZING for one canonical hour; the WarpGate row and the
-                   FORMING WarpTunnel row are created NOW.
+                   1 Quantum Crystal. Beacon enters the 48h invulnerability/
+                   expiry window (ADR-0011); a GateConstructionSite (phase 1)
+                   opens alongside it to accumulate the 1,000 ore + 500
+                   equipment structure draw over multiple stage-materials runs
+                   (ADR-0078 — a Warp Jumper's 200-unit hold can't fit either
+                   phase's total in one trip).
+  stage_materials — deposit ore/equipment (from the depositing ship's cargo)
+                   or Lumen Crystals (from the depositing PLAYER's
+                   Player.lumen_crystals wallet) into a site. Any ship present
+                   in the beacon's sector may deposit, not only the beacon's
+                   owner — team hauling is the point.
+  advance_construction — once a site's totals are fully staged, spends
+                   CONSTRUCTION_TURN_COST (5) turns to start its
+                   PHASE_CURE_HOURS (24) cure. Lazily flips CURING -> READY
+                   on any subsequent touch of the site (mirrors advance_gate's
+                   lazy-on-read model) — reaching READY on the Phase-1 site
+                   auto-opens the Phase-3 site for the same beacon.
+  anchor_focus   — Phase 3 Step A: 100 turns + 10,000 cr, drawn against the
+                   Phase-3 site's staged + cured 1,000 ore + 500 equipment +
+                   30 Lumen Crystals (never the Warp Jumper's hold). Warp
+                   Jumper enters HARMONIZING for one canonical hour; the
+                   WarpGate row and the FORMING WarpTunnel row are created NOW.
   advance_gate   — Phase 3 Step B (lazy, called from every read/list/traversal
                    path): past the timer the Warp Jumper hull is consumed
                    (no insurance, no Cargo Wreck, full cargo to the escape pod
                    at the DESTINATION), tunnel + gate flip ACTIVE, beacon
                    MATCHED with invulnerability cleared.
-  cancel         — beacon: Phase 1 materials are sunk (canon). Harmonizing
-                   gate: full Phase 3 refund, ship exits HARMONIZING intact,
-                   tunnel row deleted. The Phase 1 Crystal never refunds.
+  cancel         — beacon: Phase 1 materials sunk (canon), INCLUDING whatever
+                   is staged in the Phase-1 site. A staged-but-unconsumed
+                   Phase-3 site (opened once Phase 1 cured) is NOT covered by
+                   that rule — ADR-0029 is silent on it under the new staging
+                   model — so ore/equipment return to the cancelling player's
+                   ship hold up to its remaining capacity (excess forfeited;
+                   no warp-gate salvage-wreck mechanic exists to spawn
+                   instead) and staged Lumen Crystals always refund in full to
+                   Player.lumen_crystals (a wallet ledger, no capacity
+                   concept) — builder-proposed disposition, flagged to
+                   DECISIONS. Harmonizing gate: full Phase 3 refund (turns/
+                   credits to the player; ore/equipment/Lumen back into the
+                   Phase-3 site per warp-gates.md's own Phase 3 failure-mode
+                   wording, ready to redraw without re-ferrying or re-curing),
+                   ship exits HARMONIZING intact, tunnel row deleted. The
+                   Phase 1 Crystal never refunds.
 
 All canonical durations go through src/core/game_time.scaled_deadline so
 GAME_TIME_SCALE compresses them uniformly on dev.
@@ -48,16 +78,19 @@ import logging
 import math
 import uuid
 from collections import defaultdict, deque
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
-from src.core.game_time import scaled_deadline
+from src.core.game_time import scaled_deadline, scaled_elapsed
+from src.models.faction import Faction, FactionType
+from src.models.gate_construction_site import GateConstructionSite, GateConstructionSiteStatus
 from src.models.player import Player
 from src.models.region import Region, RegionType
+from src.models.reputation import Reputation
 from src.models.sector import Sector, sector_warps
 from src.models.ship import Ship, ShipSpecification, ShipStatus, ShipType
 from src.models.team_member import TeamMember
@@ -97,6 +130,22 @@ HARMONIZATION_HOURS = 1       # ADR-0029 Phase 3 wait
 MIN_GATE_LENGTH = 50          # sectors
 MAX_INCOMING_ACTIVE_GATES = 5  # destination anti-spam cap
 
+# --- ADR-0078 staged construction (warp-gates.md "Material staging") -------
+# A phase's bulk ORE/EQUIPMENT/LUMEN_CRYSTALS accumulate in a
+# GateConstructionSite across partial deposits (<=200/run for a Warp Jumper,
+# more for teammates' bigger haulers) instead of being demanded in the
+# Warp Jumper's hold in one payload. Once a site holds a full phase's
+# materials, advance_construction spends CONSTRUCTION_TURN_COST turns to
+# start the site's PHASE_CURE_HOURS cure; the phase can only be drawn once
+# both the totals and the cure are satisfied.
+CONSTRUCTION_TURN_COST = 5    # advance-construction, per call (ADR-0078)
+PHASE_CURE_HOURS = 24         # canonical hours per phase (ADR-0078)
+# NO-CANON (flagged to DECISIONS): canon prices advance-construction's 5
+# turns but is silent on a turn cost for the stage-materials deposit call
+# itself -- proposing 0 (ferrying materials is the trip-time cost; the
+# construction turns are spent only at advance-construction).
+STAGE_MATERIALS_TURN_COST = 0
+
 NO_WARP_FEATURE = "no_warp"
 NEXUS_PROTECTED_FEATURE = "nexus_protected"
 
@@ -129,6 +178,20 @@ _PUBLIC_MODES = frozenset({ACCESS_MODE_PUBLIC})
 # lists in a single permissions call — a conservative DoS guard so a malicious
 # owner cannot bloat the JSONB. NOT a documented game number.
 MAX_ACCESS_LIST_ENTRIES = 200  # NO-CANON
+
+# --- Toll system (WO-GWQ-GATE-TOLL, warp-gates.md "Toll system" + ADR-0049) -
+# toll_fee lives in WarpTunnel.access_requirements["toll_amount"] — the SAME
+# key admin_enhanced.py's create-enhanced-warp-tunnel route already writes
+# (converged on one spelling repo-wide; see set_gate_permissions/collect_toll
+# below and the grep-proof in tests/unit/test_warp_gate_toll.py).
+TOLL_FEE_MIN = 0
+TOLL_FEE_MAX = 10_000
+# ADR-0049 batch2 exploit closeout: toll exemption for the owner's team-mates
+# requires >= 24 CANONICAL hours of continuous membership (scaled via
+# src.core.game_time.scaled_elapsed, mirroring every other duration in this
+# module). Closes the alt-account toll-bypass loophole (join -> traverse free
+# -> leave -> repeat).
+TOLL_TEAM_TENURE_HOURS = 24
 
 
 class WarpGateError(Exception):
@@ -202,19 +265,6 @@ def _cargo_contents(ship: Ship) -> Dict[str, Any]:
     return cargo
 
 
-def _require_cargo(ship: Ship, requirements: Dict[str, int]) -> None:
-    contents = _cargo_contents(ship).get("contents", {})
-    for key, qty in requirements.items():
-        have = int(contents.get(key, 0) or 0)
-        if have < qty:
-            label = key.replace("_", " ")
-            raise WarpGateError(
-                400,
-                f"Your ship's cargo holds only {have:,} {label}; "
-                f"this phase requires {qty:,}",
-            )
-
-
 def _charge_cargo(ship: Ship, requirements: Dict[str, int]) -> None:
     """Deduct already-validated quantities from the active ship's cargo."""
     cargo = _cargo_contents(ship)
@@ -245,6 +295,30 @@ def _refund_cargo(ship: Ship, amounts: Dict[str, int]) -> None:
     )
     ship.cargo = cargo
     flag_modified(ship, "cargo")
+
+
+def _refund_cargo_up_to_capacity(ship: Ship, amounts: Dict[str, int]) -> Dict[str, int]:
+    """Return as much of `amounts` to the ship's cargo as fits under its
+    remaining capacity (unlike _refund_cargo, which assumes the space is
+    already free). Used for the ADR-0078 beacon-cancel staged-material
+    disposition, where the depositing ship never had this cargo deducted in
+    the first place — capacity is NOT guaranteed to be free. Returns the
+    subset actually applied; any remainder is the caller's to account for
+    (forfeited, per the beacon-cancel disposition)."""
+    cargo = _cargo_contents(ship)
+    capacity = int(cargo.get("capacity", 0) or 0)
+    used = int(cargo.get("used", 0) or 0)
+    room = max(0, capacity - used)
+    applied: Dict[str, int] = {}
+    for key, qty in amounts.items():
+        if qty <= 0 or room <= 0:
+            continue
+        take = min(qty, room)
+        applied[key] = take
+        room -= take
+    if applied:
+        _refund_cargo(ship, applied)
+    return applied
 
 
 # --- Placement validation (free — runs before any charge) -------------------
@@ -404,7 +478,10 @@ def deploy_beacon(db: Session, player: Player, destination_sector_number: int) -
     beacon with its 48h invulnerability/expiry window."""
     now = datetime.now(UTC)
     player = _lock_player(db, player.id)
-    ship = _require_warp_jumper(db, player, "deploy a warp gate beacon")
+    # Materials no longer come out of this hull's cargo (ADR-0078 staging
+    # below) — the call is still required for its Warp-Jumper-in-open-space
+    # validation, the return value just isn't needed anymore.
+    _require_warp_jumper(db, player, "deploy a warp gate beacon")
 
     source = _sector_by_number(db, player.current_sector_id)
     if source is None:
@@ -459,7 +536,6 @@ def deploy_beacon(db: Session, player: Player, destination_sector_number: int) -
             f"Deploying a beacon costs {PHASE1_CREDITS:,} credits; "
             f"you have {player.credits:,}",
         )
-    _require_cargo(ship, {"ore": PHASE1_ORE, "equipment": PHASE1_EQUIPMENT})
     crystals = getattr(player, "quantum_crystals", 0) or 0
     if crystals < PHASE1_QUANTUM_CRYSTALS:
         raise WarpGateError(
@@ -467,12 +543,15 @@ def deploy_beacon(db: Session, player: Player, destination_sector_number: int) -
             "Deploying a beacon consumes 1 Quantum Crystal — assemble one "
             "from 5 Quantum Shards at a Class 3+ station or SpaceDock",
         )
+    # ADR-0078: the 1,000 ore + 500 equipment structure draw is NOT demanded
+    # from the ship's hold here — it stages into the construction site opened
+    # below, across as many stage-materials runs as it takes (a Warp Jumper's
+    # 200-unit hold can't fit it in one trip).
 
     # All checks passed — charge atomically.
     spend_turns(player, PHASE1_TURNS)
     player.credits -= PHASE1_CREDITS
     player.quantum_crystals = crystals - PHASE1_QUANTUM_CRYSTALS
-    _charge_cargo(ship, {"ore": PHASE1_ORE, "equipment": PHASE1_EQUIPMENT})
 
     beacon = WarpGateBeacon(
         player_id=player.id,
@@ -484,19 +563,286 @@ def deploy_beacon(db: Session, player: Player, destination_sector_number: int) -
     db.add(beacon)
     db.flush()
 
+    site = GateConstructionSite(
+        beacon_id=beacon.id,
+        phase=1,
+        required_ore=PHASE1_ORE,
+        required_equipment=PHASE1_EQUIPMENT,
+        required_lumen=0,
+        status=GateConstructionSiteStatus.STAGING,
+    )
+    db.add(site)
+    db.flush()
+
     logger.info(
-        "Player %s deployed warp gate beacon %s (%s -> %s)",
-        player.id, beacon.id, source.sector_id, destination.sector_id,
+        "Player %s deployed warp gate beacon %s (%s -> %s); construction site "
+        "%s opened for Phase 1 staging",
+        player.id, beacon.id, source.sector_id, destination.sector_id, site.id,
     )
     return {
         "beacon": beacon,
+        "site_id": str(site.id),
         "costs_charged": {
             "turns": PHASE1_TURNS,
             "credits": PHASE1_CREDITS,
-            "ore": PHASE1_ORE,
-            "equipment": PHASE1_EQUIPMENT,
             "quantum_crystals": PHASE1_QUANTUM_CRYSTALS,
         },
+    }
+
+
+# --- ADR-0078 staged construction: stage-materials / advance-construction ---
+
+def _lazy_advance_site_cure(
+    db: Session, site: GateConstructionSite, now: Optional[datetime] = None
+) -> None:
+    """Lazy, read-time cure completion (ADR-0078 — "lazy advance-on-read,
+    mirroring terraforming's tick model", no background worker). Flips a
+    CURING site whose PHASE_CURE_HOURS scaled cure has elapsed to READY.
+    Reaching READY on a Phase-1 site auto-opens the Phase-3 site for the same
+    beacon (canon: "before the next phase opens") — idempotent, guarded
+    against a duplicate under concurrent lazy-advance calls."""
+    if site.status != GateConstructionSiteStatus.CURING:
+        return
+    now = now or datetime.now(UTC)
+    if site.cure_completes_at is None or _aware(now) < _aware(site.cure_completes_at):
+        return
+    site.status = GateConstructionSiteStatus.READY
+    db.flush()
+    if site.phase != 1:
+        return
+    existing = (
+        db.query(GateConstructionSite)
+        .filter(
+            GateConstructionSite.beacon_id == site.beacon_id,
+            GateConstructionSite.phase == 3,
+        )
+        .first()
+    )
+    if existing is not None:
+        return
+    phase3_site = GateConstructionSite(
+        beacon_id=site.beacon_id,
+        phase=3,
+        required_ore=PHASE3_ORE,
+        required_equipment=PHASE3_EQUIPMENT,
+        required_lumen=PHASE3_LUMEN_CRYSTALS,
+        status=GateConstructionSiteStatus.STAGING,
+    )
+    db.add(phase3_site)
+    db.flush()
+    logger.info(
+        "Phase 1 construction site %s cured — Phase 3 site %s opened for beacon %s",
+        site.id, phase3_site.id, site.beacon_id,
+    )
+
+
+def _resolve_site(db: Session, site_id: str, *, lock: bool) -> GateConstructionSite:
+    try:
+        site_uuid = uuid.UUID(str(site_id))
+    except (ValueError, AttributeError, TypeError):
+        raise WarpGateError(404, "Construction site not found")
+    query = db.query(GateConstructionSite).filter(GateConstructionSite.id == site_uuid)
+    if lock:
+        query = query.with_for_update()
+    site = query.first()
+    if site is None:
+        raise WarpGateError(404, "Construction site not found")
+    return site
+
+
+def stage_materials(
+    db: Session, player: Player, site_id: str, amounts: Dict[str, Optional[int]]
+) -> Dict[str, Any]:
+    """ADR-0078 — deposit ore / equipment / Lumen Crystals into a
+    gate_construction_site. Any ship present in the site's sector may deposit
+    (warp-gates.md "Any ship may deposit" — team hauling is the point); ore
+    and equipment draw from the depositing ship's cargo, Lumen Crystals draw
+    from the depositing PLAYER's own Player.lumen_crystals wallet (not cargo
+    — it's a ledger resource, unlike ore/equipment). Amounts are rejected past
+    the ship's hold contents or the phase's remaining requirement — no single
+    call, and no sum of calls, can exceed the per-phase total (warp-gates.md
+    "Material staging")."""
+    site = _resolve_site(db, site_id, lock=True)
+    if site.status != GateConstructionSiteStatus.STAGING:
+        raise WarpGateError(
+            400,
+            f"This site is {site.status.value.lower()} — materials can no "
+            "longer be staged into it",
+        )
+    beacon = db.query(WarpGateBeacon).filter(WarpGateBeacon.id == site.beacon_id).first()
+    if beacon is None:
+        raise WarpGateError(404, "This site's beacon no longer exists")
+
+    player = _lock_player(db, player.id)
+    if player.is_docked or player.is_landed:
+        raise WarpGateError(
+            400, "You must be in open space to stage materials into a construction site"
+        )
+    if player.current_sector_id != beacon.source_sector_id:
+        raise WarpGateError(
+            400,
+            f"You must be in sector {beacon.source_sector_id} — the "
+            "construction site's sector — to stage materials",
+        )
+    if not player.current_ship_id:
+        raise WarpGateError(400, "No active ship selected")
+    ship = db.query(Ship).filter(
+        Ship.id == player.current_ship_id, Ship.owner_id == player.id
+    ).first()
+    if ship is None:
+        raise WarpGateError(404, "No active ship found")
+
+    ore = int(amounts.get("ore") or 0)
+    equipment = int(amounts.get("equipment") or 0)
+    lumen = int(amounts.get("lumen_crystals") or 0)
+    if ore < 0 or equipment < 0 or lumen < 0:
+        raise WarpGateError(400, "Staged amounts cannot be negative")
+    if ore == 0 and equipment == 0 and lumen == 0:
+        raise WarpGateError(400, "Specify at least one commodity amount to stage")
+
+    remaining_ore = site.required_ore - site.staged_ore
+    remaining_equipment = site.required_equipment - site.staged_equipment
+    remaining_lumen = site.required_lumen - site.staged_lumen
+    if ore > remaining_ore:
+        raise WarpGateError(400, f"Only {remaining_ore:,} more ore is needed for this phase")
+    if equipment > remaining_equipment:
+        raise WarpGateError(
+            400, f"Only {remaining_equipment:,} more equipment is needed for this phase"
+        )
+    if lumen > remaining_lumen:
+        raise WarpGateError(
+            400, f"Only {remaining_lumen:,} more Lumen Crystals are needed for this phase"
+        )
+
+    # Ship-hold / wallet affordability — bespoke messages, since `ore` /
+    # `equipment` here are this CALL's amount, not the phase's full total
+    # (a "this phase requires X" message would mislead).
+    contents = _cargo_contents(ship).get("contents", {})
+    if ore:
+        have_ore = int(contents.get("ore", 0) or 0)
+        if have_ore < ore:
+            raise WarpGateError(
+                400, f"Your ship's cargo holds only {have_ore:,} ore; you tried to stage {ore:,}"
+            )
+    if equipment:
+        have_equipment = int(contents.get("equipment", 0) or 0)
+        if have_equipment < equipment:
+            raise WarpGateError(
+                400,
+                f"Your ship's cargo holds only {have_equipment:,} equipment; "
+                f"you tried to stage {equipment:,}",
+            )
+    if lumen:
+        have_lumen = int(getattr(player, "lumen_crystals", 0) or 0)
+        if have_lumen < lumen:
+            raise WarpGateError(
+                400, f"You have {have_lumen:,} Lumen Crystals; this deposit needs {lumen:,}"
+            )
+
+    # All checks passed — commit atomically.
+    cargo_needs = {k: v for k, v in {"ore": ore, "equipment": equipment}.items() if v}
+    if cargo_needs:
+        _charge_cargo(ship, cargo_needs)
+    if lumen:
+        player.lumen_crystals = int(getattr(player, "lumen_crystals", 0) or 0) - lumen
+
+    site.staged_ore += ore
+    site.staged_equipment += equipment
+    site.staged_lumen += lumen
+    db.flush()
+
+    logger.info(
+        "Player %s staged %d ore / %d equipment / %d Lumen into construction "
+        "site %s (beacon %s, phase %d)",
+        player.id, ore, equipment, lumen, site.id, site.beacon_id, site.phase,
+    )
+    return {
+        "site_id": str(site.id),
+        "phase": site.phase,
+        "status": site.status.value,
+        "required": {
+            "ore": site.required_ore,
+            "equipment": site.required_equipment,
+            "lumen_crystals": site.required_lumen,
+        },
+        "staged": {
+            "ore": site.staged_ore,
+            "equipment": site.staged_equipment,
+            "lumen_crystals": site.staged_lumen,
+        },
+    }
+
+
+def advance_construction(db: Session, player: Player, site_id: str) -> Dict[str, Any]:
+    """ADR-0078 — commit a fully-staged phase: CONSTRUCTION_TURN_COST (5)
+    turns, starts the phase's PHASE_CURE_HOURS (24 canonical hours, via
+    scaled_deadline — mirrors BEACON_WINDOW_HOURS above) cure. Owner-only:
+    staging materials is a team effort (stage_materials), but committing the
+    builder's own turns is the beacon owner's call. A site already CURING or
+    READY rejects (no additional turn charge) — the lazy cure-advance below is
+    what surfaces a finished cure, not a repeat call here."""
+    now = datetime.now(UTC)
+    site = _resolve_site(db, site_id, lock=True)
+    beacon = db.query(WarpGateBeacon).filter(WarpGateBeacon.id == site.beacon_id).first()
+    if beacon is None or beacon.player_id != player.id:
+        raise WarpGateError(404, "Construction site not found")
+
+    player = _lock_player(db, player.id)
+    _lazy_advance_site_cure(db, site, now)
+
+    if site.status == GateConstructionSiteStatus.CONSUMED:
+        raise WarpGateError(400, "This phase's materials have already been committed")
+    if site.status == GateConstructionSiteStatus.CANCELLED:
+        raise WarpGateError(400, "This construction site was cancelled")
+    if site.status == GateConstructionSiteStatus.READY:
+        raise WarpGateError(
+            400, "This phase already finished curing — proceed to the next step"
+        )
+    if site.status == GateConstructionSiteStatus.CURING:
+        raise WarpGateError(
+            400,
+            "Still curing — this phase's materials are already committed and "
+            "waiting out the cure",
+        )
+
+    # STAGING — require the full material set before spending turns.
+    if (
+        site.staged_ore < site.required_ore
+        or site.staged_equipment < site.required_equipment
+        or site.staged_lumen < site.required_lumen
+    ):
+        raise WarpGateError(
+            400,
+            "Materials are not fully staged yet — "
+            f"{site.staged_ore:,}/{site.required_ore:,} ore, "
+            f"{site.staged_equipment:,}/{site.required_equipment:,} equipment, "
+            f"{site.staged_lumen:,}/{site.required_lumen:,} Lumen Crystals",
+        )
+    if player.turns < CONSTRUCTION_TURN_COST:
+        raise WarpGateError(
+            400,
+            f"Advancing construction costs {CONSTRUCTION_TURN_COST} turns; "
+            f"you have {player.turns}",
+        )
+
+    spend_turns(player, CONSTRUCTION_TURN_COST)
+    site.turns_applied += CONSTRUCTION_TURN_COST
+    site.cure_completes_at = scaled_deadline(PHASE_CURE_HOURS, now)
+    site.status = GateConstructionSiteStatus.CURING
+    db.flush()
+
+    logger.info(
+        "Player %s advanced construction site %s (beacon %s, phase %d) — "
+        "curing until %s",
+        player.id, site.id, site.beacon_id, site.phase,
+        site.cure_completes_at.isoformat(),
+    )
+    return {
+        "site_id": str(site.id),
+        "phase": site.phase,
+        "status": site.status.value,
+        "turns_applied": site.turns_applied,
+        "cure_completes_at": site.cure_completes_at.isoformat(),
     }
 
 
@@ -535,8 +881,9 @@ def _warp_jumper_construction_cost(db: Session) -> int:
 
 
 def anchor_focus(db: Session, player: Player, beacon_id: str) -> Dict[str, Any]:
-    """Phase 3 Step A — charge materials, freeze the Warp Jumper in
-    HARMONIZING, create the gate + FORMING tunnel rows."""
+    """Phase 3 Step A — draw the fully-staged, cured Phase-3 construction site
+    (ADR-0078), charge turns/credits, freeze the Warp Jumper in HARMONIZING,
+    create the gate + FORMING tunnel rows."""
     now = datetime.now(UTC)
     try:
         beacon_uuid = uuid.UUID(str(beacon_id))
@@ -627,20 +974,49 @@ def anchor_focus(db: Session, player: Player, beacon_id: str) -> Dict[str, Any]:
             f"Anchoring the focus costs {PHASE3_CREDITS:,} credits; "
             f"you have {player.credits:,}",
         )
-    _require_cargo(ship, {
-        "ore": PHASE3_ORE,
-        "equipment": PHASE3_EQUIPMENT,
-        "lumen_crystals": PHASE3_LUMEN_CRYSTALS,
-    })
+    # ADR-0078 — the 1,000 ore + 500 equipment + 30 Lumen Crystal draw comes
+    # from the Phase-3 construction site (staged + cured over multiple
+    # stage-materials / advance-construction cycles), never the Warp Jumper's
+    # hold. The site only exists once the Phase-1 site has cured (canon
+    # "before the next phase opens" — _lazy_advance_site_cure opens it).
+    phase3_site = (
+        db.query(GateConstructionSite)
+        .filter(GateConstructionSite.beacon_id == beacon.id, GateConstructionSite.phase == 3)
+        .with_for_update()
+        .first()
+    )
+    if phase3_site is None:
+        raise WarpGateError(
+            400,
+            "The origin structure hasn't finished curing yet — Phase 1's "
+            "construction site must reach its 24h cure before Phase 3 "
+            "materials can stage",
+        )
+    _lazy_advance_site_cure(db, phase3_site, now)
+    if phase3_site.status == GateConstructionSiteStatus.CURING:
+        raise WarpGateError(
+            400,
+            "The destination materials are still curing — wait out the 24h "
+            "cure before anchoring the focus",
+        )
+    if phase3_site.status != GateConstructionSiteStatus.READY:
+        raise WarpGateError(
+            400,
+            "The destination materials are not fully staged yet — "
+            f"{phase3_site.staged_ore:,}/{phase3_site.required_ore:,} ore, "
+            f"{phase3_site.staged_equipment:,}/{phase3_site.required_equipment:,} equipment, "
+            f"{phase3_site.staged_lumen:,}/{phase3_site.required_lumen:,} Lumen Crystals",
+        )
 
-    # Charge Phase 3 (refundable on cancel — ADR-0029).
+    # Charge Phase 3 (refundable on cancel — ADR-0029). Turns/credits are
+    # UNCHANGED; ore/equipment/Lumen draw from the already-staged, already-
+    # cured site instead of the Warp Jumper's hold (ADR-0078).
     spend_turns(player, PHASE3_TURNS)
     player.credits -= PHASE3_CREDITS
-    _charge_cargo(ship, {
-        "ore": PHASE3_ORE,
-        "equipment": PHASE3_EQUIPMENT,
-        "lumen_crystals": PHASE3_LUMEN_CRYSTALS,
-    })
+    phase3_site.staged_ore = 0
+    phase3_site.staged_equipment = 0
+    phase3_site.staged_lumen = 0
+    phase3_site.status = GateConstructionSiteStatus.CONSUMED
 
     completes_at = scaled_deadline(HARMONIZATION_HOURS, now)
     ship.status = ShipStatus.HARMONIZING
@@ -655,6 +1031,8 @@ def anchor_focus(db: Session, player: Player, beacon_id: str) -> Dict[str, Any]:
         construction_cost=_warp_jumper_construction_cost(db),
     )
     db.add(gate)
+    db.flush()
+    phase3_site.gate_id = gate.id
     db.flush()
 
     # The tunnel row exists NOW in FORMING (canon names the pre-active state
@@ -714,8 +1092,15 @@ def _refund_phase3_and_cancel(
     """ADR-0029 canonical Phase-3 refund path, shared by cancel and the
     completion-time re-validation failure (FIX 2a).
 
-    Returns Phase-3 turns/credits/cargo to the player and the anchor hull,
-    exits the ship HARMONIZING -> IN_SPACE (harmonization_completes_at
+    Turns/credits return to the PLAYER. Per ADR-0078, ore/equipment/Lumen
+    return to the Phase-3 CONSTRUCTION SITE, not the ship's hold — the ship
+    never had this cargo deducted under the staging model (it left the site,
+    not the hold), and warp-gates.md's own Phase 3 failure-mode wording is
+    explicit: "All Phase 3 materials ... refund to the construction site /
+    player". Refilling the site to its full, already-cured totals means the
+    beacon owner can retry anchor-focus without re-ferrying or re-curing.
+
+    Exits the ship HARMONIZING -> IN_SPACE (harmonization_completes_at
     cleared), deletes the FORMING tunnel, marks the gate CANCELLED. The
     BEACON is left DEPLOYED so the player can re-attempt within its window.
     Caller owns locking and the commit. Returns the refund summary."""
@@ -729,12 +1114,26 @@ def _refund_phase3_and_cancel(
     if player is not None:
         refund_turns(player, PHASE3_TURNS)
         player.credits += PHASE3_CREDITS
+
+    site = (
+        db.query(GateConstructionSite)
+        .filter(GateConstructionSite.beacon_id == gate.beacon_id, GateConstructionSite.phase == 3)
+        .with_for_update()
+        .first()
+    )
+    if site is not None:
+        site.staged_ore = site.required_ore
+        site.staged_equipment = site.required_equipment
+        site.staged_lumen = site.required_lumen
+        site.status = GateConstructionSiteStatus.READY
+        site.gate_id = None
+        db.flush()
+    else:
+        logger.warning(
+            "Phase-3 construction site missing for gate %s during refund", gate.id
+        )
+
     if ship is not None and not ship.is_destroyed:
-        _refund_cargo(ship, {
-            "ore": PHASE3_ORE,
-            "equipment": PHASE3_EQUIPMENT,
-            "lumen_crystals": PHASE3_LUMEN_CRYSTALS,
-        })
         ship.status = ShipStatus.IN_SPACE
         ship.harmonization_completes_at = None
 
@@ -982,12 +1381,75 @@ def advance_gates_touching_sector(db: Session, sector_number: int, now: Optional
 
 # --- Cancel -------------------------------------------------------------------
 
+def _dispose_beacon_construction_sites(
+    db: Session, player: Player, beacon: WarpGateBeacon
+) -> Dict[str, int]:
+    """ADR-0078 staged-material disposition on a beacon cancel (NO-CANON —
+    ADR-0029 only settles the ORIGINAL Phase-1-sunk rule; it is silent on
+    staged-but-undrawn materials sitting in this beacon's construction
+    site(s) under the new staging model). Builder-proposed disposition,
+    flagged to DECISIONS:
+      - Phase-1 site: whatever is staged is SUNK along with the rest of
+        Phase 1 (ADR-0029's existing rule, verbatim — the site is simply
+        where those materials now sit; nothing returns).
+      - Phase-3 site (only exists once the Phase-1 site has cured): staged
+        ore/equipment return to the CANCELLING PLAYER's active ship hold up
+        to its remaining capacity; any excess is forfeited — no warp-gate
+        salvage-wreck mechanic exists in this codebase to spawn instead.
+        Staged Lumen Crystals always refund in full to Player.lumen_crystals
+        (a wallet ledger, no capacity concept).
+    Returns the amounts actually returned to the player, for the cancel
+    response's `refunded` field."""
+    returned = {"ore": 0, "equipment": 0, "lumen_crystals": 0}
+    sites = (
+        db.query(GateConstructionSite)
+        .filter(GateConstructionSite.beacon_id == beacon.id)
+        .with_for_update()
+        .all()
+    )
+    ship = None
+    if player.current_ship_id:
+        ship = db.query(Ship).filter(
+            Ship.id == player.current_ship_id, Ship.owner_id == player.id
+        ).first()
+
+    for site in sites:
+        if site.status in (GateConstructionSiteStatus.CONSUMED, GateConstructionSiteStatus.CANCELLED):
+            continue
+        if site.phase == 3:
+            if site.staged_lumen:
+                player.lumen_crystals = int(getattr(player, "lumen_crystals", 0) or 0) + site.staged_lumen
+                returned["lumen_crystals"] += site.staged_lumen
+                site.staged_lumen = 0
+            if ship is not None and not ship.is_destroyed and (site.staged_ore or site.staged_equipment):
+                applied = _refund_cargo_up_to_capacity(
+                    ship, {"ore": site.staged_ore, "equipment": site.staged_equipment}
+                )
+                for key in ("ore", "equipment"):
+                    took = applied.get(key, 0)
+                    if took:
+                        returned[key] += took
+                        setattr(site, f"staged_{key}", getattr(site, f"staged_{key}") - took)
+            if site.staged_ore or site.staged_equipment:
+                logger.info(
+                    "Beacon %s cancel: %d ore / %d equipment staged in Phase-3 "
+                    "site %s forfeited (no salvage mechanic — NO-CANON)",
+                    beacon.id, site.staged_ore, site.staged_equipment, site.id,
+                )
+        site.status = GateConstructionSiteStatus.CANCELLED
+    db.flush()
+    return returned
+
+
 def cancel(db: Session, player: Player, gate_or_beacon_id: str) -> Dict[str, Any]:
     """ADR-0029 refund semantics:
-    - DEPLOYED beacon -> CANCELLED, Phase 1 materials (incl. the Crystal) sunk.
-    - HARMONIZING gate -> full Phase 3 refund (turns, credits, ore, equipment,
-      lumen), ship exits HARMONIZING intact, tunnel row deleted. The Phase 1
-      Crystal never refunds."""
+    - DEPLOYED beacon -> CANCELLED, Phase 1 materials (incl. the Crystal) sunk
+      (see _dispose_beacon_construction_sites for the ADR-0078 staged-site
+      disposition this now also covers).
+    - HARMONIZING gate -> full Phase 3 refund (turns, credits to the player;
+      ore/equipment/Lumen back into the Phase-3 construction site per
+      _refund_phase3_and_cancel), ship exits HARMONIZING intact, tunnel row
+      deleted. The Phase 1 Crystal never refunds."""
     now = datetime.now(UTC)
     try:
         target_uuid = uuid.UUID(str(gate_or_beacon_id))
@@ -1057,14 +1519,26 @@ def cancel(db: Session, player: Player, gate_or_beacon_id: str) -> Dict[str, Any
                  "an anchor in progress",
         )
 
+    returned = _dispose_beacon_construction_sites(db, player, beacon)
     beacon.status = WarpGateBeaconStatus.CANCELLED
     db.flush()
-    logger.info("Player %s cancelled beacon %s (Phase 1 materials sunk)", player.id, beacon.id)
+    logger.info(
+        "Player %s cancelled beacon %s (Phase 1 materials sunk; staged "
+        "Phase-3 materials returned: %s)", player.id, beacon.id, returned,
+    )
+    message = (
+        "Beacon cancelled — Phase 1 materials (including the Quantum "
+        "Crystal) are sunk per canon"
+    )
+    if any(returned.values()):
+        message += (
+            "; staged Phase-3 materials returned to your ship's hold / "
+            "Lumen wallet where capacity allowed (any excess forfeited)"
+        )
     return {
         "cancelled": "beacon",
-        "refunded": {},
-        "message": "Beacon cancelled — Phase 1 materials (including the "
-                   "Quantum Crystal) are sunk per canon",
+        "refunded": returned,
+        "message": message,
     }
 
 
@@ -1083,6 +1557,49 @@ def _phase_for(beacon: WarpGateBeacon, gate: Optional[WarpGate]) -> str:
     if beacon.status == WarpGateBeaconStatus.EXPIRED:
         return "EXPIRED"
     return "CANCELLED"
+
+
+def _active_construction_site(
+    db: Session, beacon_id, now: datetime
+) -> Optional[GateConstructionSite]:
+    """The construction site currently relevant to staging/advancing this
+    beacon's build — the Phase-3 site once it exists (opened once Phase 1
+    cures), else the Phase-1 site. Lazily advances every site's cure first
+    (a Phase-1 site reaching READY here may open the Phase-3 site as a side
+    effect, so sites are re-fetched afterward to pick that up on the same
+    read). None once the relevant site is CONSUMED or CANCELLED — nothing
+    left to stage."""
+    sites = db.query(GateConstructionSite).filter(GateConstructionSite.beacon_id == beacon_id).all()
+    for site in sites:
+        _lazy_advance_site_cure(db, site, now)
+    sites = db.query(GateConstructionSite).filter(GateConstructionSite.beacon_id == beacon_id).all()
+    live = {
+        s.phase: s for s in sites
+        if s.status not in (GateConstructionSiteStatus.CONSUMED, GateConstructionSiteStatus.CANCELLED)
+    }
+    return live.get(3) or live.get(1)
+
+
+def _construction_site_payload(site: Optional[GateConstructionSite]) -> Optional[Dict[str, Any]]:
+    if site is None:
+        return None
+    return {
+        "site_id": str(site.id),
+        "phase": site.phase,
+        "status": site.status.value,
+        "required": {
+            "ore": site.required_ore,
+            "equipment": site.required_equipment,
+            "lumen_crystals": site.required_lumen,
+        },
+        "staged": {
+            "ore": site.staged_ore,
+            "equipment": site.staged_equipment,
+            "lumen_crystals": site.staged_lumen,
+        },
+        "turns_applied": site.turns_applied,
+        "cure_completes_at": site.cure_completes_at.isoformat() if site.cure_completes_at else None,
+    }
 
 
 def list_player_projects(db: Session, player: Player) -> List[Dict[str, Any]]:
@@ -1121,6 +1638,7 @@ def list_player_projects(db: Session, player: Player) -> List[Dict[str, Any]]:
         _lazy_expire_beacon(db, beacon, now)
         # The newest non-cancelled gate represents the project's Phase 3 state.
         gate = next((g for g in gates if g.status != WarpGateStatus.CANCELLED), None)
+        active_site = _active_construction_site(db, beacon.id, now)
         projects.append({
             "beacon_id": str(beacon.id),
             "gate_id": str(gate.id) if gate else None,
@@ -1135,15 +1653,51 @@ def list_player_projects(db: Session, player: Player) -> List[Dict[str, Any]]:
                 if gate and gate.harmonization_completes_at else None
             ),
             "created_at": beacon.created_at.isoformat() if beacon.created_at else None,
+            "construction_site": _construction_site_payload(active_site),
         })
     return projects
 
 
-def list_sector_structures(db: Session, sector_number: int) -> Dict[str, Any]:
+def _beacon_expired_readonly(db: Session, beacon: WarpGateBeacon, now: datetime) -> bool:
+    """Pure predicate mirroring ``_lazy_expire_beacon``'s expiry condition,
+    WITHOUT the write (no ``beacon.status`` mutation, no flush) — the read
+    query it runs (counting in-progress gates) is a plain SELECT, safe for
+    a genuinely read-only caller. Used by ``list_sector_structures(...,
+    read_only=True)`` so a display fetch shows an accurate PREVIEW of
+    beacon expiry without persisting it (mirrors the existing
+    ``salvage_service.grace_status`` live-preview idiom -- advisory, not a
+    lock-in; the real expiry flip still happens on the next write-capable
+    visit to this route)."""
+    if beacon.invulnerable_until is None or _aware(now) < _aware(beacon.invulnerable_until):
+        return False
+    in_progress = (
+        db.query(WarpGate)
+        .filter(
+            WarpGate.beacon_id == beacon.id,
+            WarpGate.status.in_([WarpGateStatus.HARMONIZING, WarpGateStatus.ACTIVE]),
+        )
+        .count()
+    )
+    return not in_progress
+
+
+def list_sector_structures(db: Session, sector_number: int, *, read_only: bool = False) -> Dict[str, Any]:
     """Beacons and active outbound gates visible in a sector (gates are
-    'visible to all in source sector' per canon). Lazily advances first."""
+    'visible to all in source sector' per canon). Lazily advances first.
+
+    ``read_only=True`` (WO-UI2-INTRASYSTEM-MODEL REVISE) skips the
+    harmonization ADVANCE and the beacon-expiry WRITE entirely -- a display
+    fetch must never pace either progress mechanic. A HARMONIZING gate past
+    its completion timer, or a DEPLOYED beacon past its expiry window, keeps
+    showing its current persisted state until a normal, write-capable call
+    to this route (``read_only=False``, the default -- used unchanged by
+    ``GET /warp-gates/sector/{sector_id}``) visits and settles it; the
+    beacon side additionally applies a pure, non-writing expiry PREVIEW
+    (``_beacon_expired_readonly``) so an obviously-expired beacon isn't
+    shown as still deployed even though nothing gets persisted."""
     now = datetime.now(UTC)
-    advance_gates_touching_sector(db, sector_number, now)
+    if not read_only:
+        advance_gates_touching_sector(db, sector_number, now)
 
     beacon_rows = (
         db.query(WarpGateBeacon)
@@ -1155,9 +1709,13 @@ def list_sector_structures(db: Session, sector_number: int) -> Dict[str, Any]:
     )
     beacons = []
     for beacon in beacon_rows:
-        _lazy_expire_beacon(db, beacon, now)
-        if beacon.status != WarpGateBeaconStatus.DEPLOYED:
-            continue
+        if read_only:
+            if _beacon_expired_readonly(db, beacon, now):
+                continue
+        else:
+            _lazy_expire_beacon(db, beacon, now)
+            if beacon.status != WarpGateBeaconStatus.DEPLOYED:
+                continue
         owner = db.query(Player).filter(Player.id == beacon.player_id).first()
         destination = _sector_by_number(db, beacon.destination_sector_id)
         beacons.append({
@@ -1194,9 +1752,8 @@ def list_sector_structures(db: Session, sector_number: int) -> Dict[str, Any]:
             "owner_name": owner.username if owner else None,
             "is_public": tunnel.is_public if tunnel is not None else True,
             "access_mode": _access_mode_of(tunnel) if tunnel is not None else ACCESS_MODE_PUBLIC,
-            # Toll system is design-only (warp-gates.md) — all gates are
-            # toll-free until it ships; the field is part of the contract.
-            "toll": 0,
+            # WO-GWQ-GATE-TOLL: real toll_amount, no longer hardcoded 0.
+            "toll": _toll_fee_of(tunnel) if tunnel is not None else 0,
         })
 
     return {"beacons": beacons, "gates": gates}
@@ -1239,14 +1796,76 @@ def _player_team_ids(db: Session, player: Player) -> set:
     return ids
 
 
+def _faction_rep_value(db: Session, player_id, faction_type_raw: Any) -> int:
+    """A player's reputation with the named faction (FactionType value/name,
+    case-insensitive per FactionType._missing_). No Faction row seeded, or no
+    Reputation row yet for this player, resolves to 0 (NEUTRAL) — mirrors
+    apply_faction_rep_delta's own default-creation value, never an error."""
+    try:
+        faction_type = FactionType(faction_type_raw)
+    except (ValueError, KeyError, TypeError):
+        return 0
+    faction = db.query(Faction).filter(Faction.faction_type == faction_type).first()
+    if faction is None:
+        return 0
+    rep = (
+        db.query(Reputation)
+        .filter(Reputation.player_id == player_id, Reputation.faction_id == faction.id)
+        .first()
+    )
+    return int(rep.current_value) if rep is not None else 0
+
+
+def _check_faction_rep_layers(db: Session, player: Player, reqs: Dict[str, Any]) -> None:
+    """Optional layered access gates applied ON TOP of whichever mode just
+    passed (warp-gates.md "Access control" — "Owners pick an access mode and
+    optionally layer additional gates on top" / "Faction reputation minimum"
+    / "...maximum" — e.g. a PUBLIC gate can still turn away low- or
+    too-high-reputation travelers). Never applies to the owner — the caller
+    (check_traversal_access) already returns before this runs for them.
+
+    NO-CANON JSONB shape (canon names the layers, not their storage —
+    flagged to DECISIONS):
+        access_requirements.faction_rep_min = {"faction_type": <FactionType value>, "value": <int>}
+        access_requirements.faction_rep_max = {"faction_type": <FactionType value>, "value": <int>}
+    """
+    rep_min = reqs.get("faction_rep_min")
+    if isinstance(rep_min, dict) and rep_min.get("faction_type") is not None:
+        threshold = int(rep_min.get("value", 0) or 0)
+        value = _faction_rep_value(db, player.id, rep_min["faction_type"])
+        if value < threshold:
+            raise WarpGateError(
+                403,
+                f"ERR_GATE_REP_TOO_LOW: this warp gate requires at least "
+                f"{threshold} reputation with {rep_min['faction_type']} "
+                f"(you have {value})",
+            )
+
+    rep_max = reqs.get("faction_rep_max")
+    if isinstance(rep_max, dict) and rep_max.get("faction_type") is not None:
+        threshold = int(rep_max.get("value", 0) or 0)
+        value = _faction_rep_value(db, player.id, rep_max["faction_type"])
+        if value > threshold:
+            raise WarpGateError(
+                403,
+                f"ERR_GATE_REP_TOO_HIGH: this warp gate blocks players above "
+                f"{threshold} reputation with {rep_max['faction_type']} "
+                f"(you have {value})",
+            )
+
+
 def check_traversal_access(db: Session, player: Player, tunnel: WarpTunnel) -> None:
-    """Enforce the gate's access mode for a player attempting traversal.
+    """Enforce the gate's access mode — plus any optional layered gates
+    (WO-GWQ-GATE-TOLL: faction-rep min/max) — for a player attempting
+    traversal.
 
     Raises WarpGateError(403, ...) when the player is not allowed. Returns
     None (allowed) for: any non-player gate, the owner, or a player who
-    satisfies the configured mode. This is the single enforcement point the
-    movement layer calls before letting a player traverse a player-built gate
-    (warp-gates.md "Access control"). No locking, no mutation — a pure check.
+    satisfies the configured mode AND every layered gate on top of it. This
+    is the single enforcement point the movement layer calls before letting a
+    player traverse a player-built gate (warp-gates.md "Access control"). No
+    locking, no mutation — a pure check, and it must run (and reject, if it's
+    going to) BEFORE any toll credit ever moves (see collect_toll below).
 
     The owner is identified by WarpTunnel.created_by_player_id (the gate's
     owner FK on the traversable row, kept in sync with WarpGate.player_id on
@@ -1259,7 +1878,7 @@ def check_traversal_access(db: Session, player: Player, tunnel: WarpTunnel) -> N
 
     owner_id = tunnel.created_by_player_id
     if owner_id == player.id:
-        return  # the owner always passes
+        return  # the owner always passes — layers never apply to the owner
 
     mode = _access_mode_of(tunnel)
     reqs = tunnel.access_requirements or {}
@@ -1267,56 +1886,268 @@ def check_traversal_access(db: Session, player: Player, tunnel: WarpTunnel) -> N
         reqs = {}
 
     if mode == ACCESS_MODE_PUBLIC:
-        return
+        pass
 
-    if mode == ACCESS_MODE_PRIVATE:
+    elif mode == ACCESS_MODE_PRIVATE:
         raise WarpGateError(
             403,
             "ERR_GATE_PRIVATE: this warp gate is private — only its owner may "
             "traverse it",
         )
 
-    if mode == ACCESS_MODE_WHITELIST:
+    elif mode == ACCESS_MODE_WHITELIST:
         whitelist = {str(x) for x in (reqs.get("whitelist") or [])}
-        if str(player.id) in whitelist:
-            return
-        raise WarpGateError(
-            403,
-            "ERR_GATE_NOT_WHITELISTED: this warp gate is restricted to a "
-            "whitelist you are not on",
-        )
+        if str(player.id) not in whitelist:
+            raise WarpGateError(
+                403,
+                "ERR_GATE_NOT_WHITELISTED: this warp gate is restricted to a "
+                "whitelist you are not on",
+            )
 
-    if mode == ACCESS_MODE_TEAM_ONLY:
+    elif mode == ACCESS_MODE_TEAM_ONLY:
         owner = db.query(Player).filter(Player.id == owner_id).first()
         owner_teams = _player_team_ids(db, owner) if owner is not None else set()
-        if owner_teams & _player_team_ids(db, player):
-            return
-        raise WarpGateError(
-            403,
-            "ERR_GATE_TEAM_ONLY: this warp gate is restricted to the owner's "
-            "team",
-        )
+        if not (owner_teams & _player_team_ids(db, player)):
+            raise WarpGateError(
+                403,
+                "ERR_GATE_TEAM_ONLY: this warp gate is restricted to the "
+                "owner's team",
+            )
 
-    if mode == ACCESS_MODE_ALLIANCE:
+    elif mode == ACCESS_MODE_ALLIANCE:
         owner = db.query(Player).filter(Player.id == owner_id).first()
         owner_teams = _player_team_ids(db, owner) if owner is not None else set()
         player_teams = _player_team_ids(db, player)
-        if owner_teams & player_teams:
-            return  # same team always passes under ALLIANCE too
         # Allied teams are stored as team UUIDs in access_requirements.allies
         # (no diplomacy/alliance table exists yet — this is the documented
         # JSONB interpretation, flagged NO-CANON for structural allies).
         allies = {str(x) for x in (reqs.get("allies") or [])}
-        if allies & {str(t) for t in player_teams}:
-            return
-        raise WarpGateError(
-            403,
-            "ERR_GATE_ALLIANCE_ONLY: this warp gate is restricted to the "
-            "owner's team and its allies",
-        )
+        if not (owner_teams & player_teams) and not (allies & {str(t) for t in player_teams}):
+            raise WarpGateError(
+                403,
+                "ERR_GATE_ALLIANCE_ONLY: this warp gate is restricted to the "
+                "owner's team and its allies",
+            )
 
-    # Unknown mode (should be impossible — validated on set) — fail closed.
-    raise WarpGateError(403, "ERR_GATE_ACCESS_DENIED: gate access denied")
+    else:
+        # Unknown mode (should be impossible — validated on set) — fail closed.
+        raise WarpGateError(403, "ERR_GATE_ACCESS_DENIED: gate access denied")
+
+    # Optional layered gates (warp-gates.md "Access control" — apply ON TOP
+    # of whichever mode just passed; e.g. a PUBLIC gate can still block by
+    # reputation). Reached only when the mode check above did not raise.
+    _check_faction_rep_layers(db, player, reqs)
+
+
+def _toll_fee_of(tunnel: WarpTunnel) -> int:
+    """Read-only: the gate's configured toll. Lives in
+    access_requirements["toll_amount"] — the SAME JSONB key
+    admin_enhanced.py's create-enhanced-warp-tunnel route already writes for
+    admin-created tunnels; converged on that one spelling repo-wide rather
+    than minting a second. Absent/invalid/negative -> 0 (free), always
+    clamped to [TOLL_FEE_MIN, TOLL_FEE_MAX]."""
+    reqs = tunnel.access_requirements if isinstance(tunnel.access_requirements, dict) else {}
+    try:
+        raw = int(reqs.get("toll_amount", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(TOLL_FEE_MIN, min(TOLL_FEE_MAX, raw))
+
+
+def _lock_player_if_exists(db: Session, player_id) -> Optional[Player]:
+    """Like _lock_player, but returns None instead of raising when the row
+    is gone. Used where a missing gate owner must degrade to a defined
+    fallback (toll collection's orphaned-owner free-passage rule) rather than
+    404ing an unrelated player's move."""
+    return (
+        db.query(Player)
+        .filter(Player.id == player_id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+
+
+def _has_24h_team_tenure(db: Session, traverser_id, owner: Optional[Player], now: datetime) -> bool:
+    """ADR-0049 batch2 exploit closeout — toll exemption for the gate
+    owner's team-mates requires >= TOLL_TEAM_TENURE_HOURS (24) CANONICAL
+    hours of continuous team membership, scaled via
+    src.core.game_time.scaled_elapsed (mirrors every other duration in this
+    module).
+
+    Canon's own text names a `TeamMembership` row with `left_at IS NULL`;
+    the model actually shipped is `TeamMember`, and it carries no `left_at`
+    column at all — team_service.py's leave_team/kick_member hard-DELETE the
+    row instead of soft-closing it. That means "continuous" falls out of the
+    schema for free: a membership row's mere existence already implies
+    unbroken tenure since `joined_at`, and a leave+rejoin cycle always
+    produces a brand-new row with a fresh `joined_at` — exactly the
+    alt-cycle rule canon asks for, with no extra bookkeeping needed."""
+    if owner is None or owner.team_id is None:
+        return False
+    membership = (
+        db.query(TeamMember)
+        .filter(TeamMember.team_id == owner.team_id, TeamMember.player_id == traverser_id)
+        .first()
+    )
+    if membership is None or membership.joined_at is None:
+        return False
+    return scaled_elapsed(membership.joined_at, now) >= timedelta(hours=TOLL_TEAM_TENURE_HOURS)
+
+
+def collect_toll(
+    db: Session, traverser: Player, tunnel: WarpTunnel, now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """warp-gates.md "Toll system" + ADR-0049 — atomic per-traversal toll on
+    a player-built gate. `now` is optional (defaults to datetime.now(UTC)),
+    mirroring advance_gate/_lazy_expire_beacon's testability convention
+    elsewhere in this module — pin it in tests for a deterministic ADR-0049
+    tenure boundary instead of racing the wall clock.
+
+    Placement (SPEC-DEFECT CORRECTION from the original work order, which
+    would have collected inside the PURE _check_warp_tunnel validator and
+    billed players whose move then failed the turns check): this is called
+    from MovementService's player-gate branch in movement_service.py, AFTER
+    check_traversal_access has already cleared the traverser (the access
+    mode + faction-rep layers are gate DECISIONS, never toll math — rep-min/
+    max reject before any toll logic ever runs) and AFTER that branch's own
+    turns-affordability check has passed, in the SAME transaction as
+    _execute_movement. Flush-only — the calling route/service owns the
+    commit, so a later failure in that same transaction reverts this too.
+
+    Exemption precedence (first match wins — NO toll charged; a 0-fee gate
+    and the owner's own traversal skip all of this and go straight to
+    "free" without even querying for it):
+      1. owner              — tunnel.created_by_player_id == traverser.id
+      2. toll-bypass list   — access_requirements.toll_bypass (NO-CANON key
+                               — canon names the layer, not its storage)
+      3. access whitelist   — access_requirements.whitelist (WG1's existing
+                               key, reused: being whitelisted for ACCESS also
+                               exempts the toll on ANY mode, not only
+                               WHITELIST mode)
+      4. team tenure         — ADR-0049: traverser has belonged to the
+                               OWNER's team for >= 24 canonical hours
+      5. orphaned owner      — the owner Player row no longer exists (or
+                               vanishes between the plain lookup and the
+                               row-lock below — a race); the traversal is
+                               FREE and a warning is logged. Never a 500.
+    Anyone reaching none of the above pays the gate's toll_amount (a whole
+    number of credits, TOLL_FEE_MIN..TOLL_FEE_MAX).
+
+    Raises WarpGateError(402, "ERR_INSUFFICIENT_CREDITS_FOR_TOLL: ...") when
+    a non-exempt traverser cannot afford the fee — checked BEFORE either
+    balance is touched, so a rejected toll leaves BOTH players' credits
+    untouched (the caller's move rejection additionally leaves turns and
+    position untouched — see movement_service.py's player-gate branch, which
+    calls this only after its own turns check already passed).
+
+    Bookkeeping (warp-gates.md "Reporting: total_revenue, usage_count,
+    last_used updated per use"):
+      - WarpTunnel.total_traversals +1 and tunnel_status.last_traversal /
+        .traffic_level update on EVERY call, owner's own traversal included
+        — mirrors the existing current_uses counter movement_service already
+        keeps for max_uses collapse tracking (both are "a traversal just
+        happened" bookkeeping, orthogonal to who pays).
+      - artificial_data.toll_stats {usage_count, total_revenue, last_used}
+        updates for NON-OWNER traversals only — canon's own toll "Reporting"
+        table sits entirely under "Owners may charge a per-traversal toll on
+        NON-OWNERS".
+      - NO-CANON: a paid traversal that also happens to be the tunnel's LAST
+        allowed use (current_uses hits max_uses) still collects — this
+        function runs, and only AFTER it returns does
+        MovementService._check_for_tunnel_events flip the tunnel COLLAPSED
+        (collect-then-collapse, flagged to DECISIONS since no player gate
+        currently ships with a max_uses set).
+    """
+    now = now or datetime.now(UTC)
+    owner_id = tunnel.created_by_player_id
+    is_owner = owner_id is not None and owner_id == traverser.id
+    fee = _toll_fee_of(tunnel)
+
+    exempt_reason: Optional[str] = None
+    charged = 0
+
+    if is_owner:
+        exempt_reason = "owner"
+    elif fee == 0:
+        exempt_reason = "free"
+    elif owner_id is None:
+        exempt_reason = "no_owner"
+    else:
+        reqs = tunnel.access_requirements if isinstance(tunnel.access_requirements, dict) else {}
+        bypass = {str(x) for x in (reqs.get("toll_bypass") or [])}
+        whitelist = {str(x) for x in (reqs.get("whitelist") or [])}
+        if str(traverser.id) in bypass:
+            exempt_reason = "toll_bypass"
+        elif str(traverser.id) in whitelist:
+            exempt_reason = "whitelist"
+        else:
+            owner_peek = db.query(Player).filter(Player.id == owner_id).first()
+            if owner_peek is None:
+                exempt_reason = "owner_orphaned"
+                logger.warning(
+                    "Warp gate tunnel %s toll collection: owner %s no longer "
+                    "exists — traversal is FREE, no credits move",
+                    tunnel.id, owner_id,
+                )
+            elif _has_24h_team_tenure(db, traverser.id, owner_peek, now):
+                exempt_reason = "team_tenure"
+
+        if exempt_reason is None:
+            # Toll read ONCE, right here at collection — no second read after
+            # this point, so nothing downstream can TOCTOU the fee.
+            owner_locked = _lock_player_if_exists(db, owner_id)
+            if owner_locked is None:
+                exempt_reason = "owner_orphaned"
+                logger.warning(
+                    "Warp gate tunnel %s toll collection: owner %s vanished "
+                    "under lock — traversal is FREE, no credits move",
+                    tunnel.id, owner_id,
+                )
+            elif traverser.credits < fee:
+                raise WarpGateError(
+                    402,
+                    f"ERR_INSUFFICIENT_CREDITS_FOR_TOLL: this gate charges a "
+                    f"{fee:,}-credit toll; you have {traverser.credits:,}",
+                )
+            else:
+                # Nothing between these two lines can raise — both sides of
+                # the transfer move together or (on any earlier raise above)
+                # neither does.
+                traverser.credits -= fee
+                owner_locked.credits += fee
+                charged = fee
+                db.flush()
+
+    # --- bookkeeping: total_traversals/tunnel_status on every call ---------
+    tunnel.total_traversals = (tunnel.total_traversals or 0) + 1
+    status = dict(tunnel.tunnel_status) if isinstance(tunnel.tunnel_status, dict) else {}
+    status["last_traversal"] = now.isoformat()
+    # NO-CANON traffic_level formula: a simple saturating traversal count,
+    # no decay/time-window — this system has no background worker (module
+    # docstring), so a decaying figure would need its own lazy-on-read
+    # recompute this WO does not build. Flagged to DECISIONS for refinement.
+    status["traffic_level"] = min(100, tunnel.total_traversals)
+    tunnel.tunnel_status = status
+    flag_modified(tunnel, "tunnel_status")
+
+    # --- bookkeeping: toll_stats for non-owner traversals only -------------
+    if not is_owner:
+        data = dict(tunnel.artificial_data) if isinstance(tunnel.artificial_data, dict) else {}
+        stats = dict(data.get("toll_stats") or {})
+        stats["usage_count"] = int(stats.get("usage_count", 0) or 0) + 1
+        stats["total_revenue"] = int(stats.get("total_revenue", 0) or 0) + charged
+        stats["last_used"] = now.isoformat()
+        data["toll_stats"] = stats
+        tunnel.artificial_data = data
+        flag_modified(tunnel, "artificial_data")
+
+    db.flush()
+    return {
+        "charged": charged,
+        "exempt_reason": exempt_reason,
+        "toll_fee": fee,
+    }
 
 
 def _resolve_owned_active_gate(db: Session, player: Player, gate_id: str, *, lock: bool):
@@ -1377,10 +2208,19 @@ def set_gate_permissions(
     mode: str,
     whitelist=None,
     allies=None,
+    toll: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """WO-DBB-WG1 — atomically set a gate's access mode, whitelist and allied
-    teams (owner-only). Persists onto the gate's WarpTunnel.access_requirements
-    JSONB and keeps the coarse is_public flag in sync. Caller owns the commit.
+    """WO-DBB-WG1 + WO-GWQ-GATE-TOLL — atomically set a gate's access mode,
+    whitelist, allied teams, AND toll fee (owner-only). Persists onto the
+    gate's WarpTunnel.access_requirements JSONB and keeps the coarse
+    is_public flag in sync. Caller owns the commit.
+
+    `toll` is OPTIONAL and, unlike mode/whitelist/allies (which this call
+    always overwrites, even to empty), is preserved unchanged when omitted —
+    an owner adjusting just the access mode should never silently zero out
+    their configured toll. Validated to TOLL_FEE_MIN..TOLL_FEE_MAX
+    (0-10,000) BEFORE anything is locked or mutated, so a rejected toll
+    leaves the gate's JSONB completely unchanged.
 
     Lock order: gate row first (then the tunnel is fetched under the same txn).
     No credit movement, so no player lock is needed."""
@@ -1391,6 +2231,14 @@ def set_gate_permissions(
             f"Unknown access mode {mode!r}; valid modes: "
             + ", ".join(sorted(ACCESS_MODES)),
         )
+    if toll is not None:
+        if not isinstance(toll, int) or isinstance(toll, bool):
+            raise WarpGateError(400, "toll must be a whole number of credits")
+        if toll < TOLL_FEE_MIN or toll > TOLL_FEE_MAX:
+            raise WarpGateError(
+                400,
+                f"toll must be between {TOLL_FEE_MIN} and {TOLL_FEE_MAX:,} credits",
+            )
 
     gate = _resolve_owned_active_gate(db, player, gate_id, lock=True)
     if not gate.warp_tunnel_id:
@@ -1411,14 +2259,18 @@ def set_gate_permissions(
     reqs["mode"] = mode
     reqs["whitelist"] = whitelist_ids
     reqs["allies"] = allies_ids
+    if toll is not None:
+        reqs["toll_amount"] = toll
     tunnel.access_requirements = reqs
     flag_modified(tunnel, "access_requirements")
     tunnel.is_public = mode in _PUBLIC_MODES
     db.flush()
 
     logger.info(
-        "Player %s set warp gate %s access mode to %s (whitelist=%d allies=%d)",
+        "Player %s set warp gate %s access mode to %s (whitelist=%d allies=%d "
+        "toll=%s)",
         player.id, gate.id, mode, len(whitelist_ids), len(allies_ids),
+        reqs.get("toll_amount", 0),
     )
     return {
         "gate_id": str(gate.id),
@@ -1426,6 +2278,144 @@ def set_gate_permissions(
         "whitelist": whitelist_ids,
         "allies": allies_ids,
         "is_public": tunnel.is_public,
+        "toll_amount": int(reqs.get("toll_amount", 0) or 0),
+    }
+
+
+# --- Layered access-gate setters (WO-QUALITY-techdebt-gate-access-setters) --
+#
+# _check_faction_rep_layers (:1780) and collect_toll's toll_bypass exemption
+# (:2038-2042) have READ the "faction_rep_min" / "faction_rep_max" /
+# "toll_bypass" access_requirements keys since WO-GWQ-GATE-TOLL, but nothing
+# ever WROTE them -- set_gate_permissions above only ever touches mode/
+# whitelist/allies/toll_amount. That enforcement code was unreachable
+# through any player-facing action. These two functions close that gap.
+
+def _validate_faction_rep_layer(raw: Any, label: str) -> Optional[Dict[str, Any]]:
+    """Validate + canonicalize an inbound faction_rep_min/max layer to the
+    NO-CANON storage shape _check_faction_rep_layers reads (:1790-1791):
+    {"faction_type": <FactionType value>, "value": <int>}. Canon (warp-
+    gates.md "Access control" -- "Faction reputation minimum" / "...
+    maximum") names the LAYER, not this JSONB shape or key -- flagged to
+    DECISIONS, same as _check_faction_rep_layers' own NO-CANON note.
+
+    None means "omitted" (caller leaves the layer unchanged -- see
+    set_gate_access_layers). A present-but-invalid faction_type is
+    rejected here rather than silently accepted: an unrecognized
+    faction_type would otherwise sail through and, at READ time,
+    _faction_rep_value's own permissive fallback resolves it to 0 rep for
+    every player, silently turning a typo'd rep-min layer into "reject
+    everyone" or a typo'd rep-max into "reject no one" with no error ever
+    surfaced to the owner who configured it."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise WarpGateError(400, f"{label} must be an object with faction_type and value")
+    try:
+        # FactionType._missing_ (faction.py) does value.upper() with no
+        # None/type guard -- a missing or non-string faction_type raises
+        # AttributeError there, not the ValueError/TypeError enum.__new__
+        # normally raises for an unrecognized value. Caught alongside the
+        # usual pair so a validation failure here always surfaces as a
+        # clean 400, never an uncaught 500 -- a real fragility in the
+        # shared enum helper, flagged rather than silently worked around
+        # by also fixing faction.py (out of this WO's scope).
+        faction_type = FactionType(raw.get("faction_type"))
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise WarpGateError(
+            400,
+            f"{label}.faction_type must be one of: "
+            + ", ".join(sorted(ft.value for ft in FactionType)),
+        )
+    value_raw = raw.get("value")
+    if not isinstance(value_raw, int) or isinstance(value_raw, bool):
+        raise WarpGateError(400, f"{label}.value must be a whole number")
+    return {"faction_type": faction_type.value, "value": value_raw}
+
+
+def _validate_toll_bypass(raw: Any) -> Optional[List[str]]:
+    """toll_bypass is [NO-CANON] end to end -- collect_toll's own docstring
+    (:1983) flags canon names the toll-bypass EXEMPTION, not its storage
+    key or shape. Reuses _validate_uuid_list's already-established
+    player-id-list validation (the SAME shape whitelist/allies already
+    use in set_gate_permissions) rather than inventing a new one. None
+    means "omitted" (leave unchanged)."""
+    if raw is None:
+        return None
+    return _validate_uuid_list(raw, "toll_bypass")
+
+
+def set_gate_access_layers(
+    db: Session,
+    player: Player,
+    gate_id: str,
+    faction_rep_min: Optional[Dict[str, Any]] = None,
+    faction_rep_max: Optional[Dict[str, Any]] = None,
+    toll_bypass: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """WO-QUALITY-techdebt-gate-access-setters -- owner-only setter for the
+    optional layered access gates on top of a gate's base mode
+    (_check_faction_rep_layers' faction_rep_min/max, collect_toll's
+    toll_bypass) that were previously unreachable (see module comment
+    above).
+
+    Each of the three parameters is OPTIONAL and, like set_gate_
+    permissions' own `toll` parameter, PRESERVED UNCHANGED when omitted
+    (None) -- an owner adding a toll_bypass entry should never silently
+    wipe an already-configured faction_rep_min, and vice versa. There is
+    currently no way to CLEAR an already-set layer back to unconfigured
+    through this call (same limitation set_gate_permissions' own `toll`
+    already has) -- a real gap if ever needed, but out of this WO's
+    scope; flagged, not silently worked around.
+
+    All three are validated BEFORE anything is locked or mutated, so a
+    rejected call leaves the gate's JSONB completely unchanged (same
+    discipline as set_gate_permissions' toll bound-check).
+
+    OWNERSHIP GUARD: identical to set_gate_permissions/transfer_gate --
+    _resolve_owned_active_gate resolves the gate from the AUTHENTICATED
+    `player` (never a client-supplied owner id) and 404s (no existence
+    leak) if `gate.player_id != player.id`. Lock order: gate row first
+    (then the tunnel is fetched under the same txn). No credit movement,
+    so no player lock is needed."""
+    validated_rep_min = _validate_faction_rep_layer(faction_rep_min, "faction_rep_min")
+    validated_rep_max = _validate_faction_rep_layer(faction_rep_max, "faction_rep_max")
+    validated_bypass = _validate_toll_bypass(toll_bypass)
+
+    gate = _resolve_owned_active_gate(db, player, gate_id, lock=True)
+    if not gate.warp_tunnel_id:
+        raise WarpGateError(400, "This gate has no traversable connection to configure")
+    tunnel = (
+        db.query(WarpTunnel)
+        .filter(WarpTunnel.id == gate.warp_tunnel_id)
+        .with_for_update()
+        .first()
+    )
+    if tunnel is None:
+        raise WarpGateError(404, "The gate's warp tunnel could not be found")
+
+    reqs = dict(tunnel.access_requirements or {}) if isinstance(tunnel.access_requirements, dict) else {}
+    if validated_rep_min is not None:
+        reqs["faction_rep_min"] = validated_rep_min
+    if validated_rep_max is not None:
+        reqs["faction_rep_max"] = validated_rep_max
+    if validated_bypass is not None:
+        reqs["toll_bypass"] = validated_bypass
+    tunnel.access_requirements = reqs
+    flag_modified(tunnel, "access_requirements")
+    db.flush()
+
+    logger.info(
+        "Player %s set warp gate %s access layers (faction_rep_min=%s "
+        "faction_rep_max=%s toll_bypass=%d entries)",
+        player.id, gate.id, reqs.get("faction_rep_min"), reqs.get("faction_rep_max"),
+        len(reqs.get("toll_bypass") or []),
+    )
+    return {
+        "gate_id": str(gate.id),
+        "faction_rep_min": reqs.get("faction_rep_min"),
+        "faction_rep_max": reqs.get("faction_rep_max"),
+        "toll_bypass": reqs.get("toll_bypass") or [],
     }
 
 
@@ -1569,4 +2559,225 @@ def transfer_gate(
         "access_carried_over": (
             _access_mode_of(tunnel) if tunnel is not None else ACCESS_MODE_PUBLIC
         ),
+    }
+
+
+# --- Region-termination cascade (ADR-0052 SK38 / ADR-0050, WO-GWQ-GATE-CASCADE) --
+# KERNEL ONLY -- no caller anywhere in src/ yet. The region-lifecycle epic
+# (structures.py's `_is_border_contested` docstring: "Depends on
+# region-lifecycle, which is unbuilt") is what will eventually invoke this
+# once a real region-cleanup orchestrator exists. Exercised directly by
+# tests/unit/test_gate_region_cascade.py in the meantime.
+
+# ADR-0052 SK38 / warp-gates.md "Region-termination cascade": 50% of the
+# construction-cost snapshot, as exact integer halving (no float rounding
+# risk on a credits figure) -- equals floor(0.5 * construction_cost) for the
+# non-negative Integer column.
+GATE_CASCADE_REFUND_DIVISOR = 2
+
+
+def _notify_gate_cascade_destroyed(
+    db: Session, owner: Player, gate_name: str, region_name: str, refund_amount: int
+) -> None:
+    """Best-effort, offline-survivable notice -- mirrors medal_service's
+    _notify_medal_awarded self-addressed system Message convention
+    (sender_id == recipient_id == owner.id; the Message model's sender_id FK
+    is non-null and a cascade teardown has no human sender).
+
+    warp-gates.md's own template calls for "realtime broadcast + ARIA
+    narration". This kernel takes a bare (db, region_id) signature with no
+    ConnectionManager/manager handle (that's async, live-connection state --
+    see notification_service.py's own PARKED precedent for the analogous gap
+    on the `push` delivery surface), so the live-broadcast half is PARKED
+    here. The persistent inbox message is the durable half of the canon
+    requirement and is what actually reaches an OFFLINE owner -- the case
+    this cascade exists for in the first place. Wording is NO-CANON (canon
+    states the facts the message must carry, not exact prose). Fully
+    defensive: any failure here must never break the teardown or its
+    already-applied refund.
+    """
+    try:
+        from src.models.message import Message
+
+        message = Message(
+            sender_id=owner.id,
+            recipient_id=owner.id,
+            subject="Warp gate destroyed — region terminated",
+            content=(
+                f"Your warp gate {gate_name} has been destroyed — the "
+                f"{region_name} side terminated. A 50% construction-cost "
+                f"refund of {refund_amount:,} credits has been credited to "
+                "your account."
+            ),
+            message_type="system",
+            priority="high",
+        )
+        db.add(message)
+    except Exception:
+        logger.warning(
+            "Cascade-teardown notification failed for owner %s (refund "
+            "already applied)", owner.id, exc_info=True,
+        )
+
+
+def cascade_region_gate_teardown(db: Session, region_id) -> Dict[str, Any]:
+    """ADR-0052 SK38 / ADR-0050 / warp-gates.md "Region-termination cascade":
+    called BY the future region-lifecycle cleanup orchestrator once a region
+    enters cleanup. Tears down every player-built warp gate with an endpoint
+    sector in `region_id`:
+
+      1. Both endpoints severed atomically. The traversable connection IS
+         the linked WarpTunnel row (movement_service._has_player_gate reads
+         ONLY WarpTunnel.status == ACTIVE, never WarpGate.status -- deleting
+         the tunnel is what actually cuts traversal); the WarpGate row is
+         flipped to the pre-existing, previously-never-written COLLAPSED
+         status (its own docstring: "Destroyed (combat / cascade)") rather
+         than hard-deleted, so the row survives as an idempotency marker +
+         audit trail -- the same pattern this file already uses on cancel
+         (_dispose_beacon_construction_sites flips CANCELLED rather than
+         deleting the gate row), and it frees the owner's ADR-0010 gate-cap
+         slot (_check_gate_cap counts ACTIVE/HARMONIZING only). The
+         WarpGateBeacon row is left untouched: its status enum has no member
+         for cascade-destruction, and WarpGate.beacon_id is
+         ondelete="CASCADE" -- hard-deleting the beacon would DB-cascade
+         -delete the very WarpGate row this function relies on for the
+         mark-before-pay idempotency guard below. This is a documented
+         interpretation of canon's literal "the entire WarpGate row (beacon
+         + focus) deletes" (mirrors this file's own "Interpretations where
+         canon leaves room" section) -- traversal is fully severed either
+         way (see the movement_service citation above), so nothing is
+         player-facing half-broken.
+      2. floor(construction_cost / 2) refunded to the owner's Player.credits,
+         marked BEFORE paying -- the status flip flushes first -- so a gate
+         spanning two terminating regions, or a re-invocation of this same
+         kernel, pays exactly once: the sweep below only ever matches a gate
+         still in HARMONIZING/ACTIVE.
+      3. A best-effort, self-addressed system Message notifies the owner
+         (see _notify_gate_cascade_destroyed for the realtime-broadcast gap).
+      4. An orphaned/deleted owner: destroyed with NO refund, WARNed, never
+         raised -- the region is terminating regardless of the owner row's
+         fate.
+
+    CENTRAL-BANK ROUTING GAP (flagged, not built): canon says refund the
+    ONLINE owner's Player.credits, or PlayerCentralBankAccount if offline.
+    `PlayerCentralBankAccount` does not exist anywhere in src/models -- it is
+    100% design-only text in ADR-0050 (no migration ever created the table).
+    There is also no synchronously-readable "is this player online" signal
+    reachable from a flush-only (db, region_id) kernel (the nearest thing,
+    redis_service.sync_player_online_status, is async/Redis-backed
+    infrastructure, not a plain column read). This function therefore
+    refunds EVERY owner's credits unconditionally to Player.credits, online
+    or not, until the Central Bank feature exists to receive the offline
+    branch.
+
+    Both endpoints of a single gate are torn down inside one flush sequence
+    per gate. A failure mid-loop propagates out of this function uncaught
+    (never swallowed) so the CALLER's transaction rollback is what reverses
+    any already-flushed-but-uncommitted work; this kernel commits NOTHING,
+    ever (house convention -- the calling route/orchestrator owns the
+    transaction boundary).
+
+    Processes both HARMONIZING and ACTIVE gates (canon says "a player-built
+    warp gate" without qualifying status; a HARMONIZING gate already carries
+    its full construction_cost snapshot and a real FORMING WarpTunnel row
+    from anchor_focus -- the same sunk-cost exposure as an ACTIVE one). A
+    CANCELLED/COLLAPSED gate is already dead and is skipped.
+
+    Does NOT read/require `Region.status == TERMINATED` -- deciding WHEN a
+    region has entered cleanup is the caller's (region-lifecycle
+    orchestrator's) job; this kernel is purely mechanical given a region_id.
+    """
+    region = db.query(Region).filter(Region.id == region_id).first()
+    region_name = region.name if region is not None else "the connected region"
+
+    sector_rows = db.query(Sector).filter(Sector.region_id == region_id).all()
+    sector_numbers = {s.sector_id for s in sector_rows}
+    if not sector_numbers:
+        return {
+            "region_id": str(region_id),
+            "gates_processed": 0,
+            "gate_ids": [],
+            "total_refunded": 0,
+            "orphaned_owners": 0,
+        }
+
+    gates = (
+        db.query(WarpGate)
+        .join(WarpGateBeacon, WarpGate.beacon_id == WarpGateBeacon.id)
+        .filter(
+            WarpGate.status.in_([WarpGateStatus.HARMONIZING, WarpGateStatus.ACTIVE]),
+            or_(
+                WarpGateBeacon.source_sector_id.in_(sector_numbers),
+                WarpGateBeacon.destination_sector_id.in_(sector_numbers),
+            ),
+        )
+        .populate_existing()
+        .with_for_update(of=WarpGate)
+        .all()
+    )
+
+    processed: List[str] = []
+    total_refunded = 0
+    orphaned_owners = 0
+
+    for gate in gates:
+        # Re-invocation / cross-regional double-cascade guard: a gate whose
+        # OTHER endpoint's region already cascaded it (or a prior call for
+        # THIS same region already did) is no longer HARMONIZING/ACTIVE --
+        # the query above already excludes it on a real DB, but a caller
+        # handing us a stale Python reference could still repeat one.
+        if gate.status not in (WarpGateStatus.HARMONIZING, WarpGateStatus.ACTIVE):
+            continue
+
+        refund_amount = gate.construction_cost // GATE_CASCADE_REFUND_DIVISOR
+
+        # Mark BEFORE paying (flush) -- see docstring point 2.
+        gate.status = WarpGateStatus.COLLAPSED
+        db.flush()
+
+        gate_name = "(unnamed)"
+        if gate.warp_tunnel_id:
+            tunnel = (
+                db.query(WarpTunnel)
+                .filter(WarpTunnel.id == gate.warp_tunnel_id)
+                .first()
+            )
+            gate.warp_tunnel_id = None
+            if tunnel is not None:
+                gate_name = tunnel.name
+                db.delete(tunnel)
+
+        owner = (
+            db.query(Player)
+            .filter(Player.id == gate.player_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if owner is None:
+            logger.warning(
+                "Cascade teardown: gate %s owner %s not found -- destroyed "
+                "with no refund", gate.id, gate.player_id,
+            )
+            orphaned_owners += 1
+        else:
+            owner.credits += refund_amount
+            total_refunded += refund_amount
+            _notify_gate_cascade_destroyed(db, owner, gate_name, region_name, refund_amount)
+
+        db.flush()
+        processed.append(str(gate.id))
+        logger.info(
+            "Region %s termination cascade: warp gate %s destroyed, %d cr "
+            "refunded (owner=%s)",
+            region_id, gate.id, refund_amount,
+            "orphaned" if owner is None else owner.id,
+        )
+
+    return {
+        "region_id": str(region_id),
+        "gates_processed": len(processed),
+        "gate_ids": processed,
+        "total_refunded": total_refunded,
+        "orphaned_owners": orphaned_owners,
     }

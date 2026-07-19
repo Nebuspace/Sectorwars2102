@@ -12,6 +12,7 @@ This service implements:
 import json
 import asyncio
 import logging
+import uuid
 from typing import Dict, Set, List, Any, Optional, Callable
 from datetime import datetime, UTC
 from dataclasses import dataclass
@@ -60,7 +61,19 @@ class RedisPubSubService:
         self.TRADING_CHANNEL_PREFIX = "trading:"
         self.AI_CHANNEL_PREFIX = "ai:"
         self.SYSTEM_CHANNEL = "system:broadcast"
-        
+
+        # WO-P1-REALTIME-BUS-FANOUT (canon SYSTEMS/realtime-bus.md "Cross-
+        # process fanout" -- this is the doc's own literal channel name).
+        # personal/sector WS delivery crosses uvicorn workers through this
+        # single shared channel, distinct from the per-commodity market
+        # channels above. worker_id tags every publish so a worker's own
+        # bus subscriber can recognize (and skip) its own just-published
+        # event -- it already delivered to its local sockets, synchronously,
+        # before publishing; see ConnectionManager._handle_bus_envelope in
+        # websocket_service.py.
+        self.BUS_CHANNEL = "sw2102:bus"
+        self.worker_id = uuid.uuid4().hex
+
         logger.info(f"Redis Pub/Sub Service initialized with URL: {self.redis_url}")
     
     async def connect(self):
@@ -221,7 +234,90 @@ class RedisPubSubService:
         except Exception as e:
             logger.error(f"Error broadcasting system message: {e}")
             return 0
-    
+
+    async def publish_bus_event(
+        self,
+        kind: str,
+        target: Any,
+        message: Dict[str, Any],
+        exclude_user: Optional[str] = None,
+    ) -> int:
+        """Publish a personal/sector WS event to the shared cross-worker bus
+        channel (WO-P1-REALTIME-BUS-FANOUT, canon SYSTEMS/realtime-bus.md
+        "Cross-process fanout"). ``kind`` is "personal" or "sector";
+        ``target`` is the user_id or sector_id the ORIGINATING
+        ConnectionManager already tried (or, for sector, always attempts)
+        to serve locally before calling this. Every worker subscribed to
+        BUS_CHANNEL receives the envelope, including the publisher itself
+        -- ConnectionManager._handle_bus_envelope skips envelopes whose
+        origin_worker_id matches its own (already delivered locally) and
+        otherwise attempts local-only delivery for whichever of its own
+        connections match.
+
+        Best-effort by design, mirroring publish_market_update /
+        publish_trading_event's own except-log-return-0 shape: a Redis
+        outage must degrade cross-worker fanout, never break the caller
+        (which has ALREADY completed its own local delivery attempt by the
+        time this runs -- realtime-bus.md invariant 4, "every send is
+        non-blocking with respect to the originating service")."""
+        try:
+            envelope = {
+                "kind": kind,
+                "target": target,
+                "message": message,
+                "exclude_user": exclude_user,
+                "origin_worker_id": self.worker_id,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+            subscribers = await self.redis_client.publish(
+                self.BUS_CHANNEL, json.dumps(envelope)
+            )
+            self.messages_published += 1
+            return subscribers
+        except Exception as e:
+            logger.error(f"Error publishing bus event (kind={kind}): {e}")
+            return 0
+
+    async def subscribe_bus(self, callback: Callable[[Dict[str, Any]], Any]) -> None:
+        """Persistent cross-worker bus listener (WO-P1-REALTIME-BUS-FANOUT).
+
+        Unlike subscribe_to_market_updates (one ephemeral subscription per
+        client-requested commodity list, torn down when that client
+        disconnects), this is a SINGLE per-process subscription meant to
+        run for the lifetime of the worker -- started once, lazily, from
+        ConnectionManager.connect() (see websocket_service.py; every
+        connection route funnels through it, so this covers both the
+        plain player route and the enhanced/Foundation-Sprint route).
+
+        Resilience (team caution): a malformed message or a callback
+        exception logs-and-continues -- never lets a single bad frame kill
+        the loop, since this is the only channel remote workers have."""
+        subscriber = self.redis_client.pubsub()
+        try:
+            await subscriber.subscribe(self.BUS_CHANNEL)
+            self.active_listeners += 1
+
+            async for message in subscriber.listen():
+                if message.get("type") != "message":
+                    continue
+                try:
+                    envelope = json.loads(message["data"])
+                except (json.JSONDecodeError, TypeError):
+                    logger.error(f"Invalid JSON on bus channel: {message.get('data')!r}")
+                    continue
+                try:
+                    await callback(envelope)
+                    self.messages_received += 1
+                except Exception:
+                    logger.exception("Error in bus subscriber callback")
+        finally:
+            try:
+                await subscriber.unsubscribe()
+                await subscriber.close()
+            except Exception:
+                pass
+            self.active_listeners -= 1
+
     # =============================================================================
     # SUBSCRIBING
     # =============================================================================
@@ -330,13 +426,47 @@ class RedisPubSubService:
 
 
 # Singleton instance
-_pubsub_service = None
+_pubsub_service: Optional["RedisPubSubService"] = None
+
+# WO-P1-BUS-RACE-CRITICAL: single-flight guard for the lazy singleton.
+# asyncio.Lock() is safe to construct at module import time on Python 3.10+
+# (it no longer binds to a specific event loop at construction), so this is
+# a plain module-level lock, not something built lazily per-loop.
+_pubsub_service_lock = asyncio.Lock()
 
 
 async def get_pubsub_service() -> RedisPubSubService:
-    """Get or create pub/sub service instance"""
+    """Get or create the pub/sub service instance -- single-flight safe.
+
+    BUG THIS FIXES (Mack's empirical repro, probe_bus_race.py): the old
+    body did `if _pubsub_service is None: _pubsub_service =
+    RedisPubSubService(); await _pubsub_service.connect()` -- the global
+    was assigned BEFORE the connect() await suspended, so a second
+    concurrent caller arriving while the first's connect() was still in
+    flight saw a non-None global and returned the SAME instance with
+    `.redis_client` still None, silently. In
+    ConnectionManager._start_bus_subscriber that meant the bus subscriber
+    concluded "Redis unavailable" and gave up FOREVER for that worker's
+    process lifetime -- a race, not a real outage, mistaken for a
+    permanent one, exactly the situation the live 2-worker deploy window
+    was about to hit for the first time (Mac/CI have no Redis at all, so
+    both racing callers agreed "unavailable" and nothing ever caught it).
+
+    Fixed via double-checked locking: the fast path (already initialized)
+    never touches the lock; the slow path acquires `_pubsub_service_lock`
+    and re-checks under it, so at most ONE caller ever constructs +
+    connects the singleton, and every other concurrent caller AWAITS that
+    same in-flight attempt (blocked on the lock) rather than racing it.
+    The module-level global is assigned ONLY after connect() has fully
+    completed -- never before -- so no caller can ever observe a non-None
+    singleton whose connect() hasn't finished.
+    """
     global _pubsub_service
-    if _pubsub_service is None:
-        _pubsub_service = RedisPubSubService()
-        await _pubsub_service.connect()
-    return _pubsub_service
+    if _pubsub_service is not None:
+        return _pubsub_service
+    async with _pubsub_service_lock:
+        if _pubsub_service is None:
+            service = RedisPubSubService()
+            await service.connect()
+            _pubsub_service = service
+        return _pubsub_service
