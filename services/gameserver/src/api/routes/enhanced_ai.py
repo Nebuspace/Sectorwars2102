@@ -27,9 +27,11 @@ from src.core.database import get_async_session
 from src.auth.dependencies import get_current_player, get_current_user
 from src.models.player import Player
 from src.services.enhanced_ai_service import (
-    EnhancedAIService, AISystemType, CrossSystemRecommendation, 
+    EnhancedAIService, AISystemType, CrossSystemRecommendation,
     ConversationContext, RecommendationPriority, RiskAssessment
 )
+from src.services.ai_security_service import AISecurityService, get_security_service
+from src.services.aria_data_index_service import ARIADataIndexService
 from src.models.enhanced_ai_models import AIComprehensiveAssistant, SecurityLevel
 from src.utils.validation import validate_uuid
 from src.middleware.rate_limit import RateLimitMiddleware
@@ -165,7 +167,25 @@ class ConversationResponse(BaseModel):
     conversation_id: str
     response_time: str
     intent: Optional[Dict[str, Any]] = None
-    
+    # WO-ARIA-COST-CAPS: additive. `degraded` marks a cost-cap fallback
+    # (never a hard error, per dispatch); `scope` distinguishes the
+    # instance-wide circuit-breaker/provider-chain-failure case from a
+    # personal per-player cap-hit (ADR-0092 §4's "quantum storm" vs
+    # "attunement fatigue" split -- narration copy is a later WO's job,
+    # this carries only the machine-readable flag). Both None/False on a
+    # normal response.
+    degraded: bool = False
+    scope: Optional[str] = None
+    # WO-ARIA-CHAT-LLM: which engine answered this turn -- "llm" |
+    # "template" | None. None on every response while ARIA_LLM_CHAT_ENABLED
+    # is off (the pinned flag-off contract) or on any error-path response
+    # built before EnhancedAIService ever ran.
+    mode: Optional[str] = None
+    # Max's GO amendment on WO-ARIA-CHAT-LLM: a Resonance-ledger accounting
+    # SEAM -- a documented hook point only. The ledger itself is a future
+    # post-ADR-0092 WO; this field is deliberately always None today.
+    ledger_entry: Optional[Any] = None
+
     class Config:
         schema_extra = {
             "example": {
@@ -197,6 +217,54 @@ class AssistantStatusResponse(BaseModel):
                 "total_interactions": 1542,
                 "last_active": "2025-06-07T15:30:00Z",
                 "access_permissions": {"trading": True, "combat": False, "colony": False, "station": True}
+            }
+        }
+
+
+class ARIADataStreamOut(BaseModel):
+    """WO-P6-aria-data-index-registry: one row of the ARIA data-index
+    catalog, as exposed to players via the memory-journal transparency
+    browser (DATA_MODELS/aria-data-index.md rule 3)."""
+    key: str
+    domain: str
+    display_name: str
+    retention_class: str
+    transparency_visible: bool
+
+    class Config:
+        from_attributes = True
+        schema_extra = {
+            "example": {
+                "key": "threat.combat",
+                "domain": "threat",
+                "display_name": "Combat",
+                "retention_class": "budget_pruned",
+                "transparency_visible": True,
+            }
+        }
+
+
+class ARIAMemoryOut(BaseModel):
+    """One decrypted ARIA memory -- the read-back half of the encrypted
+    Tier-1 memory-journal (WO-DRIFT-aria-rt-mem-readpath-dead, ADR-0016).
+    ``content`` is the plaintext dict ``_decrypt_memory`` recovered from
+    ``ARIAPersonalMemory.memory_content``."""
+    id: str
+    memory_type: str
+    importance_score: float
+    confidence_level: float
+    created_at: Optional[str] = None
+    content: Dict[str, Any]
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "id": "123e4567-e89b-12d3-a456-426614174000",
+                "memory_type": "market",
+                "importance_score": 0.72,
+                "confidence_level": 0.9,
+                "created_at": "2026-07-09T12:00:00Z",
+                "content": {"event": "trade_transaction", "commodity": "organics"},
             }
         }
 
@@ -369,17 +437,70 @@ async def get_trading_recommendations(
 async def chat_with_ai(
     request: ConversationRequest = Body(...),
     player_id: str = Depends(validate_ai_access),
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
+    security_service: AISecurityService = Depends(get_security_service),
 ):
     """
     Natural language conversation with AI assistant
-    
+
     - **message**: Your message to the AI (1-4000 characters)
     - **conversation_id**: Optional conversation ID to continue existing chat
     - **conversation_type**: Type of conversation (query, command, feedback, learning, strategic)
-    
+
     ARIA can help with trading, strategic planning, and game guidance across all systems.
     """
+    # WO-ARIA-COST-CAPS: route through AISecurityService validation + limits
+    # BEFORE any processing -- mirrors the one proven integration point
+    # (api/routes/first_login.py's answer_dialogue). Content-safety and
+    # rate-limit failures stay HARD ERRORS (same canon-cited codes first-
+    # login already uses); a COST-cap hit is the one outcome dispatch says
+    # must NEVER be a hard error -- it degrades to a fallback response with
+    # a scope flag instead (ADR-0092 §4).
+    #
+    # WO-ARIA-TRUST-PERSIST: this route never loaded a Player row before --
+    # fetched here solely to seed/write-through the trust ladder, mirroring
+    # first_login.py's pattern with an AsyncSession twin.
+    player_row = await db.get(Player, uuid.UUID(player_id))
+    is_safe, violations = security_service.validate_input(
+        request.message, player_id, request.conversation_id or "chat",
+        seed_from=player_row,
+    )
+    if player_row is not None:
+        for _col, _val in security_service.get_trust_columns(player_id).items():
+            setattr(player_row, _col, _val)
+        # EXPLICIT commit -- verified get_db()'s async twin behaves the
+        # same as the sync version (never auto-commits); an uncommitted
+        # mutation would be silently discarded on the early `raise` below,
+        # exactly the path where a NEW block is most likely to have just
+        # triggered (see first_login.py's identical fix, same WO).
+        await db.commit()
+    if not is_safe:
+        logger.warning(f"Security violation by player {player_id}: {[v.violation_type.value for v in violations]}")
+        raise HTTPException(status_code=400, detail="Input validation failed due to security policy")
+
+    if not security_service.check_rate_limits(player_id):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Please wait before making another request.")
+
+    estimated_cost = security_service.estimate_ai_cost(request.message)
+    cost_result = security_service.check_cost_limits_detailed(player_id, estimated_cost)
+    if not cost_result.allowed:
+        logger.info(
+            "ARIA cost cap hit for player %s: %s (scope=%s)",
+            player_id, cost_result.error_code, cost_result.scope,
+        )
+        return ConversationResponse(
+            # Plain operational notice, NOT in-character narration -- the
+            # "quantum storm" / "attunement fatigue" flavor text is a later
+            # ARIA WO's job per dispatch, not this one's.
+            response="ARIA's advanced response is temporarily unavailable. Please try again later.",
+            conversation_id=request.conversation_id or "",
+            response_time=datetime.utcnow().isoformat(),
+            degraded=True,
+            scope=cost_result.scope,
+        )
+
+    sanitized_input = security_service.sanitize_input(request.message)
+
     try:
         ai_service = EnhancedAIService(db)
 
@@ -391,19 +512,28 @@ async def chat_with_ai(
         # conversation_id so the service can continue the thread when valid.
         response_data = await ai_service.process_natural_language_query(
             player_id=uuid.UUID(player_id),
-            user_input=request.message,
+            user_input=sanitized_input,
             conversation_id=request.conversation_id,
         )
-        
+
         await db.commit()
-        
+
+        # Simplified real-cost tracking (matches first_login.py's own
+        # "actual_cost = estimated_cost -- Simplified for now" convention;
+        # real per-call token accounting is a separate, later concern).
+        security_service.track_cost(player_id, estimated_cost)
+
         return ConversationResponse(
             response=response_data["response"],
             conversation_id=response_data["conversation_id"],
             response_time=response_data["response_time"],
-            intent=response_data.get("intent")
+            intent=response_data.get("intent"),
+            # WO-ARIA-CHAT-LLM: absent from response_data (== None here)
+            # whenever ARIA_LLM_CHAT_ENABLED is off -- the flag-off pin.
+            mode=response_data.get("mode"),
+            ledger_entry=response_data.get("ledger_entry"),
         )
-        
+
     except ValueError as e:
         logger.warning(f"Invalid chat request: {e}")
         raise HTTPException(
@@ -670,6 +800,75 @@ async def cleanup_ai_data(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Data cleanup failed"
+        )
+
+
+# =============================================================================
+# DATA INDEX (WO-P6-aria-data-index-registry)
+# =============================================================================
+
+@router.get(
+    "/data-index",
+    response_model=List[ARIADataStreamOut],
+    summary="Get the ARIA data-index catalog",
+    description="List every observation stream ARIA learns from, per DATA_MODELS/aria-data-index.md -- the memory-journal transparency surface."
+)
+async def get_aria_data_index(
+    current_player: Player = Depends(get_current_player),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Read-only catalog listing, ordered by registry key. No player-scoped
+    filtering here -- the registry itself is global; per-player memory
+    presence is a separate, future memory-journal endpoint."""
+    try:
+        index_service = ARIADataIndexService(db)
+        return await index_service.list_streams()
+    except Exception as e:
+        logger.error(f"Error listing ARIA data index: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="ARIA data index temporarily unavailable"
+        )
+
+
+@router.get(
+    "/memories",
+    response_model=List[ARIAMemoryOut],
+    summary="Recall your own decrypted ARIA memories",
+    description=(
+        "Tier-1 memory-journal transparency read path -- decrypts and returns "
+        "YOUR OWN ARIAPersonalMemory rows (WO-DRIFT-aria-rt-mem-readpath-dead), "
+        "the endpoint the data-index route's docstring flagged as future work."
+    )
+)
+async def get_aria_memories(
+    memory_type: Optional[str] = Query(
+        None, description="Filter to one memory_type registry key (e.g. 'market', 'threat.combat')"
+    ),
+    limit: int = Query(50, ge=1, le=200),
+    current_player: Player = Depends(get_current_player),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Owner-only by construction: there is no player-id path/query
+    parameter to spoof -- ``current_player.id`` comes from the
+    JWT-authenticated dependency and is the only id ever passed to
+    ``recall_memories``'s query-level filter (ADR-0016 isolation). A
+    request can therefore only ever recall the requester's own memories,
+    never another player's."""
+    try:
+        from src.services.aria_personal_intelligence_service import get_aria_intelligence_service
+
+        aria_service = get_aria_intelligence_service()
+        memories = await aria_service.recall_memories(
+            str(current_player.id), db, memory_type=memory_type, limit=limit,
+        )
+        await db.commit()
+        return memories
+    except Exception as e:
+        logger.error(f"Error recalling ARIA memories: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="ARIA memory recall temporarily unavailable"
         )
 
 

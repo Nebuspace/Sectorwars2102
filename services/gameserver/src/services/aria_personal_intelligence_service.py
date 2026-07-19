@@ -16,6 +16,8 @@ OWASP Security Implementation:
 import json
 import hashlib
 import hmac
+import heapq
+import math
 from typing import Dict, List, Any, Optional, Tuple, Set
 from datetime import datetime, timedelta, UTC
 from decimal import Decimal
@@ -31,15 +33,23 @@ from sqlalchemy import select, and_, or_, func, update
 from sqlalchemy.orm import selectinload, Session
 
 from src.models.player import Player
-from src.models.sector import Sector
+from src.models.sector import Sector, sector_warps
 from src.models.station import Station
+from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
 from src.models.market_transaction import MarketTransaction
 from src.models.aria_personal_intelligence import (
     ARIAPersonalMemory, ARIAMarketIntelligence, ARIAExplorationMap,
-    ARIATradingPattern, ARIAQuantumCache, ARIASecurityLog
+    ARIAQuantumCache, ARIASecurityLog,
+    ARIATradingObservation, ObservationAction, ObservationOutcome,
 )
+# ARIATradingPattern (the GA/"Trade DNA" model) is DEPRECATED -- WO-ARIA-
+# GA-CLEANUP removed its only callers (evolve_trading_pattern /
+# get_evolved_patterns / _create_trading_pattern / _classify_pattern_type,
+# ADR-0038). No longer imported here; see models/aria_personal_intelligence.py's
+# own deprecation note on the class.
 from src.core.config import settings
 from src.core.security import get_password_hash
+from src.core.game_time import scaled_elapsed
 
 logger = logging.getLogger(__name__)
 
@@ -84,66 +94,6 @@ class ARIAPersonalIntelligenceService:
     # EXPLORATION & MEMORY CREATION
     # =============================================================================
     
-    async def record_sector_visit(self, player_id: str, sector_id: str, 
-                                 ship_id: str, db: AsyncSession) -> ARIAExplorationMap:
-        """
-        Record that a player visited a sector
-        This is the foundation of all ARIA knowledge
-        """
-        # Security: Validate player owns the ship (OWASP A01)
-        if not await self._validate_player_ship(player_id, ship_id, db):
-            await self._log_security_event(
-                player_id, "unauthorized_visit_attempt", "critical",
-                {"ship_id": ship_id, "sector_id": sector_id}, db
-            )
-            raise ValueError("Unauthorized ship access")
-        
-        # Check if we've visited this sector before
-        stmt = select(ARIAExplorationMap).where(
-            and_(
-                ARIAExplorationMap.player_id == player_id,
-                ARIAExplorationMap.sector_id == sector_id
-            )
-        )
-        result = await db.execute(stmt)
-        exploration = result.scalar_one_or_none()
-        
-        if exploration:
-            # Update existing exploration record
-            exploration.last_visit = datetime.now(UTC)
-            exploration.visit_count += 1
-            
-            # Decay old market intelligence
-            await self._decay_sector_intelligence(player_id, sector_id, db)
-        else:
-            # First visit to this sector!
-            exploration = ARIAExplorationMap(
-                player_id=player_id,
-                sector_id=sector_id,
-                first_visit=datetime.now(UTC),
-                last_visit=datetime.now(UTC),
-                visit_count=1
-            )
-            db.add(exploration)
-            
-            # Create memory of first exploration
-            await self._create_memory(
-                player_id,
-                "exploration",
-                {
-                    "event": "first_sector_visit",
-                    "sector_id": sector_id,
-                    "timestamp": datetime.now(UTC).isoformat()
-                },
-                importance=0.8,  # First visits are important
-                db=db
-            )
-        
-        await db.commit()
-        
-        logger.info(f"Player {player_id} visited sector {sector_id} (visit #{exploration.visit_count})")
-        return exploration
-    
     async def record_market_observation(self, player_id: str, station_id: str,
                                       commodity: str, price: float, quantity: int,
                                       db: AsyncSession) -> ARIAMarketIntelligence:
@@ -159,9 +109,18 @@ class ARIAPersonalIntelligenceService:
             )
             return None
         
-        # Get port's sector
+        # Get port's sector. sector_uuid (not the Integer sector_id -- see
+        # station.py:99-100) is the FK-compatible field ARIAMarketIntelligence.
+        # sector_id (UUID, NOT NULL) actually needs; a station with no
+        # resolved sector_uuid can't be recorded (WO-ARIA-MARKET-OBS).
         station = await db.get(Station, station_id)
         if not station:
+            return None
+        if station.sector_uuid is None:
+            logger.warning(
+                "record_market_observation: station %s has no sector_uuid -- skipping",
+                station_id,
+            )
             return None
 
         # Check existing intelligence
@@ -174,27 +133,31 @@ class ARIAPersonalIntelligenceService:
         )
         result = await db.execute(stmt)
         intelligence = result.scalar_one_or_none()
-        
+
         observation = {
             "price": price,
             "quantity": quantity,
             "timestamp": datetime.now(UTC).isoformat()
         }
-        
+
         if intelligence:
-            # Update existing intelligence
-            intelligence.price_observations.append(observation)
+            # Update existing intelligence. REASSIGN (never in-place
+            # .append()) -- price_observations is a plain Column(JSON), and
+            # in-place mutation of the same list object bypasses SQLAlchemy's
+            # attribute-set change tracking entirely, so the append would be
+            # silently lost at flush (WO-ARIA-MARKET-OBS finding).
+            intelligence.price_observations = intelligence.price_observations + [observation]
             intelligence.data_points += 1
             intelligence.last_visit = datetime.now(UTC)
-            
+
             # Recalculate statistics
             prices = [obs["price"] for obs in intelligence.price_observations[-50:]]  # Last 50
             intelligence.average_price = statistics.mean(prices)
             intelligence.price_volatility = statistics.stdev(prices) if len(prices) > 1 else 0.0
-            
+
             # Update patterns if enough data
             if intelligence.data_points >= self.MIN_DATA_POINTS_FOR_PREDICTION:
-                patterns = await self._identify_price_patterns(
+                patterns = self._identify_price_patterns(
                     intelligence.price_observations
                 )
                 intelligence.identified_patterns = patterns
@@ -206,7 +169,7 @@ class ARIAPersonalIntelligenceService:
             intelligence = ARIAMarketIntelligence(
                 player_id=player_id,
                 station_id=station_id,
-                sector_id=station.sector_id,
+                sector_id=station.sector_uuid,
                 commodity=commodity,
                 price_observations=[observation],
                 average_price=price,
@@ -246,7 +209,186 @@ class ARIAPersonalIntelligenceService:
                 )
         
         return intelligence
-    
+
+    # Canonical dedup window (WO-ARIA-MARKET-OBS, NO-CANON -- flagged for the
+    # DECISIONS batch): one market observation per (player, station,
+    # commodity) per 10 CANONICAL minutes, spanning every hook site that
+    # calls record_market_observation_sync for that station visit (dock,
+    # market view, ...). Uses game_time.scaled_elapsed -- CANONICAL, not
+    # wall-clock, matching this codebase's established clock-domain
+    # convention (docking/construction/ownership durations all compare a
+    # scaled-elapsed wall duration against a canonical threshold; see
+    # src/core/game_time.py's module docstring).
+    MARKET_OBSERVATION_DEDUP_WINDOW = timedelta(minutes=10)
+
+    def record_market_observation_sync(
+        self, player_id: str, station_id: str,
+        market_prices: List[Dict[str, Any]], db: Session,
+    ) -> None:
+        """
+        Synchronous, multi-commodity twin of ``record_market_observation``
+        for sync-Session callers (WO-ARIA-MARKET-OBS) -- trading.py's
+        dock / market-view hooks run on a sync Session and need to record a
+        whole station visit's price list in one call, not one commodity at
+        a time.
+
+        One call per station visit; ``market_prices`` is the FULL commodity
+        price list observed at ``station_id`` this visit. Each entry:
+        ``{"commodity": str, "price": float | None, "quantity": int}``
+        (``quantity`` optional, defaults to 0).
+
+        Per-(player, station, commodity) upsert, gated by
+        ``MARKET_OBSERVATION_DEDUP_WINDOW`` on that row's own ``last_visit``
+        -- naturally covers "spans both hook sites" (whichever hook fires
+        first sets ``last_visit``; a second hook re-submitting the same
+        commodity within the window is a no-op for that commodity) while
+        still recording any commodity that's genuinely new to this player+
+        station regardless of what else in the same payload was just seen.
+
+        FLUSH-ONLY: only ``db.add()``s / mutates already-attached rows; the
+        CALLER owns the commit (folds into the route's single commit).
+        Never raises -- an ARIA market-observation hiccup must never break
+        docking or the market view.
+
+        WO-SWEEP-ARIA-MI-COLUMN: each commodity's read+write is now its own
+        SAVEPOINT (``db.begin_nested()``) -- a DB-level failure (the
+        phantom-column defect this WO fixed, or any future one) rolls back
+        ONLY that commodity, never poisons the session for the rest of this
+        station visit's payload or the caller's own commit. Mirrors
+        bounty_service.py:774 / combat_service.py:4382 /
+        faction_service.py:212's add+flush-inside-begin_nested idiom, widened
+        to cover the SELECT too: a failed SELECT aborts the current
+        transaction in Postgres exactly like a failed flush does, and here
+        the SELECT (not just the INSERT/UPDATE) is the actual failure point
+        the phantom-column defect hit.
+        """
+        try:
+            if not self._validate_player_at_port_sync(player_id, station_id, db):
+                self._log_security_event_sync(
+                    player_id, "invalid_market_observation", "warning",
+                    {"station_id": station_id, "commodity_count": len(market_prices or [])},
+                    db,
+                )
+                return
+
+            station = db.query(Station).filter(Station.id == station_id).first()
+            if not station:
+                logger.warning(
+                    "record_market_observation_sync: station %s not found -- skipping",
+                    station_id,
+                )
+                return
+            if station.sector_uuid is None:
+                logger.warning(
+                    "record_market_observation_sync: station %s has no sector_uuid -- skipping",
+                    station_id,
+                )
+                return
+
+            if not market_prices:
+                return  # empty market -> 0 writes, no error
+
+            now = datetime.now(UTC)
+
+            for entry in market_prices:
+                commodity = entry.get("commodity")
+                if not commodity:
+                    logger.warning(
+                        "record_market_observation_sync: entry with no commodity for "
+                        "player %s at station %s -- skipping", player_id, station_id,
+                    )
+                    continue
+
+                price = entry.get("price")
+                if price is None:
+                    logger.info(
+                        "record_market_observation_sync: %s at station %s has no "
+                        "price -- skipping", commodity, station_id,
+                    )
+                    continue  # price 0 is a real market state and IS recorded
+
+                quantity = entry.get("quantity", 0)
+
+                try:
+                    with db.begin_nested():
+                        intelligence = (
+                            db.query(ARIAMarketIntelligence)
+                            .filter(
+                                ARIAMarketIntelligence.player_id == player_id,
+                                ARIAMarketIntelligence.station_id == station_id,
+                                ARIAMarketIntelligence.commodity == commodity,
+                            )
+                            .first()
+                        )
+
+                        observation = {
+                            "price": price,
+                            "quantity": quantity,
+                            "timestamp": now.isoformat(),
+                        }
+
+                        if intelligence is not None:
+                            if (
+                                intelligence.last_visit is not None
+                                and scaled_elapsed(intelligence.last_visit, now)
+                                < self.MARKET_OBSERVATION_DEDUP_WINDOW
+                            ):
+                                continue  # within the dedup window -- no-op for this commodity
+
+                            # REASSIGN, never in-place .append() -- price_observations
+                            # is a plain Column(JSON); in-place mutation of the same
+                            # list object bypasses SQLAlchemy's change tracking and
+                            # would be silently lost at flush.
+                            intelligence.price_observations = intelligence.price_observations + [observation]
+                            intelligence.data_points += 1
+                            intelligence.last_visit = now
+
+                            prices = [obs["price"] for obs in intelligence.price_observations[-50:]]
+                            intelligence.average_price = statistics.mean(prices)
+                            intelligence.price_volatility = statistics.stdev(prices) if len(prices) > 1 else 0.0
+
+                            if intelligence.data_points >= self.MIN_DATA_POINTS_FOR_PREDICTION:
+                                intelligence.identified_patterns = self._identify_price_patterns(
+                                    intelligence.price_observations
+                                )
+                                intelligence.prediction_confidence = min(
+                                    intelligence.data_points / 20, 0.95
+                                )
+                        else:
+                            intelligence = ARIAMarketIntelligence(
+                                player_id=player_id,
+                                station_id=station_id,
+                                sector_id=station.sector_uuid,
+                                commodity=commodity,
+                                price_observations=[observation],
+                                average_price=price,
+                                price_volatility=0.0,
+                                data_points=1,
+                                last_visit=now,
+                                intelligence_quality=0.1,
+                            )
+                            db.add(intelligence)
+
+                        intelligence.intelligence_quality = self._calculate_intelligence_quality(
+                            intelligence.data_points,
+                            intelligence.last_visit,
+                            intelligence.price_volatility,
+                        )
+                        db.flush()
+                except Exception as row_err:
+                    logger.warning(
+                        "record_market_observation_sync: commodity %s at station %s "
+                        "failed (isolated to this commodity, rest of the visit's "
+                        "payload is unaffected): %s",
+                        commodity, station_id, row_err,
+                    )
+                    continue
+        except Exception as e:
+            logger.warning(
+                "record_market_observation_sync failed for player %s at station %s: %s",
+                player_id, station_id, e,
+            )
+
     # =============================================================================
     # CONVENIENCE MEMORY RECORDERS (Combat, Trade, Exploration)
     # =============================================================================
@@ -283,7 +425,7 @@ class ARIAPersonalIntelligenceService:
 
             await self._create_memory(
                 player_id,
-                "combat",
+                "threat.combat",
                 content,
                 importance=importance,
                 db=db,
@@ -368,7 +510,7 @@ class ARIAPersonalIntelligenceService:
 
             memory = ARIAPersonalMemory(
                 player_id=player_id,
-                memory_type="combat",
+                memory_type="threat.combat",
                 importance_score=importance,
                 memory_content={"encrypted": encrypted_content},
                 memory_hash=memory_hash,
@@ -440,6 +582,92 @@ class ARIAPersonalIntelligenceService:
                 player_id, e,
             )
 
+    def record_trade_memory_sync(self, player_id: str, trade_data: dict,
+                                 db: Session) -> None:
+        """Synchronous twin of ``record_trade_memory`` for sync-Session callers.
+
+        trading.py's buy/sell routes run entirely on a synchronous SQLAlchemy
+        ``Session`` (WO-ARIA-OBS-LOG addendum): the async ``record_trade_memory``
+        internally ``await``s ``db.execute(select(...))``, which raises against a
+        sync ``Session`` -- swallowed by its own except, so zero
+        ``ARIAPersonalMemory`` rows ever persisted through the trade path. This
+        method records the exact same ``trade_transaction`` memory shape via the
+        sync session: identical encryption, content schema, importance formula,
+        and dedup-by-hash logic as ``record_trade_memory`` -- only the DB calls
+        differ (sync ``query``/``add`` instead of ``await db.execute``/``select``),
+        mirroring ``record_combat_memory_sync``'s existing precedent exactly.
+
+        FLUSH-FREE: only ``db.add``s the memory; the CALLER owns the commit (so
+        it folds into the trade's single commit). Never raises -- an ARIA
+        memory hiccup must never break a real trade.
+
+        Args:
+            player_id: the player whose ARIA should remember this trade.
+            trade_data: same keys as ``record_trade_memory`` -- ``station_name``,
+                ``action``, ``commodity``, ``quantity``, ``total_value``,
+                ``profit``.
+            db: synchronous database session (caller commits).
+        """
+        try:
+            action = trade_data.get("action", "unknown")
+            commodity = trade_data.get("commodity", "unknown")
+            profit = trade_data.get("profit")
+
+            # Profitable trades are more memorable
+            if profit is not None and profit > 0:
+                importance = min(0.5 + (profit / 10000), 0.9)
+            else:
+                importance = 0.5
+
+            content = {
+                "event": "trade_transaction",
+                "station_name": str(trade_data.get("station_name", "Unknown")),
+                "action": str(action),
+                "commodity": str(commodity),
+                "quantity": trade_data.get("quantity"),
+                "total_value": trade_data.get("total_value"),
+                "profit": profit,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+
+            encrypted_content = self._encrypt_memory(content)
+            content_str = json.dumps(content, sort_keys=True)
+            memory_hash = hashlib.sha256(content_str.encode()).hexdigest()
+
+            existing = (
+                db.query(ARIAPersonalMemory)
+                .filter(
+                    ARIAPersonalMemory.player_id == player_id,
+                    ARIAPersonalMemory.memory_hash == memory_hash,
+                )
+                .first()
+            )
+            if existing is not None:
+                return  # Memory already exists (dedup -- also our double-fire guard)
+
+            memory = ARIAPersonalMemory(
+                player_id=player_id,
+                memory_type="market",
+                importance_score=importance,
+                memory_content={"encrypted": encrypted_content},
+                memory_hash=memory_hash,
+                confidence_level=0.9,
+                decay_rate=self.MEMORY_DECAY_RATE,
+            )
+            db.add(memory)
+            self.memories_created += 1
+
+            logger.info(
+                "Recorded trade memory (sync) for player %s: %s %s at %s",
+                player_id, action, commodity,
+                trade_data.get("station_name", "Unknown"),
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to record trade memory (sync) for player %s: %s",
+                player_id, e,
+            )
+
     async def record_exploration_memory(self, player_id: str, exploration_data: dict,
                                         db: AsyncSession) -> None:
         """
@@ -466,7 +694,7 @@ class ARIAPersonalIntelligenceService:
 
             await self._create_memory(
                 player_id,
-                "exploration",
+                "nav.sector_visit",
                 content,
                 importance=importance,
                 db=db,
@@ -483,259 +711,6 @@ class ARIAPersonalIntelligenceService:
                 player_id, e,
             )
 
-    # =============================================================================
-    # QUANTUM PREDICTIONS (Personal Data Only)
-    # =============================================================================
-    
-    async def generate_quantum_states(self, player_id: str, station_id: str,
-                                    commodity: str, quantity: int,
-                                    db: AsyncSession) -> Optional[List[Dict[str, Any]]]:
-        """
-        Generate quantum states based ONLY on player's personal market intelligence
-        Returns None if player has insufficient data
-        """
-        # Check if player has visited this port
-        station = await db.get(Station, station_id)
-        if not station:
-            return None
-
-        exploration = await self._get_sector_exploration(player_id, station.sector_id, db)
-        if not exploration:
-            logger.info(f"Player {player_id} has never visited sector {station.sector_id}")
-            return None
-        
-        # Get player's market intelligence for this commodity/port
-        intelligence = await self._get_market_intelligence(
-            player_id, station_id, commodity, db
-        )
-        
-        if not intelligence or intelligence.data_points < self.MIN_DATA_POINTS_FOR_PREDICTION:
-            logger.info(f"Insufficient data for {commodity} at port {station_id} (need {self.MIN_DATA_POINTS_FOR_PREDICTION} observations)")
-            return None
-        
-        # Generate states based on personal observations
-        states = []
-        
-        # Use player's observed price range
-        prices = [obs["price"] for obs in intelligence.price_observations[-20:]]
-        avg_price = statistics.mean(prices)
-        std_dev = statistics.stdev(prices) if len(prices) > 1 else avg_price * 0.1
-        
-        # State 1: Optimistic (based on player's best observed prices)
-        best_price = max(prices) if commodity in ["ORE", "ORGANICS", "FUEL"] else min(prices)
-        states.append({
-            "state_id": "optimistic",
-            "probability": 0.25,
-            "price": best_price,
-            "confidence": intelligence.prediction_confidence,
-            "based_on": f"{len(prices)} personal observations"
-        })
-        
-        # State 2: Expected (based on identified patterns)
-        if intelligence.identified_patterns:
-            pattern_price = await self._predict_from_patterns(
-                intelligence, datetime.now(UTC)
-            )
-            if pattern_price:
-                states.append({
-                    "state_id": "pattern_based",
-                    "probability": 0.45,
-                    "price": pattern_price,
-                    "confidence": intelligence.pattern_confidence.get(
-                        intelligence.identified_patterns[0], 0.5
-                    ),
-                    "pattern": intelligence.identified_patterns[0]
-                })
-        else:
-            # No patterns, use average
-            states.append({
-                "state_id": "average",
-                "probability": 0.45,
-                "price": avg_price,
-                "confidence": intelligence.prediction_confidence * 0.8,
-                "based_on": "historical average"
-            })
-        
-        # State 3: Pessimistic (based on player's worst observed prices)
-        worst_price = min(prices) if commodity in ["ORE", "ORGANICS", "FUEL"] else max(prices)
-        states.append({
-            "state_id": "pessimistic",
-            "probability": 0.25,
-            "price": worst_price,
-            "confidence": intelligence.prediction_confidence,
-            "based_on": f"{len(prices)} personal observations"
-        })
-        
-        # State 4: Unknown (beyond player's experience)
-        states.append({
-            "state_id": "unknown",
-            "probability": 0.05,
-            "price": avg_price * (0.5 if np.random.random() < 0.5 else 1.5),
-            "confidence": 0.1,  # Very low confidence
-            "based_on": "unexplored market conditions"
-        })
-        
-        # Log quantum generation for security
-        await self._log_security_event(
-            player_id, "quantum_generation", "info",
-            {
-                "station_id": station_id,
-                "commodity": commodity,
-                "states_generated": len(states),
-                "data_points": intelligence.data_points
-            }, db
-        )
-        
-        return states
-    
-    async def get_ghost_trade_prediction(self, player_id: str, station_id: str,
-                                       commodity: str, action: str, quantity: int,
-                                       db: AsyncSession) -> Optional[Dict[str, Any]]:
-        """
-        Generate ghost trade prediction based on personal experience only
-        """
-        # Check cache first
-        cache_key = self._generate_cache_key(player_id, station_id, commodity, action, quantity)
-        cached = await self._get_quantum_cache(player_id, cache_key, db)
-        if cached:
-            return cached
-        
-        # Generate quantum states from personal data
-        states = await self.generate_quantum_states(
-            player_id, station_id, commodity, quantity, db
-        )
-        
-        if not states:
-            return {
-                "error": "insufficient_data",
-                "message": "You need to visit this port more times to generate predictions",
-                "required_visits": self.MIN_DATA_POINTS_FOR_PREDICTION
-            }
-        
-        # Calculate expected outcomes
-        outcomes = []
-        for state in states:
-            if action == "buy":
-                cost = quantity * state["price"]
-                outcome = {
-                    "state": state["state_id"],
-                    "probability": state["probability"],
-                    "cost": cost,
-                    "confidence": state["confidence"],
-                    "based_on": state.get("based_on", "personal experience")
-                }
-            else:  # sell
-                revenue = quantity * state["price"]
-                outcome = {
-                    "state": state["state_id"],
-                    "probability": state["probability"],
-                    "revenue": revenue,
-                    "confidence": state["confidence"],
-                    "based_on": state.get("based_on", "personal experience")
-                }
-            outcomes.append(outcome)
-        
-        # Calculate expected value
-        if action == "buy":
-            expected_cost = sum(o["cost"] * o["probability"] for o in outcomes)
-            result = {
-                "action": "buy",
-                "expected_cost": expected_cost,
-                "outcomes": outcomes,
-                "recommendation": self._generate_recommendation(expected_cost, action, commodity)
-            }
-        else:
-            expected_revenue = sum(o["revenue"] * o["probability"] for o in outcomes)
-            result = {
-                "action": "sell",
-                "expected_revenue": expected_revenue,
-                "outcomes": outcomes,
-                "recommendation": self._generate_recommendation(expected_revenue, action, commodity)
-            }
-        
-        # Cache result
-        await self._cache_quantum_result(player_id, cache_key, result, db)
-        
-        return result
-    
-    # =============================================================================
-    # TRADE DNA EVOLUTION (Personal Patterns)
-    # =============================================================================
-    
-    async def evolve_trading_pattern(self, player_id: str, trade_result: Dict[str, Any],
-                                   db: AsyncSession):
-        """
-        Update a player's personal trading-pattern observation accounting.
-
-        Per ADR-0038 (Accepted) ARIA learning is a purely append-only
-        observation log: this records plain performance metrics
-        (times_used / success_rate / average_profit / best_profit /
-        worst_loss / last_used) for the pattern derived from this trade.
-        There is no genetic-algorithm evolution — no fitness-driven
-        mutation or offspring. The method name is retained for caller
-        compatibility.
-        """
-        pattern_id = trade_result.get("pattern_id")
-        if not pattern_id:
-            # Create new pattern from this trade
-            pattern_id = await self._create_trading_pattern(player_id, trade_result, db)
-        
-        # Get pattern
-        stmt = select(ARIATradingPattern).where(
-            and_(
-                ARIATradingPattern.player_id == player_id,
-                ARIATradingPattern.pattern_id == pattern_id
-            )
-        )
-        result = await db.execute(stmt)
-        pattern = result.scalar_one_or_none()
-        
-        if not pattern:
-            return
-        
-        # Update performance metrics
-        pattern.times_used += 1
-        pattern.last_used = datetime.now(UTC)
-        
-        profit = trade_result.get("profit", 0)
-        if profit > 0:
-            pattern.success_rate = (
-                (pattern.success_rate * (pattern.times_used - 1) + 1) / pattern.times_used
-            )
-            pattern.average_profit = (
-                (pattern.average_profit * (pattern.times_used - 1) + profit) / pattern.times_used
-            )
-            pattern.best_profit = max(pattern.best_profit, profit)
-        else:
-            pattern.success_rate = (
-                (pattern.success_rate * (pattern.times_used - 1)) / pattern.times_used
-            )
-            pattern.worst_loss = min(pattern.worst_loss, profit)
-
-        await db.commit()
-        self.patterns_evolved += 1
-    
-    async def get_evolved_patterns(self, player_id: str,
-                                 db: AsyncSession,
-                                 pattern_type: Optional[str] = None) -> List[ARIATradingPattern]:
-        """
-        Get a player's recorded trading patterns, most-used first.
-
-        Ordered by observation accounting (times_used) rather than the legacy
-        GA fitness score, per ADR-0038's append-only observation-log model.
-        """
-        stmt = select(ARIATradingPattern).where(
-            ARIATradingPattern.player_id == player_id
-        )
-
-        if pattern_type:
-            stmt = stmt.where(ARIATradingPattern.pattern_type == pattern_type)
-
-        stmt = stmt.order_by(ARIATradingPattern.times_used.desc()).limit(10)
-
-        result = await db.execute(stmt)
-        return result.scalars().all()
-    
     # =============================================================================
     # CASCADE PLANNING (Through Explored Territory Only)
     # =============================================================================
@@ -809,40 +784,61 @@ class ARIAPersonalIntelligenceService:
     # SECURITY & PRIVACY (OWASP Implementation)
     # =============================================================================
     
-    async def _validate_player_ship(self, player_id: str, ship_id: str, 
-                                  db: AsyncSession) -> bool:
-        """Validate player owns the ship (OWASP A01)"""
-        from src.models.ship import Ship
-        
-        stmt = select(Ship).where(
-            and_(
-                Ship.id == ship_id,
-                Ship.player_id == player_id
-            )
-        )
-        result = await db.execute(stmt)
-        return result.scalar_one_or_none() is not None
-    
     async def _validate_player_at_port(self, player_id: str, station_id: str,
                                      db: AsyncSession) -> bool:
-        """Validate player has a ship at the port"""
-        from src.models.ship import Ship
-        
-        stmt = select(Ship).where(
-            and_(
-                Ship.player_id == player_id,
-                Ship.current_port_id == station_id
-            )
-        )
+        """Validate player is docked at this station.
+
+        WO-ARIA-MARKET-OBS fix: the previous implementation queried
+        ``Ship.player_id`` / ``Ship.current_port_id`` -- neither column
+        exists on the ``Ship`` model (see models/ship.py; it has
+        ``owner_id`` and no port reference at all). Every call raised
+        ``AttributeError`` building the ``select()``, silently swallowed by
+        this method's callers, so this gate has ALWAYS returned a false
+        negative in practice -- a total, silent no-op. Docking state
+        actually lives on ``Player``: ``is_docked`` (bool) +
+        ``current_sector_id``, checked against the station's sector -- the
+        exact convention every trading.py route already uses (see
+        buy_resource/sell_resource's "must be docked" + "must be in the
+        same sector" checks).
+        """
+        from src.models.player import Player
+
+        stmt = select(Player).where(Player.id == player_id)
         result = await db.execute(stmt)
-        return result.scalar_one_or_none() is not None
-    
+        player = result.scalar_one_or_none()
+        if player is None or not player.is_docked:
+            return False
+
+        station = await db.get(Station, station_id)
+        if station is None:
+            return False
+
+        return player.current_sector_id == station.sector_id
+
+    def _validate_player_at_port_sync(self, player_id: str, station_id: str,
+                                      db: Session) -> bool:
+        """Synchronous twin of ``_validate_player_at_port`` for sync-Session
+        callers (WO-ARIA-MARKET-OBS) -- same Player.is_docked +
+        current_sector_id-vs-station.sector_id check, same bug-fix
+        rationale as the async version above."""
+        from src.models.player import Player
+
+        player = db.query(Player).filter(Player.id == player_id).first()
+        if player is None or not player.is_docked:
+            return False
+
+        station = db.query(Station).filter(Station.id == station_id).first()
+        if station is None:
+            return False
+
+        return player.current_sector_id == station.sector_id
+
     async def _log_security_event(self, player_id: str, event_type: str,
                                 severity: str, event_data: Dict[str, Any],
                                 db: AsyncSession):
         """Log security events for audit (OWASP A09)"""
         # Calculate anomaly score
-        anomaly_score = await self._calculate_anomaly_score(
+        anomaly_score = self._calculate_anomaly_score(
             player_id, event_type, event_data
         )
         
@@ -860,15 +856,57 @@ class ARIAPersonalIntelligenceService:
             log_entry.security_flags.append("high_anomaly_score")
             log_entry.action_taken = "flagged_for_review"
             logger.warning(f"High anomaly score {anomaly_score} for player {player_id}")
-        
+
         db.add(log_entry)
         await db.commit()
-    
+
+    def _log_security_event_sync(self, player_id: str, event_type: str,
+                                 severity: str, event_data: Dict[str, Any],
+                                 db: Session) -> None:
+        """Synchronous twin of ``_log_security_event`` for sync-Session
+        callers (WO-ARIA-MARKET-OBS). FLUSH-ONLY like every other sync twin
+        in this class -- the caller owns the commit; the append to
+        ``security_flags`` below is safe in-place mutation on a brand-new,
+        not-yet-added ``log_entry`` (there is no prior committed baseline to
+        lose), unlike the price_observations bug this WO also fixes."""
+        anomaly_score = self._calculate_anomaly_score(
+            player_id, event_type, event_data
+        )
+
+        log_entry = ARIASecurityLog(
+            player_id=player_id,
+            event_type=event_type,
+            event_severity=severity,
+            event_data=event_data,
+            anomaly_score=anomaly_score,
+            created_at=datetime.now(UTC)
+        )
+
+        if anomaly_score > self.anomaly_threshold:
+            log_entry.security_flags.append("high_anomaly_score")
+            log_entry.action_taken = "flagged_for_review"
+            logger.warning(f"High anomaly score {anomaly_score} for player {player_id}")
+
+        db.add(log_entry)
+
     def _initialize_encryption(self) -> Fernet:
-        """Initialize encryption for personal memories (OWASP A02)"""
-        # In production, load from secure key management
-        key = settings.ARIA_ENCRYPTION_KEY if hasattr(settings, 'ARIA_ENCRYPTION_KEY') else Fernet.generate_key()
-        return Fernet(key)
+        """Initialize encryption for personal memories (OWASP A02).
+
+        WO-DRIFT-aria-rt-mem-encryption-key: the key comes from the
+        persistent ARIA_ENCRYPTION_KEY env var -- core.config.Settings
+        fail-louds at construction (process startup) if it's absent, the
+        same discipline as JWT_SECRET. The prior
+        `hasattr(settings, 'ARIA_ENCRYPTION_KEY') else Fernet.generate_key()`
+        branch was ALWAYS false (BaseSettings with extra="ignore" never
+        exposes an undeclared field via hasattr), so every instantiation of
+        this service minted a brand-new random key -- every previously-
+        encrypted ARIAPersonalMemory row became permanently undecryptable
+        across a restart (or even within one process: scheduler/
+        presence_helpers.py instantiates its own copy outside the
+        get_aria_intelligence_service() singleton). Fernet accepts str or
+        bytes directly, no manual encode needed.
+        """
+        return Fernet(settings.ARIA_ENCRYPTION_KEY)
     
     def _encrypt_memory(self, content: Dict[str, Any]) -> str:
         """Encrypt memory content"""
@@ -881,7 +919,72 @@ class ARIAPersonalIntelligenceService:
         encrypted = base64.b64decode(encrypted_content.encode())
         decrypted = self.cipher_suite.decrypt(encrypted)
         return json.loads(decrypted.decode())
-    
+
+    async def recall_memories(
+        self, player_id: str, db: AsyncSession,
+        memory_type: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Recall (decrypt) an owner's own ARIA memories -- the read-back
+        half of ``_create_memory``/``_encrypt_memory`` (WO-DRIFT-aria-rt-
+        mem-readpath-dead). ``ARIAPersonalMemory`` has been write-only
+        since inception: content lands encrypted via ``_encrypt_memory``
+        but ``_decrypt_memory`` had zero callers -- this is the Tier-1
+        recall/transparency read path ADR-0016's data-index route docstring
+        flagged as "a separate, future memory-journal endpoint."
+
+        SECURITY (ADR-0016, OWASP A01 -- personal data isolation): the
+        isolation guard is enforced at the QUERY level -- ``player_id`` is
+        the WHERE-clause filter itself, not a post-fetch check. The one
+        caller (``GET /ai/memories``) sources ``player_id`` from the
+        JWT-authenticated ``current_player``, never a client-supplied
+        parameter, so this method can only ever be asked for the caller's
+        own rows in practice; the query-level filter is what makes that
+        true regardless of caller.
+
+        A row whose content fails to decrypt (wrong key generation,
+        corrupt row) is skipped rather than raising, so one bad row can't
+        502 an entire recall.
+        """
+        stmt = (
+            select(ARIAPersonalMemory)
+            .where(ARIAPersonalMemory.player_id == player_id)
+        )
+        if memory_type is not None:
+            stmt = stmt.where(ARIAPersonalMemory.memory_type == memory_type)
+        stmt = stmt.order_by(ARIAPersonalMemory.created_at.desc()).limit(limit)
+
+        result = await db.execute(stmt)
+        memories = result.scalars().all()
+
+        recalled: List[Dict[str, Any]] = []
+        for memory in memories:
+            encrypted = (memory.memory_content or {}).get("encrypted")
+            if not encrypted:
+                continue
+            try:
+                content = self._decrypt_memory(encrypted)
+            except Exception:
+                logger.warning(
+                    "Failed to decrypt ARIA memory %s for player %s -- skipped",
+                    memory.id, player_id,
+                )
+                continue
+
+            memory.access_count = (memory.access_count or 0) + 1
+            memory.last_accessed = datetime.now(UTC)
+
+            recalled.append({
+                "id": str(memory.id),
+                "memory_type": memory.memory_type,
+                "importance_score": memory.importance_score,
+                "confidence_level": memory.confidence_level,
+                "created_at": memory.created_at.isoformat() if memory.created_at else None,
+                "content": content,
+            })
+
+        return recalled
+
     # =============================================================================
     # HELPER METHODS
     # =============================================================================
@@ -960,8 +1063,15 @@ class ARIAPersonalIntelligenceService:
         
         return min(quality, 0.99)  # Cap at 99%
     
-    async def _identify_price_patterns(self, observations: List[Dict]) -> List[str]:
-        """Identify patterns in price history"""
+    def _identify_price_patterns(self, observations: List[Dict]) -> List[str]:
+        """Identify patterns in price history.
+
+        Pure computation, no I/O -- made sync (WO-ARIA-MARKET-OBS) so both
+        the async record_market_observation and the sync
+        record_market_observation_sync can share this one implementation
+        instead of duplicating it. Its one caller previously used ``await``
+        for no reason (nothing inside this method ever awaited anything).
+        """
         if len(observations) < 10:
             return []
         
@@ -1074,9 +1184,14 @@ class ARIAPersonalIntelligenceService:
             else:
                 return f"Limited profit potential for {commodity}"
     
-    async def _calculate_anomaly_score(self, player_id: str, event_type: str,
-                                     event_data: Dict[str, Any]) -> float:
-        """Calculate anomaly score for security monitoring"""
+    def _calculate_anomaly_score(self, player_id: str, event_type: str,
+                                event_data: Dict[str, Any]) -> float:
+        """Calculate anomaly score for security monitoring.
+
+        Pure computation, no I/O -- made sync (WO-ARIA-MARKET-OBS) so both
+        _log_security_event (async) and its new sync twin can share this one
+        implementation.
+        """
         # Simple anomaly detection - in production would use ML
         score = 0.0
         
@@ -1189,16 +1304,197 @@ class ARIAPersonalIntelligenceService:
         
         return graph
     
+    async def _build_explored_adjacency(
+        self, explored_sector_ids: Set[str], db: AsyncSession,
+    ) -> Dict[str, List[Tuple[str, int]]]:
+        """Adjacency list (sector UUID -> [(neighbour UUID, turn_cost), ...])
+        restricted to ``explored_sector_ids`` on BOTH endpoints -- ADR-0075
+        ("route candidates limited to visited + charted sectors"). Mirrors
+        ``nav_service.NavService._build_known_graph``'s exact edge-source
+        selection (``sector_warps`` association table + ACTIVE ``WarpTunnel``
+        rows), adapted to ``AsyncSession``.
+
+        No UUID<->global-int conversion is needed here, unlike NavService
+        (which keys its graph by the human-readable global ``Sector.sector_id``
+        integer): ``ARIAExplorationMap.sector_id`` -- and therefore every key
+        in ``trade_graph`` -- IS the ``sectors.id`` UUID already, the exact
+        type ``sector_warps``/``WarpTunnel`` key on.
+        """
+        if not explored_sector_ids:
+            return {}
+        ids = list(explored_sector_ids)
+        graph: Dict[str, List[Tuple[str, int]]] = {sid: [] for sid in explored_sector_ids}
+
+        warp_rows = (
+            await db.execute(sector_warps.select().where(sector_warps.c.source_sector_id.in_(ids)))
+        ).fetchall()
+        for row in warp_rows:
+            src, dst = row.source_sector_id, row.destination_sector_id
+            if src not in explored_sector_ids or dst not in explored_sector_ids:
+                continue
+            tc = row.turn_cost or 1
+            graph[src].append((dst, tc))
+            if row.is_bidirectional and src != dst:
+                graph[dst].append((src, tc))
+
+        tunnel_stmt = select(WarpTunnel).where(
+            and_(
+                WarpTunnel.status == WarpTunnelStatus.ACTIVE,
+                WarpTunnel.origin_sector_id.in_(ids),
+            )
+        )
+        tunnel_rows = (await db.execute(tunnel_stmt)).scalars().all()
+        for tunnel in tunnel_rows:
+            origin, dest = tunnel.origin_sector_id, tunnel.destination_sector_id
+            if origin not in explored_sector_ids or dest not in explored_sector_ids:
+                continue
+            tc = tunnel.turn_cost or 1
+            graph[origin].append((dest, tc))
+            if tunnel.is_bidirectional:
+                graph[dest].append((origin, tc))
+
+        return graph
+
+    def _dijkstra_hop_distances(
+        self, graph: Dict[str, List[Tuple[str, int]]], start_sector_id: str, max_jumps: int,
+    ) -> Dict[str, int]:
+        """All-destinations shortest HOP COUNT from ``start_sector_id``,
+        pruned to ``max_jumps``. Returns ``{sector_id: hop_count}`` for
+        every reachable sector within budget (including the start sector
+        itself, at 0).
+
+        Unweighted (every edge costs exactly 1 hop) -- canon's
+        ``max_jumps`` is explicitly a HOP-COUNT budget
+        (aria-companion.md:38, ``Input: ... max_jumps``), not a turn-cost
+        budget like NavService's turn-cost-weighted Dijkstra. Weighting by
+        real ``turn_cost``/tunnel stability here would let a low-turn-cost
+        multi-hop route "beat" a genuinely-fewer-hop route on weighted
+        cost while still violating the hop budget -- not the semantics
+        canon asks for. Still implemented as a min-heap Dijkstra (mirrors
+        ``nav_service.NavService._dijkstra``'s shape) rather than a plain
+        BFS queue, even though the two are equivalent at uniform edge
+        weight -- this stays trivially extensible if a future WO ever
+        needs weighted hops.
+
+        A* was considered and rejected: this is a single-source
+        ALL-destinations search (every other explored sector is a
+        candidate sell leg, not one fixed target) -- exactly Dijkstra/
+        BFS's shape. A* only pays off for a single-source SINGLE-target
+        search with a goal-directed heuristic, which doesn't apply here.
+        """
+        dist: Dict[str, int] = {start_sector_id: 0}
+        pq: List[Tuple[int, str]] = [(0, start_sector_id)]
+        while pq:
+            d, node = heapq.heappop(pq)
+            if d > dist.get(node, math.inf):
+                continue
+            if d >= max_jumps:
+                continue  # do not expand past the jump budget
+            for neighbour, _turn_cost in graph.get(node, []):
+                nd = d + 1
+                if nd < dist.get(neighbour, math.inf):
+                    dist[neighbour] = nd
+                    heapq.heappush(pq, (nd, neighbour))
+        return dist
+
     async def _find_profitable_paths(self, player_id: str, start_sector: str,
                                    trade_graph: Dict[str, Any], target_profit: float,
                                    max_jumps: int, db: AsyncSession) -> List[Dict[str, Any]]:
-        """Find profitable trade paths through known space"""
-        # Simplified pathfinding - in production would use A* or similar
-        profitable_paths = []
-        
-        # This is a placeholder for the actual pathfinding algorithm
-        # Would implement proper graph traversal here
-        
+        """Find profitable trade paths through EXPLORED space only
+        (ADR-0075; aria-companion.md:33-50). Two-leg cascades: buy at a
+        station in ``start_sector``, sell the SAME commodity at a station
+        in another explored sector reachable within ``max_jumps`` real
+        warp/tunnel hops.
+
+        [NO-CANON] Profit-scoring: canon's ``plan_trade_cascade`` input
+        has no cargo/quantity parameter, so ``total_profit`` here is the
+        PER-UNIT price differential (sell avg_price - buy avg_price) from
+        ``trade_graph``'s ``ARIAMarketIntelligence`` observations -- real,
+        populated data (per the WO's own guidance). The alternative
+        signal, ``get_top_routes``/the SQL-aggregate recommendation
+        engine (``ARIATradingObservation``-backed, real completed-trade
+        profit), is DELIBERATELY NOT used here: that engine is SYNC
+        (``Session``, WO-ARIA-OBS-LOG's own documented split matching
+        trading.py's sync buy/sell path) while this entire call chain is
+        ``AsyncSession``-based -- bridging would need
+        ``AsyncSession.run_sync(...)`` (this file's own OBS-LOG section
+        docstring names that as the future connector for "a future async
+        caller"), which this WO does not need to introduce for a
+        secondary signal the WO's own brief already flags as sparse
+        (sell-leg ``profit`` is ``None`` until the cost-basis WO lands).
+        ``confidence`` is the MIN of the two legs' ``prediction_confidence``
+        (conservative combination, not an average) -- flagged, not canon.
+
+        Degrades honestly: returns ``[]`` when the start sector has no
+        market intelligence, no other explored sector is reachable within
+        ``max_jumps``, or no commodity clears ``target_profit`` -- never a
+        fabricated result.
+        """
+        start_ports = trade_graph.get(start_sector, {}).get("ports") or {}
+        if not start_ports:
+            return []
+
+        explored_ids: Set[str] = set(trade_graph.keys())
+        adjacency = await self._build_explored_adjacency(explored_ids, db)
+        hop_distances = self._dijkstra_hop_distances(adjacency, start_sector, max_jumps)
+
+        profitable_paths: List[Dict[str, Any]] = []
+        for sell_sector_id, hops in hop_distances.items():
+            if sell_sector_id == start_sector or hops <= 0 or hops > max_jumps:
+                continue
+            sell_ports = trade_graph.get(sell_sector_id, {}).get("ports") or {}
+            if not sell_ports:
+                continue
+
+            for buy_station_id, buy_commodities in start_ports.items():
+                for commodity, buy_intel in buy_commodities.items():
+                    buy_price = buy_intel.get("avg_price")
+                    if buy_price is None:
+                        continue
+
+                    for sell_station_id, sell_commodities in sell_ports.items():
+                        sell_intel = sell_commodities.get(commodity)
+                        if sell_intel is None:
+                            continue
+                        sell_price = sell_intel.get("avg_price")
+                        if sell_price is None:
+                            continue
+
+                        profit = sell_price - buy_price
+                        if profit < target_profit:
+                            continue
+
+                        confidence = min(
+                            buy_intel.get("confidence", 0.0),
+                            sell_intel.get("confidence", 0.0),
+                        )
+                        profitable_paths.append({
+                            "total_profit": profit,
+                            "jumps": hops,
+                            "profit_per_jump": profit / hops,
+                            "confidence": confidence,
+                            "path": [
+                                {
+                                    "sector_id": start_sector,
+                                    "station_id": buy_station_id,
+                                    "action": "buy",
+                                    "commodity": commodity,
+                                    "expected_price": buy_price,
+                                    "confidence": buy_intel.get("confidence", 0.0),
+                                    "observations": buy_intel.get("observations", 0),
+                                },
+                                {
+                                    "sector_id": sell_sector_id,
+                                    "station_id": sell_station_id,
+                                    "action": "sell",
+                                    "commodity": commodity,
+                                    "expected_price": sell_price,
+                                    "confidence": sell_intel.get("confidence", 0.0),
+                                    "observations": sell_intel.get("observations", 0),
+                                },
+                            ],
+                        })
+
         return profitable_paths
     
     async def _get_quantum_cache(self, player_id: str, cache_key: str,
@@ -1242,48 +1538,6 @@ class ARIAPersonalIntelligenceService:
         db.add(cache_entry)
         await db.commit()
     
-    async def _create_trading_pattern(self, player_id: str, trade_result: Dict[str, Any],
-                                    db: AsyncSession) -> str:
-        """Create new trading pattern from successful trade"""
-        # Generate pattern DNA from trade characteristics
-        pattern_dna = {
-            "commodity": trade_result.get("commodity"),
-            "action": trade_result.get("action"),
-            "time_preference": datetime.now(UTC).hour,
-            "quantity_range": trade_result.get("quantity"),
-            "risk_tolerance": 0.5  # Would calculate from player profile
-        }
-        
-        # Generate pattern ID
-        pattern_id = hashlib.sha256(
-            json.dumps(pattern_dna, sort_keys=True).encode()
-        ).hexdigest()[:16]
-        
-        pattern = ARIATradingPattern(
-            player_id=player_id,
-            pattern_id=pattern_id,
-            pattern_type=self._classify_pattern_type(pattern_dna),
-            pattern_dna=pattern_dna,
-            generation=1,
-            discovered_at=datetime.now(UTC)
-        )
-        
-        db.add(pattern)
-        await db.commit()
-        
-        return pattern_id
-    
-    def _classify_pattern_type(self, pattern_dna: Dict[str, Any]) -> str:
-        """Classify trading pattern type"""
-        commodity = pattern_dna.get("commodity", "")
-        
-        if commodity in ["ORE", "ORGANICS", "FUEL"]:
-            return "bulk_trading"
-        elif commodity in ["LUXURY", "TECHNOLOGY"]:
-            return "high_value"
-        else:
-            return "general"
-    
     # =============================================================================
     # CONSCIOUSNESS & RELATIONSHIP TRACKING
     # =============================================================================
@@ -1312,80 +1566,76 @@ class ARIAPersonalIntelligenceService:
         5: {"interactions": 1000, "memories": 150},
     }
 
-    async def update_consciousness_level(self, player_id: str, db: AsyncSession) -> Dict[str, Any]:
+    # WO-ARIA-PROGRESSION: the single canonical copy of the (interactions ->
+    # (level, multiplier)) mapping that was previously duplicated verbatim
+    # across movement_service.py, combat_service.py, and trading.py (buy +
+    # sell) -- all four now call update_consciousness_and_relationship[_sync]
+    # instead of re-declaring this dict. Paired with CONSCIOUSNESS_THRESHOLDS
+    # above for the memory-side gate (aria-companion.md:128: "Both thresholds
+    # ... must be met to advance").
+    CONSCIOUSNESS_INTERACTION_THRESHOLDS = {50: (2, 1.1), 150: (3, 1.2), 400: (4, 1.35), 1000: (5, 1.5)}
+
+    def _apply_consciousness_and_relationship(
+        self, player, total_memories: int,
+    ) -> Dict[str, Any]:
         """
-        Update a player's ARIA consciousness level based on memory count and interaction quality.
-        Called after significant ARIA interactions.
+        Pure state-mutation core shared by ``update_consciousness_and_
+        relationship`` (async) and ``update_consciousness_and_relationship_
+        sync`` -- mutates ``player`` in place; no I/O, no DB access. See the
+        async method's docstring for the full canon citation and the
+        memory-diversity interpretation this WO flags.
         """
-        from src.models.player import Player
+        old_level = player.aria_consciousness_level
+        old_relationship = player.aria_relationship_score or 0
 
-        stmt = select(Player).where(Player.id == player_id)
-        result = await db.execute(stmt)
-        player = result.scalar_one_or_none()
-        if not player:
-            return {"success": False, "message": "Player not found"}
-
-        # Count player's ARIA memories
-        memory_stmt = select(func.count(ARIAPersonalMemory.id)).where(
-            ARIAPersonalMemory.player_id == player_id
-        )
-        memory_result = await db.execute(memory_stmt)
-        memory_count = memory_result.scalar() or 0
-
+        # aria-companion.md:139 -- "Rises +1 per significant interaction
+        # (capped at 100)". This call itself IS the significant interaction
+        # (NO-CANON, flagged for DECISIONS: "significant interaction" =
+        # exactly the call sites that already bump aria_total_interactions
+        # today -- movement, combat victory, buy, sell).
+        player.aria_total_interactions = (player.aria_total_interactions or 0) + 1
+        player.aria_relationship_score = min(100, old_relationship + 1)
         total_interactions = player.aria_total_interactions
-        current_level = player.aria_consciousness_level
 
-        # Check if player qualifies for a higher level
+        # aria-companion.md:128 -- both thresholds must be met to advance.
+        # Ascending walk over CONSCIOUSNESS_INTERACTION_THRESHOLDS (50, 150,
+        # 400, 1000): each time both gates clear, new_level is overwritten,
+        # so the loop's final value is the HIGHEST qualifying level.
         new_level = 1
-        for level in range(5, 1, -1):
-            thresholds = self.CONSCIOUSNESS_THRESHOLDS[level]
-            if total_interactions >= thresholds["interactions"] and memory_count >= thresholds["memories"]:
+        new_multiplier = self.CONSCIOUSNESS_BONUSES[1]
+        for threshold, (level, multiplier) in self.CONSCIOUSNESS_INTERACTION_THRESHOLDS.items():
+            memories_needed = self.CONSCIOUSNESS_THRESHOLDS[level]["memories"]
+            if total_interactions >= threshold and total_memories >= memories_needed:
                 new_level = level
-                break
+                new_multiplier = multiplier
 
-        leveled_up = new_level > current_level
+        leveled_up = new_level > old_level
         if leveled_up:
             player.aria_consciousness_level = new_level
-            player.aria_bonus_multiplier = self.CONSCIOUSNESS_BONUSES[new_level]
+            player.aria_bonus_multiplier = new_multiplier
             logger.info(
-                "Player %s ARIA consciousness upgraded: %d -> %d (multiplier: %.2f)",
-                player_id, current_level, new_level, player.aria_bonus_multiplier,
+                "Player %s ARIA consciousness evolved: %s (%d) -> %s (%d), "
+                "relationship %d -> %d, multiplier %.2f",
+                getattr(player, "id", "?"),
+                self.CONSCIOUSNESS_LEVEL_NAMES.get(old_level, "Unknown"), old_level,
+                self.CONSCIOUSNESS_LEVEL_NAMES.get(new_level, "Unknown"), new_level,
+                old_relationship, player.aria_relationship_score, player.aria_bonus_multiplier,
             )
 
         return {
             "success": True,
-            "consciousness_level": player.aria_consciousness_level,
-            "bonus_multiplier": player.aria_bonus_multiplier,
-            "total_interactions": total_interactions,
-            "memory_count": memory_count,
+            "old_level": old_level,
+            "new_level": player.aria_consciousness_level,
+            "old_level_name": self.CONSCIOUSNESS_LEVEL_NAMES.get(old_level, "Unknown"),
+            "new_level_name": self.CONSCIOUSNESS_LEVEL_NAMES.get(
+                player.aria_consciousness_level, "Unknown"
+            ),
             "leveled_up": leveled_up,
-        }
-
-    async def update_relationship_score(self, player_id: str, db: AsyncSession, increment: int = 1) -> Dict[str, Any]:
-        """
-        Update the ARIA relationship score for a player.
-        Score increases on interaction, decays on inactivity.
-        """
-        from src.models.player import Player
-
-        stmt = select(Player).where(Player.id == player_id)
-        result = await db.execute(stmt)
-        player = result.scalar_one_or_none()
-        if not player:
-            return {"success": False, "message": "Player not found"}
-
-        # Increment interaction count
-        player.aria_total_interactions = (player.aria_total_interactions or 0) + 1
-
-        # Update relationship score (clamped 0-100)
-        old_score = player.aria_relationship_score
-        player.aria_relationship_score = min(100, max(0, old_score + increment))
-
-        return {
-            "success": True,
             "relationship_score": player.aria_relationship_score,
-            "total_interactions": player.aria_total_interactions,
-            "score_change": player.aria_relationship_score - old_score,
+            "old_relationship_score": old_relationship,
+            "bonus_multiplier": float(player.aria_bonus_multiplier),
+            "total_interactions": total_interactions,
+            "total_memories": total_memories,
         }
 
     async def apply_inactivity_decay(self, player_id: str, db: AsyncSession, days_inactive: int) -> Dict[str, Any]:
@@ -1571,7 +1821,7 @@ class ARIAPersonalIntelligenceService:
             try:
                 await db.rollback()
             except Exception:
-                pass
+                logger.debug("ARIA storage prune: db.rollback failed for player %s", player_id, exc_info=True)
             return {
                 "success": False,
                 "over_cap": False,
@@ -1592,106 +1842,95 @@ class ARIAPersonalIntelligenceService:
         self, player_id: str, db: AsyncSession
     ) -> Dict[str, Any]:
         """
-        Holistic consciousness and relationship update that factors in memory
-        diversity, total interactions, and consciousness level to drive both
-        the relationship score and potential level-ups.
+        THE canonical consciousness + relationship promotion path
+        (sw2102-docs/FEATURES/gameplay/aria-companion.md:118-128, :139-144 --
+        canon explicitly names this method as the promotion path). Call once
+        per "significant interaction" to keep the consciousness system
+        actively evolving alongside gameplay (dialogue, trade, combat,
+        movement, ...).
 
-        This is the primary method that should be called after meaningful ARIA
-        interactions (dialogue, trade analysis, combat debrief, etc.) to keep
-        the consciousness system actively evolving alongside gameplay.
+        WO-ARIA-PROGRESSION consolidation: this is now the SINGLE source of
+        truth, replacing the four duplicated inline threshold blocks
+        (movement_service.py, combat_service.py, trading.py buy + sell) AND
+        the two now-removed redundant siblings (update_consciousness_level /
+        update_relationship_score, both zero-caller dead code before this
+        WO). See update_consciousness_and_relationship_sync for the
+        sync-Session twin the three sync call sites use.
 
-        Returns dict with old/new levels, relationship score, and memory counts.
+        Per call: +1 aria_total_interactions, +1 aria_relationship_score
+        (capped 100) -- aria-companion.md:139 "Rises +1 per significant
+        interaction (capped at 100)". NO-CANON (flagged for DECISIONS):
+        "significant interaction" = exactly the event set that already
+        bumps aria_total_interactions today (movement, combat victory, buy,
+        sell) -- not silently redefined by this WO.
+
+        Then checks BOTH promotion thresholds -- aria-companion.md:128
+        "Both thresholds (interactions and unique-type memory diversity)
+        must be met to advance" -- and promotes + sets the new tier's bonus
+        multiplier if newly qualified.
+
+        FLAGGED, NOT SILENTLY RESOLVED (dispatch's explicit ask): canon's
+        memory-side gate is worded "unique-type memory diversity". A LITERAL
+        distinct ARIAPersonalMemory.memory_type COUNT is mathematically
+        incapable of ever promoting past level 1 (Dormant) -- only THREE
+        memory_type values are ever actually written anywhere in this
+        codebase (threat.combat / market / nav.sector_visit; "social" is
+        named in a docstring but never instantiated by any caller), and even the
+        LOWEST threshold (level 2) requires 10. This method therefore uses
+        the RAW TOTAL memory count (matching this method's own pre-existing
+        arithmetic before this WO), not distinct-type cardinality -- see the
+        dispatch report for the full proof and a dedicated falsifying test.
+        The threshold NUMBERS themselves (10/30/75/150) are unchanged.
         """
         from src.models.player import Player
 
-        # Load the player
         stmt = select(Player).where(Player.id == player_id)
         result = await db.execute(stmt)
         player = result.scalar_one_or_none()
         if not player:
             return {"success": False, "message": "Player not found"}
 
-        # Count total memories grouped by type
-        memory_type_stmt = (
-            select(
-                ARIAPersonalMemory.memory_type,
-                func.count(ARIAPersonalMemory.id).label("cnt"),
-            )
-            .where(ARIAPersonalMemory.player_id == player_id)
-            .group_by(ARIAPersonalMemory.memory_type)
+        memory_stmt = select(func.count(ARIAPersonalMemory.id)).where(
+            ARIAPersonalMemory.player_id == player_id
         )
-        type_result = await db.execute(memory_type_stmt)
-        memory_counts: Dict[str, int] = {}
-        total_memories = 0
-        for row in type_result:
-            memory_counts[row.memory_type] = row.cnt
-            total_memories += row.cnt
+        memory_result = await db.execute(memory_stmt)
+        total_memories = memory_result.scalar() or 0
 
-        # Capture the old state for the diff
-        old_level = player.aria_consciousness_level
-        old_relationship = player.aria_relationship_score
-        total_interactions = player.aria_total_interactions or 0
+        return self._apply_consciousness_and_relationship(player, total_memories)
 
-        # --- Relationship score ---
-        # Formula: base 25 + contribution from memories + contribution from
-        # consciousness depth.  Memories represent breadth of shared experience;
-        # consciousness level represents depth of bond.
-        new_relationship = min(
-            100,
-            int(25 + (total_memories * 0.5) + (player.aria_consciousness_level * 10)),
-        )
-        player.aria_relationship_score = new_relationship
+    def update_consciousness_and_relationship_sync(
+        self, player_id: str, db: Session,
+    ) -> Dict[str, Any]:
+        """
+        Synchronous twin of ``update_consciousness_and_relationship`` for
+        the three sync-Session call sites (WO-ARIA-PROGRESSION --
+        movement_service.py, combat_service.py, trading.py buy + sell all
+        run on a sync Session, exactly the record_trade_memory_sync
+        precedent). Same canonical core (``_apply_consciousness_and_
+        relationship``), same canon citations -- see the async method's
+        docstring. Never raises -- an ARIA progression hiccup must never
+        break movement, combat, or a trade.
+        """
+        try:
+            from src.models.player import Player
 
-        # --- Consciousness level check ---
-        # Walk thresholds from highest to lowest; first match wins.
-        new_level = 1
-        for level in range(5, 1, -1):
-            thresholds = self.CONSCIOUSNESS_THRESHOLDS[level]
-            if (
-                total_interactions >= thresholds["interactions"]
-                and total_memories >= thresholds["memories"]
-            ):
-                new_level = level
-                break
+            player = db.query(Player).filter(Player.id == player_id).first()
+            if not player:
+                return {"success": False, "message": "Player not found"}
 
-        leveled_up = new_level > old_level
-        if leveled_up:
-            player.aria_consciousness_level = new_level
-            player.aria_bonus_multiplier = self.CONSCIOUSNESS_BONUSES[new_level]
-            # Re-calculate relationship with the *new* consciousness level
-            player.aria_relationship_score = min(
-                100,
-                int(25 + (total_memories * 0.5) + (new_level * 10)),
+            total_memories = (
+                db.query(func.count(ARIAPersonalMemory.id))
+                .filter(ARIAPersonalMemory.player_id == player_id)
+                .scalar()
+            ) or 0
+
+            return self._apply_consciousness_and_relationship(player, total_memories)
+        except Exception as e:
+            logger.warning(
+                "update_consciousness_and_relationship_sync failed for player %s: %s",
+                player_id, e,
             )
-            logger.info(
-                "Player %s ARIA consciousness evolved: %s (%d) -> %s (%d), "
-                "relationship %d -> %d, multiplier %.2f",
-                player_id,
-                self.CONSCIOUSNESS_LEVEL_NAMES.get(old_level, "Unknown"),
-                old_level,
-                self.CONSCIOUSNESS_LEVEL_NAMES.get(new_level, "Unknown"),
-                new_level,
-                old_relationship,
-                player.aria_relationship_score,
-                player.aria_bonus_multiplier,
-            )
-
-        return {
-            "success": True,
-            "old_level": old_level,
-            "new_level": player.aria_consciousness_level,
-            "old_level_name": self.CONSCIOUSNESS_LEVEL_NAMES.get(old_level, "Unknown"),
-            "new_level_name": self.CONSCIOUSNESS_LEVEL_NAMES.get(
-                player.aria_consciousness_level, "Unknown"
-            ),
-            "leveled_up": leveled_up,
-            "relationship_score": player.aria_relationship_score,
-            "old_relationship_score": old_relationship,
-            "bonus_multiplier": float(player.aria_bonus_multiplier),
-            "total_interactions": total_interactions,
-            "total_memories": total_memories,
-            "memory_counts": memory_counts,
-        }
+            return {"success": False, "message": str(e)}
 
     async def _resolve_player_language(
         self, player_id: str, db: AsyncSession
@@ -1829,11 +2068,11 @@ class ARIAPersonalIntelligenceService:
         market_count = 0
         exploration_count = 0
         for mem in recent_memories:
-            if mem.memory_type == "combat":
+            if mem.memory_type == "threat.combat":
                 combat_count += 1
             elif mem.memory_type == "market":
                 market_count += 1
-            elif mem.memory_type == "exploration":
+            elif mem.memory_type == "nav.sector_visit":
                 exploration_count += 1
 
         # ------------------------------------------------------------------
@@ -1974,7 +2213,7 @@ class ARIAPersonalIntelligenceService:
             total_memories += row.cnt
 
         # Ensure common types are present even if zero
-        for mtype in ("combat", "market", "exploration"):
+        for mtype in ("threat.combat", "market", "nav.sector_visit"):
             memory_counts.setdefault(mtype, 0)
 
         # Next level requirements and progress calculation
@@ -2019,6 +2258,394 @@ class ARIAPersonalIntelligenceService:
             "next_level_requirements": next_level_requirements,
             "progress_to_next": progress_to_next,
         }
+
+    # =============================================================================
+    # OBSERVATION LOG + RECOMMENDATION ENGINE (WO-ARIA-OBS-LOG, ADR-0038)
+    # =============================================================================
+    #
+    # Append-only per-trade observation log mined by SQL aggregates -- the
+    # genetic-algorithm framing (evolve_trading_pattern / get_evolved_
+    # patterns / ARIATradingPattern) was REMOVED (WO-ARIA-GA-CLEANUP,
+    # ADR-0038, zero live callers) rather than merely retired; this section
+    # is its replacement recommendation engine.
+    #
+    # DELIBERATELY SYNC (Session, not AsyncSession): the intended write-path
+    # caller is trading.py's buy/sell routes (lane C of this WO, deferred --
+    # this table has zero writers until that follow-up lands), which run
+    # entirely on a synchronous Session, exactly like this class's existing
+    # record_combat_memory_sync twin. Rather than splitting one substrate
+    # across two session types, both the write and the read/aggregate side
+    # stay sync; a future async caller (e.g. an ARIA-recommendations route)
+    # bridges in via AsyncSession.run_sync(...) -- the same established
+    # pattern this codebase already uses for sync compute under async
+    # callers (see turn_service's regen bridge) -- rather than this one
+    # table inventing a second, mixed-session surface.
+
+    # aria.md:220 / ADR-0038 Anti-gaming -- the wash-trade floor. A trade is
+    # only counted as a "success" toward any aggregate below if its profit
+    # clears this bar; near-zero-margin wash trades and small real losses
+    # both land on the "not successful" side of every ratio computed here.
+    MIN_SIGNIFICANT_PROFIT_CR = 100
+
+    MIN_ROUTE_SAMPLES = 3           # aria.md:210 "count >= 3"
+    MIN_RELIABLE_SAMPLES = 5        # aria.md:211 "count >= 5"
+    MIN_WATCHOUT_SAMPLES = 5        # aria.md:213 "count >= 5"
+    RELIABLE_SUCCESS_RATE = 0.7     # aria.md:211
+    WATCHOUT_SUCCESS_RATE = 0.3     # aria.md:213
+    AGGREGATE_CACHE_TTL = timedelta(hours=4)  # aria.md:218
+
+    _RECOMMENDATION_CACHE_KEY = "recommendation_aggregates"
+    _AGGREGATE_CACHE_SCOPE_COMMODITY = "__ALL__"
+
+    def record_trade_observation(
+        self, player_id: str, trade_result: Dict[str, Any], db: Session,
+    ) -> Optional[ARIATradingObservation]:
+        """
+        Insert one ARIATradingObservation row for a completed trade leg.
+
+        Canonical entry-point name/signature per OPERATIONS/aria.md:222
+        ("aria_personal_intelligence_service.record_trade_observation
+        (player_id, trade_result)"). SYNC on purpose -- see section
+        docstring above.
+
+        FLUSH-FREE like record_combat_memory_sync: only db.add()s; the
+        CALLER owns the commit (folds into the trade's single commit, same
+        convention as trading.py's existing pending_aria_memories append).
+        Never raises -- an ARIA logging hiccup must never break a real
+        trade (single insert, non-blocking).
+
+        trade_result keys: commodity, action ("buy"|"sell"),
+        source_station_id, dest_station_id (optional, buy-only omits it),
+        source_sector_id / dest_sector_id (optional), quantity, unit_price,
+        total_credits, profit (optional, sell-leg only), hours_held
+        (optional, sell-leg only), trade_id / matched_market_intel_id /
+        recommendation_id (all optional FKs).
+
+        Returns the inserted (unflushed) row, or None on any invalid input
+        or failure -- callers should treat this as best-effort telemetry,
+        never a return value that gates trade logic.
+        """
+        try:
+            try:
+                action = ObservationAction(trade_result.get("action"))
+            except ValueError:
+                logger.warning(
+                    "record_trade_observation: unrecognised action %r for player %s",
+                    trade_result.get("action"), player_id,
+                )
+                return None
+
+            profit = trade_result.get("profit")
+            outcome = None
+            if action is ObservationAction.sell and profit is not None:
+                if profit > 0:
+                    outcome = ObservationOutcome.profit
+                elif profit == 0:
+                    outcome = ObservationOutcome.break_even
+                else:
+                    outcome = ObservationOutcome.loss
+
+            observation = ARIATradingObservation(
+                player_id=player_id,
+                trade_id=trade_result.get("trade_id"),
+                commodity=trade_result["commodity"],
+                action=action,
+                source_station_id=trade_result["source_station_id"],
+                dest_station_id=trade_result.get("dest_station_id"),
+                source_sector_id=trade_result.get("source_sector_id"),
+                dest_sector_id=trade_result.get("dest_sector_id"),
+                quantity=trade_result["quantity"],
+                unit_price=trade_result["unit_price"],
+                total_credits=trade_result["total_credits"],
+                profit=profit,
+                hours_held=trade_result.get("hours_held"),
+                outcome_classification=outcome,
+                observed_at=datetime.now(UTC),
+                matched_market_intel_id=trade_result.get("matched_market_intel_id"),
+                recommendation_id=trade_result.get("recommendation_id"),
+            )
+            db.add(observation)
+
+            # aria.md:222 -- new observations invalidate cached aggregates.
+            self._invalidate_aggregate_cache_sync(player_id, db)
+
+            return observation
+        except Exception as e:
+            logger.warning(
+                "record_trade_observation failed for player %s: %s", player_id, e,
+            )
+            return None
+
+    def get_top_routes(
+        self, player_id: str, db: Session, limit: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Top profitable repeated routes. OPERATIONS/aria.md:210:
+        ``GROUP BY (commodity, source_station, dest_station) HAVING count
+        >= 3 ORDER BY avg_profit DESC LIMIT 5``. Surfaced on the "Suggested
+        trades" panel.
+
+        SQL does the GROUP BY / HAVING(count) / SUM(profit) reduction;
+        avg-profit ranking + LIMIT happen in Python over the (small,
+        already-reduced) per-player group set -- see section docstring for
+        why this avoids ORDER BY on a derived expression.
+        """
+        rows = (
+            db.query(
+                ARIATradingObservation.commodity,
+                ARIATradingObservation.source_station_id,
+                ARIATradingObservation.dest_station_id,
+                func.sum(ARIATradingObservation.profit),
+                func.count(ARIATradingObservation.id),
+            )
+            .filter(
+                ARIATradingObservation.player_id == player_id,
+                ARIATradingObservation.action == ObservationAction.sell,
+                ARIATradingObservation.profit >= self.MIN_SIGNIFICANT_PROFIT_CR,
+                ARIATradingObservation.dest_station_id.isnot(None),
+            )
+            .group_by(
+                ARIATradingObservation.commodity,
+                ARIATradingObservation.source_station_id,
+                ARIATradingObservation.dest_station_id,
+            )
+            .having(func.count(ARIATradingObservation.id) >= self.MIN_ROUTE_SAMPLES)
+            .all()
+        )
+
+        routes = []
+        for commodity, source_station_id, dest_station_id, total_profit, sample_count in rows:
+            avg_profit = total_profit / sample_count
+            routes.append({
+                "commodity": commodity,
+                "source_station_id": str(source_station_id),
+                "dest_station_id": str(dest_station_id),
+                "avg_profit": avg_profit,
+                "sample_count": sample_count,
+                "explanation": (
+                    f"You've made an average of {avg_profit:,.0f} cr trading "
+                    f"{commodity} on this route over your last {sample_count} trades."
+                ),
+            })
+        routes.sort(key=lambda r: r["avg_profit"], reverse=True)
+        return routes[:limit]
+
+    def _commodity_success_rate_aggregate(
+        self, player_id: str, db: Session, group_cols: list,
+        min_samples: int, rate_ok,
+    ) -> List[Dict[str, Any]]:
+        """
+        Shared SQL-aggregate core for get_reliable_commodities /
+        get_watch_out_commodities -- both are "group by N columns, HAVING
+        count >= min_samples, then keep groups whose success_rate clears
+        rate_ok" over sell-leg observations. Two grouped COUNT queries
+        (total samples, then samples clearing MIN_SIGNIFICANT_PROFIT_CR)
+        rather than one query with a CASE-WHEN, matching this codebase's
+        established sum/count-only aggregate-query convention.
+
+        Returns a list of {"group_key": <tuple>, "sample_count": int,
+        "success_rate": float} dicts for groups where rate_ok(rate) is True.
+        """
+        base_filter = (
+            ARIATradingObservation.player_id == player_id,
+            ARIATradingObservation.action == ObservationAction.sell,
+            ARIATradingObservation.profit.isnot(None),
+        )
+
+        total_rows = (
+            db.query(*group_cols, func.count(ARIATradingObservation.id))
+            .filter(*base_filter)
+            .group_by(*group_cols)
+            .having(func.count(ARIATradingObservation.id) >= min_samples)
+            .all()
+        )
+        if not total_rows:
+            return []
+
+        totals = {tuple(row[:-1]): row[-1] for row in total_rows}
+
+        success_rows = (
+            db.query(*group_cols, func.count(ARIATradingObservation.id))
+            .filter(*base_filter, ARIATradingObservation.profit >= self.MIN_SIGNIFICANT_PROFIT_CR)
+            .group_by(*group_cols)
+            .all()
+        )
+        successes = {tuple(row[:-1]): row[-1] for row in success_rows}
+
+        results = []
+        for key, total in totals.items():
+            success = successes.get(key, 0)
+            rate = success / total if total else 0.0
+            if rate_ok(rate):
+                results.append({"group_key": key, "sample_count": total, "success_rate": rate})
+        return results
+
+    def get_reliable_commodities(self, player_id: str, db: Session) -> List[Dict[str, Any]]:
+        """
+        Reliable commodities by station. OPERATIONS/aria.md:211:
+        ``GROUP BY (commodity, source_station) HAVING count >= 5 AND
+        success_rate >= 0.7``. Surfaced on the "Stations to revisit" panel.
+        """
+        raw = self._commodity_success_rate_aggregate(
+            player_id, db,
+            group_cols=[ARIATradingObservation.commodity, ARIATradingObservation.source_station_id],
+            min_samples=self.MIN_RELIABLE_SAMPLES,
+            rate_ok=lambda rate: rate >= self.RELIABLE_SUCCESS_RATE,
+        )
+        out = []
+        for r in raw:
+            commodity, station_id = r["group_key"]
+            out.append({
+                "commodity": commodity,
+                "source_station_id": str(station_id),
+                "sample_count": r["sample_count"],
+                "success_rate": r["success_rate"],
+                "explanation": (
+                    f"{r['success_rate'] * 100:.0f}% of your {commodity} sales from "
+                    f"this station over {r['sample_count']} trades cleared a profit."
+                ),
+            })
+        return out
+
+    def get_watch_out_commodities(self, player_id: str, db: Session) -> List[Dict[str, Any]]:
+        """
+        Watch-out commodities. OPERATIONS/aria.md:213: ``GROUP BY
+        (commodity) HAVING count >= 5 AND success_rate <= 0.3``. Surfaced
+        as a warning on the "Caution" panel -- never a positive
+        recommendation.
+        """
+        raw = self._commodity_success_rate_aggregate(
+            player_id, db,
+            group_cols=[ARIATradingObservation.commodity],
+            min_samples=self.MIN_WATCHOUT_SAMPLES,
+            rate_ok=lambda rate: rate <= self.WATCHOUT_SUCCESS_RATE,
+        )
+        out = []
+        for r in raw:
+            (commodity,) = r["group_key"]
+            out.append({
+                "commodity": commodity,
+                "sample_count": r["sample_count"],
+                "success_rate": r["success_rate"],
+                "explanation": (
+                    f"Only {r['success_rate'] * 100:.0f}% of your {commodity} trades "
+                    f"over {r['sample_count']} attempts cleared a profit -- consider "
+                    f"avoiding it."
+                ),
+            })
+        return out
+
+    def compute_recommendation_aggregates(
+        self, player_id: str, db: Session, force_refresh: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Umbrella entry point: returns {top_routes, reliable_commodities,
+        watch_out_commodities, computed_at}, backed by a 4-hour
+        stale-while-revalidate cache in ARIAQuantumCache (repurposed per
+        ADR-0038's Caching section -- aria.md:218; the whole bundle is
+        cached as ONE row per player rather than partitioned per
+        (commodity, station_id) -- see _invalidate_aggregate_cache_sync for
+        why).
+
+        NOTE (flagged, not guessed): aria.md's recommendation-engine table
+        (:204-222) has two further rows -- "routes within explored space"
+        (filtering top routes by ARIAExplorationMap + a distance <=
+        max_jumps graph traversal) and "off-peak buy windows" (hour-of-day
+        grouping). Neither is implemented in this WO: this WO's explicit
+        method list and D-tests' acceptance criteria named only top routes/
+        reliable/watch-out, and "routes within explored space" needs a
+        warp-graph distance utility this WO doesn't define or own. Left for
+        a follow-up WO once that utility question is resolved.
+        """
+        if not force_refresh:
+            cached = self._get_cached_aggregates_sync(player_id, db)
+            if cached is not None:
+                return cached
+
+        bundle = {
+            "top_routes": self.get_top_routes(player_id, db),
+            "reliable_commodities": self.get_reliable_commodities(player_id, db),
+            "watch_out_commodities": self.get_watch_out_commodities(player_id, db),
+            "computed_at": datetime.now(UTC).isoformat(),
+        }
+        self._cache_aggregates_sync(player_id, bundle, db)
+        return bundle
+
+    def _get_cached_aggregates_sync(self, player_id: str, db: Session) -> Optional[Dict[str, Any]]:
+        entry = (
+            db.query(ARIAQuantumCache)
+            .filter(
+                ARIAQuantumCache.player_id == player_id,
+                ARIAQuantumCache.cache_key == self._RECOMMENDATION_CACHE_KEY,
+                ARIAQuantumCache.expires_at > datetime.now(UTC),
+            )
+            .first()
+        )
+        if entry is None:
+            return None
+        entry.hit_count = (entry.hit_count or 0) + 1
+        return entry.ghost_results
+
+    def _cache_aggregates_sync(self, player_id: str, bundle: Dict[str, Any], db: Session) -> None:
+        existing = (
+            db.query(ARIAQuantumCache)
+            .filter(
+                ARIAQuantumCache.player_id == player_id,
+                ARIAQuantumCache.cache_key == self._RECOMMENDATION_CACHE_KEY,
+            )
+            .first()
+        )
+        expires_at = datetime.now(UTC) + self.AGGREGATE_CACHE_TTL
+        if existing is not None:
+            existing.ghost_results = bundle
+            existing.expires_at = expires_at
+        else:
+            db.add(ARIAQuantumCache(
+                player_id=player_id,
+                cache_key=self._RECOMMENDATION_CACHE_KEY,
+                commodity=self._AGGREGATE_CACHE_SCOPE_COMMODITY,
+                station_id=None,
+                sector_id=None,
+                quantum_states=[],  # unused for this repurposed cache use
+                ghost_results=bundle,
+                expected_value=0.0,  # unused for this repurposed cache use
+                confidence_interval=[0, 0],  # unused for this repurposed cache use
+                expires_at=expires_at,
+            ))
+
+    def _invalidate_aggregate_cache_sync(self, player_id: str, db: Session) -> None:
+        """
+        New-observation cache invalidation (aria.md:218's "new observations
+        invalidate cache entries that touch the same (commodity,
+        station_id) tuple" rule). This WO caches the full recommendation
+        bundle as ONE row per player rather than partitioning per
+        (commodity, station_id) pair -- so any new observation invalidates
+        the whole bundle. This is the conservative superset of aria.md's
+        per-tuple rule (correct, slightly less cache-efficient); flagged in
+        the dispatch report as a deliberate simplification given the
+        observation-log's per-player scale doesn't warrant a finer
+        partition yet.
+
+        WO-SWEEP-QUANTUM-CACHE-COLUMN: the DELETE itself was ALREADY safe
+        from the aria_quantum_cache.port_id/station_id defect (a `.filter(
+        ...).delete()` bulk statement only references its WHERE-clause
+        columns -- player_id/cache_key here -- never the full column list a
+        plain SELECT would), but this is the ONE live, production-reachable
+        write against this table (record_trade_observation ->
+        trading.py:414, folded into the SAME trade commit per that
+        method's own "CALLER owns the commit" contract) with NO savepoint
+        protection -- ANY DB-level failure here (this defect or a future
+        one) would poison the session and take the real trade's own commit
+        down with it. Mirrors record_market_observation_sync's per-write
+        savepoint discipline (WO-SWEEP-ARIA-MI-COLUMN) — the caller's own
+        broad try/except catches the Python-level exception either way,
+        but only a SAVEPOINT actually protects the transaction itself.
+        """
+        with db.begin_nested():
+            db.query(ARIAQuantumCache).filter(
+                ARIAQuantumCache.player_id == player_id,
+                ARIAQuantumCache.cache_key == self._RECOMMENDATION_CACHE_KEY,
+            ).delete(synchronize_session=False)
 
 
 # Singleton instance
