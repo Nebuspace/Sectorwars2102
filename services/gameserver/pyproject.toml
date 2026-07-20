@@ -36,7 +36,7 @@ alembic = "^1.12.0"
 # 0/0/0: only direct usage is Fernet for ARIA personal-memory encryption,
 # JWT goes through PyJWT HS256 only, fernet.py byte-identical 48<->49).
 # Revisit once the dev Mac is arm64 or a Rust toolchain is provisioned.
-cryptography = ">=48.0.1,<49"
+cryptography = ">=48.0.1,<50"
 pyjwt = {extras = ["crypto"], version = "^2.10.0"}
 python-multipart = ">=0.0.18"
 passlib = {extras = ["argon2"], version = "^1.7.4"}
