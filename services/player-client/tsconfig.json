@@ -8,6 +8,10 @@
 
     /* Bundler mode */
     "moduleResolution": "bundler",
+    // TS7 stopped auto-resolving @types/node's ambient globals
+    // (__dirname/global/node:fs/node:path) without an explicit "types"
+    // array -- TS6 picked them up implicitly.
+    "types": ["node"],
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "isolatedModules": true,

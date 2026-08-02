@@ -530,6 +530,62 @@ def scan(
 
 # --- Phases 2+3: commit and resolve ---
 
+def _compute_jump_cost(db: Session, ship: Ship) -> Tuple[int, int, int]:
+    """The actual jump turn cost for THIS ship: (base, tow_surcharge, total).
+    base is the flat JUMP_TURN_COST; tow_surcharge folds in the +5 flat QJ
+    tow surcharge (WO-AF; ships.md:358; ADR-0067) when the ship is legally
+    towing a small/medium hull through its own Quantum Jump, 0 otherwise.
+
+    Extracted verbatim from jump()'s Phase-2 pre-commit cost computation —
+    byte-identical logic, including the same illegal-tow-state raises. A
+    caller that must never raise (e.g. a read-only status check) should
+    catch QuantumError and treat it as "cannot jump" rather than propagate.
+    """
+    qj_tow_surcharge = 0
+    try:
+        from src.services.tow_service import (
+            TowService,
+            QJ_MAX_TOWED_SIZE_UNITS,
+            QJ_TOW_SURCHARGE_FLAT,
+        )
+        from src.models.ship import ShipSize, size_units_for
+
+        tow_svc = TowService(db)
+        # A WJ that is itself being towed cannot quantum-jump independently.
+        if tow_svc.is_being_towed(ship.id):
+            raise QuantumError(
+                "This Warp Jumper is being towed — detach the tractor lock "
+                "before engaging the quantum drive"
+            )
+        if tow_svc.is_actively_towing(ship):
+            towed_size_str = (ship.tow_state or {}).get("towed_size")
+            try:
+                towed_size = ShipSize[towed_size_str.upper()] if towed_size_str else None
+            except (KeyError, AttributeError):
+                towed_size = None
+            if towed_size is None or towed_size == ShipSize.CAPITAL:
+                raise QuantumError(
+                    "The towed ship cannot transit a quantum jump (capital-size "
+                    "or unspecified hulls are excluded)"
+                )
+            if size_units_for(towed_size) > QJ_MAX_TOWED_SIZE_UNITS:
+                raise QuantumError(
+                    "The towed ship is too large to transit a quantum jump "
+                    "(medium-size maximum: tiny / small / medium only)"
+                )
+            qj_tow_surcharge = QJ_TOW_SURCHARGE_FLAT
+    except QuantumError:
+        raise
+    except Exception as e:
+        # A tow-state read hiccup must never silently let an oversized tow
+        # through. Fail closed only if a tow is present but unreadable; with no
+        # tow, proceed at base cost.
+        logger.error("QJ tow validation read failed: %s", e)
+        qj_tow_surcharge = 0
+
+    return JUMP_TURN_COST, qj_tow_surcharge, JUMP_TURN_COST + qj_tow_surcharge
+
+
 def jump(
     db: Session,
     player_id: uuid.UUID,
@@ -591,50 +647,9 @@ def jump(
     # towed cannot jump (it would drag itself off its hauler). All gates run
     # BEFORE the irreversible Phase-2 commit so a rejected jump leaves the tow
     # intact at the source sector (the "abort pre-commit" case is satisfied by
-    # never reaching the commit).
-    qj_tow_surcharge = 0
-    try:
-        from src.services.tow_service import (
-            TowService,
-            QJ_MAX_TOWED_SIZE_UNITS,
-            QJ_TOW_SURCHARGE_FLAT,
-        )
-        from src.models.ship import ShipSize, size_units_for
-
-        tow_svc = TowService(db)
-        # A WJ that is itself being towed cannot quantum-jump independently.
-        if tow_svc.is_being_towed(ship.id):
-            raise QuantumError(
-                "This Warp Jumper is being towed — detach the tractor lock "
-                "before engaging the quantum drive"
-            )
-        if tow_svc.is_actively_towing(ship):
-            towed_size_str = (ship.tow_state or {}).get("towed_size")
-            try:
-                towed_size = ShipSize[towed_size_str.upper()] if towed_size_str else None
-            except (KeyError, AttributeError):
-                towed_size = None
-            if towed_size is None or towed_size == ShipSize.CAPITAL:
-                raise QuantumError(
-                    "The towed ship cannot transit a quantum jump (capital-size "
-                    "or unspecified hulls are excluded)"
-                )
-            if size_units_for(towed_size) > QJ_MAX_TOWED_SIZE_UNITS:
-                raise QuantumError(
-                    "The towed ship is too large to transit a quantum jump "
-                    "(medium-size maximum: tiny / small / medium only)"
-                )
-            qj_tow_surcharge = QJ_TOW_SURCHARGE_FLAT
-    except QuantumError:
-        raise
-    except Exception as e:
-        # A tow-state read hiccup must never silently let an oversized tow
-        # through. Fail closed only if a tow is present but unreadable; with no
-        # tow, proceed at base cost.
-        logger.error("QJ tow validation read failed: %s", e)
-        qj_tow_surcharge = 0
-
-    total_jump_cost = JUMP_TURN_COST + qj_tow_surcharge
+    # never reaching the commit). Cost + tow-validity logic lives in
+    # _compute_jump_cost (shared with get_status()'s can_jump — WO-API-PHASE2).
+    _base_jump_cost, qj_tow_surcharge, total_jump_cost = _compute_jump_cost(db, ship)
     if player.turns < total_jump_cost:
         raise QuantumError(
             f"Not enough turns for a quantum jump. Need {total_jump_cost}, have {player.turns}"
@@ -1179,14 +1194,33 @@ def get_status(db: Session, player: Player) -> Dict[str, Any]:
     charges = ship.quantum_charges if is_warp_jumper else 0
     sensor_level = _sensor_level(ship) if is_warp_jumper else 0
 
+    # BUG-1 fix: can_jump must gate on the SAME total (base + tow surcharge)
+    # jump() actually charges, not the flat base — otherwise a towing pilot
+    # with 50-54 turns reads can_jump=true here but gets rejected by jump()
+    # ("Need 55, have N"). _compute_jump_cost is the single source of truth
+    # for both (WO-API-PHASE2). It can raise QuantumError for the same
+    # illegal-tow states jump() itself rejects on (the WJ being towed, or
+    # towing an oversized/capital hull); a read-only status call must never
+    # raise, so that surfaces as can_jump=false instead.
+    jump_turn_cost = JUMP_TURN_COST
+    jump_tow_surcharge = 0
+    total_jump_cost = JUMP_TURN_COST
+    tow_blocks_jump = False
+    if is_warp_jumper:
+        try:
+            jump_turn_cost, jump_tow_surcharge, total_jump_cost = _compute_jump_cost(db, ship)
+        except QuantumError:
+            tow_blocks_jump = True
+
     can_jump = (
         is_warp_jumper
+        and not tow_blocks_jump
         and not player.is_docked
         and not player.is_landed
         and ship.status != ShipStatus.HARMONIZING
         and not _cooldown_active(jump_cd)
         and charges >= 1
-        and player.turns >= JUMP_TURN_COST
+        and player.turns >= total_jump_cost
     )
 
     return {
@@ -1198,6 +1232,9 @@ def get_status(db: Session, player: Player) -> Dict[str, Any]:
         "can_jump": can_jump,
         "is_warp_jumper": is_warp_jumper,
         "sensor_level": sensor_level,
+        "scan_turn_cost": SCAN_TURN_COST,
+        "jump_turn_cost": jump_turn_cost,
+        "jump_tow_surcharge": jump_tow_surcharge,
         # ADR-0064 R-V3: present only once the viewer has PERSONALLY
         # discovered the Nexus warp — see _resolve_nexus_warp_marker.
         "nexus_warp_marker": _resolve_nexus_warp_marker(db, player),

@@ -85,7 +85,7 @@ const Dashboard: React.FC = () => {
 
       // Fetch all dashboard data concurrently - use allSettled so partial failures don't blank everything
       const [dbHealthRes, aiHealthRes, gameServerRes, adminStatsRes, auditRes] = await Promise.allSettled([
-        axios.get('/api/v1/status/database', { headers, timeout: 10000 }),
+        axios.get('/api/v1/status/database/detailed', { headers, timeout: 10000 }),
         axios.get('/api/v1/status/ai/providers', { headers, timeout: 15000 }),
         axios.get('/api/v1/status/', { headers, timeout: 10000 }),
         axios.get('/api/v1/admin/stats', { headers, timeout: 10000 }),

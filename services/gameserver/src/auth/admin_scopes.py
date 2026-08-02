@@ -59,6 +59,10 @@ ECONOMY_INTERVENE = "admin.economy.intervene"
 SECURITY_ACT = "admin.security.act"
 DISPUTES_RESOLVE = "admin.disputes.resolve"
 
+# System / monitoring (WO gameserver-CI-fix, 2026-07-19 — closes the
+# require_admin tripwire's last hit: GET /status/database/detailed).
+SYSTEM_HEALTH_VIEW = "admin.system.health_view"
+
 # ---------------------------------------------------------------------------
 # Derived sets
 # ---------------------------------------------------------------------------
@@ -92,6 +96,7 @@ ALL_SCOPES: frozenset[str] = frozenset(
         ECONOMY_INTERVENE,
         SECURITY_ACT,
         DISPUTES_RESOLVE,
+        SYSTEM_HEALTH_VIEW,
     }
 )
 
@@ -157,6 +162,10 @@ SCOPE_DESCRIPTIONS: dict[str, str] = {
     ECONOMY_INTERVENE: "Intervene in economy and market operations.",
     SECURITY_ACT: "Take security enforcement actions (e.g., blocks, alerts).",
     DISPUTES_RESOLVE: "Resolve contract disputes and escrow outcomes.",
+    SYSTEM_HEALTH_VIEW: (
+        "View system/database health introspection (host, connection-pool "
+        "status, DB size, table/connection counts)."
+    ),
 }
 
 assert set(SCOPE_DESCRIPTIONS.keys()) == ALL_SCOPES

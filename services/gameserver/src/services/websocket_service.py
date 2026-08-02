@@ -970,10 +970,18 @@ class ConnectionManager:
         if sector_id not in self.sector_connections:
             return []
 
+        # Local import (WO-API-PHASE2 Lane B6): a small pure module, kept
+        # function-scoped rather than a top-level import so this heavily-
+        # imported service module doesn't pull in npc_spawn_service's much
+        # heavier model/DB import surface just for one classification call
+        # (presence_classification imports LAWFUL_TARGET_THRESHOLD from it).
+        from src.services.presence_classification import player_rep_bucket
+
         players = []
         for user_id in self.sector_connections[sector_id]:
             metadata = self.connection_metadata.get(user_id, {})
             user_data = metadata.get("user_data", {})
+            reputation_tier = user_data.get("reputation_tier", "Neutral")
             players.append({
                 "user_id": user_id,
                 "username": user_data.get("username"),
@@ -981,7 +989,11 @@ class ConnectionManager:
                 "last_heartbeat": metadata.get("last_heartbeat", datetime.now(UTC)).isoformat(),
                 # Reputation and Ranking for Comms display
                 "personal_reputation": user_data.get("personal_reputation", 0),
-                "reputation_tier": user_data.get("reputation_tier", "Neutral"),
+                "reputation_tier": reputation_tier,
+                # Same red/gray/blue bucket REST players_present now carries
+                # (intrasystem_movement_service.enrich_presence_with_live_pose)
+                # so both presence paths agree.
+                "rep_bucket": player_rep_bucket(reputation_tier),
                 "name_color": user_data.get("name_color", "#FFFFFF"),
                 "military_rank": user_data.get("military_rank", "Recruit")
             })

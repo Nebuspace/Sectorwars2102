@@ -46,17 +46,17 @@ interface AllProvidersHealth {
 interface DatabaseHealth {
   provider: string;
   status: 'healthy' | 'degraded' | 'unavailable';
-  host: string;
-  database: string;
-  connected: boolean;
+  host?: string;
+  database?: string;
+  connected?: boolean;
   response_time: number;
-  pool_status: {
+  pool_status?: {
     size: number;
     checked_out: number;
     overflow: number;
     total_connections: number;
   };
-  database_info: {
+  database_info?: {
     size_mb: number;
     size_pretty: string;
     table_count: number;
@@ -148,7 +148,7 @@ const SystemHealthStatus: React.FC = () => {
 
   const checkDatabaseHealth = async () => {
     try {
-      const response = await fetch('/api/v1/status/database', {
+      const response = await fetch('/api/v1/status/database/detailed', {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('accessToken')}`,
@@ -401,12 +401,12 @@ const SystemHealthStatus: React.FC = () => {
                   <div className="metric-row">
                     <span className="metric-label">Pool Usage:</span>
                     <span className="metric-value">
-                      {dbHealth.pool_status.checked_out}/{dbHealth.pool_status.size} ({getPoolUtilization()}%)
+                      {dbHealth.pool_status?.checked_out ?? '—'}/{dbHealth.pool_status?.size ?? '—'} ({getPoolUtilization()}%)
                     </span>
                   </div>
                   <div className="metric-row">
                     <span className="metric-label">Database:</span>
-                    <span className="metric-value">{dbHealth.database_info.size_pretty}</span>
+                    <span className="metric-value">{dbHealth.database_info?.size_pretty ?? '—'}</span>
                   </div>
                   <div className="metric-row">
                     <span className="metric-label">Last Check:</span>

@@ -799,6 +799,12 @@ def enrich_presence_with_live_pose(db: Session, present: List[Dict[str, Any]]) -
     work — the write-time mirror was already paid for."""
     if not present:
         return present
+    # Local import: presence_classification.py (WO-API-PHASE2 Lane B6)
+    # imports npc_spawn_service.LAWFUL_TARGET_THRESHOLD at its own top
+    # level; keeping this one function-scoped avoids any chance of a
+    # circular top-level import as this module's own callers accumulate.
+    from src.services.presence_classification import npc_hostile, player_rep_bucket
+
     npc_ids = [
         e.get("player_id") for e in present
         if isinstance(e, dict) and e.get("is_npc") and e.get("player_id")
@@ -831,6 +837,18 @@ def enrich_presence_with_live_pose(db: Session, present: List[Dict[str, Any]]) -
                 e["activity"] = (act.name if hasattr(act, "name") else str(act)) if act else None
                 e["mission"] = (n.daily_schedule or {}).get("mission") or "commerce"
                 e["archetype"] = n.archetype.name if n.archetype else None
+                # WO-API-PHASE2 Lane B6: re-derive from LIVE notoriety +
+                # archetype (the same freshness argument as archetype above)
+                # rather than trust the spawn-time mirror in
+                # npc_spawn_service._presence_entry. Archetype-first: pirates/
+                # police spawn with notoriety=None (it's exclusively the
+                # trader scruples axis), so npc_hostile needs the just-
+                # computed archetype to ever call a HOSTILE_RAIDER fair game.
+                # getattr, not n.notoriety -- matches this function's own
+                # defensive convention for optional NPC-row attributes (see
+                # current_sector_id/ship_id below) since not every caller's
+                # row carries every column.
+                e["hostile"] = npc_hostile(getattr(n, "notoriety", None), e["archetype"])
                 pose_source = n.intrasystem_pose
                 if pose_source is None:
                     # WO-API-A1 mack HIGH (Option A): this branch used to
@@ -860,9 +878,18 @@ def enrich_presence_with_live_pose(db: Session, present: List[Dict[str, Any]]) -
                     e["pose"] = pose_public(pose_source)
         else:
             p = player_by_id.get(str(e.get("player_id")))
-            if p is not None and p.intrasystem_pose is not None:
+            if p is not None:
                 e = dict(e)
-                e["pose"] = pose_public(p.intrasystem_pose)
+                # WO-API-PHASE2 Lane B6: REST players_present previously
+                # carried no reputation info at all for human entries
+                # (build_presence_entry's reference shape has none) — this
+                # brings REST to parity with the WS sector_players broadcast
+                # (get_sector_players already surfaces reputation_tier).
+                # getattr, not p.reputation_tier -- same defensive convention
+                # as the NPC branch above (not every caller's row carries it).
+                e["rep_bucket"] = player_rep_bucket(getattr(p, "reputation_tier", None))
+                if p.intrasystem_pose is not None:
+                    e["pose"] = pose_public(p.intrasystem_pose)
         enriched.append(e)
     return enriched
 
