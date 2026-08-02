@@ -36,10 +36,10 @@ jobs:
         # installers or masking the conflict another way.
         run: npm ci --legacy-peer-deps
 
-      # WO-CI-TOKEN-GATE: blocking gate, deliberately its own step (not
-      # folded into `npm run lint` — that gate is dead on player-client;
-      # ESLint v10 is flat-config-only and the legacy .eslintrc.js it still
-      # points at is inert, verified separately). Fails the build if any
+      # WO-CI-TOKEN-GATE: blocking gate, deliberately its own step rather
+      # than folded into `npm run lint` — it is a different kind of check
+      # (CSS custom-property resolution across .css sources), not something
+      # ESLint can see. Fails the build if any
       # CSS var(--x) resolves to nothing anywhere in the codebase — see
       # scripts/check-css-vars.js's own header for the two same-day-shipped
       # incidents (149 + 108 usage sites, one an invisible keyboard-focus
@@ -49,6 +49,19 @@ jobs:
       - name: CSS custom-property gate (check:tokens)
         working-directory: services/player-client
         run: npm run check:tokens
+
+      # ESLint now genuinely runs here: the flat-config migration landed
+      # 2026-07-17 (services/player-client/eslint.config.js), so the rules
+      # are live rather than inert. Measured on this tree: 371 files,
+      # 0 errors, 152 warnings, exit 0 — so this step gates *new
+      # error-level* regressions and cannot retroactively redden the build.
+      # Deliberately NOT `--max-warnings`: turning the existing 152 warnings
+      # into failures is a CI-policy change that needs its own decision.
+      # Another pure static check, so it sits with check:tokens ahead of
+      # Build/Test — fastest feedback first.
+      - name: Lint
+        working-directory: services/player-client
+        run: npm run lint
 
       - name: Build
         working-directory: services/player-client

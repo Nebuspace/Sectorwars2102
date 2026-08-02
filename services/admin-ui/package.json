@@ -37,7 +37,7 @@
     "build": "tsc --noEmit && vite build",
     "build:novcheck": "vite build",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src --ext ts,tsx",
+    "lint": "eslint src",
     "preview": "vite preview",
     "test:e2e": "node ./scripts/simple-run-tests.js",
     "test:e2e:smoke": "playwright test -c playwright.config.ts --project=chromium",
