@@ -950,17 +950,23 @@ LOOP_A_WATERMARK_STATE_KEY = "loop_a_watermark"
 LOOP_B_WATERMARK_STATE_KEY = "loop_b_watermark"
 LOOP_C_WATERMARK_STATE_KEY = "loop_c_watermark"
 
-# NO-CANON (2026-07-16): bounds how many missed Loop-A cadence intervals a
-# single restart-wake will synchronously replay. canon's own "if the
-# scheduler was down for 6 hours, Loop A executes 6 ticks" (npc-
-# scheduler.md "Crash recovery") is a worked EXAMPLE, not a stated hard
-# cap -- flagging this bound for orchestrator/Max blessing. Beyond this
-# cap the watermark advances only by the bounded amount (not all the way
-# to `now`), so an exceptionally long outage self-heals over several
-# subsequent restart-catch-ups rather than either (a) silently losing the
-# untraveled gap forever or (b) synchronously blocking the scheduler's
-# worker thread on a huge unbounded backfill (the GIL/burst-length
-# caution this WO was briefed with).
+# CANON (ratified by Max 2026-08-02, was NO-CANON 2026-07-16): bounds how
+# many missed Loop-A cadence intervals a single restart-wake will
+# synchronously replay. At LOOP_A_SECONDS = 60 this caps one wake at 24
+# ticks == 24 minutes of replayed patrol movement.
+#
+# canon's own "if the scheduler was down for 6 hours, Loop A executes 6
+# ticks" (npc-scheduler.md "Crash recovery") is a worked EXAMPLE and does
+# NOT state a hard cap -- note it is also not self-consistent with a
+# 60-second cadence (6h of downtime is 360 missed intervals, not 6), which
+# is why an explicit bound is set here rather than inferred from the doc.
+#
+# Beyond this cap the watermark advances only by the bounded amount (not
+# all the way to `now`), so an exceptionally long outage self-heals over
+# several subsequent restart-catch-ups rather than either (a) silently
+# losing the untraveled gap forever or (b) synchronously blocking the
+# scheduler's worker thread on a huge unbounded backfill (the
+# GIL/burst-length caution this WO was briefed with).
 LOOP_A_CRASH_CATCHUP_MAX_TICKS = 24
 
 

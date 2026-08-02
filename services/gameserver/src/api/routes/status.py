@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 logger = logging.getLogger(__name__)
 
 from src.core.config import settings
-from src.utils.error_handling import generate_error_id, sanitize_error_message
+from src.utils.error_handling import generate_error_id
 from src.auth.admin_scopes import SYSTEM_HEALTH_VIEW
 from src.auth.dependencies import require_scope
 
@@ -146,7 +146,7 @@ async def ai_providers_health():
                     "OpenAI health-check connectivity test failed [error_id=%s]",
                     openai_error_id, exc_info=True,
                 )
-                openai_error = sanitize_error_message(e)
+                openai_error = "OpenAI health check failed"
 
         openai_response_time = (time.time() - openai_start) * 1000
 
@@ -172,7 +172,7 @@ async def ai_providers_health():
             "reachable": False,
             "response_time": 0,
             "last_check": datetime.datetime.now().isoformat(),
-            "error": sanitize_error_message(e),
+            "error": "OpenAI health check failed",
             "error_id": openai_error_id
         }
     
@@ -204,7 +204,7 @@ async def ai_providers_health():
                     "Anthropic health-check connectivity test failed [error_id=%s]",
                     anthropic_error_id, exc_info=True,
                 )
-                anthropic_error = sanitize_error_message(e)
+                anthropic_error = "Anthropic health check failed"
 
         anthropic_response_time = (time.time() - anthropic_start) * 1000
 
@@ -230,7 +230,7 @@ async def ai_providers_health():
             "reachable": False,
             "response_time": 0,
             "last_check": datetime.datetime.now().isoformat(),
-            "error": sanitize_error_message(e),
+            "error": "Anthropic health check failed",
             "error_id": anthropic_error_id
         }
     
@@ -280,7 +280,7 @@ async def openai_health():
         except Exception as e:
             error_id = generate_error_id()
             logger.error("OpenAI health check failed [error_id=%s]", error_id, exc_info=True)
-            error = sanitize_error_message(e)
+            error = "OpenAI health check failed"
 
     response_time = (time.time() - start_time) * 1000
     status = "healthy" if (configured and reachable) else "degraded" if configured else "unavailable"
@@ -328,7 +328,7 @@ async def anthropic_health():
         except Exception as e:
             error_id = generate_error_id()
             logger.error("Anthropic health check failed [error_id=%s]", error_id, exc_info=True)
-            error = sanitize_error_message(e)
+            error = "Anthropic health check failed"
 
     response_time = (time.time() - start_time) * 1000
     status = "healthy" if (configured and reachable) else "degraded" if configured else "unavailable"
@@ -454,7 +454,7 @@ async def containers_health():
     except Exception as e:
         error_id = generate_error_id()
         logger.error("Container health check failed [error_id=%s]", error_id, exc_info=True)
-        error = sanitize_error_message(e)
+        error = "Container health check failed"
         overall_healthy = False
     
     response_time = (time.time() - start_time) * 1000
@@ -555,7 +555,7 @@ def _check_database_health():
     except Exception as e:
         error_id = generate_error_id()
         logger.error("Database health check failed [error_id=%s]", error_id, exc_info=True)
-        error = sanitize_error_message(e)
+        error = "Database health check failed"
         connected = False
         # Set default values for failed connection
         pool_status = {
