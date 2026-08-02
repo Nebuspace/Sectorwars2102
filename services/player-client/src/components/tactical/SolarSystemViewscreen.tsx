@@ -7809,7 +7809,7 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
       cancelAnimationFrame(rafId);
       vistaStartRef.current = null;
     };
-  }, [scene, reducedMotion]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [scene, reducedMotion]);
 
   // ---------------------------------------------------------------------------
 

@@ -43,8 +43,8 @@ function parseMode(raw: string | null): ShellMode {
 // (...args: any[]) => X function type is assignable to any narrower
 // signature returning an assignable X) — covers every action the mocked
 // pages can invoke without hand-writing ~35 near-identical one-liners.
-const noop = (..._args: any[]): void => {}; // eslint-disable-line @typescript-eslint/no-unused-vars
-const asyncNoop = async (..._args: any[]): Promise<any> => undefined; // eslint-disable-line @typescript-eslint/no-unused-vars
+const noop = (..._args: any[]): void => {};
+const asyncNoop = async (..._args: any[]): Promise<any> => undefined;
 
 const stubMigrationContract = {
   id: 'lab-contract',

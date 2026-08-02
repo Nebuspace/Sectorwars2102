@@ -1952,7 +1952,6 @@ const GameDashboardInner: React.FC = () => {
       out[role] = alloc > 0 && Number.isFinite(rate) ? rate / alloc : null;
     }
     return out;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allocRates, landedPlanetDetail]);
 
   // The station we're docked at — drives the docked scene HUD chips and the
