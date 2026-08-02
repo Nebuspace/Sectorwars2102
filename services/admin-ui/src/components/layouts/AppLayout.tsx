@@ -6,11 +6,20 @@ import Sidebar from './Sidebar';
 
 const AppLayout: React.FC = () => {
   const { isLoading, isAuthenticated } = useAuth();
-  const { isConnected, hasGivenUp } = useWebSocket();
+  const { isConnected, hasGivenUp, retryConnection } = useWebSocket();
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
   const [isMobile, setIsMobile] = useState<boolean>(false);
   const [loadingTimeout, setLoadingTimeout] = useState<boolean>(false);
+  const [gaveUpDismissed, setGaveUpDismissed] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const location = useLocation();
+
+  // Re-show banner if gave-up flips true again after a prior dismiss.
+  useEffect(() => {
+    if (hasGivenUp) {
+      setGaveUpDismissed(false);
+    }
+  }, [hasGivenUp]);
 
   // Check if we're on the login page
   const isLoginPage = location.pathname === '/login';
@@ -124,6 +133,77 @@ const AppLayout: React.FC = () => {
       )}
 
       <main className="main-content">
+        {/* Abandoned reconnect — visible without DevTools (WO-ADM-WS-GAVEUP-BANNER) */}
+        {isAuthenticated && !isLoginPage && hasGivenUp && !gaveUpDismissed && (
+          <div
+            data-testid="ws-gave-up-banner"
+            role="status"
+            className="ws-gave-up-banner"
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '12px',
+              margin: '0 0 12px',
+              padding: '12px 16px',
+              borderRadius: '6px',
+              background: 'var(--warning, #b45309)',
+              color: 'white',
+              fontSize: '14px',
+            }}
+          >
+            <div>
+              <strong>Live updates disconnected.</strong>
+              {' '}
+              Automatic reconnection was abandoned after repeated failures.
+            </div>
+            <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                data-testid="ws-gave-up-retry"
+                disabled={retrying}
+                onClick={async () => {
+                  setRetrying(true);
+                  try {
+                    await retryConnection();
+                  } finally {
+                    setRetrying(false);
+                  }
+                }}
+                style={{
+                  background: 'white',
+                  color: 'var(--warning, #b45309)',
+                  border: 'none',
+                  borderRadius: '4px',
+                  padding: '6px 12px',
+                  cursor: retrying ? 'wait' : 'pointer',
+                  fontWeight: 600,
+                }}
+              >
+                {retrying ? 'Retrying…' : 'Retry connection'}
+              </button>
+              <button
+                type="button"
+                data-testid="ws-gave-up-dismiss"
+                aria-label="Dismiss connection warning"
+                onClick={() => setGaveUpDismissed(true)}
+                style={{
+                  background: 'transparent',
+                  color: 'white',
+                  border: '1px solid rgba(255,255,255,0.6)',
+                  borderRadius: '4px',
+                  padding: '6px 12px',
+                  cursor: 'pointer',
+                }}
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* WebSocket connection status - only show when connected or actively reconnecting */}
         {isAuthenticated && !isLoginPage && !hasGivenUp && (
           <div className="connection-status" style={{

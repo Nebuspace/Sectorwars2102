@@ -5,6 +5,7 @@ import { websocketService, WebSocketEvents } from '../services/websocket';
 interface WebSocketContextValue {
   isConnected: boolean;
   hasGivenUp: boolean;
+  retryConnection: () => Promise<void>;
   subscribe: <K extends keyof WebSocketEvents>(
     event: K,
     handler: WebSocketEvents[K]
@@ -95,9 +96,23 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     websocketService.send(event, data);
   }, []);
 
+  const retryConnection = useCallback(async () => {
+    setHasGivenUp(false);
+    try {
+      await websocketService.retryConnection();
+      setIsConnected(websocketService.isConnected());
+      setHasGivenUp(websocketService.hasGivenUp());
+    } catch (error) {
+      console.warn('WebSocket manual retry failed:', error);
+      setIsConnected(false);
+      setHasGivenUp(websocketService.hasGivenUp());
+    }
+  }, []);
+
   const value: WebSocketContextValue = {
     isConnected,
     hasGivenUp,
+    retryConnection,
     subscribe,
     unsubscribe,
     send
