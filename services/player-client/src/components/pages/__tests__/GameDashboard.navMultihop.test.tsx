@@ -467,6 +467,11 @@ describe('GameDashboard — NAV multi-hop known-graph feed', () => {
   // under full-suite parallel CPU contention -- well past vitest's 5s
   // default. Generous explicit timeout below; this is real physics work,
   // not a hang.
+  // Observed ~18.3s under full-suite `-n auto` parallel contention against the
+  //  old 20s budget (intermittent false-fail); raised to 40s for >2x headroom.
+  //  The frame-count (<=121) and node-cap (<=150) assertions are deterministic --
+  //  only wall-clock is contention-sensitive, so this widens the window without
+  //  weakening any check.
   it('caps rendered nodes at the util ceiling (150) and settles the force layout within its ~120-frame budget for a 300-known-sector graph', async () => {
     // Star graph: current sector 100 directly connected to 299 neighbors,
     // all at depth 1 -- well within the default depth cap, so only the
@@ -506,5 +511,5 @@ describe('GameDashboard — NAV multi-hop known-graph feed', () => {
     // small warm-up cycle) is the true, deterministic ceiling here, not a
     // fudge factor.
     expect(frames).toBeLessThanOrEqual(121);
-  }, 20000);
+  }, 40000);
 });

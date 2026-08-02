@@ -30,6 +30,17 @@
  * (instead of an inert `<div/>`) so the scanActive wiring is provable, and a
  * mutable autopilotState (instead of a fixed literal) so the ALL STOP
  * chip's in-transit condition can vary per test.
+ *
+ * WO-HUD-SHIPTYPE (sector-move, Max ruled 2026-07-19) AMENDMENT: the sector
+ * NUMBER moved back down here from the status bar's LocationDropdown
+ * trigger ("not in both, entirely down") -- a SECOND, UNCONDITIONAL `.loc`
+ * chip ("Sector N", via sector_number-or-sector_id) now sits beside the
+ * region chip. This partially reverses item 1's "single region-flavor
+ * chip" framing above (that text is left as historical record of WHY the
+ * sector-name/HAZARD/NEBULA chips are still gone -- only the sector-NUMBER
+ * chip is back, not those). The two tests below that pinned "region chip
+ * only" are updated accordingly; every other test in this file is
+ * unaffected (none of them assert on `.locrow .loc` chip counts/text).
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -230,7 +241,7 @@ describe('GameDashboard — locrow + HudChip retirement + SCAN relocation (WO-UI
     await flush();
   };
 
-  it('renders the .locrow region-flavor chip only — no sector-name/HAZARD/NEBULA chips', async () => {
+  it('renders the .locrow region-flavor chip + sector-number chip — no sector-NAME/HAZARD/NEBULA chips', async () => {
     await mount();
 
     const locrow = container.querySelector('.locrow');
@@ -238,15 +249,16 @@ describe('GameDashboard — locrow + HudChip retirement + SCAN relocation (WO-UI
     const chips = Array.from(locrow!.querySelectorAll('.loc'));
     const chipText = chips.map((c) => c.textContent);
 
-    // The one surviving informational chip: the region TYPE display-name
-    // (WO-T1D-LANEB), derived from region_type ("terran_space" ->
-    // "Terran Space") -- never the dev-seeded region_name ("The Frontier"
-    // on this fixture, which must NOT appear).
-    expect(chipText).toEqual(['Terran Space']);
+    // Two surviving informational chips: the region TYPE display-name
+    // (WO-T1D-LANEB, "terran_space" -> "Terran Space", never the
+    // dev-seeded region_name "The Frontier"), and -- WO-HUD-SHIPTYPE
+    // sector-move -- the sector NUMBER ("Sector 100", SECTOR_HAZARD's
+    // sector_number), region chip first per Max's ruled order.
+    expect(chipText).toEqual(['Terran Space', 'Sector 100']);
     expect(chipText).not.toContain('The Frontier');
 
-    // The sector-NAME chip ("Sol") is gone -- sector identity now lives
-    // only in the status bar's LocationDropdown (canon).
+    // The sector-NAME chip ("Sol") is still gone -- only the sector NUMBER
+    // came back, not a name/type chip.
     expect(chipText).not.toContain('Sol');
     // HAZARD is gone entirely -- Annunciator's own HAZARD segment is the
     // one surviving trigger for HazardAnalysisCard (untouched, out of this
@@ -261,17 +273,19 @@ describe('GameDashboard — locrow + HudChip retirement + SCAN relocation (WO-UI
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
-  it('locrow has NO chip at all for a NEBULA-type sector with no region (sector type + name are status-bar-only now)', async () => {
+  it('locrow has ONLY the sector-number chip for a NEBULA-type sector with no region (the sector chip is unconditional; region_type gates the region chip alone)', async () => {
     gameState = makeGameState({ currentSector: SECTOR_NEBULA });
     await mount();
 
     const locrow = container.querySelector('.locrow')!;
     const chipText = Array.from(locrow.querySelectorAll('.loc')).map((c) => c.textContent);
-    // region_type is null on this fixture (WO-T1D-LANEB: that's the chip's
-    // real gate now, not region_name), and the sector-name/NEBULA-type
-    // chips are retired -- the locrow renders with zero informational
-    // chips (still a valid, non-crashing empty state, no guessed label).
-    expect(chipText).toEqual([]);
+    // region_type is null on this fixture (WO-T1D-LANEB: that's the region
+    // chip's gate), so the region chip is absent -- but WO-HUD-SHIPTYPE's
+    // sector-number chip has no such gate. SECTOR_NEBULA spreads
+    // ...SECTOR_HAZARD and only overrides sector_id (101) -- sector_number
+    // is inherited unchanged (100), and the chip reads sector_number first
+    // (`?? sector_id`), so it renders "Sector 100" here, not 101.
+    expect(chipText).toEqual(['Sector 100']);
     expect(chipText).not.toContain('Veil');
     expect(chipText).not.toContain('NEBULA');
     expect(chipText).not.toContain('The Frontier');
