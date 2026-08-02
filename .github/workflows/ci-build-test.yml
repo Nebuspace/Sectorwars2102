@@ -91,9 +91,18 @@ jobs:
         # type-check gate is already inline here, unlike player-client.
         run: npm run build
 
-      # No test step: admin-ui has zero vitest/jsdom/RTL test runner today
-      # (Playwright e2e only, which needs a live stack). Gated behind
-      # Max-approved WO-QTI-ADMINUI-TEST-INFRA.
+      # WO-ADM-SMOKE-CI / #164: offline Playwright route-smoke (stubbed
+      # auth + API — no gameserver). Keeps the required check name
+      # `admin-ui (build)` stable for branch protection.
+      - name: Install Playwright Chromium
+        working-directory: services/admin-ui
+        run: npx playwright install --with-deps chromium
+
+      - name: Route-smoke (test:e2e:smoke)
+        working-directory: services/admin-ui
+        env:
+          CI: true
+        run: npm run test:e2e:smoke
 
   gameserver:
     name: gameserver (compile check + DB-free pytest)

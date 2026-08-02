@@ -6,6 +6,19 @@ interface LocationDropdownProps {
   children?: React.ReactNode;
 }
 
+// WO-HUD-SHIPTYPE (dropdown clean-name, Max ruled 2026-07-19): region_name
+// carries the dev-seeded galaxy-id prefix ("Stage2 Genesis R4 — Terran
+// Space") -- this line is the region NAME (the sector TYPE already has its
+// own row via sectorTypeLabel below, so this deliberately cleans the name
+// rather than swapping it for formatRegionType's type-flavor label). Strips
+// everything up to and including the LAST "— " (em-dash space) separator;
+// a real custom region name with no such separator passes through
+// unchanged -- the fallback IS the whole string, never a guess.
+const cleanRegionName = (name: string): string => {
+  const idx = name.lastIndexOf('— ');
+  return idx === -1 ? name : name.slice(idx + 2);
+};
+
 /**
  * LocationDropdown — the StatusBar's [◉ location ▾] chip + dropdown shell
  * (WO-UI0-STATUSBAR sub-part a, integrated at the serial mount step). Owns
@@ -96,6 +109,17 @@ const LocationDropdown: React.FC<LocationDropdownProps> = ({ children }) => {
     ? currentSector.type.replace(/_/g, ' ').toUpperCase()
     : null;
   const regionLabel = currentSector?.region_name;
+  // WO-HUD-SHIPTYPE (sector-move, Max ruled 2026-07-19; PINNED icon-only):
+  // the sector NUMBER moved down to the windshield's always-visible
+  // `.locrow` glass chip (GameDashboard.tsx) -- "not in both, entirely
+  // down". With region+sector now both living there, ANY text label left
+  // on this collapsed trigger (sector type OR region) reads as redundant
+  // top-bar clutter -- the trigger is now ICON-ONLY (`◉ ▾`, see the
+  // markup below), an `aria-label="Location"` on the button supplies the
+  // accessible name the now-absent text label used to give it. The opened
+  // PANEL below is otherwise unchanged -- sectorLabel/sectorTypeLabel still
+  // render there exactly as before; regionLabel now renders through
+  // `cleanRegionName()` (dropdown clean-name amendment, below).
 
   return (
     <div className="sb-location" ref={containerRef}>
@@ -114,9 +138,9 @@ const LocationDropdown: React.FC<LocationDropdownProps> = ({ children }) => {
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
         aria-controls="sb-location-panel"
+        aria-label="Location"
       >
         <span className="sb-chip-icon" aria-hidden="true">◉</span>
-        <span className="sb-location-text">{sectorLabel}</span>
       </button>
       {open && (
         <div
@@ -130,7 +154,7 @@ const LocationDropdown: React.FC<LocationDropdownProps> = ({ children }) => {
           <div className="sb-location-header">
             <div className="sb-location-header-sector">{sectorLabel}</div>
             {sectorTypeLabel && <div className="sb-location-header-type">{sectorTypeLabel}</div>}
-            {regionLabel && <div className="sb-location-header-region">{regionLabel}</div>}
+            {regionLabel && <div className="sb-location-header-region">{cleanRegionName(regionLabel)}</div>}
             <CitizenshipBadge regionId={currentSector?.region_id} regionName={currentSector?.region_name} />
             {landedPlanet && (
               <div className="sb-location-header-scene">

@@ -197,15 +197,15 @@ export interface ActivityLogEntry {
 }
 
 export interface PlayerMetrics {
-  total_active_players: number;
-  total_credits_circulation: number;
-  average_session_time: number;
-  new_players_today: number;
-  player_retention_rate: number;
-  players_online_now: number;
-  total_players: number;
-  banned_players: number;
-  suspicious_activity_alerts: number;
+  total_active_players: number | null;
+  total_credits_circulation: number | null;
+  average_session_time: number | null;
+  new_players_today: number | null;
+  player_retention_rate: number | null;
+  players_online_now: number | null;
+  total_players: number | null;
+  banned_players: number | null;
+  suspicious_activity_alerts: number | null;
 }
 
 export interface ValidationError {

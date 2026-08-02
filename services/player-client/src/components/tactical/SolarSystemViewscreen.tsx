@@ -1279,6 +1279,54 @@ function easeToward(
   };
 }
 
+/** The player marker's in-flight Travel-Here glide: a straight leg from
+ *  screen point `from` to `to`, started at `startMs`. Null = parked. */
+export interface SelfTravel {
+  from: { x: number; y: number };
+  to: { x: number; y: number };
+  startMs: number;
+}
+
+/** One frame's resolved self-marker anchor + heading, plus whether the glide
+ *  finished on THIS call (so the caller commits the parked base/heading into
+ *  its refs). Pure + exported so the CRUISE→PARK transition (WO-SOLAR-
+ *  MOVEMENT fix below) is unit-testable without a canvas/RAF harness. */
+export interface SelfMarkerResolution {
+  base: { x: number; y: number };
+  /** Heading to draw this frame, or null (caller falls back to the ambient
+   *  idle-drift angle — only ever true before the FIRST Travel-Here). */
+  heading: number | null;
+  justParked: boolean;
+}
+
+/** Resolves the player marker's screen anchor + heading for one frame,
+ *  mirroring the NPC dockCycle's CRUISE→DWELL discipline (see below): while
+ *  a Travel-Here leg is in flight, ease the position via smoothstep-over-
+ *  clock (`easeToward`) and hold the heading at the constant leg direction;
+ *  once arrived, FREEZE both at the parked values.
+ *
+ *  Bug this fixes (WO-SOLAR-MOVEMENT, Max live-driving report): the previous
+ *  code let the heading fall back to shipPos()'s wall-clock idle-drift angle
+ *  the instant a glide finished. That angle has nothing to do with the leg
+ *  just flown — it snapped to whatever the ambient bob formula produced at
+ *  that exact millisecond, which read as the marker "reorienting backwards
+ *  and firing its jet in place" right after arrival. Freezing `heading` at
+ *  the leg's direction (like dockCycle's DWELL phase holds its approach
+ *  angle) removes that discontinuity — the marker settles pointed the way
+ *  it arrived, with no separate in-place retrograde flip. */
+export function resolveSelfMarker(
+  travel: SelfTravel | null,
+  parkedBase: { x: number; y: number },
+  parkedHeading: number | null,
+  durMs: number,
+  now: number
+): SelfMarkerResolution {
+  if (!travel) return { base: parkedBase, heading: parkedHeading, justParked: false };
+  const { pt, done } = easeToward(travel.from, travel.to, travel.startMs, durMs, now);
+  const heading = Math.atan2(travel.to.y - travel.from.y, travel.to.x - travel.from.x);
+  return { base: pt, heading, justParked: done };
+}
+
 type ShipMotion = { x: number; y: number; angle: number; docked: boolean };
 type DockPoint = { x: number; y: number; kind: string };
 
@@ -7804,7 +7852,13 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   // (right-click → Travel). PURELY DECORATIVE — no real intrasystem position/
   // maneuver model; see drawScene's selfMarker param + travelMarkerTo below.
   const selfBaseRef = useRef<{ x: number; y: number }>({ x: -1, y: -1 });
-  const selfTravelRef = useRef<{ from: { x: number; y: number }; to: { x: number; y: number }; startMs: number } | null>(null);
+  const selfTravelRef = useRef<SelfTravel | null>(null);
+  // Parked heading (WO-SOLAR-MOVEMENT): frozen at the last leg's direction
+  // once a Travel-Here glide finishes, so rest never reverts to shipPos()'s
+  // wall-clock idle-drift angle — see resolveSelfMarker's doc comment. Null
+  // until the first Travel-Here (falls back to the idle-drift angle, same
+  // as pre-fix behavior, until the marker has ever actually traveled).
+  const selfHeadingRef = useRef<number | null>(null);
 
   // Orbital closeup: when set, the windshield zooms to a single planet. The
   // body snapshot + the clicked screen geometry (fromX/Y/R) are captured on
@@ -7921,20 +7975,18 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     if (selfBaseRef.current.x < 0) {
       selfBaseRef.current = { x: selfPlace.baseX, y: selfPlace.baseY };
     }
-    let selfBase = selfBaseRef.current;
-    let travelAngle: number | null = null;
-    const travel = selfTravelRef.current;
-    if (travel) {
-      const { pt, done } = easeToward(travel.from, travel.to, travel.startMs, 900, Date.now());
-      selfBase = pt;
-      travelAngle = Math.atan2(travel.to.y - travel.from.y, travel.to.x - travel.from.x);
-      if (done) {
-        selfBaseRef.current = travel.to;
-        selfTravelRef.current = null;
-      }
+    const resolved = resolveSelfMarker(
+      selfTravelRef.current, selfBaseRef.current, selfHeadingRef.current, 900, Date.now()
+    );
+    if (resolved.justParked) {
+      // Commit the parked base + heading (WO-SOLAR-MOVEMENT) so rest reads
+      // from these frozen values instead of shipPos()'s idle-drift angle.
+      selfBaseRef.current = resolved.base;
+      selfHeadingRef.current = resolved.heading;
+      selfTravelRef.current = null;
     }
-    const selfMotion = shipPos({ ...selfPlace, baseX: selfBase.x, baseY: selfBase.y }, w, h, t);
-    const selfMarker = { x: selfMotion.x, y: selfMotion.y, angle: travelAngle ?? selfMotion.angle };
+    const selfMotion = shipPos({ ...selfPlace, baseX: resolved.base.x, baseY: resolved.base.y }, w, h, t);
+    const selfMarker = { x: selfMotion.x, y: selfMotion.y, angle: resolved.heading ?? selfMotion.angle };
 
     drawScene(
       ctx, w, h, sectorId, systemRef.current, t,
@@ -7989,6 +8041,7 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     // continuity the game has no model for).
     selfBaseRef.current = { x: -1, y: -1 };
     selfTravelRef.current = null;
+    selfHeadingRef.current = null;
   }, [sectorId, scene]);
 
   // ---- Detect ships entering/leaving the sector → warp-in / warp-out streaks ----

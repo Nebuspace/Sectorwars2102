@@ -159,6 +159,7 @@ services:
       - ENVIRONMENT=${ENVIRONMENT:-development}
       - JWT_SECRET=${JWT_SECRET}
       - SECRET_KEY=${SECRET_KEY}
+      - ARIA_ENCRYPTION_KEY=${ARIA_ENCRYPTION_KEY}
       - ADMIN_USERNAME=${ADMIN_USERNAME}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
       - DOCKER_HOST=unix:///var/run/docker.sock
@@ -175,6 +176,12 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - AI_DIALOGUE_ENABLED=${AI_DIALOGUE_ENABLED:-true}
+      # NPC scheduler master switch (Loops A/B/C + startup seeding/repair).
+      # config.py defaults FALSE and compose never forwarded the var, so the
+      # scheduler could NEVER start on a checked-in config (census defect,
+      # ruled GO 2026-07-10). Default stays false -- prod-static intent
+      # preserved; each environment opts in via its own env (stage sets true).
+      - NPC_SCHEDULER_ENABLED=${NPC_SCHEDULER_ENABLED:-false}
       # Duration compression for dev (1.0 in prod): construction days,
       # grace windows, slip tenures, takeover months all scale by this
       - GAME_TIME_SCALE=${GAME_TIME_SCALE:-1.0}
@@ -222,6 +229,7 @@ services:
       - SERVICE_TYPE=central-nexus
       - REGION_ID=central-nexus
       - JWT_SECRET=${JWT_SECRET}
+      - ARIA_ENCRYPTION_KEY=${ARIA_ENCRYPTION_KEY}
       - BANG_VERSION=${BANG_VERSION:-1.3.3}
       - PAYPAL_CLIENT_ID=${PAYPAL_CLIENT_ID}
       - PAYPAL_CLIENT_SECRET=${PAYPAL_CLIENT_SECRET}
@@ -275,6 +283,7 @@ services:
       - REGION_OWNER_ID=${REGION_OWNER_ID}
       - BANG_VERSION=${BANG_VERSION:-1.3.3}
       - JWT_SECRET=${JWT_SECRET}
+      - ARIA_ENCRYPTION_KEY=${ARIA_ENCRYPTION_KEY}
       - CENTRAL_NEXUS_URL=http://central-nexus-server:8080
       - ENABLE_CROSS_REGIONAL_API=true
       - REGIONAL_ISOLATION=true
@@ -324,6 +333,21 @@ services:
       # (Vite proxy / nginx gateway), which works from any browser. Set
       # API_BASE_URL in the per-tier .env only when the API truly lives on a
       # different origin than the page.
+      # WARNING: this same-origin fallback relies on `||` (falsy) checks at the
+      # client call sites (player-client App.tsx / AuthContext.tsx) — a future
+      # `??` refactor there would treat "" as a real value and break it.
+      #
+      # DEV TIER: a host .env `API_BASE_URL`/`WS_BASE_URL` override (e.g. one
+      # copy-pasted from a stage config) renders straight into these two
+      # values for EVERY profile, including development — that class of bug
+      # once pointed the dev-host player-client at the stage API and it could
+      # not hydrate. docker-compose.dev.yml pins both to empty regardless of
+      # the host .env; the dev launcher MUST include it:
+      #   docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+      #     --profile development up -d
+      # Omitting `-f docker-compose.dev.yml` silently loses the pin — the
+      # player-client container logs a "[dev-tier]" line at startup showing
+      # what actually resolved; scripts/check-dev-tier-env.sh asserts it statically.
       - VITE_API_URL=${API_BASE_URL:-}
       - VITE_WS_URL=${WS_BASE_URL:-}
     restart: unless-stopped
@@ -362,6 +386,15 @@ services:
       - REACT_APP_API_BASE_URL=${API_BASE_URL:-http://localhost:8080}
       - REACT_APP_ENVIRONMENT=${ENVIRONMENT:-development}
       - REACT_APP_NEXUS_MODE=${NEXUS_MODE:-false}
+      # Same host-.env leak risk as player-client above (see that block's
+      # comment for the full story). Only two admin-ui call sites actually
+      # read VITE_API_URL today (LoginForm.tsx's debug test button,
+      # Dashboard.tsx — both via `|| ''` falsy fallback); the primary
+      # login/dashboard/websocket flows use same-origin relative paths /
+      # window.location and ignore these two vars entirely. Still pinned in
+      # docker-compose.dev.yml for the dev tier, for consistency and because
+      # a future call site could start reading these without re-auditing
+      # every dev-host .env for a stale API_BASE_URL first.
       - VITE_API_URL=${API_BASE_URL:-http://localhost:8080}/api/v1
       - VITE_WS_URL=${WS_BASE_URL:-ws://localhost:8080}/ws
       # When the gateway publishes admin-ui under /admin/ (stage/prod),
