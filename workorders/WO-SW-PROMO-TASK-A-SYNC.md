@@ -64,3 +64,13 @@ CI on PR + STATUS disposition table. `live-prove`: n/a for sync itself; Task B m
 ## Serialization
 
 If `WO-P9-NPC-CRASH-WATERMARK` (#163) is in flight: **park it** (`HOLD` / STATUS parked) until Task A Accepts — same seat cannot own two exclusive feat-mutating lanes; Task A is the priority Max just unblocked.
+
+## Ratified amendments (impl-sectorwars 2026-08-02 · hub folded)
+
+- **A1:** Treat `.github/workflows/ci-build-test.yml` with safety-list care (personal resolve + disposition note).
+- **A2:** If feat deliberately loosened a scope vs master, STATUS callout + explicit choice — no silent re-tighten.
+- **A3:** Every rewritten RBAC assertion demonstrated RED (break production line) in STATUS.
+- **A4:** After lock regen, diff vs both parents; call out major-version movement.
+- **A5:** Baseline every gate on `feat` **before** merging master; pre-existing red = finding, not Accept blocker.
+
+**Status:** EXECUTE (both seats ratified).
