@@ -59,8 +59,24 @@ jobs:
       # into failures is a CI-policy change that needs its own decision.
       # Another pure static check, so it sits with check:tokens ahead of
       # Build/Test — fastest feedback first.
+      # NON-BLOCKING until the TypeScript 7 / @typescript-eslint incompatibility
+      # is resolved (WO-CI-ESLINT-TOOLCHAIN-CRASH). Both lockfiles pin
+      # typescript 7.0.2, but TS 7 removed the `ts.Extension` enum that
+      # @typescript-eslint/typescript-estree dereferences at import time
+      # (create-program/shared.js: `new Set([ts.Extension.Cjs, ...])`), so the
+      # parser throws "Cannot read properties of undefined (reading 'Cjs')"
+      # before it lints a single file. No published @typescript-eslint release
+      # supports TS 7 — latest (8.65.0) and canary both declare
+      # `peer typescript: ">=4.8.4 <6.1.0"`. The `--legacy-peer-deps` install
+      # above is what lets the incompatible pair install instead of erroring.
+      # Root cause is the TypeScript major, NOT an ESLint version mismatch:
+      # admin-ui pins eslint 10.6.0 and crashes identically.
+      # Flip this back to blocking once the toolchain supports TS 7 (or once
+      # typescript is downgraded to ^6.0.3 — the codebase typechecks clean
+      # under 6.0.3, so that path is open and is the standing recommendation).
       - name: Lint
         working-directory: services/player-client
+        continue-on-error: true
         run: npm run lint
 
       - name: Build
@@ -103,8 +119,14 @@ jobs:
       # Measured after that fix: 33 problems, 0 errors, exit 0 — so, like
       # player-client's, this step gates *new* error-level regressions only
       # and is not `--max-warnings`.
+      # NON-BLOCKING for the same reason as player-client's Lint step above —
+      # see that comment for the full diagnosis. This job is the proof that the
+      # cause is TypeScript 7, not ESLint: it pins eslint 10.6.0 (the version
+      # that lints green locally) and still crashes, because it shares the
+      # typescript 7.0.2 pin.
       - name: Lint
         working-directory: services/admin-ui
+        continue-on-error: true
         run: npm run lint
 
       - name: Build
