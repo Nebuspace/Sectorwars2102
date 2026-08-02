@@ -98,6 +98,15 @@ jobs:
         # eslint 10.x ERESOLVE conflict as player-client.
         run: npm install --legacy-peer-deps --no-save
 
+      # Joins the lint gate now that the two error-level findings are gone
+      # (dead `mfaSessionToken` provider state + an unescaped apostrophe).
+      # Measured after that fix: 33 problems, 0 errors, exit 0 — so, like
+      # player-client's, this step gates *new* error-level regressions only
+      # and is not `--max-warnings`.
+      - name: Lint
+        working-directory: services/admin-ui
+        run: npm run lint
+
       - name: Build
         working-directory: services/admin-ui
         # admin-ui's build script is `tsc --noEmit && vite build` — the

@@ -34,7 +34,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [mfaSessionToken, setMfaSessionToken] = useState<string | null>(null);
 
   /**
    * API URL Strategy: Use Relative URLs for Proxy Architecture
@@ -296,7 +295,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         // Check if MFA is required
         if (data.requires_mfa && data.session_token) {
           console.log('MFA required for user');
-          setMfaSessionToken(data.session_token);
+          // The session token is returned to the caller (LoginForm owns the
+          // authoritative copy) rather than mirrored into provider state.
           return { requiresMFA: true, sessionToken: data.session_token };
         }
 
@@ -413,9 +413,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         const userData = await userResponse.json();
         setUser(userData);
       }
-      
-      // Clear MFA session token
-      setMfaSessionToken(null);
     } catch (error) {
       console.error('MFA verification failed:', error);
       throw error;

@@ -162,7 +162,7 @@ Use these codes to access your account if you lose access to your authenticator 
           </div>
 
           <div className="manual-entry">
-            <p>Can't scan? Enter this code manually:</p>
+            <p>Can&apos;t scan? Enter this code manually:</p>
             <div className="secret-code">
               <code>{secret}</code>
               <button
