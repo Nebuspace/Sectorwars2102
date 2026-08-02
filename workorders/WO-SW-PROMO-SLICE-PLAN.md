@@ -1,6 +1,7 @@
 # WO-SW-PROMO-SLICE-PLAN — Schema-first feat→master slice plan
 
-**Status:** READY · EXECUTE · HIGH  
+**Status:** DONE · plan at `.samantha/plans/promo-slice-plan.md` · `impl-sectorwars` 2026-08-02  
+**Outcome:** No slicing required — the ~1090-file divergence is a **stale-merge-base artifact** (merge-base 2026-06-28, 100 commits behind master). Real novel delta is **107 files / 11,320 lines**, under both ceilings as a single PR. Promotion is gated on a **conflicted master→feat sync** (30 conflicts, 7 on the Max-gated safety list), not on a slice plan. CI-first and schema-first are both documented **n/a** — workflows are already byte-identical on master, and HEAD's alembic chain is a strict subset of master's.  
 **Seat:** `impl-sectorwars`  
 **Branch:** `wo/SW-PROMO-SLICE-PLAN`  
 **Repo / zone:** `Sectorwars2102` only  
