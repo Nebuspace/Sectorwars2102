@@ -5,6 +5,8 @@ import { websocketService, WebSocketEvents } from '../services/websocket';
 interface WebSocketContextValue {
   isConnected: boolean;
   hasGivenUp: boolean;
+  reconnectAttempt: number;
+  maxReconnectAttempts: number;
   retryConnection: () => Promise<void>;
   subscribe: <K extends keyof WebSocketEvents>(
     event: K,
@@ -35,6 +37,19 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
   const { user, token } = useAuth();
   const [isConnected, setIsConnected] = useState(false);
   const [hasGivenUp, setHasGivenUp] = useState(false);
+  const [reconnectAttempt, setReconnectAttempt] = useState(0);
+  const [maxReconnectAttempts, setMaxReconnectAttempts] = useState(
+    () => websocketService.getMaxReconnectAttempts()
+  );
+
+  const syncConnectionState = useCallback(() => {
+    setIsConnected(websocketService.isConnected());
+    setReconnectAttempt(websocketService.getReconnectAttempt());
+    setMaxReconnectAttempts(websocketService.getMaxReconnectAttempts());
+    if (websocketService.hasGivenUp()) {
+      setHasGivenUp(true);
+    }
+  }, []);
 
   useEffect(() => {
     if (user && token) {
@@ -44,39 +59,40 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
       websocketService.connect(token)
         .then(() => {
           setIsConnected(true);
+          setReconnectAttempt(websocketService.getReconnectAttempt());
+          setMaxReconnectAttempts(websocketService.getMaxReconnectAttempts());
           console.log('WebSocket connected successfully');
         })
         .catch(error => {
           console.warn('WebSocket connection unavailable:', error);
-          setIsConnected(false);
+          syncConnectionState();
         });
 
       // Listen for when reconnection is abandoned
       const unsubGaveUp = websocketService.onGaveUp(() => {
         setHasGivenUp(true);
+        setReconnectAttempt(websocketService.getReconnectAttempt());
+        setMaxReconnectAttempts(websocketService.getMaxReconnectAttempts());
       });
 
-      // Set up connection status monitoring
-      const checkConnection = setInterval(() => {
-        setIsConnected(websocketService.isConnected());
-        if (websocketService.hasGivenUp()) {
-          setHasGivenUp(true);
-        }
-      }, 5000);
+      // Poll often enough for reconnect attempt progress to update the chip.
+      const checkConnection = setInterval(syncConnectionState, 1000);
 
       return () => {
         clearInterval(checkConnection);
         unsubGaveUp();
         websocketService.disconnect();
         setIsConnected(false);
+        setReconnectAttempt(0);
       };
     } else {
       // Disconnect when user logs out
       websocketService.disconnect();
       setIsConnected(false);
       setHasGivenUp(false);
+      setReconnectAttempt(0);
     }
-  }, [user, token]);
+  }, [user, token, syncConnectionState]);
 
   const subscribe = useCallback(<K extends keyof WebSocketEvents>(
     event: K,
@@ -100,18 +116,20 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     setHasGivenUp(false);
     try {
       await websocketService.retryConnection();
-      setIsConnected(websocketService.isConnected());
+      syncConnectionState();
       setHasGivenUp(websocketService.hasGivenUp());
     } catch (error) {
       console.warn('WebSocket manual retry failed:', error);
-      setIsConnected(false);
+      syncConnectionState();
       setHasGivenUp(websocketService.hasGivenUp());
     }
-  }, []);
+  }, [syncConnectionState]);
 
   const value: WebSocketContextValue = {
     isConnected,
     hasGivenUp,
+    reconnectAttempt,
+    maxReconnectAttempts,
     retryConnection,
     subscribe,
     unsubscribe,

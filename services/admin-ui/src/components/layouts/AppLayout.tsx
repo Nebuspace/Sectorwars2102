@@ -6,7 +6,13 @@ import Sidebar from './Sidebar';
 
 const AppLayout: React.FC = () => {
   const { isLoading, isAuthenticated } = useAuth();
-  const { isConnected, hasGivenUp, retryConnection } = useWebSocket();
+  const {
+    isConnected,
+    hasGivenUp,
+    reconnectAttempt,
+    maxReconnectAttempts,
+    retryConnection,
+  } = useWebSocket();
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
   const [isMobile, setIsMobile] = useState<boolean>(false);
   const [loadingTimeout, setLoadingTimeout] = useState<boolean>(false);
@@ -206,7 +212,10 @@ const AppLayout: React.FC = () => {
 
         {/* WebSocket connection status - only show when connected or actively reconnecting */}
         {isAuthenticated && !isLoginPage && !hasGivenUp && (
-          <div className="connection-status" style={{
+          <div
+            className="connection-status"
+            data-testid="ws-connection-chip"
+            style={{
             position: 'fixed',
             bottom: '20px',
             right: '20px',
@@ -229,7 +238,11 @@ const AppLayout: React.FC = () => {
               display: 'inline-block',
               animation: isConnected ? 'pulse 2s infinite' : 'none'
             }}></span>
-            {isConnected ? 'Live Updates Active' : 'Reconnecting...'}
+            {isConnected
+              ? 'Live Updates Active'
+              : reconnectAttempt > 0
+                ? `Reconnecting… (${reconnectAttempt}/${maxReconnectAttempts})`
+                : 'Reconnecting…'}
           </div>
         )}
         <Outlet />
