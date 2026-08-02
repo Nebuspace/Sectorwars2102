@@ -31,7 +31,11 @@ test.describe('Admin UI route smoke (WO-ADM-ROUTE-SMOKE-E2E)', () => {
     for (const { path, title } of routes) {
       test(`${path} renders page title "${title}"`, async ({ page }) => {
         await page.goto(path, { waitUntil: 'domcontentloaded' });
-        await expect(page).toHaveURL(new RegExp(`${path.replace(/\//g, '\\/')}\\/?$`));
+        // Literal path match — avoid RegExp+partial escape (CodeQL js/incomplete-sanitization).
+        await expect(page).toHaveURL((url) => {
+          const pathname = url.pathname;
+          return pathname === path || pathname === `${path}/`;
+        });
         await expect(page.locator('h1.page-title')).toHaveText(title);
       });
     }
