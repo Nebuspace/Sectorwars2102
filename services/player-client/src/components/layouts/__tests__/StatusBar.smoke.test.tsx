@@ -211,6 +211,11 @@ describe('StatusBar — live-mount smoke', () => {
     expect(container.querySelector('.sb-name-chip')).not.toBeNull();
     expect(container.querySelector('.sb-location-chip')).not.toBeNull();
 
+    // WO-HUD-SHIPTYPE: this mock's currentShip is null (below) -- the
+    // ship-type badge still renders (never crashes on a null ship) with
+    // the same '—' placeholder IdentityTab uses for other missing fields.
+    expect(container.querySelector('.sb-shiptype-chip')?.textContent).toContain('—');
+
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
