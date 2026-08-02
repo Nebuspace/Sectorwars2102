@@ -78,6 +78,8 @@ class AdminWebSocketService {
   private reconnectTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private _gaveUp = false;
   private onGaveUpCallbacks: Set<() => void> = new Set();
+  /** E2E overlay for mid-reconnect chip (does not mutate real counters permanently). */
+  private _forceReconnecting: { attempt: number; max: number } | null = null;
 
   constructor() {
     this.setupEventListeners();
@@ -134,6 +136,26 @@ class AdminWebSocketService {
       this._gaveUp = true;
       this.onGaveUpCallbacks.forEach(cb => { try { cb(); } catch { /* ignore */ } });
       throw new Error('Admin WebSocket: forced gave-up (test hook)');
+    }
+
+    // E2E hook: force mid-reconnect progress (not connected, not gave-up).
+    const forceReconnect = typeof window !== 'undefined'
+      ? (window as unknown as {
+          __ADMIN_WS_FORCE_RECONNECTING__?: { attempt?: number; max?: number } | boolean;
+        }).__ADMIN_WS_FORCE_RECONNECTING__
+      : undefined;
+    if (forceReconnect) {
+      const attempt = typeof forceReconnect === 'object' && forceReconnect.attempt != null
+        ? forceReconnect.attempt
+        : 2;
+      const max = typeof forceReconnect === 'object' && forceReconnect.max != null
+        ? forceReconnect.max
+        : this.maxReconnectAttempts;
+      this.connected = false;
+      this._gaveUp = false;
+      this.shouldReconnect = false;
+      this._forceReconnecting = { attempt, max };
+      throw new Error('Admin WebSocket: forced reconnecting (test hook)');
     }
 
     if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) {
@@ -208,6 +230,7 @@ class AdminWebSocketService {
     this.shouldReconnect = false;
     this.stopHeartbeat();
     this.clearReconnectTimeout();
+    this._forceReconnecting = null;
     
     if (this.ws) {
       this.ws.close(1000, 'Client disconnect');
@@ -358,6 +381,16 @@ class AdminWebSocketService {
     return this._gaveUp;
   }
 
+  /** Current reconnect attempt (0 = not yet in a retry cycle). */
+  getReconnectAttempt(): number {
+    return this._forceReconnecting?.attempt ?? this.reconnectAttempts;
+  }
+
+  /** Configured max reconnect attempts (read-only for UI). */
+  getMaxReconnectAttempts(): number {
+    return this._forceReconnecting?.max ?? this.maxReconnectAttempts;
+  }
+
   /** Register a callback for when reconnection is abandoned */
   onGaveUp(cb: () => void): () => void {
     this.onGaveUpCallbacks.add(cb);
@@ -377,8 +410,10 @@ class AdminWebSocketService {
     this.reconnectDelay = 1000;
     this._gaveUp = false;
     this.shouldReconnect = true;
+    this._forceReconnecting = null;
     if (typeof window !== 'undefined') {
       delete (window as unknown as { __ADMIN_WS_FORCE_GAVE_UP__?: boolean }).__ADMIN_WS_FORCE_GAVE_UP__;
+      delete (window as unknown as { __ADMIN_WS_FORCE_RECONNECTING__?: unknown }).__ADMIN_WS_FORCE_RECONNECTING__;
     }
     if (this.ws) {
       try {
