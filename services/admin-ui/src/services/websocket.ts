@@ -129,6 +129,13 @@ class AdminWebSocketService {
       throw new Error('No authentication token provided');
     }
 
+    // E2E hook: force abandoned-reconnect path without a live gameserver.
+    if (typeof window !== 'undefined' && (window as unknown as { __ADMIN_WS_FORCE_GAVE_UP__?: boolean }).__ADMIN_WS_FORCE_GAVE_UP__) {
+      this._gaveUp = true;
+      this.onGaveUpCallbacks.forEach(cb => { try { cb(); } catch { /* ignore */ } });
+      throw new Error('Admin WebSocket: forced gave-up (test hook)');
+    }
+
     if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) {
       console.log('Admin WebSocket: Already connected or connecting');
       return;
@@ -355,6 +362,34 @@ class AdminWebSocketService {
   onGaveUp(cb: () => void): () => void {
     this.onGaveUpCallbacks.add(cb);
     return () => { this.onGaveUpCallbacks.delete(cb); };
+  }
+
+  /**
+   * Manual retry after gave-up: reset abandon state and attempt a fresh connect.
+   * Clears the Playwright force-gave-up hook if present so Retry can succeed offline.
+   */
+  async retryConnection(): Promise<void> {
+    if (!this.token) {
+      throw new Error('No authentication token available for WebSocket retry');
+    }
+    this.clearReconnectTimeout();
+    this.reconnectAttempts = 0;
+    this.reconnectDelay = 1000;
+    this._gaveUp = false;
+    this.shouldReconnect = true;
+    if (typeof window !== 'undefined') {
+      delete (window as unknown as { __ADMIN_WS_FORCE_GAVE_UP__?: boolean }).__ADMIN_WS_FORCE_GAVE_UP__;
+    }
+    if (this.ws) {
+      try {
+        this.ws.close(1000, 'Manual retry');
+      } catch {
+        /* ignore */
+      }
+      this.ws = null;
+    }
+    this.connected = false;
+    await this.connect(this.token);
   }
 
   // Compatibility method for smooth transition
