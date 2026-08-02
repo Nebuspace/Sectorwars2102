@@ -21,7 +21,11 @@ interface GenesisVenueProps {
   genesisError: string | null;
   genesisPurchasing: boolean;
   displayCredits: number;
-  genesisDevicePrice: number;
+  // Server-authoritative acquisition price (GET /genesis/available's
+  // device_acquisition_cost). Null until it loads, or if the fetch fails/omits
+  // the field — GRACEFUL-DEGRADE: render "—" and disable the purchase button
+  // rather than guess a price (#139).
+  genesisDevicePrice: number | null;
   purchaseGenesisDevice: () => void;
   onBack: () => void;
 }
@@ -147,14 +151,23 @@ const GenesisVenue: React.FC<GenesisVenueProps> = ({
               </ul>
             </div>
             <div className="device-footer">
-              <div className="device-price">{formatCredits(genesisDevicePrice)}</div>
+              <div className="device-price">{genesisDevicePrice != null ? formatCredits(genesisDevicePrice) : '—'}</div>
               <button
                 className="purchase-device-btn"
                 onClick={() => purchaseGenesisDevice()}
-                disabled={genesisPurchasing || displayCredits < genesisDevicePrice || !canHoldGenesis || !hasCapacity || genesisWeeklyRemaining === 0 || Boolean(genesisRepGate && !genesisRepGate.met)}
+                disabled={
+                  genesisPurchasing
+                  || genesisDevicePrice == null
+                  || displayCredits < genesisDevicePrice
+                  || !canHoldGenesis
+                  || !hasCapacity
+                  || genesisWeeklyRemaining === 0
+                  || Boolean(genesisRepGate && !genesisRepGate.met)
+                }
                 aria-describedby={genesisRepGate && !genesisRepGate.met ? 'genesis-rep-gate-note' : undefined}
               >
                 {genesisPurchasing ? 'Acquiring…'
+                  : genesisDevicePrice == null ? 'Price Unavailable'
                   : !canHoldGenesis ? 'Ship Incompatible'
                   : !hasCapacity ? 'Ship At Capacity'
                   : genesisRepGate && !genesisRepGate.met ? 'Reputation Too Low'

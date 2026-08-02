@@ -2,7 +2,7 @@
   "devDependencies": {
     "@playwright/test": "^1.61.0",
     "@types/axios": "^0.14.4",
-    "@types/node": "^25.9.1",
+    "@types/node": "^26.1.1",
     "@types/uuid": "^11.0.0",
     "dotenv": "^17.4.2"
   },

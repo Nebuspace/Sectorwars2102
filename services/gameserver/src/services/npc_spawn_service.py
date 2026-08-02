@@ -443,6 +443,13 @@ def _presence_entry(npc: NPCCharacter, ship: Ship) -> Dict[str, Any]:
     _update_player_presence write, plus ``is_npc: true`` so consumers can
     distinguish NPCs (the player_id key carries the NPCCharacter id, which
     will NOT resolve against the players table)."""
+    # Local import: presence_classification imports LAWFUL_TARGET_THRESHOLD
+    # from this module at its own top level, so importing it back up here
+    # must stay function-scoped to avoid a circular top-level import.
+    from src.services import presence_classification
+
+    archetype_name = npc.archetype.name if npc.archetype else None
+
     return {
         "player_id": str(npc.id),
         # Canon renders title before name (DATA_MODELS/npcs.md).
@@ -455,8 +462,17 @@ def _presence_entry(npc: NPCCharacter, ship: Ship) -> Dict[str, Any]:
         "is_npc": True,
         # Authoritative archetype (so the client colors law/raider/trader
         # without guessing from the ship name) + the trader scruples axis.
-        "archetype": npc.archetype.name if npc.archetype else None,
+        "archetype": archetype_name,
         "notoriety": npc.notoriety,
+        # Write-time mirror of the fair-game classification (WO-API-PHASE2
+        # Lane B6) — same defense-in-depth as archetype above; re-derived
+        # from the LIVE notoriety/archetype on every REST read by
+        # enrich_presence_with_live_pose, this is only the freshness
+        # guarantee for a consumer reading players_present raw. Archetype-
+        # first: pirates/police spawn with notoriety=None (it's exclusively
+        # the trader scruples axis), so npc_hostile needs the archetype to
+        # ever call a HOSTILE_RAIDER fair game.
+        "hostile": presence_classification.npc_hostile(npc.notoriety, archetype_name),
         # Live schedule fields — windshield/SSV motion reads these so contacts
         # don't all freeze as identical SLEEP glyphs until a later enrich pass.
         "activity": (

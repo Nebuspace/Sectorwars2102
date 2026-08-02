@@ -90,6 +90,10 @@ class AvailablePurchasesResponse(BaseModel):
     formation_hours: int
     tiers: dict
     reputation_gate: ReputationGate
+    # Flat one-time acquisition price for one Genesis Device (distinct from
+    # tiers.*.cost, the deploy sequence cost) — DRY-sourced from the same
+    # GENESIS_DEVICE_PRICE constant POST /player/genesis/purchase charges.
+    device_acquisition_cost: int
 
 
 class GenesisQuoteResponse(BaseModel):

@@ -2758,6 +2758,16 @@ class PlanetaryService:
                 "upgrading": is_upgrading,
                 "upgradingToLevel": upgrade.get("to") if is_upgrading else None,
                 "completionTime": upgrade.get("complete_at") if is_upgrading else None,
+                # WO-API-PHASE1 B4: server-authoritative cost for the NEXT
+                # level, computed via the EXACT fn upgrade_building charges
+                # (_calculate_upgrade_cost) — so the client's upgrade-cost
+                # preview can never drift from what Save actually charges
+                # (DRY; mirrors B3's defense pricing). None once the building
+                # is already at the server's level cap (no next level to price).
+                "nextUpgradeCost": (
+                    self._calculate_upgrade_cost(building_type, level, level + 1)
+                    if level < MAX_BUILDING_LEVEL else None
+                ),
             })
 
         return buildings
