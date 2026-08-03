@@ -75,8 +75,9 @@ const fmtCountdown = (
 };
 
 // Feature-detect the updated credit balance out of an action response —
-// accept returns remaining_balance, complete/abandon/post/cancel return
-// credits (contracts.py:266-274/:356-362/:413-418/:550-558/:617-622).
+// accept returns remaining_balance (contract_service.py:279-287);
+// complete/abandon/post/cancel return credits (:501-509 / :642-648 /
+// :1969-1977 / :2110-2116). Routes return those service dicts verbatim.
 // Locker deposits that auto-complete nest the same shape under complete_result.
 const creditsFromResponse = (result: unknown): number | null => {
   const body = asRecord(result);
@@ -101,11 +102,11 @@ const heldCommodityOnShip = async (commodity: string): Promise<number> => {
 
 const shortId = (id: string) => `#${id.slice(0, 8)}`;
 
-// PLAYER_POST_MIN_DEADLINE_HOURS (contract_service.py:81) — canon floor,
+// PLAYER_POST_MIN_DEADLINE_HOURS (contract_escrow_core.py:127) — canon floor,
 // mirrored client-side so the form fails fast instead of round-tripping.
 const MIN_DEADLINE_HOURS = 1;
 
-// WO-CONTRACT-1-INSURANCE. INSURANCE_PREMIUM_PCT (contract_service.py) —
+// WO-CONTRACT-1-INSURANCE. INSURANCE_PREMIUM_PCT (contract_insurance.py:72) —
 // mirrored client-side ONLY for the live premium preview before the user
 // commits; the server is authoritative and recomputes this exact math at
 // /insure time regardless of what the client shows.

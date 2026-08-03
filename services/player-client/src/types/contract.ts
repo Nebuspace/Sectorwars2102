@@ -1,9 +1,10 @@
 /**
- * Trade Contract types — mirrors gameserver/src/api/routes/contracts.py's
- * `_serialize_contract` shape and each write-action's response shape
- * exactly (contracts.py:30-52, :266-274, :356-362, :413-418, :550-558,
- * :617-622). See SYSTEMS/contracts.md for the canonical contract
- * lifecycle and the escrow table.
+ * Trade Contract types — mirrors gameserver `_serialize_contract`
+ * (contracts.py:50-86) and each write-action's response dict in
+ * contract_service (accept :279-287, complete :501-509, abandon :642-648,
+ * post_player_contract :1969-1977, cancel_player_contract :2110-2116).
+ * Routes return those service dicts verbatim. See SYSTEMS/contracts.md
+ * for the canonical contract lifecycle and the escrow table.
  */
 
 export type ContractIssuerType = 'npc' | 'player';
@@ -110,9 +111,9 @@ export interface ContractCancelResponse {
   credits: number;
 }
 
-/** POST /contracts/{id}/insure response (contract_service.insure). Claim-
- * filing (WO-1b-CLAIM-SAFETY) is deferred, design-gated -- no response
- * type for it yet. */
+/** POST /contracts/{id}/insure response (contract_insurance.insure
+ * :439-444). Claim-filing (WO-1b-CLAIM-SAFETY) is deferred, design-gated
+ * -- no response type for it yet. */
 export interface ContractInsureResponse {
   id: string;
   insurance_coverage_tier: ContractInsuranceCoverageTier;
@@ -120,7 +121,7 @@ export interface ContractInsureResponse {
   credits: number;
 }
 
-/** POST /contracts request body — PostContractRequest (contracts.py:96-143).
+/** POST /contracts request body — PostContractRequest (contracts.py:96-157).
  * WO-CONTRACT-4-BULK: `contract_type` is now a real field, restricted
  * server-side to `cargo_delivery` | `bulk_procurement` (the other 5
  * ContractType members carry NPC-generator-only pricing this route never
