@@ -3139,8 +3139,6 @@ async def get_ai_system_metrics(
         
         # Honest metrics: no AI prediction engine, model registry, or job queue
         # exists yet — only real ARIA interaction counts are reportable.
-        # (De-mocked: the previous hardcoded 3247/79.8/67.3/12/45 figures were
-        # fabrications presented as live telemetry.)
         total_aria_interactions = db.query(
             func.coalesce(func.sum(Player.aria_total_interactions), 0)
         ).scalar() or 0

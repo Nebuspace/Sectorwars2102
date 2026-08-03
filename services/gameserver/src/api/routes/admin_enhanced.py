@@ -19,16 +19,6 @@ from src.models.station import Station, StationClass, StationType, StationStatus
 from src.models.planet import Planet
 
 # Enhanced request schemas
-# DEPRECATED: EnhancedGalaxyConfig no longer used (zone-based generation removed)
-# class EnhancedGalaxyConfig(BaseModel):
-#     name: str
-#     total_sectors: int
-#     region_distribution: Dict[str, int]  # federation, border, frontier percentages
-#     density: Dict[str, float]  # port_density, planet_density, one_way_warp_percentage
-#     warp_tunnel_config: Dict[str, Any]  # min_per_region, max_per_region, stability_range
-#     resource_distribution: Dict[str, Dict[str, int]]  # min/max by region type
-#     hazard_levels: Dict[str, Dict[str, int]]  # min/max by region type
-
 class SectorUpdateRequest(BaseModel):
     name: Optional[str] = None
     type: Optional[str] = None
