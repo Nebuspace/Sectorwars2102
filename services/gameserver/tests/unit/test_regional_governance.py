@@ -857,7 +857,12 @@ class TestAccountAgeVoteGate:
 
     @pytest.fixture
     def mock_db(self):
-        return AsyncMock()
+        db = AsyncMock()
+        # Default: not HARD-flagged (blocks_vote → False). Age-gate tests
+        # exercise the created_at half; the multi-account half is covered in
+        # test_participation_weight.py.
+        db.run_sync = AsyncMock(return_value=False)
+        return db
 
     @pytest.mark.asyncio
     async def test_fresh_account_is_ineligible(self, mock_db):
