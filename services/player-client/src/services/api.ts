@@ -1194,6 +1194,15 @@ export const contractsAPI = {
       method: 'POST',
       body: JSON.stringify({ tier }),
     }),
+
+  // WO-CONTRACT-INSURANCE-ARBITRATION-SCOPE — acceptor files dispute on an
+  // expired (failed) contract within the 48h window (contracts.md:390).
+  // Server runs Tier-1 sync; unresolvable cases escalate to admin.
+  dispute: (contractId: string, body: { reason: string; evidence_snapshot?: string }) =>
+    apiRequest(`/api/v1/contracts/${contractId}/dispute`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 };
 
 // Storage lockers — multi-trip contract fulfillment (FEATURES/economy/storage-lockers.md).

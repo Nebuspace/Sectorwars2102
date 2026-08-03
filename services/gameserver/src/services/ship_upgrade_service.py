@@ -201,7 +201,9 @@ class ShipUpgradeService:
         "quantum_harvester": {
             "name": "Quantum Harvester",
             "description": "Harvests quantum particles from space, providing passive income",
-            "cost": 25000,
+            # CANON (sw2102-docs FEATURES/galaxy/quantum-resources.md): 50,000 cr.
+            # Prior 25,000 was initial-impl / 1:1 SHIP-MODS port — not a deliberate retune.
+            "cost": 50000,
             "compatible_ships": [ShipType.SCOUT_SHIP, ShipType.FAST_COURIER, ShipType.DEFENDER, ShipType.WARP_JUMPER],
             "effects": {"passive_income": 100}
         },
@@ -443,7 +445,9 @@ class ShipUpgradeService:
         },
         # --- ported from EQUIPMENT_DEFINITIONS (the 4 player equipment plug-ins) ---
         "harvester": {
-            "base_cost": 25000,
+            # CANON (quantum-resources.md): 50,000 cr — kept in lockstep with
+            # EQUIPMENT_DEFINITIONS["quantum_harvester"]["cost"].
+            "base_cost": 50000,
             "base_effects": {"passive_income": 100},
             # Mirrors quantum_harvester compatible_ships.
             "compatible_ships": [
@@ -1448,8 +1452,10 @@ class ShipUpgradeService:
         }
 
     def uninstall_equipment(self, ship_id: uuid.UUID, player_id: uuid.UUID, equipment_key: str) -> Dict[str, Any]:
-        """
-        Uninstall a piece of equipment from a ship. No credit refund.
+        """Uninstall equipment and refund ``int(catalog_cost × SALVAGE_FRACTION)``.
+
+        CANON (quantum-resources.md Quantum Field Harvester): removable, refunds
+        25% of purchase cost. Same salvage fraction as module remove_module.
         """
         ship, player, error = self._get_ship_and_player(ship_id, player_id)
         if error:
@@ -1466,6 +1472,8 @@ class ShipUpgradeService:
 
         eq_def = self.EQUIPMENT_DEFINITIONS.get(equipment_key, {})
         eq_name = eq_def.get("name", equipment_key)
+        cost = int(eq_def.get("cost", 0) or 0)
+        refund = int(cost * self.SALVAGE_FRACTION)
 
         # Remove from equipment_slots JSONB
         del ship.equipment_slots[equipment_key]
@@ -1475,16 +1483,22 @@ class ShipUpgradeService:
         if equipment_key == "quantum_harvester":
             ship.quantum_harvester_slot = False
 
+        if refund > 0:
+            player.credits += refund
+
         self.db.flush()
 
         logger.info(
-            f"Player {player_id} uninstalled {eq_name} from ship {ship.name} (no refund)"
+            "Player %s uninstalled %s from ship %s (refund %s credits)",
+            player_id, eq_name, ship.name, f"{refund:,}",
         )
 
         return {
             "success": True,
-            "message": f"{eq_name} uninstalled (no credit refund)",
+            "message": f"{eq_name} uninstalled (salvage refund {refund:,} cr)",
             "equipment": equipment_key,
+            "refund": refund,
+            "remaining_credits": player.credits,
         }
 
     def purchase_mining_laser_upgrade(
