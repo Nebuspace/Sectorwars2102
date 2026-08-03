@@ -47,12 +47,13 @@ def test_registry_names_match_canon_list():
 
 
 def test_registry_category_counts_match_canon_sections():
-    """8 core commodities / 4 strategic resources / 2 rare materials."""
+    """7 core commodities / 4 strategic resources / 3 rare materials
+    (precious_metals is Secondary rare mining drop, not core)."""
     by_category = {}
     for entry in RESOURCE_REGISTRY.values():
         by_category.setdefault(entry["category"], 0)
         by_category[entry["category"]] += 1
-    assert by_category == {CATEGORY_CORE: 8, CATEGORY_STRATEGIC: 4, CATEGORY_RARE: 2}
+    assert by_category == {CATEGORY_CORE: 7, CATEGORY_STRATEGIC: 4, CATEGORY_RARE: 3}
 
 
 @pytest.mark.parametrize(
@@ -92,14 +93,15 @@ def test_combat_drones_price_spans_both_canon_figures():
 
 
 def test_precious_metals_row_pinned(db: Session):
-    """WO-RES-PRECIOUS-METALS-SEED — priced mining drop, not safe-storable,
-    not production_rate regen; surfaces via the seeder + list route."""
+    """WO-RES-PRECIOUS-METALS-SEED — priced Secondary mining drop
+    (rare_material), not core_commodity, not safe-storable, not
+    production_rate regen; surfaces via the seeder + list route."""
     entry = RESOURCE_REGISTRY[ResourceType.PRECIOUS_METALS]
     expected = COMMODITY_BASE_PRICES["precious_metals"]
     lo, hi = expected["range"]
     assert entry["name"] == "precious_metals"
     assert entry["label"] == "Precious Metals"
-    assert entry["category"] == CATEGORY_CORE
+    assert entry["category"] == CATEGORY_RARE
     assert entry["base_price"] == expected["base"] == 130
     assert entry["price_range_min"] == lo == 80
     assert entry["price_range_max"] == hi == 180
@@ -111,6 +113,7 @@ def test_precious_metals_row_pinned(db: Session):
     row = db.query(Resource).filter(Resource.name == "precious_metals").first()
     assert row is not None
     assert row.type == ResourceType.PRECIOUS_METALS
+    assert row.category == CATEGORY_RARE
     assert row.base_price == 130
     assert row.price_range_min == 80
     assert row.price_range_max == 180

@@ -34,13 +34,13 @@ class ResourceType(enum.Enum):
 
     See /DOCS/STATUS/COMMODITY_NAMING_ANALYSIS.md for detailed analysis.
 
-    Categories:
-    - Core Commodities (8): Basic trading resources (incl. precious_metals)
+    Categories (registry category strings — see resource_registry_seeder):
+    - Core Commodities (7): Basic station-traded resources
     - Strategic Resources (4): Advanced gameplay materials
-    - Rare Materials (2): Endgame high-value materials
+    - Rare Materials (3): Endgame finds + precious_metals (Secondary mining drop)
     """
 
-    # Core Commodities (8)
+    # Core Commodities (7)
     # NOTE: BASIC_FOOD maps to "organics" in actual trading code
     # NOTE: TECHNOLOGY maps to "equipment" in actual trading code
     ORE = "ORE"
@@ -50,7 +50,6 @@ class ResourceType(enum.Enum):
     TECHNOLOGY = "TECHNOLOGY"  # Actual codebase uses: "equipment"
     EXOTIC_TECHNOLOGY = "EXOTIC_TECHNOLOGY"
     LUXURY_GOODS = "LUXURY_GOODS"
-    PRECIOUS_METALS = "PRECIOUS_METALS"
 
     # Strategic Resources (4)
     # NOTE: POPULATION maps to "colonists" in actual trading code
@@ -59,7 +58,9 @@ class ResourceType(enum.Enum):
     QUANTUM_CRYSTALS = "QUANTUM_CRYSTALS"
     COMBAT_DRONES = "COMBAT_DRONES"
 
-    # Rare Materials (2)
+    # Rare Materials (3) — PRECIOUS_METALS is CATEGORY_RARE in the seeder
+    # (priced Secondary mining drop); prismatic_ore / lumen_crystals unpriced.
+    PRECIOUS_METALS = "PRECIOUS_METALS"
     PRISMATIC_ORE = "PRISMATIC_ORE"
     PHOTONIC_CRYSTALS = "PHOTONIC_CRYSTALS"
 

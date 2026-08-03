@@ -48,15 +48,18 @@ Field provenance (do not invent — every value below traces to a source):
     key has been designed yet; a future UI pass can repoint icon without a
     schema change. Not a design decision, a placeholder.
 
-precious_metals (WO-RES-PRECIOUS-METALS-SEED): seeded as a core_commodity
-with COMMODITY_BASE_PRICES pricing. It is *not* in definitions.md's narrow
-"Rare Materials" subsection (that list is only prismatic_ore /
-lumen_crystals — super-rare finds with no credit price). precious_metals is
-separately canonical as a mining rare drop (FEATURES/economy/mining.md,
-ADR-0062 E-D1) and appears in market-pricing / trading / bang class-
-coverage tables. Earlier seeder revisions incorrectly treated "not in that
-narrow Rare Materials list" as "exclude from the registry"; that was a gap,
-not a code/docs divergence.
+precious_metals (WO-RES-PRECIOUS-METALS-SEED): seeded as rare_material
+(CATEGORY_RARE) with COMMODITY_BASE_PRICES pricing. mining.md lists it as a
+Secondary rare mining drop — not one of the 7 core tradeable commodities —
+so it must not use core_commodity (that category feeds
+RealtimeMarketDefaultsService.valid_commodities). It is *not* in
+definitions.md's narrow "Rare Materials" subsection (that list is only
+prismatic_ore / lumen_crystals — super-rare finds with no credit price);
+precious_metals is separately canonical as a priced mining rare drop
+(FEATURES/economy/mining.md, ADR-0062 E-D1) and appears in market-pricing /
+trading / bang class-coverage tables. Earlier seeder revisions incorrectly
+treated "not in that narrow Rare Materials list" as "exclude from the
+registry"; that was a gap, not a code/docs divergence.
 """
 
 import logging
@@ -84,9 +87,9 @@ def _core(commodity_key: str) -> Dict[str, Any]:
 # Canon resource registry (definitions.md:187-219 + precious_metals via
 # mining.md / ADR-0062 E-D1) keyed by ResourceType.
 # Declaration order mirrors the canon doc's three subsections; precious_metals
-# trails the classic 7 core commodities (priced mining drop, not Rare Materials).
+# sits with rare materials (priced Secondary mining drop, not core_commodity).
 RESOURCE_REGISTRY: Dict[ResourceType, Dict[str, Any]] = {
-    # --- Core trading commodities (8) ---------------------------------
+    # --- Core trading commodities (7) ---------------------------------
     ResourceType.ORE: {
         "name": "ore", "label": "Ore", "category": CATEGORY_CORE,
         **_core("ore"), "is_storable": True, "is_producible": True,
@@ -115,12 +118,6 @@ RESOURCE_REGISTRY: Dict[ResourceType, Dict[str, Any]] = {
         "name": "luxury_goods", "label": "Luxury Goods", "category": CATEGORY_CORE,
         **_core("luxury_goods"), "is_storable": False, "is_producible": True,
     },
-    ResourceType.PRECIOUS_METALS: {
-        "name": "precious_metals", "label": "Precious Metals", "category": CATEGORY_CORE,
-        # ADR-0062 E-D1 / mining.md — rare mining drop, station-traded price
-        # band; not citadel-safe, not production_rate regen.
-        **_core("precious_metals"), "is_storable": False, "is_producible": False,
-    },
     # --- Strategic resources (4) ---------------------------------------
     ResourceType.POPULATION: {
         "name": "colonists", "label": "Colonists", "category": CATEGORY_STRATEGIC,
@@ -146,7 +143,15 @@ RESOURCE_REGISTRY: Dict[ResourceType, Dict[str, Any]] = {
         "base_price": None, "price_range_min": None, "price_range_max": None,
         "is_storable": False, "is_producible": False,
     },
-    # --- Rare materials (2) ---------------------------------------------
+    # --- Rare materials (3) — prismatic_ore / lumen_crystals (unpriced) +
+    # precious_metals (priced Secondary mining drop per mining.md) ----------
+    ResourceType.PRECIOUS_METALS: {
+        "name": "precious_metals", "label": "Precious Metals", "category": CATEGORY_RARE,
+        # ADR-0062 E-D1 / mining.md — Secondary rare mining drop with a
+        # station-traded price band; not citadel-safe, not production_rate
+        # regen. CATEGORY_RARE so it does not leak into valid_commodities.
+        **_core("precious_metals"), "is_storable": False, "is_producible": False,
+    },
     ResourceType.PRISMATIC_ORE: {
         "name": "prismatic_ore", "label": "Prismatic Ore", "category": CATEGORY_RARE,
         # No canon credit price — ~1 in 10,000 asteroid find, not station-traded.
