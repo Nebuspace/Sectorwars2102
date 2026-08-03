@@ -1666,12 +1666,13 @@ class ShipUpgradeService:
             return {"success": False, "message": f"Unknown module: {module_class} Mk{tier}"}
 
         # --- deferred equipment-family guard (reviewer LOW#2 fix) ---
-        # harvester/lander/mining/tractor bake into Ship.modules["_baked"] but their
-        # effect is NOT yet wired to its equipment_slots consumer (the deferred MED) —
+        # lander/mining/tractor bake into Ship.modules["_baked"] but their effect
+        # is NOT yet wired to its equipment_slots consumer (the deferred MED) —
         # so installing one would CHARGE 20-40k cr for a runtime-INERT module (a
         # pay-for-nothing trap). Block install until the consumer-wiring follow-up
         # lands; the family stays catalog-LISTED (get_ship_modules / the UI can show
         # it as "coming soon") so it surfaces for when it's unblocked.
+        # harvester: residual (2) wired get_passive_income to _baked — NOT deferred.
         if module_class in _EQUIPMENT_FAMILY_DEFERRED:
             return {
                 "success": False,
@@ -1790,10 +1791,10 @@ class ShipUpgradeService:
             "remaining_credits": player.credits,
             "updated_stats": updated_stats,
         }
-        # EQUIPMENT-FAMILY families (harvester/lander/mining/tractor) are baked but
-        # NOT yet wired to their equipment_slots consumers — see the class-level
-        # note + _apply_module_effects. Surface the deferral so the caller/UI can
-        # warn the player the module is install-but-inert.
+        # lander/mining/tractor are baked but NOT yet wired to their equipment_slots
+        # consumers — see the class-level note + _apply_module_effects. Surface the
+        # deferral so the caller/UI can warn the player the module is install-but-inert.
+        # harvester is live (residual 2) and is not in _EQUIPMENT_FAMILY_DEFERRED.
         if module_class in _EQUIPMENT_FAMILY_DEFERRED:
             result["consumer_inert"] = True
             result["consumer_note"] = (
