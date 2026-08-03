@@ -26,7 +26,7 @@ from src.services.ai_dialogue_service import (
 )
 from src.services.ai_provider_service import get_ai_provider_service, ProviderType
 from src.services.nickname_validation_service import validate_nickname
-from src.utils.guard_personalities import get_guard_for_session
+from src.utils.guard_personalities import get_guard_for_session, personality_threshold_modifier
 from src.core.ship_specifications_seeder import SHIP_SPECIFICATIONS
 
 logger = logging.getLogger(__name__)
@@ -1543,14 +1543,12 @@ Description: {ship_specs.get('description', 'N/A')}
         else:
             base_threshold = ship_config.weak_threshold
 
-        # Apply guard personality modifier to threshold
-        # Friendly guards are easier (lower threshold)
-        # Strict/paranoid guards are harder (higher threshold)
-        personality_modifier = 0.0
-        if session.guard_base_suspicion <= 0.35:  # Friendly Veteran
-            personality_modifier = -0.10  # 10% easier
-        elif session.guard_base_suspicion >= 0.60:  # Strict Rule-Follower or Paranoid Newbie
-            personality_modifier = +0.10  # 10% harder
+        # Apply guard personality modifier to threshold.
+        # Trait-keyed map (WO-FIRSTLOGIN-NIGHTSHIFTER): Night-Shifter @ 0.40
+        # was skipped by the old <=0.35 / >=0.60 suspicion buckets.
+        personality_modifier = personality_threshold_modifier(
+            session.guard_trait, session.guard_base_suspicion
+        )
 
         threshold = base_threshold + personality_modifier
         threshold = max(0.2, min(0.95, threshold))  # Clamp between 0.2 and 0.95
