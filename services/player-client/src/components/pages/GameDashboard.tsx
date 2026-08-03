@@ -34,6 +34,7 @@ import { projectedWarpBearing, subscribeWarpDepart, WARP_TURN_MS } from '../../s
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { TurnsIcon } from '../icons/TurnsIcon';
 import { formatRegionType } from '../../utils/formatters';
+import { movementAlertVariant, movementAlertHeader, shouldShowMovementEncounters } from './movementAlertPresentation';
 import './game-dashboard.css';
 import './cockpit.css';
 import '../tactical/tactical-layout.css';
@@ -2414,10 +2415,10 @@ const GameDashboardInner: React.FC = () => {
         )}
 
         {movementResult && (
-          <div className="cockpit-alert success">
-            <div className="alert-header">✅ NAVIGATION COMPLETE</div>
+          <div className={`cockpit-alert ${movementAlertVariant(movementResult)}`} role="status">
+            <div className="alert-header">{movementAlertHeader(movementResult)}</div>
             <div className="alert-message">{movementResult.message}</div>
-            {movementResult.encounters && movementResult.encounters.length > 0 && (
+            {shouldShowMovementEncounters(movementResult) && movementResult.encounters && movementResult.encounters.length > 0 && (
               <div className="encounter-log">
                 <div className="log-header">ENCOUNTER LOG:</div>
                 <ul className="encounter-list">
