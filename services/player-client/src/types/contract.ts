@@ -60,6 +60,9 @@ export interface ContractDTO {
   insurance_coverage_tier: ContractInsuranceCoverageTier | null;
   insurance_premium_paid: number | null;
   insurance_claim_filed: boolean;
+  /** WO-CONTRACT-2-DISPUTE / WO-CONTRACT-INSURANCE-ARBITRATION-SCOPE */
+  dispute_filed_at?: string | null;
+  escalated_to_admin?: boolean;
 }
 
 export interface ContractMineResponse {
