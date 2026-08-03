@@ -90,6 +90,7 @@ from src.models.medal import Medal, PlayerMedal
 from src.models.bounty_claim import BountyClaim, BountyClaimStatus
 from src.models.region_invite import RegionInvite, RegionInviteStatus, RegionInviteRedemption
 from src.models.claim_license import ClaimLicense
+from src.models.mining_harvest import MiningHarvest, MiningHarvestStatus
 from src.models.route_optimization_run import RouteOptimizationRun
 from src.models.pirate_holding import PirateHolding, PirateHoldingTier
 from src.models.pirate_kill_log import PirateKillLog, PirateKillDisposition

@@ -156,10 +156,9 @@ class ShipStatus(enum.Enum):
     # the deadline.
     HARMONIZING = "HARMONIZING"
     # Ship is harvesting an ASTEROID_FIELD sector (FEATURES/economy/mining.md;
-    # DATA_MODELS/ships.md). Momentary: the harvest resolves synchronously in
-    # one request, so MINING is set and reset to IN_SPACE inside the same
-    # transaction. While MINING the hull is stationary and PvP-vulnerable
-    # (the interrupt-refund window is a deferred enhancement).
+    # DATA_MODELS/ships.md; WO-MINING-ASYNC-HARVEST). Status stays MINING while
+    # a PENDING MiningHarvest row is in flight (resolves_at). While MINING the
+    # hull is stationary and PvP-vulnerable until resolve or interrupt.
     MINING = "MINING"
 
 

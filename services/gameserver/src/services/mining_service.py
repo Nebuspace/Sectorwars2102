@@ -1,37 +1,30 @@
 """Mining service — server-authoritative asteroid harvest + AM claim licenses.
 
-Implements the buildable kernel of ``FEATURES/economy/mining.md`` (canon) and
-``audit/design-briefs/mining.md`` (working brief). Greenfield (WO-MINING):
-additive only — no existing file is changed by this module.
+Implements the buildable kernel of ``FEATURES/economy/mining.md`` (canon).
+WO-MINING-ASYNC-HARVEST: harvest is start → PENDING row → scheduler resolve
+(or interrupt), so ``Ship.status = MINING`` spans requests for PvP.
 
-The two entry points:
+Entry points:
 
-* ``MiningService.harvest(ship_id, player_id)`` — one atomic 5-turn harvest in an
-  ``ASTEROID_FIELD`` sector, gated by a Mining Laser + (in AM-claimed sectors) an
-  Astral Mining Consortium claim license. Yields ``ore`` primarily, with rare
-  ``precious_metals`` and trace ``quantum_shards``. Decrements the sector's
-  depletion pool, grants commodities to the ship's cargo, spends 5 turns, and
-  applies AM faction-reputation deltas — all in ONE transaction under a
-  player+ship row lock.
-* ``MiningService.purchase_license(ship_id, player_id)`` — buy/renew a 24-hour
-  AM claim license for the player's current sector at ``500 cr × richness_tier``.
+* ``MiningService.harvest(ship_id, player_id)`` — start an async harvest:
+  gates, prepaid 5 turns, ``Ship.status = MINING``, insert
+  ``MiningHarvest`` PENDING with ``resolves_at``. Yields apply on resolve.
+* ``MiningService.resolve_harvest(harvest_id)`` — complete a due PENDING
+  row (yield roll, cargo, depletion, AM rep, MINING→IN_SPACE).
+* ``MiningService.resolve_due_harvests()`` — scheduler sweep helper.
+* ``MiningService.interrupt_harvest(...)`` — cancel + 50% turn refund
+  (kernel for WO-MINING-PVP-INTERRUPT).
+* ``MiningService.purchase_license(...)`` — unchanged AM claim license buy.
 
-Numbers (yield matrix, license fee table, rep deltas) are copied VERBATIM from
-canon — see the matrix constants below. RNG is ``secrets``-backed (canon
-§ Anti-cheat: cryptographically secure rolls).
-
-LOCK ORDER (canon § Anti-cheat + WO frozen contract): lock the player row then
-the ship row ``FOR UPDATE`` (mirroring ShipUpgradeService._get_ship_and_player),
-``regenerate_turns`` then ``spend_turns`` INSIDE the lock, faction rep via the
-sync ``apply_faction_rep_delta`` helper in the SAME transaction. The route owns
-the commit; this service flushes only.
+LOCK ORDER: player → ship ``FOR UPDATE``; harvest row locked on resolve/
+interrupt. Route owns commit; this service flushes only on player paths.
 """
 
 import logging
 import secrets
 import uuid
-from datetime import datetime, timedelta
-from typing import Any, Dict, Optional, Tuple
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -41,6 +34,7 @@ from src.models.ship import Ship, ShipStatus, effective_cargo_capacity
 from src.models.sector import Sector, SectorType
 from src.models.faction import FactionType
 from src.models.claim_license import ClaimLicense
+from src.models.mining_harvest import MiningHarvest, MiningHarvestStatus
 from src.services.faction_service import apply_faction_rep_delta
 from src.services.turn_service import regenerate_turns, spend_turns
 
@@ -57,6 +51,12 @@ _RNG = secrets.SystemRandom()
 
 # § Harvest action — turn cost.
 HARVEST_TURN_COST = 5
+
+# Interruptible MINING window before the scheduler may complete the row.
+# Canon has no real-time cooldown (turn cost is the throttle); this duration
+# exists solely so peers can attack mid-harvest (mining.md § PvP). Provisional
+# until a DECISION pins a different number — 30s + 60s tick ≈ ≤90s worst case.
+HARVEST_WINDOW_SECONDS = 30
 
 # AM faction snake-code — matches Sector.controlling_faction / FactionType.MINING
 # (ADR-0033; canon § Astral Mining Consortium claim licenses).
@@ -296,22 +296,21 @@ class MiningService:
         return sector.controlling_faction == AM_FACTION_CODE
 
     # ------------------------------------------------------------------
-    # Harvest
+    # Harvest — start (async) / resolve / interrupt
     # ------------------------------------------------------------------
     def harvest(self, ship_id: uuid.UUID, player_id: uuid.UUID) -> Dict[str, Any]:
-        """Resolve ONE atomic asteroid harvest. Returns the frozen-contract (B)
-        shape::
+        """Start an interruptible asteroid harvest (PENDING until resolve).
 
-            {success, reason, ore, precious_metals, quantum_shards, turns_spent,
+        Returns the frozen-contract shape with yields still zero while
+        ``status == "in_progress"``::
+
+            {success, reason, status, harvest_id, resolves_at,
+             ore, precious_metals, quantum_shards, turns_spent,
              depletion_state, am_rep_delta, remaining_turns}
 
-        Resolution order (canon § Resolution + brief §1.4):
-          lock player+ship → precondition gates → set MINING → regenerate_turns →
-          affordability (turns) → backfill richness/pool → roll ore band
-          (richness_tier × laser_level) → ×laser efficiency → ×depletion modifier
-          → 1-ore hard floor → roll precious_metals → roll quantum_shards →
-          decrement depletion_pool → grant to cargo → spend_turns(5) →
-          MINING→IN_SPACE → AM rep deltas → flush.
+        Start order: lock player+ship → gates → regenerate_turns → afford →
+        spend_turns(5) → MINING → insert MiningHarvest PENDING → flush.
+        Yields / depletion / AM rep land on ``resolve_harvest``.
         """
         empty = {
             "ore": 0,
@@ -320,13 +319,33 @@ class MiningService:
             "turns_spent": 0,
             "depletion_state": {},
             "am_rep_delta": 0,
+            "status": None,
+            "harvest_id": None,
+            "resolves_at": None,
         }
 
         player, ship, reason = self._lock_player_and_ship(ship_id, player_id)
         if reason:
             return {"success": False, "reason": reason, "remaining_turns": 0, **empty}
 
-        # --- precondition gates -----------------------------------------
+        # Reject a second in-flight harvest on this hull.
+        existing = (
+            self.db.query(MiningHarvest)
+            .filter(
+                MiningHarvest.ship_id == ship.id,
+                MiningHarvest.status == MiningHarvestStatus.PENDING,
+            )
+            .with_for_update()
+            .first()
+        )
+        if existing is not None or ship.status == ShipStatus.MINING:
+            return {
+                "success": False,
+                "reason": "already_mining",
+                "remaining_turns": player.turns or 0,
+                **empty,
+            }
+
         sector = self._resolve_current_sector(player)
         if sector is None or sector.type != SectorType.ASTEROID_FIELD:
             return {
@@ -345,7 +364,6 @@ class MiningService:
                 **empty,
             }
 
-        # Undocked: a docked ship cannot mine (canon precondition 3).
         if getattr(player, "is_docked", False) or ship.status == ShipStatus.DOCKED:
             return {
                 "success": False,
@@ -354,13 +372,6 @@ class MiningService:
                 **empty,
             }
 
-        # Cargo capacity: need >= 1 free unit (canon precondition 5). The cargo
-        # JSONB convention (matches trading.py) is {'used','capacity','contents'}
-        # with a 50-unit default when 'capacity' is absent. There is NO
-        # Ship.max_cargo column — max_cargo lives on ShipSpecification — so the
-        # capacity must come from the JSONB (or the 50 default), never ship.*.
-        # The ceiling MUST honor the Cargo-Hold ship-mod bonus, so read the
-        # effective (post-bonus) capacity, not the raw base (ship.py:166).
         cargo = ship.cargo if isinstance(ship.cargo, dict) else {}
         cargo_used = cargo.get("used", 0) or 0
         cargo_capacity = effective_cargo_capacity(ship)
@@ -373,13 +384,8 @@ class MiningService:
                 **empty,
             }
 
-        # --- set MINING status (momentary; reset to IN_SPACE before return) ----
-        ship.status = ShipStatus.MINING
-
-        # --- turns: regenerate (frozen hook) INSIDE the lock, then check afford -
         regenerate_turns(self.db, player)
         if (player.turns or 0) < HARVEST_TURN_COST:
-            ship.status = ShipStatus.IN_SPACE
             return {
                 "success": False,
                 "reason": "insufficient_turns",
@@ -387,52 +393,147 @@ class MiningService:
                 **empty,
             }
 
-        # --- richness + depletion (lazy backfill if absent) -------------
         richness = self._ensure_asteroid_richness(sector)
-        tier = int(richness.get("richness_tier", 3))
-        tier = max(1, min(5, tier))
+        tier = max(1, min(5, int(richness.get("richness_tier", 3))))
+        am_claimed = self._is_am_claimed(sector)
+        has_license = False
+        if am_claimed:
+            has_license = self._find_active_license(player_id, sector) is not None
+
+        spend_turns(player, HARVEST_TURN_COST)
+        ship.status = ShipStatus.MINING
+
+        now = datetime.now(timezone.utc)
+        resolves_at = now + timedelta(seconds=HARVEST_WINDOW_SECONDS)
+        row = MiningHarvest(
+            id=uuid.uuid4(),
+            player_id=player_id,
+            ship_id=ship.id,
+            sector_id=sector.sector_id,
+            region_id=sector.region_id,
+            status=MiningHarvestStatus.PENDING,
+            turns_spent=HARVEST_TURN_COST,
+            laser_level=max(0, min(3, laser_level)),
+            richness_tier=tier,
+            am_claimed=am_claimed,
+            has_license=has_license,
+            started_at=now,
+            resolves_at=resolves_at,
+        )
+        self.db.add(row)
+        self.db.flush()
+
+        logger.info(
+            "Player %s started harvest %s sector %s (tier %d, laser L%d) "
+            "resolves_at=%s turns_left=%d",
+            player_id,
+            row.id,
+            sector.sector_id,
+            tier,
+            row.laser_level,
+            resolves_at.isoformat(),
+            player.turns or 0,
+        )
+
+        return {
+            "success": True,
+            "reason": None,
+            "status": "in_progress",
+            "harvest_id": str(row.id),
+            "resolves_at": resolves_at.isoformat(),
+            "ore": 0,
+            "precious_metals": 0,
+            "quantum_shards": 0,
+            "turns_spent": HARVEST_TURN_COST,
+            "depletion_state": {},
+            "am_rep_delta": 0,
+            "remaining_turns": player.turns or 0,
+        }
+
+    def resolve_harvest(self, harvest_id: uuid.UUID) -> Dict[str, Any]:
+        """Complete a PENDING harvest: yield roll, cargo, depletion, AM rep."""
+        empty = {
+            "ore": 0,
+            "precious_metals": 0,
+            "quantum_shards": 0,
+            "turns_spent": 0,
+            "depletion_state": {},
+            "am_rep_delta": 0,
+        }
+
+        # Peek without lock to learn lock-order keys (player → ship → harvest).
+        peek = (
+            self.db.query(MiningHarvest)
+            .filter(MiningHarvest.id == harvest_id)
+            .first()
+        )
+        if peek is None:
+            return {"success": False, "reason": "harvest_not_found", **empty}
+        if peek.status != MiningHarvestStatus.PENDING:
+            return {"success": False, "reason": "harvest_not_pending", **empty}
+
+        player, ship, reason = self._lock_player_and_ship(
+            peek.ship_id, peek.player_id
+        )
+        if reason:
+            return {"success": False, "reason": reason, **empty}
+
+        row = (
+            self.db.query(MiningHarvest)
+            .filter(MiningHarvest.id == harvest_id)
+            .with_for_update()
+            .first()
+        )
+        if row is None:
+            return {"success": False, "reason": "harvest_not_found", **empty}
+        if row.status != MiningHarvestStatus.PENDING:
+            return {"success": False, "reason": "harvest_not_pending", **empty}
+
+        sector = (
+            self.db.query(Sector)
+            .filter(Sector.sector_id == row.sector_id)
+            .with_for_update()
+            .first()
+        )
+        if sector is None:
+            return self._fail_harvest_row(
+                row, ship, "sector_gone", empty
+            )
+
+        # Re-check cargo at resolve (hold may have filled mid-flight).
+        cargo = ship.cargo if isinstance(ship.cargo, dict) else {}
+        cargo_used = cargo.get("used", 0) or 0
+        cargo_capacity = effective_cargo_capacity(ship)
+        free_cargo = cargo_capacity - cargo_used
+        if free_cargo < 1:
+            return self._fail_harvest_row(
+                row, ship, "cargo_full", empty, refund_turns=True
+            )
+
+        self._ensure_asteroid_richness(sector)
+        tier = max(1, min(5, int(row.richness_tier)))
+        laser_col = max(0, min(3, int(row.laser_level)))
         resources = sector.resources if isinstance(sector.resources, dict) else {}
         pool_size = tier * DEPLETION_POOL_PER_TIER
         depletion_pool = resources.get("depletion_pool", pool_size)
         if not isinstance(depletion_pool, int):
             depletion_pool = pool_size
 
-        # --- license gate (AM-claimed sectors) -------------------------
-        am_claimed = self._is_am_claimed(sector)
-        has_license = False
-        if am_claimed:
-            license_row = self._find_active_license(player_id, sector)
-            has_license = license_row is not None
-
-        # --- ore band roll: richness_tier × laser_level ----------------
-        laser_col = max(0, min(3, laser_level))
         lo, hi = _YIELD_MATRIX[tier][laser_col]
         base_ore = _RNG.randint(lo, hi)
-
-        # ×laser mining_efficiency multiplier (canon § Resolution step 4).
         efficiency = self._laser_efficiency_multiplier(laser_col)
-
-        # ×depletion modifier (canon § Asteroid depletion). The fraction consumed
-        # is measured against the tier's full pool size.
         consumed = max(0, pool_size - depletion_pool)
         consumed_fraction = (consumed / pool_size) if pool_size > 0 else 0.0
         depletion_mod = _depletion_yield_modifier(consumed_fraction)
 
         ore = int(base_ore * efficiency * depletion_mod)
-        # 1-ore hard floor (canon § Asteroid depletion: "at least 1 ore per
-        # attempt"). When the floor fires the pool is left unchanged for that
-        # attempt (canon: "the depletion pool is unchanged for that attempt").
         floor_fired = False
         if ore < 1:
             ore = 1
             floor_fired = True
-
-        # Clamp ore to available free cargo so we never overfill (precious_metals
-        # / quantum_shards also draw from the same cargo space).
         ore = max(1, min(ore, free_cargo))
         free_after_ore = free_cargo - ore
 
-        # --- precious_metals rare drop: 5% + 2%/laser_level, cap 11% ----
         precious_metals = 0
         if free_after_ore > 0:
             pm_rate = min(
@@ -444,7 +545,6 @@ class MiningService:
                 precious_metals = min(pm, free_after_ore)
         free_after_pm = free_after_ore - precious_metals
 
-        # --- quantum_shards trace drop: 1%, only deep asteroids & laser >= 2 ----
         quantum_shards = 0
         if (
             free_after_pm > 0
@@ -452,28 +552,27 @@ class MiningService:
             and laser_col >= QUANTUM_SHARDS_MIN_LASER_LEVEL
             and _RNG.random() < QUANTUM_SHARDS_RATE
         ):
-            quantum_shards = 1  # § Output: "Yield 1 shard per drop."
+            quantum_shards = 1
 
-        # --- decrement depletion_pool by ore yield (NOT pm/shards; canon
-        # § Asteroid depletion: "decremented by the rolled ore yield; precious
-        # metals and quantum shards do not count"). Floor-fired attempts leave the
-        # pool unchanged. Never below 0. ----------------------------------------
         if not floor_fired:
             depletion_pool = max(0, depletion_pool - ore)
             resources["depletion_pool"] = depletion_pool
             sector.resources = resources
             flag_modified(sector, "resources")
 
-        # --- grant commodities to cargo (mirror trading.py cargo structure) ----
         contents = cargo.get("contents", {})
         if not isinstance(contents, dict):
             contents = {}
         granted_total = ore + precious_metals + quantum_shards
         contents["ore"] = contents.get("ore", 0) + ore
         if precious_metals:
-            contents["precious_metals"] = contents.get("precious_metals", 0) + precious_metals
+            contents["precious_metals"] = (
+                contents.get("precious_metals", 0) + precious_metals
+            )
         if quantum_shards:
-            contents["quantum_shards"] = contents.get("quantum_shards", 0) + quantum_shards
+            contents["quantum_shards"] = (
+                contents.get("quantum_shards", 0) + quantum_shards
+            )
         cargo["contents"] = contents
         cargo["used"] = cargo_used + granted_total
         if "capacity" not in cargo:
@@ -481,35 +580,34 @@ class MiningService:
         ship.cargo = cargo
         flag_modified(ship, "cargo")
 
-        # --- spend turns (affordability already checked) ----------------
-        spend_turns(player, HARVEST_TURN_COST)
+        if ship.status == ShipStatus.MINING:
+            ship.status = ShipStatus.IN_SPACE
 
-        # --- MINING → IN_SPACE (momentary status) -----------------------
-        ship.status = ShipStatus.IN_SPACE
-
-        # --- AM faction reputation (same transaction; sync flush-only helper) ---
         am_rep_delta = 0
-        if am_claimed:
-            if has_license:
-                # Licensed: base +1 stacks with the +1 licensed bonus → +2.
+        if row.am_claimed:
+            if row.has_license:
                 am_rep_delta = AM_REP_BASE + AM_REP_LICENSED_BONUS
             else:
-                # Unlicensed extraction in AM space: −10 (canon; the base +1 tick
-                # is overridden by the penalty per canon's per-action table).
                 am_rep_delta = AM_REP_UNLICENSED
         else:
-            # Unclaimed asteroid sector: base +1 AM tick (Mining Laser equipped).
             am_rep_delta = AM_REP_BASE
 
         if am_rep_delta != 0:
             apply_faction_rep_delta(
                 self.db,
-                player_id,
+                row.player_id,
                 FactionType.MINING,
                 am_rep_delta,
                 reason="mining_harvest",
             )
 
+        now = datetime.now(timezone.utc)
+        row.status = MiningHarvestStatus.COMPLETED
+        row.resolved_at = now
+        row.ore_yield = ore
+        row.precious_metals_yield = precious_metals
+        row.quantum_shards_yield = quantum_shards
+        row.am_rep_delta = am_rep_delta
         self.db.flush()
 
         depletion_state = {
@@ -522,23 +620,147 @@ class MiningService:
         }
 
         logger.info(
-            "Player %s harvested sector %s (tier %d, laser L%d): ore=%d pm=%d qs=%d "
-            "am_rep=%+d turns_left=%d",
-            player_id, sector.sector_id, tier, laser_col, ore, precious_metals,
-            quantum_shards, am_rep_delta, player.turns or 0,
+            "Harvest %s completed sector %s: ore=%d pm=%d qs=%d am_rep=%+d",
+            row.id,
+            row.sector_id,
+            ore,
+            precious_metals,
+            quantum_shards,
+            am_rep_delta,
         )
 
         return {
             "success": True,
             "reason": None,
+            "status": "completed",
+            "harvest_id": str(row.id),
             "ore": ore,
             "precious_metals": precious_metals,
             "quantum_shards": quantum_shards,
-            "turns_spent": HARVEST_TURN_COST,
+            "turns_spent": row.turns_spent,
             "depletion_state": depletion_state,
             "am_rep_delta": am_rep_delta,
             "remaining_turns": player.turns or 0,
+            "player_id": str(row.player_id),
         }
+
+    def interrupt_harvest(
+        self,
+        harvest_id: uuid.UUID,
+        *,
+        reason_code: str = "interrupted",
+        leave_in_combat: bool = False,
+    ) -> Dict[str, Any]:
+        """Cancel a PENDING harvest with 50% turn refund (mining.md § PvP).
+
+        Kernel for WO-MINING-PVP-INTERRUPT — combat/evacuation callers wire in.
+        """
+        peek = (
+            self.db.query(MiningHarvest)
+            .filter(MiningHarvest.id == harvest_id)
+            .first()
+        )
+        if peek is None:
+            return {"success": False, "reason": "harvest_not_found"}
+        if peek.status != MiningHarvestStatus.PENDING:
+            return {"success": False, "reason": "harvest_not_pending"}
+
+        player, ship, lock_reason = self._lock_player_and_ship(
+            peek.ship_id, peek.player_id
+        )
+        if lock_reason:
+            return {"success": False, "reason": lock_reason}
+
+        row = (
+            self.db.query(MiningHarvest)
+            .filter(MiningHarvest.id == harvest_id)
+            .with_for_update()
+            .first()
+        )
+        if row is None:
+            return {"success": False, "reason": "harvest_not_found"}
+        if row.status != MiningHarvestStatus.PENDING:
+            return {"success": False, "reason": "harvest_not_pending"}
+
+        refund = row.turns_spent // 2  # 50% of prepaid 5 → 2 turns
+        if player is not None and refund > 0:
+            player.turns = (player.turns or 0) + refund
+
+        if ship is not None and ship.status == ShipStatus.MINING:
+            ship.status = (
+                ShipStatus.IN_COMBAT if leave_in_combat else ShipStatus.IN_SPACE
+            )
+
+        row.status = MiningHarvestStatus.INTERRUPTED
+        row.resolved_at = datetime.now(timezone.utc)
+        row.terminal_reason = reason_code
+        self.db.flush()
+
+        logger.info(
+            "Harvest %s interrupted (%s); refunded %d turns",
+            row.id,
+            reason_code,
+            refund,
+        )
+        return {
+            "success": True,
+            "reason": None,
+            "status": "interrupted",
+            "harvest_id": str(row.id),
+            "turns_refunded": refund,
+            "remaining_turns": (player.turns or 0) if player else 0,
+            "player_id": str(row.player_id),
+        }
+
+    def resolve_due_harvests(
+        self, now: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """Complete every PENDING harvest whose ``resolves_at`` has elapsed."""
+        when = now or datetime.now(timezone.utc)
+        due_ids = [
+            hid
+            for (hid,) in (
+                self.db.query(MiningHarvest.id)
+                .filter(
+                    MiningHarvest.status == MiningHarvestStatus.PENDING,
+                    MiningHarvest.resolves_at <= when,
+                )
+                .order_by(MiningHarvest.resolves_at.asc())
+                .all()
+            )
+        ]
+        results: List[Dict[str, Any]] = []
+        for hid in due_ids:
+            # Fresh lock per row so a mid-sweep interrupt can win.
+            results.append(self.resolve_harvest(hid))
+        return results
+
+    def _fail_harvest_row(
+        self,
+        row: MiningHarvest,
+        ship: Optional[Ship],
+        reason_code: str,
+        empty: Dict[str, Any],
+        *,
+        refund_turns: bool = False,
+    ) -> Dict[str, Any]:
+        """Terminal-fail a PENDING row without granting commodities."""
+        if refund_turns:
+            player = (
+                self.db.query(Player)
+                .filter(Player.id == row.player_id)
+                .with_for_update()
+                .first()
+            )
+            if player is not None:
+                player.turns = (player.turns or 0) + (row.turns_spent // 2)
+        if ship is not None and ship.status == ShipStatus.MINING:
+            ship.status = ShipStatus.IN_SPACE
+        row.status = MiningHarvestStatus.CANCELLED
+        row.resolved_at = datetime.now(timezone.utc)
+        row.terminal_reason = reason_code
+        self.db.flush()
+        return {"success": False, "reason": reason_code, **empty}
 
     # ------------------------------------------------------------------
     # License purchase / renewal

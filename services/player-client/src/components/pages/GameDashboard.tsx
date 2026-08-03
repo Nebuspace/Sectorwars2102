@@ -2210,6 +2210,7 @@ const GameDashboardInner: React.FC = () => {
     insufficient_turns: 'Not enough turns to run a harvest cycle.',
     not_an_asteroid_field: 'No asteroids here — harvesting requires an asteroid field.',
     ship_not_found: 'Active ship not found — re-select a ship and try again.',
+    already_mining: 'Mining laser already deployed — wait for the current harvest to finish.',
   };
 
   const handleHarvest = async () => {
@@ -2223,8 +2224,21 @@ const GameDashboardInner: React.FC = () => {
     setHarvestBusy(true);
     try {
       const response = await apiClient.post('/api/v1/mining/harvest', { ship_id: shipId });
-      setHarvestResult({ success: true, ...response.data });
-      // Turns + cargo changed server-side — pull the fresh player state.
+      const data = response.data || {};
+      if (data.status === 'in_progress') {
+        setHarvestResult({
+          success: true,
+          status: 'in_progress',
+          harvest_id: data.harvest_id,
+          resolves_at: data.resolves_at,
+          turns_spent: data.turns_spent,
+          remaining_turns: data.remaining_turns,
+          message: 'Mining in progress — hold position while the laser works the field.',
+        });
+      } else {
+        setHarvestResult({ success: true, ...data });
+      }
+      // Turns prepaid server-side — pull fresh player state (cargo still pending).
       await refreshPlayerState();
     } catch (error: any) {
       const reason = error?.response?.data?.detail;

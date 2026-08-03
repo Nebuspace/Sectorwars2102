@@ -30,6 +30,10 @@ TICK_SECONDS = 60
 # ADR-0042: the PendingEngagement sweep runs every minute, distinct
 # from Loop A.
 ENGAGEMENT_SWEEP_SECONDS = 60
+# WO-MINING-ASYNC-HARVEST: complete PENDING mining_harvests past resolves_at.
+# Matches the main tick so a 30s harvest window settles within one tick after
+# due (worst case ≈ 90s from start).
+MINING_HARVEST_SWEEP_SECONDS = 60
 # Loop A runs every tick (60s). The OLD 5-minute cadence made patrols read as
 # dead: a co-located squad held position for 4m59s then teleported one hop in
 # unison. At the tick cadence, combined with the per-NPC phase stagger in
@@ -732,6 +736,11 @@ _CONTRACT_EXPIRE_LOCK_KEY = _mnemonic_lock_key("CEXP")
 # expired beacons. 'BCNX' = BeaCoN eXpire.
 _BEACON_EXPIRE_LOCK_KEY = _mnemonic_lock_key("BCNX")
 
+# Async asteroid-harvest resolve sweep (WO-MINING-ASYNC-HARVEST) — own key so
+# two gameserver instances don't double-complete the same PENDING row.
+# 'MHRV' = Mining HaRVest.
+_MINING_HARVEST_LOCK_KEY = _mnemonic_lock_key("MHRV")
+
 # ADR-0063: recruit lifecycle stage lasts 7 canonical days, then ACTIVE.
 RECRUIT_STAGE_HOURS = 7 * 24
 
@@ -1069,6 +1078,21 @@ async def _broadcast_events(events: List[Dict[str, Any]]) -> None:
                     logger.exception(
                         "NPC scheduler: genesis_progress send failed for owner %s",
                         owner_id,
+                    )
+            continue
+
+        # WO-MINING-ASYNC-HARVEST: personal frame when a PENDING harvest completes.
+        if event.get("type") == "mining_harvest_completed":
+            player_id = event.get("player_id")
+            if player_id is not None:
+                try:
+                    await connection_manager.send_personal_message(
+                        str(player_id), dict(event)
+                    )
+                except Exception:
+                    logger.exception(
+                        "NPC scheduler: mining_harvest_completed send failed for %s",
+                        player_id,
                     )
             continue
 

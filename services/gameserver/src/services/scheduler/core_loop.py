@@ -44,6 +44,7 @@ from src.services.scheduler._common import (
     PRICE_HISTORY_SWEEP_SECONDS,
     ROUTE_RUNS_RETENTION_SWEEP_SECONDS,
     PRESENCE_SWEEP_CHECK_SECONDS,
+    MINING_HARVEST_SWEEP_SECONDS,
     _broadcast_events,
 )
 from src.services.scheduler.presence_helpers import (
@@ -94,6 +95,7 @@ from src.services.scheduler.contract_sweeps import (
     _run_contract_expire_sweep_sync,
 )
 from src.services.scheduler.beacon_sweeps import _run_beacon_expire_sweep_sync
+from src.services.scheduler.mining_sweeps import _run_mining_harvest_resolve_sync
 
 logger = logging.getLogger(__name__)
 
@@ -274,6 +276,28 @@ async def _npc_scheduler_main_loop() -> None:
             raise
         except Exception:
             logger.exception("NPC scheduler: tick crashed (loop continues)")
+
+        # Async asteroid-harvest resolve (WO-MINING-ASYNC-HARVEST). Completes
+        # PENDING mining_harvests past resolves_at so MINING spans requests.
+        if elapsed % MINING_HARVEST_SWEEP_SECONDS == 0:
+            try:
+                completed, mining_events = await asyncio.to_thread(
+                    _run_mining_harvest_resolve_sync
+                )
+                if completed:
+                    logger.info(
+                        "NPC scheduler: completed %d due mining harvest(s)",
+                        completed,
+                    )
+                if mining_events:
+                    await _broadcast_events(mining_events)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "NPC scheduler: mining harvest resolve sweep crashed "
+                    "(loop continues)"
+                )
 
         # Genesis formation completion sweep (every GENESIS_COMPLETION_SECONDS).
         # Makes the 48h formation timer authoritative for all planets, not just
