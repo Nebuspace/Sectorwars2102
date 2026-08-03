@@ -563,12 +563,3 @@ async def create_ship(
             "created_at": new_ship.created_at.isoformat()
         }
     }
-
-
-
-
-# DEPRECATED: Ship specifications are now fetched from ShipSpecification database table
-# This function used incorrect field names (armor instead of hull) and is no longer used
-# def get_ship_specifications(ship_type: ShipType) -> Dict[str, int]:
-#     """Get ship specifications based on type."""
-#     # See ShipSpecification model for actual specifications
