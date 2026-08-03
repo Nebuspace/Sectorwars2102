@@ -30,11 +30,10 @@ This module is the canonical home for that lifecycle. It owns two halves:
      "defenses must be re-purchased").
 
   3. ``is_station_functional`` — the single authoritative "can players
-     interact with this station?" predicate. The docking / trading routes
-     and ``trading_service.can_player_trade`` SHOULD call this to refuse
-     docking/trading for the 24h window; wiring those call sites lives in
-     their own lanes (this lane owns only this service + the scheduler
-     sweep) and is flagged as a follow-up.
+     interact with this station?" predicate. Wired into
+     ``TradingService.can_player_trade`` and ``POST /trading/dock``
+     (WO-STATION-DESTROYED-TRADE-GATE) so destroyed stations refuse
+     docking/trading for the 24h rebuild window.
 
 STORAGE — additive JSONB, NO migration: the destruction state reuses the
 existing ``Station.is_destroyed`` (Boolean) + ``Station.recovery_time``
