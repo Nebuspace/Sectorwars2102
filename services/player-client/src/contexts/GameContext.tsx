@@ -1675,6 +1675,31 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     return unsubscribe;
   }, [user]);
 
+  // Live bounty lifecycle push (WO-BOUNTY-REALTIME-EVENTS). Server already
+  // emits bounty_updated post-commit; this keeps StatusBar bounty_total and
+  // credits in lockstep when the current player is the placer, target, or
+  // collector — without polling. playerIdRef avoids stale-closure misses
+  // when the subscription outlives a playerState identity change.
+  const playerIdRef = useRef<string | null>(null);
+  playerIdRef.current = playerState?.id ?? null;
+
+  useEffect(() => {
+    if (!user) return;
+
+    const unsubscribe = websocketService.onBountyUpdated((message) => {
+      const me = playerIdRef.current;
+      if (!me) return;
+      const involved = [message.target_id, message.placed_by, message.collected_by]
+        .filter((id): id is string => id != null && id !== '')
+        .map(String);
+      if (involved.includes(me)) {
+        void refreshPlayerState();
+      }
+    });
+
+    return unsubscribe;
+  }, [user]);
+
   // Hyperspace echo scan along a bearing (spends turns; far band spends a shard)
   const quantumScan = async (payload: QuantumBearing): Promise<QuantumScanResult> => {
     if (!user || !playerState) throw new Error('Not authenticated');
