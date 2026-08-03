@@ -160,7 +160,7 @@ def test_seeded_row_field_shape(db: Session):
 async def test_list_resources_returns_seeded_catalog(db: Session):
     seed_resource_registry(db)
 
-    result = await list_resources(player=None, db=db)
+    result = await list_resources(current_user=None, db=db)
 
     assert len(result) == 13
     names = {r.name for r in result}
@@ -183,7 +183,7 @@ async def test_list_resources_excludes_inactive_rows(db: Session):
     row.is_active = False
     db.commit()
 
-    result = await list_resources(player=None, db=db)
+    result = await list_resources(current_user=None, db=db)
 
     assert "prismatic_ore" not in {r.name for r in result}
     assert len(result) == 12
@@ -206,7 +206,7 @@ async def test_route_is_a_pure_table_read_not_a_hardcoded_list(db: Session):
     collide on `type` — robust whether or not the resources.type unique
     constraint (alembic 5a30b799bb25, WO-ARCH-RES-2 follow-up — authored,
     not yet applied) is live in the target schema."""
-    pre_count = len(await list_resources(player=None, db=db))
+    pre_count = len(await list_resources(current_user=None, db=db))
 
     marker_type = ResourceType.ORE
     marker_name = "__test_marker_pure_route_read__"
@@ -228,9 +228,50 @@ async def test_route_is_a_pure_table_read_not_a_hardcoded_list(db: Session):
     )
     db.commit()
 
-    result = await list_resources(player=None, db=db)
+    result = await list_resources(current_user=None, db=db)
 
     marker = next((r for r in result if r.name == marker_name), None)
     assert marker is not None, "hand-inserted marker row did not surface via the route"
     assert marker.base_price == 15
     assert len(result) == pre_count - displaced + 1
+
+
+def test_list_resources_auth_is_any_authenticated_user_not_player():
+    """Admin-only sessions (User, no Player) must not 404 on the catalog.
+
+    Pin the route source to ``get_current_user`` — ``get_current_player``
+    404s when no Player row exists (default admin account shape). Pure AST
+    so this pin does not require a live DATABASE_URL / Settings bootstrap.
+    """
+    import ast
+    from pathlib import Path
+
+    src_path = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "api"
+        / "routes"
+        / "resources.py"
+    )
+    src = src_path.read_text(encoding="utf-8")
+    tree = ast.parse(src)
+
+    assert "get_current_player" not in src
+    assert "from src.models.player import Player" not in src
+    assert "get_current_user" in src
+
+    imports: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module == "src.auth.dependencies":
+            imports.update(a.name for a in node.names if a.name)
+    assert "get_current_user" in imports
+    assert "get_current_player" not in imports
+
+    for node in tree.body:
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "list_resources":
+            arg_names = [a.arg for a in node.args.args]
+            assert "current_user" in arg_names
+            assert "player" not in arg_names
+            break
+    else:
+        raise AssertionError("list_resources handler not found")
