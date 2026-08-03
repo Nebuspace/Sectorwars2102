@@ -864,7 +864,7 @@ class FleetService:
         # Player-then-Team, the REVERSE of team_service.py's own internal
         # Team-then-Player order (deposit_to_treasury / withdraw_from_
         # treasury / transfer_to_player) and this codebase's documented
-        # resource-before-player deadlock contract (trading.py:513,
+        # resource-before-player deadlock contract (trading.py:1016,
         # planet_grid.py:245, auth.py:549). A concurrent team-treasury call
         # from a player who is also a kill-reward participant/target is a
         # real, player-triggerable AB-BA deadlock on the ordinary attrition-
