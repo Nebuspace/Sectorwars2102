@@ -98,8 +98,9 @@ class MarketPredictionEngine:
     # single price table (WO-ARCH-RES-2H-RUNTIME-VOCAB) instead of a hand-kept
     # literal that had drifted from the 9-commodity wire (was missing
     # precious_metals). Import-time only — no DB read; auto-tracks any future
-    # change to COMMODITY_BASE_PRICES (incl. Max's pending precious_metals
-    # ruling — see DECISIONS).
+    # change to COMMODITY_BASE_PRICES. precious_metals is canonical there
+    # (mining.md Secondary drop, ADR-0062 E-D1, station DEFAULT_COMMODITIES) —
+    # not a pending Max ruling.
     COMMODITIES = list(COMMODITY_BASE_PRICES)
 
     def __init__(self):
