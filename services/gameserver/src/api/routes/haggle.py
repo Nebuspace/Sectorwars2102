@@ -52,14 +52,11 @@ def _station_or_404(db: Session, station_id: str) -> Station:
 
 def _require_docked_here(player: Player, station: Station) -> None:
     """Haggling is a docked-at-the-desk activity — mirror the trading guards."""
-    if not player.is_docked:
-        raise HTTPException(
-            status_code=400, detail="You must be docked at a station to haggle"
-        )
-    if player.current_sector_id != station.sector_id:
-        raise HTTPException(
-            status_code=400, detail="You must be in the same sector as the station"
-        )
+    from src.services.trading_service import TradingService
+
+    ok, reason = TradingService.can_player_trade(player, station)
+    if not ok:
+        raise HTTPException(status_code=400, detail=reason)
 
 
 @router.post("/open")

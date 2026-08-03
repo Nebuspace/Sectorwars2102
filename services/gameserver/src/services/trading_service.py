@@ -1021,6 +1021,8 @@ class TradingService:
         Returns:
             Tuple of (can_trade: bool, reason: str).
         """
+        from src.services.station_service import is_station_functional
+
         # Check if player is docked
         if not player.is_docked:
             return False, "You must be docked at a port to trade"
@@ -1028,5 +1030,9 @@ class TradingService:
         # Check if player is in the same sector as the station
         if player.current_sector_id != station.sector_id:
             return False, "You must be in the same sector as the port"
+
+        # Destroyed / 24h rebuild window — trading.md recovery clauses
+        if not is_station_functional(station):
+            return False, "This station is destroyed and rebuilding — trading is suspended"
 
         return True, "OK"

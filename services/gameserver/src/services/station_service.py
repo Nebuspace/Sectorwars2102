@@ -100,9 +100,9 @@ def is_station_functional(station: Station) -> bool:
     no services, defenses inactive — all of trading.md's recovery clauses
     flow from this one flag). True for an operational station.
 
-    Callers in the docking / trading lanes SHOULD gate on this (follow-up:
-    those routes are not in this lane). It deliberately reads ONLY the
-    durable ``is_destroyed`` flag so it is cheap and side-effect-free."""
+    Callers in the docking / trading lanes gate on this
+    (``TradingService.can_player_trade``, ``POST /trading/dock``). It deliberately
+    reads ONLY the durable ``is_destroyed`` flag so it is cheap and side-effect-free."""
     return not bool(getattr(station, "is_destroyed", False))
 
 

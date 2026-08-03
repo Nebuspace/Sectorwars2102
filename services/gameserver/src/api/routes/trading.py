@@ -83,6 +83,13 @@ def _get_station_or_404(db: Session, station_id: str) -> Station:
     return station
 
 
+def _require_can_trade(player: Player, station: Station) -> None:
+    """Docked + co-located + station functional (WO-STATION-DESTROYED-TRADE-GATE)."""
+    ok, reason = TradingService.can_player_trade(player, station)
+    if not ok:
+        raise HTTPException(status_code=400, detail=reason)
+
+
 def _ensure_market_prices(db: Session, station: Station) -> None:
     """Bridge the station's commodities JSONB into MarketPrice rows, then
     run the lazy stock-regen tick.
@@ -550,17 +557,9 @@ async def buy_resource(
     current_player: Player = Depends(get_current_player)
 ):
     """Buy a resource from a station"""
-    
-    # Verify player is docked at this port
-    if not current_player.is_docked:
-        raise HTTPException(status_code=400, detail="You must be docked at a station to trade")
 
-    # Get the station
     station = _get_station_or_404(db, trade_request.station_id)
-
-    # Verify player is in the same sector as the station
-    if current_player.current_sector_id != station.sector_id:
-        raise HTTPException(status_code=400, detail="You must be in the same sector as the station")
+    _require_can_trade(current_player, station)
 
     # Populate MarketPrice rows from the commodities JSONB if missing
     _ensure_market_prices(db, station)
@@ -908,16 +907,8 @@ async def sell_resource(
 ):
     """Sell a resource to a station"""
 
-    # Verify player is docked at this port
-    if not current_player.is_docked:
-        raise HTTPException(status_code=400, detail="You must be docked at a station to trade")
-
-    # Get the station
     station = _get_station_or_404(db, trade_request.station_id)
-
-    # Verify player is in the same sector as the station
-    if current_player.current_sector_id != station.sector_id:
-        raise HTTPException(status_code=400, detail="You must be in the same sector as the station")
+    _require_can_trade(current_player, station)
 
     # Populate MarketPrice rows from the commodities JSONB if missing
     # (may COMMIT — must run before any row locks are taken)
@@ -1305,13 +1296,8 @@ async def get_trade_quote(
     if action not in ("buy", "sell"):
         raise HTTPException(status_code=400, detail="action must be 'buy' or 'sell'")
 
-    if not current_player.is_docked:
-        raise HTTPException(status_code=400, detail="You must be docked at a station to trade")
-
     station = _get_station_or_404(db, quote_request.station_id)
-
-    if current_player.current_sector_id != station.sector_id:
-        raise HTTPException(status_code=400, detail="You must be in the same sector as the station")
+    _require_can_trade(current_player, station)
 
     # Same lazy-init idiom GET /market/{id} already uses — populates
     # MarketPrice rows from the commodities JSONB on first read. Not a
@@ -1539,6 +1525,14 @@ async def dock_at_station(
     )
     if not station:
         raise HTTPException(status_code=404, detail="Station not found")
+
+    from src.services.station_service import is_station_functional
+
+    if not is_station_functional(station):
+        raise HTTPException(
+            status_code=400,
+            detail="This station is destroyed and rebuilding — docking is suspended",
+        )
 
     # Lock player row to prevent concurrent turn deduction races
     # (after the station lock — see lock-order note above)
