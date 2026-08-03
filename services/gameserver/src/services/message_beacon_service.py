@@ -38,13 +38,13 @@ from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
 
 from src.models.message_beacon import MessageBeacon
-from src.models.multi_account import MultiAccountFlag, MultiAccountSeverity
 from src.models.player import Player
 from src.models.region import Region
 from src.models.sector import Sector
 from src.models.ship import Ship
 from src.services import turn_service
 from src.services.ai_security_service import get_security_service
+from src.services.multi_account_service import participation_weight as _participation_weight
 
 logger = logging.getLogger(__name__)
 
@@ -186,30 +186,8 @@ def _lock_sector(db: Session, region_id: uuid.UUID, sector_id: int) -> None:
 
 
 # ── Anti-account-multiplication hook (message-beacons.md:115, ADR-0056 E-V5) ─
-
-def _participation_weight(db: Session, player_id: uuid.UUID) -> float:
-    """Free-tier accounts in a flagged HARD-severity multi-account cluster
-    weight 0x for beacon-cap/visibility purposes (canon:115); everyone else
-    is 1.0.
-
-    [SOFT-DEP] The real `participation_weight` computation is explicitly
-    OUT OF SCOPE for the schema-owning WO that built `MultiAccountFlag`
-    (models/multi_account.py's own docstring: "that computation itself is
-    out of scope for this WO") -- this is a genuine seam consulting the
-    live schema those flags land in, NOT a fake/stubbed detector. It reads
-    real rows if any detection service ever writes them, and reads nothing
-    (defaults 1.0) while none exists -- never blocks on the absent service,
-    never invents a heuristic of its own.
-    """
-    flagged = (
-        db.query(MultiAccountFlag)
-        .filter(
-            MultiAccountFlag.player_id == player_id,
-            MultiAccountFlag.severity == MultiAccountSeverity.HARD,
-        )
-        .first()
-    )
-    return 0.0 if flagged is not None else 1.0
+# Shared implementation: src.services.multi_account_service.participation_weight
+# (imported above as `_participation_weight` so call sites stay stable).
 
 
 def _sector_cap(region: Region) -> int:
