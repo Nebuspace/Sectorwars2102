@@ -1,7 +1,8 @@
-"""Player-to-player trade window service (ADR-0089 v1 kernel).
+"""Player-to-player trade window service (ADR-0089).
 
-Credits + commodities only. Ship-bundle transfer and progressive anti-RMT
-surcharge are deferred. Flat 5% appraisal sink applies on settle.
+v1 kernel: credits + commodities. Follow-on: ship-bundle transfer (same
+port dock gate, last-ship/stolen blocks, ShipRegistry append, insurance
+void). Progressive anti-RMT surcharge still deferred.
 FLUSH-ONLY — route owns commit.
 """
 
@@ -11,19 +12,21 @@ import logging
 import math
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.player import Player
-from src.models.ship import Ship, effective_cargo_capacity
+from src.models.ship import Ship, ShipType, effective_cargo_capacity
 from src.models.player_trade import (
     PlayerTradeLog,
     PlayerTradeSession,
     PlayerTradeSessionStatus,
     PlayerTradeablePrice,
 )
+from src.models.ship_registry import RegistryEventType
+from src.services.ship_registry_service import append_registry_event
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +34,7 @@ SESSION_TTL_SECONDS = 5 * 60
 FLAT_TAX_RATE = 0.05
 MIN_TAX_CR = 1
 
-_EMPTY_OFFER = {"credits": 0, "commodities": {}, "ship_id": None}
+_EMPTY_OFFER = {"credits": 0, "commodities": {}, "ship_id": None, "ships": []}
 
 
 def _now() -> datetime:
@@ -51,7 +54,21 @@ def _normalize_offer(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     ship_id = raw.get("ship_id")
     if ship_id is not None:
         ship_id = str(ship_id)
-    return {"credits": credits, "commodities": commodities, "ship_id": ship_id}
+    ships: List[str] = []
+    seen = set()
+    for sid in raw.get("ships") or []:
+        if sid is None:
+            continue
+        s = str(sid)
+        if s not in seen:
+            seen.add(s)
+            ships.append(s)
+    return {
+        "credits": credits,
+        "commodities": commodities,
+        "ship_id": ship_id,
+        "ships": ships,
+    }
 
 
 class PlayerTradeService:
@@ -280,18 +297,32 @@ class PlayerTradeService:
         init_offer = _normalize_offer(session.initiator_offer)
         tgt_offer = _normalize_offer(session.target_offer)
 
-        init_ship_id = (
+        init_ship_ids = self._parse_ship_ids(init_offer.get("ships") or [])
+        tgt_ship_ids = self._parse_ship_ids(tgt_offer.get("ships") or [])
+        ship_trade = bool(init_ship_ids or tgt_ship_ids)
+        if ship_trade:
+            err = self._validate_dock_gate(initiator, target)
+            if err:
+                return self._cancel(session, err)
+            session.port_id = initiator.current_port_id
+
+        init_cargo_id = (
             uuid.UUID(init_offer["ship_id"]) if init_offer["ship_id"] else None
         )
-        tgt_ship_id = (
+        tgt_cargo_id = (
             uuid.UUID(tgt_offer["ship_id"]) if tgt_offer["ship_id"] else None
         )
         # Receiving hull defaults to current_ship when party sends no commodities
         # but receives some — name the receiver's active ship.
-        recv_init_ship = init_ship_id or initiator.current_ship_id
-        recv_tgt_ship = tgt_ship_id or target.current_ship_id
+        recv_init_ship = init_cargo_id or initiator.current_ship_id
+        recv_tgt_ship = tgt_cargo_id or target.current_ship_id
         ships = self._lock_ships(
-            init_ship_id, tgt_ship_id, recv_init_ship, recv_tgt_ship
+            init_cargo_id,
+            tgt_cargo_id,
+            recv_init_ship,
+            recv_tgt_ship,
+            *init_ship_ids,
+            *tgt_ship_ids,
         )
 
         err = self._validate_party_offer(initiator, init_offer, ships)
@@ -300,8 +331,16 @@ class PlayerTradeService:
         err = self._validate_party_offer(target, tgt_offer, ships)
         if err:
             return {"success": False, "reason": err}
+        err = self._validate_ship_bundle(initiator, init_ship_ids, ships)
+        if err:
+            return {"success": False, "reason": err}
+        err = self._validate_ship_bundle(target, tgt_ship_ids, ships)
+        if err:
+            return {"success": False, "reason": err}
 
         # Capacity: each receiver must fit incoming commodities net of outgoing.
+        # Skip capacity against a hull that is itself leaving in this settle —
+        # the receiving hull must remain owned by the receiver after transfers.
         err = self._validate_capacity(
             ships.get(recv_tgt_ship) if recv_tgt_ship else None,
             outgoing=tgt_offer["commodities"],
@@ -317,11 +356,10 @@ class PlayerTradeService:
         if err:
             return {"success": False, "reason": err}
 
-        gross = self._appraise(init_offer) + self._appraise(tgt_offer)
+        init_gross = self._appraise(init_offer, ships)
+        tgt_gross = self._appraise(tgt_offer, ships)
+        gross = init_gross + tgt_gross
         tax = max(MIN_TAX_CR, int(math.ceil(gross * FLAT_TAX_RATE))) if gross > 0 else 0
-        # Split tax across parties proportional to what they send (min 0).
-        init_gross = self._appraise(init_offer)
-        tgt_gross = self._appraise(tgt_offer)
         init_tax = (
             int(math.ceil(tax * (init_gross / gross))) if gross > 0 and init_gross else 0
         )
@@ -331,7 +369,22 @@ class PlayerTradeService:
         if (target.credits or 0) < tgt_offer["credits"] + tgt_tax:
             return {"success": False, "reason": "target_insufficient_credits"}
 
-        # Apply transfers.
+        # Apply transfers — ownership first (ADR), then credits/commodities.
+        for sid in init_ship_ids:
+            self._transfer_ship(
+                ships[sid],
+                previous_owner=initiator,
+                new_owner=target,
+                port_id=session.port_id,
+            )
+        for sid in tgt_ship_ids:
+            self._transfer_ship(
+                ships[sid],
+                previous_owner=target,
+                new_owner=initiator,
+                port_id=session.port_id,
+            )
+
         initiator.credits = (initiator.credits or 0) - init_offer["credits"] - init_tax
         target.credits = (target.credits or 0) + init_offer["credits"]
         target.credits = (target.credits or 0) - tgt_offer["credits"] - tgt_tax
@@ -339,13 +392,13 @@ class PlayerTradeService:
 
         if init_offer["commodities"]:
             self._move_commodities(
-                ships[init_ship_id],
+                ships[init_cargo_id],
                 ships[recv_tgt_ship],
                 init_offer["commodities"],
             )
         if tgt_offer["commodities"]:
             self._move_commodities(
-                ships[tgt_ship_id],
+                ships[tgt_cargo_id],
                 ships[recv_init_ship],
                 tgt_offer["commodities"],
             )
@@ -371,10 +424,11 @@ class PlayerTradeService:
         self.db.add(log)
         self.db.flush()
         logger.info(
-            "Trade session %s settled gross=%d tax=%d",
+            "Trade session %s settled gross=%d tax=%d ships=%d",
             session.id,
             gross,
             tax,
+            len(init_ship_ids) + len(tgt_ship_ids),
         )
         return {
             "success": True,
@@ -438,6 +492,10 @@ class PlayerTradeService:
     ) -> Optional[str]:
         if offer["credits"] > (player.credits or 0):
             return "insufficient_credits"
+        staged = set(offer.get("ships") or [])
+        if offer["ship_id"] and offer["ship_id"] in staged and offer["commodities"]:
+            # Hull transfers as a bundle — cargo on that hull cannot also be staged.
+            return "commodities_on_staged_ship"
         if not offer["commodities"]:
             return None
         if not offer["ship_id"]:
@@ -454,6 +512,97 @@ class PlayerTradeService:
             if int(contents.get(slug, 0) or 0) < qty:
                 return f"insufficient_commodity:{slug}"
         return None
+
+    def _parse_ship_ids(self, raw: List[str]) -> List[uuid.UUID]:
+        out: List[uuid.UUID] = []
+        for s in raw:
+            try:
+                out.append(uuid.UUID(str(s)))
+            except (ValueError, TypeError):
+                continue
+        return out
+
+    def _validate_dock_gate(self, a: Player, b: Player) -> Optional[str]:
+        if not a.is_docked or not b.is_docked:
+            return "not_docked"
+        if a.current_port_id is None or b.current_port_id is None:
+            return "not_docked"
+        if a.current_port_id != b.current_port_id:
+            return "different_port"
+        return None
+
+    def _fleet_tradeable_count(self, player_id: uuid.UUID) -> int:
+        """Non-destroyed non-escape-pod hulls owned by player (ADR last-ship rule)."""
+        return (
+            self.db.query(Ship)
+            .filter(
+                Ship.owner_id == player_id,
+                Ship.is_destroyed.is_(False),
+                Ship.type != ShipType.ESCAPE_POD,
+            )
+            .count()
+        )
+
+    def _validate_ship_bundle(
+        self,
+        player: Player,
+        ship_ids: List[uuid.UUID],
+        ships: Dict[uuid.UUID, Ship],
+    ) -> Optional[str]:
+        if not ship_ids:
+            return None
+        for sid in ship_ids:
+            ship = ships.get(sid)
+            if ship is None:
+                return "ship_not_found"
+            if ship.is_destroyed:
+                return "ship_destroyed"
+            owner_ok = ship.owner_id == player.id or ship.registered_owner_id == player.id
+            if not owner_ok:
+                return "ship_not_owned"
+            if ship.stolen_status:
+                return "ship_stolen"
+            if player.current_ship_id == sid:
+                return "ship_currently_piloted"
+            stype = ship.type.value if hasattr(ship.type, "value") else str(ship.type)
+            if stype == ShipType.ESCAPE_POD.value:
+                return "escape_pod_not_tradeable"
+        remaining = self._fleet_tradeable_count(player.id) - len(ship_ids)
+        if remaining < 1:
+            return "last_ship"
+        return None
+
+    def _transfer_ship(
+        self,
+        ship: Ship,
+        *,
+        previous_owner: Player,
+        new_owner: Player,
+        port_id: Optional[uuid.UUID],
+    ) -> None:
+        prev_id = previous_owner.id
+        new_id = new_owner.id
+        original = ship.registered_owner_id or ship.owner_id or prev_id
+        ship.owner_id = new_id
+        ship.registered_owner_id = new_id
+        if ship.current_pilot_id == prev_id:
+            ship.current_pilot_id = None
+        ship.for_sale_price = None
+        ship.for_sale_listed_by_id = None
+        if ship.insurance is not None:
+            ship.insurance = None
+            flag_modified(ship, "insurance")
+        append_registry_event(
+            self.db,
+            ship=ship,
+            event_type=RegistryEventType.OWNERSHIP_TRANSFER,
+            original_owner_id=original,
+            previous_owner_id=prev_id,
+            new_owner_id=new_id,
+            acting_party_id=prev_id,
+            port_id=port_id,
+            event_metadata={"via": "player_trade"},
+        )
 
     def _validate_capacity(
         self,
@@ -484,7 +633,7 @@ class PlayerTradeService:
         )
         if row is not None:
             return int(row.unit_value_cr)
-        # Hard fallbacks matching seed / ADR-0082 bands.
+        # Hard fallbacks matching seed / ADR-0082 bands. Hulls use ship:<TYPE>.
         defaults = {
             "credits": 1,
             "ore": 15,
@@ -493,12 +642,29 @@ class PlayerTradeService:
             "equipment": 35,
             "precious_metals": 120,
         }
+        if asset_key.startswith("ship:"):
+            return 5000
         return int(defaults.get(asset_key, 10))
 
-    def _appraise(self, offer: Dict[str, Any]) -> int:
+    def _appraise(
+        self,
+        offer: Dict[str, Any],
+        ships: Optional[Dict[uuid.UUID, Ship]] = None,
+    ) -> int:
         total = int(offer.get("credits") or 0)
         for slug, qty in (offer.get("commodities") or {}).items():
             total += self._unit_price(slug) * int(qty)
+        ships = ships or {}
+        for sid in offer.get("ships") or []:
+            try:
+                ship = ships.get(uuid.UUID(str(sid)))
+            except (ValueError, TypeError):
+                ship = None
+            if ship is None:
+                total += 5000
+                continue
+            stype = ship.type.value if hasattr(ship.type, "value") else str(ship.type)
+            total += self._unit_price(f"ship:{stype}")
         return total
 
     def _move_commodities(
@@ -546,6 +712,7 @@ class PlayerTradeService:
             "initiator_confirmed_version": session.initiator_confirmed_version,
             "target_confirmed_version": session.target_confirmed_version,
             "sector_id": session.sector_id,
+            "port_id": str(session.port_id) if session.port_id else None,
             "initiator_offer": session.initiator_offer or dict(_EMPTY_OFFER),
             "target_offer": session.target_offer or dict(_EMPTY_OFFER),
             "expires_at": session.expires_at.isoformat()

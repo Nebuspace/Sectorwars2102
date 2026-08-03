@@ -1,4 +1,4 @@
-"""Player-to-player trade API (ADR-0089 v1 kernel — credits + commodities)."""
+"""Player-to-player trade API (ADR-0089 — credits, commodities, ship-bundle)."""
 
 import logging
 from uuid import UUID
@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from src.core.database import get_db
 from src.auth.dependencies import get_current_player
@@ -26,6 +26,7 @@ class OfferRequest(BaseModel):
     credits: int = 0
     commodities: Dict[str, int] = Field(default_factory=dict)
     ship_id: Optional[str] = None
+    ships: List[str] = Field(default_factory=list)
 
 
 def _commit_or_400(db: Session, result: Dict[str, Any]) -> Dict[str, Any]:
@@ -88,6 +89,7 @@ async def stage_offer(
         "credits": body.credits,
         "commodities": body.commodities,
         "ship_id": body.ship_id,
+        "ships": body.ships,
     }
     result = PlayerTradeService(db).stage_offer(UUID(session_id), player.id, offer)
     return _commit_or_400(db, result)
