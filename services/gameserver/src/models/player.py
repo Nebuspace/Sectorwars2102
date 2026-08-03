@@ -69,6 +69,13 @@ class Player(Base):
     aria_blocked_until = Column(DateTime(timezone=True), nullable=True)
 
     current_ship_id = Column(UUID(as_uuid=True), ForeignKey("ships.id", ondelete="SET NULL"), nullable=True)
+    # ADR-0089 / WO-P2P-TRADING-SYSTEM: at most one open bilateral trade session.
+    open_trade_session_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("player_trade_sessions.id", ondelete="SET NULL", use_alter=True),
+        nullable=True,
+        unique=True,
+    )
     home_sector_id = Column(Integer, nullable=False, default=1)
     current_sector_id = Column(Integer, nullable=False, default=1)
     is_docked = Column(Boolean, nullable=False, default=False)

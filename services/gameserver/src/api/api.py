@@ -14,6 +14,7 @@ from src.api.routes.events import router as events_router
 from src.api.routes.websocket import router as websocket_router
 from src.api.routes.trading import router as trading_router
 from src.api.routes.mining import router as mining_router
+from src.api.routes.player_trade import router as player_trade_router
 from src.api.routes.player import router as player_router
 from src.api.routes.sectors import router as sectors_router
 from src.api.routes.ai import router as ai_router
@@ -102,6 +103,7 @@ api_router.include_router(events_router, tags=["events"])
 api_router.include_router(websocket_router, tags=["websocket"])
 api_router.include_router(trading_router, tags=["trading"])
 api_router.include_router(mining_router, tags=["mining"])  # WO-MINING (router carries /mining prefix)
+api_router.include_router(player_trade_router, tags=["player-trade"])  # ADR-0089 P2P trade (prefix /trade)
 api_router.include_router(haggle_router, tags=["haggle"])  # ADR-0079 numerical haggling (router carries /haggle prefix)
 api_router.include_router(player_router, tags=["player"])
 api_router.include_router(sectors_router, tags=["sectors"])
