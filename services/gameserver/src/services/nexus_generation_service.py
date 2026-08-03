@@ -501,10 +501,10 @@ class NexusGenerationService:
                 # NO-CANON patrol count: 2-4 patrol ships per military sector.
                 patrol_count = random.randint(2, 4)
                 # WO-GX1 CRITICAL: patrol_ships MUST be a SCALAR INT, never a
-                # list-of-dicts — four live consumers read it via int()
-                # (combat_service.py:3506, port_ownership_service.py:1792,
-                # admin.py:1495, admin_comprehensive.py:970); a list detonates
-                # combat + admin in every military sector.
+                # list-of-dicts — live consumers read it as a number
+                # (combat_service.py:4425 + port_ownership_service.py:2151 via
+                # int(); admin.py:1569 + admin_comprehensive.py:1127 via .get);
+                # a list detonates combat + admin in every military sector.
                 sector_data["defenses"] = {
                     "owner_id": None,
                     "owner_name": None,
