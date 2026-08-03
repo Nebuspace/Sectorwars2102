@@ -138,7 +138,7 @@ const UsersManager: React.FC = () => {
       setError(null);
       setSuccessMessage(null);
 
-      // PUT /api/v1/users/{id} (users.py:156) — partial update; is_active
+      // PUT /api/v1/users/{id} (users.py:123) — partial update; is_active
       // doubles as the activate/deactivate control (no dedicated endpoints exist).
       const updateData = {
         username: editUsername,
@@ -178,7 +178,7 @@ const UsersManager: React.FC = () => {
       setError(null);
       setSuccessMessage(null);
 
-      // DELETE /api/v1/users/{id} (users.py:210) — soft delete (sets deleted=true).
+      // DELETE /api/v1/users/{id} (users.py:177) — soft delete (sets deleted=true).
       await api.delete(`/api/v1/users/${selectedUser.id}`);
 
       // Reset delete state
@@ -213,7 +213,7 @@ const UsersManager: React.FC = () => {
       setError(null);
       setSuccessMessage(null);
 
-      // PUT /api/v1/users/{id}/password (users.py:242). The endpoint declares a
+      // PUT /api/v1/users/{id}/password (users.py:209). The endpoint declares a
       // single non-embedded scalar Body param, so the request body is the raw
       // JSON-encoded password string (not an object).
       await api.put(`/api/v1/users/${selectedUser.id}/password`, JSON.stringify(resetPassword), {

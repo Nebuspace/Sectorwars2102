@@ -41,7 +41,7 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
   const [unsavedChanges, setUnsavedChanges] = useState(false);
 
   // Honesty: player-scoped emergency route does not exist (only ship-scoped
-  // at admin_ships.py:205). Do not invent teleport/rescue/reset/clear chrome.
+  // at admin_ships.py:224). Do not invent teleport/rescue/reset/clear chrome.
   const EMERGENCY_ENDPOINT = 'POST /api/v1/admin/players/{id}/emergency';
 
   useEffect(() => {
