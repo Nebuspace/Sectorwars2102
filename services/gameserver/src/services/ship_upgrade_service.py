@@ -18,24 +18,20 @@ from src.models.ship import Ship, ShipType, ShipSpecification, UpgradeType
 logger = logging.getLogger(__name__)
 
 
-# SHIP-MODS WO-SM-3 STEP 4 — the four EQUIPMENT-FAMILY module classes whose
-# legacy effects are consumed out of the equipment_slots JSONB (by their EXISTING
+# SHIP-MODS WO-SM-3 STEP 4 — equipment-family module classes whose legacy
+# effects are consumed out of equipment_slots JSONB (by their EXISTING
 # consumers), NOT from a scalar Ship column. Their effects ARE baked/tracked in
 # Ship.modules["_baked"] by _apply_module_effects, but persisting them into the
-# equipment_slots key each consumer reads is DEFERRED to a follow-up WO (see the
-# rationale in install_module). Until then a module of one of these classes is
-# fitted-and-baked but runtime-INERT — install_module/remove_module surface
-# ``consumer_inert: True`` so the UI can warn the player.
+# equipment_slots key each consumer reads is DEFERRED for lander/mining/tractor
+# (see install_module). Until then those modules are fitted-and-baked but
+# runtime-INERT — install_module/remove_module surface ``consumer_inert: True``.
 #
-# WHY DEFERRED (not wired here) — flagged for the orchestrator/Max:
-#   * harvester (passive_income): get_passive_income() keys off the literal
-#     EQUIPMENT_DEFINITIONS slug ("quantum_harvester") and reads the CATALOG
-#     effect, not a stored slot value. A synthetic module key is unrecognized
-#     (silently 0); writing the literal "quantum_harvester" key COLLIDES with
-#     install_equipment's own slot, the npc_scheduler daily-credit anchor logic,
-#     and the legacy "is the equipment installed?" detection. Wiring it correctly
-#     needs a consumer change (a new module-aware passive-income source), which is
-#     out of SM-3's no-new-consumer scope.
+# harvester (passive_income): WO residual (2) wired get_passive_income to ALSO
+# read Ship.modules["_baked"]["passive_income"] — no equipment_slots write, so
+# no collision with install_equipment("quantum_harvester") / npc_scheduler.
+# harvester is therefore NOT in the deferred set below.
+#
+# WHY STILL DEFERRED for lander/mining/tractor — flagged for the orchestrator:
 #   * lander/mining/tractor (landing_bonus / mining_efficiency / tow_capable /
 #     weapon_mode): get_equipment_effects() MERGES numeric effects ADDITIVELY
 #     across all equipment_slots entries, but each consumer reads landing_bonus /
@@ -46,7 +42,7 @@ logger = logging.getLogger(__name__)
 #     tier value. Writing that key would make the module WORK WRONG — STEP 4 says
 #     do not write a wrong key. Correct wiring needs a module-aware effect source
 #     the consumers read (a follow-up WO).
-_EQUIPMENT_FAMILY_DEFERRED = frozenset({"harvester", "lander", "mining", "tractor"})
+_EQUIPMENT_FAMILY_DEFERRED = frozenset({"lander", "mining", "tractor"})
 
 # ============================================================================
 # GALACTIC-CITIZEN tier (WO-GC-B). The Citizen tier is DATA + an eligibility
@@ -661,25 +657,24 @@ class ShipUpgradeService:
 
     @staticmethod
     def get_passive_income(ship) -> int:
-        """Total per-period passive_income a ship's installed equipment grants.
+        """Total per-period passive_income a ship's installed equipment + modules grant.
 
-        Read-only. Authoritative source is EQUIPMENT_DEFINITIONS keyed by the
-        equipment actually installed in the ship's equipment_slots JSONB — NOT
-        the effects snapshot stored on the slot at install time — so a future
-        re-tuning of the canonical passive_income figure (e.g. a DECISIONS.md
-        ruling) takes effect for already-equipped ships without a backfill. If a
-        ship carries the effect via MULTIPLE equipment sources, their
-        passive_income values are SUMMED. Returns 0 when the ship carries no
-        passive_income equipment (the common case), so the idle-income sweep
-        skips it cleanly.
+        Read-only. Two additive sources (no double-write collision):
 
-        Used by npc_scheduler_service's daily idle-income credit-grant sweep
-        (ship-systems.md §passive_income: "applied per-tick by an idle-income
-        job"). Magnitude/cadence are NO-CANON (the doc marks the effect
-        📐 Design-only) — flagged for the orchestrator.
+        1. EQUIPMENT_DEFINITIONS keyed by equipment_slots JSONB keys (catalog
+           re-read so retunes apply without backfill) — typically
+           ``quantum_harvester``.
+        2. Ship.modules["_baked"]["passive_income"] — tiered totals already
+           summed by _apply_module_effects for installed harvester-family
+           modules (WO residual (2)). Does NOT write equipment_slots.
+
+        Returns 0 when neither source contributes, so the idle-income sweep
+        skips cleanly. Used by npc_scheduler_service's daily idle-income
+        credit-grant sweep. Magnitude/cadence are NO-CANON (ship-systems.md
+        §passive_income is 📐 Design-only).
         """
-        equipment_slots = getattr(ship, "equipment_slots", None) or {}
         total = 0
+        equipment_slots = getattr(ship, "equipment_slots", None) or {}
         for eq_key in equipment_slots.keys():
             eq_def = ShipUpgradeService.EQUIPMENT_DEFINITIONS.get(eq_key)
             if not eq_def:
@@ -687,6 +682,13 @@ class ShipUpgradeService:
             value = eq_def.get("effects", {}).get("passive_income")
             if isinstance(value, (int, float)):
                 total += int(value)
+
+        modules = getattr(ship, "modules", None) or {}
+        baked = modules.get("_baked") if isinstance(modules, dict) else None
+        if isinstance(baked, dict):
+            baked_pi = baked.get("passive_income")
+            if isinstance(baked_pi, (int, float)):
+                total += int(baked_pi)
         return total
 
     @staticmethod
