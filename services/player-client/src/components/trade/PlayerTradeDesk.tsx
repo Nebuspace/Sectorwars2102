@@ -23,6 +23,52 @@ type Props = {
   onClose: () => void;
 };
 
+const TERMINAL = new Set(['SETTLED', 'CANCELLED', 'EXPIRED', 'DECLINED']);
+
+/** Map server reason codes (HTTP detail) to cockpit prose. Unknown codes stay readable. */
+const TRADE_REASON_COPY: Record<string, string> = {
+  cannot_trade_self: 'You cannot trade with yourself.',
+  player_not_found: 'That captain is not available.',
+  already_in_trade: 'One of you already has an open trade.',
+  not_co_located: 'You must be in the same location to trade.',
+  session_not_found: 'Trade session not found.',
+  not_target: 'Only the invited captain can do that.',
+  not_pending_accept: 'This invite is no longer waiting for accept.',
+  not_open: 'This trade is not open for staging.',
+  not_party: 'You are not a party to this trade.',
+  already_terminal: 'This trade has already ended.',
+  not_fully_confirmed: 'Both captains must confirm the current offers first.',
+  initiator_insufficient_credits: 'You do not have enough credits for this deal.',
+  target_insufficient_credits: 'They do not have enough credits for this deal.',
+  ship_id_required_for_commodities: 'Pick a ship before offering commodities.',
+  trade_refresh_failed: 'Could not refresh the trade desk.',
+  trade_open_failed: 'Could not open a trade.',
+  trade_action_failed: 'That trade action failed.',
+};
+
+const STATUS_COPY: Record<string, string> = {
+  SETTLED: 'Deal complete.',
+  CANCELLED: 'Trade cancelled.',
+  EXPIRED: 'Trade invite expired.',
+  DECLINED: 'Trade declined.',
+  PENDING_ACCEPT: 'Awaiting accept',
+  OPEN: 'Open',
+};
+
+function formatTradeError(raw: unknown, fallback: string): string {
+  const msg = typeof raw === 'string' ? raw : (raw as any)?.message;
+  if (!msg || typeof msg !== 'string') return TRADE_REASON_COPY[fallback] || fallback;
+  const key = msg.trim();
+  if (TRADE_REASON_COPY[key]) return TRADE_REASON_COPY[key];
+  // Throttle / antirmt reasons may be longer free-form — pass through if already prose.
+  if (key.includes(' ') && !/^[a-z0-9_]+$/i.test(key)) return key;
+  // Snake_case unknown: soften underscores for display rather than dump the code raw.
+  if (/^[a-z][a-z0-9_]*$/i.test(key)) {
+    return key.replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase()) + '.';
+  }
+  return key;
+}
+
 /**
  * Thin P2P trade desk (ADR-0089) — credits-first staging + confirm/cancel.
  * Mounted from TACTICAL TARGET TRADE action.
@@ -44,7 +90,7 @@ const PlayerTradeDesk: React.FC<Props> = ({ targetPlayerId, myPlayerId, onClose 
       const res = await tradeAPI.getOpen();
       setSession(res.session ?? null);
     } catch (e: any) {
-      setError(e?.message || 'trade_refresh_failed');
+      setError(formatTradeError(e, 'trade_refresh_failed'));
     }
   }, []);
 
@@ -65,7 +111,7 @@ const PlayerTradeDesk: React.FC<Props> = ({ targetPlayerId, myPlayerId, onClose 
           setInfo('Trade invite sent — waiting for accept.');
         }
       } catch (e: any) {
-        if (!cancelled) setError(e?.message || 'trade_open_failed');
+        if (!cancelled) setError(formatTradeError(e, 'trade_open_failed'));
       } finally {
         if (!cancelled) setBusy(false);
       }
@@ -77,9 +123,7 @@ const PlayerTradeDesk: React.FC<Props> = ({ targetPlayerId, myPlayerId, onClose 
 
   useEffect(() => {
     if (!session?.id) return;
-    if (session.status === 'SETTLED' || session.status === 'CANCELLED' || session.status === 'EXPIRED' || session.status === 'DECLINED') {
-      return;
-    }
+    if (TERMINAL.has(session.status)) return;
     const t = window.setInterval(() => {
       refresh(session.id);
     }, 2000);
@@ -91,6 +135,17 @@ const PlayerTradeDesk: React.FC<Props> = ({ targetPlayerId, myPlayerId, onClose 
   const myOffer = amInitiator ? session?.initiator_offer : session?.target_offer;
   const theirOffer = amInitiator ? session?.target_offer : session?.initiator_offer;
 
+  const myConfirmed =
+    !!session &&
+    (amInitiator
+      ? session.initiator_confirmed_version === session.version
+      : session.target_confirmed_version === session.version);
+  const theyConfirmed =
+    !!session &&
+    (amInitiator
+      ? session.target_confirmed_version === session.version
+      : session.initiator_confirmed_version === session.version);
+
   const run = async (fn: () => Promise<any>, okMsg?: string) => {
     setBusy(true);
     setError(null);
@@ -101,11 +156,14 @@ const PlayerTradeDesk: React.FC<Props> = ({ targetPlayerId, myPlayerId, onClose 
       if (res.settled) setInfo(`Deal settled. Tax ${formatCredits(res.tax_paid ?? 0)}.`);
       else if (okMsg) setInfo(okMsg);
     } catch (e: any) {
-      setError(e?.message || 'trade_action_failed');
+      setError(formatTradeError(e, 'trade_action_failed'));
     } finally {
       setBusy(false);
     }
   };
+
+  const statusLabel = session ? STATUS_COPY[session.status] || session.status : '';
+  const isTerminal = session ? TERMINAL.has(session.status) : false;
 
   const body = (
     <div className="p2p-trade-desk" role="dialog" aria-modal="true" aria-label="Player trade desk">
@@ -132,8 +190,17 @@ const PlayerTradeDesk: React.FC<Props> = ({ targetPlayerId, myPlayerId, onClose 
       {session && (
         <>
           <p className="p2p-trade-desk__status">
-            Status: <strong>{session.status}</strong> · v{session.version}
+            Status: <strong>{statusLabel}</strong> · v{session.version}
           </p>
+
+          {isTerminal && (
+            <div className="p2p-trade-desk__row">
+              <p className="p2p-trade-desk__muted">{STATUS_COPY[session.status] || 'Trade ended.'}</p>
+              <button type="button" onClick={onClose}>
+                Close
+              </button>
+            </div>
+          )}
 
           {session.status === 'PENDING_ACCEPT' && amTarget && (
             <div className="p2p-trade-desk__row">
@@ -163,6 +230,16 @@ const PlayerTradeDesk: React.FC<Props> = ({ targetPlayerId, myPlayerId, onClose 
                 </div>
               </div>
 
+              <p className="p2p-trade-desk__muted" role="status">
+                {myConfirmed && theyConfirmed
+                  ? 'Both confirmed — settling…'
+                  : myConfirmed
+                    ? 'You confirmed — waiting for them.'
+                    : theyConfirmed
+                      ? 'They confirmed — confirm when ready.'
+                      : 'Neither captain has confirmed this version yet.'}
+              </p>
+
               <label className="p2p-trade-desk__field">
                 Credits to offer
                 <input
@@ -189,7 +266,7 @@ const PlayerTradeDesk: React.FC<Props> = ({ targetPlayerId, myPlayerId, onClose 
                 </button>
                 <button
                   type="button"
-                  disabled={busy}
+                  disabled={busy || myConfirmed}
                   onClick={() => run(() => tradeAPI.confirm(session.id), 'Confirmed.')}
                 >
                   Confirm
