@@ -96,6 +96,10 @@ class SetAccessLayersRequest(BaseModel):
     # Player UUIDs exempted from this gate's toll — [NO-CANON] key/shape,
     # see collect_toll's own docstring.
     toll_bypass: Optional[List[str]] = None
+    # WO-WARP-GATE-FACTION-ACCESS: snake_case NPC faction codes (e.g.
+    # "terran_federation") granted traversal through this player-built
+    # gate — default-DENY, see npc_movement_service._npc_gate_access_granted.
+    npc_factions: Optional[List[str]] = None
 
 
 class SetAccessLayersResponse(BaseModel):
@@ -103,6 +107,7 @@ class SetAccessLayersResponse(BaseModel):
     faction_rep_min: Optional[Dict[str, Any]] = None
     faction_rep_max: Optional[Dict[str, Any]] = None
     toll_bypass: List[str]
+    npc_factions: List[str]
 
 
 class TransferRequest(BaseModel):
@@ -348,13 +353,16 @@ async def set_access_layers(
     convention. This makes warp_gate_service.check_traversal_access's
     faction-rep enforcement and collect_toll's toll_bypass exemption —
     both already live at traversal/toll time — reachable for the first
-    time; previously nothing ever wrote these keys."""
+    time; previously nothing ever wrote these keys. WO-WARP-GATE-FACTION-
+    ACCESS extends the same PATCH with npc_factions, the grant list
+    npc_movement_service._npc_gate_access_granted already reads."""
     try:
         result = warp_gate_service.set_gate_access_layers(
             db, player, gate_id,
             request.faction_rep_min.model_dump() if request.faction_rep_min else None,
             request.faction_rep_max.model_dump() if request.faction_rep_max else None,
             request.toll_bypass,
+            request.npc_factions,
         )
         db.commit()
     except WarpGateError as e:

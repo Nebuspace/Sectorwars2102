@@ -21,9 +21,8 @@ from src.models.faction import Faction, FactionType
 from src.models.reputation import Reputation
 from src.models.warp_gate import WarpGate, WarpGateStatus
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus, WarpTunnelType
-from src.services import warp_gate_service
+from src.services import npc_movement_service, warp_gate_service
 from src.services.warp_gate_service import WarpGateError
-
 
 # --- shared fakes (mirrors test_warp_gate_toll.py) --------------------------
 
@@ -178,6 +177,70 @@ class TestValidateTollBypass:
         assert warp_gate_service._validate_toll_bypass([]) == []
 
 
+@pytest.mark.unit
+class TestNpcFactionGrantKeyMustMatch:
+    """warp_gate_service duplicates npc_movement_service._NPC_FACTION_GRANT_KEY
+    as a literal string (rather than importing it) to avoid a warp_gate_
+    service -> npc_movement_service -> movement_service -> warp_gate_service
+    import cycle (movement_service does `from src.services import
+    warp_gate_service` at module scope). This test is the drift guard the
+    duplication's own comment promises."""
+
+    def test_keys_are_identical(self) -> None:
+        assert (
+            warp_gate_service._NPC_FACTION_GRANT_KEY
+            == npc_movement_service._NPC_FACTION_GRANT_KEY
+        )
+
+
+@pytest.mark.unit
+class TestValidateNpcFactions:
+    def test_none_passes_through_unchanged(self) -> None:
+        assert warp_gate_service._validate_npc_factions(None) is None
+
+    def test_empty_list_is_valid_and_clears_grants(self) -> None:
+        assert warp_gate_service._validate_npc_factions([]) == []
+
+    def test_valid_snake_case_codes_accepted(self) -> None:
+        result = warp_gate_service._validate_npc_factions(
+            ["terran_federation", "pirates"],
+        )
+        assert result == ["terran_federation", "pirates"]
+
+    def test_dedupes_preserving_first_seen_order(self) -> None:
+        result = warp_gate_service._validate_npc_factions(
+            ["pirates", "terran_federation", "pirates"],
+        )
+        assert result == ["pirates", "terran_federation"]
+
+    def test_non_list_rejected(self) -> None:
+        with pytest.raises(WarpGateError, match="npc_factions must be a list"):
+            warp_gate_service._validate_npc_factions("terran_federation")
+
+    def test_too_many_entries_rejected(self) -> None:
+        codes = [f"faction_{i}" for i in range(warp_gate_service.MAX_ACCESS_LIST_ENTRIES + 1)]
+        with pytest.raises(WarpGateError, match="may hold at most"):
+            warp_gate_service._validate_npc_factions(codes)
+
+    @pytest.mark.parametrize("bad_value", [123, None, True, ""])
+    def test_non_string_or_empty_entry_rejected(self, bad_value: Any) -> None:
+        with pytest.raises(WarpGateError, match="invalid faction code"):
+            warp_gate_service._validate_npc_factions([bad_value])
+
+    def test_entry_too_long_rejected(self) -> None:
+        too_long = "a" * (warp_gate_service._MAX_FACTION_CODE_LEN + 1)
+        with pytest.raises(WarpGateError, match="exceeds .* characters"):
+            warp_gate_service._validate_npc_factions([too_long])
+
+    @pytest.mark.parametrize(
+        "bad_code",
+        ["Terran_Federation", "1pirates", "terran federation", "terran-federation", "_pirates"],
+    )
+    def test_non_snake_case_code_rejected(self, bad_code: str) -> None:
+        with pytest.raises(WarpGateError, match="must be snake_case"):
+            warp_gate_service._validate_npc_factions([bad_code])
+
+
 # --- set_gate_access_layers --------------------------------------------------
 
 @pytest.mark.unit
@@ -226,16 +289,44 @@ class TestSetGateAccessLayers:
         assert result["toll_bypass"] == [str(exempt_id)]
         assert tunnel.access_requirements["toll_bypass"] == [str(exempt_id)]
 
+    def test_sets_npc_factions_only(self) -> None:
+        owner_id = uuid.uuid4()
+        db, owner, gate, tunnel = _setup(owner_id)
+
+        result = warp_gate_service.set_gate_access_layers(
+            db, owner, str(gate.id), npc_factions=["terran_federation"],
+        )
+
+        assert result["npc_factions"] == ["terran_federation"]
+        assert tunnel.access_requirements["npc_factions"] == ["terran_federation"]
+        # Written under the SAME JSONB key npc_movement_service reads.
+        assert (
+            tunnel.access_requirements[warp_gate_service._NPC_FACTION_GRANT_KEY]
+            == ["terran_federation"]
+        )
+
+    def test_npc_factions_defaults_to_empty_list_when_never_set(self) -> None:
+        owner_id = uuid.uuid4()
+        db, owner, gate, tunnel = _setup(owner_id)
+
+        result = warp_gate_service.set_gate_access_layers(
+            db, owner, str(gate.id), toll_bypass=[],
+        )
+
+        assert result["npc_factions"] == []
+        assert "npc_factions" not in tunnel.access_requirements
+
     def test_omitted_fields_preserve_existing_values(self) -> None:
         """Matches set_gate_permissions' own `toll` field convention — an
         owner setting toll_bypass should never silently wipe an already-
-        configured faction_rep_min."""
+        configured faction_rep_min (or npc_factions)."""
         owner_id = uuid.uuid4()
         db, owner, gate, tunnel = _setup(
             owner_id,
             access_requirements={
                 "mode": "PUBLIC",
                 "faction_rep_min": {"faction_type": "Federation", "value": 5},
+                "npc_factions": ["terran_federation"],
             },
         )
 
@@ -244,9 +335,11 @@ class TestSetGateAccessLayers:
         )
 
         assert result["faction_rep_min"] == {"faction_type": "Federation", "value": 5}
+        assert result["npc_factions"] == ["terran_federation"]
         assert tunnel.access_requirements["faction_rep_min"] == {
             "faction_type": "Federation", "value": 5,
         }
+        assert tunnel.access_requirements["npc_factions"] == ["terran_federation"]
         assert tunnel.access_requirements["mode"] == "PUBLIC"  # untouched sibling key too
         assert tunnel.access_requirements["toll_bypass"] == []
 
@@ -266,6 +359,24 @@ class TestSetGateAccessLayers:
         assert result["faction_rep_max"] == {"faction_type": "Pirates", "value": 100}
         assert result["toll_bypass"] == [str(exempt_id)]
 
+    def test_sets_all_four_together(self) -> None:
+        owner_id = uuid.uuid4()
+        exempt_id = uuid.uuid4()
+        db, owner, gate, tunnel = _setup(owner_id)
+
+        result = warp_gate_service.set_gate_access_layers(
+            db, owner, str(gate.id),
+            faction_rep_min={"faction_type": "Federation", "value": 5},
+            faction_rep_max={"faction_type": "Pirates", "value": 100},
+            toll_bypass=[str(exempt_id)],
+            npc_factions=["terran_federation", "pirates"],
+        )
+
+        assert result["faction_rep_min"] == {"faction_type": "Federation", "value": 5}
+        assert result["faction_rep_max"] == {"faction_type": "Pirates", "value": 100}
+        assert result["toll_bypass"] == [str(exempt_id)]
+        assert result["npc_factions"] == ["terran_federation", "pirates"]
+
     def test_invalid_layer_rejected_before_any_lock_or_mutation(self) -> None:
         """Mirrors test_warp_gate_toll.py's own
         test_toll_out_of_range_rejected_jsonb_unchanged proof shape:
@@ -280,6 +391,22 @@ class TestSetGateAccessLayers:
             warp_gate_service.set_gate_access_layers(
                 db, owner, str(gate.id),
                 faction_rep_min={"faction_type": "NotReal", "value": 5},
+            )
+
+        assert tunnel.access_requirements == {"mode": "PUBLIC"}
+        assert db.flush_calls == 0
+
+    def test_invalid_npc_factions_rejected_before_any_lock_or_mutation(self) -> None:
+        """Same validate-before-mutate discipline, pinned specifically for
+        the npc_factions field this WO adds."""
+        owner_id = uuid.uuid4()
+        db, owner, gate, tunnel = _setup(
+            owner_id, access_requirements={"mode": "PUBLIC"},
+        )
+
+        with pytest.raises(WarpGateError, match="must be snake_case"):
+            warp_gate_service.set_gate_access_layers(
+                db, owner, str(gate.id), npc_factions=["Not Snake Case"],
             )
 
         assert tunnel.access_requirements == {"mode": "PUBLIC"}
@@ -410,3 +537,46 @@ class TestSetterEnablesReadSideEnforcement:
         reqs = tunnel.access_requirements
         bypass = {str(x) for x in (reqs.get("toll_bypass") or [])}
         assert str(exempt_player.id) in bypass
+
+    def test_npc_factions_setter_round_trips_through_npc_movement_service_read(self) -> None:
+        """WO-WARP-GATE-FACTION-ACCESS's own DoD: writing npc_factions via
+        this setter makes npc_movement_service._npc_gate_access_granted —
+        the default-DENY read this WO's write side was missing for — see a
+        granted faction as allowed and every other faction as still denied."""
+        owner_id = uuid.uuid4()
+        db, owner, gate, tunnel = _setup(owner_id)
+
+        result = warp_gate_service.set_gate_access_layers(
+            db, owner, str(gate.id), npc_factions=["terran_federation"],
+        )
+        assert result["npc_factions"] == ["terran_federation"]
+
+        assert npc_movement_service._npc_gate_access_granted(
+            tunnel, "terran_federation",
+        ) is True
+        # default-DENY: an ungranted faction stays denied even though the
+        # gate now has SOME grant configured.
+        assert npc_movement_service._npc_gate_access_granted(
+            tunnel, "pirates",
+        ) is False
+        # default-DENY: a tunnel with no faction_code at all is denied too.
+        assert npc_movement_service._npc_gate_access_granted(
+            tunnel, None,
+        ) is False
+
+    def test_revoking_npc_factions_to_empty_list_denies_every_faction(self) -> None:
+        owner_id = uuid.uuid4()
+        db, owner, gate, tunnel = _setup(
+            owner_id, access_requirements={"npc_factions": ["terran_federation"]},
+        )
+        assert npc_movement_service._npc_gate_access_granted(
+            tunnel, "terran_federation",
+        ) is True
+
+        warp_gate_service.set_gate_access_layers(
+            db, owner, str(gate.id), npc_factions=[],
+        )
+
+        assert npc_movement_service._npc_gate_access_granted(
+            tunnel, "terran_federation",
+        ) is False
