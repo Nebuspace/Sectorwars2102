@@ -116,7 +116,8 @@ class RealTimeMarketService:
         # previously hardcoded lists spelled the rare-material slug after the
         # legacy PHOTONIC_CRYSTALS enum member instead of canon's
         # lumen_crystals — see resource_registry_seeder.py's docstring).
-        # Core Commodities (7) - lowercase_underscore canon slugs
+        # Core Commodities (8) - lowercase_underscore canon slugs
+        # (classic 7 + precious_metals per ADR-0062 / mining.md)
         self.valid_commodities = [
             e["name"] for e in RESOURCE_REGISTRY.values() if e["category"] == CATEGORY_CORE
         ]

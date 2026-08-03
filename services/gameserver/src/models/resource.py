@@ -35,12 +35,12 @@ class ResourceType(enum.Enum):
     See /DOCS/STATUS/COMMODITY_NAMING_ANALYSIS.md for detailed analysis.
 
     Categories:
-    - Core Commodities (7): Basic trading resources
+    - Core Commodities (8): Basic trading resources (incl. precious_metals)
     - Strategic Resources (4): Advanced gameplay materials
     - Rare Materials (2): Endgame high-value materials
     """
 
-    # Core Commodities (7)
+    # Core Commodities (8)
     # NOTE: BASIC_FOOD maps to "organics" in actual trading code
     # NOTE: TECHNOLOGY maps to "equipment" in actual trading code
     ORE = "ORE"
@@ -50,6 +50,7 @@ class ResourceType(enum.Enum):
     TECHNOLOGY = "TECHNOLOGY"  # Actual codebase uses: "equipment"
     EXOTIC_TECHNOLOGY = "EXOTIC_TECHNOLOGY"
     LUXURY_GOODS = "LUXURY_GOODS"
+    PRECIOUS_METALS = "PRECIOUS_METALS"
 
     # Strategic Resources (4)
     # NOTE: POPULATION maps to "colonists" in actual trading code
