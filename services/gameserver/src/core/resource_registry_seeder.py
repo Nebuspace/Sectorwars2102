@@ -52,7 +52,7 @@ precious_metals (WO-RES-PRECIOUS-METALS-SEED): seeded as rare_material
 (CATEGORY_RARE) with COMMODITY_BASE_PRICES pricing. mining.md lists it as a
 Secondary rare mining drop — not one of the 7 core tradeable commodities —
 so it must not use core_commodity (that category feeds
-RealtimeMarketDefaultsService.valid_commodities). It is *not* in
+RealTimeMarketService.valid_commodities). It is *not* in
 definitions.md's narrow "Rare Materials" subsection (that list is only
 prismatic_ore / lumen_crystals — super-rare finds with no credit price);
 precious_metals is separately canonical as a priced mining rare drop
