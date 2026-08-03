@@ -4,8 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useAdmin } from '../../../contexts/AdminContext';
 import type {
   BangConfig,
-  BangJobResponse,
-  BangJobWarning,
+  BangJobListItem,
 } from './types';
 import './galaxy-generation-history.css';
 
@@ -20,19 +19,6 @@ interface GalaxyGenerationHistoryProps {
 }
 
 const DEFAULT_PAGE_SIZE = 20;
-
-/** Group warnings by category for the count badge cluster. */
-function warningCounts(
-  warnings: BangJobWarning[],
-): Array<{ category: string; count: number }> {
-  const counts = new Map<string, number>();
-  for (const w of warnings) {
-    counts.set(w.category, (counts.get(w.category) ?? 0) + 1);
-  }
-  return Array.from(counts.entries())
-    .map(([category, count]) => ({ category, count }))
-    .sort((a, b) => b.count - a.count);
-}
 
 function formatDuration(ms: number | null | undefined): string {
   if (!ms || ms <= 0) return '—';
@@ -106,13 +92,13 @@ const GalaxyGenerationHistory: React.FC<GalaxyGenerationHistoryProps> = ({
               </tr>
             </thead>
             <tbody>
-              {bangHistory.map((job: BangJobResponse) => {
+              {bangHistory.map((job: BangJobListItem) => {
                 const params = job.params_json as Partial<BangConfig> & Record<string, unknown>;
                 const seed = params.seed ?? '—';
                 const regionType = params.region_type ?? '—';
                 const bangVersion = (params as { bang_version?: string }).bang_version ?? '—';
                 const date = job.started_at ? new Date(job.started_at).toLocaleString() : '—';
-                const counts = warningCounts(job.warnings_json ?? []);
+                const warningCount = job.warning_count ?? 0;
                 return (
                   <tr key={job.id}>
                     <td>{date}</td>
@@ -121,18 +107,15 @@ const GalaxyGenerationHistory: React.FC<GalaxyGenerationHistoryProps> = ({
                     <td>{bangVersion}</td>
                     <td>{regionType}</td>
                     <td className="history-warnings-cell">
-                      {counts.length === 0 ? (
+                      {warningCount === 0 ? (
                         <span className="history-warning-zero">0</span>
                       ) : (
-                        counts.map((c) => (
-                          <span
-                            key={c.category}
-                            className="history-warning-badge"
-                            title={c.category}
-                          >
-                            {c.category.slice(0, 4)}:{c.count}
-                          </span>
-                        ))
+                        <span
+                          className="history-warning-badge"
+                          title={t('bang.history.columns.warnings')}
+                        >
+                          {warningCount}
+                        </span>
                       )}
                     </td>
                     <td>{formatDuration(job.duration_ms)}</td>

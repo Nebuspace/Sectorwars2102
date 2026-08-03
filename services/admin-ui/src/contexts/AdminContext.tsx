@@ -3,6 +3,7 @@ import axios from 'axios';
 import { useAuth } from './AuthContext';
 import type {
   BangConfig,
+  BangJobListItem,
   BangJobResponse,
 } from '../components/universe/bang/types';
 import {
@@ -207,7 +208,7 @@ interface AdminContextType {
   deactivateUser: (userId: string) => Promise<void>;
 
   // sw2102-bang generation (Phase 3 — admin UI integration)
-  bangHistory: BangJobResponse[];
+  bangHistory: BangJobListItem[];
   bangHistoryTotal: number;
   bangGalaxy: (config: BangConfig, galaxyName?: string) => Promise<BangJobResponse | null>;
   loadBangHistory: (page?: number, pageSize?: number) => Promise<void>;
@@ -240,7 +241,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const [players, setPlayers] = useState<PlayerAccount[]>([]);
 
   // sw2102-bang state
-  const [bangHistory, setBangHistory] = useState<BangJobResponse[]>([]);
+  const [bangHistory, setBangHistory] = useState<BangJobListItem[]>([]);
   const [bangHistoryTotal, setBangHistoryTotal] = useState<number>(0);
   
   // Set up axios instance (headers set per request)
@@ -623,12 +624,12 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         setBangHistory(result.items ?? []);
         setBangHistoryTotal(result.total ?? 0);
       } catch (err) {
-        // History listing endpoint is planned but may not yet exist —
-        // degrade to an empty list rather than blocking the whole page.
+        // Endpoint is live (GET /admin/galaxy/jobs); surface real failures.
         console.error('Error loading bang history:', err);
         setBangHistory([]);
         setBangHistoryTotal(0);
         setError('Failed to load bang generation history');
+        throw err;
       } finally {
         setIsLoading(false);
       }
