@@ -204,6 +204,23 @@ DOCKING_FEE_ENABLED_KEY = "docking_fee_enabled"  # toggle (canon "toggle + amoun
 SERVICE_CHARGE_KEY = "service_charge_multiplier"  # owner-set repair/refuel multiplier
 STORAGE_RENTAL_KEY = "storage_rental_per_day"   # owner-set cr/day per storage slot
 
+# Station.ownership["defense_policy"] levers (WO-STATION-DEFENSE-POLICY-LEVERS).
+# Persisted in the existing ownership JSONB — no migration.
+DEFENSE_POLICY_KEY = "defense_policy"
+DOCKING_ACCESS_MODES = frozenset({"open", "faction", "whitelist", "hostile_deny"})
+PUNITIVE_FEE_MULT_MIN = 1.0
+PUNITIVE_FEE_MULT_MAX = 5.0
+DRONE_ALLOCATION_PCT_MIN = 0
+DRONE_ALLOCATION_PCT_MAX = 100
+DEFAULT_DEFENSE_POLICY: Dict[str, Any] = {
+    "docking_access": "open",
+    "hostility_list": [],
+    "punitive_fee_mult": 1.0,
+    "defender_posture": "passive",
+    "drone_allocation_pct": 100,
+    "patrol_radius": 0,
+}
+
 # Campaign statuses considered "active" (a live takeover attempt). Hoisted here
 # so both the economic and military engines reference one source of truth.
 _ACTIVE_CAMPAIGN_STATUSES = ("building", "eligible", "countered", "disputed")
@@ -1091,6 +1108,228 @@ def set_docking_fee(
     }
 
 
+def _ownership(station: Station) -> Dict[str, Any]:
+    """Mutable handle on station.ownership (created if absent). Caller MUST
+    flag_modified(station, 'ownership') after mutating."""
+    if station.ownership is None:
+        station.ownership = {}
+    return station.ownership
+
+
+def normalize_defense_policy(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return a fully-populated defense_policy dict with clamped defaults.
+
+    Pure helper — no DB. Unknown / missing keys fall back to defaults.
+    Does NOT raise on patrol_radius > 0 (set_defense_policy rejects that);
+    normalize clamps patrol_radius to 0 for safe reads of legacy/bad data.
+    """
+    src = raw if isinstance(raw, dict) else {}
+    access = src.get("docking_access", DEFAULT_DEFENSE_POLICY["docking_access"])
+    if access not in DOCKING_ACCESS_MODES:
+        access = DEFAULT_DEFENSE_POLICY["docking_access"]
+
+    hostility_raw = src.get("hostility_list", [])
+    hostility_list: List[str] = []
+    if isinstance(hostility_raw, (list, tuple)):
+        for item in hostility_raw:
+            if item is None:
+                continue
+            hostility_list.append(str(item))
+
+    try:
+        mult = float(src.get("punitive_fee_mult", DEFAULT_DEFENSE_POLICY["punitive_fee_mult"]))
+    except (TypeError, ValueError):
+        mult = float(DEFAULT_DEFENSE_POLICY["punitive_fee_mult"])
+    mult = max(PUNITIVE_FEE_MULT_MIN, min(PUNITIVE_FEE_MULT_MAX, mult))
+
+    posture = src.get("defender_posture", DEFAULT_DEFENSE_POLICY["defender_posture"])
+    if not isinstance(posture, str) or not posture:
+        posture = str(DEFAULT_DEFENSE_POLICY["defender_posture"])
+
+    try:
+        drone_pct = int(src.get(
+            "drone_allocation_pct", DEFAULT_DEFENSE_POLICY["drone_allocation_pct"]
+        ))
+    except (TypeError, ValueError):
+        drone_pct = int(DEFAULT_DEFENSE_POLICY["drone_allocation_pct"])
+    drone_pct = max(DRONE_ALLOCATION_PCT_MIN, min(DRONE_ALLOCATION_PCT_MAX, drone_pct))
+
+    # v1: patrol is deferred; clamp reads to 0 (setter rejects >0).
+    patrol = 0
+
+    return {
+        "docking_access": access,
+        "hostility_list": hostility_list,
+        "punitive_fee_mult": float(mult),
+        "defender_posture": posture,
+        "drone_allocation_pct": drone_pct,
+        "patrol_radius": patrol,
+    }
+
+
+def get_defense_policy(station: Station) -> Dict[str, Any]:
+    """Effective defense_policy for `station` (normalized defaults)."""
+    raw = (station.ownership or {}).get(DEFENSE_POLICY_KEY)
+    return normalize_defense_policy(raw if isinstance(raw, dict) else None)
+
+
+def set_defense_policy(
+    db: Session,
+    station: Station,
+    owner: Player,
+    policy: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Owner lever: persist Station.ownership['defense_policy'] (no migration).
+
+    Rejects patrol_radius > 0 (patrol deferred to a later WO). Owner-gated
+    under the station lock; no commit.
+    """
+    station = _lock_station(db, station.id)
+    _require_owner(station, owner)
+
+    if not isinstance(policy, dict):
+        raise PortOwnershipError(400, "defense_policy must be an object")
+
+    # Reject patrol before normalize (normalize would clamp and hide the error).
+    raw_patrol = policy.get("patrol_radius", 0)
+    try:
+        patrol_val = int(raw_patrol) if raw_patrol is not None else 0
+    except (TypeError, ValueError):
+        raise PortOwnershipError(400, "patrol_radius must be an integer")
+    if patrol_val > 0:
+        raise PortOwnershipError(
+            400,
+            "patrol_radius > 0 is not supported yet — patrol is deferred",
+        )
+    if patrol_val < 0:
+        raise PortOwnershipError(400, "patrol_radius must be 0")
+
+    access = policy.get("docking_access", DEFAULT_DEFENSE_POLICY["docking_access"])
+    if access not in DOCKING_ACCESS_MODES:
+        raise PortOwnershipError(
+            400,
+            f"docking_access must be one of: {', '.join(sorted(DOCKING_ACCESS_MODES))}",
+        )
+
+    try:
+        mult = float(policy.get(
+            "punitive_fee_mult", DEFAULT_DEFENSE_POLICY["punitive_fee_mult"]
+        ))
+    except (TypeError, ValueError):
+        raise PortOwnershipError(400, "punitive_fee_mult must be a number")
+    if not (PUNITIVE_FEE_MULT_MIN <= mult <= PUNITIVE_FEE_MULT_MAX):
+        raise PortOwnershipError(
+            400,
+            f"punitive_fee_mult must be between {PUNITIVE_FEE_MULT_MIN} and "
+            f"{PUNITIVE_FEE_MULT_MAX}",
+        )
+
+    try:
+        drone_pct = int(policy.get(
+            "drone_allocation_pct", DEFAULT_DEFENSE_POLICY["drone_allocation_pct"]
+        ))
+    except (TypeError, ValueError):
+        raise PortOwnershipError(400, "drone_allocation_pct must be an integer")
+    if not (DRONE_ALLOCATION_PCT_MIN <= drone_pct <= DRONE_ALLOCATION_PCT_MAX):
+        raise PortOwnershipError(
+            400,
+            f"drone_allocation_pct must be between {DRONE_ALLOCATION_PCT_MIN} and "
+            f"{DRONE_ALLOCATION_PCT_MAX}",
+        )
+
+    normalized = normalize_defense_policy({
+        **policy,
+        "docking_access": access,
+        "punitive_fee_mult": mult,
+        "drone_allocation_pct": drone_pct,
+        "patrol_radius": 0,
+    })
+    ownership = _ownership(station)
+    ownership[DEFENSE_POLICY_KEY] = normalized
+    flag_modified(station, "ownership")
+    db.flush()
+    logger.info(
+        "Station %s defense_policy set (access=%s) by %s",
+        station.id, normalized["docking_access"], owner.id,
+    )
+    return {
+        "station_id": str(station.id),
+        "defense_policy": normalized,
+    }
+
+
+def evaluate_defense_dock_access(
+    db: Session, station: Station, player: Player
+) -> Dict[str, Any]:
+    """Evaluate defense_policy docking access for `player` at `station`.
+
+    Returns {allowed, reason?, on_hostility_list, punitive_fee_mult}.
+    Owner always bypasses access deny. Punitive mult applies when the
+    visitor is on the hostility list AND docking is allowed.
+    """
+    policy = get_defense_policy(station)
+    player_id_str = str(player.id)
+    on_list = player_id_str in policy["hostility_list"]
+    access = policy["docking_access"]
+    base_mult = float(policy["punitive_fee_mult"])
+
+    # Owner always docks (bypass access deny).
+    if station.owner_id is not None and station.owner_id == player.id:
+        punitive = base_mult if on_list else 1.0
+        return {
+            "allowed": True,
+            "on_hostility_list": on_list,
+            "punitive_fee_mult": punitive,
+        }
+
+    allowed = True
+    reason: Optional[str] = None
+
+    if access == "open":
+        allowed = True
+    elif access == "whitelist":
+        if not on_list:
+            allowed = False
+            reason = "Docking denied: this station only admits whitelisted visitors."
+    elif access == "hostile_deny":
+        if on_list:
+            allowed = False
+            reason = "Docking denied: you are on this station's hostility list."
+    elif access == "faction":
+        # Lazy import avoids a cycle with docking_service (which imports
+        # realize_port_revenue from this module at call time).
+        from src.services.docking_service import check_reputation_gate
+
+        rep_allowed, rep_value, threshold = check_reputation_gate(db, station, player)
+        if not rep_allowed:
+            allowed = False
+            reason = (
+                f"Docking denied: your standing with this station's faction is "
+                f"{rep_value}; minimum required is {threshold}."
+            )
+        else:
+            allowed = True
+
+    punitive = base_mult if (allowed and on_list) else 1.0
+    result: Dict[str, Any] = {
+        "allowed": allowed,
+        "on_hostility_list": on_list,
+        "punitive_fee_mult": punitive,
+    }
+    if reason is not None:
+        result["reason"] = reason
+    return result
+
+
+def public_defense_policy_fields(station: Station) -> Dict[str, Any]:
+    """Public-safe defense policy summary — never exposes hostility_list."""
+    policy = get_defense_policy(station)
+    return {
+        "docking_access": policy["docking_access"],
+        "punitive_fees_apply": float(policy["punitive_fee_mult"]) > 1.0,
+    }
+
+
 def set_service_charge(
     db: Session, station: Station, owner: Player, multiplier: float
 ) -> Dict[str, Any]:
@@ -1317,10 +1556,8 @@ def revenue_summary(db: Session, station: Station, days: int = 30) -> Dict[str, 
 
 def _ledger(station: Station) -> Dict[str, Any]:
     """Mutable handle on station.ownership (created if absent). Caller MUST
-    flag_modified(station, 'ownership') after mutating."""
-    if station.ownership is None:
-        station.ownership = {}
-    return station.ownership
+    flag_modified(station, 'ownership') after mutating. Alias of _ownership."""
+    return _ownership(station)
 
 
 def _bucket(station: Station, key: str) -> int:
@@ -2727,7 +2964,7 @@ def get_station_listing_status(
     else:
         status = "unlisted"
 
-    return {
+    payload = {
         "station_id": str(station.id),
         "owner_id": str(station.owner_id) if station.owner_id else None,
         "owner_name": owner_name,
@@ -2743,3 +2980,5 @@ def get_station_listing_status(
         "treasury_balance": station.treasury_balance or 0,
         "status": status,
     }
+    payload.update(public_defense_policy_fields(station))
+    return payload

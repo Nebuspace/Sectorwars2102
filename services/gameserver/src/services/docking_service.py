@@ -402,7 +402,11 @@ def ship_size_for(db: Session, ship: Optional[Ship]) -> Optional[ShipSize]:
     return spec.ship_size if spec is not None else None
 
 
-def docking_fee_for(station: Station, ship_size: Optional[ShipSize] = None) -> int:
+def docking_fee_for(
+    station: Station,
+    ship_size: Optional[ShipSize] = None,
+    player: Optional[Player] = None,
+) -> int:
     """Transient docking fee in credits.
 
     Canon (FEATURES/economy/station-protection.md §Docking fee economics,
@@ -425,14 +429,29 @@ def docking_fee_for(station: Station, ship_size: Optional[ShipSize] = None) -> i
     disabled, this falls through to the size/tier matrix. Reading the override
     here makes every docking-fee consume site (dock charge, bump cost,
     slip-info quote, admin display) honor it through one source of truth.
+
+    When ``player`` is provided, the station's defense_policy punitive
+    multiplier applies if that player is on the hostility list (and would
+    be allowed to dock). Cap is int(round(...)).
     """
     override = _owner_docking_fee_override(station)
     if override is not None:
-        return override
-    size = ship_size if ship_size is not None else _DOCKING_FEE_SIZE_FALLBACK
-    base = _DOCKING_BASE_FEE_BY_SIZE.get(size, _DOCKING_BASE_FEE_BY_SIZE[_DOCKING_FEE_SIZE_FALLBACK])
-    multiplier = _DOCKING_TIER_MULTIPLIER.get(station.security_level, 0.0)
-    return int(round(base * multiplier))
+        fee = override
+    else:
+        size = ship_size if ship_size is not None else _DOCKING_FEE_SIZE_FALLBACK
+        base = _DOCKING_BASE_FEE_BY_SIZE.get(size, _DOCKING_BASE_FEE_BY_SIZE[_DOCKING_FEE_SIZE_FALLBACK])
+        multiplier = _DOCKING_TIER_MULTIPLIER.get(station.security_level, 0.0)
+        fee = int(round(base * multiplier))
+
+    if player is not None:
+        # Lazy import: port_ownership_service imports check_reputation_gate
+        # from this module at call time — keep the cycle broken.
+        from src.services.port_ownership_service import get_defense_policy
+
+        policy = get_defense_policy(station)
+        if str(player.id) in policy["hostility_list"]:
+            fee = int(round(fee * float(policy["punitive_fee_mult"])))
+    return fee
 
 
 def occupant_tenure_hours(occupancy: DockingSlipOccupancy, now=None) -> float:
@@ -520,6 +539,22 @@ def acquire(db: Session, station: Station, player: Player, ship_id: Optional[UUI
                 f"Docking denied: your standing with this station's faction is {rep_value}; "
                 f"minimum required is {threshold}. Improve your reputation to dock here."
             ),
+        }
+
+    # Owner defense_policy docking access (WO-STATION-DEFENSE-POLICY-LEVERS).
+    # Lives in port_ownership_service to keep the check_reputation_gate import
+    # cycle one-directional (lazy there, lazy here).
+    from src.services.port_ownership_service import evaluate_defense_dock_access
+
+    defense = evaluate_defense_dock_access(db, station, player)
+    if not defense.get("allowed", True):
+        return {
+            "status": "access_denied",
+            "detail": defense.get(
+                "reason",
+                "Docking denied by this station's defense policy.",
+            ),
+            "on_hostility_list": defense.get("on_hostility_list", False),
         }
 
     capacity = slip_capacity_for(station)

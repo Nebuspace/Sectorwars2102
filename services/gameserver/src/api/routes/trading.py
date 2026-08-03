@@ -1589,7 +1589,9 @@ async def dock_at_station(
     # shown by /slips and the charge here always agree. Validated after the
     # turn check, in addition to the 1-turn dock cost.
     docking_ship_size = docking_service.ship_size_for(db, current_ship)
-    docking_fee = docking_service.docking_fee_for(station, docking_ship_size)
+    docking_fee = docking_service.docking_fee_for(
+        station, docking_ship_size, player=current_player
+    )
     if current_player.credits < docking_fee:
         raise HTTPException(
             status_code=400,
@@ -1601,6 +1603,12 @@ async def dock_at_station(
     slip_result = docking_service.acquire(
         db, station, current_player, ship_id=current_player.current_ship_id
     )
+
+    # Access denials (reputation gate / defense_policy) — mirror long-term
+    # mooring's reputation_denied → HTTP 403; do not enqueue.
+    if slip_result["status"] in ("reputation_denied", "access_denied"):
+        db.rollback()
+        raise HTTPException(status_code=403, detail=slip_result["detail"])
 
     if slip_result["status"] != "granted":
         # All transient slips taken (or the free slot belongs to the queue

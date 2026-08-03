@@ -73,6 +73,17 @@ class DockingFeeRequest(BaseModel):
     enabled: bool = True
 
 
+class DefensePolicyRequest(BaseModel):
+    # WO-STATION-DEFENSE-POLICY-LEVERS — stored in Station.ownership JSONB.
+    docking_access: Literal["open", "faction", "whitelist", "hostile_deny"] = "open"
+    hostility_list: list[str] = Field(default_factory=list)
+    punitive_fee_mult: float = Field(1.0, ge=1.0, le=5.0)
+    defender_posture: str = "passive"
+    drone_allocation_pct: int = Field(100, ge=0, le=100)
+    # v1: must be 0; service rejects >0 (patrol deferred).
+    patrol_radius: int = Field(0, ge=0)
+
+
 class ServiceChargeRequest(BaseModel):
     # Canon service charge: 0.8x-2.0x of standard.
     multiplier: float = Field(..., ge=0.8, le=2.0)
@@ -374,6 +385,55 @@ async def set_docking_fee(
     state = "on" if request.enabled else "off"
     return {
         "message": f"Docking fee at {station.name} set to {request.amount:,} cr ({state})",
+        **result,
+    }
+
+
+@router.get("/stations/{station_id}/defense-policy")
+async def get_defense_policy(
+    station_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Return the station's defense_policy (owner only — includes hostility_list)."""
+    station = _get_station_or_404(db, station_id)
+    if station.owner_id != current_player.id:
+        raise HTTPException(status_code=403, detail="Only the station owner can do that")
+    policy = port_ownership_service.get_defense_policy(station)
+    return {
+        "station_id": str(station.id),
+        "defense_policy": policy,
+    }
+
+
+@router.post("/stations/{station_id}/defense-policy")
+async def set_defense_policy(
+    station_id: str,
+    request: DefensePolicyRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Set the station's defense_policy levers (owner only). patrol_radius must
+    be 0 in v1 — patrol is deferred."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.set_defense_policy(
+            db,
+            station,
+            current_player,
+            request.model_dump(),
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "message": (
+            f"Defense policy at {station.name} updated "
+            f"(access={result['defense_policy']['docking_access']})"
+        ),
         **result,
     }
 
