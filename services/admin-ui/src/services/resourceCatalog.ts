@@ -11,13 +11,11 @@
  * Network / auth failures still degrade to an empty list rather than crashing
  * or reintroducing stale mock data.
  *
- * Also note: the registry is missing `precious_metals`, a real, actively
- * traded MarketPrice.commodity value (see models/station.py's DEFAULT_
- * COMMODITIES and resource_registry_seeder.py's own docstring, which
- * documents this exact divergence as a pre-existing, already-flagged gap).
- * The commodity filter below is strictly additive over the old hardcoded
- * list (whose 8 values never matched a real commodity at all), not a
- * regression.
+ * `precious_metals` is seeded (WO-RES-PRECIOUS-METALS-SEED / #179–#180) as
+ * `rare_material` — priced Secondary mining drop, not a core station
+ * commodity. GET /api/v1/resources returns it with the rest of the active
+ * catalog; EconomyDashboard maps `catalog[].name` directly. Local glyph
+ * lives in DEFAULT_ICONS below (registry `icon` column stays placeholder).
  */
 import { api } from '../utils/auth';
 
