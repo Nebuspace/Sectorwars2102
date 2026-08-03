@@ -1666,7 +1666,7 @@ const GameDashboardInner: React.FC = () => {
 
   // Colonist disembark ceiling = the LOWER of the citadel headcount cap
   // (baseMaxColonists) and the habitability demographic cap (maxPopulation) —
-  // the server enforces BOTH (planets.py:982 citadel + :993 habitability; settle
+  // the server enforces BOTH (planets.py:1005-1009 citadel + :1010 habitability; settle
   // clamps to min). NOT maxColonists/effectiveMaxColonists (habitability-scaled
   // DISPLAY value, not enforced) and NOT maxPopulation alone (misses the citadel
   // cap). Using baseMaxColonists alone over-filled the Max preset → server 400 when
