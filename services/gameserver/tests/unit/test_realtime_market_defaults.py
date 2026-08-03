@@ -60,10 +60,12 @@ class TestTaxonomyDerivation:
     """valid_commodities/strategic_resources/rare_materials now derive from
     the resource registry's category split instead of a hand-kept literal."""
 
-    def test_valid_commodities_are_the_seven_core_canon_slugs(self, service):
+    def test_valid_commodities_are_the_eight_core_canon_slugs(self, service):
+        """8 core commodities — classic 7 + precious_metals (ADR-0062 / mining.md)."""
         assert set(service.valid_commodities) == {
             "ore", "organics", "gourmet_food", "fuel",
             "equipment", "exotic_technology", "luxury_goods",
+            "precious_metals",
         }
 
     def test_rare_materials_uses_lumen_crystals_not_photonic_crystals(self, service):
