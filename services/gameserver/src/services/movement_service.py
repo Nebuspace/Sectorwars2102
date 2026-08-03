@@ -600,6 +600,101 @@ class MovementService:
             return False
         return True
 
+    def _roll_contraband_transit_scan(
+        self,
+        player: Player,
+        origin_sector_id: Optional[int],
+        destination_sector_id: int,
+        result: Dict[str, Any],
+    ) -> None:
+        """Customs scan on arrival when the hold is hot (WO-K2).
+
+        The black-market brief always had TWO detection sites — "sell into, or
+        TRANSIT OUT OF, a higher-security sector" (black-market.md:18) and
+        "detection also invocable on sector egress from movement_service.py"
+        (:47). Only the sell site was built; this is the other one. The roll fires
+        exactly when contraband is aboard AND the destination's security_level
+        exceeds the origin's, and is rate-limited per destination sector by the
+        [OPEN-9] cooldown. ``contraband_service`` owns all of that policy — this
+        method owns only the transaction.
+
+        TRANSACTION CONTRACT — this is the FIRST hook on the movement path that
+        moves money and cargo, so it deliberately does NOT copy the read-only
+        best-effort shape of ``_sweep_scanner_detection``. It copies
+        ``_roll_mechanical_failure``, which is the existing precedent for a
+        MUTATING hook here:
+
+        * ``_execute_movement`` has already committed by the time we run, so the
+          scan gets its OWN commit — without it the confiscation and the fine
+          would be flushed and then dropped.
+        * The service computes the entire outcome and applies every mutation
+          before returning, so there is no partial-bust window: this method sees
+          either a fully-formed outcome to commit or an exception to roll back.
+          A rollback here discards the fine, the confiscation AND the cooldown
+          anchor together — the roll is simply never spent, which is the correct
+          failure mode (it can't cost a player cargo without also recording that
+          the scan happened).
+        * Nothing raises out of here. A scan hiccup must never strand a move that
+          is already durable, and must never be reported to the player as a
+          failed jump — the jump succeeded.
+        """
+        try:
+            # Lazy import, matching every other service hook on this path
+            # (ShipUpgradeService / TowService / HangarService) — keeps
+            # movement_service free of a load-time edge onto the trading stack.
+            from src.services.contraband_service import ContrabandService
+
+            outcome = ContrabandService(self.db).scan_in_transit(
+                player_id=player.id,
+                ship_id=player.current_ship_id,
+                origin_sector_id=origin_sector_id,
+                destination_sector_id=destination_sector_id,
+            )
+
+            if not outcome.get("scanned"):
+                # Gated out (clean hold, not a tighter-security crossing, or
+                # still inside the cooldown) — nothing to persist and nothing to
+                # tell the player about. This rollback is NOT a no-op: the
+                # cooldown gate is evaluated UNDER the player/ship row lock (it
+                # has to be, or two concurrent arrivals could both pass it), so
+                # some no-scan outcomes reach here holding FOR UPDATE locks. The
+                # move's own commit already happened, so without an explicit end
+                # to this transaction those locks would be held until the request
+                # scope tore the session down. Nothing was mutated, so discarding
+                # is exactly right.
+                self.db.rollback()
+                return
+
+            # A scan happened: either a clean pass (cooldown anchor only) or a
+            # full bust. Both carry mutations that must outlive this call.
+            self.db.commit()
+
+            if outcome.get("detected"):
+                # Surface ONLY on a real bust — the move's existing return
+                # contract is otherwise untouched, and a clean pass must stay
+                # invisible (telling a smuggler "you were scanned and got away"
+                # would leak the security topology the roll is scored on).
+                result["contraband_scan"] = {
+                    "detected": True,
+                    "commodity": outcome.get("commodity"),
+                    "confiscated_units": outcome.get("confiscated_units"),
+                    "confiscated_value": outcome.get("confiscated_value"),
+                    "fine": outcome.get("fine"),
+                    "heat": outcome.get("heat"),
+                    "remaining_credits": outcome.get("remaining_credits"),
+                    "message": (
+                        "Customs interdiction: your illegal cargo was seized and "
+                        f"you were fined {outcome.get('fine', 0):,} credits"
+                    ),
+                }
+        except Exception as e:
+            logger.error("Contraband transit scan failed during movement: %s", e)
+            # Never poison the (already-committed) move.
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
+
     def _sweep_scanner_detection(self, player: Player, destination_sector_id: int) -> None:
         """Best-effort scanner-array detection sweep after a SUCCESSFUL move (WO-AY).
 
@@ -944,6 +1039,12 @@ class MovementService:
             # scanner-array detections (best-effort; only on real success).
             if result.get("success"):
                 self._sweep_scanner_detection(player, destination_sector_id)
+                # WO-K2: a player-built gate is still a border crossing — customs
+                # scan the hold. Wired on ALL THREE success paths so a smuggler
+                # can't pick a transport mode to route around the check.
+                self._roll_contraband_transit_scan(
+                    player, current_sector_id, destination_sector_id, result
+                )
             return result
 
         # Check if direct warp exists
@@ -973,6 +1074,10 @@ class MovementService:
                 self._roll_mechanical_failure(player, result)
                 # WO-AY: same success path — sweep for scanner-array detections.
                 self._sweep_scanner_detection(player, destination_sector_id)
+                # WO-K2: customs scan on a direct warp (see the gate branch).
+                self._roll_contraband_transit_scan(
+                    player, current_sector_id, destination_sector_id, result
+                )
             return result
 
         # Check if warp tunnel exists
@@ -1008,6 +1113,10 @@ class MovementService:
                 self._roll_mechanical_failure(player, result)
                 # WO-AY: same success path — sweep for scanner-array detections.
                 self._sweep_scanner_detection(player, destination_sector_id)
+                # WO-K2: customs scan on a natural warp tunnel (see the gate branch).
+                self._roll_contraband_transit_scan(
+                    player, current_sector_id, destination_sector_id, result
+                )
             return result
 
         # If we get here, no valid path was found

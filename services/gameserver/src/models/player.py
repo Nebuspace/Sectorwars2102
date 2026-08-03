@@ -161,6 +161,17 @@ class Player(Base):
     # beacon; the cooldown deadline is derived at read time via
     # scaled_deadline(24, start=last_distress_at) -- never stored pre-computed.
     last_distress_at = Column(DateTime(timezone=True), nullable=True)
+    # Black-market TRANSIT-scan cooldown (WO-K2, black-market.md [OPEN-9]).
+    # The brief's default is a PER-SECTOR cooldown -- "one scan per sector per
+    # traversal (no re-roll on immediate re-entry)" -- which a lone timestamp
+    # cannot express, so the scanned sector is stored alongside it. The pair is
+    # written in the SAME transaction as the bust it guards, which is why this
+    # lives here and not in Redis (a key outside the move's transaction can
+    # drift from the DB if that transaction rolls back).
+    # NULL/NULL = never scanned in transit; the roll is always eligible.
+    # contraband_service.scan_in_transit owns this contract.
+    last_contraband_scan_at = Column(DateTime(timezone=True), nullable=True)
+    last_contraband_scan_sector_id = Column(Integer, nullable=True)
     settings = Column(JSONB, nullable=False, default={})
     first_login = Column(JSONB, nullable=False, default={"completed": False})
     # CRT WO-K0-2: the research ledger. ONE additive NULLABLE JSONB column — the
