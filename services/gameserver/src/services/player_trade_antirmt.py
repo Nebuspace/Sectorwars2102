@@ -37,6 +37,11 @@ CLUSTER_OUTFLOW_CAP_7D = 500_000
 
 NEW_ACCOUNT_AGE_DAYS = 14
 
+# --- Initiate throttles (grief control, ADR-0089 § Ratified parameters) ---
+FREE_INITIATES_PER_DAY = 20
+POST_FREE_INITIATE_COOLDOWN_SECONDS = 30
+POST_CANCEL_EXPIRE_COOLDOWN_SECONDS = 60
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)

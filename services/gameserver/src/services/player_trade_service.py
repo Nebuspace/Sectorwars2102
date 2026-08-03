@@ -131,6 +131,10 @@ class PlayerTradeService:
         if initiator.current_sector_id != target.current_sector_id:
             return {"success": False, "reason": "not_co_located"}
 
+        throttle_err = self._check_initiate_throttle(initiator_id)
+        if throttle_err:
+            return {"success": False, "reason": throttle_err}
+
         session = PlayerTradeSession(
             id=uuid.uuid4(),
             initiator_id=initiator_id,
@@ -529,6 +533,57 @@ class PlayerTradeService:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+    def _check_initiate_throttle(self, initiator_id: uuid.UUID) -> Optional[str]:
+        """ADR-0089: 20 free initiates/UTC-day, then 30s; 60s after cancel/expire."""
+        now = _now()
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        initiates_today = (
+            self.db.query(PlayerTradeSession)
+            .filter(
+                PlayerTradeSession.initiator_id == initiator_id,
+                PlayerTradeSession.created_at >= day_start,
+            )
+            .count()
+        )
+        last_terminal = (
+            self.db.query(PlayerTradeSession)
+            .filter(
+                PlayerTradeSession.initiator_id == initiator_id,
+                PlayerTradeSession.status.in_(
+                    (
+                        PlayerTradeSessionStatus.CANCELLED,
+                        PlayerTradeSessionStatus.EXPIRED,
+                    )
+                ),
+            )
+            .order_by(PlayerTradeSession.updated_at.desc())
+            .first()
+        )
+        if last_terminal is not None and last_terminal.updated_at is not None:
+            term_at = last_terminal.updated_at
+            if term_at.tzinfo is None:
+                term_at = term_at.replace(tzinfo=timezone.utc)
+            cool = timedelta(seconds=antirmt.POST_CANCEL_EXPIRE_COOLDOWN_SECONDS)
+            if now < term_at + cool:
+                return "initiate_cooldown_after_cancel"
+
+        if initiates_today >= antirmt.FREE_INITIATES_PER_DAY:
+            last_init = (
+                self.db.query(PlayerTradeSession)
+                .filter(PlayerTradeSession.initiator_id == initiator_id)
+                .order_by(PlayerTradeSession.created_at.desc())
+                .first()
+            )
+            if last_init is not None and last_init.created_at is not None:
+                created = last_init.created_at
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                cool = timedelta(seconds=antirmt.POST_FREE_INITIATE_COOLDOWN_SECONDS)
+                if now < created + cool:
+                    return "initiate_cooldown"
+
+        return None
+
     def _trade_window_totals(
         self, player_id: uuid.UUID, *, days: int
     ) -> antirmt.WindowTotals:

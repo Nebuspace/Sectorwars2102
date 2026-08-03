@@ -6,6 +6,7 @@ import { InputValidator, SecurityAudit } from '../../../utils/security/inputVali
 import { formatCredits } from '../../../utils/formatters';
 import ContactActionMenu, { type ContactActionMenuItem } from '../ContactActionMenu';
 import HailComposeDialog from '../HailComposeDialog';
+import PlayerTradeDesk from '../../trade/PlayerTradeDesk';
 import { repBucket, type RepBucket } from '../contactClassification';
 import { distancePx, REFERENCE_BAND } from '../WindshieldTableau';
 
@@ -212,6 +213,7 @@ const TacticalTargetPage: React.FC<TacticalTargetPageProps> = ({ contacts, selec
   const [hailText, setHailText] = useState('');
   const [hailBusy, setHailBusy] = useState(false);
   const [hailResult, setHailResult] = useState<{ key: string; ok: boolean; text: string } | null>(null);
+  const [tradeTargetId, setTradeTargetId] = useState<string | null>(null);
 
   // WO-TACTICAL-POPUP: which row's ContactActionMenu is open (one at a
   // time). `triggerRefs` holds each row's name-span DOM node, keyed the
@@ -329,11 +331,12 @@ const TacticalTargetPage: React.FC<TacticalTargetPageProps> = ({ contacts, selec
         // contact incl. poseless ones -- not gated on real server pose.
         const canApproach = !!contact.ship_id && !inEngageRange;
         const canHail = !contact.is_npc && !!contact.player_id;
+        const canTrade = canHail;
         // Trigger-gating (WO-TACTICAL-POPUP, extended Part B): the menu
         // opens whenever it has ANYTHING to show -- a shipless, unhailable
         // contact (e.g. a comms-only presence with no ship in this sector)
         // still correctly gets no trigger, same as before this WO.
-        const menuHasItems = canEngage || canApproach || canHail;
+        const menuHasItems = canEngage || canApproach || canHail || canTrade;
         // Reticle-select stays its own, ship_id-gated concern -- separate
         // from whether the menu has anything to offer.
         const canSelect = !!onSelectContact && !!contact.ship_id;
@@ -372,6 +375,17 @@ const TacticalTargetPage: React.FC<TacticalTargetPageProps> = ({ contacts, selec
             onSelect: () => {
               closeMenu();
               startHail(key);
+            },
+          });
+        }
+        if (canTrade && contact.player_id) {
+          menuItems.push({
+            key: 'trade',
+            label: 'TRADE',
+            variant: 'hail',
+            onSelect: () => {
+              closeMenu();
+              setTradeTargetId(contact.player_id!);
             },
           });
         }
@@ -481,6 +495,13 @@ const TacticalTargetPage: React.FC<TacticalTargetPageProps> = ({ contacts, selec
           </div>
         );
       })}
+      {tradeTargetId && playerState?.id && (
+        <PlayerTradeDesk
+          targetPlayerId={tradeTargetId}
+          myPlayerId={String(playerState.id)}
+          onClose={() => setTradeTargetId(null)}
+        />
+      )}
     </div>
   );
 };

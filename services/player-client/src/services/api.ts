@@ -1234,6 +1234,43 @@ export const storageAPI = {
   getClaimable: () => apiRequest('/api/v1/storage/lockers/claimable'),
 };
 
+/** ADR-0089 player-to-player trade window (thin client). */
+export const tradeAPI = {
+  initiate: (targetPlayerId: string) =>
+    apiRequest('/api/v1/trade/initiate', {
+      method: 'POST',
+      body: JSON.stringify({ target_player_id: targetPlayerId }),
+    }),
+  accept: (sessionId: string) =>
+    apiRequest(`/api/v1/trade/${sessionId}/accept`, { method: 'POST' }),
+  decline: (sessionId: string) =>
+    apiRequest(`/api/v1/trade/${sessionId}/decline`, { method: 'POST' }),
+  offer: (
+    sessionId: string,
+    offer: {
+      credits?: number;
+      commodities?: Record<string, number>;
+      ship_id?: string | null;
+      ships?: string[];
+    }
+  ) =>
+    apiRequest(`/api/v1/trade/${sessionId}/offer`, {
+      method: 'POST',
+      body: JSON.stringify({
+        credits: offer.credits ?? 0,
+        commodities: offer.commodities ?? {},
+        ship_id: offer.ship_id ?? null,
+        ships: offer.ships ?? [],
+      }),
+    }),
+  confirm: (sessionId: string) =>
+    apiRequest(`/api/v1/trade/${sessionId}/confirm`, { method: 'POST' }),
+  cancel: (sessionId: string) =>
+    apiRequest(`/api/v1/trade/${sessionId}/cancel`, { method: 'POST' }),
+  get: (sessionId: string) => apiRequest(`/api/v1/trade/${sessionId}`),
+  getOpen: () => apiRequest('/api/v1/trade/open'),
+};
+
 export const gameAPI = {
   combat: combatAPI,
   greyStatus: greyStatusAPI,
@@ -1258,4 +1295,5 @@ export const gameAPI = {
   resource: resourceAPI,
   contracts: contractsAPI,
   storage: storageAPI,
+  trade: tradeAPI,
 };

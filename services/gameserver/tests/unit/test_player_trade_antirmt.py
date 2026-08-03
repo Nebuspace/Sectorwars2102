@@ -96,3 +96,15 @@ def test_check_caps_new_receive_block():
         )
         == "receive_cap_exceeded"
     )
+
+
+def test_initiate_throttle_constants_match_adr():
+    from src.services.player_trade_antirmt import (
+        FREE_INITIATES_PER_DAY,
+        POST_CANCEL_EXPIRE_COOLDOWN_SECONDS,
+        POST_FREE_INITIATE_COOLDOWN_SECONDS,
+    )
+
+    assert FREE_INITIATES_PER_DAY == 20
+    assert POST_FREE_INITIATE_COOLDOWN_SECONDS == 30
+    assert POST_CANCEL_EXPIRE_COOLDOWN_SECONDS == 60

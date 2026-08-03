@@ -115,6 +115,20 @@ async def cancel_trade(
     return _commit_or_400(db, result)
 
 
+@router.get("/open")
+async def get_open_trade(
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Return the caller's open trade session, if any."""
+    if not player.open_trade_session_id:
+        return {"success": True, "session": None}
+    result = PlayerTradeService(db).get(player.open_trade_session_id, player.id)
+    if not result.get("success"):
+        return {"success": True, "session": None}
+    return result
+
+
 @router.get("/{session_id}")
 async def get_trade(
     session_id: str,
