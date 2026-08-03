@@ -99,8 +99,8 @@ class MarketPredictionEngine:
     # literal that had drifted from the 9-commodity wire (was missing
     # precious_metals). Import-time only — no DB read; auto-tracks any future
     # change to COMMODITY_BASE_PRICES. precious_metals is canonical there
-    # (mining.md Secondary drop, ADR-0062 E-D1, station DEFAULT_COMMODITIES) —
-    # not a pending Max ruling.
+    # (mining.md Secondary drop, ADR-0062 E-D1, Station.commodities JSONB
+    # default in models/station.py) — not a pending Max ruling.
     COMMODITIES = list(COMMODITY_BASE_PRICES)
 
     def __init__(self):
