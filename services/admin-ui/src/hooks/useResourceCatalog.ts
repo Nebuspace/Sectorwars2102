@@ -2,12 +2,12 @@
  * useResourceCatalog — React binding over services/resourceCatalog.ts.
  *
  * Triggers the (session-cached, shared) GET /api/v1/resources fetch on first
- * mount and re-renders every subscribed consumer once it lands. See
- * resourceCatalog.ts for the known auth-dependency gap this degrades
- * gracefully around: a failed fetch leaves `catalog` empty rather than
- * throwing, so callers should treat [] as "no catalog available yet /
- * unavailable this session" and design their UI accordingly (e.g. an
- * options list that's just shorter, never a crash).
+ * mount and re-renders every subscribed consumer once it lands. A failed
+ * fetch (network / auth) leaves `catalog` empty rather than throwing, so
+ * callers should treat [] as "no catalog available yet / unavailable this
+ * session" and design their UI accordingly (e.g. an options list that's
+ * just shorter, never a crash). Admin-only sessions are supported by the
+ * gameserver route (authenticated user, no Player row required).
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
