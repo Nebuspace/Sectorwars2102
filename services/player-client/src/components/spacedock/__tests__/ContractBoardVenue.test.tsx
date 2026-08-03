@@ -57,6 +57,7 @@ const {
   mockDeposit,
   mockGetCurrentShip,
   mockInsure,
+  mockDispute,
   mockGetClaimable,
   mockRetrieve,
 } = vi.hoisted(() => ({
@@ -71,6 +72,7 @@ const {
   mockDeposit: vi.fn(),
   mockGetCurrentShip: vi.fn(),
   mockInsure: vi.fn(),
+  mockDispute: vi.fn(),
   mockGetClaimable: vi.fn(),
   mockRetrieve: vi.fn(),
 }));
@@ -86,6 +88,7 @@ vi.mock('../../../services/api', () => ({
     post: mockPost,
     cancel: mockCancel,
     insure: mockInsure,
+    dispute: mockDispute,
   },
   storageAPI: {
     rentLocker: mockRentLocker,
@@ -186,6 +189,7 @@ describe('ContractBoardVenue', () => {
     mockDeposit.mockReset();
     mockGetCurrentShip.mockReset();
     mockInsure.mockReset();
+    mockDispute.mockReset();
     mockGetClaimable.mockReset();
     mockRetrieve.mockReset();
     VENUE_PROPS.onCreditsSet = vi.fn();
@@ -526,7 +530,7 @@ describe('ContractBoardVenue', () => {
       expect(findButton('Abandon')).toBeFalsy();
     });
 
-    it('an expired ACCEPTED row points to Claimable Cargo; an expired POSTED row does not (no cargo the issuer would retrieve)', async () => {
+    it('an expired ACCEPTED row points to Claimable Cargo and offers File Dispute; an expired POSTED row does not (no cargo the issuer would retrieve)', async () => {
       mockGetBoard.mockResolvedValueOnce([]);
       mockGetMine.mockResolvedValueOnce({
         posted: [{ ...CONTRACT_POSTED, id: 'contract-issued-expired', status: 'expired' }],
@@ -542,6 +546,8 @@ describe('ContractBoardVenue', () => {
 
       // Defaults to the Accepted subtab.
       expect(container.querySelector('.cb-list')?.textContent).toContain('Claimable Cargo');
+      expect(findButton('File Dispute')).toBeTruthy();
+      expect(container.querySelector('.cb-dispute-reason')).toBeTruthy();
 
       await clickButton('Posted');
       await flush();
@@ -549,6 +555,55 @@ describe('ContractBoardVenue', () => {
       const postedText = container.querySelector('.cb-list')?.textContent ?? '';
       expect(postedText).toContain('escrow already settled');
       expect(postedText).not.toContain('Claimable Cargo');
+      expect(findButton('File Dispute')).toBeFalsy();
+    });
+  });
+
+  describe('File Dispute (WO-CONTRACT-INSURANCE-ARBITRATION-SCOPE)', () => {
+    it('typing a reason and clicking File Dispute POSTs /dispute, shows success, and refetches mine', async () => {
+      mockGetBoard.mockResolvedValueOnce([]);
+      mockGetMine
+        .mockResolvedValueOnce({
+          posted: [],
+          accepted: [{ ...CONTRACT_ACCEPTED, id: 'contract-expired', status: 'expired' }],
+        })
+        .mockResolvedValueOnce({
+          posted: [],
+          accepted: [
+            {
+              ...CONTRACT_ACCEPTED,
+              id: 'contract-expired',
+              status: 'disputed',
+              escalated_to_admin: true,
+            },
+          ],
+        });
+      mockDispute.mockResolvedValueOnce({
+        id: 'contract-expired',
+        status: 'disputed',
+        tier1_resolution: null,
+        escalated_to_admin: true,
+        payout: 0,
+        credits: 9000,
+      });
+
+      await act(async () => {
+        root.render(<ContractBoardVenue {...VENUE_PROPS} />);
+      });
+      await flush();
+      await clickButton('My Contracts');
+      await flush();
+
+      await setInputValue('.cb-dispute-reason', 'Station went dark mid-delivery');
+      await clickButton('File Dispute');
+      await flush();
+
+      expect(mockDispute).toHaveBeenCalledWith('contract-expired', {
+        reason: 'Station went dark mid-delivery',
+      });
+      expect(VENUE_PROPS.onCreditsSet).toHaveBeenCalledWith(9000);
+      expect(container.textContent).toMatch(/escalated to admin/i);
+      expect(container.querySelector('.cb-status-note')?.textContent).toMatch(/Disputed/i);
     });
   });
 

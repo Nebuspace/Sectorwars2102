@@ -270,6 +270,33 @@
   align-items: center;
 }
 
+/* WO-CONTRACT-INSURANCE-ARBITRATION-SCOPE — File Dispute on expired accepted. */
+.cb-dispute-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  max-width: 100%;
+}
+
+.cb-dispute-reason {
+  min-width: 12rem;
+  max-width: 18rem;
+  flex: 1 1 12rem;
+  padding: 0.35rem 0.4rem;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(0, 217, 255, 0.35);
+  border-radius: 4px;
+  color: #e0e0e0;
+  font-family: inherit;
+  font-size: 0.8em;
+}
+
+.cb-dispute-reason:focus {
+  outline: none;
+  border-color: #00d9ff;
+}
+
 .cb-insure-tier {
   padding: 0.35rem 0.4rem;
   background: rgba(0, 0, 0, 0.35);

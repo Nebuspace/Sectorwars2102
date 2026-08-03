@@ -3,6 +3,10 @@ Tier-2 admin arbitration for trade-contract disputes (contracts.md:404-416,
 WO-CONTRACT-6-DISPUTE-T2-ADMIN). Tier-1 (contract_service.file_dispute) is
 synchronous and automated; anything it can't resolve escalates here
 (status == DISPUTED, escalated_to_admin == True) for a human ruling.
+WO-CONTRACT-INSURANCE-ARBITRATION-SCOPE: file_dispute now ALWAYS sets
+escalated_to_admin on Tier-1 non-match (contracts.md:402) — the E-I3
+criteria are reason/metadata only, not a gate that left low-value
+filings invisible to this queue.
 
 `contract_service.resolve_dispute` is authz-FREE by design (it only logs
 admin_id) -- this route owns ALL authz via ``require_scope`` (``PLAYERS_VIEW``
