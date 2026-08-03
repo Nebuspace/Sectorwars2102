@@ -785,6 +785,24 @@ def jump(
             player, old_sector_id, destination.sector_id
         )
 
+        # WO-K2b: a quantum jump bypasses the warp graph, not the law. The
+        # detection model keys on crossing INTO tighter security with contraband
+        # aboard, never on HOW you crossed — so exempting the jump would just make
+        # it the smuggler's preferred border run (orchestrator ruling 2026-08-03).
+        # Placed INSIDE the moved-sectors branch (a same-sector outcome is not a
+        # crossing) and BEFORE the commit below, so a bust is atomic with the jump
+        # that caused it. Flush-only + savepoint-scoped: it can never strand the
+        # arrival, and it must NOT commit here — that would publish a
+        # half-finished jump.
+        from src.services.contraband_service import scan_in_transit_best_effort
+        scan_in_transit_best_effort(
+            db,
+            player=player,
+            ship_id=ship.id,
+            origin_sector_id=old_sector_id,
+            destination_sector_id=destination.sector_id,
+        )
+
     db.commit()
 
     logger.info(

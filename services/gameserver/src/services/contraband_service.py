@@ -183,6 +183,58 @@ SEVERITY_ORDER: Dict[IllegalSeverity, int] = {
 TRANSIT_SCAN_COOLDOWN_SECONDS = 900  # 15 min — PROVISIONAL, awaiting [OPEN-9]
 
 
+def scan_in_transit_best_effort(
+    db: Session,
+    player: Player,
+    ship_id: Optional[uuid.UUID],
+    origin_sector_id: Optional[int],
+    destination_sector_id: Optional[int],
+) -> Optional[Dict[str, Any]]:
+    """Run a transit scan from INSIDE a transaction this caller does not own.
+
+    WO-K2b. The four relocation paths that bypass ``move_player_to_sector`` —
+    quantum jump, slipdrive, carrier hangar ride-along, tractor tow ride-along —
+    all reach their arrival point with the host transaction still OPEN
+    (``carry_hangared_ships``/``carry_towed_ship`` say so in their own docstrings:
+    "Does NOT commit"; ``slipdrive.complete_charge`` and the quantum ``jump``
+    path likewise flush and let their owner commit).
+
+    That is the exact inverse of the movement hook, where ``_execute_movement``
+    has already committed and the hook must own its transaction. Here a
+    ``commit()`` would publish a HALF-FINISHED relocation and a ``rollback()``
+    would discard the relocation outright, so this wrapper does neither:
+
+    * **SAVEPOINT-scoped.** ``begin_nested()`` means a failure inside the scan
+      unwinds only the scan's own writes. Without it, a raise partway through a
+      bust would leave a half-applied confiscation sitting in the caller's
+      session, to be committed later by an owner that has no idea it is there.
+    * **Never raises.** A contraband roll must not be able to strand a jump or
+      strand a passenger mid-carry. Degrades to a log line, exactly like the
+      other best-effort hooks on these paths.
+    * **Never commits or rolls back the outer transaction.** The scan's own
+      writes ride the caller's commit, which is what makes the bust atomic with
+      the relocation that triggered it.
+
+    Returns the scan outcome, or ``None`` when it was skipped or failed.
+    """
+    try:
+        with db.begin_nested():
+            return ContrabandService(db).scan_in_transit(
+                player=player,
+                ship_id=ship_id,
+                origin_sector_id=origin_sector_id,
+                destination_sector_id=destination_sector_id,
+            )
+    except Exception:
+        logger.warning(
+            "contraband transit scan failed for player %s (%s -> %s) — relocation "
+            "continues unaffected",
+            getattr(player, "id", None), origin_sector_id, destination_sector_id,
+            exc_info=True,
+        )
+        return None
+
+
 class ContrabandService:
     """Server-authoritative black-market trading: gated catalog, haggle-priced
     buy, and sell-with-detection. Flushes only — the route owns the commit."""

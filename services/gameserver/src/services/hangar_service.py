@@ -446,9 +446,31 @@ class HangarService:
             if ship.owner_id is not None:
                 pilot = self.db.query(Player).filter(Player.id == ship.owner_id).first()
                 if pilot is not None and pilot.current_ship_id == ship.id:
+                    # WO-K2b: snapshot the ORIGIN before overwriting it — the
+                    # contraband scan below needs where this pilot came from, and
+                    # the next line destroys it.
+                    pilot_origin_sector_id = pilot.current_sector_id
                     pilot.current_sector_id = destination_sector_id
                     pilot.current_region_id = region_id
                     self._schedule_region_hop(pilot, region_id)
+
+                    # WO-K2b: riding in a Carrier's hangar is still a border
+                    # crossing. Scanned PER PASSENGER against that passenger's own
+                    # cooldown anchor, so a Carrier full of smugglers is not one
+                    # scan — otherwise the hangar becomes the preferred way to run
+                    # contraband past customs. Flush-only and savepoint-scoped: it
+                    # rides THIS carrier-move transaction (see the helper's
+                    # docstring) and can never strand the carry.
+                    from src.services.contraband_service import (
+                        scan_in_transit_best_effort,
+                    )
+                    scan_in_transit_best_effort(
+                        self.db,
+                        player=pilot,
+                        ship_id=ship.id,
+                        origin_sector_id=pilot_origin_sector_id,
+                        destination_sector_id=destination_sector_id,
+                    )
             carried += 1
 
         if carried:
