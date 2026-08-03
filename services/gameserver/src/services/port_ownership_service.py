@@ -221,6 +221,21 @@ DEFAULT_DEFENSE_POLICY: Dict[str, Any] = {
     "patrol_radius": 0,
 }
 
+# Station.ownership["defense_counters"] — owner-side takeover counters
+# (WO-TAKEOVER-DEFENSE-COUNTERMOVES v1). No migration. Friendly-faction
+# contract + allied-response rally deferred.
+DEFENSE_COUNTERS_KEY = "defense_counters"
+# NO-CANON v1 defaults (port-ownership.md lists the levers but is silent on
+# magnitudes). Conservative first-pass: halve tariff for one counter-window
+# length; 1 cr per 1 credit of synthetic absorb; hard ceiling so a rich owner
+# cannot zero a challenger's share with unbounded spend in one click.
+TARIFF_CUT_FRACTION = 0.5
+TARIFF_CUT_DURATION_HOURS = COUNTER_WINDOW_HOURS
+COUNTER_TRADE_CREDITS_PER_VOLUME = 1
+COUNTER_TRADE_MAX_ABSORB = 500_000
+# Statuses where building-phase owner counters may be activated.
+_DEFENSE_COUNTER_STATUSES = frozenset({"building", "eligible"})
+
 # Campaign statuses considered "active" (a live takeover attempt). Hoisted here
 # so both the economic and military engines reference one source of truth.
 _ACTIVE_CAMPAIGN_STATUSES = ("building", "eligible", "countered", "disputed")
@@ -1330,6 +1345,289 @@ def public_defense_policy_fields(station: Station) -> Dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Takeover defense counters (WO-TAKEOVER-DEFENSE-COUNTERMOVES v1)
+# ---------------------------------------------------------------------------
+
+def tariff_cut_rate(prior: float) -> float:
+    """Compute the cut tax rate from a prior rate (pure helper)."""
+    return max(MIN_TAX_RATE, round(float(prior) * TARIFF_CUT_FRACTION, 4))
+
+
+def month_share_with_defense(
+    station_vol: int, challenger_vol: int, defense_vol: int
+) -> float:
+    """Challenger share after adding synthetic defense_volume to station side."""
+    total = int(station_vol) + max(0, int(defense_vol))
+    if total <= 0:
+        return 0.0
+    return round(int(challenger_vol) / total, 4)
+
+
+def get_defense_counters(station: Station) -> List[Dict[str, Any]]:
+    """Copy of Station.ownership['defense_counters'] (list of records)."""
+    raw = (station.ownership or {}).get(DEFENSE_COUNTERS_KEY)
+    if not isinstance(raw, list):
+        return []
+    return [dict(item) for item in raw if isinstance(item, dict)]
+
+
+def _set_defense_counters(station: Station, counters: List[Dict[str, Any]]) -> None:
+    ownership = _ownership(station)
+    ownership[DEFENSE_COUNTERS_KEY] = list(counters)
+    # Unit tests may pass SimpleNamespace stubs without SA instrumentation.
+    if hasattr(station, "_sa_instance_state"):
+        flag_modified(station, "ownership")
+
+
+def defense_volume_for_month(station: Station, campaign_id, month_index: int) -> int:
+    """Sum of synthetic counter_trade absorbs for campaign+month."""
+    cid = str(campaign_id)
+    total = 0
+    for rec in get_defense_counters(station):
+        if rec.get("type") != "counter_trade":
+            continue
+        if str(rec.get("campaign_id")) != cid:
+            continue
+        try:
+            if int(rec.get("month", -1)) != int(month_index):
+                continue
+        except (TypeError, ValueError):
+            continue
+        try:
+            total += max(0, int(rec.get("defense_volume", 0)))
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def _parse_counter_ts(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return _aware(value)
+    if isinstance(value, str):
+        try:
+            return _aware(datetime.fromisoformat(value.replace("Z", "+00:00")))
+        except ValueError:
+            return None
+    return None
+
+
+def _threat_campaign_for_defense(
+    db: Session, station: Station, now: datetime
+) -> TakeoverCampaign:
+    """Most advanced active economic campaign the owner may counter against."""
+    campaigns = (
+        db.query(TakeoverCampaign)
+        .filter(
+            TakeoverCampaign.station_id == station.id,
+            TakeoverCampaign.status.in_(_ACTIVE_CAMPAIGN_STATUSES),
+        )
+        .all()
+    )
+    economic = [c for c in campaigns if not _is_military(c)]
+    if not economic:
+        raise PortOwnershipError(
+            400, "No active economic takeover campaign to defend against"
+        )
+    order = {"eligible": 0, "countered": 1, "disputed": 2, "building": 3}
+    return sorted(economic, key=lambda c: (order.get(c.status, 9), str(c.id)))[0]
+
+
+def tick_defense_counters(
+    db: Session, station: Station, now: Optional[datetime] = None
+) -> None:
+    """Expire tariff cuts (restore prior tax) and drop counters for dead campaigns.
+
+    Idempotent; called from evaluate_campaign and owner defense activates.
+    """
+    now = now or datetime.now(UTC)
+    counters = get_defense_counters(station)
+    if not counters:
+        return
+
+    active_ids = {
+        str(cid)
+        for (cid,) in db.query(TakeoverCampaign.id)
+        .filter(
+            TakeoverCampaign.station_id == station.id,
+            TakeoverCampaign.status.in_(_ACTIVE_CAMPAIGN_STATUSES),
+        )
+        .all()
+    }
+
+    kept: List[Dict[str, Any]] = []
+    changed = False
+    for rec in counters:
+        ctype = rec.get("type")
+        cid = str(rec.get("campaign_id") or "")
+        if cid and cid not in active_ids:
+            if ctype == "tariff_cut":
+                try:
+                    station.tax_rate = float(rec.get("prior_tax_rate", station.tax_rate))
+                except (TypeError, ValueError):
+                    pass
+            changed = True
+            continue
+        if ctype == "tariff_cut":
+            expires = _parse_counter_ts(rec.get("expires_at"))
+            if expires is not None and now >= expires:
+                try:
+                    station.tax_rate = float(rec.get("prior_tax_rate", station.tax_rate))
+                except (TypeError, ValueError):
+                    pass
+                changed = True
+                continue
+        kept.append(rec)
+
+    if changed or len(kept) != len(counters):
+        _set_defense_counters(station, kept)
+
+
+def activate_tariff_cut(
+    db: Session,
+    station: Station,
+    owner: Player,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Owner lever: temporarily halve tax_rate during building|eligible."""
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    _require_owner(station, owner)
+    tick_defense_counters(db, station, now)
+
+    campaign = _threat_campaign_for_defense(db, station, now)
+    if campaign.status not in _DEFENSE_COUNTER_STATUSES:
+        raise PortOwnershipError(
+            400,
+            f"Tariff cut only allowed while campaign is building or eligible "
+            f"(current: {campaign.status})",
+        )
+
+    counters = get_defense_counters(station)
+    for rec in counters:
+        if rec.get("type") == "tariff_cut":
+            raise PortOwnershipError(400, "A tariff cut is already active")
+
+    prior = float(station.tax_rate or 0.0)
+    new_rate = tariff_cut_rate(prior)
+    expires = game_time.scaled_deadline(TARIFF_CUT_DURATION_HOURS, start=now)
+    counters.append({
+        "type": "tariff_cut",
+        "campaign_id": str(campaign.id),
+        "prior_tax_rate": prior,
+        "tax_rate": new_rate,
+        "expires_at": _iso(expires),
+        "activated_at": _iso(now),
+    })
+    station.tax_rate = new_rate
+    _set_defense_counters(station, counters)
+    db.flush()
+    logger.info(
+        "Station %s tariff_cut %.4f -> %.4f (campaign %s) by %s",
+        station.id, prior, new_rate, campaign.id, owner.id,
+    )
+    return {
+        "station_id": str(station.id),
+        "campaign_id": str(campaign.id),
+        "type": "tariff_cut",
+        "prior_tax_rate": prior,
+        "tax_rate": new_rate,
+        "expires_at": _iso(expires),
+    }
+
+
+def activate_counter_trade(
+    db: Session,
+    station: Station,
+    owner: Player,
+    defense_volume: int,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Owner lever: credit-funded synthetic volume absorb for the current month.
+
+    Does NOT write MarketTransaction rows — synthetic defense_volume only.
+    """
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    _require_owner(station, owner)
+    tick_defense_counters(db, station, now)
+
+    try:
+        volume = int(defense_volume)
+    except (TypeError, ValueError):
+        raise PortOwnershipError(400, "defense_volume must be an integer")
+    if volume <= 0:
+        raise PortOwnershipError(400, "defense_volume must be positive")
+    if volume > COUNTER_TRADE_MAX_ABSORB:
+        raise PortOwnershipError(
+            400,
+            f"defense_volume cannot exceed {COUNTER_TRADE_MAX_ABSORB:,}",
+        )
+
+    campaign = _threat_campaign_for_defense(db, station, now)
+    if campaign.status not in _DEFENSE_COUNTER_STATUSES:
+        raise PortOwnershipError(
+            400,
+            f"Counter-trade only allowed while campaign is building or eligible "
+            f"(current: {campaign.status})",
+        )
+
+    cost = volume * COUNTER_TRADE_CREDITS_PER_VOLUME
+    if owner.credits < cost:
+        raise PortOwnershipError(
+            400,
+            f"Insufficient credits: counter-trade costs {cost:,}, "
+            f"you have {owner.credits:,}",
+        )
+
+    month_index = int(
+        game_time.canonical_hours_since(campaign.started_at, now) // MONTH_HOURS
+    )
+    owner.credits -= cost
+    counters = get_defense_counters(station)
+    counters.append({
+        "type": "counter_trade",
+        "campaign_id": str(campaign.id),
+        "month": month_index,
+        "defense_volume": volume,
+        "cost": cost,
+        "activated_at": _iso(now),
+    })
+    _set_defense_counters(station, counters)
+    db.flush()
+    logger.info(
+        "Station %s counter_trade absorb=%s cost=%s month=%s (campaign %s) by %s",
+        station.id, volume, cost, month_index, campaign.id, owner.id,
+    )
+    return {
+        "station_id": str(station.id),
+        "campaign_id": str(campaign.id),
+        "type": "counter_trade",
+        "month": month_index,
+        "defense_volume": volume,
+        "cost": cost,
+        "credits": owner.credits,
+    }
+
+
+def list_defense_counters(
+    db: Session, station: Station, owner: Player, now: Optional[datetime] = None
+) -> Dict[str, Any]:
+    """Owner-only read of active defense_counters (after tick)."""
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    _require_owner(station, owner)
+    tick_defense_counters(db, station, now)
+    db.flush()
+    return {
+        "station_id": str(station.id),
+        "tax_rate": float(station.tax_rate or 0.0),
+        "defense_counters": get_defense_counters(station),
+    }
+
+
 def set_service_charge(
     db: Session, station: Station, owner: Player, multiplier: float
 ) -> Dict[str, Any]:
@@ -2029,6 +2327,7 @@ def _month_stats(
     anchor = _aware(campaign.started_at)
     start, end = _month_bounds(anchor, month_index)
     station_vol = monthly_volume(db, station, month_index, anchor)
+    defense_vol = defense_volume_for_month(station, campaign.id, month_index)
     challenger_vol = int(
         db.query(func.coalesce(func.sum(MarketTransaction.total_value), 0))
         .filter(
@@ -2041,13 +2340,15 @@ def _month_stats(
         .scalar()
         or 0
     )
-    share = (challenger_vol / station_vol) if station_vol > 0 else 0.0
+    share = month_share_with_defense(station_vol, challenger_vol, defense_vol)
     hostile = _month_hostility(db, station.id, campaign.challenger_id, start, end)
     return {
         "month": month_index,
-        "station_volume": station_vol,
+        "station_volume": station_vol + max(0, defense_vol),
+        "market_volume": station_vol,
+        "defense_volume": defense_vol,
         "challenger_volume": challenger_vol,
-        "share": round(share, 4),
+        "share": share,
         "hostile": hostile,
         "satisfied": month_satisfied(share, hostile),
     }
@@ -2072,6 +2373,9 @@ def evaluate_campaign(
     )
     if campaign is None:
         raise PortOwnershipError(404, "Campaign not found")
+
+    # Expire tariff cuts / drop dead-campaign counters before month math.
+    tick_defense_counters(db, station, now)
 
     # Military campaigns are driven by the siege/occupy actions, NOT the
     # economic monthly-volume engine — never month-evaluate them here.

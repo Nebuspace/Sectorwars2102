@@ -84,6 +84,11 @@ class DefensePolicyRequest(BaseModel):
     patrol_radius: int = Field(0, ge=0)
 
 
+class CounterTradeRequest(BaseModel):
+    # Synthetic absorb volume (credits of trade); cost = volume * CREDITS_PER_VOLUME.
+    defense_volume: int = Field(..., ge=1, le=500_000)
+
+
 class ServiceChargeRequest(BaseModel):
     # Canon service charge: 0.8x-2.0x of standard.
     multiplier: float = Field(..., ge=0.8, le=2.0)
@@ -433,6 +438,79 @@ async def set_defense_policy(
         "message": (
             f"Defense policy at {station.name} updated "
             f"(access={result['defense_policy']['docking_access']})"
+        ),
+        **result,
+    }
+
+
+@router.get("/stations/{station_id}/takeover/defense")
+async def get_takeover_defense(
+    station_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Owner-only: active takeover defense_counters + current tax_rate."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.list_defense_counters(
+            db, station, current_player
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return result
+
+
+@router.post("/stations/{station_id}/takeover/defense/tariff-cut")
+async def activate_tariff_cut(
+    station_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Owner counter: temporarily halve tax_rate during building|eligible."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.activate_tariff_cut(
+            db, station, current_player
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "message": (
+            f"Tariff cut at {station.name}: "
+            f"{result['prior_tax_rate']:.0%} → {result['tax_rate']:.0%}"
+        ),
+        **result,
+    }
+
+
+@router.post("/stations/{station_id}/takeover/defense/counter-trade")
+async def activate_counter_trade(
+    station_id: str,
+    request: CounterTradeRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Owner counter: credit-funded synthetic volume absorb (no MarketTransaction)."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.activate_counter_trade(
+            db, station, current_player, request.defense_volume
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "message": (
+            f"Counter-trade absorb {result['defense_volume']:,} at {station.name} "
+            f"(cost {result['cost']:,} cr)"
         ),
         **result,
     }
