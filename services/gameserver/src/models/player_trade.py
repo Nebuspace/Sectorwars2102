@@ -1,7 +1,7 @@
 """Player-to-player trade window models (ADR-0089 / WO-P2P-TRADING-SYSTEM).
 
-v1 kernel: credits + commodities only. Ship-bundle transfer and progressive
-anti-RMT surcharge are deferred follow-on WOs.
+Credits, commodities, ship-bundle. Progressive anti-RMT uses per-party
+appraised columns on PlayerTradeLog for rolling windows.
 """
 
 from __future__ import annotations
@@ -64,14 +64,13 @@ class PlayerTradeSession(Base):
     initiator_confirmed_version = Column(Integer, nullable=True)
     target_confirmed_version = Column(Integer, nullable=True)
     sector_id = Column(Integer, nullable=False)
-    # Optional station UUID when both docked (ship trades later); unused in v1 kernel.
+    # Optional station UUID when both docked (ship trades).
     port_id = Column(
         UUID(as_uuid=True),
         ForeignKey("stations.id", ondelete="SET NULL"),
         nullable=True,
     )
-    # Offer shape: {credits: int, commodities: {slug: qty}, ship_id: uuid|null}
-    # ship_id names which hull's cargo the commodities leave/enter.
+    # Offer shape: {credits, commodities, ship_id, ships}
     initiator_offer = Column(JSONB, nullable=False, default=dict)
     target_offer = Column(JSONB, nullable=False, default=dict)
     expires_at = Column(DateTime(timezone=True), nullable=False)
@@ -97,6 +96,7 @@ class PlayerTradeLog(Base):
     __table_args__ = (
         Index("ix_player_trade_logs_initiator", "initiator_id"),
         Index("ix_player_trade_logs_target", "target_id"),
+        Index("ix_player_trade_logs_created_at", "created_at"),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -120,6 +120,10 @@ class PlayerTradeLog(Base):
     manifest = Column(JSONB, nullable=False, default=dict)
     appraised_value = Column(Integer, nullable=False, default=0)
     tax_paid = Column(Integer, nullable=False, default=0)
+    # Per-party gross appraisal at settle time (anti-RMT window SSOT).
+    initiator_appraised = Column(Integer, nullable=False, default=0, server_default="0")
+    target_appraised = Column(Integer, nullable=False, default=0, server_default="0")
+    surcharge_paid = Column(Integer, nullable=False, default=0, server_default="0")
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,

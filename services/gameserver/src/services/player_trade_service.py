@@ -1,9 +1,7 @@
 """Player-to-player trade window service (ADR-0089).
 
-v1 kernel: credits + commodities. Follow-on: ship-bundle transfer (same
-port dock gate, last-ship/stolen blocks, ShipRegistry append, insurance
-void). Progressive anti-RMT surcharge still deferred.
-FLUSH-ONLY — route owns commit.
+Credits, commodities, ship-bundle. Progressive anti-RMT surcharge + value
+caps from ADR-0089 § Ratified parameters (pinned). FLUSH-ONLY — route owns commit.
 """
 
 from __future__ import annotations
@@ -27,12 +25,13 @@ from src.models.player_trade import (
 )
 from src.models.ship_registry import RegistryEventType
 from src.services.ship_registry_service import append_registry_event
+from src.services import player_trade_antirmt as antirmt
 
 logger = logging.getLogger(__name__)
 
 SESSION_TTL_SECONDS = 5 * 60
-FLAT_TAX_RATE = 0.05
-MIN_TAX_CR = 1
+FLAT_TAX_RATE = antirmt.FLAT_TAX_RATE
+MIN_TAX_CR = antirmt.MIN_TAX_CR
 
 _EMPTY_OFFER = {"credits": 0, "commodities": {}, "ship_id": None, "ships": []}
 
@@ -359,11 +358,91 @@ class PlayerTradeService:
         init_gross = self._appraise(init_offer, ships)
         tgt_gross = self._appraise(tgt_offer, ships)
         gross = init_gross + tgt_gross
-        tax = max(MIN_TAX_CR, int(math.ceil(gross * FLAT_TAX_RATE))) if gross > 0 else 0
-        init_tax = (
-            int(math.ceil(tax * (init_gross / gross))) if gross > 0 and init_gross else 0
+        flat_tax = (
+            max(MIN_TAX_CR, int(math.ceil(gross * FLAT_TAX_RATE))) if gross > 0 else 0
         )
-        tgt_tax = tax - init_tax
+        init_flat = (
+            int(math.ceil(flat_tax * (init_gross / gross)))
+            if gross > 0 and init_gross
+            else 0
+        )
+        tgt_flat = flat_tax - init_flat
+
+        # --- ADR-0089 anti-RMT: progressive surcharge + value-window caps ---
+        init_nlr = antirmt.is_new_or_low_rep(
+            created_at=initiator.created_at,
+            personal_reputation=int(initiator.personal_reputation or 0),
+        )
+        tgt_nlr = antirmt.is_new_or_low_rep(
+            created_at=target.created_at,
+            personal_reputation=int(target.personal_reputation or 0),
+        )
+        init_prior = self._trade_window_totals(initiator.id, days=antirmt.WINDOW_DAYS)
+        tgt_prior = self._trade_window_totals(target.id, days=antirmt.WINDOW_DAYS)
+        init_cp = self._counterparty_flow(
+            initiator.id, target.id, days=antirmt.COUNTERPARTY_WINDOW_DAYS
+        )
+        tgt_cp = self._counterparty_flow(
+            target.id, initiator.id, days=antirmt.COUNTERPARTY_WINDOW_DAYS
+        )
+        cp_this = init_gross + tgt_gross
+
+        err = antirmt.check_caps(
+            prior_7d=init_prior,
+            send_this=init_gross,
+            receive_this=tgt_gross,
+            is_new_low_rep=init_nlr,
+            prior_cp_flow_30d=init_cp,
+            cp_flow_this=cp_this,
+        )
+        if err:
+            return {"success": False, "reason": f"initiator_{err}"}
+        err = antirmt.check_caps(
+            prior_7d=tgt_prior,
+            send_this=tgt_gross,
+            receive_this=init_gross,
+            is_new_low_rep=tgt_nlr,
+            prior_cp_flow_30d=tgt_cp,
+            cp_flow_this=cp_this,
+        )
+        if err:
+            return {"success": False, "reason": f"target_{err}"}
+
+        cluster_err = self._check_cluster_outflow(
+            initiator.id, add_external=init_gross
+        )
+        if cluster_err:
+            return {"success": False, "reason": cluster_err}
+        cluster_err = self._check_cluster_outflow(
+            target.id, add_external=tgt_gross
+        )
+        if cluster_err:
+            return {"success": False, "reason": cluster_err}
+
+        # Net-sent increase this trade = send - receive for that party.
+        init_net_add = init_gross - tgt_gross
+        tgt_net_add = tgt_gross - init_gross
+        init_surcharge = antirmt.progressive_surcharge_on_increase(
+            init_prior.net_sent, init_net_add
+        )
+        tgt_surcharge = antirmt.progressive_surcharge_on_increase(
+            tgt_prior.net_sent, tgt_net_add
+        )
+        # New/low-rep receive surcharge is paid by the party sending into them.
+        if tgt_nlr:
+            init_surcharge += antirmt.new_low_rep_receive_surcharge(
+                init_gross, is_new_low_rep=True
+            )
+        if init_nlr:
+            tgt_surcharge += antirmt.new_low_rep_receive_surcharge(
+                tgt_gross, is_new_low_rep=True
+            )
+
+        init_tax = init_flat + init_surcharge
+        tgt_tax = tgt_flat + tgt_surcharge
+        tax = init_tax + tgt_tax
+        surcharge_total = init_surcharge + tgt_surcharge
+
         if (initiator.credits or 0) < init_offer["credits"] + init_tax:
             return {"success": False, "reason": "initiator_insufficient_credits"}
         if (target.credits or 0) < tgt_offer["credits"] + tgt_tax:
@@ -417,17 +496,25 @@ class PlayerTradeService:
             manifest={
                 "initiator_offer": init_offer,
                 "target_offer": tgt_offer,
+                "flat_tax": flat_tax,
+                "surcharge": surcharge_total,
+                "initiator_surcharge": init_surcharge,
+                "target_surcharge": tgt_surcharge,
             },
             appraised_value=gross,
             tax_paid=tax,
+            initiator_appraised=init_gross,
+            target_appraised=tgt_gross,
+            surcharge_paid=surcharge_total,
         )
         self.db.add(log)
         self.db.flush()
         logger.info(
-            "Trade session %s settled gross=%d tax=%d ships=%d",
+            "Trade session %s settled gross=%d tax=%d surcharge=%d ships=%d",
             session.id,
             gross,
             tax,
+            surcharge_total,
             len(init_ship_ids) + len(tgt_ship_ids),
         )
         return {
@@ -436,11 +523,113 @@ class PlayerTradeService:
             "session": self._public(session),
             "appraised_value": gross,
             "tax_paid": tax,
+            "surcharge_paid": surcharge_total,
         }
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+    def _trade_window_totals(
+        self, player_id: uuid.UUID, *, days: int
+    ) -> antirmt.WindowTotals:
+        since = _now() - timedelta(days=days)
+        rows = (
+            self.db.query(PlayerTradeLog)
+            .filter(
+                PlayerTradeLog.created_at >= since,
+                (
+                    (PlayerTradeLog.initiator_id == player_id)
+                    | (PlayerTradeLog.target_id == player_id)
+                ),
+            )
+            .all()
+        )
+        return antirmt.accumulate_window(player_id, rows)
+
+    def _counterparty_flow(
+        self, player_id: uuid.UUID, counterparty_id: uuid.UUID, *, days: int
+    ) -> int:
+        since = _now() - timedelta(days=days)
+        rows = (
+            self.db.query(PlayerTradeLog)
+            .filter(
+                PlayerTradeLog.created_at >= since,
+                (
+                    (
+                        (PlayerTradeLog.initiator_id == player_id)
+                        & (PlayerTradeLog.target_id == counterparty_id)
+                    )
+                    | (
+                        (PlayerTradeLog.initiator_id == counterparty_id)
+                        & (PlayerTradeLog.target_id == player_id)
+                    )
+                ),
+            )
+            .all()
+        )
+        return antirmt.counterparty_flow(player_id, counterparty_id, rows)
+
+    def _check_cluster_outflow(
+        self, player_id: uuid.UUID, *, add_external: int
+    ) -> Optional[str]:
+        """Cluster combined external outflow cap (ADR-0089). Soft-skip if schema unused."""
+        try:
+            from src.models.multi_account import MultiAccountFlag
+        except Exception:
+            return None
+        cluster_ids = [
+            row[0]
+            for row in self.db.query(MultiAccountFlag.cluster_id)
+            .filter(MultiAccountFlag.player_id == player_id)
+            .distinct()
+            .all()
+            if row[0] is not None
+        ]
+        if not cluster_ids:
+            return None
+        since = _now() - timedelta(days=antirmt.WINDOW_DAYS)
+        for cid in cluster_ids:
+            member_ids = [
+                r[0]
+                for r in self.db.query(MultiAccountFlag.player_id)
+                .filter(MultiAccountFlag.cluster_id == cid)
+                .distinct()
+                .all()
+                if r[0] is not None
+            ]
+            if not member_ids:
+                continue
+            member_set = set(member_ids)
+            rows = (
+                self.db.query(PlayerTradeLog)
+                .filter(
+                    PlayerTradeLog.created_at >= since,
+                    (
+                        (PlayerTradeLog.initiator_id.in_(member_ids))
+                        | (PlayerTradeLog.target_id.in_(member_ids))
+                    ),
+                )
+                .all()
+            )
+            outflow = 0
+            for row in rows:
+                # External = value sent by a member to a non-member.
+                if (
+                    row.initiator_id in member_set
+                    and row.target_id not in member_set
+                ):
+                    outflow += int(row.initiator_appraised or 0)
+                if (
+                    row.target_id in member_set
+                    and row.initiator_id not in member_set
+                ):
+                    outflow += int(row.target_appraised or 0)
+            # This trade's add_external counts if counterparties are outside —
+            # settle caller passes the party's gross send; we conservatively add it.
+            if outflow + add_external > antirmt.CLUSTER_OUTFLOW_CAP_7D:
+                return "cluster_cap_exceeded"
+        return None
+
     def _lock_session(self, session_id: uuid.UUID) -> Optional[PlayerTradeSession]:
         return (
             self.db.query(PlayerTradeSession)
