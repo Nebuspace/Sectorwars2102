@@ -915,7 +915,20 @@ class CombatService:
         # Check if combat is allowed in this sector (could have special rules)
         if not self._is_combat_allowed(sector, attacker, defender):
             return {"success": False, "message": "Combat is not allowed in this sector"}
-        
+
+        # WO-MINING-PVP-INTERRUPT: engaging a mining hull cancels the PENDING
+        # harvest (50% turn refund) before resolution. Canon mining.md § PvP —
+        # refund fires on engage regardless of whether damage lands. Only after
+        # gates that mean this attack will resolve (sector/range/turns/rules).
+        if defender.current_ship.status == ShipStatus.MINING:
+            from src.services.mining_service import MiningService
+
+            MiningService(self.db).interrupt_pending_for_ship(
+                defender.current_ship_id,
+                reason_code="pvp_attack",
+                leave_in_combat=True,
+            )
+
         # Resolve combat
         combat_result = self._resolve_ship_combat(attacker, defender, sector)
         
@@ -1944,6 +1957,17 @@ class CombatService:
         sector = self.db.query(Sector).filter(Sector.sector_id == defender.current_sector_id).first()
         if sector is None:
             return {"success": False, "message": "Sector not found"}
+
+        # WO-MINING-PVP-INTERRUPT: NPC engage cancels PENDING harvest (canon:
+        # incoming combat from player or NPC). Same hook as attack_player.
+        if defender.current_ship.status == ShipStatus.MINING:
+            from src.services.mining_service import MiningService
+
+            MiningService(self.db).interrupt_pending_for_ship(
+                defender.current_ship_id,
+                reason_code="npc_pvp_attack",
+                leave_in_combat=True,
+            )
 
         combat_result = self._resolve_ship_combat(
             attacker=None, defender=defender, sector=sector, attacker_ship=npc_ship,

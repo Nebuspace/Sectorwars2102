@@ -644,6 +644,36 @@ class MiningService:
             "player_id": str(row.player_id),
         }
 
+    def interrupt_pending_for_ship(
+        self,
+        ship_id: uuid.UUID,
+        *,
+        reason_code: str = "pvp_attack",
+        leave_in_combat: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        """Cancel the ship's PENDING harvest if one exists (WO-MINING-PVP-INTERRUPT).
+
+        Returns the ``interrupt_harvest`` result, or ``None`` when no PENDING
+        row exists (no-op for non-mining defenders). Callers that already hold
+        player/ship row locks (combat) may invoke this safely — Postgres
+        re-acquires the same locks in-transaction.
+        """
+        pending = (
+            self.db.query(MiningHarvest)
+            .filter(
+                MiningHarvest.ship_id == ship_id,
+                MiningHarvest.status == MiningHarvestStatus.PENDING,
+            )
+            .first()
+        )
+        if pending is None:
+            return None
+        return self.interrupt_harvest(
+            pending.id,
+            reason_code=reason_code,
+            leave_in_combat=leave_in_combat,
+        )
+
     def interrupt_harvest(
         self,
         harvest_id: uuid.UUID,
