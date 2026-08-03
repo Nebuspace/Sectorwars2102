@@ -12,13 +12,13 @@ from src.core.resource_registry_seeder import RESOURCE_REGISTRY, seed_resource_r
 from src.models.resource import Resource, ResourceType
 
 
-def test_double_seed_yields_thirteen_rows_thirteen_distinct_names(db: Session):
+def test_double_seed_yields_fourteen_rows_fourteen_distinct_names(db: Session):
     seed_resource_registry(db)
     seed_resource_registry(db)
 
     rows = db.query(Resource).all()
-    assert len(rows) == 13
-    assert len({r.name for r in rows}) == 13
+    assert len(rows) == 14
+    assert len({r.name for r in rows}) == 14
 
 
 def test_lumen_crystals_row_exists_by_name(db: Session):
@@ -41,7 +41,7 @@ def test_reseed_updates_by_name_not_duplicate(db: Session):
 
     processed = seed_resource_registry(db)
 
-    assert processed == 13
+    assert processed == 14
     matching_rows = db.query(Resource).filter(Resource.name == "ore").all()
     assert len(matching_rows) == 1
     assert matching_rows[0].label == "Ore"
@@ -51,10 +51,17 @@ def test_reseed_reconciles_type_when_name_is_the_lookup_key(db: Session):
     """Forward-compat: even if a row's `type` drifted from RESOURCE_REGISTRY
     (e.g. mid-transition to the enum->varchar retire), re-seeding by `name`
     still finds it and reconciles `type` back to canon — the seeder no
-    longer depends on `type` staying in sync to find its own rows."""
+    longer depends on `type` staying in sync to find its own rows.
+
+    Free the target enum value first: ``resources.type`` is unique
+    (``uq_resources_type``), and the full catalog occupies every
+    ResourceType, so a drift to PRISMATIC_ORE requires removing that
+    type's own row before the assignment can commit.
+    """
     seed_resource_registry(db)
     row = db.query(Resource).filter(Resource.name == "ore").first()
     original_type = row.type
+    db.query(Resource).filter(Resource.name == "prismatic_ore").delete()
     # Simulate type drift while name (the new lookup key) stays canonical.
     row.type = ResourceType.PRISMATIC_ORE
     db.commit()
@@ -71,4 +78,4 @@ def test_reseed_reconciles_type_when_name_is_the_lookup_key(db: Session):
 
 def test_registry_entry_count_matches_row_count_after_seed(db: Session):
     seed_resource_registry(db)
-    assert db.query(Resource).count() == len(RESOURCE_REGISTRY) == 13
+    assert db.query(Resource).count() == len(RESOURCE_REGISTRY) == 14

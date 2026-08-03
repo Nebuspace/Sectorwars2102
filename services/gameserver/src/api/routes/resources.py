@@ -1,9 +1,10 @@
 """
 Resource Registry API routes (WO-ARCH-RES-1-KERNEL).
 
-Read-only catalog of the 13 canon resources (definitions.md#resource-types),
-seeded idempotently at startup by src.core.resource_registry_seeder. A new
-resource inserted into the registry surfaces here with zero code change.
+Read-only catalog of the seeded resources (definitions.md#resource-types
+plus precious_metals per ADR-0062 E-D1 / mining.md), seeded idempotently at
+startup by src.core.resource_registry_seeder. A new resource inserted into
+the registry surfaces here with zero code change.
 
 Auth: any authenticated user (player or admin-only). The catalog is not
 player-scoped — requiring a Player row wrongly 404'd default admin sessions

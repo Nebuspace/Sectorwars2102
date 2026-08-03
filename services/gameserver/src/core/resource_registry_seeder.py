@@ -8,19 +8,21 @@ model's enum, an idempotent query-then-upsert seed function, called once at
 startup (src/main.py).
 
 Vocabulary mapping — ResourceType (models/resource.py) predates this WO and
-already used UPPER_CASE names for exactly these 13 canon resources; its own
+already used UPPER_CASE names for exactly these catalog resources; its own
 docstring documents 3 of the mappings (BASIC_FOOD->organics,
 TECHNOLOGY->equipment, POPULATION->colonists). The two not already called out
 there: PRISMATIC_ORE->prismatic_ore (identity) and PHOTONIC_CRYSTALS-
 >lumen_crystals (canon's rare-material name for that enum member). RESOURCE_
-REGISTRY below is the single place all 13 mappings are explicit.
+REGISTRY below is the single place all mappings are explicit.
 
 Field provenance (do not invent — every value below traces to a source):
-  * base_price / price_range (min, max) for the 7 core commodities +
-    colonists come from src.core.commodity_economy.COMMODITY_BASE_PRICES,
-    the existing single source of truth for commodity economics (WO-Y /
-    ADR-0082); those ranges are asserted at import time to match canon's
-    published price-range table (definitions.md:193-201).
+  * base_price / price_range (min, max) for the 7 core station-trade
+    commodities + colonists + precious_metals come from
+    src.core.commodity_economy.COMMODITY_BASE_PRICES, the existing single
+    source of truth for commodity economics (WO-Y / ADR-0082 / ADR-0062
+    E-D1); those ranges are asserted at import time to match canon's
+    published price-range table (definitions.md:193-201 + market-pricing.md
+    precious_metals 80-180).
   * combat_drones has no single canon price — definitions.md:208 gives two
     flat prices (Attack 1,000cr / Defense 1,200cr, at military outposts, not
     the dynamic station-commodity mechanic). Encoded as base_price=1000
@@ -32,23 +34,29 @@ Field provenance (do not invent — every value below traces to a source):
     than fabricated.
   * is_producible=True marks the 8 resources present in the station
     production_rate regen mechanic (bang_import_service._COMMODITY_DEFAULTS /
-    nexus_generation_service.base_commodities — the 7 core commodities plus
-    colonists). The remaining 5 (combat_drones, quantum_shards,
-    quantum_crystals, prismatic_ore, lumen_crystals) are acquired via
-    distinct mechanics (fixed-price purchase, nebula harvest, shard assembly,
-    rare find) with no production_rate regen, so is_producible=False.
+    nexus_generation_service.base_commodities — the 7 classic core
+    commodities plus colonists). precious_metals is priced and station-
+    traded but acquired as a rare mining drop (mining_service roll), not
+    via production_rate regen — so is_producible=False, matching
+    quantum_shards / prismatic_ore / lumen_crystals. The remaining
+    combat_drones / quantum_crystals use distinct non-regen mechanics too.
   * is_storable=True marks exactly commodity_economy.SAFE_STORABLE_
     COMMODITIES (ore, organics, equipment) — the only commodities the
-    citadel safe accepts (ADR-0082). Everything else is False.
+    citadel safe accepts (ADR-0082). Everything else (including
+    precious_metals) is False.
   * icon defaults to the canonical slug (same as `name`) — no glyph/asset
     key has been designed yet; a future UI pass can repoint icon without a
     schema change. Not a design decision, a placeholder.
 
-NOTE: commodity_economy.COMMODITY_BASE_PRICES also carries a "precious_metals"
-entry (code-only, no canon docs backing) that is deliberately EXCLUDED here —
-definitions.md's Rare Materials section lists prismatic_ore and lumen_crystals,
-not precious_metals. That's a pre-existing code/docs divergence outside this
-WO's scope; flagged for the orchestrator, not resolved here.
+precious_metals (WO-RES-PRECIOUS-METALS-SEED): seeded as a core_commodity
+with COMMODITY_BASE_PRICES pricing. It is *not* in definitions.md's narrow
+"Rare Materials" subsection (that list is only prismatic_ore /
+lumen_crystals — super-rare finds with no credit price). precious_metals is
+separately canonical as a mining rare drop (FEATURES/economy/mining.md,
+ADR-0062 E-D1) and appears in market-pricing / trading / bang class-
+coverage tables. Earlier seeder revisions incorrectly treated "not in that
+narrow Rare Materials list" as "exclude from the registry"; that was a gap,
+not a code/docs divergence.
 """
 
 import logging
@@ -73,10 +81,12 @@ def _core(commodity_key: str) -> Dict[str, Any]:
     return {"base_price": entry["base"], "price_range_min": lo, "price_range_max": hi}
 
 
-# Canon resource registry (definitions.md:187-219) keyed by ResourceType.
-# Declaration order mirrors the canon doc's three subsections.
+# Canon resource registry (definitions.md:187-219 + precious_metals via
+# mining.md / ADR-0062 E-D1) keyed by ResourceType.
+# Declaration order mirrors the canon doc's three subsections; precious_metals
+# trails the classic 7 core commodities (priced mining drop, not Rare Materials).
 RESOURCE_REGISTRY: Dict[ResourceType, Dict[str, Any]] = {
-    # --- Core trading commodities (7) ---------------------------------
+    # --- Core trading commodities (8) ---------------------------------
     ResourceType.ORE: {
         "name": "ore", "label": "Ore", "category": CATEGORY_CORE,
         **_core("ore"), "is_storable": True, "is_producible": True,
@@ -104,6 +114,12 @@ RESOURCE_REGISTRY: Dict[ResourceType, Dict[str, Any]] = {
     ResourceType.LUXURY_GOODS: {
         "name": "luxury_goods", "label": "Luxury Goods", "category": CATEGORY_CORE,
         **_core("luxury_goods"), "is_storable": False, "is_producible": True,
+    },
+    ResourceType.PRECIOUS_METALS: {
+        "name": "precious_metals", "label": "Precious Metals", "category": CATEGORY_CORE,
+        # ADR-0062 E-D1 / mining.md — rare mining drop, station-traded price
+        # band; not citadel-safe, not production_rate regen.
+        **_core("precious_metals"), "is_storable": False, "is_producible": False,
     },
     # --- Strategic resources (4) ---------------------------------------
     ResourceType.POPULATION: {
