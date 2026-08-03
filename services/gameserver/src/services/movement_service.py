@@ -645,29 +645,36 @@ class MovementService:
             from src.services.contraband_service import ContrabandService
 
             outcome = ContrabandService(self.db).scan_in_transit(
-                player_id=player.id,
+                player=player,
                 ship_id=player.current_ship_id,
                 origin_sector_id=origin_sector_id,
                 destination_sector_id=destination_sector_id,
             )
 
-            if not outcome.get("scanned"):
-                # Gated out (clean hold, not a tighter-security crossing, or
-                # still inside the cooldown) — nothing to persist and nothing to
-                # tell the player about. This rollback is NOT a no-op: the
-                # cooldown gate is evaluated UNDER the player/ship row lock (it
-                # has to be, or two concurrent arrivals could both pass it), so
-                # some no-scan outcomes reach here holding FOR UPDATE locks. The
-                # move's own commit already happened, so without an explicit end
-                # to this transaction those locks would be held until the request
-                # scope tore the session down. Nothing was mutated, so discarding
-                # is exactly right.
-                self.db.rollback()
+            if not outcome.get("scanned") and not outcome.get("locked"):
+                # Gated out before any lock was taken — the overwhelmingly common
+                # case (clean hold, not a tighter-security crossing, or inside the
+                # cooldown). Only SELECTs ran, exactly like the read-only sweep
+                # above leaves behind, so there is NOTHING to end here.
+                #
+                # Do NOT rollback() on this path. It is the caller's session, and
+                # rollback expires every ORM instance the request is still using —
+                # routes/player.py:653 reads `player.turns` as a default argument
+                # on every move, immediately after this hook, and an earlier
+                # revision that rolled back here failed the core-loop playthrough
+                # with ObjectDeletedError (2026-08-03).
                 return
 
-            # A scan happened: either a clean pass (cooldown anchor only) or a
-            # full bust. Both carry mutations that must outlive this call.
+            # Past this point a lock was acquired, so the transaction must be
+            # ended to release it — with commit(), not rollback(). Both release
+            # the lock, but commit is the operation this request path already
+            # survives every single move (_execute_movement commits mid-request
+            # and the route reads `player` afterwards). When the scan was declined
+            # after locking there is simply nothing staged, and committing an
+            # empty transaction is a no-op that releases cleanly.
             self.db.commit()
+            if not outcome.get("scanned"):
+                return
 
             if outcome.get("detected"):
                 # Surface ONLY on a real bust — the move's existing return

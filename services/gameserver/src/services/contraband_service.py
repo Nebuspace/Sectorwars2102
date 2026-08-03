@@ -700,7 +700,7 @@ class ContrabandService:
     # ------------------------------------------------------------------
     def scan_in_transit(
         self,
-        player_id: uuid.UUID,
+        player: Player,
         ship_id: Optional[uuid.UUID],
         origin_sector_id: Optional[int],
         destination_sector_id: Optional[int],
@@ -712,9 +712,10 @@ class ContrabandService:
         traded" to key consequences on — the WORST severity aboard drives the fine
         multiplier, the heat flip, and the rep deltas (``_worst_held_meta``).
 
-        Gate order, cheapest first — every early return is a no-op that has
-        mutated NOTHING, so the common case (no contraband aboard) costs one
-        cargo read and never touches a lock or a row:
+        Gate order, cheapest first. **EVERY gate is evaluated BEFORE any lock is
+        taken**, so the common case — a clean hold, which is nearly every jump in
+        the game — costs one cargo read, takes no lock, and leaves the caller
+        nothing to commit or roll back:
 
         1. both sector ids present, and this is a real change of sector;
         2. the ship is carrying at least one enabled ``illegal:*`` line;
@@ -722,51 +723,78 @@ class ContrabandService:
            INTO tighter space, never for leaving it. Equal or looser security is
            not a scan event (a NULL security_level reads as the mid default 5 on
            both sides, so an unseeded sector pair is never a scan);
-        4. the [OPEN-9] per-sector cooldown has expired for THIS destination.
+        4. the [OPEN-9] per-sector cooldown has expired for THIS destination —
+           read straight off the passed-in ``player``, no query and no lock.
 
-        Only after all four does it take the player/ship lock and roll. FLUSH
-        only — the CALLER owns the commit (L1). On the movement path that caller
-        is ``movement_service._roll_contraband_transit_scan``, which commits
-        explicitly because the move itself already committed.
+        **WHY THE GATES MUST ALL PRECEDE THE LOCK (regression, 2026-08-03).**
+        An earlier revision took the lock before the cooldown check so the check
+        would be serialized, which meant some no-scan outcomes returned holding
+        ``FOR UPDATE`` locks and the caller had to end the transaction to release
+        them. It did that with ``rollback()`` — on the CALLER'S session, on the
+        common path — which expires every ORM instance the request is still
+        using. ``routes/player.py:653`` evaluates ``player.turns`` as a default
+        argument on *every* move, i.e. immediately after this hook, and blew up
+        with ``ObjectDeletedError``. `_roll_mechanical_failure` looks like it does
+        the same thing but does not: its ``rollback()`` is only in an exception
+        handler, so it never runs on a healthy request. Gates-before-lock removes
+        the whole class of problem — no lock is taken unless this call is going to
+        mutate and therefore to be committed.
 
-        Returns ``{"scanned": bool, "detected": bool, "reason": str|None, ...}``;
-        on a bust the ``_resolve_bust`` payload is merged in.
+        ``locked`` in the return tells the caller whether a lock was actually
+        acquired, so it only ends the transaction when there is something to end.
+
+        FLUSH only — the CALLER owns the commit (L1). On the movement path that
+        caller is ``movement_service._roll_contraband_transit_scan``, which
+        commits explicitly because the move itself already committed.
+
+        Returns ``{"scanned": bool, "detected": bool, "locked": bool,
+        "reason": str|None, ...}``; on a bust the ``_resolve_bust`` payload is
+        merged in.
         """
-        if origin_sector_id is None or destination_sector_id is None:
-            return {"scanned": False, "detected": False, "reason": "unknown_sector"}
-        if origin_sector_id == destination_sector_id:
-            return {"scanned": False, "detected": False, "reason": "same_sector"}
+        def _skip(reason: str, locked: bool = False) -> Dict[str, Any]:
+            return {"scanned": False, "detected": False, "locked": locked, "reason": reason}
 
-        # (2) Cheap pre-check on the UNLOCKED ship: is there anything to find?
-        # Re-checked under the lock below — this is only here to keep the
-        # overwhelmingly common "clean hold" jump off the lock entirely.
+        if origin_sector_id is None or destination_sector_id is None:
+            return _skip("unknown_sector")
+        if origin_sector_id == destination_sector_id:
+            return _skip("same_sector")
+
+        # (2) Is there anything to find? Unlocked read — this is what keeps the
+        # overwhelmingly common clean-hold jump off the lock entirely.
         pre_ship = self.db.query(Ship).filter(Ship.id == ship_id).first() if ship_id else None
         if pre_ship is None:
-            return {"scanned": False, "detected": False, "reason": "ship_not_found"}
+            return _skip("ship_not_found")
         if self._worst_held_meta(self._cargo(pre_ship).get("contents", {})) is None:
-            return {"scanned": False, "detected": False, "reason": "no_contraband"}
+            return _skip("no_contraband")
 
         # (3) Security differential. Both sides resolve through the same default
         # so a NULL/absent sector can never manufacture a scan.
         origin_security = self._security_level(self._sector_by_number(origin_sector_id))
-        dest_sector = self._sector_by_number(destination_sector_id)
-        dest_security = self._security_level(dest_sector)
+        dest_security = self._security_level(self._sector_by_number(destination_sector_id))
         if dest_security <= origin_security:
-            return {"scanned": False, "detected": False, "reason": "not_higher_security"}
-
-        # Everything below MUTATES, so take the lock now.
-        player, ship, reason = self._lock_player_ship(player_id, ship_id)
-        if reason:
-            return {"scanned": False, "detected": False, "reason": reason}
+            return _skip("not_higher_security")
 
         # (4) [OPEN-9] cooldown — "one scan per sector per traversal (no re-roll
         # on immediate re-entry)". Keyed on the destination, so bouncing back and
         # forth across the same border cannot farm rolls, while a genuinely new
-        # crossing always scans. Read under the lock: the anchor is written under
-        # it too, so two concurrent arrivals can't both pass this check.
+        # crossing always scans. Read off the already-loaded player: no query, and
+        # crucially no lock, so declining here leaves nothing for the caller to
+        # unwind (see the docstring's regression note).
         now = datetime.now(UTC)
         if self._transit_scan_on_cooldown(player, destination_sector_id, now):
-            return {"scanned": False, "detected": False, "reason": "cooldown"}
+            return _skip("cooldown")
+
+        # Everything below MUTATES, so take the lock now.
+        player, ship, reason = self._lock_player_ship(player.id, ship_id)
+        if reason:
+            return _skip(reason, locked=True)
+
+        # Re-check the cooldown under the lock. Two arrivals racing the same
+        # border could both have passed the unlocked check above; the lock makes
+        # exactly one of them the winner. Rare enough that paying a lock to lose
+        # is fine — and the caller ends the transaction because `locked` is set.
+        if self._transit_scan_on_cooldown(player, destination_sector_id, now):
+            return _skip("cooldown_race", locked=True)
 
         # Re-read the hold under the lock — this is the set the roll is scored on
         # and the set a bust confiscates; the unlocked pre-check above is advisory.
@@ -776,7 +804,7 @@ class ContrabandService:
             contents = {}
         worst = self._worst_held_meta(contents)
         if worst is None:
-            return {"scanned": False, "detected": False, "reason": "no_contraband"}
+            return _skip("no_contraband", locked=True)
         worst_commodity, worst_meta = worst
 
         p_detect = self._transit_detection_probability(
@@ -808,6 +836,7 @@ class ContrabandService:
                 reason="contraband_transit_scan",
             )
             outcome["scanned"] = True
+            outcome["locked"] = True
             outcome["sector_id"] = destination_sector_id
             return outcome
 
@@ -819,6 +848,7 @@ class ContrabandService:
         return {
             "scanned": True,
             "detected": False,
+            "locked": True,
             "reason": None,
             "sector_id": destination_sector_id,
             "detection_probability": round(p_detect, 4),
