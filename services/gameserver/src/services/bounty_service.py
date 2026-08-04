@@ -7,7 +7,7 @@ Uses Player.settings["bounties"] JSONB — no new database table required.
 
 import logging
 import uuid
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 from typing import Dict, Any, List, Optional
 
 from sqlalchemy.orm import Session
@@ -22,6 +22,17 @@ logger = logging.getLogger(__name__)
 
 BOUNTY_MIN_AMOUNT = 1000
 BOUNTY_PLACEMENT_FEE = 0.10  # 10% fee
+
+# Optional bounty expiry (bounty-and-reputation.md 📐 "optional expiry
+# timestamp on placement (expires_at); auto-refund-minus-fee on expiry" —
+# design-only, no ratified duration; canon's own example, "a 48-hour
+# vendetta," is illustrative not normative). Opt-in only: place_bounty's
+# default (duration_days=None) sets no expires_at, preserving the documented
+# baseline "bounties do NOT auto-expire." NO-CANON bounds pending a
+# DECISIONS.md magnitude ruling — conservative clamp so a placer can't set
+# an effectively-permanent or effectively-instant expiry.
+BOUNTY_MIN_DURATION_DAYS = 1
+BOUNTY_MAX_DURATION_DAYS = 90
 
 # System-generated bounty thresholds based on personal reputation. These define
 # WHO the Federation wants (a player must be at or below the shallowest tier,
@@ -470,13 +481,34 @@ class BountyService:
         return player_a, player_b
 
     def place_bounty(
-        self, placer_id: uuid.UUID, target_id: uuid.UUID, amount: int
+        self,
+        placer_id: uuid.UUID,
+        target_id: uuid.UUID,
+        amount: int,
+        duration_days: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Place a bounty on a target player. Placer pays amount + 10% fee."""
+        """Place a bounty on a target player. Placer pays amount + 10% fee.
+
+        ``duration_days`` is optional (default None = no expiry, the
+        documented baseline). When given, must be within
+        [BOUNTY_MIN_DURATION_DAYS, BOUNTY_MAX_DURATION_DAYS]; the bounty
+        entry then carries an ``expires_at`` the sweep (``expire_due_
+        bounties``) auto-cancels-and-refunds once passed."""
         if amount < BOUNTY_MIN_AMOUNT:
             return {
                 "success": False,
                 "message": f"Minimum bounty is {BOUNTY_MIN_AMOUNT} credits",
+            }
+
+        if duration_days is not None and not (
+            BOUNTY_MIN_DURATION_DAYS <= duration_days <= BOUNTY_MAX_DURATION_DAYS
+        ):
+            return {
+                "success": False,
+                "message": (
+                    f"duration_days must be between {BOUNTY_MIN_DURATION_DAYS} "
+                    f"and {BOUNTY_MAX_DURATION_DAYS}"
+                ),
             }
 
         # Lock placer AND target rows, in ASCENDING-ID order — deterministic,
@@ -524,6 +556,11 @@ class BountyService:
             "amount": amount,
             "placed_at": datetime.now(UTC).isoformat(),
             "type": "player",
+            "expires_at": (
+                (datetime.now(UTC) + timedelta(days=duration_days)).isoformat()
+                if duration_days is not None
+                else None
+            ),
         }
         bounties.append(bounty_entry)
         self._set_bounties(target, bounties)
@@ -543,6 +580,7 @@ class BountyService:
             "fee": fee,
             "total_cost": total_cost,
             "remaining_credits": placer.credits,
+            "expires_at": bounty_entry["expires_at"],
         }
 
     def cancel_bounty(
@@ -635,6 +673,84 @@ class BountyService:
             "refund": refund,
             "remaining_credits": placer.credits,
         }
+
+    def expire_due_bounties(self, now: Optional[datetime] = None) -> Dict[str, int]:
+        """Auto-cancel every PLAYER-placed bounty past its optional
+        ``expires_at`` and refund the placer (bounty-and-reputation.md 📐
+        "auto-refund-minus-fee on expiry") — the sweep counterpart to
+        ``cancel_bounty``, triggered by the clock instead of the placer.
+
+        Refund equals the escrowed ``amount`` only (the 10% placement fee
+        was already taken and stays non-refundable, matching cancel's
+        invariant #9 exactly — "refund-minus-fee" describes that the fee
+        is never returned, not a further deduction off the principal).
+
+        Scans all active players' JSONB bounty lists (mirrors
+        ``get_available_bounties``'s existing full-scan pattern — no GIN
+        index on ``Player.settings`` exists to query this server-side).
+        Entries with no ``expires_at`` (the default — "do NOT auto-expire")
+        are untouched. System (``type == "system"``) entries never carry
+        ``expires_at`` and are skipped defensively. Caller commits."""
+        now = now or datetime.now(UTC)
+        result = {"expired": 0, "total_refunded": 0}
+
+        targets = self.db.query(Player).filter(Player.is_active == True).all()  # noqa: E712
+        for target in targets:
+            bounties = self._get_bounties(target)
+            if not bounties:
+                continue
+
+            due = []
+            kept = []
+            for entry in bounties:
+                expires_at_raw = entry.get("expires_at")
+                if entry.get("type") == "system" or not expires_at_raw:
+                    kept.append(entry)
+                    continue
+                try:
+                    expires_at = datetime.fromisoformat(str(expires_at_raw).replace("Z", "+00:00"))
+                except (ValueError, TypeError):
+                    kept.append(entry)
+                    continue
+                if expires_at <= now:
+                    due.append(entry)
+                else:
+                    kept.append(entry)
+
+            if not due:
+                continue
+
+            self._set_bounties(target, kept)
+
+            for entry in due:
+                try:
+                    placer_id = uuid.UUID(str(entry.get("placed_by")))
+                except (ValueError, TypeError):
+                    logger.error(
+                        "expire_due_bounties: bounty %s on %s has an unresolvable "
+                        "placed_by (%r) — refund skipped",
+                        entry.get("id"), target.id, entry.get("placed_by"),
+                    )
+                    continue
+                placer = (
+                    self.db.query(Player)
+                    .filter(Player.id == placer_id)
+                    .with_for_update()
+                    .first()
+                )
+                if placer is None:
+                    continue
+                refund = int(entry.get("amount", 0))
+                placer.credits += refund
+                result["expired"] += 1
+                result["total_refunded"] += refund
+                logger.info(
+                    "Bounty expired: %s on %s, refunded %d to placer %s",
+                    entry.get("id"), target.id, refund, placer_id,
+                )
+
+        self.db.flush()
+        return result
 
     def get_bounties_on_player(self, target_id: uuid.UUID) -> Dict[str, Any]:
         """List all active bounties on a player."""

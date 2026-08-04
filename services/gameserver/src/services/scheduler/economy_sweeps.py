@@ -36,6 +36,10 @@ from src.services.scheduler._common import (
     _STATION_RECOVERY_LOCK_KEY,
     _RECLAIM_FLAG_LOCK_KEY,
     _PRICE_HISTORY_LOCK_KEY,
+    _BOUNTY_EXPIRE_LOCK_KEY,
+    _BOUNTY_EXPIRE_STATE_KEY,
+    BOUNTY_EXPIRE_SWEEP_SECONDS,
+    _sweep_due_and_advance,
     canonical_day_number,
 )
 
@@ -622,6 +626,42 @@ def _run_stolen_ship_rep_penalty_sweep_sync() -> Dict[str, int]:
         logger.exception("Stolen-ship rep-penalty sweep failed")
         db.rollback()
         return result
+    finally:
+        db.close()
+
+
+def _run_bounty_expire_sweep_sync() -> Dict[str, int]:
+    """Auto-cancel + refund every player-placed bounty past its optional
+    ``expires_at`` (bounty-and-reputation.md 📐 "auto-refund-minus-fee on
+    expiry"). Thin session/lock/due-check wrapper — the pure, testable logic
+    is ``BountyService.expire_due_bounties`` (mirrors
+    ``_run_beacon_expire_sweep_sync`` wrapping ``message_beacon_service.
+    sweep_expired`` exactly). Lock acquired FIRST, only a successful
+    acquirer proceeds to the due-check (WO-SWEEP-SILENT-SWEEPS discipline —
+    lock contention returns a zeroed result, not a silent no-op)."""
+    from src.core.database import SessionLocal
+    from src.services.bounty_service import BountyService
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _BOUNTY_EXPIRE_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            logger.info("NPC scheduler: bounty expire sweep — lock busy, skipped")
+            return {"expired": 0, "total_refunded": 0}
+        if not _sweep_due_and_advance(
+            db, _BOUNTY_EXPIRE_STATE_KEY, BOUNTY_EXPIRE_SWEEP_SECONDS, datetime.now(UTC),
+        ):
+            return {"expired": 0, "total_refunded": 0}
+        result = BountyService(db).expire_due_bounties(now=datetime.now(UTC))
+        db.commit()
+        return result
+    except Exception:
+        logger.exception("Bounty expire sweep failed")
+        db.rollback()
+        return {"expired": 0, "total_refunded": 0}
     finally:
         db.close()
 

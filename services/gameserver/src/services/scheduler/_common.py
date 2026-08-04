@@ -229,6 +229,7 @@ _SUSPECT_CLEAR_STATE_KEY = "suspect_clear_last_run_at"
 _CONTRACT_GENERATION_STATE_KEY = "contract_generation_last_run_at"
 _CONTRACT_EXPIRE_STATE_KEY = "contract_expire_last_run_at"
 _BEACON_EXPIRE_STATE_KEY = "beacon_expire_last_run_at"
+_BOUNTY_EXPIRE_STATE_KEY = "bounty_expire_last_run_at"
 _TEAM_REPUTATION_SWEEP_STATE_KEY = "team_reputation_sweep_last_run_at"
 _PIRATE_ECOSYSTEM_TICK_STATE_KEY = "pirate_ecosystem_tick_last_run_at"
 # Deliberately NO coarse elapsed pre-filter for these 4 (unlike the
@@ -561,6 +562,15 @@ BEACON_EXPIRE_SWEEP_SECONDS = int(
     os.environ.get("BEACON_EXPIRE_SWEEP_SECONDS", str(10 * 60))
 )
 
+# Bounty expiry sweep (bounty-and-reputation.md 📐 "auto-refund-minus-fee on
+# expiry" — design-only, no ratified cadence). Mirrors BEACON_EXPIRE_SWEEP_
+# SECONDS: bounties are placer-visible but not urgent (an expired bounty
+# just stops being collectable and gets refunded), so a coarse 10-minute
+# cadence is a conservative default pending a DECISIONS.md ruling.
+BOUNTY_EXPIRE_SWEEP_SECONDS = int(
+    os.environ.get("BOUNTY_EXPIRE_SWEEP_SECONDS", str(10 * 60))
+)
+
 # Suspect auto-clear sweep (WO-CMB-SUSPECT-LIFE-1 held wiring) —
 # suspect_service.clear_expired_suspects. NO-CANON: ships.md:293 names the
 # auto-clear BEHAVIOR ("auto-clears at suspect_until") but not a sweep
@@ -750,6 +760,7 @@ _CONTRACT_EXPIRE_LOCK_KEY = _mnemonic_lock_key("CEXP")
 # second gameserver instance can't double-delete/double-broadcast the same
 # expired beacons. 'BCNX' = BeaCoN eXpire.
 _BEACON_EXPIRE_LOCK_KEY = _mnemonic_lock_key("BCNX")
+_BOUNTY_EXPIRE_LOCK_KEY = _mnemonic_lock_key("BNTX")
 
 # Async asteroid-harvest resolve sweep (WO-MINING-ASYNC-HARVEST) — own key so
 # two gameserver instances don't double-complete the same PENDING row.

@@ -76,6 +76,7 @@ from src.services.scheduler.economy_sweeps import (
     _run_daily_stipend_sweep_sync,
     _run_bounty_accrual_sweep_sync,
     _run_stolen_ship_rep_penalty_sweep_sync,
+    _run_bounty_expire_sweep_sync,
     _run_port_operating_costs_sync,
     _run_station_recovery_sync,
     _run_reclaim_flag_sweep_sync,
@@ -965,6 +966,25 @@ async def _npc_scheduler_main_loop() -> None:
             raise
         except Exception:
             logger.exception("NPC scheduler: beacon expiry sweep crashed (loop continues)")
+
+        # Bounty expiry sweep (bounty-and-reputation.md 📐 "auto-refund-minus-
+        # fee on expiry") — same no-gate treatment as beacon expiry directly
+        # above; the sweep's own durable due-check (BOUNTY_EXPIRE_SWEEP_
+        # SECONDS) gates the real work. Opt-in feature (place_bounty's
+        # duration_days defaults to None/no-expiry), so this is a no-op scan
+        # until a caller actually sets one.
+        try:
+            bounty_result = await asyncio.to_thread(_run_bounty_expire_sweep_sync)
+            if bounty_result.get("expired"):
+                logger.info(
+                    "NPC scheduler: bounty expiry sweep — expired %d bounty(ies), "
+                    "refunded %d total",
+                    bounty_result.get("expired", 0), bounty_result.get("total_refunded", 0),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("NPC scheduler: bounty expiry sweep crashed (loop continues)")
 
         # Suspect auto-clear sweep (WO-CMB-SUSPECT-LIFE-1 held wiring) —
         # ships.md:293's "auto-clears at suspect_until" guarantee needed a
