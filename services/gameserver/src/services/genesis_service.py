@@ -65,6 +65,17 @@ GENESIS_MIN_SECTORS_FROM_PLANET = 2
 GENESIS_MAX_REGION_OWNERSHIP_FRACTION = 0.25
 # Safety cap on BFS exploration so a deploy can never walk the whole galaxy.
 _GENESIS_BFS_NODE_CAP = 4000
+# Protected-sectors gate (genesis-devices.md 📐 "a distinct protected-sectors
+# check... rather than folded into the 5-jump Federation-distance gate above
+# — is not separately enforced"). Sector.is_capital is the one existing
+# "protected anchor" concept in the schema (region-capital sectors); no
+# deploy within this many jumps of a capital sector (0 = the capital sector
+# itself), mirroring the GENESIS_MIN_SECTORS_FROM_PLANET spacing radius.
+GENESIS_PROTECTED_SECTOR_RADIUS = 1
+# Sequence-participation cooldown (genesis-devices.md 📐 "max 1 every 14 days
+# per player — not enforced"). Distinct from MAX_PURCHASES_PER_WEEK (device
+# acquisition); this gates DEPLOY (starting a formation sequence).
+GENESIS_SEQUENCE_COOLDOWN_DAYS = 14
 
 # Default formation time in hours. Env-configurable so dev can accelerate it
 # (the deployment formation timer is wall-clock, NOT GAME_TIME_SCALE-driven).
@@ -341,6 +352,24 @@ class GenesisService:
                 f"(nearest Federation sector is {min(fed_dist)} jump(s) away)."
             )
 
+        # Gate 2b — protected sectors: no deploy within GENESIS_PROTECTED_SECTOR_RADIUS
+        # jumps of a capital sector (Sector.is_capital), distinct from the Federation-
+        # distance gate above (a region's capital need not be Federation Space).
+        protected_uuids = [
+            u for u, d in distances.items() if d <= GENESIS_PROTECTED_SECTOR_RADIUS
+        ]
+        if protected_uuids:
+            capital_count = self.db.execute(
+                select(func.count(Sector.id)).where(
+                    and_(Sector.id.in_(protected_uuids), Sector.is_capital.is_(True))
+                )
+            ).scalar() or 0
+            if capital_count > 0:
+                raise ValueError(
+                    "genesis_blocked_protected: Genesis deployment must be at least "
+                    f"{GENESIS_PROTECTED_SECTOR_RADIUS + 1} jump(s) from a capital sector."
+                )
+
         # Gate 3 — >= 2 sectors from any other planet (no planet within <=1 jump,
         # including the target sector itself).
         spacing_radius = GENESIS_MIN_SECTORS_FROM_PLANET - 1
@@ -386,6 +415,39 @@ class GenesisService:
                     f"genesis_blocked_monopoly: You already own {owned} of {total} planets in "
                     f"this region; a single player may hold at most ~{pct}% of a region's planets."
                 )
+
+    def _enforce_sequence_cooldown(self, player: Player) -> None:
+        """Enforce the genesis-devices.md sequence-participation cooldown: a
+        player may start (deploy) at most one genesis sequence per
+        GENESIS_SEQUENCE_COOLDOWN_DAYS. Reads/writes ``player.settings["genesis_
+        last_deploy_at"]`` — a distinct JSONB key from ``genesis_purchases``
+        (that list gates weekly ACQUISITION; this gates DEPLOY/sequence-start)."""
+        settings = player.settings or {}
+        last_at_raw = settings.get("genesis_last_deploy_at")
+        if not last_at_raw:
+            return
+        try:
+            last_at = datetime.fromisoformat(str(last_at_raw).replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return
+        now = datetime.now(timezone.utc)
+        elapsed = now - last_at
+        cooldown = timedelta(days=GENESIS_SEQUENCE_COOLDOWN_DAYS)
+        if elapsed < cooldown:
+            remaining = cooldown - elapsed
+            raise ValueError(
+                "genesis_blocked_cooldown: You may only start one genesis sequence "
+                f"every {GENESIS_SEQUENCE_COOLDOWN_DAYS} days; "
+                f"{remaining.days}d {remaining.seconds // 3600}h remaining."
+            )
+
+    def _record_sequence_deploy(self, player: Player) -> None:
+        """Stamp the sequence-cooldown marker at the moment a deploy succeeds
+        (called just before commit, mirroring _record_genesis_purchase's
+        settings-JSONB reassign pattern)."""
+        settings = dict(player.settings) if player.settings else {}
+        settings["genesis_last_deploy_at"] = datetime.now(timezone.utc).isoformat()
+        player.settings = settings
 
     def deploy_genesis_device(
         self,
@@ -454,8 +516,13 @@ class GenesisService:
             raise ValueError(f"Sector {sector_id} not found")
 
         # --- Genesis deploy restrictions (ADR-0088): reputation tier, distance
-        # from Federation Space, planet spacing, and per-region anti-monopoly. ---
+        # from Federation Space, protected sectors, planet spacing, and
+        # per-region anti-monopoly. ---
         self._enforce_deploy_restrictions(player, sector)
+
+        # --- Sequence-participation cooldown (genesis-devices.md: max 1 every
+        # 14 days per player) ---
+        self._enforce_sequence_cooldown(player)
 
         # --- Check sector planet limit ---
         existing_planet_count = self.db.query(func.count(Planet.id)).filter(
@@ -707,6 +774,8 @@ class GenesisService:
             )
         except Exception as e:
             logger.error("Exploration medal dispatch failed on genesis deploy: %s", e)
+
+        self._record_sequence_deploy(player)
 
         self.db.commit()
         self.db.refresh(planet)
