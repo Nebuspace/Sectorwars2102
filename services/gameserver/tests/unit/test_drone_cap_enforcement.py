@@ -32,6 +32,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.models.drone import DroneStatus, DroneType
+from src.models.ship import UpgradeType
 from src.services.combat_service import CombatService
 from src.services.drone_service import DroneService
 
@@ -250,3 +251,31 @@ def test_dead_system_b_drone_combat_path_removed():
     _resolve_sector_drone_combat, called from attack_sector_drones."""
     assert not hasattr(CombatService, "_resolve_drone_combat")
     assert hasattr(CombatService, "_resolve_sector_drone_combat")
+
+
+class TestDroneBayBonusModuleAndLegacyStack:
+    """WO-FIX-DRONE-BAY-MODULE-VS-LEGACY-SPLIT: DroneService._drone_bay_bonus
+    sums the legacy Ship.upgrades[DRONE_BAY] level bonus with any fitted
+    Drone Bay module's baked bonus (Ship.modules["_baked"].drone_capacity_bonus)
+    -- the module bake was previously KERNEL-INERT (never read by any
+    consumer), so a fitted module gave zero capacity change. Pure staticmethod,
+    no DB access -- these are plain sync unit tests, no fixtures needed."""
+
+    def test_legacy_upgrade_only(self):
+        ship = _ship(upgrades={UpgradeType.DRONE_BAY.value: 2})
+        assert DroneService._drone_bay_bonus(ship) == 4
+
+    def test_module_only(self):
+        ship = _ship()
+        ship.modules = {"_baked": {"drone_capacity_bonus": 2}}
+        assert DroneService._drone_bay_bonus(ship) == 2
+
+    def test_legacy_and_module_stack_additively(self):
+        ship = _ship(upgrades={UpgradeType.DRONE_BAY.value: 1})
+        ship.modules = {"_baked": {"drone_capacity_bonus": 2}}
+        assert DroneService._drone_bay_bonus(ship) == 4
+
+    def test_neither_contributes_zero(self):
+        ship = _ship()
+        ship.modules = None
+        assert DroneService._drone_bay_bonus(ship) == 0

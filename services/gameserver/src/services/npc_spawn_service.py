@@ -162,14 +162,27 @@ TRADER_NAME_POOL: Tuple[str, ...] = (
 )
 
 PIRATE_PATROL_DEFENSES_KEY = "pirate_patrol_ships"
-# Police squads land under their own defenses key. Canon-divergence note:
-# police-forces.md "Patrol-squad row coherence" says the existing
-# ``defenses.patrol_ships`` shape "is extended", but patrol_ships is
-# already shape-conflicted in code — admin.py reads it as an INT while
-# sector.py defaults it to a list — so landing dict squad rows there
-# would break admin pages. A dedicated key mirrors the ADR-0047
-# pirate_patrol_ships precedent instead; divergence FLAGGED for the docs
-# repo, not silently resolved.
+# Police squads land under their own defenses key, NOT the canon-documented
+# unified ``Sector.defenses.patrol_ships`` list (police-forces.md
+# "Patrol-squad row coherence", DATA_MODELS/jsonb-schema.md
+# "Sector.defenses"). VERIFY-FIRST correction (this key predates the
+# correction, hence the mismatch): the previously-cited "shape conflict"
+# with admin.py's int read never actually existed — admin.py's
+# ``defenses.get("patrol_ships", 0)`` (src/api/routes/admin.py) reads
+# ``Station.defenses``, a DIFFERENT model's JSONB blob (per-station
+# garrison count, DATA_MODELS/jsonb-schema.md "Station.defenses"), not
+# ``Sector.defenses`` — the two never collide at runtime; ``Sector.defenses
+# .patrol_ships`` (list, sector.py default ``[]``) and ``Station.defenses
+# .patrol_ships`` (int, station.py default ``0``) are independent fields
+# that happen to share a key name across unrelated models. Real reason for
+# the split keys: dedicated ``pirate_patrol_ships`` / ``police_patrol_ships``
+# lists (mirroring the ADR-0047 precedent) instead of canon's single
+# ``patrol_ships`` list are now the shipped mechanism — movement_service.py
+# and npc_engagement_service.py's ADR-0042 dispatch/pursuit engine are built
+# against these two keys, not the unified one. Docs corrected to match
+# (police-forces.md, jsonb-schema.md, sector-presence.md); code left as-is —
+# unifying onto canon's single key would require rewriting the shipped
+# encounter/dispatch engine, out of scope for a doc-vs-code reconciliation.
 POLICE_PATROL_DEFENSES_KEY = "police_patrol_ships"
 PATROL_DEFENSES_KEYS: Tuple[str, ...] = (
     PIRATE_PATROL_DEFENSES_KEY,

@@ -2839,19 +2839,23 @@ class MovementService:
         # Check for faction patrols (Wanted-status detection --
         # WO-RT-PATROL-ENCOUNTER, sector-presence.md "NPC faction
         # patrols"). Canon's pseudocode reads sector.defenses['patrol_ships']
-        # as a list of squad dicts, but that key is ALREADY a live SCALAR
-        # INT elsewhere in this codebase -- station siege-defense fire
-        # power (combat_service.py _resolve_port_combat), admin's
-        # security_level rollup, and MILITARY_ZONE seeding
-        # (nexus_generation_service.py / bang_import_service.py) all
-        # read/write it as an int; nexus_generation_service.py even
-        # comments "patrol_ships MUST be a SCALAR INT, never a [list]".
-        # The already-shipped police/pirate squad writer
-        # (npc_spawn_service.py) hit this exact conflict already and
-        # deliberately lands squad rows under a SEPARATE dedicated key --
-        # POLICE_PATROL_DEFENSES_KEY = "police_patrol_ships" -- flagging
-        # the divergence there rather than silently overloading
-        # patrol_ships. This leg follows that precedent.
+        # as a list of squad dicts on Sector.defenses. VERIFY-FIRST
+        # correction: the "patrol_ships MUST be a SCALAR INT" sites
+        # (combat_service.py _resolve_port_combat, admin's security_level
+        # rollup, nexus_generation_service.py / bang_import_service.py
+        # MILITARY_ZONE seeding) all read/write ``Station.defenses``, a
+        # DIFFERENT model's JSONB blob (per-station garrison count) --
+        # they never collide with ``Sector.defenses.patrol_ships`` (list,
+        # sector.py default ``[]``) at runtime; the two are independent
+        # fields on unrelated models sharing a key name. This leg (and the
+        # already-shipped police/pirate squad writer in
+        # npc_spawn_service.py) still uses dedicated
+        # POLICE_PATROL_DEFENSES_KEY = "police_patrol_ships" /
+        # pirate_patrol_ships keys rather than canon's unified
+        # patrol_ships list -- that split is now the shipped mechanism the
+        # ADR-0042 dispatch engine below is built against; docs corrected
+        # to match (police-forces.md, jsonb-schema.md, sector-presence.md)
+        # rather than rewriting this engine to canon's original shape.
         #
         # NO-CANON / PARKED (flagged to the orchestrator, not silently
         # invented): the doc's pseudocode also has this leg call

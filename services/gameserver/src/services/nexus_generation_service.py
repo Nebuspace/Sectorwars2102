@@ -281,7 +281,13 @@ class NexusGenerationService:
             subscription_tier="nexus",
             status="active",
             governance_type="autocracy",
-            tax_rate=0.05,  # Minimum allowed by valid_tax_rate constraint
+            # Deliberately the floor of the valid_tax_rate CHECK (0.05-0.25,
+            # FEATURES/gameplay/regional-governance.md:215). Central Nexus is
+            # platform-owned, not a real taxing economy; commit 4bf5b37f
+            # (2025-11-16) fixed an earlier attempt at 0.0 which violated the
+            # constraint outright -- 0.05 is the lowest legal value, not the
+            # model default of 0.10.
+            tax_rate=0.05,
             economic_specialization="galactic_hub",
             starting_credits=100,  # Minimum allowed by valid_starting_credits constraint
             starting_ship="none",

@@ -426,21 +426,18 @@ class ShipUpgradeService:
             "name": "Cargo Module",
             "description": "Increases cargo capacity (consumed via effective_cargo_capacity).",
         },
-        # drone: STILL INERT. The drone_capacity_bonus bake has no scalar Ship
-        # column, and the live consumer (drone_service._drone_bay_bonus) reads the
-        # Drone Bay level out of Ship.upgrades[DRONE_BAY] — the legacy UpgradeType
-        # JSONB — NOT the module bake. So a drone MODULE is fitted-and-baked but its
-        # capacity bonus is never read. Making it live needs a module-aware
-        # drone-capacity source (a separate WO); kept `inert` until then.
+        # drone: now CONSUMED. drone_service._drone_bay_bonus reads BOTH the legacy
+        # Ship.upgrades[DRONE_BAY] level AND Ship.modules["_baked"].drone_capacity_bonus,
+        # summed additively (mirrors the cargo/genesis legacy+module stacking pattern).
+        # The `inert` marker is therefore removed — the module's effect is live.
         "drone": {
             "base_cost": 10000,
             "base_effects": {"drone_capacity_bonus": 2},
             "compatible_ships": None,
             "requires": None,
             "slot_class": None,
-            "inert": True,  # [NO-CANON] module bake unread — consumer reads Ship.upgrades[DRONE_BAY], not the bake
             "name": "Drone Bay Module",
-            "description": "Increases drone capacity (module bake NOT yet consumed — consumer reads the legacy upgrade level; wiring is a separate WO).",
+            "description": "Increases drone capacity (consumed via drone_service._drone_bay_bonus).",
         },
         # --- ported from EQUIPMENT_DEFINITIONS (the 4 player equipment plug-ins) ---
         "harvester": {
@@ -1184,19 +1181,21 @@ class ShipUpgradeService:
             updated["max_genesis_devices"] = ship.max_genesis_devices
 
         # EQUIPMENT-FAMILY effects (harvester.passive_income / lander.landing_bonus
-        # / mining.mining_efficiency) + drone.drone_capacity_bonus are KERNEL-INERT
-        # here (reviewer SM-2 HIGH gate-fix). Unlike engine/shield/hull/sensor/
-        # maintenance/genesis (which write real scalar/JSONB stat columns above),
-        # these four have NO scalar column on the Ship model — their legacy
-        # consumers read them out of the equipment_slots JSONB that install_equipment
-        # writes (quantum_service passive income, the landing/mining/tow paths). The
-        # earlier draft wrote ship.passive_income/landing_bonus/mining_efficiency,
-        # which DO NOT EXIST on Ship → silent hasattr no-ops (the HIGH). Rather than
-        # ship a misleading dead write, the kernel tracks these totals in _baked
-        # (below) — a correct, re-tune-safe snapshot — and DEFERS their consumer
-        # persistence to WO-SM-3, which wires install_module + writes each
-        # equipment-family effect into the equipment_slots key its existing consumer
-        # already reads (no new consumer, no double-count vs install_equipment).
+        # / mining.mining_efficiency) here have NO scalar column on the Ship model
+        # (reviewer SM-2 HIGH gate-fix) — their legacy consumers read them out of
+        # the equipment_slots JSONB that install_equipment writes (quantum_service
+        # passive income, the landing/mining/tow paths). The earlier draft wrote
+        # ship.passive_income/landing_bonus/mining_efficiency, which DO NOT EXIST
+        # on Ship → silent hasattr no-ops (the HIGH). Rather than ship a misleading
+        # dead write, the kernel tracks these totals in _baked (below) — a correct,
+        # re-tune-safe snapshot — and DEFERS their consumer persistence to WO-SM-3,
+        # which wires install_module + writes each equipment-family effect into the
+        # equipment_slots key its existing consumer already reads (no new consumer,
+        # no double-count vs install_equipment).
+        # drone.drone_capacity_bonus is tracked here the same way (also no scalar
+        # column) but IS already consumed: drone_service._drone_bay_bonus reads
+        # Ship.modules["_baked"]["drone_capacity_bonus"] directly and sums it with
+        # the legacy upgrade level.
         # Surfaced in `updated` for observability so SM-3's bake-correctness test can
         # assert the tracked totals.
         for _inert_key in (
