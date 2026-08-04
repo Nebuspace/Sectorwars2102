@@ -95,6 +95,25 @@ async def read_beacon(
         return result
 
 
+@router.post("/{beacon_id}/report")
+async def report_beacon(
+    beacon_id: str,
+    db: Session = Depends(get_db),
+    current_player: Player = Depends(get_current_player),
+) -> Dict[str, Any]:
+    """WO-BEACON-REPORT-MODERATION: flag a beacon (same sector). Immediate
+    hide from denorm + subsequent reads. Idempotent."""
+    beacon_uuid = _parse_uuid(beacon_id, "beacon_id")
+    try:
+        result = message_beacon_service.report(db, beacon_uuid, current_player.id)
+    except BeaconError as exc:
+        db.rollback()
+        _raise_for(exc)
+    else:
+        db.commit()
+        return result
+
+
 @router.post("/{beacon_id}/salvage")
 async def salvage_beacon(
     beacon_id: str,

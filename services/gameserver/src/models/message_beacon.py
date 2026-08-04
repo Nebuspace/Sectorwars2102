@@ -86,6 +86,10 @@ class MessageBeacon(Base):
     read_once = Column(Boolean, nullable=False, default=False, server_default="false")
     read_count = Column(Integer, nullable=False, default=0, server_default="0")
 
+    # WO-BEACON-REPORT-MODERATION: player report → immediate hide from denorm
+    # + direct read. Admin clear UI deferred (follow-up queue row).
+    flagged = Column(Boolean, nullable=False, default=False, server_default="false")
+
     deployed_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     last_read_at = Column(DateTime(timezone=True), nullable=True)
 

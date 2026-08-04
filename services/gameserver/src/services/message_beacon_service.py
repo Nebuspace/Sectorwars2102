@@ -301,7 +301,11 @@ def _rebuild_sector_denorm(
     )
     visible = [
         _beacon_summary(b, now) for b in rows
-        if _participation_weight(db, b.deployer_player_id) > 0.0 and _decay_state(b, now) != "DARK"
+        if (
+            _participation_weight(db, b.deployer_player_id) > 0.0
+            and _decay_state(b, now) != "DARK"
+            and not bool(getattr(b, "flagged", False))
+        )
     ]
     sector.message_beacons = visible
     flag_modified(sector, "message_beacons")
@@ -707,6 +711,10 @@ def read(db: Session, beacon_id: uuid.UUID, player_id: uuid.UUID) -> Dict[str, A
         raise BeaconError(f"Player {player_id} not found")
     if player.current_sector_id != beacon.sector_id:
         raise BeaconNotFoundError(f"Beacon {beacon_id} not found")
+    # WO-BEACON-REPORT-MODERATION: flagged beacons are unread by id (anti-oracle
+    # — same 404 as wrong-sector / missing).
+    if bool(getattr(beacon, "flagged", False)):
+        raise BeaconNotFoundError(f"Beacon {beacon_id} not found")
 
     result = {
         "id": str(beacon.id),
@@ -768,6 +776,39 @@ def read(db: Session, beacon_id: uuid.UUID, player_id: uuid.UUID) -> Dict[str, A
         raise BeaconNotFoundError(f"Beacon {beacon_id} not found") from None
     result["read_count"] = beacon.read_count
     return result
+
+
+def report(db: Session, beacon_id: uuid.UUID, player_id: uuid.UUID) -> Dict[str, Any]:
+    """Player report → immediate hide (WO-BEACON-REPORT-MODERATION v1).
+
+    Sets ``flagged=true`` (idempotent), rebuilds sector denorm so the cell
+    disappears from ambient view. Same-sector gate + anti-oracle 404 as
+    read/salvage. No reason string / trust auto-flag in v1. FLUSH-ONLY.
+    """
+    beacon = _load_beacon(db, beacon_id)
+    player = db.query(Player).filter(Player.id == player_id).first()
+    if player is None:
+        raise BeaconError(f"Player {player_id} not found")
+    if player.current_sector_id != beacon.sector_id:
+        raise BeaconNotFoundError(f"Beacon {beacon_id} not found")
+
+    region_id, sector_id = beacon.region_id, beacon.sector_id
+    _lock_sector(db, region_id, sector_id)
+    # Re-load under sector lock for a consistent flagged write + denorm rebuild.
+    beacon = _load_beacon(db, beacon_id)
+    already = bool(getattr(beacon, "flagged", False))
+    if not already:
+        beacon.flagged = True
+        db.flush()
+        _rebuild_sector_denorm(db, region_id, sector_id)
+        db.flush()
+        logger.info("Beacon %s flagged by player %s", beacon_id, player_id)
+
+    return {
+        "id": str(beacon.id),
+        "flagged": True,
+        "already_flagged": already,
+    }
 
 
 # ── Salvage ─────────────────────────────────────────────────────────────
