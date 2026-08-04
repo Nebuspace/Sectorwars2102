@@ -980,9 +980,10 @@ def _run_governance_sweep_sync() -> Dict[str, Any]:
         # region-lifecycle.md's daily-cron triggers: SUSPENDED -> GRACE at 7
         # days since Region.suspended_at, GRACE -> TERMINATED at 30 days since
         # the SAME original suspended_at (region_lifecycle_service.advance_
-        # to_grace / advance_to_terminated), plus a read-only cleanup-
-        # eligibility discovery pass (dispatch_terminated_cleanup — gate-
-        # cascade wires the real cascade on later, not built here). Self-gated
+        # to_grace / advance_to_terminated), plus the cleanup cascade dispatch
+        # (dispatch_terminated_cleanup — per-planet process_planet_termination,
+        # per-region dispatch_station_termination, and cascade_region_gate_
+        # teardown, gated on Region.cleanup_completed_at). Self-gated
         # to once per canonical day (see _run_region_lifecycle_advance_gated),
         # mirroring Phase 6's day-anchor discipline exactly. A failure here
         # must NEVER break the governance sweep proper.
