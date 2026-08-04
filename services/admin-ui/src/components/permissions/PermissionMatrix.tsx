@@ -7,9 +7,8 @@ interface PermissionMatrixProps {
 
 // Orphaned / unused matrix banner UI. RBAC scopes are shipped and live
 // elsewhere (ADR-0027 / ADR-0058); this component is not wired to them and
-// only renders a placeholder banner. The props interface is kept so existing
-// composition (PermissionsDashboard) continues to compile; onPermissionChange
-// is never invoked because this UI is unused.
+// only renders a placeholder banner. onPermissionChange is never invoked
+// because this UI is unused.
 export const PermissionMatrix: React.FC<PermissionMatrixProps> = () => {
   return (
     <div className="permission-matrix">
