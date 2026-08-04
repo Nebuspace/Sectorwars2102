@@ -222,17 +222,21 @@ DEFAULT_DEFENSE_POLICY: Dict[str, Any] = {
 }
 
 # Station.ownership["defense_counters"] — owner-side takeover counters
-# (WO-TAKEOVER-DEFENSE-COUNTERMOVES v1). No migration. Friendly-faction
+# (WO-TAKEOVER-DEFENSE-COUNTERMOVES). No migration. Friendly-faction
 # contract + allied-response rally deferred.
 DEFENSE_COUNTERS_KEY = "defense_counters"
-# NO-CANON v1 defaults (port-ownership.md lists the levers but is silent on
-# magnitudes). Conservative first-pass: halve tariff for one counter-window
-# length; 1 cr per 1 credit of synthetic absorb; hard ceiling so a rich owner
-# cannot zero a challenger's share with unbounded spend in one click.
+# Ratified 2026-08-04 (DECISIONS.md port-ownership-takeover-counter-magnitudes-ratify):
+# TARIFF_CUT_FRACTION / COUNTER_TRADE_CREDITS_PER_VOLUME / COUNTER_TRADE_MAX_ABSORB.
+# Counter-trade volume is ledgered as real MarketTransaction rows
+# (DECISIONS.md counter-trade-real-market-orders); legacy synthetic
+# defense_volume records remain honored by defense_volume_for_month.
 TARIFF_CUT_FRACTION = 0.5
 TARIFF_CUT_DURATION_HOURS = COUNTER_WINDOW_HOURS
 COUNTER_TRADE_CREDITS_PER_VOLUME = 1
 COUNTER_TRADE_MAX_ABSORB = 500_000
+# Ledger commodity for defense MarketTransactions — one-sided BUY so the
+# absorb cannot self-cancel against an owner SELL in the same activation.
+COUNTER_TRADE_COMMODITY = "Equipment"
 # Statuses where building-phase owner counters may be activated.
 _DEFENSE_COUNTER_STATUSES = frozenset({"building", "eligible"})
 
@@ -1406,7 +1410,12 @@ def tariff_cut_rate(prior: float) -> float:
 def month_share_with_defense(
     station_vol: int, challenger_vol: int, defense_vol: int
 ) -> float:
-    """Challenger share after adding synthetic defense_volume to station side."""
+    """Challenger share after adding legacy synthetic defense_volume.
+
+    New counter-trade activations write MarketTransaction rows that already
+    inflate ``station_vol`` via monthly_volume — pass defense_vol=0 for those.
+    ``defense_vol`` remains for pre-conversion synthetic ledger rows.
+    """
     total = int(station_vol) + max(0, int(defense_vol))
     if total <= 0:
         return 0.0
@@ -1430,13 +1439,21 @@ def _set_defense_counters(station: Station, counters: List[Dict[str, Any]]) -> N
 
 
 def defense_volume_for_month(station: Station, campaign_id, month_index: int) -> int:
-    """Sum of synthetic counter_trade absorbs for campaign+month."""
+    """Sum of LEGACY synthetic counter_trade absorbs for campaign+month.
+
+    Rows that carry ``market_transaction_id`` (post-conversion activations)
+    contribute 0 here — their volume is already in monthly_volume via the
+    MarketTransaction ledger. Only pre-conversion records with a positive
+    ``defense_volume`` and no MT id still dilute via this path.
+    """
     cid = str(campaign_id)
     total = 0
     for rec in get_defense_counters(station):
         if rec.get("type") != "counter_trade":
             continue
         if str(rec.get("campaign_id")) != cid:
+            continue
+        if rec.get("market_transaction_id"):
             continue
         try:
             if int(rec.get("month", -1)) != int(month_index):
@@ -1594,9 +1611,12 @@ def activate_counter_trade(
     defense_volume: int,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
-    """Owner lever: credit-funded synthetic volume absorb for the current month.
+    """Owner lever: spend credits to place a real MarketTransaction absorb.
 
-    Does NOT write MarketTransaction rows — synthetic defense_volume only.
+    DECISIONS.md counter-trade-real-market-orders: writes a one-sided BUY
+    MarketTransaction (total_value == requested volume) so monthly_volume
+    and share math see real ledger footprint a challenger can out-trade.
+    Does not mutate station inventory — ledger-only defense trade.
     """
     now = now or datetime.now(UTC)
     station = _lock_station(db, station.id)
@@ -1635,20 +1655,42 @@ def activate_counter_trade(
         game_time.canonical_hours_since(campaign.started_at, now) // MONTH_HOURS
     )
     owner.credits -= cost
+
+    # unit_price=1, quantity=volume → total_value exactly matches absorb.
+    tx = MarketTransaction(
+        player_id=owner.id,
+        station_id=station.id,
+        transaction_type=TransactionType.BUY,
+        commodity=COUNTER_TRADE_COMMODITY,
+        quantity=volume,
+        unit_price=1,
+        total_value=volume,
+        station_buy_price=1,
+        station_sell_price=1,
+        owner_tariff_rate=0.0,
+        port_owner_id=owner.id,
+        admin_notes="counter_trade_defense",
+        timestamp=now,
+    )
+    db.add(tx)
+    db.flush()
+
     counters = get_defense_counters(station)
     counters.append({
         "type": "counter_trade",
         "campaign_id": str(campaign.id),
         "month": month_index,
-        "defense_volume": volume,
+        "defense_volume": 0,  # volume lives on the MarketTransaction
+        "market_transaction_id": str(tx.id),
         "cost": cost,
         "activated_at": _iso(now),
     })
     _set_defense_counters(station, counters)
     db.flush()
     logger.info(
-        "Station %s counter_trade absorb=%s cost=%s month=%s (campaign %s) by %s",
-        station.id, volume, cost, month_index, campaign.id, owner.id,
+        "Station %s counter_trade absorb=%s cost=%s month=%s (campaign %s) "
+        "by %s mt=%s",
+        station.id, volume, cost, month_index, campaign.id, owner.id, tx.id,
     )
     return {
         "station_id": str(station.id),
@@ -1656,6 +1698,7 @@ def activate_counter_trade(
         "type": "counter_trade",
         "month": month_index,
         "defense_volume": volume,
+        "market_transaction_id": str(tx.id),
         "cost": cost,
         "credits": owner.credits,
     }

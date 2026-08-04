@@ -1,4 +1,4 @@
-"""Unit tests for WO-TAKEOVER-DEFENSE-COUNTERMOVES v1 (pure helpers + light mocks)."""
+"""Unit tests for WO-TAKEOVER-DEFENSE-COUNTERMOVES (pure helpers + light mocks)."""
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 
+from src.models.market_transaction import TransactionType
 from src.services import port_ownership_service as po
 from src.services.port_ownership_service import PortOwnershipError
 
@@ -17,7 +18,7 @@ class TestTariffCutRate:
         assert po.tariff_cut_rate(0.10) == 0.05
 
     def test_floors_at_min(self):
-        assert po.tariff_cut_rate(0.0) == 0.0
+        assert po.tariff_cut_rate(0.0) == po.MIN_TAX_RATE
 
 
 class TestMonthShareWithDefense:
@@ -46,6 +47,18 @@ class TestDefenseVolumeForMonth:
             ]
         })
         assert po.defense_volume_for_month(station, cid, 1) == 15_000
+
+    def test_skips_rows_with_market_transaction_id(self):
+        cid = uuid4()
+        station = SimpleNamespace(ownership={
+            "defense_counters": [
+                {"type": "counter_trade", "campaign_id": str(cid), "month": 1,
+                 "defense_volume": 0, "market_transaction_id": str(uuid4())},
+                {"type": "counter_trade", "campaign_id": str(cid), "month": 1,
+                 "defense_volume": 7_000},
+            ]
+        })
+        assert po.defense_volume_for_month(station, cid, 1) == 7_000
 
 
 class TestTickDefenseCounters:
@@ -83,3 +96,52 @@ class TestActivateGuards:
             with pytest.raises(PortOwnershipError) as exc:
                 po.activate_tariff_cut(db, station, stranger)
         assert exc.value.status_code == 403
+
+
+class TestActivateCounterTradeWritesMarketTransaction:
+    def test_writes_buy_ledger_row_and_skips_synthetic_volume(self):
+        owner_id = uuid4()
+        station_id = uuid4()
+        campaign_id = uuid4()
+        station = SimpleNamespace(
+            id=station_id, owner_id=owner_id, tax_rate=0.1, ownership={},
+        )
+        owner = SimpleNamespace(id=owner_id, credits=100_000)
+        campaign = SimpleNamespace(
+            id=campaign_id,
+            station_id=station_id,
+            status="building",
+            started_at=datetime.now(UTC),
+        )
+        db = MagicMock()
+        added = []
+
+        def _add(obj):
+            if getattr(obj, "id", None) is None:
+                obj.id = uuid4()
+            added.append(obj)
+
+        db.add.side_effect = _add
+        db.flush = MagicMock()
+
+        with patch.object(po, "_lock_station", return_value=station), \
+             patch.object(po, "tick_defense_counters"), \
+             patch.object(po, "_threat_campaign_for_defense", return_value=campaign):
+            result = po.activate_counter_trade(db, station, owner, 12_000)
+
+        assert owner.credits == 88_000
+        assert result["defense_volume"] == 12_000
+        assert result["market_transaction_id"]
+        assert len(added) == 1
+        tx = added[0]
+        assert tx.transaction_type == TransactionType.BUY
+        assert tx.total_value == 12_000
+        assert tx.quantity == 12_000
+        assert tx.unit_price == 1
+        assert tx.commodity == po.COUNTER_TRADE_COMMODITY
+        assert tx.admin_notes == "counter_trade_defense"
+        counters = po.get_defense_counters(station)
+        assert len(counters) == 1
+        assert counters[0]["defense_volume"] == 0
+        assert counters[0]["market_transaction_id"] == str(tx.id)
+        assert po.defense_volume_for_month(station, campaign_id, counters[0]["month"]) == 0
