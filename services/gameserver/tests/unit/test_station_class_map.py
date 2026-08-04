@@ -116,13 +116,13 @@ class TestApplyClassPattern:
             assert result[key]["buys"] is False
             assert result[key]["sells"] is False
 
-    def test_premium_buyer_and_seller_price_adjustments(self) -> None:
-        # CLASS_8 (Black Hole) pays 1.3x base on bought commodities;
-        # CLASS_9 (Nova) charges 0.8x base on sold commodities.
+    def test_bootstrap_current_price_is_base_only(self) -> None:
+        # Premiums are applied at transaction time in trading_service, not
+        # at stock bootstrap (old Class-9 0.8x / Class-8 1.3x multipliers removed).
         black_hole = apply_class_pattern(_commodities(), StationClass.CLASS_8, random.Random(1))
-        assert black_hole["ore"]["current_price"] == int(50 * 1.3)
+        assert black_hole["ore"]["current_price"] == 50
         nova = apply_class_pattern(_commodities(), StationClass.CLASS_9, random.Random(1))
-        assert nova["ore"]["current_price"] == int(50 * 0.8)
+        assert nova["ore"]["current_price"] == 50
 
     def test_unknown_class_pattern_is_inert(self) -> None:
         # get_class_pattern falls back to an empty pattern, mirroring the

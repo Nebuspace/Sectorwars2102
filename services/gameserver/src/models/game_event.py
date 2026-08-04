@@ -194,13 +194,3 @@ class EventLog(Base):
     
     # Relationships
     event = relationship("GameEvent")
-
-
-# Add event relationships to existing models
-# This would be added to the Player model:
-# event_participations = relationship("EventParticipation", back_populates="player")
-
-# This would be added to the User model (for admin users):
-# created_events = relationship("GameEvent", foreign_keys="GameEvent.created_by")
-# approved_events = relationship("GameEvent", foreign_keys="GameEvent.approved_by")
-# created_templates = relationship("EventTemplate", foreign_keys="EventTemplate.created_by")
