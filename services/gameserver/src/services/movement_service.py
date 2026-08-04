@@ -2244,6 +2244,100 @@ class MovementService:
             f"-{self.MINE_DETONATION_DAMAGE} hull (now {combat['hull']}), {remaining} mine(s) remain"
         )
 
+    def _attach_limpet_trackers(self, player: Player, sector: Sector) -> None:
+        """Attach one hostile limpet mine in `sector` to the entering ship.
+
+        Mirrors ``_detonate_sector_mines``'s structure exactly, but limpet
+        mines carry no damage — they attach a tracker (stored on
+        ``Ship.combat['limpet_trackers']``) that later movement calls
+        ``_dispatch_limpet_signals`` to report back to the owner. Same-team
+        entrants and the field's own owner are never tracked. One limpet is
+        consumed per hostile entry.
+        """
+        defenses = sector.defenses or {}
+        limpet_count = int(defenses.get("limpet_mines", 0) or 0)
+        owner_id = defenses.get("limpet_owner_id")
+        if limpet_count <= 0 or not owner_id or str(owner_id) == str(player.id):
+            return
+
+        owner_team = defenses.get("limpet_team_id")
+        entrant_team = str(player.team_id) if player.team_id else None
+        if owner_team and entrant_team and owner_team == entrant_team:
+            return  # friendly minefield — same team
+
+        if not player.current_ship:
+            return
+
+        owner_player = self.db.query(Player).filter(Player.id == owner_id).first()
+        if not owner_player or not owner_player.user_id:
+            return
+
+        combat = dict(player.current_ship.combat or {})
+        trackers = list(combat.get("limpet_trackers", []) or [])
+        trackers.append({
+            "owner_player_id": str(owner_player.id),
+            "owner_user_id": str(owner_player.user_id),
+            "attached_at": datetime.now(UTC).isoformat(),
+        })
+        combat["limpet_trackers"] = trackers
+        player.current_ship.combat = combat
+        flag_modified(player.current_ship, "combat")
+
+        new_def = dict(defenses)
+        remaining = limpet_count - 1
+        new_def["limpet_mines"] = remaining
+        if remaining <= 0:
+            new_def["limpet_mines"] = 0
+            new_def["limpet_owner_id"] = None
+            new_def["limpet_team_id"] = None
+        sector.defenses = new_def
+        flag_modified(sector, "defenses")
+
+        logger.info(
+            f"Limpet mine attached to player {player.id} entering sector {sector.sector_id}: "
+            f"{remaining} limpet(s) remain"
+        )
+
+    def _dispatch_limpet_signals(self, player: Player, sector_id: int) -> None:
+        """Schedule a best-effort WS 'limpet signal' push to each tracker owner
+        on ``player.current_ship`` reporting the tracked ship's new sector.
+
+        Mirrors ``_dispatch_hostile_detected``: import inside the function,
+        grab the running loop, schedule with ``loop.create_task`` so it runs
+        after the move's transaction commits and yields, never blocking the
+        sync move, and swallow any failure so a quiet socket can never break
+        the move."""
+        if not player.current_ship:
+            return
+        combat = player.current_ship.combat or {}
+        trackers = combat.get("limpet_trackers", []) or []
+        if not trackers:
+            return
+
+        try:
+            import asyncio
+            from src.services.websocket_service import connection_manager
+
+            loop = asyncio.get_running_loop()
+            for tracker in trackers:
+                owner_user_id = tracker.get("owner_user_id")
+                if not owner_user_id:
+                    continue
+                loop.create_task(connection_manager.send_personal_message(
+                    str(owner_user_id),
+                    {
+                        "type": "limpet_signal",
+                        "tracked_player_id": str(player.id),
+                        "tracked_ship_id": str(player.current_ship.id),
+                        "sector_id": sector_id,
+                    },
+                ))
+        except Exception:
+            logger.debug(
+                "Skipped limpet-signal WS notice (no loop or socket)",
+                exc_info=True,
+            )
+
     def _execute_movement(self, player: Player, destination_sector_id: int, turn_cost: int) -> Dict[str, Any]:
         """Execute a player's movement to a destination sector."""
         old_sector_id = player.current_sector_id
@@ -2320,6 +2414,23 @@ class MovementService:
             self._detonate_sector_mines(player, destination_sector)
         except Exception as e:
             logger.error("Mine detonation hook failed: %s", e)
+
+        # Limpet tracker attach: hostile limpet mines in the destination attach
+        # a tracker to the entering ship instead of dealing damage (mirrors the
+        # armored-mine hook above). Best-effort — a hook failure must never
+        # strand the move; it rides the move's own commit below.
+        try:
+            self._attach_limpet_trackers(player, destination_sector)
+        except Exception as e:
+            logger.error("Limpet tracker attach hook failed: %s", e)
+
+        # Limpet signal dispatch: report this ship's new sector to any tracker
+        # owners, on every move (not just moves into a minefield). Best-effort,
+        # scheduled after the position update above.
+        try:
+            self._dispatch_limpet_signals(player, destination_sector_id)
+        except Exception as e:
+            logger.error("Limpet signal dispatch hook failed: %s", e)
 
         # Consume turns
         spend_turns(player, turn_cost)
