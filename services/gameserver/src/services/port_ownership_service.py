@@ -706,6 +706,44 @@ def _acquisition_cost(station: Station) -> int:
     return int(base) if base else 500_000
 
 
+RELOCATION_FEE_PCT = 0.30  # ADR-0050 "Station relocation paths" -- 30% of
+# (acquisition cost + sum of upgrade capital costs).
+
+
+def append_capital_cost(
+    station: Station, *, source: str, amount: int, now: Optional[datetime] = None
+) -> None:
+    """Append a one-time capital-spend entry to ``station.capital_cost_
+    ledger`` (WO-BUILD-STATION-ACQUISITION-COST-CAPITAL-LEDGER). Caller
+    holds the station lock and must ``flag_modified(station,
+    'capital_cost_ledger')`` + flush, matching this codebase's other
+    JSONB-mutation call sites (mirrors _security's caller-flags-modified
+    contract in station_security_service). No-op on amount <= 0."""
+    if amount <= 0:
+        return
+    now = now or datetime.now(UTC)
+    ledger = list(station.capital_cost_ledger or [])
+    ledger.append({"source": source, "amount": int(amount), "at": now.isoformat()})
+    station.capital_cost_ledger = ledger
+
+
+def total_capital_cost(station: Station) -> int:
+    """Sum of every ledgered capital spend -- the "sum of upgrade capital
+    costs" half of ADR-0050's relocation-fee formula."""
+    ledger = station.capital_cost_ledger or []
+    return sum(int(e.get("amount", 0) or 0) for e in ledger if isinstance(e, dict))
+
+
+def relocation_fee(station: Station) -> int:
+    """ADR-0050 "Station relocation paths" -- 30% of (acquisition cost + sum
+    of upgrade capital costs). Unblocks the formula itself; the region-
+    termination-cascade wiring that would actually charge/debit this stays
+    a separately-deferred discovery-only stub (region_termination_cascade_
+    service.py) per this WO's own scope."""
+    basis = _acquisition_cost(station) + total_capital_cost(station)
+    return int(basis * RELOCATION_FEE_PCT)
+
+
 def _transfer_station(
     db: Session,
     station: Station,

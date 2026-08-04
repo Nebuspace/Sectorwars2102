@@ -1,15 +1,19 @@
 """Region-termination cascade -- reduced scope (WO-BUILD-REGION-LIFECYCLE-
 CLEANUP-CASCADE, lead-approved reduction after the full-scope blocker below).
 
-BLOCKER on the full ADR-0050 cascade (unresolved, not built here): the
+BLOCKER on the full ADR-0050 cascade, NARROWED (not built here): the
 **station relocation** branch (ADR-0050 "Region-termination asset
 disposition" table + "Station relocation paths") needs a 30% fee of
-``(acquisition cost + sum of upgrade capital costs)``.
-``WO-BUILD-STATION-ACQUISITION-COST-CAPITAL-LEDGER`` owns that schema.
-``dispatch_station_termination`` below remains a **discovery-only stub**
-for fee math / moves / destroys. Station-loss *credit compensation*
-(Path A final fallback) deposits via ``apply_station_loss_compensation``
-→ Central Bank once a caller can compute the amount.
+``(acquisition cost + sum of upgrade capital costs)``. The formula itself is
+now computable -- ``port_ownership_service.relocation_fee`` (WO-BUILD-
+STATION-ACQUISITION-COST-CAPITAL-LEDGER; acquisition_cost was already
+tracked in ``station.ownership['acquisition_cost']``, the ledger for the
+upgrade-capital half is new). What remains unbuilt here is wiring that
+formula into an actual cascade dispatch (charge/debit/relocate/destroy) --
+``dispatch_station_termination`` below remains a **discovery-only stub** for
+that. Station-loss *credit compensation* (Path A final fallback) deposits
+via ``apply_station_loss_compensation`` → Central Bank once a caller
+computes the amount (the formula can now supply it).
 
 Built under the reduced scope (lead-approved): **planet-safe transport** (20%
 loss, or 100% via ``Planet.transport_prepaid``) + **Genesis-device
@@ -25,8 +29,9 @@ as an ``AuditService`` entry (action=FORFEIT,
 resource_type="planet_safe_forfeiture") tied to the planet/region.
 
 WALLET-DEFICIT HANDLING -- explicitly NOT built here: none of this reduced
-scope's obligations ever DEBITS the wallet. Station Path A deficit math
-stays blocked on acquisition_cost.
+scope's obligations ever DEBITS the wallet. Station Path A deficit math is
+computable now (relocation_fee) but still stays blocked on the cascade
+dispatch itself being unwired here (see BLOCKER section above).
 
 FLAG COLUMN PLACEMENT -- ``transport_prepaid`` / ``relocation_prepaid`` live
 on ``Planet`` / ``Station`` (migration c4d8e61f97ab), not ``Region`` —
@@ -253,9 +258,10 @@ def apply_station_loss_compensation(
 ) -> Any:
     """Path-A station-loss compensation → Central Bank (third GAP re-point).
 
-    Fee/acquisition math lives in WO-BUILD-STATION-ACQUISITION-COST-CAPITAL-
-    LEDGER; once that computes ``amount``, callers deposit here — never into
-    ``Player.credits``.
+    Fee/acquisition math is computable via ``port_ownership_service.
+    relocation_fee`` (WO-BUILD-STATION-ACQUISITION-COST-CAPITAL-LEDGER);
+    once a caller invokes the cascade dispatch that isn't wired here yet,
+    it deposits the computed ``amount`` here — never into ``Player.credits``.
     """
     return bank.pay_station_loss_compensation(
         db, player_id, amount, station_id=station_id, notes=notes,
@@ -277,8 +283,9 @@ def dispatch_station_termination(db: Session, region_id: uuid.UUID) -> Dict[str,
     if stations:
         logger.info(
             "region_termination_cascade: %d station(s) in region %s eligible "
-            "for relocation cascade (NOT executed -- acquisition_cost / "
-            "upgrade-capital-cost tracking does not exist; discovery only; "
+            "for relocation cascade (NOT executed -- fee formula is now "
+            "computable via port_ownership_service.relocation_fee, but the "
+            "cascade dispatch itself remains discovery-only; "
             "loss-compensation deposit target = Central Bank)",
             len(stations), region_id,
         )

@@ -111,11 +111,21 @@ class Station(Base):
     # Region-termination-cascade relocation pre-pay (ADR-0050 "Station
     # relocation paths" B, WO-BUILD-REGION-LIFECYCLE-CLEANUP-CASCADE): set
     # when the owner pre-pays the 30% relocation fee during Suspended/Grace.
-    # Schema-only for now -- the station-relocation cascade itself is a
-    # discovery-only stub (region_termination_cascade_service.py) pending
-    # Station.acquisition_cost / upgrade-capital-cost tracking, which does
-    # not exist anywhere in this schema yet.
+    # Schema-only for now -- the station-relocation cascade itself remains a
+    # discovery-only stub (region_termination_cascade_service.py), but the
+    # 30%-of-(acquisition + upgrade capital costs) fee formula itself is now
+    # computable: acquisition_cost already lives in ownership['acquisition_
+    # cost'] (port_ownership_service._acquisition_cost), and capital_cost_
+    # ledger below tracks upgrade spend (WO-BUILD-STATION-ACQUISITION-COST-
+    # CAPITAL-LEDGER). See port_ownership_service.relocation_fee.
     relocation_prepaid = Column(Boolean, nullable=True)
+    # Append-only ledger of one-time capital spend on this station (station-
+    # security-tier upgrades today; any future station-upgrade purchase
+    # should append here too). List of {"source": str, "amount": int, "at":
+    # ISO8601 str}. Feeds port_ownership_service.total_capital_cost(), the
+    # "sum of upgrade capital costs" half of ADR-0050's relocation-fee
+    # formula (WO-BUILD-STATION-ACQUISITION-COST-CAPITAL-LEDGER).
+    capital_cost_ledger = Column(JSONB, nullable=False, default=list)
 
     # Station properties
     station_class = Column(Enum(StationClass, name="station_class"), nullable=False)

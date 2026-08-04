@@ -382,6 +382,18 @@ def upgrade_security_tier(
     sec["upgrade_to"] = target
     sec["upgrade_completes_at"] = completes_at.isoformat()
     flag_modified(station, "security")
+
+    # Ledger the capital spend -- ADR-0050 relocation-fee formula's "sum of
+    # upgrade capital costs" half (WO-BUILD-STATION-ACQUISITION-COST-CAPITAL-
+    # LEDGER). Lazy import mirrors this module's own existing import-from-
+    # port_ownership_service convention (see apply_acquisition_default /
+    # upkeep_for_gross call sites there) to avoid a circular top-level import.
+    from src.services.port_ownership_service import append_capital_cost
+
+    append_capital_cost(
+        station, source=f"security_upgrade:{target}", amount=cost, now=now
+    )
+    flag_modified(station, "capital_cost_ledger")
     db.flush()
     logger.info(
         "Station %s security upgrade initiated: %s -> %s, cost %s, completes %s",
