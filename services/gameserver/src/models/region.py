@@ -102,10 +102,14 @@ class Region(Base):
     suspended_at = Column(TIMESTAMP, nullable=True)
     terminated_at = Column(TIMESTAMP, nullable=True)
     scheduled_hard_delete_at = Column(TIMESTAMP, nullable=True)
-    # Canon (galaxy.md:93) marks generation_seed NOT NULL; shipped nullable
-    # here per the additive-only migration rule -- a NOT NULL column against
-    # existing region rows with no recorded seed would be destructive.
-    generation_seed = Column(BigInteger, nullable=True)
+    # Canon (galaxy.md:93 / ADR-0050:177) marks generation_seed NOT NULL.
+    # WO-FIX-GENERATION-SEED-WRITER-AND-BACKFILL (2026-08-04): all 4 live
+    # Region-creation sites now set it (nexus_generation_service.py,
+    # paypal_service.py, bang_galaxy.py x2 -- bang-import seed where one
+    # exists, server-generated uint64-positive fallback otherwise), and
+    # migration ae4f2ed102fc backfilled every pre-existing NULL row
+    # (deterministic md5-of-id derivation) before flipping this NOT NULL.
+    generation_seed = Column(BigInteger, nullable=False)
     generation_phase_checksums = Column(JSONB, nullable=True, server_default='{}')
     created_at = Column(TIMESTAMP, nullable=False, server_default=func.now())
     updated_at = Column(TIMESTAMP, nullable=False, server_default=func.now(), onupdate=func.now())

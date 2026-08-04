@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import random
 import re
 import httpx
 from datetime import datetime, timedelta, timezone
@@ -580,7 +581,11 @@ class PayPalService:
                 owner_id=user_id,
                 subscription_tier="regional_owner",
                 paypal_subscription_id=subscription_id,
-                status="active"
+                status="active",
+                # No bang-import seed exists for a subscription-purchased
+                # region -- server-generated per galaxy-generation.md:231,
+                # same convention as nexus_generation_service's own region.
+                generation_seed=random.getrandbits(63),
             )
             session.add(region)
             logger.info(f"Created new region {region_name} for user {user_id}")
