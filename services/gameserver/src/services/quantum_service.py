@@ -86,7 +86,7 @@ class QuantumError(Exception):
 
 SCAN_TURN_COST = 5
 JUMP_TURN_COST = 50
-SCAN_COOLDOWN_HOURS = 4.0      # canonical, scaled via scaled_deadline
+SCAN_COOLDOWN_HOURS = 4.0      # REAL hours — deliberately unscaled (sectors.md)
 JUMP_COOLDOWN_HOURS = 24.0     # canonical, scaled via scaled_deadline
 SCAN_RESULT_TTL_MINUTES = 10   # REAL minutes — canon says real-minutes, never scaled
 
@@ -184,8 +184,8 @@ RANGE_BANDS: Dict[str, Tuple[float, float]] = {
     "extended": (12.0, 15.0),
 }
 
-# Fuzzy vocab orderings used for misread shifts (ADR-0031: a misread shifts
-# the resonance band one level and swaps the texture for a near-relative).
+# Fuzzy vocab orderings. Misread shifts resonance ±1 band only (sectors.md) —
+# texture/echo stay exact regardless of Sensor level (never fuzzed).
 RESONANCE_ORDER = ["silent", "faint", "steady", "bright"]
 TEXTURE_ORDER = ["hollow", "mineral", "chromatic", "heavy", "hot", "turbulent"]
 
@@ -512,7 +512,7 @@ def scan(
             echo = "faint motion"
 
     # Misread roll (ADR-0030: 15% minus 5 points per sensor level, floor 0;
-    # a misread shifts resonance one band AND swaps texture for a neighbour)
+    # sectors.md: resonance band ±1 only — texture/echo stay exact).
     misread_pct = max(
         0, MISREAD_BASE_PCT - MISREAD_REDUCTION_PER_SENSOR_LEVEL * sensor_level
     )
@@ -520,15 +520,13 @@ def scan(
         r_idx = RESONANCE_ORDER.index(resonance)
         shift = random.choice([-1, 1])
         resonance = RESONANCE_ORDER[min(len(RESONANCE_ORDER) - 1, max(0, r_idx + shift))]
-        t_idx = TEXTURE_ORDER.index(texture)
-        shift = random.choice([-1, 1])
-        texture = TEXTURE_ORDER[min(len(TEXTURE_ORDER) - 1, max(0, t_idx + shift))]
 
     # Charge the scan — single commit
     spend_turns(player, SCAN_TURN_COST)
     if shard_cost:
         player.quantum_shards -= shard_cost
-    ship.quantum_scan_cooldown_until = scaled_deadline(SCAN_COOLDOWN_HOURS)
+    # 4 REAL hours — deliberately unscaled (sectors.md), unlike jump cooldown.
+    ship.quantum_scan_cooldown_until = _now() + timedelta(hours=SCAN_COOLDOWN_HOURS)
     db.commit()
 
     # Expiry is 10 REAL minutes (canon: real-minutes; deliberately unscaled)

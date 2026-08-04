@@ -63,8 +63,6 @@ async function doRefreshToken(): Promise<void> {
   }
 
   try {
-    console.log('[apiClient] Refreshing access token...');
-
     // The refresh call must go through a PRISTINE axios instance: apiClient
     // would re-enter this interceptor, and the GLOBAL axios instance carries
     // AuthContext's own 401 response interceptor — routing a dead refresh
@@ -84,8 +82,6 @@ async function doRefreshToken(): Promise<void> {
     // Also update the global axios default header so that any code still
     // using the global axios instance picks up the new token.
     axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
-
-    console.log('[apiClient] Token refresh succeeded');
   } catch (err) {
     console.error('[apiClient] Token refresh failed:', err);
 
