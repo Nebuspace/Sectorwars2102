@@ -108,6 +108,7 @@ from src.models.warp_tunnel import (
 )
 from src.services.ship_service import ShipService
 from src.services.turn_service import refund_turns, spend_turns
+from src.services import central_bank_service as _central_bank  # gate-cascade refund routing
 
 logger = logging.getLogger(__name__)
 
@@ -2733,17 +2734,11 @@ def cascade_region_gate_teardown(db: Session, region_id) -> Dict[str, Any]:
          raised -- the region is terminating regardless of the owner row's
          fate.
 
-    CENTRAL-BANK ROUTING GAP (flagged, not built): canon says refund the
-    ONLINE owner's Player.credits, or PlayerCentralBankAccount if offline.
-    `PlayerCentralBankAccount` does not exist anywhere in src/models -- it is
-    100% design-only text in ADR-0050 (no migration ever created the table).
-    There is also no synchronously-readable "is this player online" signal
-    reachable from a flush-only (db, region_id) kernel (the nearest thing,
-    redis_service.sync_player_online_status, is async/Redis-backed
-    infrastructure, not a plain column read). This function therefore
-    refunds EVERY owner's credits unconditionally to Player.credits, online
-    or not, until the Central Bank feature exists to receive the offline
-    branch.
+    CENTRAL-BANK ROUTING (WO-BUILD-PLAYER-CENTRAL-BANK-ACCOUNT): canon refunds
+    the ONLINE owner's Player.credits, or PlayerCentralBankAccount if offline.
+    Online status is a best-effort sync Redis probe
+    (``central_bank_service.is_player_online_sync``); unproven online → Bank.
+    Routing goes through ``central_bank_service.credit_wallet_or_bank``.
 
     Both endpoints of a single gate are torn down inside one flush sequence
     per gate. A failure mid-loop propagates out of this function uncaught
@@ -2836,9 +2831,20 @@ def cascade_region_gate_teardown(db: Session, region_id) -> Dict[str, Any]:
             )
             orphaned_owners += 1
         else:
-            owner.credits += refund_amount
+            destination = _central_bank.credit_wallet_or_bank(
+                db,
+                owner,
+                refund_amount,
+                entry_type=_central_bank.ENTRY_WARP_GATE_CASCADE_REFUND,
+                source=f"warp_gate:{gate.id}",
+                notes="region_termination_gate_cascade_half_refund",
+            )
             total_refunded += refund_amount
             _notify_gate_cascade_destroyed(db, owner, gate_name, region_name, refund_amount)
+            logger.info(
+                "Cascade teardown: gate %s refund %d → %s (owner=%s)",
+                gate.id, refund_amount, destination, owner.id,
+            )
 
         db.flush()
         processed.append(str(gate.id))

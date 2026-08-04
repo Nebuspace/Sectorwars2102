@@ -4,66 +4,33 @@ CLEANUP-CASCADE, lead-approved reduction after the full-scope blocker below).
 BLOCKER on the full ADR-0050 cascade (unresolved, not built here): the
 **station relocation** branch (ADR-0050 "Region-termination asset
 disposition" table + "Station relocation paths") needs a 30% fee of
-``(acquisition cost + sum of upgrade capital costs)``. Neither
-``Station.acquisition_cost`` nor any per-upgrade capital-cost ledger exists
-anywhere in ``src/models`` -- there is no player-buildable-station economy
-shipped at all to derive either number from. Computing the fee would mean
-fabricating a value, which this codebase's conventions forbid. This mirrors
-the exact shape of the pre-existing gap warp_gate_service.py:2736-2746
-documents for the Central-Bank routing branch of the SAME cascade (design-
-only text in ADR-0050, no backing schema) -- flagged, not silently guessed.
-``dispatch_station_termination`` below is therefore a **discovery-only
-stub**, identical in spirit to that precedent and to region_lifecycle_
-service.dispatch_terminated_cleanup: it identifies affected stations and logs
-them, and does nothing destructive or fee-charging.
+``(acquisition cost + sum of upgrade capital costs)``.
+``WO-BUILD-STATION-ACQUISITION-COST-CAPITAL-LEDGER`` owns that schema.
+``dispatch_station_termination`` below remains a **discovery-only stub**
+for fee math / moves / destroys. Station-loss *credit compensation*
+(Path A final fallback) deposits via ``apply_station_loss_compensation``
+→ Central Bank once a caller can compute the amount.
 
 Built under the reduced scope (lead-approved): **planet-safe transport** (20%
 loss, or 100% via ``Planet.transport_prepaid``) + **Genesis-device
-compensation** (citadel-level table) for terminating planets, using only
-existing columns/services -- ``Planet.citadel_safe_credits`` /
-``Planet.active_events["safe_commodities"]`` (via ``CitadelService``),
-``GenesisDevice.owner_id``, ``Planet.citadel_level``, ``Player.credits``.
+compensation** (citadel-level table) for terminating planets.
 
-No ``PlayerCentralBankAccount`` exists (verified: grep of src/models turns up
-nothing, only the same warp_gate_service.py design-only citations above) --
-ADR-0050 says the safe's SURVIVING (non-forfeited) value should land in that
-Bank. Absent the Bank, this deposits it straight into the owner's
-``Player.credits`` instead, the same gap-fallback warp_gate_service.py uses
-for its own Central-Bank-routing gap. Non-cash commodities have no Player-
-side storage either (Player has no cargo/inventory field), so the surviving
-commodity stack is liquidated to its credit-equivalent via
-``CitadelService.COMMODITY_CREDIT_VALUE`` -- the same conversion table
-``CitadelService._safe_total_value`` already uses -- and folded into that
-same credit deposit, rather than inventing a new storage location.
+Surviving safe credits + commodity stacks deposit into
+``PlayerCentralBankAccount`` (ADR-0050 / WO-BUILD-PLAYER-CENTRAL-BANK-
+ACCOUNT). Genesis credit compensation still credits ``Player.credits``
+(ADR-0050: partial-loss buffer into the wallet, not the Bank).
 
-The FORFEITED 20% (or 0% if prepaid) is never credited anywhere -- per lead
-direction 3, it is recorded as an ``AuditService`` entry (action=FORFEIT,
-resource_type="planet_safe_forfeiture") tied to the planet/region, not
-routed to any Player-side destination.
+The FORFEITED 20% (or 0% if prepaid) is never credited anywhere -- recorded
+as an ``AuditService`` entry (action=FORFEIT,
+resource_type="planet_safe_forfeiture") tied to the planet/region.
 
-WALLET-DEFICIT HANDLING -- explicitly NOT built here, flagged rather than
-silently included: none of this reduced scope's three obligations (safe
-transport, Genesis compensation, forfeiture logging) ever DEBITS the wallet
--- they only credit it or leave it untouched. The "wallet-deficit" language
-in ADR-0050's station-relocation Path A (treasury insufficient -> debit
-wallet -> insufficient -> strip upgrades -> lose station) is specific to the
-station-relocation branch, which stays a discovery-only stub above pending
-the acquisition_cost/upgrade-capital blocker. There is nothing to attach
-deficit-handling to on the planet-safe-transport path.
+WALLET-DEFICIT HANDLING -- explicitly NOT built here: none of this reduced
+scope's obligations ever DEBITS the wallet. Station Path A deficit math
+stays blocked on acquisition_cost.
 
-FLAG COLUMN PLACEMENT -- a deviation from "Region, most likely" worth
-surfacing: ``transport_prepaid`` / ``relocation_prepaid`` were added to
-``Planet`` / ``Station`` respectively (migration
-c4d8e61f97ab_add_cascade_prepaid_flags), not ``Region``. ADR-0050's own
-prose ties pre-pay to a specific asset -- "Player visits **the planet**
-during Suspended/Grace ... `transport_prepaid` flag locks" (planet-safe
-table Path B) and "Player visits **the station** ... `relocation_prepaid`
-flag locks" (station-relocation table Path B) -- and a region can hold many
-planets/stations that each independently choose to pre-pay; a single
-region-level flag could not represent that. Both columns still live where
-SUSPENDED/GRACE/TERMINATED region state anchors the cascade trigger
-(``Region.status`` / ``Region.suspended_at`` / ``Region.terminated_at`` in
-``src/models/region.py``), just not ON that row.
+FLAG COLUMN PLACEMENT -- ``transport_prepaid`` / ``relocation_prepaid`` live
+on ``Planet`` / ``Station`` (migration c4d8e61f97ab), not ``Region`` —
+ADR-0050 ties pre-pay to a specific asset.
 """
 import logging
 import uuid
@@ -78,8 +45,9 @@ from src.models.player import Player
 from src.models.region import Region
 from src.models.sector import Sector
 from src.models.station import Station
+from src.services import central_bank_service as bank
 from src.services.audit_service import AuditAction, AuditService
-from src.services.citadel_service import COMMODITY_CREDIT_VALUE, CitadelService
+from src.services.citadel_service import CitadelService
 
 logger = logging.getLogger(__name__)
 
@@ -194,15 +162,35 @@ def process_planet_termination(
             if lost:
                 forfeited_commodities[commodity] = lost
 
-    commodity_credit_value = sum(
-        qty * COMMODITY_CREDIT_VALUE.get(commodity, 0)
-        for commodity, qty in surviving_commodities.items()
-    )
-    credited_total = surviving_credits + commodity_credit_value
-    if credited_total:
-        owner.credits = (owner.credits or 0) + credited_total
+    # Surviving safe → Central Bank (credits + commodity stacks). Canon
+    # deposits commodities as commodities — no credit-equivalent liquidation.
+    source = f"planet:{planet.id}"
+    if surviving_credits:
+        bank.deposit_credits(
+            db,
+            owner.id,
+            surviving_credits,
+            entry_type=bank.ENTRY_CASCADE_SAFE_TRANSFER,
+            source=source,
+            notes="planet_safe_transport" + ("_prepaid" if prepaid else "_20pct_loss"),
+            access_override=True,
+        )
+    surviving_commodities_kept = {
+        k: int(v) for k, v in surviving_commodities.items() if int(v) > 0
+    }
+    if surviving_commodities_kept:
+        bank.deposit_commodities(
+            db,
+            owner.id,
+            surviving_commodities_kept,
+            entry_type=bank.ENTRY_CASCADE_SAFE_TRANSFER,
+            source=source,
+            notes="planet_safe_commodities" + ("_prepaid" if prepaid else "_20pct_loss"),
+            access_override=True,
+        )
+    credited_total = surviving_credits
 
-    # Drain the safe now that its surviving value has been credited -- the
+    # Drain the safe now that its surviving value has been banked -- the
     # planet (and its safe) is lost with the region, so nothing should be
     # left behind for a re-run of this function to double-credit.
     planet.citadel_safe_credits = 0
@@ -236,6 +224,8 @@ def process_planet_termination(
 
     result.update({
         "credited_credits": credited_total,
+        "bank_credits": surviving_credits,
+        "bank_commodities": surviving_commodities_kept,
         "forfeited_credits": forfeited_credits,
         "forfeited_commodities": forfeited_commodities,
         "genesis_devices_minted": len(genesis_ids),
@@ -243,22 +233,41 @@ def process_planet_termination(
         "genesis_credit_compensation": genesis_credit_compensation,
     })
     logger.info(
-        "region_termination_cascade: planet %s terminated -- owner %s credited "
-        "%d (safe) + %d (genesis) credits, %d genesis device(s) minted, "
-        "%d credits / %s commodities forfeited",
-        planet.id, owner.id, credited_total, genesis_credit_compensation,
-        len(genesis_ids), forfeited_credits, forfeited_commodities,
+        "region_termination_cascade: planet %s terminated -- owner %s banked "
+        "%d credits + %s commodities (safe) + %d (genesis wallet) credits, "
+        "%d genesis device(s) minted, %d credits / %s commodities forfeited",
+        planet.id, owner.id, surviving_credits, surviving_commodities_kept,
+        genesis_credit_compensation, len(genesis_ids), forfeited_credits,
+        forfeited_commodities,
     )
     return result
+
+
+def apply_station_loss_compensation(
+    db: Session,
+    player_id: uuid.UUID,
+    amount: int,
+    *,
+    station_id: Optional[uuid.UUID] = None,
+    notes: Optional[str] = None,
+) -> Any:
+    """Path-A station-loss compensation → Central Bank (third GAP re-point).
+
+    Fee/acquisition math lives in WO-BUILD-STATION-ACQUISITION-COST-CAPITAL-
+    LEDGER; once that computes ``amount``, callers deposit here — never into
+    ``Player.credits``.
+    """
+    return bank.pay_station_loss_compensation(
+        db, player_id, amount, station_id=station_id, notes=notes,
+    )
 
 
 def dispatch_station_termination(db: Session, region_id: uuid.UUID) -> Dict[str, Any]:
     """DISCOVERY-ONLY STUB -- see module docstring's BLOCKER section. Finds
     stations in ``region_id`` and logs them as eligible for the relocation
     cascade; does NOT relocate, charge a fee, strip upgrades, or destroy
-    anything. Mirrors region_lifecycle_service.dispatch_terminated_cleanup's
-    own discovery-only shape for the same reason: the real cascade needs
-    schema this codebase does not have yet."""
+    anything. When Path A final-fallback loss is wired, compensation deposits
+    via ``apply_station_loss_compensation`` (Bank), not ``Player.credits``."""
     stations = (
         db.query(Station.id, Station.name)
         .join(Sector, Sector.id == Station.sector_uuid)
@@ -269,7 +278,8 @@ def dispatch_station_termination(db: Session, region_id: uuid.UUID) -> Dict[str,
         logger.info(
             "region_termination_cascade: %d station(s) in region %s eligible "
             "for relocation cascade (NOT executed -- acquisition_cost / "
-            "upgrade-capital-cost tracking does not exist; discovery only)",
+            "upgrade-capital-cost tracking does not exist; discovery only; "
+            "loss-compensation deposit target = Central Bank)",
             len(stations), region_id,
         )
     return {"station_relocation_eligible": len(stations)}
