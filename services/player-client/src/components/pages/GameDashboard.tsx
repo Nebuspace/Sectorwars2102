@@ -6,7 +6,6 @@ import { WindshieldFlightProvider, useWindshieldFlight } from '../../contexts/Wi
 import { useFirstLogin } from '../../contexts/FirstLoginContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useShellSlots } from '../layouts/ShellContext';
-// import { useTheme } from '../../themes/ThemeProvider'; // Available for future use
 import TradingInterface from '../trading/TradingInterface';
 import SpaceDockInterface from '../spacedock/SpaceDockInterface';
 import PortOfficeVenue from '../spacedock/PortOfficeVenue';
