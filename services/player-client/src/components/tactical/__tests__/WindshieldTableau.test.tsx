@@ -110,7 +110,7 @@ describe('chooseWarpArrivalAnchor', () => {
 
   it('uses a fresh random coordinate instead of a sector-deterministic anchor', () => {
     const emptySystem = {
-      star: null, nebula: null, belt: null, debris: null, bodies: [], stations: [],
+      star: null, nebula: null, belt: null, debris: null, bodies: [], stations: [], messageBeacons: [],
     };
     const a = chooseWarpArrivalAnchor(77, emptySystem, band, () => 0.2);
     const b = chooseWarpArrivalAnchor(77, emptySystem, band, () => 0.8);
@@ -125,6 +125,7 @@ describe('chooseWarpArrivalAnchor', () => {
       debris: null,
       bodies: [],
       stations: [],
+      messageBeacons: [],
     };
     const star = starAnchor(SECTOR_ID, starOnlySystem.star, []);
     // Bounds for this 1000x500 band are x=[6,94], y=[10,90]. Feed the star's

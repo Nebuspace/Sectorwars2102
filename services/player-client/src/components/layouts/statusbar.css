@@ -390,6 +390,97 @@
   font-style: italic;
 }
 
+/* ── My Beacons tab ───────────────────────────────────────────────────────── */
+.sb-beacons-loading,
+.sb-beacons-error {
+  font-size: 0.9615em;
+  color: var(--color-text-muted, #7e8ca0);
+}
+
+.sb-beacons-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.sb-beacons-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.45rem 0.5rem;
+  border: 1px solid rgba(0, 217, 255, 0.15);
+  border-radius: 4px;
+  font-size: 0.9231em;
+}
+
+.sb-beacons-header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.sb-beacons-sector {
+  font-weight: 700;
+  flex: 1 1 auto;
+}
+
+.sb-beacons-state {
+  color: var(--color-text-muted, #7e8ca0);
+  font-size: 0.7692em;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.sb-beacons-flagged {
+  color: var(--health-danger, #ef4444);
+  font-weight: 700;
+  font-size: 0.7692em;
+  letter-spacing: 0.05em;
+}
+
+.sb-beacons-preview {
+  color: var(--color-text-muted, #7e8ca0);
+  font-style: italic;
+  overflow-wrap: break-word;
+}
+
+.sb-beacons-meta {
+  display: flex;
+  gap: 0.6rem;
+  font-size: 0.7692em;
+  color: var(--color-text-muted, #7e8ca0);
+}
+
+.sb-beacons-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.15rem;
+}
+
+.sb-beacons-actions button {
+  font-size: 0.7692em;
+  padding: 0.2rem 0.45rem;
+  border: 1px solid rgba(0, 217, 255, 0.35);
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.sb-beacons-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.sb-beacons-row-message {
+  font-size: 0.7692em;
+  color: var(--color-text-muted, #7e8ca0);
+}
+
 /* ── Crew (team summary) tab ─────────────────────────────────────────────── */
 .sb-crew-loading,
 .sb-crew-error {

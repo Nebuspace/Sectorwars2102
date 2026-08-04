@@ -42,6 +42,18 @@ import {
 // services/gameserver/src/api/routes/sectors.py's get_sector_contents).
 // ---------------------------------------------------------------------------
 
+/** Sector.message_beacons JSONB denorm entry (message-beacons.md:91-100),
+ *  passed through SectorContentsResponse.message_beacons verbatim. */
+export interface MessageBeaconSummary {
+  id: string;
+  deployer_nickname: string;
+  deployed_at: string | null;
+  preview: string;
+  expiry: string | null;
+  state?: string;
+  signal?: string;
+}
+
 export interface StaticSystem {
   star: { kind: string; label: string; color: string } | null;
   nebula: { hue: number; density: number } | null;
@@ -49,6 +61,7 @@ export interface StaticSystem {
   debris: { inner_au: number; outer_au: number; hue: number } | null;
   bodies: SystemBody[];
   stations: SystemStation[];
+  messageBeacons: MessageBeaconSummary[];
 }
 
 export const POPUP_W = 232;
@@ -325,6 +338,7 @@ export function toStaticSystem(data: any): StaticSystem {
     debris: d.debris ?? null,
     bodies: Array.isArray(d.bodies) ? d.bodies : [],
     stations: Array.isArray(d.stations) ? d.stations : [],
+    messageBeacons: Array.isArray(d.message_beacons) ? d.message_beacons : [],
   };
 }
 

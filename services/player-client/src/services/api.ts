@@ -1302,6 +1302,32 @@ export const tradeAPI = {
   getOpen: () => apiRequest('/api/v1/trade/open'),
 };
 
+// Message beacons (message-beacons.md) -- deploy/read/salvage/recharge/
+// report kernel is server-shipped (services/gameserver/src/api/routes/
+// beacons.py); `mine` lists the calling player's own deployed beacons
+// (GET /api/v1/beacons/mine) for the My Beacons management screen.
+export interface MyBeacon {
+  id: string;
+  sector_id: number;
+  preview: string;
+  deployed_at: string | null;
+  charge_expires_at: string | null;
+  expiry: string | null;
+  state: string;
+  read_once: boolean;
+  read_count: number;
+  flagged: boolean;
+}
+
+export const beaconAPI = {
+  mine: (page = 1, limit = 20): Promise<{ beacons: MyBeacon[]; total?: number }> =>
+    apiRequest(`/api/v1/beacons/mine?page=${page}&limit=${limit}`),
+  read: (beaconId: string) => apiRequest(`/api/v1/beacons/${beaconId}/read`),
+  salvage: (beaconId: string) => apiRequest(`/api/v1/beacons/${beaconId}/salvage`, { method: 'POST' }),
+  recharge: (beaconId: string) => apiRequest(`/api/v1/beacons/${beaconId}/recharge`, { method: 'POST' }),
+  report: (beaconId: string) => apiRequest(`/api/v1/beacons/${beaconId}/report`, { method: 'POST' }),
+};
+
 export const gameAPI = {
   combat: combatAPI,
   greyStatus: greyStatusAPI,
@@ -1328,4 +1354,5 @@ export const gameAPI = {
   contracts: contractsAPI,
   storage: storageAPI,
   trade: tradeAPI,
+  beacon: beaconAPI,
 };
