@@ -108,11 +108,24 @@ def upgrade() -> None:
     op.create_index("ix_expeditions_player_id", "expeditions", ["player_id"])
     op.create_index("ix_expeditions_planet_id", "expeditions", ["planet_id"])
 
+    # Explicit CREATE TYPE — sa.Enum inside add_column does NOT reliably emit
+    # CREATE TYPE on Postgres (only create_table paths do). Without this,
+    # fresh `alembic upgrade head` fails with UndefinedObject for
+    # planet_contest_state (caught on heimdall 2026-08-04 during Bank deploy
+    # catch-up; type had to be pre-created out-of-band). checkfirst keeps
+    # already-upgraded hosts idempotent.
+    planet_contest_state = postgresql.ENUM(
+        *PLANET_CONTEST_STATE_VALUES,
+        name="planet_contest_state",
+        create_type=False,
+    )
+    planet_contest_state.create(op.get_bind(), checkfirst=True)
+
     op.add_column(
         "planets",
         sa.Column(
             "contest_state",
-            sa.Enum(*PLANET_CONTEST_STATE_VALUES, name="planet_contest_state"),
+            planet_contest_state,
             nullable=True,
         ),
     )
