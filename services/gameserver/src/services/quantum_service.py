@@ -805,6 +805,33 @@ def jump(
             destination_sector_id=destination.sector_id,
         )
 
+        # exploration.void_walker ("10 Quantum-Jumps into uncharted void",
+        # 2026-08-04 orchestrator ruling: wire Sector.discovered_by_id for
+        # real rather than reuse the per-player sectors_visited semantic
+        # already claimed by explorers_badge/pathfinder). Only a QJ that
+        # lands on a sector NOBODY has ever discovered before counts — the
+        # first-wins mark below is the same idempotent pattern as
+        # discovery_service.mark_planet_discovered. Best-effort: a discovery
+        # or medal hiccup must never strand the jump arrival.
+        try:
+            from src.services.discovery_service import mark_sector_discovered
+            destination_sector = db.query(Sector).filter(
+                Sector.id == destination.id
+            ).first()
+            if destination_sector is not None and mark_sector_discovered(
+                db, destination_sector, player.id
+            ):
+                settings = dict(player.settings or {})
+                settings["void_jumps"] = int(settings.get("void_jumps", 0) or 0) + 1
+                player.settings = settings
+                flag_modified(player, "settings")
+                from src.services.medal_service import check_and_award_exploration_medals
+                check_and_award_exploration_medals(
+                    db, player, {"void_jumps": settings["void_jumps"]},
+                )
+        except Exception as e:
+            logger.error("Void-walker discovery/medal hook failed during QJ: %s", e)
+
     db.commit()
 
     logger.info(

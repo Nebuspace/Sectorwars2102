@@ -2578,6 +2578,19 @@ class MovementService:
         except Exception as e:
             logger.error("Special-formation discovery hook failed during movement: %s", e)
 
+        # Galaxy-wide sector first-discoverer (Sector.discovered_by_id — 2026-08-04
+        # orchestrator ruling on exploration.void_walker: wire it "for real" at
+        # every arrival layer, not just quantum-jumps, since the column itself is
+        # galaxy-wide-first-discovery, not jump-specific. Normal warp arrival does
+        # NOT feed the void_jumps medal counter (that's quantum_service.jump()-only
+        # by the medal's own definition) — this call exists purely to keep the
+        # column meaningful for ordinary movement too. Best-effort, flush-only.
+        try:
+            from src.services.discovery_service import mark_sector_discovered
+            mark_sector_discovered(self.db, destination_sector, player.id)
+        except Exception as e:
+            logger.error("Sector first-discoverer hook failed during movement: %s", e)
+
         # Exploration medal dispatch hook (ADR-0028 / medals lane). The
         # ARIAExplorationMap table above is the canonical unique-sector visit
         # record — one row per (player, sector) — so its DISTINCT-sector count

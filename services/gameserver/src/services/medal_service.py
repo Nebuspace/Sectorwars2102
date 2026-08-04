@@ -830,7 +830,7 @@ def check_and_award_exploration_medals(
             return []
         context = context or {}
         awarded: List[str] = []
-        for trigger in ("sectors_visited", "sectors_discovered", "planets_created", "planets_colonized"):
+        for trigger in ("sectors_visited", "sectors_discovered", "planets_created", "planets_colonized", "void_jumps"):
             value = context.get(trigger)
             if value is not None:
                 awarded += _evaluate_and_award(
