@@ -353,49 +353,13 @@ export const teamAPI = {
       method: 'DELETE'
     }),
 
-  // Alliance & Diplomacy (Phase 3 - may not be implemented yet)
-  getAlliances: (teamId: string) =>
-    apiRequest(`/api/v1/teams/${teamId}/alliances`),
-
-  getDiplomaticRelations: (teamId: string) =>
-    apiRequest(`/api/v1/teams/${teamId}/relations`),
-
-  proposeAlliance: (teamId: string, data: any) =>
-    apiRequest(`/api/v1/teams/${teamId}/alliances/propose`, {
-      method: 'POST',
-      body: JSON.stringify(data)
-    }),
-
-  proposeTreaty: (teamId: string, data: any) =>
-    apiRequest(`/api/v1/teams/${teamId}/treaties/propose`, {
-      method: 'POST',
-      body: JSON.stringify(data)
-    }),
-
-  changeDiplomaticRelation: (teamId: string, targetTeamId: string, type: string) =>
-    apiRequest(`/api/v1/teams/${teamId}/relations/${targetTeamId}`, {
-      method: 'PUT',
-      body: JSON.stringify({ type })
-    }),
-
-  leaveAlliance: (teamId: string, allianceId: string) =>
-    apiRequest(`/api/v1/teams/${teamId}/alliances/${allianceId}`, {
-      method: 'DELETE'
-    }),
-
   // Analytics
   getTeamAnalytics: (teamId: string, period: 'day' | 'week' | 'month' | 'all-time') =>
     apiRequest(`/api/v1/teams/${teamId}/analytics?period=${period}`),
 
   // Permissions
   getPermissions: (teamId: string) =>
-    apiRequest(`/api/v1/teams/${teamId}/permissions`),
-
-  // Canon gap: GET /api/v1/teams does not exist on the backend. Still bound
-  // because DiplomacyInterface/AllianceManager call it; their fetches fail at
-  // runtime today. Remove together with those call sites.
-  getAvailableTeams: () =>
-    apiRequest('/api/v1/teams')
+    apiRequest(`/api/v1/teams/${teamId}/permissions`)
 };
 
 // Fleet Management APIs
