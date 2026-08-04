@@ -29,7 +29,7 @@ Key invariants (per ``DOCS/PLANS/bang-integration.md`` and
 The ``terran_space`` region additionally enforces the legacy starter
 invariants (Earth Station, New Earth with 8 B population, SpaceDock at
 sector 10 with full service flags) so the first-login flow keeps working
-after the legacy ``GalaxyGenerator`` is removed in Phase 4.
+after the former ``GalaxyGenerator`` path was retired in Phase 4.
 """
 from __future__ import annotations
 
@@ -145,7 +145,7 @@ _PLANET_TYPE_MAP: Dict[str, PlanetType] = {
     "volcanic": PlanetType.VOLCANIC,
 }
 
-#: bang Port.class → gameserver StationType (heuristic; matches legacy
+#: bang Port.class → gameserver StationType (heuristic; matches historical
 #: GalaxyGenerator weighting tables). CLASS_0 stays TRADING since SpaceDocks
 #: route via :attr:`Station.is_spacedock` per Q2.
 #:
@@ -940,7 +940,7 @@ class BangImportService:
             plan = self._translate_region(region_type, universe)
             if region_type == "terran_space":
                 # Enforce the legacy starter-region invariants per the
-                # GalaxyGenerator audit's "Top 3 risks".
+                # former GalaxyGenerator audit's "Top 3 risks".
                 plan = self._apply_terran_space_invariants(plan, warnings)
             else:
                 capital_planet = next(
@@ -2711,7 +2711,7 @@ class BangImportService:
     ) -> RegionInsertPlan:
         """Force the legacy starter-region invariants.
 
-        Per the legacy GalaxyGenerator audit's "Top 3 risks":
+        Per the former GalaxyGenerator audit's "Top 3 risks":
         * Sector 1 must be safe (hazard=0, radiation=0, STANDARD type) and
           host the canonical "Earth Station" + "New Earth" planet (8 B pop).
         * Sector 10 must host a CLASS_11 Shipyard SpaceDock with the

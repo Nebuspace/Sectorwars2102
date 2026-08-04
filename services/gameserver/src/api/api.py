@@ -222,6 +222,3 @@ api_router.include_router(admin_reports_router, tags=["admin-reports"])  # WO-PA
 if settings.TESTING or settings.DEVELOPMENT_MODE:
     api_router.include_router(test_router, prefix="/test", tags=["test"])
 
-# Add additional routers here as they are created
-# Example:
-# api_router.include_router(game_router, prefix="/game", tags=["game"])
