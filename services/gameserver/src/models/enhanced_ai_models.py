@@ -889,9 +889,3 @@ def log_sensitive_knowledge_creation(mapper, connection, target):
                 security_context={"source": "after_insert_listener"},
             )
         )
-
-
-# Add relationships to Player model (to be added to player.py)
-# player.ai_assistant = relationship("AIComprehensiveAssistant", back_populates="player", uselist=False)
-# player.trading_profile = relationship("PlayerTradingProfile", back_populates="player", uselist=False)
-# player.ai_recommendations = relationship("AIRecommendation", back_populates="player")

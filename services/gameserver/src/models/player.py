@@ -227,10 +227,6 @@ class Player(Base):
     first_login_sessions = relationship("FirstLoginSession", back_populates="player", cascade="all, delete-orphan")
     first_login_state = relationship("PlayerFirstLoginState", back_populates="player", uselist=False, cascade="all, delete-orphan")
     
-    # Analytics relationships (TODO: Create PlayerSession and PlayerActivity models)
-    # sessions = relationship("PlayerSession", back_populates="player", cascade="all, delete-orphan")
-    # activities = relationship("PlayerActivity", cascade="all, delete-orphan")
-    
     # Multi-regional relationships
     home_region = relationship("Region", foreign_keys=[home_region_id])
     current_region = relationship("Region", foreign_keys=[current_region_id])

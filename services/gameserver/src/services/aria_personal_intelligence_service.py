@@ -1492,46 +1492,15 @@ class ARIAPersonalIntelligenceService:
 
         return profitable_paths
     
-    async def _get_quantum_cache(self, player_id: str, cache_key: str,
-                               db: AsyncSession) -> Optional[Dict[str, Any]]:
-        """Get cached quantum calculation"""
-        stmt = select(ARIAQuantumCache).where(
-            and_(
-                ARIAQuantumCache.player_id == player_id,
-                ARIAQuantumCache.cache_key == cache_key,
-                ARIAQuantumCache.expires_at > datetime.now(UTC)
-            )
-        )
-        result = await db.execute(stmt)
-        cache_entry = result.scalar_one_or_none()
-        
-        if cache_entry:
-            cache_entry.hit_count += 1
-            await db.commit()
-            return cache_entry.ghost_results
-        
-        return None
-    
-    async def _cache_quantum_result(self, player_id: str, cache_key: str,
-                                  result: Dict[str, Any], db: AsyncSession):
-        """Cache quantum calculation result"""
-        # Calculate expiry based on market volatility
-        # More volatile = shorter cache
-        expiry = datetime.now(UTC) + timedelta(minutes=15)
-        
-        cache_entry = ARIAQuantumCache(
-            player_id=player_id,
-            cache_key=cache_key,
-            commodity=result.get("commodity", "UNKNOWN"),
-            quantum_states=[],  # Would store actual states
-            ghost_results=result,
-            expected_value=result.get("expected_cost", result.get("expected_revenue", 0)),
-            confidence_interval=[0, 0],  # Would calculate
-            expires_at=expiry
-        )
-        
-        db.add(cache_entry)
-        await db.commit()
+    # _get_quantum_cache / _cache_quantum_result (the original ghost-trade
+    # quantum-calculation cache read/write pair) removed 2026-08-04 —
+    # zero callers anywhere in the codebase (grep-confirmed). The table
+    # (ARIAQuantumCache) is still live via the repurposed observation-log
+    # aggregate cache (_cache_aggregates_sync / its read counterpart just
+    # above), which is the ONLY production-reachable writer today and
+    # always stores dummy quantum_states/expected_value/confidence_interval
+    # values — those columns remain permanently zeroed by design under the
+    # current repurposing, not because anything here still populates them.
     
     # =============================================================================
     # CONSCIOUSNESS & RELATIONSHIP TRACKING
