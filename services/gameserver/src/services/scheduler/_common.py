@@ -364,6 +364,16 @@ BOUNTY_ACCRUAL_CHECK_SECONDS = int(
     os.environ.get("BOUNTY_ACCRUAL_CHECK_SECONDS", str(40 * 60))
 )
 
+# Stolen-ship possession rep-penalty sweep pre-filter (ship-registry.md "Wanted
+# Status" — "Personal reputation hit — −100/day while still in possession of
+# the stolen ship; cumulative"). Same coarse-elapsed-pre-filter + durable
+# per-player canonical-day anchor discipline as the bounty-accrual sweep just
+# above (Player.settings[stolen_ship_rep_penalty_period]); offset to 42m so it
+# doesn't land on the same wake as the 40m bounty-accrual probe.
+STOLEN_SHIP_REP_PENALTY_CHECK_SECONDS = int(
+    os.environ.get("STOLEN_SHIP_REP_PENALTY_CHECK_SECONDS", str(42 * 60))
+)
+
 # Port operating-cost sweep pre-filter (WO-B3). The maintenance/upkeep accrual
 # + 3-month insolvency force-sell live in port_ownership_service.accrue_operating_
 # costs — a LAZY, idempotent engine that, before this sweep, only fired via the
@@ -687,6 +697,7 @@ _ECONOMIC_METRICS_LOCK_KEY = _mnemonic_lock_key("ECMT")
 _IDLE_INCOME_LOCK_KEY = _mnemonic_lock_key("IDLI")
 _DAILY_STIPEND_LOCK_KEY = _mnemonic_lock_key("STIP")
 _BOUNTY_ACCRUAL_LOCK_KEY = _mnemonic_lock_key("BNTY")
+_STOLEN_SHIP_REP_PENALTY_LOCK_KEY = _mnemonic_lock_key("STLN")
 _SUSTAINED_DRIP_LOCK_KEY = _mnemonic_lock_key("SDRP")
 _PORT_OPERATING_COSTS_LOCK_KEY = _mnemonic_lock_key("PORT")
 _STATION_RECOVERY_LOCK_KEY = _mnemonic_lock_key("STRC")

@@ -35,6 +35,7 @@ from src.services.scheduler._common import (
     IDLE_INCOME_CHECK_SECONDS,
     DAILY_STIPEND_CHECK_SECONDS,
     BOUNTY_ACCRUAL_CHECK_SECONDS,
+    STOLEN_SHIP_REP_PENALTY_CHECK_SECONDS,
     PORT_OPERATING_COST_CHECK_SECONDS,
     STATION_RECOVERY_CHECK_SECONDS,
     RECLAIM_FLAG_CHECK_SECONDS,
@@ -74,6 +75,7 @@ from src.services.scheduler.economy_sweeps import (
     _run_idle_income_sweep_sync,
     _run_daily_stipend_sweep_sync,
     _run_bounty_accrual_sweep_sync,
+    _run_stolen_ship_rep_penalty_sweep_sync,
     _run_port_operating_costs_sync,
     _run_station_recovery_sync,
     _run_reclaim_flag_sweep_sync,
@@ -582,6 +584,24 @@ async def _npc_scheduler_main_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: system-bounty accrual crashed (loop continues)")
+
+        # Stolen-ship possession rep-penalty sweep (ship-registry.md "Wanted
+        # Status" — −100/canonical-day while piloting a stolen ship). Same
+        # coarse-elapsed-pre-filter + durable per-player canonical-day anchor
+        # discipline as the bounty-accrual sweep directly above.
+        if elapsed % STOLEN_SHIP_REP_PENALTY_CHECK_SECONDS == 0:
+            try:
+                penalized = await asyncio.to_thread(_run_stolen_ship_rep_penalty_sweep_sync)
+                if penalized.get("pilots"):
+                    logger.info(
+                        "NPC scheduler: stolen-ship rep penalty — %d pilot(s), "
+                        "%d total reputation",
+                        penalized.get("pilots", 0), penalized.get("total_penalty", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: stolen-ship rep-penalty sweep crashed (loop continues)")
 
         # Port operating-cost sweep (WO-B3) — charge each player-owned port its
         # accrued maintenance/upkeep and force-sell any port insolvent for the

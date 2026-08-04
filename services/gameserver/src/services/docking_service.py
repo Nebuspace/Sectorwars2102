@@ -504,6 +504,83 @@ def _bumpable_summary(db: Session, occupancies: List[DockingSlipOccupancy]) -> L
     return out
 
 
+# Port-docking impound (ship-registry.md "Port-docking impound"): pilot fine
+# is 25% of credits, clamped to this max.
+STOLEN_SHIP_IMPOUND_FINE_CAP = 100_000
+# Personal-reputation hit applied to the impounded pilot, on top of the
+# ongoing −100/canonical-day possession penalty (economy_sweeps.py
+# _run_stolen_ship_rep_penalty_sweep_sync) — a separate, one-time hit for the
+# impound event itself.
+STOLEN_SHIP_IMPOUND_REP_PENALTY = -100
+
+
+def _check_stolen_ship_impound(db: Session, player: Player, ship_id: Optional[UUID]) -> Optional[Dict[str, Any]]:
+    """Port-docking impound (ship-registry.md): attempting to dock with a
+    `stolen_status = True` ship seizes it instead of granting a slip.
+
+    Returns None (no impound — proceed with normal docking) when the
+    player's current ship isn't flagged stolen. Otherwise: the ship is
+    returned to its registered owner and held at the port (stays at the
+    player's current sector — the station they were trying to dock at, not
+    relocated); the pilot is fined 25% of credits (capped), takes a
+    personal-reputation hit, and is ejected to an escape pod IN PLACE
+    (mirrors ship_service.destroy_ship's piloted-eject branch — reuse/
+    relocate the player's pod at the SAME sector — rather than escape_pod_
+    service.eject_to_escape_pod's sink-fleeing BFS relocation, which does
+    not fit an impound that happens right where the player already is).
+
+    FLUSH-ONLY — the caller (acquire) does not commit; docking routes own
+    the commit, exactly as for a granted/queued/full result."""
+    ship = db.query(Ship).filter(Ship.id == (ship_id or player.current_ship_id)).first()
+    if ship is None or not ship.stolen_status:
+        return None
+
+    from src.services.ship_service import ShipService, sync_current_pilot
+
+    fine = min(STOLEN_SHIP_IMPOUND_FINE_CAP, int(round(player.credits * 0.25)))
+    player.credits = max(0, player.credits - fine)
+    player.personal_reputation = (player.personal_reputation or 0) + STOLEN_SHIP_IMPOUND_REP_PENALTY
+
+    impounded_ship_id = ship.id
+    impounded_ship_name = ship.name
+    sector_id = ship.sector_id
+
+    # Return the hull to its registered owner and clear the stolen flags —
+    # the report is resolved by recovery, mirroring stolen_reported_at's
+    # own "cleared on recovery" contract.
+    ship.owner_id = ship.registered_owner_id or ship.owner_id
+    ship.stolen_status = False
+    ship.stolen_reported_at = None
+    ship.is_active = False  # held at the port, not flyable until reclaimed
+
+    # Pilot ejects in place — same pod-reuse-or-create machinery the
+    # destroy_ship piloted-eject branch uses, at the SAME sector (no BFS
+    # relocation; the player is already exactly where they need to be).
+    escape_pod = ShipService(db)._ensure_escape_pod(player, sector_id)
+    player.current_ship_id = escape_pod.id
+    sync_current_pilot(player, escape_pod, old_ship=ship)
+
+    logger.info(
+        "Stolen-ship impound: player %s docking with stolen ship %s (%s) — "
+        "impounded, returned to owner %s, fined %d, rep %+d, ejected to pod %s",
+        player.id, impounded_ship_id, impounded_ship_name,
+        ship.registered_owner_id, fine, STOLEN_SHIP_IMPOUND_REP_PENALTY, escape_pod.id,
+    )
+
+    return {
+        "status": "impounded",
+        "detail": (
+            f"{impounded_ship_name} was impounded — flagged stolen and returned to its "
+            f"registered owner. You were fined {fine} credits, took a reputation hit, "
+            "and ejected to an escape pod."
+        ),
+        "impounded_ship_id": str(impounded_ship_id),
+        "fine": fine,
+        "reputation_penalty": STOLEN_SHIP_IMPOUND_REP_PENALTY,
+        "escape_pod_id": str(escape_pod.id),
+    }
+
+
 def acquire(db: Session, station: Station, player: Player, ship_id: Optional[UUID] = None) -> Dict[str, Any]:
     """Try to claim a transient slip for `player` at `station`.
 
@@ -522,7 +599,15 @@ def acquire(db: Session, station: Station, player: Player, ship_id: Optional[UUI
     player is head-of-queue (consuming their entry). A queued non-head player
     — or any walk-up while others are waiting — gets a position response
     instead of jumping the line.
+
+    Stolen-ship impound check (ship-registry.md "Port-docking impound") runs
+    BEFORE any slip logic: docking with a `stolen_status = True` ship never
+    grants a slip — the ship is seized instead. See `_check_stolen_ship_impound`.
     """
+    impound_result = _check_stolen_ship_impound(db, player, ship_id)
+    if impound_result is not None:
+        return impound_result
+
     # Lock the station row: serializes all slip grants/bumps for this station.
     station = db.query(Station).filter(Station.id == station.id).with_for_update().first()
 

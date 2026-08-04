@@ -31,6 +31,7 @@ from src.services.scheduler._common import (
     _IDLE_INCOME_LOCK_KEY,
     _DAILY_STIPEND_LOCK_KEY,
     _BOUNTY_ACCRUAL_LOCK_KEY,
+    _STOLEN_SHIP_REP_PENALTY_LOCK_KEY,
     _PORT_OPERATING_COSTS_LOCK_KEY,
     _STATION_RECOVERY_LOCK_KEY,
     _RECLAIM_FLAG_LOCK_KEY,
@@ -500,6 +501,129 @@ def _run_bounty_accrual_sweep_sync() -> Dict[str, int]:
         db.close()
 
 
+def _run_stolen_ship_rep_penalty_sweep_sync() -> Dict[str, int]:
+    """Apply the −100/canonical-day personal-reputation penalty (ship-registry.md
+    "Wanted Status") to every player currently piloting a `stolen_status = True`
+    ship, once per canonical day. Mirrors _run_bounty_accrual_sweep_sync's
+    discipline exactly: own SessionLocal, xact-level advisory lock (skip on
+    contention rather than double-charge), a candidate query, then a per-row
+    with_for_update re-read, per-row commit + per-row try/except so one bad
+    row can't abort the batch.
+
+    IDEMPOTENCY: the durable per-player anchor is the canonical-day index
+    under Player.settings[STOLEN_SHIP_REP_PENALTY_PERIOD_KEY] — a restart,
+    duplicate wake, or re-run within the same canonical day re-reads it and
+    skips, so the penalty never double-applies in one day. Additive JSONB
+    only; NO migration, NO new table (mirrors the bounty-pot-period anchor's
+    exact shape).
+
+    CANDIDATE GATE: Ship.stolen_status is True AND Ship.current_pilot_id is
+    NOT NULL (someone must actually be aboard to be penalized — an
+    unpiloted/drifting stolen hull accrues nothing, matching "while STILL IN
+    POSSESSION of the stolen ship"). The per-row re-read re-confirms both
+    conditions on the locked player row's CURRENT ship (a concurrent impound
+    or ship-swap since the candidate query clears stolen_status or moves the
+    pilot off, in which case this row simply adds 0 but still advances the
+    anchor so the period isn't re-evaluated).
+
+    Returns {"pilots": n_penalized, "reputation_delta": total_cr_...} — actually
+    {"pilots": n_penalized, "total_penalty": total_negative_rep_applied}."""
+    from src.core.database import SessionLocal
+    from src.models.player import Player
+    from src.models.ship import Ship
+
+    STOLEN_SHIP_REP_PENALTY_PER_DAY = -100  # ship-registry.md "Wanted Status"
+    STOLEN_SHIP_REP_PENALTY_PERIOD_KEY = "stolen_ship_rep_penalty_period"
+
+    result = {"pilots": 0, "total_penalty": 0}
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _STOLEN_SHIP_REP_PENALTY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return result
+        db.commit()
+
+        period = canonical_day_number()
+
+        candidate_ids = (
+            db.query(Ship.current_pilot_id)
+            .filter(
+                Ship.stolen_status.is_(True),
+                Ship.current_pilot_id.isnot(None),
+            )
+            .all()
+        )
+
+        for (player_id,) in candidate_ids:
+            try:
+                player = (
+                    db.query(Player)
+                    .filter(Player.id == player_id)
+                    .with_for_update()
+                    .first()
+                )
+                if player is None or not player.is_active:
+                    db.rollback()
+                    continue
+
+                ship = (
+                    db.query(Ship)
+                    .filter(Ship.id == player.current_ship_id)
+                    .first()
+                )
+                still_piloting_stolen = (
+                    ship is not None
+                    and ship.stolen_status
+                    and ship.current_pilot_id == player.id
+                )
+
+                settings = player.settings or {}
+                try:
+                    last_period = int(settings.get(STOLEN_SHIP_REP_PENALTY_PERIOD_KEY))
+                except (TypeError, ValueError):
+                    last_period = None
+
+                if last_period is not None and last_period >= period:
+                    db.rollback()
+                    continue
+
+                if still_piloting_stolen:
+                    player.personal_reputation = (
+                        player.personal_reputation or 0
+                    ) + STOLEN_SHIP_REP_PENALTY_PER_DAY
+                    result["pilots"] += 1
+                    result["total_penalty"] += STOLEN_SHIP_REP_PENALTY_PER_DAY
+
+                if player.settings is None:
+                    player.settings = {}
+                player.settings[STOLEN_SHIP_REP_PENALTY_PERIOD_KEY] = int(period)
+                flag_modified(player, "settings")
+
+                db.commit()
+            except Exception:
+                logger.exception(
+                    "Stolen-ship rep-penalty sweep: penalty failed for player %s",
+                    player_id,
+                )
+                db.rollback()
+
+        if result["pilots"]:
+            logger.info(
+                "Stolen-ship rep-penalty sweep: canonical-day %d — penalized %d "
+                "pilot(s), %d total reputation",
+                period, result["pilots"], result["total_penalty"],
+            )
+        return result
+    except Exception:
+        logger.exception("Stolen-ship rep-penalty sweep failed")
+        db.rollback()
+        return result
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------

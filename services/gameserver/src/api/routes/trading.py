@@ -1609,6 +1609,16 @@ async def dock_at_station(
         db.rollback()
         raise HTTPException(status_code=403, detail=slip_result["detail"])
 
+    # Stolen-ship impound (ship-registry.md "Port-docking impound"): the ship
+    # never enters the slip queue at all — it's seized. acquire() already
+    # applied the fine/rep-hit/eject in-memory (flush-only); commit here and
+    # report it plainly rather than falling into the queue/full branch below
+    # (which expects queue_length/occupied/capacity/bumpable keys this
+    # result doesn't carry).
+    if slip_result["status"] == "impounded":
+        db.commit()
+        return JSONResponse(status_code=403, content=slip_result)
+
     if slip_result["status"] != "granted":
         # All transient slips taken (or the free slot belongs to the queue
         # head). Auto-enqueue the requester so they hold a FIFO position,
