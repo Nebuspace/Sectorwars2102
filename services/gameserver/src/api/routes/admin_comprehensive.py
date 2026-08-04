@@ -780,7 +780,7 @@ async def delete_ship(
             if owner and owner.current_ship_id == ship.id:
                 owner.current_ship_id = None
                 from src.services.ship_service import sync_current_pilot
-                sync_current_pilot(owner, None, old_ship=ship)
+                sync_current_pilot(owner, None, old_ship=ship, db=db)
 
             try:
                 from src.services.pioneer_service import reabsorb_on_ship_loss

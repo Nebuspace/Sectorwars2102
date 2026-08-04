@@ -59,6 +59,7 @@ REGION_ORDER: Tuple[str, ...] = ("terran_space", "player_owned", "central_nexus"
 
 PIRATE_CAPTAIN_KIND = "pirate_captain"
 PIRATE_CAPTAIN_TITLE = "Pirate Captain"
+PIRATE_LORD_TITLE = "Pirate Lord"  # ADR-0063 N-I1 / npc-scheduler.md hop-cap class
 MERCHANT_CAPTAIN_KIND = "merchant_captain"
 
 # TRADER roster tunables. Canon is silent on both (flagged for

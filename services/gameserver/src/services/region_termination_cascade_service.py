@@ -115,6 +115,13 @@ def process_planet_termination(
         "genesis_credit_compensation": 0,
     }
 
+    # Idempotency (WO-ESCALATE-CYCLE26-DESIGN-FLAGS): a prior successful pass
+    # stamps termination_compensated_at so daily re-entry while region
+    # cleanup_completed_at stays null cannot re-mint Genesis / re-bank.
+    if getattr(planet, "termination_compensated_at", None) is not None:
+        result["skipped"] = "already_compensated"
+        return result
+
     if planet.owner_id is None:
         logger.warning(
             "region_termination_cascade: planet %s has no owner; safe/genesis "
@@ -127,6 +134,7 @@ def process_planet_termination(
             resource_id=str(planet.id),
             details={"reason": "orphaned_planet", "region_id": str(planet.region_id) if planet.region_id else None},
         )
+        planet.termination_compensated_at = now
         return result
 
     owner = db.query(Player).filter(Player.id == planet.owner_id).first()
@@ -142,6 +150,7 @@ def process_planet_termination(
             resource_id=str(planet.id),
             details={"reason": "missing_player_row", "owner_id": str(planet.owner_id)},
         )
+        planet.termination_compensated_at = now
         return result
 
     citadel = CitadelService(db)
@@ -237,6 +246,7 @@ def process_planet_termination(
         "genesis_device_ids": genesis_ids,
         "genesis_credit_compensation": genesis_credit_compensation,
     })
+    planet.termination_compensated_at = now
     logger.info(
         "region_termination_cascade: planet %s terminated -- owner %s banked "
         "%d credits + %s commodities (safe) + %d (genesis wallet) credits, "

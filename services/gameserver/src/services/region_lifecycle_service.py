@@ -136,16 +136,18 @@ def dispatch_terminated_cleanup(db: Session, now: Optional[datetime] = None) -> 
     planet/station cascade -- each processes a disjoint entity type -- so
     the gate teardown runs alongside them in the same per-region pass.
 
-    Gated on ``Region.cleanup_completed_at IS NULL`` and sets it to ``now``
-    once a region's cascade has been dispatched, so a region is processed
-    exactly once -- without this marker, re-finding the same eligible
-    region on every daily sweep (the previous discovery-only stub's
-    documented idempotent-by-construction behavior, which held only
-    because it never mutated anything) would re-run the planet cascade
-    and re-mint Genesis compensation / re-credit safe-transport value for
-    the same planets repeatedly. Flush-only -- caller owns the commit, per
-    this codebase's route-owns-commit convention (mirrors both cascade
-    functions below it)."""
+    Does NOT stamp ``Region.cleanup_completed_at`` while
+    ``dispatch_station_termination`` remains discovery-only
+    (WO-ESCALATE-CYCLE26-DESIGN-FLAGS / DECISIONS.md cycle26-design-flags-fix):
+    asserting "cleanup complete" while stations are never terminated is a
+    data-integrity bug. Planet re-entry is gated by
+    ``Planet.termination_compensated_at`` instead; gate teardown is already
+    status-flip idempotent. Eligibility still filters
+    ``cleanup_completed_at IS NULL`` so a future station-termination
+    implementation can stamp the region marker once and stop re-dispatch.
+
+    Flush-only -- caller owns the commit, per this codebase's
+    route-owns-commit convention (mirrors both cascade functions below it)."""
     now = now or datetime.now(UTC)
     eligible = (
         db.query(Region)
@@ -163,10 +165,12 @@ def dispatch_terminated_cleanup(db: Session, now: Optional[datetime] = None) -> 
             process_planet_termination(db, planet, now=now)
         dispatch_station_termination(db, region.id)
         cascade_region_gate_teardown(db, region.id)
-        region.cleanup_completed_at = now
+        # Intentionally leave cleanup_completed_at NULL until station
+        # termination is real (cycle26-design-flags-fix).
         logger.info(
             "region_lifecycle: dispatched cleanup cascade for region %s "
-            "(%d planet(s) processed)",
+            "(%d planet(s) processed; cleanup_completed_at deferred — "
+            "station termination still discovery-only)",
             region.id, len(planets),
         )
     return {"cleanup_eligible": len(eligible)}

@@ -330,11 +330,13 @@ class TestAdvanceToTerminated:
 
 
 # --------------------------------------------------------------------------- #
-# dispatch_terminated_cleanup -- dispatches the cascade + stamps the marker
+# dispatch_terminated_cleanup -- cascade without false-complete stamp
 # --------------------------------------------------------------------------- #
 
 class TestDispatchTerminatedCleanup:
-    def test_eligible_region_dispatches_cascade_and_is_stamped(self, monkeypatch) -> None:
+    def test_eligible_region_dispatches_cascade_without_stamping(self, monkeypatch) -> None:
+        """Station termination is still discovery-only: do NOT stamp
+        cleanup_completed_at (WO-ESCALATE-CYCLE26-DESIGN-FLAGS)."""
         region = FakeRegionRow(
             status=RegionStatus.TERMINATED,
             scheduled_hard_delete_at=_NOW - timedelta(hours=1),
@@ -355,7 +357,7 @@ class TestDispatchTerminatedCleanup:
 
         assert result == {"cleanup_eligible": 1}
         assert region.status == RegionStatus.TERMINATED  # cleanup doesn't change status
-        assert region.cleanup_completed_at == _NOW  # idempotency marker stamped
+        assert region.cleanup_completed_at is None  # deferred until stations are real
         assert station_calls == [region.id]  # cascade dispatched for the right region
         assert gate_calls == [region.id]  # ADR-0052 SK38 gate teardown dispatched for the right region
 
@@ -409,6 +411,32 @@ class TestDispatchTerminatedCleanup:
         result = region_lifecycle_service.dispatch_terminated_cleanup(session, now=_NOW)
 
         assert result == {"cleanup_eligible": 0}
+
+    def test_uncompensated_region_redispatches_daily(self, monkeypatch) -> None:
+        """Without cleanup_completed_at, eligible regions re-enter each tick;
+        planet/gate idempotency (termination_compensated_at / COLLAPSED)
+        prevents double-payout — this only asserts the region stays eligible."""
+        region = FakeRegionRow(
+            status=RegionStatus.TERMINATED,
+            scheduled_hard_delete_at=_NOW - timedelta(hours=1),
+            cleanup_completed_at=None,
+        )
+        session = FakeRegionLifecycleSession(regions=[region])
+        station_calls = []
+        monkeypatch.setattr(
+            region_lifecycle_service, "dispatch_station_termination",
+            lambda db, region_id: station_calls.append(region_id) or {"station_relocation_eligible": 0},
+        )
+        monkeypatch.setattr(
+            region_lifecycle_service, "cascade_region_gate_teardown",
+            lambda db, region_id: {"gates_destroyed": 0},
+        )
+
+        region_lifecycle_service.dispatch_terminated_cleanup(session, now=_NOW)
+        region_lifecycle_service.dispatch_terminated_cleanup(session, now=_NOW)
+
+        assert len(station_calls) == 2
+        assert region.cleanup_completed_at is None
 
 
 # --------------------------------------------------------------------------- #

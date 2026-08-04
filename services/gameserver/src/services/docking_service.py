@@ -558,7 +558,7 @@ def _check_stolen_ship_impound(db: Session, player: Player, ship_id: Optional[UU
     # relocation; the player is already exactly where they need to be).
     escape_pod = ShipService(db)._ensure_escape_pod(player, sector_id)
     player.current_ship_id = escape_pod.id
-    sync_current_pilot(player, escape_pod, old_ship=ship)
+    sync_current_pilot(player, escape_pod, old_ship=ship, db=db)
 
     logger.info(
         "Stolen-ship impound: player %s docking with stolen ship %s (%s) — "

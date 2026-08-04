@@ -456,6 +456,8 @@ def abandon_ship(db: Session, *, ship: Ship, owner: Player, port_id: UUID) -> di
     # ship they no longer control.
     if owner.current_ship_id == ship.id:
         owner.current_ship_id = None
+        from src.services.ship_service import sync_current_pilot
+        sync_current_pilot(owner, None, old_ship=ship, db=db)
 
     append_registry_event(
         db,

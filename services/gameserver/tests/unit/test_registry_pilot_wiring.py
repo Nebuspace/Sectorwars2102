@@ -112,6 +112,8 @@ class TestEveryCurrentShipIdWriteSitePairsWithSyncCurrentPilot:
         "services/station_security_service.py": (1, 1),
         "services/escape_pod_service.py": (1, 1),
         "services/first_login_service.py": (1, 1),
+        "services/docking_service.py": (1, 1),
+        "services/ship_registry_service.py": (1, 1),
         # ship_service.py DEFINES sync_current_pilot -- the def line itself
         # matches the sync-call regex, so 1 real call there = 2 raw matches.
         "services/ship_service.py": (1, 2),

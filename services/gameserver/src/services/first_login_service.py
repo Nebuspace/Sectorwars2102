@@ -1965,7 +1965,7 @@ Description: {ship_specs.get('description', 'N/A')}
         from src.services.ship_service import sync_current_pilot
         # QUEUE-REGISTRY-PILOT-WIRING: no old ship -- every pre-existing
         # ship was hard-deleted above (self-healing stale-data cleanup).
-        sync_current_pilot(player, new_ship)
+        sync_current_pilot(player, new_ship, db=self.db)
         
         # Apply any bonuses or penalties from the dialogue outcome
         if session.negotiation_bonus_flag:

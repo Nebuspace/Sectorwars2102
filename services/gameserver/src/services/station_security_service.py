@@ -832,7 +832,7 @@ def surrender_tractor_locked_ship(
     # QUEUE-REGISTRY-PILOT-WIRING: old ship's current_pilot_id already
     # cleared explicitly above (line ~802, part of the surrender/abandon
     # flow) -- only the new escape pod's pointer needs setting here.
-    sync_current_pilot(player, escape_pod)
+    sync_current_pilot(player, escape_pod, db=db)
 
     db.flush()
 

@@ -243,6 +243,10 @@ class Planet(Base):
     # the owner pre-pays the 20% transport fee during Suspended/Grace so the
     # safe transfers to the player's wallet at 100% instead of 80% on cascade.
     transport_prepaid = Column(Boolean, nullable=True)
+    # WO-ESCALATE-CYCLE26-DESIGN-FLAGS: stamped by process_planet_termination
+    # after a successful pass so daily re-entry (while Region.cleanup_completed_at
+    # stays null pending real station termination) does not re-mint Genesis.
+    termination_compensated_at = Column(DateTime(timezone=True), nullable=True)
     # Timestamp of the first valid SETTLE (ADR-0091 R2: ownership attaches at
     # settle, not at genesis-deploy). NULL until the CAS resolver's UPDATE wins.
     settled_at = Column(DateTime(timezone=True), nullable=True)

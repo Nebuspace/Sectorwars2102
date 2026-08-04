@@ -16,7 +16,13 @@ from src.models.ship import Ship, ShipType, ShipSpecification
 logger = logging.getLogger(__name__)
 
 
-def sync_current_pilot(player: Player, new_ship: Optional[Ship], *, old_ship: Optional[Ship] = None) -> None:
+def sync_current_pilot(
+    player: Player,
+    new_ship: Optional[Ship],
+    *,
+    old_ship: Optional[Ship] = None,
+    db: Optional[Session] = None,
+) -> None:
     """QUEUE-REGISTRY-PILOT-WIRING (2026-07-16): maintains the Ship Registry
     invariant (SYSTEMS/ship-registry.md #4, the canonical eject/board pair)
     -- ``Ship.current_pilot_id == player.id`` iff ``Player.current_ship_id ==
@@ -44,7 +50,13 @@ def sync_current_pilot(player: Player, new_ship: Optional[Ship], *, old_ship: Op
     Idempotent and safe to call with ``old_ship is new_ship`` (a same-ship
     no-op re-assignment) -- the old-ship clear is skipped whenever the two
     ids match, so a redundant call never wipes the pointer it's about to
-    set right back to it."""
+    set right back to it.
+
+    WO-ESCALATE-CYCLE26-DESIGN-FLAGS: when ``db`` is provided, recompute
+    ``Player.is_wanted`` after the pilot pointers settle so boarding a
+    reported-stolen ship flips Wanted immediately (closes the ~24h
+    daily-sweep-only exploit window). Callers without a Session keep the
+    prior signature; the daily sweep remains the backstop."""
     if old_ship is not None and (new_ship is None or old_ship.id != new_ship.id):
         old_ship.current_pilot_id = None
         old_ship.current_pilot_since = None
@@ -52,6 +64,12 @@ def sync_current_pilot(player: Player, new_ship: Optional[Ship], *, old_ship: Op
         if new_ship.current_pilot_id != player.id:
             new_ship.current_pilot_since = datetime.now(timezone.utc)
         new_ship.current_pilot_id = player.id
+    if db is not None:
+        try:
+            from src.services.wanted_service import recompute_is_wanted
+            recompute_is_wanted(db, player)
+        except Exception as e:  # never let Wanted recompute break boarding
+            logger.error("Wanted recompute on sync_current_pilot failed: %s", e)
 
 
 def _dispatch_fleet_medals(db: Session, owner_id: uuid.UUID) -> None:
@@ -289,7 +307,7 @@ class ShipService:
         # was destroyed (FIX 6).
         if is_piloted:
             player.current_ship_id = escape_pod.id
-            sync_current_pilot(player, escape_pod, old_ship=ship)  # QUEUE-REGISTRY-PILOT-WIRING
+            sync_current_pilot(player, escape_pod, old_ship=ship, db=self.db)  # QUEUE-REGISTRY-PILOT-WIRING
 
         # Apply insurance if available. Skipped entirely for the warp-gate
         # anchor: no underwriter writes a policy on a hull whose canonical
