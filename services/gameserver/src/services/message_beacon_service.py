@@ -654,6 +654,28 @@ def deploy(
     db.add(beacon)
     db.flush()
 
+    # Medal dispatch hook (ADR-0028 / medals lane): diplomatic.beacon_keeper
+    # (beacons_placed >= 10). A durable per-player JSONB counter is
+    # maintained HERE (not derived by counting live MessageBeacon rows) --
+    # the expiry sweep HARD-DELETES expired beacons, so a live-row count
+    # would under-count this lifetime achievement as beacons age out. Best-
+    # effort: resolved by getattr (the medals lane may be absent) and any
+    # failure is logged and swallowed, a medal hiccup must never break a
+    # deploy.
+    try:
+        settings = dict(player.settings) if player.settings else {}
+        lifetime_beacons = int(settings.get("beacons_placed_lifetime", 0)) + 1
+        settings["beacons_placed_lifetime"] = lifetime_beacons
+        player.settings = settings
+        flag_modified(player, "settings")
+
+        import src.services.medal_service as _medal_module
+        hook = getattr(_medal_module, "check_and_award_beacon_medals", None)
+        if callable(hook):
+            hook(db, player_id, lifetime_beacons)
+    except Exception as e:
+        logger.error("Beacon medal dispatch hook failed: %s", e)
+
     region = db.query(Region).filter(Region.id == sector.region_id).first()
     cap = _sector_cap(region) if region is not None else DEFAULT_SECTOR_CAP
 

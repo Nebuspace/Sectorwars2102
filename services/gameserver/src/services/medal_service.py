@@ -796,7 +796,7 @@ def check_and_award_exploration_medals(
             return []
         context = context or {}
         awarded: List[str] = []
-        for trigger in ("sectors_visited", "planets_created", "planets_colonized"):
+        for trigger in ("sectors_visited", "sectors_discovered", "planets_created", "planets_colonized"):
             value = context.get(trigger)
             if value is not None:
                 awarded += _evaluate_and_award(
@@ -892,6 +892,53 @@ def check_and_award_bounty_medals(db: Session, collector_id: uuid.UUID) -> List[
         )
     except Exception as e:
         logger.error("check_and_award_bounty_medals failed for %s: %s", collector_id, e)
+        return []
+
+
+def check_and_award_contract_medals(db: Session, player_id: uuid.UUID) -> List[str]:
+    """Award economic.quartermaster (``contracts_completed`` >= 25).
+
+    Counter: COUNT of Contract rows where this player is the acceptor and
+    status == COMPLETED. Dispatched from contract_service.complete() after a
+    successful delivery, inside the same unit of work (mirrors the bounty
+    hook's own frozen-hook pattern). Defensive."""
+    try:
+        from src.models.contract import Contract, ContractStatus
+
+        contracts_completed = (
+            db.query(Contract)
+            .filter(
+                Contract.acceptor_player_id == player_id,
+                Contract.status == ContractStatus.COMPLETED,
+            )
+            .count()
+        )
+        return _evaluate_and_award(
+            db, player_id, "contracts_completed", int(contracts_completed),
+            source_event_key="contract.completed", awarded_via="trade",
+        )
+    except Exception as e:
+        logger.error("check_and_award_contract_medals failed for %s: %s", player_id, e)
+        return []
+
+
+def check_and_award_beacon_medals(db: Session, player_id: uuid.UUID, beacons_placed: int) -> List[str]:
+    """Award diplomatic.beacon_keeper (``beacons_placed`` >= 10).
+
+    ``beacons_placed`` is a CALLER-SUPPLIED lifetime count, not derived here
+    by counting live MessageBeacon rows -- the expiry sweep HARD-DELETES
+    expired beacons (message_beacon_service.sweep_expired), so a live-row
+    COUNT would under-count (and could even un-award) a lifetime achievement
+    as old beacons age out. The caller (message_beacon_service.deploy)
+    maintains a durable per-player counter for this reason. Dispatched
+    inside the same unit of work as the deploy. Defensive."""
+    try:
+        return _evaluate_and_award(
+            db, player_id, "beacons_placed", int(beacons_placed),
+            source_event_key="beacon.deployed", awarded_via="social",
+        )
+    except Exception as e:
+        logger.error("check_and_award_beacon_medals failed for %s: %s", player_id, e)
         return []
 
 
@@ -1291,6 +1338,8 @@ __all__ = [
     "check_and_award_fleet_medals",
     "check_and_award_port_medals",
     "check_and_award_bounty_medals",
+    "check_and_award_contract_medals",
+    "check_and_award_beacon_medals",
     "check_and_award_faction_medals",
     "check_and_award_team_founder_medal",
     "check_and_award_governance_medals",

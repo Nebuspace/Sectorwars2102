@@ -2590,10 +2590,19 @@ class MovementService:
         # it no-ops on every move except the one that first crosses 500 sectors —
         # never re-awards.
         try:
+            # sectors_discovered (Pathfinder, threshold 1 -- "personally
+            # discovering your first sector") reuses the EXACT same counter
+            # as sectors_visited (Cartographer, threshold 1000): the
+            # ARIAExplorationMap row count IS both statistics at different
+            # thresholds -- "discovered" and "visited" both mean "distinct
+            # sectors this player has ever entered" (WO-BUILD-MEDAL-AUTO-
+            # AWARD-BATCH, exploration domain, verify-first: no separate
+            # discovery-vs-visit distinction exists in the schema).
+            unique_sectors = self._count_unique_sectors_visited(player.id)
             _dispatch_exploration_medals(
                 self.db,
                 player,
-                {"sectors_visited": self._count_unique_sectors_visited(player.id)},
+                {"sectors_visited": unique_sectors, "sectors_discovered": unique_sectors},
             )
         except Exception as e:
             logger.error("Exploration medal dispatch hook failed during movement: %s", e)

@@ -493,6 +493,21 @@ def complete(
 
     db.flush()
 
+    # Medal dispatch hook (ADR-0028 / medals lane): economic.quartermaster
+    # (contracts_completed >= 25). Best-effort — resolved by getattr (the
+    # medals lane may be absent) and any failure is logged and swallowed, a
+    # medal hiccup must never break a contract completion. Dispatched here,
+    # AFTER the flush above but BEFORE this function's caller commits, so the
+    # medal-award SAVEPOINT folds into the same transaction (mirrors every
+    # other frozen-hook dispatcher in this codebase).
+    try:
+        import src.services.medal_service as _medal_module
+        hook = getattr(_medal_module, "check_and_award_contract_medals", None)
+        if callable(hook):
+            hook(db, player_id)
+    except Exception as e:
+        logger.error("Contract medal dispatch hook failed: %s", e)
+
     logger.info(
         "Player %s completed contract %s, paid %d credits (+%d early-arrival bonus, "
         "issuer pool refund %d)",
