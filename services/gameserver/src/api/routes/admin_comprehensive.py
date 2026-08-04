@@ -853,6 +853,41 @@ async def teleport_ship(
             logger.error(f"Error teleporting ship {ship_id}: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to teleport ship: {str(e)}") from e
 
+
+@router.post("/ships/registry/backfill", response_model=Dict[str, Any])
+async def admin_backfill_ship_registry(
+    current_admin: User = Depends(require_scope(SHIPS_MANAGE)),
+    db: Session = Depends(get_db),
+):
+    """One-shot invocation of ``ship_registry_service.backfill_initial_registrations``
+    (WO-P10-green-ship-registry-schema) — emits an INITIAL_REGISTRATION
+    ShipRegistry row (and assigns a registration_number) for every existing
+    Ship that predates the auto-registration mapper events and doesn't
+    already have one. Idempotent — safe to invoke more than once; ships
+    that already have an INITIAL_REGISTRATION row are skipped.
+    """
+    from src.services.ship_registry_service import backfill_initial_registrations
+
+    backfilled = backfill_initial_registrations(db)
+
+    log_admin_action(
+        db,
+        actor=current_admin,
+        scope_used=SHIPS_MANAGE,
+        action="admin_backfill_ship_registry",
+        target_type="ship_registry",
+        target_id=None,
+        payload={"backfilled": backfilled},
+    )
+    db.commit()
+
+    logger.info(
+        f"Admin {current_admin.username} backfilled {backfilled} ship registry "
+        "INITIAL_REGISTRATION row(s)"
+    )
+    return {"backfilled": backfilled}
+
+
 # Player Management Endpoints
 
 @router.post("/players/create-from-user", response_model=Dict[str, str])
