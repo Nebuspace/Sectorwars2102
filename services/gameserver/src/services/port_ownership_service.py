@@ -158,7 +158,7 @@ CATCHUP_EVAL_LIMIT = 3              # lazy month catch-up: evaluate at most the
                                     # trailing N months individually; older
                                     # months batch-skip as unsatisfied
 
-MIN_TAX_RATE = 0.0
+MIN_TAX_RATE = 0.05  # canon floor 5-25% (lifecycle.md; port-ownership-station-trade-tariff-bounds-5-25 ruling)
 MAX_TAX_RATE = 0.25
 
 # Canon "Treasury & cash flow > Owner withdrawals" (port-ownership.md:361-367):

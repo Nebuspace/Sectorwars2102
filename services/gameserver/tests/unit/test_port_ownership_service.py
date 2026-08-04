@@ -339,7 +339,7 @@ class TestCanonConstants:
         assert po.MONTH_HOURS == 30 * 24.0
 
     def test_tax_bounds(self):
-        assert (po.MIN_TAX_RATE, po.MAX_TAX_RATE) == (0.0, 0.25)
+        assert (po.MIN_TAX_RATE, po.MAX_TAX_RATE) == (0.05, 0.25)
 
     def test_price_bounds(self):
         assert (po.PRICE_FLOOR, po.PRICE_CEILING) == (250_000, 2_000_000)
