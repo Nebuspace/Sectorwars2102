@@ -138,7 +138,6 @@ api_router.include_router(nexus_router, tags=["nexus"])
 api_router.include_router(regional_governance_router, tags=["regional-governance"])
 api_router.include_router(translation_router, tags=["translation"])
 api_router.include_router(enhanced_websocket_router, tags=["websocket", "real-time"])
-api_router.include_router(debug_router, tags=["debug"])
 api_router.include_router(gambling_router, tags=["gambling"])
 api_router.include_router(genesis_router, tags=["genesis"])
 api_router.include_router(ship_upgrades_router, tags=["ship-upgrades"])
@@ -226,7 +225,11 @@ api_router.include_router(storage_router, tags=["storage"])
 api_router.include_router(intrasystem_router, tags=["intrasystem"])
 api_router.include_router(admin_reports_router, tags=["admin-reports"])  # WO-PADMIN-analytics
 
-# Only include test routes in development/test environments
+# Only include test + debug routes in development/test environments.
+# debug_router is admin-scoped (AUDIT_VIEW) but still dumps full player/ship/
+# sector state — keep it off production the same way as test_router
+# (WO-CLEANUP-DEBUG-ROUTES-ENV-GATE).
 if settings.TESTING or settings.DEVELOPMENT_MODE:
+    api_router.include_router(debug_router, tags=["debug"])
     api_router.include_router(test_router, prefix="/test", tags=["test"])
 
