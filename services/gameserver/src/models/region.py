@@ -102,6 +102,7 @@ class Region(Base):
     suspended_at = Column(TIMESTAMP, nullable=True)
     terminated_at = Column(TIMESTAMP, nullable=True)
     scheduled_hard_delete_at = Column(TIMESTAMP, nullable=True)
+    cleanup_completed_at = Column(TIMESTAMP, nullable=True)
     # Canon (galaxy.md:93 / ADR-0050:177) marks generation_seed NOT NULL.
     # WO-FIX-GENERATION-SEED-WRITER-AND-BACKFILL (2026-08-04): all 4 live
     # Region-creation sites now set it (nexus_generation_service.py,
