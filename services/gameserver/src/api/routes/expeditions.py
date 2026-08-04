@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from src.auth.dependencies import get_current_player
 from src.core.database import get_db
-from src.models.expedition import Expedition, ExpeditionStatus
+from src.models.expedition import Expedition
 from src.models.planet import Planet
 from src.models.player import Player
 from src.models.ship import Ship

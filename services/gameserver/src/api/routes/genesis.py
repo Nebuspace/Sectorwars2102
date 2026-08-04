@@ -9,7 +9,7 @@ from typing import Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from src.core.database import get_db
 from src.auth.dependencies import get_current_player

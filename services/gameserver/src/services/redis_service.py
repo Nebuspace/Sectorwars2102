@@ -5,6 +5,7 @@ Provides hybrid PostgreSQL + Redis architecture for optimal performance
 
 import json
 import asyncio
+import logging
 from typing import Any, Optional, Dict, List
 from datetime import datetime
 # aioredis is archived upstream and dead on Python 3.12 (its import chain
@@ -14,6 +15,8 @@ from datetime import datetime
 from redis import asyncio as aioredis
 import redis
 from src.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class RedisService:
@@ -45,13 +48,13 @@ class RedisService:
             
             # Test connection
             await self.redis_pool.ping()
-            print(f"✅ Redis connected successfully at {settings.REDIS_URL}")
+            logger.info(f"Redis connected successfully at {settings.REDIS_URL}")
             
             # Initialize sync client for non-async operations
             self.sync_redis = redis.from_url(settings.REDIS_URL, decode_responses=True)
             
         except Exception as e:
-            print(f"❌ Redis connection failed: {e}")
+            logger.error(f"Redis connection failed: {e}")
             raise
     
     async def disconnect(self):
