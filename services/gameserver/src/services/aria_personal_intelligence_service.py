@@ -38,11 +38,7 @@ from src.models.aria_personal_intelligence import (
     ARIAQuantumCache, ARIASecurityLog,
     ARIATradingObservation, ObservationAction, ObservationOutcome,
 )
-# ARIATradingPattern (the GA/"Trade DNA" model) is DEPRECATED -- WO-ARIA-
-# GA-CLEANUP removed its only callers (evolve_trading_pattern /
-# get_evolved_patterns / _create_trading_pattern / _classify_pattern_type,
-# ADR-0038). No longer imported here; see models/aria_personal_intelligence.py's
-# own deprecation note on the class.
+# ARIATradingPattern removed (WO-ARIA-GA-CLEANUP, ADR-0038) -- see git history.
 from src.core.config import settings
 from src.core.game_time import scaled_elapsed
 
@@ -2245,11 +2241,8 @@ class ARIAPersonalIntelligenceService:
     # OBSERVATION LOG + RECOMMENDATION ENGINE (WO-ARIA-OBS-LOG, ADR-0038)
     # =============================================================================
     #
-    # Append-only per-trade observation log mined by SQL aggregates -- the
-    # genetic-algorithm framing (evolve_trading_pattern / get_evolved_
-    # patterns / ARIATradingPattern) was REMOVED (WO-ARIA-GA-CLEANUP,
-    # ADR-0038, zero live callers) rather than merely retired; this section
-    # is its replacement recommendation engine.
+    # Replacement for the GA-based ARIATradingPattern engine, removed via
+    # WO-ARIA-GA-CLEANUP (ADR-0038) -- see git history.
     #
     # DELIBERATELY SYNC (Session, not AsyncSession): the intended write-path
     # caller is trading.py's buy/sell routes (lane C of this WO, deferred --

@@ -1223,19 +1223,8 @@ class FleetService:
                 continue
             self._set_ship_combat_stat(ship, "hull", min(max_hull, current_hull + regen))
 
-    # DEPRECATED + REMOVED — Fleet.morale is now FULLY INERT in combat
-    # (WO-BS2, reverts WO-AS). The former ``_morale_factor`` helper mapped
-    # Fleet.morale to an outer ``(1 + morale_modifier)`` combat multiplier
-    # (ADR-0061 S-I3). Max ruled the combat-morale coupling CUT entirely — the
-    # ADR-0061 morale clause is retired. WO-BS removed the damage coupling (this
-    # helper + its attack/defense applications) and the per-round attrition
-    # decrement; WO-BS2 removed the LAST residual coupling — the battle-DURATION
-    # path — by deleting the flagship -30, the post-battle -20, and the < 20
-    # morale-collapse battle-end check. The combat path now writes/reads
-    # Fleet.morale NOWHERE (identical battle outcome AND duration at morale
-    # 100 / 50 / 0). The Fleet.morale COLUMN is intentionally kept
-    # (non-destructive, no migration) but is cosmetic only — touched solely by
-    # the admin adjust helper (another file) for display.
+    # Fleet.morale combat coupling fully removed (WO-BS2, ADR-0061) -- column
+    # kept, cosmetic only, see git history.
 
     def _calculate_formation_bonus(self, fleet: Fleet) -> Dict[str, float]:
         """
