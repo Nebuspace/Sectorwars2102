@@ -848,11 +848,47 @@ class AISecurityAuditLog(Base):
 # Event listeners for automatic security logging
 @event.listens_for(AICrossSystemKnowledge, 'after_insert')
 def log_sensitive_knowledge_creation(mapper, connection, target):
-    """Log creation of sensitive AI knowledge"""
+    """Log creation of sensitive AI knowledge.
+
+    A mapper-level ``after_insert`` fires mid-flush, so this uses the raw
+    Core ``connection`` (already inside the triggering INSERT's transaction)
+    rather than a second ORM session — the standard pattern for mapper
+    events, and simpler than the "separate session" note this replaces
+    (which was never actually wired up, leaving this listener a no-op that
+    looked like it was logging while silently dropping every sensitive-
+    knowledge creation event).
+    """
     if target.security_classification in ['restricted', 'confidential'] or target.data_sensitivity in ['high', 'critical']:
-        # Note: In production, this would use a separate database session
-        # to avoid issues with the current transaction
-        pass  # Security logging would be implemented here
+        connection.execute(
+            AISecurityAuditLog.__table__.insert().values(
+                id=uuid.uuid4(),
+                # event_type/severity_level values are CHECK-constrained
+                # (valid_event_type / valid_severity_level below) — "data_access"
+                # and "critical"/"warning" are the closest fits in each
+                # constrained vocabulary, not free-form labels.
+                event_type="data_access",
+                severity_level=(
+                    "critical"
+                    if target.data_sensitivity == "critical" or target.security_classification == "confidential"
+                    else "warning"
+                ),
+                event_description=(
+                    f"AICrossSystemKnowledge {target.id} created with "
+                    f"security_classification={target.security_classification}, "
+                    f"data_sensitivity={target.data_sensitivity}"
+                )[:1000],
+                assistant_id=target.assistant_id,
+                player_id=None,
+                event_data={
+                    "knowledge_id": str(target.id),
+                    "knowledge_domain": target.knowledge_domain,
+                    "knowledge_type": target.knowledge_type,
+                    "security_classification": target.security_classification,
+                    "data_sensitivity": target.data_sensitivity,
+                },
+                security_context={"source": "after_insert_listener"},
+            )
+        )
 
 
 # Add relationships to Player model (to be added to player.py)
