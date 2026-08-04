@@ -161,6 +161,53 @@ def _reveal_warp_to_player(
             revealed_via=revealed_via,
         )
         db.add(row)
+        # ARIA narration — P-A5, first PERSONAL warp reveal (aria-companion.md
+        # § Warp discovery: "ARIA surfaces these conversationally — flagging a
+        # first reveal ... special-casing the player's region Nexus warp").
+        # Gated on the new-row branch (fires exactly once per (player, tunnel))
+        # AND revealed_via != CORP_SHARE — a teammate's share isn't the
+        # player's own discovery moment (mirrors ADR-0064 R-V3's "requires
+        # PERSONAL discovery" framing already enforced a few lines below for
+        # the upgrade-to-personal case). Best-effort, own try/except so a
+        # narration hiccup can never strand the warp-knowledge write it rides
+        # alongside — same idiom as P-A2 above.
+        if revealed_via != WarpRevealedVia.CORP_SHARE:
+            try:
+                from src.models.region import Region
+
+                player = db.query(Player).filter(Player.id == player_id).first()
+                is_nexus_warp = False
+                if player is not None and player.home_region_id is not None:
+                    home_region = db.query(Region).filter(
+                        Region.id == player.home_region_id
+                    ).first()
+                    if home_region is not None and home_region.nexus_warp_sector is not None:
+                        is_nexus_warp = home_region.nexus_warp_sector in (
+                            tunnel.origin_sector.sector_id if tunnel.origin_sector else None,
+                            tunnel.destination_sector.sector_id if tunnel.destination_sector else None,
+                        )
+                reveal_desc = (
+                    "That's the Nexus connection, captain — this warp leads to "
+                    "the Central Nexus."
+                    if is_nexus_warp else
+                    f"New warp revealed via {revealed_via.value}. Logged it to your map."
+                )
+                from src.services.aria_narration_service import (
+                    dispatch_narration_push,
+                    get_aria_narration_service,
+                    resolve_assistance_level,
+                )
+                narration_line = get_aria_narration_service().record_event(
+                    "P-A5",
+                    player_id,
+                    assistance_level=resolve_assistance_level(db, player_id),
+                    dedupe_key=str(tunnel.id),
+                    context={"reveal_desc": reveal_desc},
+                )
+                if narration_line is not None and narration_line.delivered_immediately and player is not None:
+                    dispatch_narration_push(player, narration_line)
+            except Exception as e:
+                logger.error("ARIA narration hook failed (P-A5): %s", e)
     elif row.visibility_state == WarpVisibilityState.HIDDEN:
         # Promote hidden -> revealed; never downgrade traversed.
         row.visibility_state = WarpVisibilityState.REVEALED

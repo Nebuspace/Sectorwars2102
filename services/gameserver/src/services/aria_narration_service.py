@@ -123,6 +123,14 @@ REGISTRY: Dict[str, NarrationEventDef] = {
             suppression_scope="ever",
         ),
         NarrationEventDef(
+            event_id="P-A5",
+            trigger="Player personally reveals a latent warp tunnel for the first time "
+                     "(scan / traversal_attempt / aria_inference — not corp_share)",
+            template="{reveal_desc}",
+            priority_rank=PRIORITY_P_A,
+            suppression_scope="ever",
+        ),
+        NarrationEventDef(
             event_id="P-A3",
             trigger="Player.team_id transitions from null to non-null",
             template=(
