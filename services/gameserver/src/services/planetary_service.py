@@ -50,16 +50,14 @@ SIEGE_RESOURCE_THEFT_FRACTION = 0.15
 # rates DOWN by the same fraction (the extra cost is paid out of output), applied
 # exactly like SIEGE_PRODUCTION_PENALTY's siege_multiplier just below it.
 #
-# NO-CANON: the doc marks this 📐 Design-only and the threshold/percentage are
-# given as a TARGET ("< 30", "+20%"), not a settled rule. LOW_HABITABILITY_
-# THRESHOLD = 30 and LOW_HABITABILITY_PRODUCTION_PENALTY = 0.20 are the WO/doc
-# target values — FLAGGED for DECISIONS, not invented. Below the threshold the
-# colony already DECLINES in population (HABITABILITY_GROWTH_THRESHOLD = 20);
-# this penalty additionally taxes commodity output across the marginal band
-# (hab < 30), so a hab-20 world both shrinks AND nets ~20% less than a hab-50
-# world with identical allocations/buildings.
-LOW_HABITABILITY_THRESHOLD = 30           # NO-CANON: target threshold (doc line 213)
-LOW_HABITABILITY_PRODUCTION_PENALTY = 0.20  # NO-CANON: target "+20% resource costs"
+# Ratified 2026-08-04 (Max): mutually exclusive with the population-decline
+# band, not stacked. HABITABILITY_GROWTH_THRESHOLD = 20 already declines
+# population below hab 20; this output penalty applies ONLY across the
+# marginal band [20, 30) — a hab<20 world gets population decline alone, no
+# double-hit. LOW_HABITABILITY_THRESHOLD = 30 and LOW_HABITABILITY_
+# PRODUCTION_PENALTY = 0.20 are the ratified band/magnitude.
+LOW_HABITABILITY_THRESHOLD = 30
+LOW_HABITABILITY_PRODUCTION_PENALTY = 0.20
 
 # --- PL4b TAX-RATE BOUNDS (DEFERRED, COLUMN-ONLY — I11) ----------------------
 # Planet.tax_rate ships as a NULLABLE, INERT column (migration d7a2f1c9e3b5).
@@ -2778,7 +2776,14 @@ class PlanetaryService:
         # path can never raise; on any hiccup the colony simply pays no penalty.
         try:
             low_hab_score = planet.habitability_score
-            if low_hab_score is not None and low_hab_score < LOW_HABITABILITY_THRESHOLD:
+            # Mutually exclusive with population decline (HABITABILITY_GROWTH_
+            # THRESHOLD = 20): only the marginal [20, 30) band pays this output
+            # penalty. Below 20 the colony already shrinks; it does not also
+            # net less output on top of that.
+            if (
+                low_hab_score is not None
+                and HABITABILITY_GROWTH_THRESHOLD <= low_hab_score < LOW_HABITABILITY_THRESHOLD
+            ):
                 low_hab_multiplier = 1.0 - LOW_HABITABILITY_PRODUCTION_PENALTY
                 fuel_rate *= low_hab_multiplier
                 organics_rate *= low_hab_multiplier
