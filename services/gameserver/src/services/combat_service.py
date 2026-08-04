@@ -2238,6 +2238,30 @@ class CombatService:
             except Exception as e:
                 logger.error("Failed destroy_pirate_drones reputation hook: %s", e)
 
+        # Medal dispatch hook (ADR-0028 / medals lane): combat.drone_reaper
+        # (drones_cleared >= 100). A durable per-player JSONB counter is
+        # maintained HERE (not derived by querying DroneDeployment) --
+        # DroneDeployment.player_id is the drone's DEPLOYER/owner, not the
+        # attacker who destroyed it, so there is no table this attacker's
+        # lifetime destroyed-drone count could be queried from. Best-effort:
+        # resolved by getattr (the medals lane may be absent) and any
+        # failure is logged and swallowed, a medal hiccup must never fail
+        # combat resolution.
+        if destroyed_drone_ids:
+            try:
+                settings = dict(attacker.settings) if attacker.settings else {}
+                lifetime_cleared = int(settings.get("drones_cleared_lifetime", 0)) + len(destroyed_drone_ids)
+                settings["drones_cleared_lifetime"] = lifetime_cleared
+                attacker.settings = settings
+                flag_modified(attacker, "settings")
+
+                import src.services.medal_service as _medal_module
+                hook = getattr(_medal_module, "check_and_award_drone_medals", None)
+                if callable(hook):
+                    hook(self.db, attacker.id, lifetime_cleared)
+            except Exception as e:
+                logger.error("Drone-reaper medal dispatch hook failed: %s", e)
+
         # Update last_combat timestamp for sector
         sector.last_combat = datetime.now()
 
@@ -2365,7 +2389,26 @@ class CombatService:
             self._award_planet_capture_rewards(
                 attacker, planet, planet_owner, sector, combat_result
             )
-        
+
+            # Medal dispatch hook (ADR-0028 / medals lane): combat.siege_master
+            # (planetary_assaults >= 25 -- "successful planetary assaults",
+            # i.e. captures, matching this branch's own gate). Durable
+            # per-player JSONB counter (no captured-only outcome column exists
+            # on CombatLog to derive this from a query). Best-effort.
+            try:
+                settings = dict(attacker.settings) if attacker.settings else {}
+                lifetime_assaults = int(settings.get("planetary_assaults_lifetime", 0)) + 1
+                settings["planetary_assaults_lifetime"] = lifetime_assaults
+                attacker.settings = settings
+                flag_modified(attacker, "settings")
+
+                import src.services.medal_service as _medal_module
+                hook = getattr(_medal_module, "check_and_award_siege_medals", None)
+                if callable(hook):
+                    hook(self.db, attacker.id, lifetime_assaults)
+            except Exception as e:
+                logger.error("Siege-master medal dispatch hook failed: %s", e)
+
         # Update last_attacked timestamp for planet
         planet.last_attacked = datetime.now()
 

@@ -1888,7 +1888,25 @@ class ARIAPersonalIntelligenceService:
                 .scalar()
             ) or 0
 
-            return self._apply_consciousness_and_relationship(player, total_memories)
+            result = self._apply_consciousness_and_relationship(player, total_memories)
+
+            # Medal dispatch hook (ADR-0028 / medals lane): special.arias_favor
+            # (aria_consciousness >= 5). Best-effort — resolved by getattr (the
+            # medals lane may be absent) and any failure is logged and
+            # swallowed, a medal hiccup must never break ARIA progression.
+            # Uses THIS sync twin specifically (not the async method above) so
+            # the dispatch runs on a plain sync Session — see WO-BUILD-MEDAL-
+            # AUTO-AWARD-BATCH's diplomatic.first_citizen note for why an
+            # AsyncSession-only earn-event is a real blocker for this pattern.
+            try:
+                import src.services.medal_service as _medal_module
+                hook = getattr(_medal_module, "check_and_award_aria_medals", None)
+                if callable(hook):
+                    hook(db, player.id, player.aria_consciousness_level)
+            except Exception as e:
+                logger.error("ARIA medal dispatch hook failed: %s", e)
+
+            return result
         except Exception as e:
             logger.warning(
                 "update_consciousness_and_relationship_sync failed for player %s: %s",

@@ -922,6 +922,60 @@ def check_and_award_contract_medals(db: Session, player_id: uuid.UUID) -> List[s
         return []
 
 
+def check_and_award_aria_medals(db: Session, player_id: uuid.UUID, aria_consciousness: int) -> List[str]:
+    """Award special.arias_favor (``aria_consciousness`` >= 5).
+
+    ``aria_consciousness`` is caller-supplied (``Player.aria_consciousness_
+    level``, already live-tracked and monotonic — no under/over-counting risk
+    like beacons_placed). Dispatched from ``aria_personal_intelligence_
+    service.update_consciousness_and_relationship_sync`` on a sync Session
+    (the async twin is NOT hooked — see that call site's own comment).
+    Defensive."""
+    try:
+        return _evaluate_and_award(
+            db, player_id, "aria_consciousness", int(aria_consciousness),
+            source_event_key="aria.consciousness_evolved", awarded_via="aria",
+        )
+    except Exception as e:
+        logger.error("check_and_award_aria_medals failed for %s: %s", player_id, e)
+        return []
+
+
+def check_and_award_drone_medals(db: Session, player_id: uuid.UUID, drones_cleared: int) -> List[str]:
+    """Award combat.drone_reaper (``drones_cleared`` >= 100).
+
+    ``drones_cleared`` is a caller-supplied durable lifetime count
+    (combat_service maintains it in Player.settings JSONB, since
+    DroneDeployment.player_id tracks the drone's DEPLOYER/owner, not the
+    attacker who destroyed it -- there's no table to derive this from).
+    Dispatched from combat_service after a sector drone-clear victory, same
+    unit of work as the destroy_pirate_drones reputation hook. Defensive."""
+    try:
+        return _evaluate_and_award(
+            db, player_id, "drones_cleared", int(drones_cleared),
+            source_event_key="combat.drones_cleared", awarded_via="combat",
+        )
+    except Exception as e:
+        logger.error("check_and_award_drone_medals failed for %s: %s", player_id, e)
+        return []
+
+
+def check_and_award_siege_medals(db: Session, player_id: uuid.UUID, planetary_assaults: int) -> List[str]:
+    """Award combat.siege_master (``planetary_assaults`` >= 25, i.e. successful
+    captures). Caller-supplied durable lifetime count (combat_service
+    maintains it in Player.settings JSONB -- no captured-only outcome column
+    exists on CombatLog to derive this from a query). Dispatched from
+    combat_service.attack_planet's capture branch. Defensive."""
+    try:
+        return _evaluate_and_award(
+            db, player_id, "planetary_assaults", int(planetary_assaults),
+            source_event_key="combat.planet_captured", awarded_via="combat",
+        )
+    except Exception as e:
+        logger.error("check_and_award_siege_medals failed for %s: %s", player_id, e)
+        return []
+
+
 def check_and_award_beacon_medals(db: Session, player_id: uuid.UUID, beacons_placed: int) -> List[str]:
     """Award diplomatic.beacon_keeper (``beacons_placed`` >= 10).
 
@@ -1340,6 +1394,9 @@ __all__ = [
     "check_and_award_bounty_medals",
     "check_and_award_contract_medals",
     "check_and_award_beacon_medals",
+    "check_and_award_aria_medals",
+    "check_and_award_drone_medals",
+    "check_and_award_siege_medals",
     "check_and_award_faction_medals",
     "check_and_award_team_founder_medal",
     "check_and_award_governance_medals",
