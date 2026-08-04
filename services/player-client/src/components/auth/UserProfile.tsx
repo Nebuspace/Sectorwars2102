@@ -1,6 +1,7 @@
 import React from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import LogoutButton from './LogoutButton';
+import LanguageSwitcher from '../common/LanguageSwitcher';
 import './auth.css';
 
 const UserProfile: React.FC = () => {
@@ -16,6 +17,7 @@ const UserProfile: React.FC = () => {
         <span className="username">{user.username}</span>
         <span className="user-role">Player</span>
       </div>
+      <LanguageSwitcher variant="compact" showProgress={false} />
       <LogoutButton className="user-logout" />
     </div>
   );

@@ -4,6 +4,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useGame } from '../../contexts/GameContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useSettings } from '../../contexts/SettingsContext';
+import LanguageSwitcher from '../common/LanguageSwitcher';
 import { formatCredits, formatShipType } from '../../utils/formatters';
 import { TurnsIcon } from '../icons/TurnsIcon';
 import { MineIcon } from '../icons/MineIcon';
@@ -203,6 +204,11 @@ const SettingsTab: React.FC<{ idPrefix?: string }> = ({ idPrefix = '' }) => {
           />
           <span className="sb-identity-v" aria-live="polite">{currentPercent}</span>
         </div>
+      </div>
+
+      <div className="sb-settings-row">
+        <span className="sb-identity-k">LANGUAGE</span>
+        <LanguageSwitcher variant="compact" showProgress={false} />
       </div>
 
       <div className="sb-settings-row sb-settings-subscription">
