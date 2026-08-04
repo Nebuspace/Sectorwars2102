@@ -248,6 +248,13 @@ class Ship(Base):
     # = listed; listed_by is always the registered owner at listing time.
     for_sale_price = Column(Integer, nullable=True)
     for_sale_listed_by_id = Column(UUID(as_uuid=True), ForeignKey("players.id", ondelete="SET NULL"), nullable=True)
+    # Salvage break (DATA_MODELS/ships.md "salvage_break_in_progress_by_id" /
+    # "salvage_break_started_at"). Non-NULL in_progress = a break is underway
+    # on this Drifting ship by the named player; duration scales by ship class
+    # (Scout 1h / Cargo Hauler 4h / Carrier 12h) -- not enforced here, no
+    # consuming service exists yet (schema-only, additive per this WO's scope).
+    salvage_break_in_progress_by_id = Column(UUID(as_uuid=True), ForeignKey("players.id", ondelete="SET NULL"), nullable=True)
+    salvage_break_started_at = Column(DateTime(timezone=True), nullable=True)
 
     # True for NPC-piloted ships. Instance-level companion to canon's
     # ShipSpecification.is_npc_only flag (DATA_MODELS/ships.md): police
