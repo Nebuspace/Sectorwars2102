@@ -492,8 +492,16 @@ class BountyService:
         target_id: uuid.UUID,
         amount: int,
         duration_days: Optional[int] = None,
+        fee_pct: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """Place a bounty on a target player. Placer pays amount + 10% fee.
+        """Place a bounty on a target player. Placer pays amount + fee.
+
+        ``fee_pct`` overrides the standard ``BOUNTY_PLACEMENT_FEE`` (10%) when
+        given -- used by ship_registry_service's auto-placed stolen-report
+        bounty, which per ship-registry.md "Reporting a ship stolen" waives
+        the placement fee ("the owner has already lost the use of their
+        ship; the registry doesn't double-tax"). Defaults to the standard
+        fee for every other caller -- zero behavior change otherwise.
 
         ``duration_days`` is optional (default None = no expiry, the
         documented baseline). When given, must be within
@@ -541,7 +549,7 @@ class BountyService:
         if placer_id == target_id:
             return {"success": False, "message": "Cannot place a bounty on yourself"}
 
-        fee = int(amount * BOUNTY_PLACEMENT_FEE)
+        fee = int(amount * (BOUNTY_PLACEMENT_FEE if fee_pct is None else fee_pct))
         total_cost = amount + fee
 
         if placer.credits < total_cost:
@@ -590,9 +598,16 @@ class BountyService:
         }
 
     def cancel_bounty(
-        self, placer_id: uuid.UUID, bounty_id: str, target_id: uuid.UUID
+        self, placer_id: uuid.UUID, bounty_id: str, target_id: uuid.UUID,
+        refund_pct: float = 1.0,
     ) -> Dict[str, Any]:
         """Cancel a still-uncollected PLAYER-placed bounty and refund the placer.
+
+        ``refund_pct`` overrides the default 100%-of-principal refund --
+        used by ship_registry_service's retract-stolen-report flow, whose
+        75%/0% timing-dependent refund schedule (ship-registry.md "Reporting
+        a ship stolen" retract paragraph) differs from this method's
+        cancellation invariant #9.
 
         Canon (SYSTEMS/bounty-and-reputation.md#cancellation, invariant #9):
         only the ORIGINAL PLACER may cancel; only a not-yet-collected bounty is
@@ -655,8 +670,9 @@ class BountyService:
                 "message": "System bounties cannot be cancelled",
             }
 
-        # Refund the escrowed principal only (fee is non-refundable, invariant #9).
-        refund = int(entry.get("amount", 0))
+        # Refund the escrowed principal only (fee is non-refundable, invariant #9),
+        # scaled by refund_pct for callers with a partial-refund schedule.
+        refund = int(int(entry.get("amount", 0)) * refund_pct)
 
         # Remove the entry FIRST so it can never be collected after the refund,
         # then credit. Both happen under the target+placer locks atomically.
@@ -959,10 +975,28 @@ class BountyService:
         now = datetime.now(UTC)
 
         # --- Player-placed bounties: pay every entry, record a PAID claim ---
-        # These are pay-once-then-cleared (the list is wiped below), so no
-        # ledger dedup is needed — clearing the JSONB is the dedup.
+        # These are pay-once-then-cleared (paid entries are wiped below), so
+        # no ledger dedup is needed for them — clearing the JSONB is the
+        # dedup.
+        #
+        # Same-team collusion block (ADR-0055 S-F1, bounty-collection half):
+        # a collector sharing a team with the entry's placer does NOT get
+        # paid for that entry — cross-team hunting still works, same-team
+        # laundering is blocked. The entry is left standing (escrow held,
+        # untouched) rather than paid or removed, so the placer can still
+        # retract it or a non-team-mate hunter can still collect it later.
         total_player = 0
+        withheld_player_bounties = []
         for b in player_bounties:
+            placed_by = b.get("placed_by")
+            collector_team_id = getattr(collector, "team_id", None)
+            if placed_by and collector_team_id is not None:
+                placer_team = (
+                    self.db.query(Player.team_id).filter(Player.id == placed_by).first()
+                )
+                if placer_team is not None and placer_team[0] is not None and placer_team[0] == collector.team_id:
+                    withheld_player_bounties.append(b)
+                    continue
             amount = b.get("amount", 0)
             total_player += amount
             self._write_claim(
@@ -1042,9 +1076,11 @@ class BountyService:
         # Award credits
         collector.credits += total
 
-        # Clear player-placed bounties (clearing the JSONB list IS their dedup).
-        # The system pot was already zeroed above (its reset is ITS dedup).
-        self._set_bounties(target, [])
+        # Clear PAID player-placed bounties (clearing them IS their dedup);
+        # same-team-withheld entries (see above) are left standing for a
+        # future retract or a non-team-mate hunter. The system pot was
+        # already zeroed above (its reset is ITS dedup).
+        self._set_bounties(target, withheld_player_bounties)
 
         # Flush within the caller's locked transaction (caller owns the commit).
         self.db.flush()

@@ -53,6 +53,7 @@ from src.api.routes.hangar import router as hangar_router
 from src.api.routes.tow import router as tow_router
 from src.api.routes.armory import router as armory_router
 from src.api.routes.registry import router as registry_router
+from src.api.routes.ship_registry_behaviors import router as ship_registry_behaviors_router
 from src.api.routes.bang_galaxy import router as bang_galaxy_router
 from src.api.routes.construction import router as construction_router
 from src.api.routes.port_ownership import router as port_ownership_router
@@ -151,6 +152,7 @@ api_router.include_router(tow_router, tags=["tow"])
 api_router.include_router(armory_router, tags=["armory"])
 # Black-market planet registry lookup (router carries its own /registry prefix)
 api_router.include_router(registry_router, tags=["registry"])
+api_router.include_router(ship_registry_behaviors_router, tags=["ship-registry"])
 # TradeDock ship construction (router carries its own /construction prefix)
 api_router.include_router(construction_router, tags=["construction"])
 # Port ownership: listings/auctions, owner powers, economic takeover
