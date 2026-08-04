@@ -87,7 +87,11 @@ LICENSE_COST_PER_TIER = 500  # § License cost: "500 cr × richness_tier"
 LICENSE_DURATION_HOURS = 24  # § License model: "24 real-time hours per purchase"
 LICENSE_RENEWAL_FACTOR = 0.8  # § License cost: renewal at 80% of base (400 × tier)
 
-# § Output — precious_metals rare-drop: 5% base + 2% per laser level, cap 11%.
+# § Output — precious_metals rare-drop: 5% base + 2% per laser level, frozen
+# at the Laser L2 value (9%) per ADR-0062 E-F3 vs Laser L3 ruling, 2026-08-04
+# (DECISIONS.md adr-0062-ef3-vs-mining-laser-l3) -- Laser L3 grants no further
+# precious-metals bump; see the pm_laser_level clamp at its use site. CAP is
+# retained as a safety ceiling above the effective L2-frozen rate.
 PRECIOUS_METALS_BASE_RATE = 0.05
 PRECIOUS_METALS_PER_LEVEL = 0.02
 PRECIOUS_METALS_CAP = 0.11
@@ -536,9 +540,16 @@ class MiningService:
 
         precious_metals = 0
         if free_after_ore > 0:
+            # ADR-0062 E-F3 vs mining.md Laser L3 contradiction, ruled
+            # 2026-08-04 (DECISIONS.md adr-0062-ef3-vs-mining-laser-l3,
+            # Option 2 -- match canon): precious_metals scaling freezes at
+            # the L2 value; L3 grants no further precious-metals bump.
+            # Ore-efficiency (_laser_efficiency_multiplier) and the
+            # quantum_shards L3 gate are untouched by this ruling.
+            pm_laser_level = min(laser_col, 2)
             pm_rate = min(
                 PRECIOUS_METALS_CAP,
-                PRECIOUS_METALS_BASE_RATE + PRECIOUS_METALS_PER_LEVEL * laser_col,
+                PRECIOUS_METALS_BASE_RATE + PRECIOUS_METALS_PER_LEVEL * pm_laser_level,
             )
             if _RNG.random() < pm_rate:
                 pm = _RNG.randint(*PRECIOUS_METALS_YIELD)
