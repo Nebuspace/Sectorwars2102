@@ -7,8 +7,10 @@ Declares / list / ceasefire already live on ``Team.member_roles['active_wars']``
   that hold a mutual ``status=active`` war entry, increment the kill score on
   both sides' JSONB entries.
 * When either side's ``score.us`` reaches ``VICTORY_KILL_THRESHOLD``, flip both
-  entries to ``status=ceased`` with ``cease_reason=victory`` (reward payout and
-  UI deferred).
+  entries to ``status=ceased`` with ``cease_reason=victory``, persist
+  ``victory_at`` / ``winner_team_id`` / ``loser_team_id``, and emit a structured
+  ``team_war_victory`` realtime event to both team rooms (credit payout HOLD —
+  DECISIONS Pending team-war-victory-reward; UI deferred).
 
 Flush-only; caller owns commit. Lock both Team rows ascending-id (same
 discipline as ``declare_war`` / fleet_service).
@@ -43,6 +45,57 @@ def _active_war_vs(wars: list, target_team_id: str) -> Optional[dict]:
         ):
             return war
     return None
+
+
+def _broadcast_team_event(team_id: UUID, payload: Dict[str, Any]) -> None:
+    """Best-effort team-room WS push. Same idiom as team_reputation /
+    combat_service: lazy-import connection_manager singleton, create_task,
+    never block, never break the caller.
+    """
+    try:
+        import asyncio
+
+        from src.services.websocket_service import connection_manager
+
+        asyncio.get_running_loop().create_task(
+            connection_manager.broadcast_to_team(str(team_id), payload)
+        )
+    except RuntimeError:
+        pass  # no running loop — sync/unit context
+    except Exception:
+        logger.exception(
+            "team_war telemetry broadcast failed for type=%s (non-fatal)",
+            payload.get("type"),
+        )
+
+
+def _emit_team_war_victory_event(
+    *,
+    winner_team_id: UUID,
+    loser_team_id: UUID,
+    victory_at: str,
+    winner_score_us: int,
+    loser_score_us: int,
+) -> Dict[str, Any]:
+    """Structured victory frame (event-only; no credits). Broadcast to both
+    team rooms so either side's clients can react when a war board lands.
+    """
+    payload = {
+        "type": "team_war_victory",
+        "winner_team_id": str(winner_team_id),
+        "loser_team_id": str(loser_team_id),
+        "victory_at": victory_at,
+        "cease_reason": "victory",
+        "threshold": VICTORY_KILL_THRESHOLD,
+        "score": {
+            "winner_us": winner_score_us,
+            "loser_us": loser_score_us,
+        },
+        "timestamp": victory_at,
+    }
+    _broadcast_team_event(winner_team_id, payload)
+    _broadcast_team_event(loser_team_id, payload)
+    return payload
 
 
 def record_pvp_kill(
@@ -101,6 +154,7 @@ def record_pvp_kill(
     d_entry["score"] = d_score
 
     victory = False
+    victory_event: Optional[Dict[str, Any]] = None
     if a_score["us"] >= VICTORY_KILL_THRESHOLD:
         victory = True
         now = datetime.now(UTC).isoformat()
@@ -110,9 +164,18 @@ def record_pvp_kill(
         ):
             entry["status"] = "ceased"
             entry["ceased_at"] = now
+            entry["victory_at"] = now
             entry["cease_reason"] = "victory"
             entry["winner_team_id"] = winner
             entry["loser_team_id"] = loser
+
+        victory_event = _emit_team_war_victory_event(
+            winner_team_id=atid,
+            loser_team_id=dtid,
+            victory_at=now,
+            winner_score_us=a_score["us"],
+            loser_score_us=int(d_score.get("us") or 0),
+        )
 
     # Write lists back (entries are mutable dicts already in the lists).
     attacker_team.member_roles["active_wars"] = a_wars
@@ -128,6 +191,10 @@ def record_pvp_kill(
         "threshold": VICTORY_KILL_THRESHOLD,
     }
     if victory:
+        result["winner_team_id"] = str(atid)
+        result["loser_team_id"] = str(dtid)
+        result["victory_at"] = a_entry.get("victory_at")
+        result["event"] = victory_event
         logger.info(
             "team_war: victory team=%s over team=%s at %d kills",
             atid, dtid, a_score["us"],

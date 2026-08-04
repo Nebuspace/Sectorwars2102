@@ -133,7 +133,23 @@ def test_record_pvp_kill_victory_at_threshold():
     result = tws.record_pvp_kill(db, _player(a_id), _player(b_id))
     assert result["victory"] is True
     assert result["attacker_score_us"] == tws.VICTORY_KILL_THRESHOLD
-    assert a.member_roles["active_wars"][0]["status"] == "ceased"
-    assert b.member_roles["active_wars"][0]["status"] == "ceased"
-    assert a.member_roles["active_wars"][0]["cease_reason"] == "victory"
-    assert a.member_roles["active_wars"][0]["winner_team_id"] == str(a_id)
+    assert result["winner_team_id"] == str(a_id)
+    assert result["loser_team_id"] == str(b_id)
+    assert result["victory_at"]
+    a_war = a.member_roles["active_wars"][0]
+    b_war = b.member_roles["active_wars"][0]
+    assert a_war["status"] == "ceased"
+    assert b_war["status"] == "ceased"
+    assert a_war["cease_reason"] == "victory"
+    assert a_war["winner_team_id"] == str(a_id)
+    assert a_war["loser_team_id"] == str(b_id)
+    assert a_war["victory_at"] == result["victory_at"]
+    assert b_war["victory_at"] == result["victory_at"]
+    assert a_war["ceased_at"] == a_war["victory_at"]
+    event = result["event"]
+    assert event["type"] == "team_war_victory"
+    assert event["winner_team_id"] == str(a_id)
+    assert event["loser_team_id"] == str(b_id)
+    assert event["victory_at"] == result["victory_at"]
+    assert event["score"]["winner_us"] == tws.VICTORY_KILL_THRESHOLD
+    assert event["threshold"] == tws.VICTORY_KILL_THRESHOLD
