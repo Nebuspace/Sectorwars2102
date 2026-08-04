@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 # read Ship.modules["_baked"]["passive_income"] — no equipment_slots write, so
 # no collision with install_equipment("quantum_harvester") / npc_scheduler.
 # harvester is therefore NOT in the deferred set below.
+# WO-QUANTUM-HARVESTER-MODULE-LATTICE-WIRING: lattice harvester install/remove
+# also syncs Ship.quantum_harvester_slot (QR2 harvest gate) via
+# _sync_quantum_harvester_slot — same flag the equipment path flips.
 #
 # WHY STILL DEFERRED for lander/mining/tractor — flagged for the orchestrator:
 #   * lander/mining/tractor (landing_bonus / mining_efficiency / tow_capable /
@@ -690,6 +693,29 @@ class ShipUpgradeService:
             if isinstance(baked_pi, (int, float)):
                 total += int(baked_pi)
         return total
+
+    @staticmethod
+    def _sync_quantum_harvester_slot(ship) -> bool:
+        """Set ``Ship.quantum_harvester_slot`` from equipment OR lattice modules.
+
+        True when either ``equipment_slots`` carries ``quantum_harvester`` or any
+        installed module record has ``class == "harvester"``. Used by the QR2
+        harvest gate (quantum_service) so lattice-only fits are not invisible.
+        Returns the new flag value.
+        """
+        equipment_slots = getattr(ship, "equipment_slots", None) or {}
+        if "quantum_harvester" in equipment_slots:
+            ship.quantum_harvester_slot = True
+            return True
+        modules = getattr(ship, "modules", None) or {}
+        installed = modules.get("installed") if isinstance(modules, dict) else None
+        if isinstance(installed, dict):
+            for record in installed.values():
+                if isinstance(record, dict) and record.get("class") == "harvester":
+                    ship.quantum_harvester_slot = True
+                    return True
+        ship.quantum_harvester_slot = False
+        return False
 
     @staticmethod
     def get_equipment_effects(ship) -> Dict[str, Any]:
@@ -1433,9 +1459,10 @@ class ShipUpgradeService:
         }
         flag_modified(ship, 'equipment_slots')
 
-        # WO-DBB-QR1: the Quantum Harvester flips the dedicated slot flag (prereq for QR2).
+        # WO-DBB-QR1 + WO-QUANTUM-HARVESTER-MODULE-LATTICE-WIRING: keep the
+        # dedicated slot flag in sync with equipment AND lattice harvester fits.
         if equipment_key == "quantum_harvester":
-            ship.quantum_harvester_slot = True
+            self._sync_quantum_harvester_slot(ship)
 
         self.db.flush()
 
@@ -1481,9 +1508,10 @@ class ShipUpgradeService:
         del ship.equipment_slots[equipment_key]
         flag_modified(ship, 'equipment_slots')
 
-        # WO-DBB-QR1: removing the Quantum Harvester clears the slot flag.
+        # WO-DBB-QR1 + WO-QUANTUM-HARVESTER-MODULE-LATTICE-WIRING: recompute
+        # from remaining equipment / lattice (lattice harvester may still be fitted).
         if equipment_key == "quantum_harvester":
-            ship.quantum_harvester_slot = False
+            self._sync_quantum_harvester_slot(ship)
 
         if refund > 0:
             player.credits += refund
@@ -1775,6 +1803,10 @@ class ShipUpgradeService:
         updated_stats = self._apply_module_effects(ship)
         flag_modified(ship, "modules")
 
+        # Lattice harvester must flip QR2's dedicated slot flag (same as equipment path).
+        if module_class == "harvester":
+            self._sync_quantum_harvester_slot(ship)
+
         self.db.flush()
 
         logger.info(
@@ -1852,6 +1884,10 @@ class ShipUpgradeService:
         ship.modules = modules  # same dict, "_baked" intact
         updated_stats = self._apply_module_effects(ship)
         flag_modified(ship, "modules")
+
+        # Recompute QR2 flag — equipment quantum_harvester may still keep it true.
+        if module_class == "harvester":
+            self._sync_quantum_harvester_slot(ship)
 
         if refund > 0:
             player.credits += refund
