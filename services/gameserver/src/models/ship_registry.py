@@ -58,6 +58,12 @@ class RegistryEventType(str, enum.Enum):
     STOLEN_RETRACTED = "stolen_retracted"
     IMPOUNDED = "impounded"
     ARCHIVED = "archived"
+    # WO-FIX-SHIP-REGISTRY-TRANSFER-SALVAGE-TRADE-ABANDON: the relinquish
+    # half of "Abandonment" (ship-registry.md) -- the owner giving up
+    # ownership with no new owner yet. The later free-claim (a new owner
+    # taking possession) reuses OWNERSHIP_TRANSFER, matching every other
+    # ownership-change event in this enum.
+    ABANDONED = "abandoned"
 
 
 class ShipRegistry(Base):

@@ -1,14 +1,19 @@
 """ShipRegistry service -- append-event helper + existing-hull backfill +
-report-stolen / retract-stolen-report behavioral flows.
+report-stolen / retract-stolen-report / abandon / claim / trade-sell
+behavioral flows.
 
 Canon: SYSTEMS/ship-registry.md, DATA_MODELS/ships.md#shipregistry.
 Schema rollout was WO-P10-green-ship-registry-schema (append-event helper +
-backfill only). WO-FIX-SHIP-REGISTRY-BEHAVIORAL-ROUTES adds the first two of
-the six ownership-affecting behavioral flows: report-stolen and
-retract-stolen-report, wired to ``src/api/routes/ship_registry_behaviors.py``.
-transfer / salvage / trade / abandon remain deferred (see that WO's report --
-each needs its own dispute-window scheduler / mutual-presence / real-credits
-surface, out of scope for this pass).
+backfill only). WO-FIX-SHIP-REGISTRY-BEHAVIORAL-ROUTES added report-stolen /
+retract-stolen-report. WO-FIX-SHIP-REGISTRY-TRANSFER-SALVAGE-TRADE-ABANDON
+adds abandon / claim (ship-registry.md "Abandonment") and trade-sell / trade
+-respond (ship-registry.md "Trading" -- peer-to-peer sale). Contested
+registration transfer / salvage-claim ("Legal ownership transfer" -- 30% fee,
+24h owner-dispute window) is DEFERRED -- see that WO's report: the numbers
+are concrete, but the flow needs a new pending-transfer schema, a 24h
+auto-complete scheduler sweep (mirroring economy_sweeps.py's stolen-ship-rep-
+penalty sweep), and a cancel-on-stolen-report interaction with report_stolen
+above -- scoped as its own follow-up WO rather than rushed here.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -16,6 +21,7 @@ from typing import Optional
 from uuid import UUID
 
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.bounty_claim import BountyClaim, BountyClaimStatus
 from src.models.player import Player
@@ -347,3 +353,143 @@ def retract_stolen_report(db: Session, *, ship: Ship, owner: Player) -> dict:
         "stolen_status": False,
         "refund": refund,
     }
+
+
+# --- Abandon / claim (ship-registry.md "Abandonment") ---------------------
+#
+# Trade (peer-to-peer sale) is NOT built here -- ship-registry.md's own
+# "Trading" section delegates the full protocol to ADR-0089, which already
+# ships a complete mutual-presence-gated ship-bundle trade session
+# (player_trade_service.PlayerTradeService._transfer_ship, wired at
+# src/api/routes/player_trade.py) that logs the SAME
+# RegistryEventType.OWNERSHIP_TRANSFER event this module uses. Re-verified
+# 2026-08-04: this page's own status banner claiming trade has "zero route
+# callers" is stale -- the ADR-0089 path is the real trade-transfer, live
+# today.
+#
+# Contested registration transfer / salvage-claim ("Legal ownership
+# transfer" -- 30% fee, 24h owner-dispute window) is deferred -- see this
+# module's docstring.
+
+
+def abandon_ship(db: Session, *, ship: Ship, owner: Player, port_id: UUID) -> dict:
+    """Voluntarily relinquish ownership of ``ship`` at a port (ship-registry.md
+    "Abandonment" steps 1-3). Ejects the owner to escape-pod state and marks
+    the ship Abandoned; ownership is NOT transferred yet -- the first later
+    claimant (see ``claim_abandoned_ship``) becomes the new registered owner.
+    Raises ``ShipRegistryError`` with the exact canon ERR_* code on rejection.
+    Flushes but does not commit -- the route owns the commit."""
+    if ship.registered_owner_id != owner.id:
+        raise ShipRegistryError(
+            "ERR_NOT_REGISTERED_OWNER", "Only the registered owner can abandon this ship.",
+        )
+    if ship.is_abandoned:
+        raise ShipRegistryError(
+            "ERR_ALREADY_ABANDONED", "This ship has already been abandoned.",
+        )
+    if not owner.is_docked or owner.current_port_id != port_id:
+        raise ShipRegistryError(
+            "ERR_NOT_AT_PORT", "You must be docked at this port to abandon the ship here.",
+        )
+    # "not currently Borrowed by someone else" (ship-registry.md "Abandonment"
+    # step 1). The owner themself piloting (or nobody piloting) is fine.
+    if ship.current_pilot_id is not None and ship.current_pilot_id != owner.id:
+        raise ShipRegistryError(
+            "ERR_SHIP_BORROWED", "This ship is currently borrowed and cannot be abandoned.",
+        )
+
+    now = datetime.now(timezone.utc)
+    ship.is_abandoned = True
+    ship.abandoned_at = now
+    ship.current_pilot_id = None
+    # Owner is "ejected to escape pod" (step 2) -- clears their active-ship
+    # pointer if this was the ship they were piloting; mirrors the eject
+    # flow's Player.current_ship_id clear (ship-registry.md "Eject and
+    # board"). Does not itself spawn an escape pod -- that's the existing
+    # eject mechanic's own concern (escape_pod_service), out of scope here;
+    # this only clears the pointer so the player isn't left referencing a
+    # ship they no longer control.
+    if owner.current_ship_id == ship.id:
+        owner.current_ship_id = None
+
+    append_registry_event(
+        db,
+        ship=ship,
+        event_type=RegistryEventType.ABANDONED,
+        previous_owner_id=owner.id,
+        acting_party_id=owner.id,
+        port_id=port_id,
+    )
+
+    return {
+        "ship_id": str(ship.id),
+        "is_abandoned": True,
+        "abandoned_at": now.isoformat(),
+    }
+
+
+def claim_abandoned_ship(db: Session, *, ship: Ship, claimant: Player, port_id: UUID) -> dict:
+    """The first player to dock at the port and claim an Abandoned ship
+    becomes its new registered owner -- no transfer fee, no dispute window
+    (ship-registry.md "Abandonment" step 4). Raises ``ShipRegistryError``
+    with the exact canon ERR_* code on rejection. Flushes but does not
+    commit -- the route owns the commit."""
+    if not ship.is_abandoned:
+        raise ShipRegistryError(
+            "ERR_NOT_ABANDONED", "This ship is not available to claim.",
+        )
+    if not claimant.is_docked or claimant.current_port_id != port_id:
+        raise ShipRegistryError(
+            "ERR_NOT_AT_PORT", "You must be docked at this port to claim the ship here.",
+        )
+
+    previous_owner_id = ship.registered_owner_id
+    now = datetime.now(timezone.utc)
+
+    ship.owner_id = claimant.id
+    ship.registered_owner_id = claimant.id
+    ship.is_abandoned = False
+    ship.abandoned_at = None
+    # Insurance from the previous owner voids on any ownership change
+    # (ship-registry.md "Insurance interaction"); mirrors player_trade_
+    # service._transfer_ship's identical clear on its own ownership-change
+    # path.
+    if ship.insurance is not None:
+        ship.insurance = None
+        flag_modified(ship, "insurance")
+
+    append_registry_event(
+        db,
+        ship=ship,
+        event_type=RegistryEventType.OWNERSHIP_TRANSFER,
+        original_owner_id=ship_registry_original_owner_id(db, ship),
+        previous_owner_id=previous_owner_id,
+        new_owner_id=claimant.id,
+        acting_party_id=claimant.id,
+        port_id=port_id,
+        transfer_fee_paid=0,
+        event_metadata={"via": "abandon_claim"},
+    )
+
+    return {
+        "ship_id": str(ship.id),
+        "registered_owner_id": str(claimant.id),
+        "claimed_at": now.isoformat(),
+    }
+
+
+def ship_registry_original_owner_id(db: Session, ship: Ship) -> Optional[UUID]:
+    """The ship's immutable ``original_owner_id`` (Invariant 2), read off its
+    own INITIAL_REGISTRATION row rather than re-derived -- mirrors
+    player_trade_service._transfer_ship's ``ship.registered_owner_id or
+    ship.owner_id or prev_id`` fallback intent but sources it from the
+    ledger itself, the one place that value is guaranteed immutable."""
+    row = (
+        db.query(ShipRegistry.original_owner_id)
+        .filter(
+            ShipRegistry.ship_id == ship.id,
+            ShipRegistry.event_type == RegistryEventType.INITIAL_REGISTRATION,
+        )
+        .first()
+    )
+    return row[0] if row is not None else ship.registered_owner_id

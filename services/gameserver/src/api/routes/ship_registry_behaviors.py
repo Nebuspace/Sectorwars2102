@@ -1,17 +1,20 @@
-"""Ship Registry behavioral routes -- report-stolen / retract-stolen-report.
+"""Ship Registry behavioral routes -- report-stolen / retract-stolen-report /
+abandon / claim.
 
-Canon: SYSTEMS/ship-registry.md "Reporting a ship stolen". WO-FIX-SHIP-
-REGISTRY-BEHAVIORAL-ROUTES: the first two of the six ownership-affecting
-events (report/retract/transfer/salvage/trade/abandon) get route callers
-here. transfer/salvage/trade/abandon are deferred -- each needs its own
-dispute-window scheduler / mutual-presence-at-port / real-credits-transfer
-surface, out of scope for this pass (see the dispatching WO's report).
+Canon: SYSTEMS/ship-registry.md "Reporting a ship stolen", "Abandonment".
+WO-FIX-SHIP-REGISTRY-BEHAVIORAL-ROUTES shipped report/retract-stolen.
+WO-FIX-SHIP-REGISTRY-TRANSFER-SALVAGE-TRADE-ABANDON adds abandon/claim here.
+Trade (peer-to-peer sale) is ADR-0089's ship-bundle trade session
+(src/api/routes/player_trade.py) -- not duplicated here, see
+ship_registry_service's module docstring. Contested registration transfer /
+salvage-claim is deferred -- see that module's docstring for why.
 
 Business logic lives in src.services.ship_registry_service -- this file is
 routing + locking + HTTP-shape translation only.
 """
 
 import logging
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -23,6 +26,8 @@ from src.models.player import Player
 from src.models.ship import Ship
 from src.services.ship_registry_service import (
     ShipRegistryError,
+    abandon_ship,
+    claim_abandoned_ship,
     report_stolen,
     retract_stolen_report,
 )
@@ -40,6 +45,10 @@ _CONFLICT_CODES = {
     "ERR_BOUNTY_ALREADY_COLLECTED",
     "ERR_THIEF_IS_TEAM_MATE",
     "ERR_INSUFFICIENT_CREDITS_FOR_AUTO_BOUNTY",
+    "ERR_ALREADY_ABANDONED",
+    "ERR_SHIP_BORROWED",
+    "ERR_NOT_ABANDONED",
+    "ERR_NOT_AT_PORT",
 }
 
 
@@ -112,4 +121,50 @@ async def retract_stolen_report_route(
         "Ship %s stolen report retracted by owner %s (refund=%s)",
         ship_id, player.id, result["refund"],
     )
+    return result
+
+
+class PortActionRequest(BaseModel):
+    port_id: UUID
+
+
+@router.post("/{ship_id}/abandon")
+async def abandon_ship_route(
+    ship_id: str,
+    request: PortActionRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    ship = _get_locked_ship(db, ship_id)
+
+    try:
+        result = abandon_ship(db, ship=ship, owner=player, port_id=request.port_id)
+    except ShipRegistryError as exc:
+        db.rollback()
+        _raise_for(exc)
+        return  # pragma: no cover -- _raise_for always raises
+
+    db.commit()
+    logger.info("Ship %s abandoned by owner %s at port %s", ship_id, player.id, request.port_id)
+    return result
+
+
+@router.post("/{ship_id}/claim")
+async def claim_abandoned_ship_route(
+    ship_id: str,
+    request: PortActionRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    ship = _get_locked_ship(db, ship_id)
+
+    try:
+        result = claim_abandoned_ship(db, ship=ship, claimant=player, port_id=request.port_id)
+    except ShipRegistryError as exc:
+        db.rollback()
+        _raise_for(exc)
+        return  # pragma: no cover -- _raise_for always raises
+
+    db.commit()
+    logger.info("Ship %s claimed by %s at port %s", ship_id, player.id, request.port_id)
     return result
