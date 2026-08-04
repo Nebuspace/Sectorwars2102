@@ -200,6 +200,47 @@ def _dispatch_combat_medals(db: Session, killer: Player, context: Dict[str, Any]
         logger.error("Combat medal dispatch hook failed: %s", e)
 
 
+def _dispatch_untouchable_medal(db: Session, player: Player, flawless_combats: int) -> None:
+    """Fire the medals-lane hook ``check_and_award_untouchable_medal`` after a
+    combat resolves without ``player`` losing their ship. Same defensive
+    getattr contract as ``_dispatch_combat_medals`` — a medal hiccup must
+    NEVER break combat resolution."""
+    try:
+        import src.services.medal_service as _medal_module
+        hook = getattr(_medal_module, "check_and_award_untouchable_medal", None)
+        if callable(hook):
+            hook(db, player, flawless_combats)
+    except Exception as e:  # never let a medal hiccup break combat
+        logger.error("Untouchable medal dispatch hook failed: %s", e)
+
+
+def _track_flawless_combat_streak(db: Session, player: Optional[Player], ship_destroyed: bool) -> None:
+    """combat.untouchable (2026-08-04 orchestrator ruling: STREAK, not a
+    lifetime cumulative count — "Untouchable" claims an unbroken run, so a
+    player who lost a ship once early and then fought flawlessly for 100
+    fights must not read the same as a genuine 100-fight unbroken streak).
+    Reset to 0 on ANY ship loss (this ship or any other combat context —
+    every ``*_ship_destroyed`` site for a real Player calls this); increment
+    on every combat resolved without one. Durable per-player JSONB counter
+    (mirrors ``beacons_placed_lifetime`` / ``drones_cleared_lifetime`` —
+    no live query can derive a streak retroactively). Defensive: never lets
+    a counter hiccup break combat resolution."""
+    if player is None:
+        return
+    try:
+        settings = dict(player.settings or {})
+        if ship_destroyed:
+            settings["flawless_combats"] = 0
+        else:
+            settings["flawless_combats"] = int(settings.get("flawless_combats", 0) or 0) + 1
+        player.settings = settings
+        flag_modified(player, "settings")
+        if not ship_destroyed:
+            _dispatch_untouchable_medal(db, player, settings["flawless_combats"])
+    except Exception as e:
+        logger.error("Failed to track flawless-combat streak for %s: %s", getattr(player, "id", "?"), e)
+
+
 def _dispatch_bounty_medals(db: Session, collector_id) -> None:
     """Fire the medals-lane bounty hook
     ``medal_service.check_and_award_bounty_medals(db, collector_id)`` after a
@@ -1020,6 +1061,9 @@ class CombatService:
             self._transfer_quantum_wallet(victor=defender, victim=attacker)
             self._handle_ship_destruction(attacker, defender, "combat")
 
+        _track_flawless_combat_streak(self.db, defender, combat_result["defender_ship_destroyed"])
+        _track_flawless_combat_streak(self.db, attacker, combat_result["attacker_ship_destroyed"])
+
         # Update drone counts
         if combat_result["attacker_drones_lost"] > 0:
             attacker.attack_drones = max(0, attacker.attack_drones - combat_result["attacker_drones_lost"])
@@ -1820,6 +1864,8 @@ class CombatService:
         if combat_result["attacker_ship_destroyed"]:
             self._handle_ship_destruction(attacker, None, "combat")
 
+        _track_flawless_combat_streak(self.db, attacker, combat_result["attacker_ship_destroyed"])
+
         # Update attacker drone count
         if combat_result["attacker_drones_lost"] > 0:
             attacker.attack_drones = max(0, attacker.attack_drones - combat_result["attacker_drones_lost"])
@@ -2034,6 +2080,8 @@ class CombatService:
         if combat_result["defender_ship_destroyed"]:
             self._handle_ship_destruction(defender, None, "npc_combat")
 
+        _track_flawless_combat_streak(self.db, defender, combat_result["defender_ship_destroyed"])
+
         if combat_result["attacker_ship_destroyed"]:
             npc_ship.is_destroyed = True
             npc_ship.is_active = False
@@ -2204,6 +2252,8 @@ class CombatService:
         if combat_result["attacker_ship_destroyed"]:
             self._handle_ship_destruction(attacker, None, "drone_combat")
 
+        _track_flawless_combat_streak(self.db, attacker, combat_result["attacker_ship_destroyed"])
+
         # Update attacker's carried drone count if any were lost
         if combat_result["attacker_drones_lost"] > 0:
             attacker.attack_drones = max(
@@ -2363,7 +2413,9 @@ class CombatService:
         # Apply combat effects
         if combat_result["attacker_ship_destroyed"]:
             self._handle_ship_destruction(attacker, None, "planet_defense")
-        
+
+        _track_flawless_combat_streak(self.db, attacker, combat_result["attacker_ship_destroyed"])
+
         # Update drone counts
         if combat_result["attacker_drones_lost"] > 0:
             attacker.attack_drones = max(0, attacker.attack_drones - combat_result["attacker_drones_lost"])
@@ -2533,7 +2585,9 @@ class CombatService:
         # Apply combat effects
         if combat_result["attacker_ship_destroyed"]:
             self._handle_ship_destruction(attacker, None, "port_defense")
-        
+
+        _track_flawless_combat_streak(self.db, attacker, combat_result["attacker_ship_destroyed"])
+
         # Update drone counts
         if combat_result["attacker_drones_lost"] > 0:
             attacker.attack_drones = max(0, attacker.attack_drones - combat_result["attacker_drones_lost"])

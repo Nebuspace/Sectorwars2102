@@ -748,6 +748,29 @@ def check_and_award_combat_medals(
         return []
 
 
+def check_and_award_untouchable_medal(
+    db: Session,
+    player: Player,
+    flawless_combats: int,
+) -> List[str]:
+    """combat.untouchable dispatcher (2026-08-04 orchestrator ruling: the
+    counter is a STREAK, reset to 0 on any ship loss — see
+    ``combat_service._track_flawless_combat_streak``, the durable per-player
+    JSONB counter this reads). Defensive — NEVER raises into the combat lane.
+    """
+    try:
+        if player is None:
+            return []
+        return _evaluate_and_award(
+            db, player.id, "flawless_combats", int(flawless_combats or 0),
+            source_event_key="combat.flawless",
+            awarded_via="combat",
+        )
+    except Exception as e:  # defensive: never break combat
+        logger.error("check_and_award_untouchable_medal failed for %s: %s", getattr(player, "id", "?"), e)
+        return []
+
+
 def check_and_award_trade_medals(
     db: Session,
     player: Player,
