@@ -73,6 +73,74 @@ def apply_wanted_event(db: Session, player: Player, *, now: Optional[datetime] =
     return first_acquisition
 
 
+def _is_piloting_stolen_ship(db: Session, player: Player) -> bool:
+    """True iff ``player`` is the current pilot of any ``Ship`` with
+    ``stolen_status = True`` (ship-registry.md "Wanted Status (pilot of a
+    stolen ship)"). A live query rather than a cached flag -- the pilot
+    relationship changes at several independent write sites (ship purchase,
+    ``set-active``, eject/escape-pod) and re-deriving from ``Ship`` is the
+    single source of truth ``sync_current_pilot`` already maintains."""
+    from src.models.ship import Ship
+
+    return (
+        db.query(Ship.id)
+        .filter(Ship.current_pilot_id == player.id, Ship.stolen_status.is_(True))
+        .first()
+        is not None
+    )
+
+
+# personal_reputation threshold below which the reputation-based Wanted
+# trigger fires (ranking.md "Villain / Criminal tiers", DATA_MODELS/
+# player.md wanted-trigger union). Auto-clears on recovery >= this value.
+WANTED_REPUTATION_THRESHOLD = -500
+
+
+def recompute_is_wanted(db: Session, player: Player, *, now: Optional[datetime] = None) -> bool:
+    """Single source of truth for ``Player.is_wanted``, OR-ing the three
+    documented triggers (ranking.md "Wanted status" trigger set): (1) the
+    Severe black-market-bust timer (``wanted_until``), (2) piloting a
+    stolen-flagged ship, (3) ``personal_reputation < WANTED_REPUTATION_
+    THRESHOLD``. Any ONE live trigger keeps ``is_wanted`` True; ``is_wanted``
+    only clears once ALL three are false, so e.g. a reputation recovery
+    while still piloting a stolen ship correctly stays Wanted.
+
+    Call after anything that changes one of the three underlying signals:
+    a stolen report filed/retracted (``ship_registry_service``), a
+    reputation adjustment (``personal_reputation_service``), or a pilot
+    change on a stolen ship (the daily stolen-ship rep-penalty sweep, which
+    already iterates exactly this candidate set).
+
+    ``wanted_declared_at`` is stamped only on a true first-acquisition
+    (mirrors ``apply_wanted_event``/``suspect_declared_at``'s contract) and
+    left untouched while already-Wanted from a different trigger. FLUSH
+    only -- the caller owns commit. Returns True iff this call flipped
+    ``is_wanted`` (either direction)."""
+    now = _now(now)
+    bust_active = is_live_wanted(player, now=now)
+    stolen_active = _is_piloting_stolen_ship(db, player)
+    rep_active = (
+        player.personal_reputation is not None
+        and player.personal_reputation < WANTED_REPUTATION_THRESHOLD
+    )
+    should_be_wanted = bust_active or stolen_active or rep_active
+
+    if should_be_wanted and not player.is_wanted:
+        player.is_wanted = True
+        player.wanted_declared_at = now
+        return True
+
+    if not should_be_wanted and player.is_wanted:
+        player.is_wanted = False
+        player.wanted_declared_at = None
+        # wanted_until is left alone here on purpose: a live bust timer is
+        # one of the OR terms above, so should_be_wanted is already False
+        # only once wanted_until has elapsed (or was never set).
+        return True
+
+    return False
+
+
 def clear_expired_wanted(db: Session, *, now: Optional[datetime] = None) -> int:
     """Auto-clear sweep, mirrors ``suspect_service.clear_expired_suspects``.
     Clears ``is_wanted``, ``wanted_until``, and ``wanted_declared_at`` for
@@ -104,7 +172,9 @@ def clear_expired_wanted(db: Session, *, now: Optional[datetime] = None) -> int:
 
 __all__ = [
     "WANTED_DURATION",
+    "WANTED_REPUTATION_THRESHOLD",
     "is_live_wanted",
     "apply_wanted_event",
     "clear_expired_wanted",
+    "recompute_is_wanted",
 ]

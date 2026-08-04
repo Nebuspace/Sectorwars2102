@@ -22,6 +22,7 @@ from src.models.player import Player
 from src.models.ship import Ship, ShipSpecification
 from src.models.ship_registry import RegistryEventType, ShipRegistry, generate_registration_number
 from src.services.bounty_service import BountyService
+from src.services.wanted_service import recompute_is_wanted
 
 # 50% of the ship's last appraised value (ship-registry.md "Reporting a ship
 # stolen" effects #5). ``Ship.purchase_value`` is this codebase's existing
@@ -212,6 +213,24 @@ def report_stolen(
     ship.stolen_bounty_ref = bounty_ref
     ship.retract_grace_processed = False
 
+    # Wanted-trigger (ranking.md "Wanted status"): "the current pilot (if
+    # any) immediately enters Wanted Status" -- fired here, not deferred to
+    # a sweep, since the pilot is already known and (when a bounty was
+    # placed above) already row-locked. populate_existing() re-reads that
+    # possibly-already-locked row rather than trusting a stale identity-map
+    # copy; with_for_update() is a safe re-lock if place_bounty didn't run
+    # (no_bounty mode, or thief_id is None/the owner themself).
+    if thief_id is not None:
+        thief_player = (
+            db.query(Player)
+            .filter(Player.id == thief_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if thief_player is not None:
+            recompute_is_wanted(db, thief_player, now=now)
+
     append_registry_event(
         db,
         ship=ship,
@@ -307,6 +326,21 @@ def retract_stolen_report(db: Session, *, ship: Ship, owner: Player) -> dict:
     ship.stolen_thief_id = None
     ship.stolen_bounty_ref = None
     ship.retract_grace_processed = False
+
+    # Wanted-trigger reconciliation: the stolen-piloting condition just
+    # cleared for this ship; recompute rather than blind-clear so the thief
+    # correctly stays Wanted if the reputation trigger (or an unrelated
+    # bust timer) still applies.
+    if thief_id is not None:
+        thief_player = (
+            db.query(Player)
+            .filter(Player.id == thief_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if thief_player is not None:
+            recompute_is_wanted(db, thief_player, now=now)
 
     return {
         "ship_id": str(ship.id),

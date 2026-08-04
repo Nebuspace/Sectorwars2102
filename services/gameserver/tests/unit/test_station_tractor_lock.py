@@ -42,7 +42,7 @@ import pytest
 from sqlalchemy import inspect as sa_inspect
 
 from src.models.player import Player
-from src.models.ship import ShipType
+from src.models.ship import Ship, ShipType
 from src.models.station import Station
 from src.services import station_security_service as sts
 from src.services.station_security_service import StationSecurityError
@@ -93,6 +93,11 @@ def _fake_player(**overrides):
         current_ship=None,
         is_docked=True,
         current_port_id=None,
+        # WO-BUILD-WANTED-TRIGGERS-STOLEN-SHIP-LOW-REP: adjust_reputation
+        # now calls wanted_service.recompute_is_wanted, which reads these.
+        is_wanted=False,
+        wanted_until=None,
+        wanted_declared_at=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -132,6 +137,12 @@ class _FakeSession:
             return _FakeQuery(self._station)
         if model is Player:
             return _FakeQuery(self._player)
+        if model is Ship.id:
+            # wanted_service._is_piloting_stolen_ship, reached via
+            # PersonalReputationService.adjust_reputation's recompute call.
+            # None: surrender's own reputation-penalty tests don't exercise
+            # the stolen-ship trigger.
+            return _FakeQuery(None)
         raise AssertionError(f"unexpected query for {model!r}")
 
     def add(self, obj):

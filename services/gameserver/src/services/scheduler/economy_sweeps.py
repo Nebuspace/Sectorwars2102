@@ -609,6 +609,18 @@ def _run_stolen_ship_rep_penalty_sweep_sync() -> Dict[str, int]:
                     result["pilots"] += 1
                     result["total_penalty"] += STOLEN_SHIP_REP_PENALTY_PER_DAY
 
+                # Wanted-trigger backstop: report_stolen/retract_stolen_
+                # report already recompute this player's is_wanted
+                # immediately on file/retract. This daily pass is the
+                # backstop for the OTHER way the stolen-piloting condition
+                # can change -- the pilot switching away from the stolen
+                # hull to a different ship (no dedicated writer for that
+                # today; see ship_service.sync_current_pilot) -- so a
+                # departed pilot's Wanted flag doesn't persist past this
+                # sweep's cadence once no longer piloting.
+                from src.services.wanted_service import recompute_is_wanted
+                recompute_is_wanted(db, player)
+
                 if player.settings is None:
                     player.settings = {}
                 player.settings[STOLEN_SHIP_REP_PENALTY_PERIOD_KEY] = int(period)

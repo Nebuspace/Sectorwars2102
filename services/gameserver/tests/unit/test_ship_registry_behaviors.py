@@ -36,18 +36,30 @@ class _FakeQuery:
     def filter(self, *args, **kwargs):
         return self
 
+    def populate_existing(self):
+        return self
+
+    def with_for_update(self):
+        return self
+
     def first(self):
         return self._result
 
 
 class _FakeSession:
     """Routes db.query(Entity) to a canned result per entity class -- not a
-    general-purpose fake, mirrors this file's sibling test's own convention."""
+    general-purpose fake, mirrors this file's sibling test's own convention.
 
-    def __init__(self, *, ship_spec=None, thief=None, bounty_claim=None):
+    ``other_stolen_pilot_id`` feeds ``wanted_service._is_piloting_stolen_ship``
+    (queries ``Ship.id``, an InstrumentedAttribute, not the ``Ship`` class --
+    matched separately below): None means "not piloting any stolen ship" for
+    every player, matching every existing test's implicit expectation."""
+
+    def __init__(self, *, ship_spec=None, thief=None, bounty_claim=None, still_piloting_stolen=False):
         self._ship_spec = ship_spec
         self._thief = thief
         self._bounty_claim = bounty_claim
+        self._still_piloting_stolen = still_piloting_stolen
         self.added = []
 
     def query(self, entity):
@@ -57,6 +69,9 @@ class _FakeSession:
             return _FakeQuery(self._thief)
         if entity is BountyClaim:
             return _FakeQuery(self._bounty_claim)
+        if entity is Ship.id:
+            # wanted_service._is_piloting_stolen_ship's live-query hook.
+            return _FakeQuery(uuid.uuid4() if self._still_piloting_stolen else None)
         raise AssertionError(f"unexpected query entity in fake session: {entity!r}")
 
     def add(self, obj):
@@ -353,3 +368,76 @@ class TestRetractStolenReport:
         assert _FakeBountyService.last_instance is None
         assert result["refund"] == 0
         assert ship.stolen_status is False
+
+
+@pytest.mark.unit
+class TestWantedTriggerWiring:
+    """WO-BUILD-WANTED-TRIGGERS-STOLEN-SHIP-LOW-REP: ranking.md's stolen-
+    ship Wanted trigger, fired via ``wanted_service.recompute_is_wanted``
+    from inside ``report_stolen``/``retract_stolen_report``."""
+
+    def test_report_stolen_flips_thief_is_wanted(self):
+        owner = _owner()
+        thief_id = uuid.uuid4()
+        thief = Player(id=thief_id, team_id=None, is_wanted=False, personal_reputation=0)
+        ship = _ship(owner=owner, pilot_id=thief_id)
+        # still_piloting_stolen=True: mirrors real-DB autoflush -- the
+        # in-flight `ship.stolen_status = True` mutation just above (still
+        # pending, not yet flushed) is visible to recompute_is_wanted's own
+        # query in the same session (autoflush=True by default), so the
+        # ship this thief is piloting right now IS found as stolen.
+        db = _FakeSession(thief=thief, still_piloting_stolen=True)
+
+        report_stolen(db, ship=ship, owner=owner, recovery_mode="no_bounty")
+
+        assert thief.is_wanted is True
+        assert thief.wanted_declared_at is not None
+        # Not the timer-based trigger -- wanted_until stays untouched (None).
+        assert thief.wanted_until is None
+
+    def test_report_stolen_with_no_current_pilot_does_not_query_or_flip_anyone(self):
+        owner = _owner()
+        ship = _ship(owner=owner, pilot_id=None)
+        db = _FakeSession(thief=None)
+
+        result = report_stolen(db, ship=ship, owner=owner, recovery_mode="no_bounty")
+
+        assert result["ship_id"] == str(ship.id)  # ran to completion, no unexpected query
+
+    def test_retract_clears_is_wanted_once_no_longer_stolen(self):
+        owner = _owner()
+        thief_id = uuid.uuid4()
+        thief = Player(id=thief_id, team_id=None, is_wanted=True, personal_reputation=0)
+        ship = self._make_stolen_for_retract(owner=owner, thief_id=thief_id)
+        db = _FakeSession(bounty_claim=None, thief=thief, still_piloting_stolen=False)
+
+        retract_stolen_report(db, ship=ship, owner=owner)
+
+        assert thief.is_wanted is False
+        assert thief.wanted_declared_at is None
+
+    def test_retract_keeps_is_wanted_if_low_reputation_still_applies(self):
+        """OR-combination: retracting the stolen report clears the STOLEN
+        trigger, but the thief stays Wanted if personal_reputation < -500
+        independently qualifies (ranking.md's trigger union)."""
+        owner = _owner()
+        thief_id = uuid.uuid4()
+        thief = Player(id=thief_id, team_id=None, is_wanted=True, personal_reputation=-600)
+        ship = self._make_stolen_for_retract(owner=owner, thief_id=thief_id)
+        db = _FakeSession(bounty_claim=None, thief=thief, still_piloting_stolen=False)
+
+        retract_stolen_report(db, ship=ship, owner=owner)
+
+        assert thief.is_wanted is True  # still Wanted via the reputation trigger
+
+    @staticmethod
+    def _make_stolen_for_retract(*, owner, thief_id):
+        return _ship(
+            owner=owner,
+            pilot_id=thief_id,
+            stolen_status=True,
+            stolen_reported_at=datetime.now(timezone.utc),
+            stolen_recovery_mode="no_bounty",
+            stolen_thief_id=thief_id,
+            stolen_bounty_ref=None,
+        )
