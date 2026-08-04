@@ -105,7 +105,7 @@ from src.models.reputation import Reputation, ReputationLevel
 from src.models.sector import Sector
 from src.models.ship import Ship
 from src.models.station import Station, StationType
-from src.services import suspect_service
+from src.services import suspect_service, wanted_service
 from src.services.faction_service import apply_faction_rep_delta
 
 logger = logging.getLogger(__name__)
@@ -1235,9 +1235,11 @@ class ContrabandService:
         is identical either way (WO-K2)."""
         now = datetime.now(UTC)
         if severity in WANTED_SEVERITIES:
-            if not player.is_wanted:
-                player.is_wanted = True
-                player.wanted_declared_at = now
+            # WO-BUILD-WANTED-UNTIL-TIMER: refreshes wanted_until to a flat
+            # 24h window (wanted_service.WANTED_DURATION) so this trigger
+            # auto-clears — previously is_wanted was set once here and NEVER
+            # cleared (a standing bug; see wanted_service module docstring).
+            wanted_service.apply_wanted_event(db, player, now=now)
             # A wanted player is implicitly also a suspect -- same lifecycle event.
             suspect_service.apply_suspect_event(db, player, reason=reason, now=now)
             return "wanted"

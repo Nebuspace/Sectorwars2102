@@ -137,6 +137,14 @@ class Player(Base):
     # (src.services.suspect_service.clear_expired_suspects).
     suspect_until = Column(DateTime(timezone=True), nullable=True)
     suspect_team_snapshot = Column(ARRAY(UUID(as_uuid=True)), nullable=True)
+    # WO-BUILD-WANTED-UNTIL-TIMER (2026-08-04). Fixed-duration auto-clear
+    # timestamp, but ONLY for the black-market Severe-bust Wanted trigger
+    # (src.services.wanted_service) -- the stolen-ship and reputation-
+    # recovery triggers (ranking.md#wanted-status) auto-clear on their own
+    # condition and never touch this column. Parallel field to
+    # suspect_until. NULL when not Wanted, or Wanted via a condition-based
+    # trigger.
+    wanted_until = Column(DateTime(timezone=True), nullable=True)
     # Grey-flag PvP status (WO-BL, Max-ruled). A temporary "open season" mark
     # earned by aggressing on a lawful target:
     #   - attacking a GOOD-STANDING player → grey 1h (grey_kind="player_attack");

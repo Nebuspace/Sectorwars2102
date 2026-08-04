@@ -77,6 +77,8 @@ from src.services.scheduler.economy_sweeps import (
     _run_bounty_accrual_sweep_sync,
     _run_stolen_ship_rep_penalty_sweep_sync,
     _run_bounty_expire_sweep_sync,
+    _run_suspect_clear_sweep_sync,
+    _run_wanted_clear_sweep_sync,
     _run_port_operating_costs_sync,
     _run_station_recovery_sync,
     _run_reclaim_flag_sweep_sync,
@@ -985,6 +987,35 @@ async def _npc_scheduler_main_loop() -> None:
             raise
         except Exception:
             logger.exception("NPC scheduler: bounty expiry sweep crashed (loop continues)")
+
+        # Suspect auto-clear sweep (ships.md:293 "auto-clears at suspect_until")
+        # — WO-CMB-SUSPECT-LIFE-1 left this wiring out explicitly (see
+        # suspect_service.py's module docstring); closing it here.
+        try:
+            suspect_cleared = await asyncio.to_thread(_run_suspect_clear_sweep_sync)
+            if suspect_cleared:
+                logger.info(
+                    "NPC scheduler: suspect clear sweep — cleared %d player(s)",
+                    suspect_cleared,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("NPC scheduler: suspect clear sweep crashed (loop continues)")
+
+        # Wanted auto-clear sweep (WO-BUILD-WANTED-UNTIL-TIMER) — same
+        # no-gate treatment as the suspect sweep directly above.
+        try:
+            wanted_cleared = await asyncio.to_thread(_run_wanted_clear_sweep_sync)
+            if wanted_cleared:
+                logger.info(
+                    "NPC scheduler: wanted clear sweep — cleared %d player(s)",
+                    wanted_cleared,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("NPC scheduler: wanted clear sweep crashed (loop continues)")
 
         # Suspect auto-clear sweep (WO-CMB-SUSPECT-LIFE-1 held wiring) —
         # ships.md:293's "auto-clears at suspect_until" guarantee needed a

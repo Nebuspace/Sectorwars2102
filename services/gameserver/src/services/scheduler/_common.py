@@ -580,6 +580,15 @@ SUSPECT_CLEAR_SWEEP_SECONDS = int(
     os.environ.get("SUSPECT_CLEAR_SWEEP_SECONDS", str(5 * 60))
 )
 
+# Wanted auto-clear sweep (WO-BUILD-WANTED-UNTIL-TIMER) —
+# wanted_service.clear_expired_wanted. Same cadence rationale as the
+# suspect sweep directly above (Wanted is the stronger flag but shares the
+# same "reasonably prompt, not hammering every 60s wake" tradeoff).
+_WANTED_CLEAR_STATE_KEY = "wanted_clear_last_run_at"
+WANTED_CLEAR_SWEEP_SECONDS = int(
+    os.environ.get("WANTED_CLEAR_SWEEP_SECONDS", str(5 * 60))
+)
+
 # Team-reputation recalculation sweep (WO-RT-TEAM-REP held wiring) —
 # team_reputation_service.sweep_due_team_reputations.
 # RECALCULATION_INTERVAL (team_reputation_service.py) is 1 day; checking
@@ -737,6 +746,10 @@ _RETENTION_SWEEP_LOCK_KEY = _mnemonic_lock_key("RETN")
 # instances double-flushing the same rows in the same instant, not for
 # correctness.
 _SUSPECT_CLEAR_LOCK_KEY = _mnemonic_lock_key("SUSP")
+# Wanted auto-clear sweep (WO-BUILD-WANTED-UNTIL-TIMER) — own key so a
+# second gameserver instance can't double-flush the same expired rows.
+# 'WANT' = WANTed clear.
+_WANTED_CLEAR_LOCK_KEY = _mnemonic_lock_key("WANT")
 # Pirate-ecosystem weekly growth + evolution tick sweep (WO-PIRATE-ECO-2
 # held wiring) — own key; covers the whole per-region growth + per-holding
 # evolution pass in one lock (mirrors the citizen-rebake sweep's own

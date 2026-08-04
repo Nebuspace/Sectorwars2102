@@ -39,6 +39,12 @@ from src.services.scheduler._common import (
     _BOUNTY_EXPIRE_LOCK_KEY,
     _BOUNTY_EXPIRE_STATE_KEY,
     BOUNTY_EXPIRE_SWEEP_SECONDS,
+    _SUSPECT_CLEAR_LOCK_KEY,
+    _SUSPECT_CLEAR_STATE_KEY,
+    SUSPECT_CLEAR_SWEEP_SECONDS,
+    _WANTED_CLEAR_LOCK_KEY,
+    _WANTED_CLEAR_STATE_KEY,
+    WANTED_CLEAR_SWEEP_SECONDS,
     _sweep_due_and_advance,
     canonical_day_number,
 )
@@ -662,6 +668,73 @@ def _run_bounty_expire_sweep_sync() -> Dict[str, int]:
         logger.exception("Bounty expire sweep failed")
         db.rollback()
         return {"expired": 0, "total_refunded": 0}
+    finally:
+        db.close()
+
+
+def _run_suspect_clear_sweep_sync() -> int:
+    """Auto-clear every Suspect flag past its ``suspect_until`` (WO-CMB-
+    SUSPECT-LIFE-1 held wiring, closed here). Thin session/lock/due-check
+    wrapper — the pure, testable logic is
+    ``suspect_service.clear_expired_suspects`` (mirrors
+    ``_run_bounty_expire_sweep_sync`` exactly). Lock acquired FIRST, only a
+    successful acquirer proceeds to the due-check."""
+    from src.core.database import SessionLocal
+    from src.services import suspect_service
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _SUSPECT_CLEAR_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            logger.info("NPC scheduler: suspect clear sweep — lock busy, skipped")
+            return 0
+        if not _sweep_due_and_advance(
+            db, _SUSPECT_CLEAR_STATE_KEY, SUSPECT_CLEAR_SWEEP_SECONDS, datetime.now(UTC),
+        ):
+            return 0
+        cleared = suspect_service.clear_expired_suspects(db, now=datetime.now(UTC))
+        db.commit()
+        return cleared
+    except Exception:
+        logger.exception("Suspect clear sweep failed")
+        db.rollback()
+        return 0
+    finally:
+        db.close()
+
+
+def _run_wanted_clear_sweep_sync() -> int:
+    """Auto-clear every Wanted flag past its ``wanted_until`` (WO-BUILD-
+    WANTED-UNTIL-TIMER). Thin session/lock/due-check wrapper — the pure,
+    testable logic is ``wanted_service.clear_expired_wanted`` (mirrors
+    ``_run_suspect_clear_sweep_sync`` directly above). Lock acquired FIRST,
+    only a successful acquirer proceeds to the due-check."""
+    from src.core.database import SessionLocal
+    from src.services import wanted_service
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _WANTED_CLEAR_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            logger.info("NPC scheduler: wanted clear sweep — lock busy, skipped")
+            return 0
+        if not _sweep_due_and_advance(
+            db, _WANTED_CLEAR_STATE_KEY, WANTED_CLEAR_SWEEP_SECONDS, datetime.now(UTC),
+        ):
+            return 0
+        cleared = wanted_service.clear_expired_wanted(db, now=datetime.now(UTC))
+        db.commit()
+        return cleared
+    except Exception:
+        logger.exception("Wanted clear sweep failed")
+        db.rollback()
+        return 0
     finally:
         db.close()
 
