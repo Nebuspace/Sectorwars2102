@@ -341,9 +341,14 @@ class TestDispatchTerminatedCleanup:
         )
         session = FakeRegionLifecycleSession(regions=[region])
         station_calls = []
+        gate_calls = []
         monkeypatch.setattr(
             region_lifecycle_service, "dispatch_station_termination",
             lambda db, region_id: station_calls.append(region_id) or {"station_relocation_eligible": 0},
+        )
+        monkeypatch.setattr(
+            region_lifecycle_service, "cascade_region_gate_teardown",
+            lambda db, region_id: gate_calls.append(region_id) or {"gates_destroyed": 0},
         )
 
         result = region_lifecycle_service.dispatch_terminated_cleanup(session, now=_NOW)
@@ -352,6 +357,7 @@ class TestDispatchTerminatedCleanup:
         assert region.status == RegionStatus.TERMINATED  # cleanup doesn't change status
         assert region.cleanup_completed_at == _NOW  # idempotency marker stamped
         assert station_calls == [region.id]  # cascade dispatched for the right region
+        assert gate_calls == [region.id]  # ADR-0052 SK38 gate teardown dispatched for the right region
 
     def test_already_cleaned_up_region_excluded(self, monkeypatch) -> None:
         """The idempotency guard: a region already stamped is never

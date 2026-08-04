@@ -26,7 +26,7 @@ the caller (economy_governance_sweeps._run_region_lifecycle_advance_gated,
 Phase 7 of the daily governance sweep) owns the commit.
 """
 import logging
-from datetime import datetime, timedelta, UTC
+from datetime import UTC, datetime, timedelta
 from typing import Dict, Optional
 
 from sqlalchemy import update
@@ -38,6 +38,7 @@ from src.services.region_termination_cascade_service import (
     dispatch_station_termination,
     process_planet_termination,
 )
+from src.services.warp_gate_service import cascade_region_gate_teardown
 
 logger = logging.getLogger(__name__)
 
@@ -125,10 +126,15 @@ def dispatch_terminated_cleanup(db: Session, now: Optional[datetime] = None) -> 
     reduced-scope cascade (WO-BUILD-REGION-LIFECYCLE-CLEANUP-CASCADE,
     commit bae0abcf) against each eligible region's planets and stations:
     ``process_planet_termination`` per planet (planet-safe transport +
-    Genesis compensation) and ``dispatch_station_termination`` for the
-    region as a whole (still a discovery-only stub there pending the
+    Genesis compensation), ``dispatch_station_termination`` for the region
+    as a whole (still a discovery-only stub there pending the
     acquisition_cost/upgrade-capital blocker documented in that module --
-    this dispatch does not change that module's own scope).
+    this dispatch does not change that module's own scope), and
+    ``cascade_region_gate_teardown`` (ADR-0052 SK38) to tear down every
+    player-built warp gate with an endpoint in the region. ADR-0052 SK38
+    states no ordering dependency between the gate cascade and the
+    planet/station cascade -- each processes a disjoint entity type -- so
+    the gate teardown runs alongside them in the same per-region pass.
 
     Gated on ``Region.cleanup_completed_at IS NULL`` and sets it to ``now``
     once a region's cascade has been dispatched, so a region is processed
@@ -156,6 +162,7 @@ def dispatch_terminated_cleanup(db: Session, now: Optional[datetime] = None) -> 
         for planet in planets:
             process_planet_termination(db, planet, now=now)
         dispatch_station_termination(db, region.id)
+        cascade_region_gate_teardown(db, region.id)
         region.cleanup_completed_at = now
         logger.info(
             "region_lifecycle: dispatched cleanup cascade for region %s "
