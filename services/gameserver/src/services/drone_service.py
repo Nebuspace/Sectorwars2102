@@ -323,6 +323,22 @@ class DroneService:
                 f"at most {max_drones} drone(s) (you have {deployed} deployed)."
             )
 
+        # combat.md § Sector control: one player per sector. Own additional
+        # or redeployed drones in the same sector are fine; another player's
+        # active deployment blocks. Checked before the turn debit so a
+        # rejected exclusive deploy never spends turns.
+        rival = await self.session.execute(
+            select(DroneDeployment.id).where(and_(
+                DroneDeployment.sector_id == sector_id,
+                DroneDeployment.is_active == True,
+                DroneDeployment.player_id != drone.player_id,
+            )).limit(1)
+        )
+        if rival.scalar_one_or_none() is not None:
+            raise ValueError(
+                "Sector already defended by another player's drones"
+            )
+
         # turns.md:87 — checked (and cleanly rejected, before any state
         # mutation or debit) using the same "Not enough turns ... Need N, have
         # M" shape as quantum_service/slipdrive_service's exception-raising

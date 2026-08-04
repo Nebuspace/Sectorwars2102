@@ -144,15 +144,27 @@ class _DeploySession:
     get (Drone) -> execute (lock, now the FULL Player row) -> run_sync
     (regenerate_turns bridge) -> get (Player, inside _get_max_drones)
     -> get (Ship) -> execute (max_drones) -> execute (deployed count)
-    -> [execute (prior deployment) -> add/commit/refresh on success].
+    -> execute (rival exclusive-sector check) -> [execute (prior deployment)
+    -> add/commit/refresh on success].
     """
 
-    def __init__(self, *, drone, player, ship, max_drones, deployed_count, prior_deployment=None):
+    def __init__(
+        self,
+        *,
+        drone,
+        player,
+        ship,
+        max_drones,
+        deployed_count,
+        prior_deployment=None,
+        rival_deployment_id=None,
+    ):
         self.get = AsyncMock(side_effect=[drone, player, ship])
         self.execute = AsyncMock(side_effect=[
             _result(scalar_one_or_none=player),                   # lock check (full Player, WO-PROG-TURN-COSTS)
             _result(scalar_one_or_none=max_drones),               # ShipSpecification.max_drones
             _result(scalar=deployed_count),                       # _count_deployed_drones
+            _result(scalar_one_or_none=rival_deployment_id),      # one-player-per-sector
             _result(scalar_one_or_none=prior_deployment),         # prior active deployment
         ])
         # AsyncSession.run_sync(fn, *args) -> fn(sync_session, *args). These
@@ -215,6 +227,54 @@ async def test_deploy_drone_redeploy_excludes_self_from_cap():
     # deployed_count as returned by _count_deployed_drones already excludes
     # this drone (exclude_drone_id=drone_id) — 0 other fielded drones, cap 1.
     db = _DeploySession(drone=drone, player=player, ship=ship, max_drones=1, deployed_count=0)
+    service = DroneService(db)
+
+    deployment = await service.deploy_drone(drone_id=drone.id, sector_id=uuid.uuid4())
+
+    assert deployment.drone_id == drone.id
+    db.add.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_deploy_drone_rejects_when_another_player_holds_sector():
+    """combat.md one-player-per-sector: rival active deployment blocks deploy
+    before any turn debit or mutation."""
+    player = _player(current_ship_id=uuid.uuid4())
+    ship = _ship()
+    drone = _drone(player.id, status=DroneStatus.IDLE.value)
+    db = _DeploySession(
+        drone=drone,
+        player=player,
+        ship=ship,
+        max_drones=2,
+        deployed_count=0,
+        rival_deployment_id=uuid.uuid4(),
+    )
+    service = DroneService(db)
+
+    with pytest.raises(ValueError, match="already defended by another player"):
+        await service.deploy_drone(drone_id=drone.id, sector_id=uuid.uuid4())
+
+    db.add.assert_not_called()
+    db.commit.assert_not_awaited()
+    assert player.turns == 100  # _player default; no debit on exclusive reject
+
+
+@pytest.mark.asyncio
+async def test_deploy_drone_allows_when_only_own_deployments_in_sector():
+    """Same player's existing active deployment does not trip the exclusive
+    gate — only a different player_id does."""
+    player = _player(current_ship_id=uuid.uuid4())
+    ship = _ship()
+    drone = _drone(player.id, status=DroneStatus.IDLE.value)
+    db = _DeploySession(
+        drone=drone,
+        player=player,
+        ship=ship,
+        max_drones=2,
+        deployed_count=1,
+        rival_deployment_id=None,
+    )
     service = DroneService(db)
 
     deployment = await service.deploy_drone(drone_id=drone.id, sector_id=uuid.uuid4())

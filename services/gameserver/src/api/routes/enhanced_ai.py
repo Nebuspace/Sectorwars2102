@@ -97,6 +97,26 @@ class ConversationRequest(BaseModel):
         return v
 
 
+class TradeCascadeRequest(BaseModel):
+    """Request model for ARIA multi-hop trade cascade planning."""
+    start_sector_id: str = Field(
+        ...,
+        min_length=1,
+        description="Sector UUID to start the cascade from (must be explored)",
+    )
+    target_profit: float = Field(
+        ...,
+        gt=0,
+        description="Minimum total profit the cascade should aim for",
+    )
+    max_jumps: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="Maximum hops through explored sectors",
+    )
+
+
 class AssistantConfigRequest(BaseModel):
     """Request model for AI assistant configuration"""
     assistant_name: Optional[str] = Field(
@@ -796,6 +816,59 @@ async def cleanup_ai_data(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Data cleanup failed"
+        )
+
+
+# =============================================================================
+# TRADE CASCADE (WO-PULL-ARIA-CASCADE-ENTRYPOINT)
+# =============================================================================
+
+@router.post(
+    "/trade-cascade",
+    summary="Plan an explored-sector trade cascade",
+    description=(
+        "ARIA multi-hop trade cascade through ONLY sectors this player has "
+        "explored (aria-companion.md Route optimization). Returns a cascade "
+        "plan or an explored-space refusal payload — never invents unknown "
+        "space routes."
+    ),
+)
+async def plan_trade_cascade(
+    request: TradeCascadeRequest = Body(...),
+    player_id: str = Depends(validate_ai_access),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Owner-only by construction: player_id comes from validate_ai_access
+    (JWT), never from the request body. Frontier refusal is service-owned —
+    insufficient exploration / no profitable route return structured error
+    dicts (HTTP 200 with error key) rather than inventing routes."""
+    try:
+        from src.services.aria_personal_intelligence_service import (
+            get_aria_intelligence_service,
+        )
+
+        aria_service = get_aria_intelligence_service()
+        result = await aria_service.plan_trade_cascade(
+            player_id,
+            request.start_sector_id,
+            request.target_profit,
+            request.max_jumps,
+            db,
+        )
+        await db.commit()
+        if result is None:
+            return {
+                "error": "no_exploration_map",
+                "message": (
+                    "Explore more sectors to plan trade routes"
+                ),
+            }
+        return result
+    except Exception as e:
+        logger.error(f"Error planning trade cascade: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="ARIA trade cascade temporarily unavailable",
         )
 
 

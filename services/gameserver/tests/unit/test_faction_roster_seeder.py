@@ -18,22 +18,25 @@ CANON_FACTION_TYPES = {
     FactionType.MINING,
     FactionType.EXPLORERS,
     FactionType.OUTLAWS,
+    FactionType.SYNDICATE,
     FactionType.PIRATES,
 }
 
 
-def test_seed_creates_all_seven_canon_factions(db: Session):
+def test_seed_creates_all_eight_canon_factions(db: Session):
     create_default_factions(db)
     types = {row[0] for row in db.query(Faction.faction_type).all()}
     assert types == CANON_FACTION_TYPES
-    assert db.query(Faction).count() == 7
+    assert db.query(Faction).count() == 8
+    syndicate = db.query(Faction).filter(Faction.faction_type == FactionType.SYNDICATE).one()
+    assert syndicate.name == "Shadow Syndicate"
 
 
 def test_seed_is_idempotent_across_two_calls(db: Session):
     """Calling the wired startup path twice in a row must not duplicate rows."""
     create_default_factions(db)
     create_default_factions(db)
-    assert db.query(Faction).count() == 7
+    assert db.query(Faction).count() == 8
     types = {row[0] for row in db.query(Faction.faction_type).all()}
     assert types == CANON_FACTION_TYPES
 
@@ -48,7 +51,7 @@ def test_seed_coexists_with_federation_safety_net(db: Session):
 
     create_default_factions(db)
 
-    assert db.query(Faction).count() == 7
+    assert db.query(Faction).count() == 8
     types = {row[0] for row in db.query(Faction.faction_type).all()}
     assert types == CANON_FACTION_TYPES
     # the pre-existing Federation row was left untouched, not duplicated
