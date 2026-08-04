@@ -587,12 +587,14 @@ def _compute_jump_cost(db: Session, ship: Ship) -> Tuple[int, int, int]:
             if towed_size is None or towed_size == ShipSize.CAPITAL:
                 raise QuantumError(
                     "The towed ship cannot transit a quantum jump (capital-size "
-                    "or unspecified hulls are excluded)"
+                    "or unspecified hulls are excluded)",
+                    error_code="ERR_QJ_TOWED_SIZE_EXCEEDS_MEDIUM",
                 )
             if size_units_for(towed_size) > QJ_MAX_TOWED_SIZE_UNITS:
                 raise QuantumError(
                     "The towed ship is too large to transit a quantum jump "
-                    "(medium-size maximum: tiny / small / medium only)"
+                    "(medium-size maximum: tiny / small / medium only)",
+                    error_code="ERR_QJ_TOWED_SIZE_EXCEEDS_MEDIUM",
                 )
             qj_tow_surcharge = QJ_TOW_SURCHARGE_FLAT
     except QuantumError:
