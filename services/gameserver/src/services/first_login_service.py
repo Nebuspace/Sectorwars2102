@@ -28,6 +28,31 @@ from src.services.ai_provider_service import get_ai_provider_service, ProviderTy
 from src.services.nickname_validation_service import validate_nickname
 from src.utils.guard_personalities import get_guard_for_session, personality_threshold_modifier
 from src.core.ship_specifications_seeder import SHIP_SPECIFICATIONS
+from src.services.enhanced_manual_provider import CatBoostDetector
+
+# Canon FEATURES/gameplay/first-login.md: flat +15% on persuasion score when the
+# player mentions the cat (whole-word), applied once before threshold checks.
+CAT_MENTION_SCORE_BONUS = 0.15
+
+
+def apply_cat_mention_score_bonus(
+    score: float, player_responses: List[str]
+) -> Tuple[float, bool]:
+    """Add flat CAT_MENTION_SCORE_BONUS once if any response mentions the cat.
+
+    Returns (possibly_boosted_score, applied). Caps at 1.0. Pure helper so the
+    ship-claim path and unit tests share one implementation (WO-FIRSTLOGIN-
+    CAT-BONUS-WIRING) — per-exchange CatBoostDetector boosts in the manual
+    provider are not enough when AI providers score exchanges.
+    """
+    mentioned = any(
+        CatBoostDetector.detect_cat_mention(text or "")
+        for text in player_responses
+    )
+    if not mentioned:
+        return float(score), False
+    return min(1.0, float(score) + CAT_MENTION_SCORE_BONUS), True
+
 
 logger = logging.getLogger(__name__)
 
@@ -1487,6 +1512,18 @@ Description: {ship_specs.get('description', 'N/A')}
 
         logger.info(f"Final Persuasion Score: {final_persuasion_score:.4f}")
         logger.info(f"  Formula: ({avg_consistency:.4f} * 0.5) + ({avg_confidence:.4f} * 0.3) + ({avg_persuasiveness:.4f} * 0.2)")
+
+        # Canon flat +0.15 when any exchange mentions the cat (session-level,
+        # once) — applied before skill band + ship-claim threshold checks.
+        final_persuasion_score, cat_bonus_applied = apply_cat_mention_score_bonus(
+            final_persuasion_score,
+            [ex.player_response for ex in exchanges],
+        )
+        if cat_bonus_applied:
+            logger.info(
+                f"Cat-mention bonus applied: +{CAT_MENTION_SCORE_BONUS:.2f} → "
+                f"{final_persuasion_score:.4f}"
+            )
 
         # HARD-FAIL CHECKS: Instant denial for critical failures
         hard_fail_reason = None
