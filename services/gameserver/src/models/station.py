@@ -371,6 +371,11 @@ class Station(Base):
     # too because StarDock-special-location hosts also get this flag for queries
     # that don't load the parent sector's special_features array).
     is_spacedock = Column(Boolean, nullable=False, default=False, server_default="false")
+    # WO-ANCHOR-REPAIR-SERVICE: Phase-11 SpaceDock role within a region —
+    # 'starter' (starter-cluster anchor) or 'frontier'. Nullable: unset means
+    # role unknown; the detect-only daily scan treats that as unverifiable,
+    # not false-missing. Backfill is a separate worldgen/ops pass.
+    region_assignment_role = Column(String(32), nullable=True)
     # Central Nexus Starport Prime discriminator (FEATURES/economy/docking-slips
     # §Per-station-class slip counts). Both Starport Prime and a regional Capital
     # are StationClass.CLASS_0, but their docking-slip pools differ: Starport

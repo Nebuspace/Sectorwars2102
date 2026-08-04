@@ -153,6 +153,10 @@ _TREASURY_RECON_STATE_KEY = "treasury_reconciliation_last_day"
 # ONCE per canonical day — mirroring _TREASURY_RECON_STATE_KEY's discipline
 # exactly (same already-locked-session, no lock of its own).
 _REGION_LIFECYCLE_STATE_KEY = "region_lifecycle_advance_last_day"
+# Galaxy.state JSONB key holding the canonical-DAY index of the last anchor-
+# repair detect scan (WO-ANCHOR-REPAIR-SERVICE). Rides the governance sweep
+# as Phase 8, gated once per canonical day — mirrors _REGION_LIFECYCLE_STATE_KEY.
+_ANCHOR_REPAIR_STATE_KEY = "anchor_repair_scan_last_day"
 # Galaxy.state JSONB key holding the canonical-DAY index of the last ARIA
 # storage-prune pass (WO-F16). The dormant prune kernel
 # (ARIAPersonalIntelligenceService.prune_player_storage) evicts each player's

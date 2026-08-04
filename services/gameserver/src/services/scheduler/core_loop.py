@@ -401,6 +401,16 @@ async def _npc_scheduler_main_loop() -> None:
                         gov.get("advanced_to_terminated", 0),
                         gov.get("cleanup_eligible", 0),
                     )
+                if gov.get("anchors_missing") or gov.get("anchors_scanned"):
+                    logger.info(
+                        "NPC scheduler: anchor-repair scan — %d region(s), "
+                        "%d missing check(s)",
+                        gov.get("anchors_scanned", 0),
+                        gov.get("anchors_missing", 0),
+                    )
+                anchor_events = gov.get("events") or []
+                if anchor_events:
+                    await _broadcast_events(anchor_events)
             except asyncio.CancelledError:
                 raise
             except Exception:

@@ -389,7 +389,7 @@ def _run_region_lifecycle_advance_gated(db: Session) -> Dict[str, Any]:
 # Regional governance sweep — open/close elections + finalize policies
 # ---------------------------------------------------------------------------
 
-def _run_governance_sweep_sync() -> Dict[str, int]:
+def _run_governance_sweep_sync() -> Dict[str, Any]:
     """Drive the regional democratic loop forward on the canonical clock.
 
     Idempotent phases mirroring the planetary advance sweep's discipline (own
@@ -459,13 +459,19 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
     lifecycle.md's daily-cron triggers), plus a read-only terminated-
     cleanup-eligibility discovery pass (``dispatch_terminated_cleanup`` —
     the dispatch point gate-cascade wires the real cascade onto later).
-    Self-gated to once per canonical day via ``_run_region_lifecycle_
+    Self-gated to     once per canonical day via ``_run_region_lifecycle_
     advance_gated`` (mirrors Phase 6's day-anchor discipline exactly).
+
+    Phase 8 runs the anchor-repair detect-only daily scan
+    (WO-ANCHOR-REPAIR-SERVICE / SYSTEMS/anchor-repair-service.md): existence
+    checks for the four Phase-11 anchors per active non-nexus region, emitting
+    ``region_anchor_missing`` events. Re-injection is deferred. Self-gated
+    once per canonical day via ``anchor_repair_service.run_daily_scan_gated``.
 
     Returns {auto_created, opened, tallied, enacted, rejected,
     regions_recomputed, treaties_expired, treasury_checked,
     treasury_mismatched, advanced_to_grace, advanced_to_terminated,
-    cleanup_eligible}.
+    cleanup_eligible, anchors_scanned, anchors_missing, events}.
     """
     from src.core.database import SessionLocal
     from src.models.region import (
@@ -492,7 +498,8 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
               "rejected": 0, "regions_recomputed": 0, "treaties_expired": 0,
               "treasury_checked": 0, "treasury_mismatched": 0,
               "advanced_to_grace": 0, "advanced_to_terminated": 0,
-              "cleanup_eligible": 0}
+              "cleanup_eligible": 0, "anchors_scanned": 0, "anchors_missing": 0,
+              "events": []}
     now = datetime.utcnow()
 
     db = SessionLocal()
@@ -987,6 +994,22 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
             db.commit()
         except Exception:
             logger.exception("Governance sweep: region lifecycle advance phase failed")
+            db.rollback()
+
+        # --- Phase 8: anchor-repair detect-only scan (WO-ANCHOR-REPAIR-SERVICE)
+        # SYSTEMS/anchor-repair-service.md daily existence checks. Self-gated
+        # once per canonical day. Emits region_anchor_missing; no re-inject.
+        # A failure here must NEVER break the governance sweep proper.
+        try:
+            from src.services import anchor_repair_service
+
+            anchors = anchor_repair_service.run_daily_scan_gated(db)
+            result["anchors_scanned"] = anchors["anchors_scanned"]
+            result["anchors_missing"] = anchors["anchors_missing"]
+            result["events"] = list(anchors.get("events") or [])
+            db.commit()
+        except Exception:
+            logger.exception("Governance sweep: anchor-repair scan phase failed")
             db.rollback()
 
         # Final commit closes out any open (no-op) transaction so the advisory
