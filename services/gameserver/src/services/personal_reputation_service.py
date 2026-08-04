@@ -106,6 +106,9 @@ class PersonalReputationService:
             effects["faction_standing_bonus"] = 5
         elif score >= 250:
             effects["station_price_discount"] = 5
+            effects["faction_standing_bonus"] = 5
+        elif score >= 1:
+            effects["station_price_discount"] = 5
 
         return {
             "success": True,
