@@ -1110,7 +1110,7 @@ class EnhancedWebSocketService:
         
         # Add ARIA personal intelligence summary
         from src.services.aria_personal_intelligence_service import get_aria_intelligence_service
-        aria_intel = get_aria_intelligence_service()
+        get_aria_intelligence_service()
         
         # Get exploration summary
         from src.models.aria_personal_intelligence import ARIAExplorationMap
@@ -1170,10 +1170,10 @@ class EnhancedWebSocketService:
         try:
             # Store in ARIA personal memory for learning
             from src.services.aria_personal_intelligence_service import get_aria_intelligence_service
-            aria_intel = get_aria_intelligence_service()
+            get_aria_intelligence_service()
             
             # Create memory of this interaction
-            memory_content = {
+            {
                 "type": "conversation",
                 "input": user_input,
                 "response_summary": response.get("response", "")[:200],  # First 200 chars

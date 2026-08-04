@@ -313,7 +313,7 @@ class TestMultiRegionalSystemIntegration:
         
         # 3. Verify regional territories are separate from Central Nexus
         region1 = setup["region1"]
-        region2 = setup["region2"]
+        setup["region2"]
         
         # Update one region for admin testing
         admin_user = db.query(User).filter(User.username == settings.ADMIN_USERNAME).first()
@@ -509,7 +509,7 @@ class TestMultiRegionalSystemIntegration:
         url = f"{settings.API_V1_STR}/regions/my-region"
         response = client.get(url, headers=admin_auth_headers)
         assert response.status_code == 200
-        initial_region = response.json()
+        response.json()
         
         # 2. Update economics
         economic_update = {

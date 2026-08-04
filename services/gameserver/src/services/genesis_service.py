@@ -1218,7 +1218,6 @@ class GenesisService:
 
         # Set initial resources based on tier
         tier = planet.genesis_tier or "basic"
-        tier_config = GENESIS_TIERS.get(tier, GENESIS_TIERS["basic"])
 
         # Give starting resources scaled by habitability and resource richness
         base_resources = int(planet.habitability_score * planet.resource_richness * 2)

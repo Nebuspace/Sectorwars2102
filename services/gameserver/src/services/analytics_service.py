@@ -34,7 +34,7 @@ class AnalyticsService:
             now = datetime.utcnow()
             today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
             week_ago = now - timedelta(days=7)
-            thirty_days_ago = now - timedelta(days=30)
+            now - timedelta(days=30)
             
             # Get all players with their related data
             all_players = self.db.query(Player).all()

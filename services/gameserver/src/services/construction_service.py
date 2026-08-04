@@ -1107,7 +1107,7 @@ def create_reservation(
     # Task B-1: apply premium floor to the project cost.
     total_cost = apply_premium_floor(spec["total_cost"])
     deposit = milestone_amounts(total_cost)["deposit"]
-    total_upfront = deposit + guest_fee_paid  # defensive: already charged above
+    deposit + guest_fee_paid  # defensive: already charged above
     if player.credits < deposit:
         raise ConstructionError(
             400,

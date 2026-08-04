@@ -2970,9 +2970,9 @@ async def get_ai_system_metrics(
     """Get AI system metrics for admin dashboard"""
     try:
         # Get actual player and activity data
-        total_players = db.query(Player).count()
+        db.query(Player).count()
         day_ago = datetime.utcnow() - timedelta(days=1)
-        active_players = db.query(Player).filter(Player.last_game_login >= day_ago).count()
+        db.query(Player).filter(Player.last_game_login >= day_ago).count()
         
         # Honest metrics: no AI prediction engine, model registry, or job queue
         # exists yet — only real ARIA interaction counts are reportable.

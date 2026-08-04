@@ -151,7 +151,6 @@ class HangarService:
         """Return the Carrier whose hangar holds ``ship_id`` as a DOCKED
         passenger, or None. Scans only capital-size carriers with a non-NULL
         hangar (cheap: there are very few Carriers)."""
-        sid = str(ship_id)
         carriers = (
             self.db.query(Ship)
             .filter(Ship.hangar.isnot(None), Ship.is_destroyed.is_(False))

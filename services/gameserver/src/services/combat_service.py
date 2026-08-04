@@ -5278,7 +5278,7 @@ class CombatService:
     def _transfer_planet_ownership(self, planet: Planet, new_owner: Player) -> None:
         """Transfer ownership of a planet to a new player via many-to-many."""
         # Clear existing owners from the join table
-        player_planets = self.db.execute(
+        self.db.execute(
             self.db.query(Planet).filter(Planet.id == planet.id).statement
         )
         # Use direct SQL to clear the many-to-many

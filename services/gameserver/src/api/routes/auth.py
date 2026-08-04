@@ -878,7 +878,7 @@ async def github_callback(request: Request, code: str, register: bool = False, s
     api_base_url = settings.get_api_base_url()
 
     # Get the actual request URL used to access this endpoint
-    callback_url = str(request.url)
+    str(request.url)
 
     # Detailed debug for the callback
     logger.debug("GitHub OAuth callback received (env=%s)", settings.detect_environment())

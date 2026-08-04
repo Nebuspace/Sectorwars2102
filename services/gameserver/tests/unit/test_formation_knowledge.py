@@ -334,7 +334,6 @@ class TestIndependentPerPlayerRows:
 
 class TestIdempotentRevisit:
     def test_same_player_revisit_one_row_zero_new(self, one_formation):
-        formation = one_formation
         db = _FakeSession()
         player_a = make_player()
         sector = make_sector()

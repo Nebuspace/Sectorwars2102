@@ -1528,7 +1528,7 @@ def cancel_contract(db: Session, player_id: Any, contract_id: str,
         return {"success": False, "message": "Directive not found."}
 
     state = row.get("state")
-    cr_cost = int(row.get("cr_cost", 0) or 0)
+    int(row.get("cr_cost", 0) or 0)
     refund = 0
     if state == "active":
         # 0% credit refund on an active contract (anti-arbitrage). Effect ends now.

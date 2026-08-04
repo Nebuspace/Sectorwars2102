@@ -262,7 +262,7 @@ class AISecurityService:
         violations = []
 
         # Update player profile
-        profile = self.get_or_create_player_profile(player_id, seed_from=seed_from)
+        self.get_or_create_player_profile(player_id, seed_from=seed_from)
 
         # Check if player is blocked
         if self.is_player_blocked(player_id):

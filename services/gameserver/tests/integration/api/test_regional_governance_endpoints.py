@@ -68,10 +68,6 @@ class TestRegionalGovernanceEndpoints:
     @pytest.fixture
     def region_owner_headers(self, client: TestClient, test_user):
         """Get auth headers for the region owner"""
-        login_payload = {
-            "username": test_user.username,
-            "password": "testpassword123"  # Default test password
-        }
         
         # First create user credentials
         

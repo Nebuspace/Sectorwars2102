@@ -1728,7 +1728,6 @@ Description: {ship_specs.get('description', 'N/A')}
     def _generate_guard_outcome_response_fallback(self, session: FirstLoginSession) -> str:
         """Fallback static response if AI generation fails"""
         claimed_ship = session.ship_claimed or ShipChoice.ESCAPE_POD
-        awarded_ship = session.awarded_ship or ShipChoice.ESCAPE_POD
 
         if session.outcome == DialogueOutcome.SUCCESS:
             if claimed_ship == ShipChoice.ESCAPE_POD:

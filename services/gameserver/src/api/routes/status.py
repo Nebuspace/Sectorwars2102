@@ -136,7 +136,7 @@ async def ai_providers_health():
                 import openai
                 client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
                 # Use a minimal request to test connectivity
-                response = client.models.list()
+                client.models.list()
                 openai_reachable = True
             except Exception:
                 openai_error_id = generate_error_id()
@@ -190,7 +190,7 @@ async def ai_providers_health():
                 import anthropic
                 client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
                 # Use a minimal request to test connectivity
-                response = client.messages.create(
+                client.messages.create(
                     model="claude-3-haiku-20240307",
                     max_tokens=10,
                     messages=[{"role": "user", "content": "test"}]
@@ -273,7 +273,7 @@ async def openai_health():
             import openai
             client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
             # Quick test with OpenAI API
-            response = client.models.list()
+            client.models.list()
             reachable = True
         except Exception:
             error_id = generate_error_id()
@@ -317,7 +317,7 @@ async def anthropic_health():
             import anthropic
             client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
             # Quick test with Anthropic API
-            response = client.messages.create(
+            client.messages.create(
                 model="claude-3-haiku-20240307",
                 max_tokens=10,
                 messages=[{"role": "user", "content": "test"}]

@@ -136,7 +136,6 @@ def _hop_distances(db: Session, origin_sector_id: int, max_hops: int) -> Dict[in
         return {}
 
     distances: Dict[uuid.UUID, int] = {origin.id: 0}
-    sector_ids: Dict[uuid.UUID, int] = {origin.id: origin.sector_id}
     queue = deque([(origin.id, 0)])
 
     while queue:

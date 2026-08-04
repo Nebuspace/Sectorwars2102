@@ -192,7 +192,7 @@ async def create_oauth_user(
     db.add(oauth_account)
 
     # Create Player record for OAuth user (with optional invite placement override)
-    player = await create_player_for_user(
+    await create_player_for_user(
         db, user, invite_code=invite_code, ip_hash=ip_hash
     )
 

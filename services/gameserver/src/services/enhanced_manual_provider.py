@@ -331,8 +331,7 @@ class EnhancedManualProvider(AIProvider):
         # Basic text analysis
         words = response.split()
         word_count = len(words)
-        char_count = len(response)
-        
+
         # Base scores
         persuasiveness = self._calculate_base_persuasiveness(response, word_count)
         confidence = self._calculate_confidence(response)
