@@ -100,7 +100,9 @@ from sqlalchemy.orm.attributes import flag_modified
 from src.models.contract import Contract, ContractStatus
 from src.models.player import Player
 from src.models.ship import Ship
-from src.models.storage_locker import ContractCargoDeposit, StorageLocker, StorageLockerStatus
+from src.models.storage_locker import (
+    ContractCargoDeposit, StorageLocker, StorageLockerStatus, StorageLockerTier,
+)
 from src.services import contract_service
 
 logger = logging.getLogger(__name__)
@@ -177,6 +179,33 @@ class StorageNotFoundError(StorageError):
     """404-class."""
 
 
+# Tier rent multipliers (WO-BUILD-STORAGE-LOCKER-TIER-LADDER, heist-brief.html
+# "04 / THE ECONOMY" tier table -- canon-given: Basic 1x / Reinforced ~2.5x /
+# Vault ~5x). BASE_RENT_RATE is D16's flat 1cr/unit/day; a tier's rent_rate is
+# BASE_RENT_RATE * the multiplier below, stored PER-LOCKER at creation (same
+# discipline the model docstring already establishes: a future multiplier
+# tuning can never retroactively reprice an already-rented locker).
+#
+# This wires the TIER->rent-rate mechanism only. The RISK-STATE ladder
+# (Secure->Watched->Targeted->Breached, driven by dwell-time + station-
+# security) is the full heist S2 mechanic (WO-HEIST-RISK-STATE / -BREAKIN /
+# -CONSEQUENCES, heist-brief.html "02 / THE SPINE") -- separately staged, with
+# its own OPEN design numbers (break-in success formula, spoilage %) the brief
+# explicitly lists as unresolved. Out of scope here; every locker this
+# function creates still writes risk_state=SECURE (model default), unchanged.
+BASE_RENT_RATE = Decimal("1")
+STORAGE_TIER_RENT_MULTIPLIERS = {
+    StorageLockerTier.BASIC: Decimal("1"),
+    StorageLockerTier.REINFORCED: Decimal("2.5"),
+    StorageLockerTier.VAULT: Decimal("5"),
+}
+
+
+def rent_rate_for_tier(tier: StorageLockerTier) -> Decimal:
+    """BASE_RENT_RATE * the tier's canon multiplier (pure helper)."""
+    return BASE_RENT_RATE * STORAGE_TIER_RENT_MULTIPLIERS.get(tier, Decimal("1"))
+
+
 def _load_contract(db: Session, contract_id: uuid.UUID) -> Contract:
     contract = db.query(Contract).filter(Contract.id == contract_id).first()
     if contract is None:
@@ -186,10 +215,13 @@ def _load_contract(db: Session, contract_id: uuid.UUID) -> Contract:
 
 def get_or_create_locker(
     db: Session, player_id: uuid.UUID, contract_id: uuid.UUID,
+    tier: StorageLockerTier = StorageLockerTier.BASIC,
 ) -> StorageLocker:
     """One StorageLocker per (player, contract) -- idempotent get-or-
     create. A second call for the same pair returns the EXISTING locker
-    rather than minting a duplicate.
+    rather than minting a duplicate (``tier`` is ignored on that path --
+    an existing locker's tier/rent_rate is fixed at creation, matching
+    the model docstring's "never retroactively reprice" contract).
 
     Locks the Player row BEFORE the existence-check-then-insert so two
     concurrent calls for the SAME player+contract pair serialize on it
@@ -197,7 +229,11 @@ def get_or_create_locker(
     Player lock is the only resource available to guard the race). A
     unique (owner_player_id, contract_id) index (migration <followup>)
     is the belt-and-suspenders DB-level guarantee for any future call
-    path that might bypass this lock."""
+    path that might bypass this lock.
+
+    ``tier`` defaults to BASIC (unchanged prior behavior -- every current
+    caller is the contract-storage-trap auto-create path, which has no
+    tier-selection UI yet; see rent_rate_for_tier's docstring)."""
     contract = _load_contract(db, contract_id)
     if contract.status != ContractStatus.ACCEPTED:
         raise StorageError(
@@ -222,6 +258,8 @@ def get_or_create_locker(
         station_id=contract.destination_station_id,
         contract_id=contract_id,
         status=StorageLockerStatus.ACTIVE,
+        tier=tier,
+        rent_rate=rent_rate_for_tier(tier),
     )
     db.add(locker)
     db.flush()
