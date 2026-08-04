@@ -11,22 +11,6 @@ import enum
 from src.core.database import Base
 
 
-class LanguageCode(enum.Enum):
-    """Supported language codes following ISO 639-1 standard"""
-    EN = "en"          # English (base language)
-    ES = "es"          # Spanish
-    ZH = "zh"          # Chinese (Simplified)
-    FR = "fr"          # French
-    PT = "pt"          # Portuguese
-    DE = "de"          # German
-    JA = "ja"          # Japanese
-    RU = "ru"          # Russian
-    AR = "ar"          # Arabic
-    KO = "ko"          # Korean
-    IT = "it"          # Italian
-    NL = "nl"          # Dutch
-
-
 class NamespaceType(enum.Enum):
     """Translation namespace types for organization"""
     COMMON = "common"          # Shared across applications
