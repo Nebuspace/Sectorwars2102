@@ -1088,6 +1088,18 @@ class CombatService:
                     "kind": "pvp",
                 },
             )
+            # Team-war score / victory (WO-BUILD-TEAM-WAR-SCORE-HOOK-VICTORY).
+            # Best-effort: a war-score hiccup must never break combat.
+            try:
+                from src.services import team_war_service
+
+                team_war_service.record_pvp_kill(self.db, attacker, defender)
+            except Exception:
+                logger.exception(
+                    "team_war: record_pvp_kill failed for attacker=%s defender=%s",
+                    getattr(attacker, "id", None),
+                    getattr(defender, "id", None),
+                )
 
         # Grey-flag PvP status (WO-BL). Two interacting facts, both evaluated
         # against PRE-resolution standing so a kill that drops the defender's rep
