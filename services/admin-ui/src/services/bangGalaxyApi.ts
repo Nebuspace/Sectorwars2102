@@ -1,9 +1,8 @@
 /**
- * Thin axios wrappers around the five sw2102-bang admin endpoints.
+ * Thin axios wrappers around the sw2102-bang admin endpoints.
  *
  *   POST   /api/v1/admin/galaxy/jobs           — start a generation job
  *   POST   /api/v1/admin/galaxy/preview        — preview / validate only
- *   GET    /api/v1/admin/galaxy/jobs/{id}      — job detail
  *   GET    /api/v1/admin/galaxy/jobs?page=...  — history listing (BangJobListItem)
  *   DELETE /api/v1/admin/galaxy/{galaxy_id}    — hard-delete (typed-name)
  *
@@ -71,18 +70,6 @@ export async function previewBangConfig(
   const response = await api.post<BangPreviewResponse>(
     '/admin/galaxy/preview',
     config,
-    { headers: authHeaders(token) },
-  );
-  return response.data;
-}
-
-/** GET /admin/galaxy/jobs/{id} — full job record. */
-export async function getBangJob(
-  jobId: string,
-  token: string | null,
-): Promise<BangJobResponse> {
-  const response = await api.get<BangJobResponse>(
-    `/admin/galaxy/jobs/${jobId}`,
     { headers: authHeaders(token) },
   );
   return response.data;

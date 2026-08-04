@@ -177,9 +177,11 @@ class NexusGenerationService:
                 start_sector = current_sector_num
                 end_sector = start_sector + sectors_per_cluster - 1
 
-                # Last cluster gets any remaining sectors (extends to sector 5300)
+                # total_sectors (5000) divides evenly by cluster_count (20), so
+                # this is a redundant no-op recompute of the same end_sector --
+                # not remainder handling. Central Nexus ends at sector 5300
+                # (301 + 5000 - 1, since Terran Space occupies sectors 1-300).
                 if idx == len(nexus_clusters) - 1:
-                    # Central Nexus ends at sector 5300 (301 + 5000 - 1, since Terran Space ends at 300)
                     end_sector = 300 + self.total_sectors
 
                 cluster_stats = await self._generate_cluster_sectors(
