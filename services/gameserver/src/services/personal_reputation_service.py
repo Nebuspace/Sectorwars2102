@@ -143,7 +143,8 @@ class PersonalReputationService:
         }
 
     def apply_weekly_decay(self, player_id: uuid.UUID) -> Dict[str, Any]:
-        """Decay reputation toward 0 by 5 points per week for extreme values."""
+        """Decay reputation toward 0 by 5 points per week for any nonzero
+        score (ADR-0025's whole-range ruling) -- not just extreme values."""
         player = self.db.query(Player).filter(Player.id == player_id).first()
         if not player:
             return {"success": False, "message": "Player not found"}

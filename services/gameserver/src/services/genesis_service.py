@@ -96,6 +96,10 @@ GENESIS_TIERS = {
     # (ADR-0014) and is never genesis-rollable; the rollable set is
     # OCEANIC / DESERT / ICE / VOLCANIC / MOUNTAINOUS.
     "basic": {
+        # 25000 coincidentally matches GENESIS_DEVICE_PRICE above -- a
+        # SEPARATE concept (deploy-tier cost vs. flat acquisition price),
+        # not a duplicated/drifted constant. See GENESIS_DEVICE_PRICE's
+        # comment for the full distinction.
         "cost": 25000,
         "requires_ship_sacrifice": False,
         "planet_type_weights": {
