@@ -50,9 +50,10 @@ def _dispatch_exploration_medals(db: Session, player: Player, context: Dict[str,
 # Heroic tier (personal_reputation >= 250) so it is reachable through normal play
 # rather than the near-unreachable top tier (Legendary >= 500). personal_reputation
 # is THE Federation-standing scalar (ADR-0084); the per-faction ReputationLevel
-# enum (EXALTED) was rejected as a dead/unreachable gate. NOTE: the peaceful rep
-# triggers (complete_trade, destroy_pirate_drones) are defined-but-unwired, so
-# this bar only becomes comfortably reachable once they are wired (Phase 1).
+# enum (EXALTED) was rejected as a dead/unreachable gate. Peaceful-rep triggers
+# complete_trade (+1 via trading buy/sell) and destroy_pirate_drones (+10 via
+# combat_service drone clear) are LIVE in REPUTATION_TRIGGERS / call sites —
+# Heroic (>=250) is reachable through normal play without a further Phase-1 wire.
 GENESIS_MIN_REPUTATION = 250
 # Deploy must be >= 5 jumps from Federation Space, i.e. NO Federation-Zone sector
 # within (5 - 1) = 4 warp jumps of the target sector.
