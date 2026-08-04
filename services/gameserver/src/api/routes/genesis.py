@@ -122,6 +122,15 @@ async def deploy_genesis_device(
     db: Session = Depends(get_db),
 ):
     """
+    DEPRECATED — zero real callers (verified 2026-08-04). The canonical,
+    actually-live route is ``POST /planets/genesis/deploy``
+    (``deploy_genesis_device_legacy`` in api/routes/planets.py) — that is
+    what player-client calls (services/api.ts:190). Per ADR-0094 point 2
+    (one canonical endpoint per action), this route is the deprecated
+    overlap for the genesis-deploy example the ADR itself names. Left live
+    rather than removed pending confirmation no external/API-first client
+    depends on it.
+
     Deploy a genesis device to create a new planet in the specified sector.
 
     The player must:
