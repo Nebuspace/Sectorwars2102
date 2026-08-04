@@ -245,6 +245,32 @@ class ShipUpgradeService:
             "compatible_ships": [ShipType.CARGO_HAULER, ShipType.DEFENDER, ShipType.CARRIER, ShipType.WARP_JUMPER],
             "effects": {"tow_capable": True, "weapon_mode": "tractor"}
         },
+        # Combat-class tactical equipment (ship-systems.md §2.6 / §3):
+        # weapons stay hull-signature (attack_rating fixed at purchase); equipment
+        # offers tactical modifiers (ECM, stealth), NEVER raw firepower.
+        # Costs [NO-CANON — launch values; flag for bless]. Compatible-ship lists
+        # mirror the combat/utility hulls named in the planned-equipment prose.
+        "ecm_suite": {
+            "name": "ECM Suite",
+            "description": "Electronic countermeasures that degrade incoming fire accuracy",
+            "cost": 45000,
+            "compatible_ships": [
+                ShipType.SCOUT_SHIP, ShipType.DEFENDER, ShipType.CARRIER, ShipType.WARP_JUMPER,
+            ],
+            # Fraction subtracted from the opponent's hit_chance when THIS ship
+            # is the defender. combat_service applies it at the hit roll.
+            "effects": {"ecm_hit_penalty": 0.15},
+        },
+        "stealth_module": {
+            "name": "Stealth Module",
+            "description": "Signature dampers that raise effective evasion in combat",
+            "cost": 40000,
+            "compatible_ships": [
+                ShipType.SCOUT_SHIP, ShipType.FAST_COURIER, ShipType.WARP_JUMPER,
+            ],
+            # Flat evasion points folded into _calculate_ship_defense.
+            "effects": {"stealth_evasion_bonus": 15},
+        },
     }
 
     # ========================================================================
@@ -502,6 +528,31 @@ class ShipUpgradeService:
             "slot_class": "combat",
             "name": "Tractor Beam Module",
             "description": "Dual-use tractor: combat escape-denial (no damage) + ship-tow rig.",
+        },
+        # Combat tactical equipment (ship-systems.md §2.6) — ECM / stealth,
+        # NOT raw firepower. slot_class "combat" matches tractor's tactical face.
+        "ecm": {
+            "base_cost": 45000,
+            "base_effects": {"ecm_hit_penalty": 0.15},
+            "compatible_ships": [
+                ShipType.SCOUT_SHIP, ShipType.DEFENDER,
+                ShipType.CARRIER, ShipType.WARP_JUMPER,
+            ],
+            "requires": None,
+            "slot_class": "combat",
+            "name": "ECM Suite Module",
+            "description": "Electronic countermeasures that degrade incoming fire accuracy.",
+        },
+        "stealth": {
+            "base_cost": 40000,
+            "base_effects": {"stealth_evasion_bonus": 15},
+            "compatible_ships": [
+                ShipType.SCOUT_SHIP, ShipType.FAST_COURIER, ShipType.WARP_JUMPER,
+            ],
+            "requires": None,
+            "slot_class": "combat",
+            "name": "Stealth Module",
+            "description": "Signature dampers that raise effective evasion in combat.",
         },
     }
 

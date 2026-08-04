@@ -72,6 +72,13 @@ SALVAGE_CREDIT_REFUND = 250  # equipment is NOT refunded -- destroyed with the c
 MESSAGE_MIN_LENGTH = 1
 MESSAGE_MAX_LENGTH = 500
 
+# ── Trust-score auto-flag (message-beacons.md:118) ────────────────────────
+# Canon: ARIA trust model auto-flags very-low-trust deployers' beacons for
+# moderator review before they become player-visible (distinct from the
+# player-initiated report() path). Threshold mirrors ai_security_service's
+# high-risk band (trust_score < 0.2). [NO-CANON — launch value; flag for bless.]
+TRUST_AUTOFLAG_THRESHOLD = 0.2
+
 # ── Per-sector visibility cap (message-beacons.md:56, ADR-0056 N-V2) ──────
 DEFAULT_SECTOR_CAP = 10
 MAX_SECTOR_CAP = 50
@@ -638,6 +645,12 @@ def deploy(
     # keeps "no new scheduler" true).
     now = _now()
     charge_expires_at = now + CHARGE_CELL_DURATION
+    # Trust-score auto-flag (message-beacons.md:118): very-low ARIA trust
+    # → flagged before denorm rebuild, so the cell never appears in ambient
+    # sector view / read list until an admin clear_flag. Player.aria_trust_score
+    # is the durable column (ai_security_service persists through it).
+    deployer_trust = float(getattr(player, "aria_trust_score", 1.0) or 1.0)
+    trust_autoflagged = deployer_trust < TRUST_AUTOFLAG_THRESHOLD
     beacon = MessageBeacon(
         id=uuid.uuid4(),
         region_id=sector.region_id,
@@ -650,9 +663,15 @@ def deploy(
         last_charged_at=now,
         read_once=read_once,
         deployed_at=now,
+        flagged=trust_autoflagged,
     )
     db.add(beacon)
     db.flush()
+    if trust_autoflagged:
+        logger.info(
+            "Beacon %s auto-flagged on deploy (deployer trust %.3f < %.3f)",
+            beacon.id, deployer_trust, TRUST_AUTOFLAG_THRESHOLD,
+        )
 
     # Medal dispatch hook (ADR-0028 / medals lane): diplomatic.beacon_keeper
     # (beacons_placed >= 10). A durable per-player JSONB counter is
@@ -705,6 +724,8 @@ def deploy(
         "charge_expires_at": beacon.charge_expires_at,
         "read_once": beacon.read_once,
         "deployed_at": beacon.deployed_at,
+        "flagged": bool(getattr(beacon, "flagged", False)),
+        "trust_autoflagged": trust_autoflagged,
         "credits": player.credits,
         "turns": player.turns,
     }
@@ -801,11 +822,12 @@ def read(db: Session, beacon_id: uuid.UUID, player_id: uuid.UUID) -> Dict[str, A
 
 
 def report(db: Session, beacon_id: uuid.UUID, player_id: uuid.UUID) -> Dict[str, Any]:
-    """Player report → immediate hide (WO-BEACON-REPORT-MODERATION v1).
+    """Player report → immediate hide (WO-BEACON-REPORT-MODERATION).
 
     Sets ``flagged=true`` (idempotent), rebuilds sector denorm so the cell
     disappears from ambient view. Same-sector gate + anti-oracle 404 as
-    read/salvage. No reason string / trust auto-flag in v1. FLUSH-ONLY.
+    read/salvage. No reason string. Trust-score auto-flag lives on deploy()
+    (message-beacons.md:118), not here. FLUSH-ONLY.
     """
     beacon = _load_beacon(db, beacon_id)
     player = db.query(Player).filter(Player.id == player_id).first()

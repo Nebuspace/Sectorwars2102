@@ -3583,6 +3583,7 @@ class CombatService:
             if not attacker_ship_destroyed:
                 # Calculate chance to hit
                 hit_chance = min(0.8, attacker_attack / (defender_defense * 1.5) * 0.6)
+                hit_chance = self._apply_defender_ecm(hit_chance, defender_ship)
                 
                 # Random element
                 if random.random() < hit_chance:
@@ -3694,6 +3695,7 @@ class CombatService:
             if not defender_ship_destroyed:
                 # Calculate chance to hit
                 hit_chance = min(0.8, defender_defense / (attacker_attack * 1.5) * 0.6)
+                hit_chance = self._apply_defender_ecm(hit_chance, attacker_ship)
 
                 # Random element
                 if random.random() < hit_chance:
@@ -5090,13 +5092,45 @@ class CombatService:
         shield_bonus = combat_data.get("shield_bonus", 0)
         hull_bonus = combat_data.get("hull_bonus", 0)
         evasion = combat_data.get("evasion", 0)
+
+        # Stealth-module tactical bonus (ship-systems.md §2.6 — evasion, not
+        # firepower). Read via combined equipment/module effects so both
+        # install paths count; never crash combat on a missing accessory.
+        stealth_bonus = 0
+        try:
+            effects = ShipUpgradeService.get_combined_effects(ship)
+            raw = effects.get("stealth_evasion_bonus", 0) or 0
+            stealth_bonus = int(raw) if isinstance(raw, (int, float)) else 0
+        except Exception as e:
+            logger.error("Stealth equipment read failed (continuing without): %s", e)
         
         # Each drone contributes to defense
         drone_defense = drones * 1.5
 
         # Maintenance condition scales overall combat effectiveness (ships.md bands).
         from src.services.maintenance_service import combat_multiplier
-        return (base_defense + shield_bonus + hull_bonus + evasion + drone_defense) * combat_multiplier(ship)
+        return (
+            base_defense + shield_bonus + hull_bonus + evasion + stealth_bonus + drone_defense
+        ) * combat_multiplier(ship)
+
+    def _apply_defender_ecm(self, hit_chance: float, defender_ship) -> float:
+        """Reduce hit_chance by the defender's ECM suite penalty, if any.
+
+        ship-systems.md §2.6: combat equipment is tactical (ECM), never raw
+        firepower. ``ecm_hit_penalty`` is a fraction in [0, 1) subtracted from
+        the incoming hit roll. Missing/broken equipment reads as no ECM.
+        """
+        if defender_ship is None or hit_chance <= 0:
+            return hit_chance
+        try:
+            effects = ShipUpgradeService.get_combined_effects(defender_ship)
+            raw = effects.get("ecm_hit_penalty", 0) or 0
+            penalty = float(raw) if isinstance(raw, (int, float)) else 0.0
+            penalty = max(0.0, min(0.9, penalty))  # hard ceiling — never zero hit
+            return max(0.0, hit_chance * (1.0 - penalty))
+        except Exception as e:
+            logger.error("ECM equipment read failed (continuing without): %s", e)
+            return hit_chance
     
     def _handle_ship_destruction(self, player: Player, destroyer: Optional[Player], cause: str) -> None:
         """Handle a player's ship being destroyed."""
