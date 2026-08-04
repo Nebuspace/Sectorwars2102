@@ -131,6 +131,18 @@ REGISTRY: Dict[str, NarrationEventDef] = {
             suppression_scope="ever",
         ),
         NarrationEventDef(
+            event_id="P-F9",
+            trigger="A citadel upgrade in progress is auto-cancelled because a required "
+                     "defensive prerequisite building/shield went offline mid-upgrade "
+                     "(ADR-0059 N-F3, citadel_service.handle_prerequisite_loss)",
+            template=(
+                "Your {cancelled_upgrade} upgrade was cancelled — {lost_building} is "
+                "offline. Rebuild it to resume the upgrade."
+            ),
+            priority_rank=PRIORITY_P_F,
+            suppression_scope="session",
+        ),
+        NarrationEventDef(
             event_id="P-A3",
             trigger="Player.team_id transitions from null to non-null",
             template=(
