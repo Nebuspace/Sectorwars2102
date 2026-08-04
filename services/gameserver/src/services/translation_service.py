@@ -192,7 +192,7 @@ class TranslationService:
             if existing_languages > 0:
                 logger.info("Translation data already initialized")
                 return True
-            
+
             # Create default languages
             for code, name, native_name, direction, is_active, completion in DEFAULT_LANGUAGES:
                 language = Language(
@@ -204,7 +204,7 @@ class TranslationService:
                     completion_percentage=completion
                 )
                 self.db.add(language)
-            
+
             # Create default namespaces
             for name, description, application in DEFAULT_NAMESPACES:
                 namespace = TranslationNamespace(
@@ -214,15 +214,92 @@ class TranslationService:
                     is_active=True
                 )
                 self.db.add(namespace)
-            
+
             self.db.commit()
             logger.info("Translation system initialized with default data")
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to initialize translation data: {e}")
             self.db.rollback()
             return False
+
+    async def seed_non_english_from_english(self) -> Dict[str, int]:
+        """Seed non-English language translations from English base.
+
+        Creates translation_keys rows for all non-English languages using English
+        values as the base. Only creates missing translations (does not overwrite
+        existing ones). This ensures non-English locales render with English
+        fallback on fresh deploy until translations are available.
+
+        Returns:
+            Dict mapping language code to count of newly created keys.
+        """
+        try:
+            # Get English and all non-English languages
+            english = self.db.query(Language).filter(Language.code == "en").first()
+            if not english:
+                logger.warning("English language not found; skipping non-English seed")
+                return {}
+
+            non_english_languages = self.db.query(Language).filter(
+                Language.code != "en"
+            ).all()
+
+            if not non_english_languages:
+                logger.info("No non-English languages to seed")
+                return {}
+
+            # Get all English translation keys
+            english_keys = self.db.query(TranslationKey).filter(
+                TranslationKey.language_id == english.id
+            ).all()
+
+            if not english_keys:
+                logger.info("No English translation keys found; skipping seed")
+                return {}
+
+            seed_counts = {}
+
+            # For each non-English language, create missing translation keys
+            for non_english in non_english_languages:
+                count = 0
+
+                for english_key in english_keys:
+                    # Check if translation already exists
+                    existing = self.db.query(TranslationKey).filter(
+                        TranslationKey.language_id == non_english.id,
+                        TranslationKey.key == english_key.key,
+                        TranslationKey.namespace_id == english_key.namespace_id
+                    ).first()
+
+                    if not existing:
+                        # Create new translation with English value as fallback
+                        new_key = TranslationKey(
+                            key=english_key.key,
+                            language_id=non_english.id,
+                            namespace_id=english_key.namespace_id,
+                            value=english_key.value,
+                            context=english_key.context,
+                            pluralization_rule=english_key.pluralization_rule,
+                            interpolation_vars=english_key.interpolation_vars,
+                            is_verified=False,  # Mark as unverified (needs translation)
+                        )
+                        self.db.add(new_key)
+                        count += 1
+
+                if count > 0:
+                    self.db.commit()
+                    seed_counts[non_english.code] = count
+                    logger.info(f"Seeded {count} translation keys for language '{non_english.code}'")
+
+            logger.info(f"Non-English seed complete: {seed_counts}")
+            return seed_counts
+
+        except Exception as e:
+            logger.error(f"Failed to seed non-English translations: {e}")
+            self.db.rollback()
+            return {}
     
     async def get_supported_languages(self, active_only: bool = True) -> List[Dict[str, Any]]:
         """Get list of supported languages"""
