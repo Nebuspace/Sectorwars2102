@@ -2503,11 +2503,10 @@ class CombatService:
     def attack_port(self, attacker_id: uuid.UUID, station_id: uuid.UUID) -> Dict[str, Any]:
         """Attack a space station.
 
-        WARNING: not wired to any player route — port assault is disabled
-        this pass (economically sensitive: it transfers port ownership).
-        The Station model currently has no defense_level / shields /
-        defense_weapons columns, so this path cannot resolve until the
-        station-defense schema lands (canon gap: station defense stats).
+        Defense stats live in ``Station.defenses`` JSONB (read/written by
+        ``_resolve_port_combat``). Capture remains mathematically unreachable
+        in the shipped kernel (per-round hull ceiling vs hull_armor floor);
+        ownership transfer only fires if ``port_captured`` is true.
         """
         # Get attacker
         attacker = self.db.query(Player).filter(Player.id == attacker_id).first()
@@ -2590,10 +2589,18 @@ class CombatService:
         if combat_result["attacker_drones_lost"] > 0:
             attacker.attack_drones = max(0, attacker.attack_drones - combat_result["attacker_drones_lost"])
 
-        # Update port defenses
-        station.defense_level = max(0, station.defense_level - combat_result["port_damage"])
+        # Persist hull damage into Station.defenses JSONB (WO attack-port-build
+        # corrected scope — never write a bare station.defense_level attribute;
+        # that column does not exist and would AttributeError).
+        defenses = dict(station.defenses or {})
+        hull_before = int(defenses.get("hull_armor", 5000) or 0)
+        defenses["hull_armor"] = max(0, hull_before - int(combat_result.get("port_damage") or 0))
+        if "shield_pool_after" in combat_result:
+            defenses["shield_pool"] = max(0, int(combat_result["shield_pool_after"]))
+        station.defenses = defenses
+        flag_modified(station, "defenses")
 
-        # If port was captured, transfer ownership
+        # If port was captured, transfer ownership (unreachable in current kernel)
         if combat_result["port_captured"]:
             self._transfer_port_ownership(station, attacker)
 
@@ -2609,8 +2616,7 @@ class CombatService:
         # regardless of capture/outcome (this line is only reached after every
         # guard has passed and the attack has definitively proceeded). MAX rule
         # applied inside set_grey. Best-effort: a grey-flag hiccup never breaks
-        # combat resolution. (attack_port is not yet route-wired — port assault
-        # returns 501 — but the rail is ready for when it lands.)
+        # combat resolution.
         try:
             from src.services.grey_flag_service import (
                 GreyFlagService,
@@ -4547,11 +4553,9 @@ class CombatService:
         lie), but capture requires grinding ``hull_armor`` (default 5000) to
         zero, and a per-round damage CEILING (150) combined with the 8-round
         limit caps total reachable hull damage at ~1200 << 5000 — so capture is
-        mathematically unreachable here regardless of drone count. The ONLY
-        caller, attack_port, is DISABLED/unwired; this resolver does not
-        transfer ownership and is unreachable from any route. Making the
-        defense formidable + fixing the AttributeError crash must NOT make a
-        station capturable or the path live — and it does not.
+        mathematically unreachable here regardless of drone count. Ownership
+        transfer in ``attack_port`` only fires when ``port_captured`` is true,
+        which this kernel never produces.
         """
         # --- Attacker ---
         attacker_ship = attacker.current_ship
@@ -4748,6 +4752,7 @@ class CombatService:
             "attacker_ship_destroyed": attacker_ship_destroyed,
             "port_damage": port_damage,
             "port_captured": port_captured,
+            "shield_pool_after": shield_pool,
             "combat_details": combat_details
         }
     
