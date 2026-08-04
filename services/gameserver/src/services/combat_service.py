@@ -1786,6 +1786,23 @@ class CombatService:
                             "Failed KILL_PIRATE_NPC emergent-rep hook: %s", e
                         )
 
+                # Faction-issued bounty payout (bounties.md:26 — "Federation
+                # putting a bounty on a specific pirate captain that pays out
+                # only to faction members"). Best-effort, flush-only (folds
+                # into this method's single commit below): a no-op when the
+                # NPC carries no faction bounty; pays the attacker iff their
+                # own standing with the issuing faction clears the gate
+                # (bounty_service.collect_faction_bounty), otherwise the
+                # bounty is left standing for a future eligible hunter.
+                try:
+                    from src.services.bounty_service import collect_faction_bounty
+                    collect_faction_bounty(self.db, dead_npc, attacker)
+                except Exception as e:
+                    logger.error(
+                        "Failed faction-bounty collection hook for NPC %s: %s",
+                        dead_npc.id, e,
+                    )
+
             # Medal dispatch hook (ADR-0028 / medals lane) for a resolved NPC
             # kill. defender_id is NULL on NPC combat logs (no Player behind
             # the ship), so kind="npc" lets the idempotent medals-lane hook

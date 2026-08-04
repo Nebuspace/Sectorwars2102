@@ -3152,3 +3152,58 @@ async def get_ai_behavior_analytics(
     except Exception as e:
         logger.error(f"Error getting AI behavior analytics: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get AI behavior analytics: {str(e)}")
+
+
+class FactionBountyRequest(BaseModel):
+    faction_type: str = Field(..., description="FactionType value, e.g. 'Federation'")
+    amount: int = Field(..., ge=1000, description="Bounty amount in credits")
+    reason: str = Field(..., min_length=1, max_length=200)
+
+
+@router.post("/npcs/{npc_id}/faction-bounty", response_model=Dict[str, Any])
+async def place_npc_faction_bounty(
+    npc_id: uuid.UUID,
+    request: FactionBountyRequest,
+    current_admin: User = Depends(require_scope(ECONOMY_INTERVENE)),
+    db: Session = Depends(get_db),
+):
+    """Place a faction-issued bounty on an NPC pirate captain (bounties.md:26
+    — "the Federation putting a bounty on a specific pirate captain that pays
+    out only to faction members"). Payout fires automatically when a player
+    kills the NPC (combat_service._handle_ship_destruction's dead_npc hook,
+    via bounty_service.collect_faction_bounty) and is gated on the killer's
+    own standing with the issuing faction being at least RECOGNIZED.
+    """
+    from src.models.npc_character import NPCCharacter
+    from src.models.faction import FactionType
+    from src.services.bounty_service import place_faction_bounty
+
+    npc = db.query(NPCCharacter).filter(NPCCharacter.id == npc_id).with_for_update().first()
+    if not npc:
+        raise HTTPException(status_code=404, detail="NPC not found")
+
+    try:
+        faction_type = FactionType(request.faction_type)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unrecognized faction_type: {request.faction_type}")
+
+    result = place_faction_bounty(db, npc, faction_type, request.amount, request.reason)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("message", "Failed to place bounty"))
+
+    log_admin_action(
+        db,
+        actor=current_admin,
+        scope_used=ECONOMY_INTERVENE,
+        action="place_npc_faction_bounty",
+        target_type="npc_character",
+        target_id=str(npc_id),
+        payload={"faction_type": faction_type.value, "amount": request.amount, "reason": request.reason},
+    )
+    db.commit()
+
+    logger.info(
+        f"Admin {current_admin.username} placed a {faction_type.value} bounty "
+        f"of {request.amount} on NPC {npc_id}"
+    )
+    return result

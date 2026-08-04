@@ -15,6 +15,8 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.player import Player
 from src.models.bounty_claim import BountyClaim, BountyClaimStatus
+from src.models.faction import Faction, FactionType
+from src.models.reputation import Reputation, ReputationLevel
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +92,156 @@ SYSTEM_BOUNTY_ACCRUAL_MULTIPLIER = {
     -750: 2.0,   # Villain low: 500/day
     -1000: 4.0,  # Villain max: 1,000/day
 }
+
+# --- Faction-issued bounties (bounties.md:26, 📐 Design-only until this WO) -
+# "The Federation putting a bounty on a specific pirate captain that pays out
+# only to faction members." Distinct from the player-placed pot (target is a
+# PLAYER, escrowed in Player.settings) and the system pot (auto-accrued from
+# personal_reputation): a faction bounty is PLACED by faction fiat on an NPC
+# pirate captain (NPCCharacter — HOSTILE_RAIDER archetype), not a player, so it
+# cannot live in Player.settings["bounties"] (no Player row for an NPC). Reuses
+# NPCCharacter.backstory JSONB (schema:no — no new column, no new table),
+# mirroring the single-value system-bounty-pot pattern rather than a list: one
+# active faction bounty per NPC at a time.
+#
+# Storage key (NPCCharacter.backstory):
+#   faction_bounty -> {faction_type, amount, reason, placed_at}
+FACTION_BOUNTY_KEY = "faction_bounty"
+
+# Payout gated on the collector's OWN standing with the issuing faction being
+# at least RECOGNIZED — mirrors contraband_service.GATE_MIN_LEVEL exactly (the
+# established "faction membership" proxy in this codebase: there is no
+# discrete membership row, only a Reputation tier per faction). A collector
+# below the gate still gets the kill; they simply don't get paid — "pays out
+# only to faction members" per bounties.md.
+FACTION_BOUNTY_GATE_LEVEL = ReputationLevel.RECOGNIZED
+
+# Ordered rank table — same values as contraband_service._level_rank (kept as
+# a local copy rather than a cross-module import: a lightweight ordinal
+# lookup, not shared business logic, and bounty_service should not depend on
+# contraband_service for it).
+_REPUTATION_LEVEL_RANK = {
+    ReputationLevel.PUBLIC_ENEMY: -8,
+    ReputationLevel.CRIMINAL: -7,
+    ReputationLevel.OUTLAW: -6,
+    ReputationLevel.PIRATE: -5,
+    ReputationLevel.SMUGGLER: -4,
+    ReputationLevel.UNTRUSTWORTHY: -3,
+    ReputationLevel.SUSPICIOUS: -2,
+    ReputationLevel.QUESTIONABLE: -1,
+    ReputationLevel.NEUTRAL: 0,
+    ReputationLevel.RECOGNIZED: 1,
+    ReputationLevel.ACKNOWLEDGED: 2,
+    ReputationLevel.TRUSTED: 3,
+    ReputationLevel.RESPECTED: 4,
+    ReputationLevel.VALUED: 5,
+    ReputationLevel.HONORED: 6,
+    ReputationLevel.REVERED: 7,
+    ReputationLevel.EXALTED: 8,
+}
+
+
+def place_faction_bounty(
+    db: Session, npc, faction_type: FactionType, amount: int, reason: str,
+) -> Dict[str, Any]:
+    """Place (or replace) a faction-issued bounty on an NPC pirate captain.
+
+    One active faction bounty per NPC — a second placement overwrites the
+    first rather than stacking (mirrors the system-bounty-pot's single-value
+    shape, not the player-placed list's append shape, since there's exactly
+    one issuing faction per call and no per-placer escrow to track)."""
+    if amount < BOUNTY_MIN_AMOUNT:
+        return {"success": False, "message": f"Minimum bounty is {BOUNTY_MIN_AMOUNT} credits"}
+
+    backstory = dict(npc.backstory or {})
+    backstory[FACTION_BOUNTY_KEY] = {
+        "faction_type": faction_type.value,
+        "amount": int(amount),
+        "reason": reason,
+        "placed_at": datetime.now(UTC).isoformat(),
+    }
+    npc.backstory = backstory
+    flag_modified(npc, "backstory")
+
+    logger.info(
+        "Faction bounty placed: %s put %d on NPC %s (%s)",
+        faction_type.value, amount, npc.id, reason,
+    )
+    return {
+        "success": True,
+        "npc_id": str(npc.id),
+        "faction_type": faction_type.value,
+        "amount": int(amount),
+    }
+
+
+def _collector_passes_faction_gate(db: Session, collector: Player, faction_type: FactionType) -> bool:
+    """True iff the collector's reputation with the issuing faction is at
+    least FACTION_BOUNTY_GATE_LEVEL. Mirrors contraband_service._passes_rep_gate:
+    a missing Faction row or missing Reputation row both read as below-gate."""
+    faction = db.query(Faction).filter(Faction.faction_type == faction_type).first()
+    if faction is None:
+        return False
+    reputation = (
+        db.query(Reputation)
+        .filter(Reputation.player_id == collector.id, Reputation.faction_id == faction.id)
+        .first()
+    )
+    if reputation is None:
+        return False
+    return (
+        _REPUTATION_LEVEL_RANK.get(reputation.current_level, -99)
+        >= _REPUTATION_LEVEL_RANK[FACTION_BOUNTY_GATE_LEVEL]
+    )
+
+
+def collect_faction_bounty(db: Session, npc, collector: Player) -> Optional[Dict[str, Any]]:
+    """Pay out and clear an NPC's faction bounty on kill, iff the collector
+    passes the issuing faction's standing gate.
+
+    Returns None when the NPC carries no faction bounty (nothing to do — the
+    caller's kill-resolution flow should not treat this as an error). Returns
+    a dict with ``paid: 0`` (bounty existed but the collector failed the
+    gate — bounty is left standing, uncleared, for a future eligible hunter)
+    or ``paid: <amount>`` (gate passed — bounty cleared, credited)."""
+    backstory = npc.backstory or {}
+    entry = backstory.get(FACTION_BOUNTY_KEY)
+    if not entry:
+        return None
+
+    try:
+        faction_type = FactionType(entry.get("faction_type"))
+    except ValueError:
+        logger.error("Faction bounty on NPC %s has an unrecognized faction_type %r", npc.id, entry.get("faction_type"))
+        return None
+    amount = int(entry.get("amount", 0) or 0)
+
+    if not _collector_passes_faction_gate(db, collector, faction_type):
+        logger.info(
+            "Faction bounty on NPC %s NOT paid: collector %s below %s standing with %s",
+            npc.id, collector.id, FACTION_BOUNTY_GATE_LEVEL.name, faction_type.value,
+        )
+        return {"success": True, "paid": 0, "faction_type": faction_type.value, "gate_passed": False}
+
+    if amount > 0:
+        collector.credits += amount
+
+    new_backstory = dict(backstory)
+    del new_backstory[FACTION_BOUNTY_KEY]
+    npc.backstory = new_backstory
+    flag_modified(npc, "backstory")
+
+    logger.info(
+        "Faction bounty collected: %s paid %d to %s for NPC %s (%s)",
+        faction_type.value, amount, collector.id, npc.id, entry.get("reason"),
+    )
+    return {
+        "success": True,
+        "paid": amount,
+        "faction_type": faction_type.value,
+        "gate_passed": True,
+        "new_credits": collector.credits,
+    }
 
 
 class BountyService:
