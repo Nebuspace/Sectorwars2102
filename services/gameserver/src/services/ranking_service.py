@@ -16,6 +16,17 @@ from src.models.player import Player
 
 logger = logging.getLogger(__name__)
 
+# Which PlayerLifetimeStats column (if any) a rank-point award reason
+# increments by 1. admin_grant carries no implied achievement, so it is
+# intentionally absent — a manual point grant doesn't mean a trade/kill/
+# discovery/colony actually happened.
+_REASON_TO_LIFETIME_STAT_COLUMN: Dict[str, str] = {
+    "trading_volume": "total_trades",
+    "combat_victory": "combat_victories",
+    "exploration": "sectors_visited",
+    "colony_establishment": "planets_owned",
+}
+
 
 # 18-rank spec-compliant definitions ordered by point threshold (ascending)
 # Tiers: Enlisted (3), NCO (3), Warrant (2), Officer (5), Flag (5)
@@ -316,6 +327,34 @@ class RankingService:
             "planets_owned": planets_owned,
         }
 
+    def _increment_lifetime_stat(self, player_id: uuid.UUID, reason: str) -> None:
+        """Increment the PlayerLifetimeStats column mapped to ``reason`` by 1.
+
+        Upserts the row (get-or-create) so a player predating this table, or
+        one somehow missing a row, still gets one on first award rather than
+        silently no-opping. Flush-only — the caller's own commit boundary
+        governs durability, matching award_rank_points' existing pattern.
+        """
+        column_name = _REASON_TO_LIFETIME_STAT_COLUMN.get(reason)
+        if column_name is None:
+            return
+
+        from src.models.player_lifetime_stats import PlayerLifetimeStats
+
+        stats_row = (
+            self.db.query(PlayerLifetimeStats)
+            .filter(PlayerLifetimeStats.player_id == player_id)
+            .first()
+        )
+        if stats_row is None:
+            stats_row = PlayerLifetimeStats(player_id=player_id)
+            self.db.add(stats_row)
+            self.db.flush()
+
+        current_value = getattr(stats_row, column_name) or 0
+        setattr(stats_row, column_name, current_value + 1)
+        self.db.flush()
+
     def check_rank_requirements(
         self, player_id: uuid.UUID, target_rank: str
     ) -> Dict[str, Any]:
@@ -408,6 +447,16 @@ class RankingService:
 
         old_rank = player.military_rank
         player.rank_points = (player.rank_points or 0) + points
+
+        # Best-effort lifetime-stats increment. Never blocks the point award —
+        # a failure here would otherwise silently lose real rank progress.
+        try:
+            self._increment_lifetime_stat(player_id, reason)
+        except Exception as e:
+            logger.error(
+                "Failed to increment lifetime stats for player %s (reason=%s): %s",
+                player_id, reason, e,
+            )
 
         # Check and apply promotion
         promotion_result = self._check_and_promote(player)
