@@ -69,8 +69,17 @@ logger = logging.getLogger(__name__)
 
 
 class QuantumError(Exception):
-    """Raised for player-facing quantum drive failures; .args[0] is the
-    human-readable detail string the route layer surfaces as a 400."""
+    """Raised for player-facing quantum drive failures.
+
+    ``str(exc)`` / ``.args[0]`` remains the human-readable detail the route
+    layer surfaces. Optional ``error_code`` carries the machine-readable
+    ``ERR_QJ_*`` contract from FEATURES/galaxy/sectors.md (WO-FIX-QUANTUM-
+    JUMP-ERROR-CODES-MISSING).
+    """
+
+    def __init__(self, message: str, *, error_code: str | None = None):
+        super().__init__(message)
+        self.error_code = error_code
 
 
 # --- Canonical constants (ADR-0030) ---
@@ -402,29 +411,38 @@ def scan(
     # Mirror jump()'s state guards BEFORE the cooldown check so a rejected
     # scan never consumes the cooldown (ADR-0040).
     if player.is_docked:
-        raise QuantumError("You cannot run a quantum scan while docked — launch first")
+        raise QuantumError(
+            "You cannot run a quantum scan while docked — launch first",
+            error_code="ERR_QJ_DOCKED",
+        )
     if player.is_landed:
-        raise QuantumError("You cannot run a quantum scan on a planet surface — lift off first")
+        raise QuantumError(
+            "You cannot run a quantum scan on a planet surface — lift off first",
+            error_code="ERR_QJ_DOCKED",
+        )
     if ship.status == ShipStatus.HARMONIZING:
         raise QuantumError("This Warp Jumper is anchored to a beacon and harmonizing — it cannot scan")
 
     if _cooldown_active(ship.quantum_scan_cooldown_until):
         raise QuantumError(
             f"Quantum sensors are recharging until "
-            f"{_iso_or_none(ship.quantum_scan_cooldown_until)}"
+            f"{_iso_or_none(ship.quantum_scan_cooldown_until)}",
+            error_code="ERR_QJ_SCAN_COOLDOWN",
         )
 
     sensor_level = _sensor_level(ship)
     if range_band == "extended" and sensor_level < EXTENDED_BAND_SENSOR_LEVEL:
         raise QuantumError(
-            f"The extended range band requires a Sensor L{EXTENDED_BAND_SENSOR_LEVEL} upgrade"
+            f"The extended range band requires a Sensor L{EXTENDED_BAND_SENSOR_LEVEL} upgrade",
+            error_code="ERR_QJ_SENSOR_L3_REQUIRED",
         )
 
     shard_cost = FAR_BAND_SHARD_COST if range_band == "far" else 0
     if shard_cost and player.quantum_shards < shard_cost:
         raise QuantumError(
             f"Scanning the far band costs {shard_cost} Quantum Shard; you have "
-            f"{player.quantum_shards}"
+            f"{player.quantum_shards}",
+            error_code="ERR_QJ_SHARD_REQUIRED",
         )
     if player.turns < SCAN_TURN_COST:
         raise QuantumError(
@@ -435,7 +453,8 @@ def scan(
     origin = _origin_point(points, player.current_sector_id)
     if origin.type == SectorType.NEBULA:
         raise QuantumError(
-            "Quantum field interference: the drive cannot lock a bearing inside a nebula"
+            "Quantum field interference: the drive cannot lock a bearing inside a nebula",
+            error_code="ERR_QJ_FROM_NEBULA",
         )
     spacing = _inter_sector_spacing(points)
     direction = _bearing_unit_vector(yaw_deg, pitch_deg)
@@ -606,15 +625,22 @@ def jump(
 
     # ADR-0040: no quantum jumps from a hangar — and none from a planet
     if player.is_docked:
-        raise QuantumError("You cannot engage the quantum drive while docked — launch first")
+        raise QuantumError(
+            "You cannot engage the quantum drive while docked — launch first",
+            error_code="ERR_QJ_FROM_HANGAR",
+        )
     if player.is_landed:
-        raise QuantumError("You cannot engage the quantum drive on a planet surface — lift off first")
+        raise QuantumError(
+            "You cannot engage the quantum drive on a planet surface — lift off first",
+            error_code="ERR_QJ_DOCKED",
+        )
     if ship.status == ShipStatus.HARMONIZING:
         raise QuantumError("This Warp Jumper is anchored to a beacon and harmonizing — it cannot jump")
     if _cooldown_active(ship.quantum_jump_cooldown_until):
         raise QuantumError(
             f"Quantum drive is in cooldown until "
-            f"{_iso_or_none(ship.quantum_jump_cooldown_until)}"
+            f"{_iso_or_none(ship.quantum_jump_cooldown_until)}",
+            error_code="ERR_QJ_COOLDOWN_ACTIVE",
         )
     # Player-wide 24h jump cooldown: the canon cooldown is per-pilot, not
     # per-hull. Swapping to another owned Warp Jumper must not reset it, so
@@ -625,18 +651,21 @@ def jump(
     ).scalar()
     if _cooldown_active(fleet_jump_cd):
         raise QuantumError(
-            f"Quantum drive is in cooldown until {_iso_or_none(fleet_jump_cd)}"
+            f"Quantum drive is in cooldown until {_iso_or_none(fleet_jump_cd)}",
+            error_code="ERR_QJ_PLAYER_COOLDOWN_ACTIVE",
         )
     # Same gate as the scan: committing blind to a band you cannot even
     # scan would sidestep the Sensor L3 requirement
     if range_band == "extended" and _sensor_level(ship) < EXTENDED_BAND_SENSOR_LEVEL:
         raise QuantumError(
-            f"The extended range band requires a Sensor L{EXTENDED_BAND_SENSOR_LEVEL} upgrade"
+            f"The extended range band requires a Sensor L{EXTENDED_BAND_SENSOR_LEVEL} upgrade",
+            error_code="ERR_QJ_SENSOR_L3_REQUIRED",
         )
     if ship.quantum_charges < 1:
         raise QuantumError(
             "No Quantum Charge loaded. Refine one (1 Quantum Shard) at any "
-            "Class-3+ station or SpaceDock"
+            "Class-3+ station or SpaceDock",
+            error_code="ERR_QJ_NO_CHARGE",
         )
 
     # Tractor tow through Quantum Jump (WO-AF; ships.md:358; ADR-0067). A tow
@@ -661,7 +690,8 @@ def jump(
     origin = _origin_point(points, player.current_sector_id)
     if origin.type == SectorType.NEBULA:
         raise QuantumError(
-            "Quantum field interference: the drive cannot lock a bearing inside a nebula"
+            "Quantum field interference: the drive cannot lock a bearing inside a nebula",
+            error_code="ERR_QJ_FROM_NEBULA",
         )
     spacing = _inter_sector_spacing(points)
     direction = _bearing_unit_vector(yaw_deg, pitch_deg)
@@ -869,18 +899,23 @@ def refine_charge(db: Session, player_id: uuid.UUID) -> Dict[str, Any]:
     ship = _require_warp_jumper(db, player)
 
     if not player.is_docked or not player.current_port_id:
-        raise QuantumError("You must be docked at a station to refine a Quantum Charge")
+        raise QuantumError(
+            "You must be docked at a station to refine a Quantum Charge",
+            error_code="ERR_QJ_NOT_AT_REFINING_PORT",
+        )
     station = db.query(Station).filter(Station.id == player.current_port_id).first()
     if not station:
         raise QuantumError("Docked station not found")
     if not (station.is_spacedock or station.station_class.value >= REFINE_MIN_STATION_CLASS):
         raise QuantumError(
             f"Quantum Charge refining requires a Class-{REFINE_MIN_STATION_CLASS}+ "
-            f"station or SpaceDock; {station.name} is Class {station.station_class.value}"
+            f"station or SpaceDock; {station.name} is Class {station.station_class.value}",
+            error_code="ERR_QJ_NOT_AT_REFINING_PORT",
         )
     if player.quantum_shards < 1:
         raise QuantumError(
-            f"Refining a Quantum Charge costs 1 Quantum Shard; you have {player.quantum_shards}"
+            f"Refining a Quantum Charge costs 1 Quantum Shard; you have {player.quantum_shards}",
+            error_code="ERR_QJ_SHARD_REQUIRED",
         )
 
     player.quantum_shards -= 1

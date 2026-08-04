@@ -1812,10 +1812,11 @@ class ARIAPersonalIntelligenceService:
         WO-ARIA-PROGRESSION consolidation: this is now the SINGLE source of
         truth, replacing the four duplicated inline threshold blocks
         (movement_service.py, combat_service.py, trading.py buy + sell) AND
-        the two now-removed redundant siblings (update_consciousness_level /
-        update_relationship_score, both zero-caller dead code before this
-        WO). See update_consciousness_and_relationship_sync for the
-        sync-Session twin the three sync call sites use.
+        the two removed redundant siblings (update_consciousness_level /
+        update_relationship_score — deleted; zero callers confirmed again
+        2026-08-04, WO-CLEANUP-UPDATE-RELATIONSHIP-SCORE-DEAD-FUNCTION). See
+        update_consciousness_and_relationship_sync for the sync-Session twin
+        the three sync call sites use.
 
         Per call: +1 aria_total_interactions, +1 aria_relationship_score
         (capped 100) -- aria-companion.md:139 "Rises +1 per significant

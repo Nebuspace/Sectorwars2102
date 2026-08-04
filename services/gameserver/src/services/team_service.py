@@ -212,18 +212,20 @@ class TeamService:
         # a non-leader (or non-member entirely) forces a SELECT ... FOR
         # UPDATE on every one of the target team's Fleet rows, PLUS the Team
         # row itself, before ever reaching the leader check -- a spammable
-        # (the rate limiter is dead code) griefing/contention lever against
-        # a rival team's mid-battle fleet ops, and a straight regression
-        # from the pre-fix code, which rejected non-leaders before any
-        # locking at all. This reads off the unlocked top-of-function
-        # get_team() -- an optimistic filter, not the authoritative
-        # decision -- so a leader_id that's stale by the time this runs
-        # (a concurrent transfer_leadership mid-flight) simply falls through
-        # to the Fleet lock path same as a real leader would; the LOCKED
-        # re-check below (off the populate_existing() Team re-read) remains
-        # the sole source of truth and still closes that TOCTOU. Two checks,
-        # not one moved: this one is cheap-and-optimistic, that one is
-        # authoritative-and-locked.
+        # griefing/contention lever against a rival team's mid-battle fleet
+        # ops (there is no delete-team rate limiter on this path — verified
+        # 2026-08-04, WO-CLEANUP-TEAM-SERVICE-RATE-LIMITER-SPOTCHECK: zero
+        # RateLimiter/throttle symbols in team_service or teams routes), and
+        # a straight regression from the pre-fix code, which rejected
+        # non-leaders before any locking at all. This reads off the unlocked
+        # top-of-function get_team() -- an optimistic filter, not the
+        # authoritative decision -- so a leader_id that's stale by the time
+        # this runs (a concurrent transfer_leadership mid-flight) simply
+        # falls through to the Fleet lock path same as a real leader would;
+        # the LOCKED re-check below (off the populate_existing() Team
+        # re-read) remains the sole source of truth and still closes that
+        # TOCTOU. Two checks, not one moved: this one is cheap-and-optimistic,
+        # that one is authoritative-and-locked.
         if team.leader_id != player_id:
             raise ValueError("Only team leader can delete the team")
 
