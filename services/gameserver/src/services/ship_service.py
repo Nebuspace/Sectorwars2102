@@ -5,7 +5,7 @@ Handles ship creation, destruction, and special ship mechanics
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -47,7 +47,10 @@ def sync_current_pilot(player: Player, new_ship: Optional[Ship], *, old_ship: Op
     set right back to it."""
     if old_ship is not None and (new_ship is None or old_ship.id != new_ship.id):
         old_ship.current_pilot_id = None
+        old_ship.current_pilot_since = None
     if new_ship is not None:
+        if new_ship.current_pilot_id != player.id:
+            new_ship.current_pilot_since = datetime.now(timezone.utc)
         new_ship.current_pilot_id = player.id
 
 

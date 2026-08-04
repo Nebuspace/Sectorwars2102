@@ -279,6 +279,32 @@ class Ship(Base):
     # consuming service exists yet (schema-only, additive per this WO's scope).
     salvage_break_in_progress_by_id = Column(UUID(as_uuid=True), ForeignKey("players.id", ondelete="SET NULL"), nullable=True)
     salvage_break_started_at = Column(DateTime(timezone=True), nullable=True)
+    # When the CURRENT current_pilot_id started piloting this hull (set by
+    # ship_service.sync_current_pilot, the single write-site every boarding/
+    # ejection call site already funnels through). Needed for the contested
+    # registration-transfer "Borrowed by the claimant for at least 1 hour"
+    # eligibility check (ship-registry.md "Legal ownership transfer") -- no
+    # such timestamp existed anywhere before WO-BUILD-SHIP-REGISTRY-
+    # CONTESTED-TRANSFER-SALVAGE-CLAIM. Cleared to NULL alongside
+    # current_pilot_id whenever the pilot changes/clears.
+    current_pilot_since = Column(DateTime(timezone=True), nullable=True)
+
+    # --- Contested registration transfer / salvage-claim (ship-registry.md
+    # "Legal ownership transfer") -- WO-BUILD-SHIP-REGISTRY-CONTESTED-
+    # TRANSFER-SALVAGE-CLAIM. All additive nullable; non-NULL
+    # pending_transfer_claimant_id means a claim is in-flight and the ship is
+    # locked against a second concurrent claim (canon failure-mode table:
+    # "First request locks the ship until resolved... Second returns 409").
+    pending_transfer_claimant_id = Column(UUID(as_uuid=True), ForeignKey("players.id", ondelete="SET NULL"), nullable=True)
+    pending_transfer_requested_at = Column(DateTime(timezone=True), nullable=True)
+    # Denormalized copy of requested_at + 24h -- the sweep's candidate filter
+    # queries this column directly rather than recomputing per-row.
+    pending_transfer_deadline = Column(DateTime(timezone=True), nullable=True)
+    # The 30% fee already DEBITED from the claimant at filing time (canon
+    # step 2 precedes the dispute window) -- kept so a stolen-report
+    # cancellation can refund the exact amount paid.
+    pending_transfer_fee_paid = Column(Integer, nullable=True)
+    pending_transfer_port_id = Column(UUID(as_uuid=True), ForeignKey("stations.id", ondelete="SET NULL"), nullable=True)
 
     # True for NPC-piloted ships. Instance-level companion to canon's
     # ShipSpecification.is_npc_only flag (DATA_MODELS/ships.md): police

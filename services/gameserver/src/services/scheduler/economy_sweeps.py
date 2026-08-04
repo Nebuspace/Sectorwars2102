@@ -32,6 +32,7 @@ from src.services.scheduler._common import (
     _DAILY_STIPEND_LOCK_KEY,
     _BOUNTY_ACCRUAL_LOCK_KEY,
     _STOLEN_SHIP_REP_PENALTY_LOCK_KEY,
+    _TRANSFER_CLAIM_AUTOCOMPLETE_LOCK_KEY,
     _PORT_OPERATING_COSTS_LOCK_KEY,
     _STATION_RECOVERY_LOCK_KEY,
     _RECLAIM_FLAG_LOCK_KEY,
@@ -643,6 +644,96 @@ def _run_stolen_ship_rep_penalty_sweep_sync() -> Dict[str, int]:
         return result
     except Exception:
         logger.exception("Stolen-ship rep-penalty sweep failed")
+        db.rollback()
+        return result
+    finally:
+        db.close()
+
+
+def _run_transfer_claim_autocomplete_sweep_sync() -> Dict[str, int]:
+    """Auto-complete any contested registration-transfer claim whose 24h
+    owner-dispute window has elapsed with no owner response (ship-registry.md
+    "Legal ownership transfer" step 4, "Owner takes no action -> transfer
+    completes automatically at the deadline" / failure-modes table). Own
+    SessionLocal, xact-level advisory lock (skip on contention), a candidate
+    query, then a per-row with_for_update re-read + per-row commit + per-row
+    try/except -- same discipline as
+    ``_run_stolen_ship_rep_penalty_sweep_sync`` directly above.
+
+    IDEMPOTENCY: the candidate gate itself is the idempotency anchor --
+    ``Ship.pending_transfer_claimant_id IS NOT NULL``. Completion (via
+    ``ship_registry_service._complete_transfer_claim``) clears that column,
+    so a completed claim drops out of the candidate set and can never be
+    re-completed by a duplicate wake or restart. The per-row re-read re-
+    confirms both the claim is still pending AND the deadline has still
+    passed (a concurrent owner-approve or stolen-report-cancel since the
+    candidate query would have already cleared/changed it).
+
+    Returns {"claims": n_completed}."""
+    from src.core.database import SessionLocal
+    from src.models.ship import Ship
+    from src.services.ship_registry_service import _complete_transfer_claim
+
+    result = {"claims": 0}
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _TRANSFER_CLAIM_AUTOCOMPLETE_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return result
+        db.commit()
+
+        now = datetime.now(UTC)
+
+        candidate_ids = (
+            db.query(Ship.id)
+            .filter(
+                Ship.pending_transfer_claimant_id.isnot(None),
+                Ship.pending_transfer_deadline.isnot(None),
+                Ship.pending_transfer_deadline <= now,
+            )
+            .all()
+        )
+
+        for (ship_id,) in candidate_ids:
+            try:
+                ship = (
+                    db.query(Ship)
+                    .filter(Ship.id == ship_id)
+                    .with_for_update()
+                    .first()
+                )
+                still_pending_and_due = (
+                    ship is not None
+                    and ship.pending_transfer_claimant_id is not None
+                    and ship.pending_transfer_deadline is not None
+                    and ship.pending_transfer_deadline <= now
+                )
+                if not still_pending_and_due:
+                    db.rollback()
+                    continue
+
+                _complete_transfer_claim(db, ship=ship, via="auto_complete")
+                result["claims"] += 1
+                db.commit()
+            except Exception:
+                logger.exception(
+                    "Transfer-claim autocomplete sweep: completion failed for ship %s",
+                    ship_id,
+                )
+                db.rollback()
+
+        if result["claims"]:
+            logger.info(
+                "Transfer-claim autocomplete sweep: completed %d pending claim(s)",
+                result["claims"],
+            )
+        return result
+    except Exception:
+        logger.exception("Transfer-claim autocomplete sweep failed")
         db.rollback()
         return result
     finally:

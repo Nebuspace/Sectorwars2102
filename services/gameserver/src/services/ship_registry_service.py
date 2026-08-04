@@ -1,19 +1,20 @@
 """ShipRegistry service -- append-event helper + existing-hull backfill +
-report-stolen / retract-stolen-report / abandon / claim / trade-sell
-behavioral flows.
+report-stolen / retract-stolen-report / abandon / claim / trade-sell /
+contested-transfer behavioral flows.
 
 Canon: SYSTEMS/ship-registry.md, DATA_MODELS/ships.md#shipregistry.
 Schema rollout was WO-P10-green-ship-registry-schema (append-event helper +
 backfill only). WO-FIX-SHIP-REGISTRY-BEHAVIORAL-ROUTES added report-stolen /
 retract-stolen-report. WO-FIX-SHIP-REGISTRY-TRANSFER-SALVAGE-TRADE-ABANDON
 adds abandon / claim (ship-registry.md "Abandonment") and trade-sell / trade
--respond (ship-registry.md "Trading" -- peer-to-peer sale). Contested
-registration transfer / salvage-claim ("Legal ownership transfer" -- 30% fee,
-24h owner-dispute window) is DEFERRED -- see that WO's report: the numbers
-are concrete, but the flow needs a new pending-transfer schema, a 24h
-auto-complete scheduler sweep (mirroring economy_sweeps.py's stolen-ship-rep-
-penalty sweep), and a cancel-on-stolen-report interaction with report_stolen
-above -- scoped as its own follow-up WO rather than rushed here.
+-respond (ship-registry.md "Trading" -- peer-to-peer sale).
+WO-BUILD-SHIP-REGISTRY-CONTESTED-TRANSFER-SALVAGE-CLAIM adds the contested
+registration-transfer flow itself (ship-registry.md "Legal ownership
+transfer" -- 30% fee, 24h owner-dispute window): file_transfer_claim /
+approve_transfer_claim / _complete_transfer_claim here, the auto-complete
+scheduler sweep in economy_sweeps.py (mirroring the stolen-ship-rep-penalty
+sweep's discipline), and a cancel-on-stolen-report hook added to
+report_stolen below.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -29,6 +30,19 @@ from src.models.ship import Ship, ShipSpecification
 from src.models.ship_registry import RegistryEventType, ShipRegistry, generate_registration_number
 from src.services.bounty_service import BountyService
 from src.services.wanted_service import recompute_is_wanted
+
+# 30% of the ship's appraised value, charged to the claimant AT FILING TIME
+# (ship-registry.md "Legal ownership transfer" step 2, "Fee assessment" --
+# precedes the notification/dispute-window steps). ``Ship.purchase_value``
+# is this codebase's "last appraised value" field, same convention as
+# STOLEN_AUTO_BOUNTY_PCT above. The fee is a pure credit sink (no receiving
+# party is named anywhere in canon -- it is a registry/port processing fee,
+# not a payment to the previous owner, mirroring bounty_service.place_bounty's
+# placement-fee sink), fully refunded only if the owner cancels the claim by
+# filing a stolen report mid-window (canon failure-modes table: "Fee
+# refunded"); kept on successful completion (auto-complete or owner-approve).
+TRANSFER_CLAIM_FEE_PCT = 0.30
+TRANSFER_CLAIM_DISPUTE_WINDOW = timedelta(hours=24)
 
 # 50% of the ship's last appraised value (ship-registry.md "Reporting a ship
 # stolen" effects #5). ``Ship.purchase_value`` is this codebase's existing
@@ -212,6 +226,35 @@ def report_stolen(
             bounty_ref = result["bounty_id"]
 
     now = datetime.now(timezone.utc)
+
+    # Cancel-on-stolen-report (ship-registry.md "Legal ownership transfer"
+    # step 4 / failure-modes table: "Original owner files stolen report
+    # mid-transfer -> Transfer canceled; claimant becomes Wanted. Fee
+    # refunded."). The claimant becoming Wanted is already covered below --
+    # thief_id is the current pilot, which for a pending-transfer ship is
+    # ordinarily the claimant (Borrowed >=1h eligibility path) or nobody
+    # (Drifting path, no Wanted trigger either way). Refund the exact fee
+    # paid at filing; the claimant row needs its own lock since it wasn't
+    # locked by the route (only the ship row was).
+    cancelled_transfer_claim_id: Optional[UUID] = None
+    if ship.pending_transfer_claimant_id is not None:
+        cancelled_transfer_claim_id = ship.pending_transfer_claimant_id
+        fee_to_refund = ship.pending_transfer_fee_paid or 0
+        if fee_to_refund > 0:
+            claimant = (
+                db.query(Player)
+                .filter(Player.id == ship.pending_transfer_claimant_id)
+                .with_for_update()
+                .first()
+            )
+            if claimant is not None:
+                claimant.credits += fee_to_refund
+        ship.pending_transfer_claimant_id = None
+        ship.pending_transfer_requested_at = None
+        ship.pending_transfer_deadline = None
+        ship.pending_transfer_fee_paid = None
+        ship.pending_transfer_port_id = None
+
     ship.stolen_status = True
     ship.stolen_reported_at = now
     ship.stolen_recovery_mode = mode
@@ -247,6 +290,7 @@ def report_stolen(
             "recovery_mode": mode,
             "thief_id": str(thief_id) if thief_id else None,
             "bounty_ref": bounty_ref,
+            "cancelled_transfer_claimant_id": str(cancelled_transfer_claim_id) if cancelled_transfer_claim_id else None,
         },
     )
 
@@ -256,6 +300,7 @@ def report_stolen(
         "stolen_reported_at": now.isoformat(),
         "recovery_mode": mode,
         "bounty_id": bounty_ref,
+        "cancelled_transfer_claim": cancelled_transfer_claim_id is not None,
     }
 
 
@@ -493,3 +538,140 @@ def ship_registry_original_owner_id(db: Session, ship: Ship) -> Optional[UUID]:
         .first()
     )
     return row[0] if row is not None else ship.registered_owner_id
+
+
+# --- Contested registration transfer (ship-registry.md "Legal ownership
+# transfer") ---------------------------------------------------------------
+
+
+def file_transfer_claim(db: Session, *, ship: Ship, claimant: Player, port_id: UUID) -> dict:
+    """File a contested registration-transfer claim on ``ship`` at
+    ``port_id`` (ship-registry.md "Legal ownership transfer" steps 1-3).
+    Charges the 30% fee immediately and opens the 24h owner-dispute window.
+    Raises ``ShipRegistryError`` with the exact canon ERR_* code on
+    rejection. Flushes but does not commit -- the route owns the commit."""
+    if ship.registered_owner_id == claimant.id:
+        raise ShipRegistryError(
+            "ERR_ALREADY_OWNER", "You already hold the registration for this ship.",
+        )
+    if ship.pending_transfer_claimant_id is not None:
+        raise ShipRegistryError(
+            "ERR_TRANSFER_ALREADY_PENDING",
+            "A registration-transfer claim is already pending on this ship "
+            "(ship-registry.md: first request locks the ship until resolved).",
+        )
+    if not claimant.is_docked or claimant.current_port_id != port_id:
+        raise ShipRegistryError(
+            "ERR_NOT_AT_PORT", "You must be docked at this port to file a transfer claim here.",
+        )
+    if ship.stolen_status:
+        raise ShipRegistryError(
+            "ERR_SHIP_STOLEN", "A ship with an active stolen report cannot be claimed via transfer.",
+        )
+
+    now = datetime.now(timezone.utc)
+    # Eligibility (step 1): Drifting (no current pilot) and not stolen (the
+    # stolen check above already covers "not flagged stolen"), OR Borrowed
+    # by the claimant for at least 1 hour -- "boarding doesn't grant transfer
+    # rights immediately; you can't board and instantly claim."
+    is_drifting = ship.current_pilot_id is None
+    is_eligible_borrower = (
+        ship.current_pilot_id == claimant.id
+        and ship.current_pilot_since is not None
+        and (now - ship.current_pilot_since) >= timedelta(hours=1)
+    )
+    if not (is_drifting or is_eligible_borrower):
+        raise ShipRegistryError(
+            "ERR_NOT_ELIGIBLE_FOR_TRANSFER",
+            "This ship must be Drifting, or Borrowed by you for at least 1 hour, to file a transfer claim.",
+        )
+
+    fee = int(ship.purchase_value * TRANSFER_CLAIM_FEE_PCT)
+    if claimant.credits < fee:
+        raise ShipRegistryError(
+            "ERR_INSUFFICIENT_CREDITS", "You do not have enough credits to pay the transfer fee.",
+        )
+
+    claimant.credits -= fee
+    deadline = now + TRANSFER_CLAIM_DISPUTE_WINDOW
+    ship.pending_transfer_claimant_id = claimant.id
+    ship.pending_transfer_requested_at = now
+    ship.pending_transfer_deadline = deadline
+    ship.pending_transfer_fee_paid = fee
+    ship.pending_transfer_port_id = port_id
+
+    return {
+        "ship_id": str(ship.id),
+        "claimant_id": str(claimant.id),
+        "fee_paid": fee,
+        "requested_at": now.isoformat(),
+        "dispute_deadline": deadline.isoformat(),
+    }
+
+
+def approve_transfer_claim(db: Session, *, ship: Ship, owner: Player) -> dict:
+    """The registered owner explicitly approves a pending transfer claim,
+    completing it immediately (ship-registry.md "Legal ownership transfer"
+    step 4, "Owner explicitly approves -> transfer completes immediately").
+    Raises ``ShipRegistryError`` with the exact canon ERR_* code on
+    rejection. Flushes but does not commit -- the route owns the commit."""
+    if ship.registered_owner_id != owner.id:
+        raise ShipRegistryError(
+            "ERR_NOT_REGISTERED_OWNER", "Only the registered owner can approve this transfer claim.",
+        )
+    if ship.pending_transfer_claimant_id is None:
+        raise ShipRegistryError(
+            "ERR_NO_PENDING_TRANSFER", "This ship has no pending transfer claim.",
+        )
+    return _complete_transfer_claim(db, ship=ship, via="owner_approved")
+
+
+def _complete_transfer_claim(db: Session, *, ship: Ship, via: str) -> dict:
+    """Shared completion path for both ``approve_transfer_claim`` (owner
+    approves) and the auto-complete scheduler sweep (owner takes no action
+    within 24h). Transfers registration to the pending claimant, keeps the
+    already-charged fee (only a stolen-report cancellation refunds it -- see
+    ``report_stolen``), and clears the pending-transfer columns. Caller must
+    already hold the row lock on ``ship`` (and, for the sweep, have
+    re-verified the claim is still pending). Flushes but does not commit."""
+    claimant_id = ship.pending_transfer_claimant_id
+    fee_paid = ship.pending_transfer_fee_paid
+    port_id = ship.pending_transfer_port_id
+    previous_owner_id = ship.registered_owner_id
+    now = datetime.now(timezone.utc)
+
+    ship.owner_id = claimant_id
+    ship.registered_owner_id = claimant_id
+    # Insurance from the previous owner voids on any ownership change
+    # (ship-registry.md "Insurance interaction"); same clear as
+    # claim_abandoned_ship / player_trade_service._transfer_ship.
+    if ship.insurance is not None:
+        ship.insurance = None
+        flag_modified(ship, "insurance")
+
+    ship.pending_transfer_claimant_id = None
+    ship.pending_transfer_requested_at = None
+    ship.pending_transfer_deadline = None
+    ship.pending_transfer_fee_paid = None
+    ship.pending_transfer_port_id = None
+
+    append_registry_event(
+        db,
+        ship=ship,
+        event_type=RegistryEventType.OWNERSHIP_TRANSFER,
+        original_owner_id=ship_registry_original_owner_id(db, ship),
+        previous_owner_id=previous_owner_id,
+        new_owner_id=claimant_id,
+        acting_party_id=claimant_id,
+        port_id=port_id,
+        transfer_fee_paid=fee_paid,
+        event_metadata={"via": via},
+    )
+
+    return {
+        "ship_id": str(ship.id),
+        "registered_owner_id": str(claimant_id),
+        "fee_paid": fee_paid,
+        "completed_at": now.isoformat(),
+        "via": via,
+    }

@@ -1,13 +1,13 @@
 """Ship Registry behavioral routes -- report-stolen / retract-stolen-report /
-abandon / claim.
+abandon / claim / transfer-claim.
 
-Canon: SYSTEMS/ship-registry.md "Reporting a ship stolen", "Abandonment".
-WO-FIX-SHIP-REGISTRY-BEHAVIORAL-ROUTES shipped report/retract-stolen.
-WO-FIX-SHIP-REGISTRY-TRANSFER-SALVAGE-TRADE-ABANDON adds abandon/claim here.
-Trade (peer-to-peer sale) is ADR-0089's ship-bundle trade session
-(src/api/routes/player_trade.py) -- not duplicated here, see
-ship_registry_service's module docstring. Contested registration transfer /
-salvage-claim is deferred -- see that module's docstring for why.
+Canon: SYSTEMS/ship-registry.md "Reporting a ship stolen", "Abandonment",
+"Legal ownership transfer". WO-FIX-SHIP-REGISTRY-BEHAVIORAL-ROUTES shipped
+report/retract-stolen. WO-FIX-SHIP-REGISTRY-TRANSFER-SALVAGE-TRADE-ABANDON
+added abandon/claim. WO-BUILD-SHIP-REGISTRY-CONTESTED-TRANSFER-SALVAGE-CLAIM
+adds transfer-claim (file) / transfer-claim/approve here. Trade (peer-to-peer
+sale) is ADR-0089's ship-bundle trade session (src/api/routes/player_trade.py)
+-- not duplicated here, see ship_registry_service's module docstring.
 
 Business logic lives in src.services.ship_registry_service -- this file is
 routing + locking + HTTP-shape translation only.
@@ -27,7 +27,9 @@ from src.models.ship import Ship
 from src.services.ship_registry_service import (
     ShipRegistryError,
     abandon_ship,
+    approve_transfer_claim,
     claim_abandoned_ship,
+    file_transfer_claim,
     report_stolen,
     retract_stolen_report,
 )
@@ -49,6 +51,12 @@ _CONFLICT_CODES = {
     "ERR_SHIP_BORROWED",
     "ERR_NOT_ABANDONED",
     "ERR_NOT_AT_PORT",
+    "ERR_ALREADY_OWNER",
+    "ERR_TRANSFER_ALREADY_PENDING",
+    "ERR_SHIP_STOLEN",
+    "ERR_NOT_ELIGIBLE_FOR_TRANSFER",
+    "ERR_INSUFFICIENT_CREDITS",
+    "ERR_NO_PENDING_TRANSFER",
 }
 
 
@@ -167,4 +175,52 @@ async def claim_abandoned_ship_route(
 
     db.commit()
     logger.info("Ship %s claimed by %s at port %s", ship_id, player.id, request.port_id)
+    return result
+
+
+@router.post("/{ship_id}/transfer-claim")
+async def file_transfer_claim_route(
+    ship_id: str,
+    request: PortActionRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """File a contested registration-transfer claim (ship-registry.md
+    "Legal ownership transfer") -- the "Salvage" acquisition method."""
+    ship = _get_locked_ship(db, ship_id)
+
+    try:
+        result = file_transfer_claim(db, ship=ship, claimant=player, port_id=request.port_id)
+    except ShipRegistryError as exc:
+        db.rollback()
+        _raise_for(exc)
+        return  # pragma: no cover -- _raise_for always raises
+
+    db.commit()
+    logger.info(
+        "Ship %s transfer claim filed by %s at port %s (fee=%s, deadline=%s)",
+        ship_id, player.id, request.port_id, result["fee_paid"], result["dispute_deadline"],
+    )
+    return result
+
+
+@router.post("/{ship_id}/transfer-claim/approve")
+async def approve_transfer_claim_route(
+    ship_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """The registered owner explicitly approves a pending transfer claim,
+    completing it immediately instead of waiting out the 24h window."""
+    ship = _get_locked_ship(db, ship_id)
+
+    try:
+        result = approve_transfer_claim(db, ship=ship, owner=player)
+    except ShipRegistryError as exc:
+        db.rollback()
+        _raise_for(exc)
+        return  # pragma: no cover -- _raise_for always raises
+
+    db.commit()
+    logger.info("Ship %s transfer claim approved by owner %s", ship_id, player.id)
     return result

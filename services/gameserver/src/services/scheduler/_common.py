@@ -375,6 +375,14 @@ STOLEN_SHIP_REP_PENALTY_CHECK_SECONDS = int(
     os.environ.get("STOLEN_SHIP_REP_PENALTY_CHECK_SECONDS", str(42 * 60))
 )
 
+# Contested registration-transfer 24h auto-complete sweep pre-filter
+# (ship-registry.md "Legal ownership transfer" -- a real-time deadline, not a
+# canonical-day cadence like the sweeps above, so this runs on a much finer
+# 5-minute cadence rather than the ~40min coarse pre-filters used elsewhere).
+TRANSFER_CLAIM_AUTOCOMPLETE_CHECK_SECONDS = int(
+    os.environ.get("TRANSFER_CLAIM_AUTOCOMPLETE_CHECK_SECONDS", str(5 * 60))
+)
+
 # Port operating-cost sweep pre-filter (WO-B3). The maintenance/upkeep accrual
 # + 3-month insolvency force-sell live in port_ownership_service.accrue_operating_
 # costs — a LAZY, idempotent engine that, before this sweep, only fired via the
@@ -717,6 +725,10 @@ _IDLE_INCOME_LOCK_KEY = _mnemonic_lock_key("IDLI")
 _DAILY_STIPEND_LOCK_KEY = _mnemonic_lock_key("STIP")
 _BOUNTY_ACCRUAL_LOCK_KEY = _mnemonic_lock_key("BNTY")
 _STOLEN_SHIP_REP_PENALTY_LOCK_KEY = _mnemonic_lock_key("STLN")
+# Contested registration-transfer 24h auto-complete sweep (ship-registry.md
+# "Legal ownership transfer") -- WO-BUILD-SHIP-REGISTRY-CONTESTED-TRANSFER-
+# SALVAGE-CLAIM.
+_TRANSFER_CLAIM_AUTOCOMPLETE_LOCK_KEY = _mnemonic_lock_key("TCLM")
 _SUSTAINED_DRIP_LOCK_KEY = _mnemonic_lock_key("SDRP")
 _PORT_OPERATING_COSTS_LOCK_KEY = _mnemonic_lock_key("PORT")
 _STATION_RECOVERY_LOCK_KEY = _mnemonic_lock_key("STRC")
