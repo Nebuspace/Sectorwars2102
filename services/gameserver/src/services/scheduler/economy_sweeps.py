@@ -313,10 +313,11 @@ def _run_daily_stipend_sweep_sync() -> Dict[str, int]:
         # Candidate players: active accounts whose USER logged in today (UTC).
         # The durable login timestamp is User.last_login, written on every login
         # by user_service.update_user_last_login / authenticate_player (auth
-        # flow). NOTE: Player has no last_login column (it was renamed to
-        # last_game_login), and last_game_login is NOT written by the live auth
-        # path (track_login is called without a db arg) — so User.last_login is
-        # the only reliable active-that-day signal. Filter on the
+        # flow). Player.last_game_login is ALSO now refreshed on the live login
+        # path (PlayerActivityService.track_login, WO-BUILD-RETENTION-SIGNALS-
+        # WRITEBACK), but User.last_login remains the field this sweep was
+        # already built against and is kept as the active-that-day signal here
+        # for continuity. Filter on the
         # [today 00:00 UTC, tomorrow 00:00 UTC) half-open window in SQL (join
         # Player->User) so the gate is cheap and idle players never enter the set.
         day_start = datetime(today.year, today.month, today.day, tzinfo=UTC)

@@ -83,10 +83,11 @@ async def _track_player_login(db: Session, user_id) -> Optional[Dict[str, Any]]:
 
         from src.services.player_activity_service import get_player_activity_service
         activity_service = await get_player_activity_service()
-        # Call without the optional db arg: the routes' Session is sync, and
-        # track_login only uses db to refresh last_game_login (optional). The
-        # Redis session/online-set tracking is the part we need here.
-        await activity_service.track_login(str(player.id))
+        # db is the routes' sync Session; track_login accepts sync Session
+        # (WO-BUILD-RETENTION-SIGNALS-WRITEBACK) and uses it to refresh
+        # last_game_login AND open the durable PlayerSession/PlayerActivity
+        # mirror the retention sweep + WO-G18 region-activity recompute read.
+        await activity_service.track_login(str(player.id), db=db)
     except Exception:
         logger.warning("player-login activity tracking failed (non-fatal)", exc_info=True)
     return welcome_back_outcome
@@ -105,7 +106,7 @@ async def _track_player_logout(db: Session, user_id) -> None:
             return
         from src.services.player_activity_service import get_player_activity_service
         activity_service = await get_player_activity_service()
-        await activity_service.track_logout(str(player.id))
+        await activity_service.track_logout(str(player.id), db=db)
     except Exception:
         logger.warning("player-logout activity tracking failed (non-fatal)", exc_info=True)
 

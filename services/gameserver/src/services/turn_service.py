@@ -329,8 +329,10 @@ def welcome_back(player: Player, prior_last_game_login: Optional[datetime]) -> D
     ``player.last_game_login`` to *now*. The next login within 7 days therefore
     measures a fresh, sub-threshold gap and grants 0 — the bonus can only fire
     once per genuine return. ``last_game_login`` is the live login-recency clock
-    for the auth path (track_login is called without a db arg, so this is the
-    only writer of that column on the live login route).
+    for the auth path; ``PlayerActivityService.track_login`` (also called on
+    the live login route, now with ``db``) redundantly refreshes it to the
+    same instant a moment later, so this remains the authoritative first
+    write for idempotency purposes.
 
     The bonus is added to the balance and clamped to ``player.max_turns`` so a
     returning player is topped up *to* their cap at most — never overflowed past

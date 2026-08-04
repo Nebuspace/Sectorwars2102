@@ -56,15 +56,20 @@ UTC = timezone.utc
 #       analytics write-back per OPERATIONS/player-activity.md)
 #     - negative_combat_streak     ← CombatLog (written by combat_service)
 #     - social_isolation           ← Player.team_id + Message
-#   DORMANT (logic correct, but their SQL tables are NEVER written — the
-#   PlayerActivity / PlayerSession telemetry is REDIS-ONLY per
-#   OPERATIONS/player-activity.md "no write-back into Postgres"; these SELECTs
-#   read empty tables and return None, so the signals never fire until a durable
-#   analytics write-back lands):
-#     - declining_session_length / early_logout_streak  ← PlayerSession (empty)
+#   LIVE as of WO-BUILD-RETENTION-SIGNALS-WRITEBACK (PlayerActivityService now
+#   durably mirrors PlayerSession at login/logout):
+#     - declining_session_length / early_logout_streak  ← PlayerSession
+#       (populated on every login/logout; needs DECLINING_MIN_SESSIONS=5
+#       completed sessions to accumulate before it can trip)
+#   STILL DORMANT (no production call site writes trade events at all —
+#   PlayerActivityService.track_activity, which would populate this table for
+#   trade_buy/trade_sell, has zero callers; the trading services never invoke
+#   it — a genuinely separate, larger follow-up than the session mirror):
 #     - economic_loss_streak                            ← PlayerActivity (empty)
-#   This is flagged for DECISIONS.md. The same empty-PlayerActivity caveat
-#   affects WO-G18's Region.active_players_30d recompute (separate follow-up).
+#   This is flagged for DECISIONS.md. WO-G18's Region.active_players_30d
+#   recompute now gets partial (login/logout-boundary) PlayerActivity rows
+#   from the same writeback, so it is no longer always-zero, but undercounts
+#   players who only trade/move without a fresh login in the 30d window.
 # ============================================================================
 
 # --- Canonical thresholds (OPERATIONS/retention.md "At-risk signals") --------
