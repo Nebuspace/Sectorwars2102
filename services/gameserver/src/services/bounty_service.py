@@ -34,6 +34,12 @@ BOUNTY_PLACEMENT_FEE = 0.10  # 10% fee
 BOUNTY_MIN_DURATION_DAYS = 1
 BOUNTY_MAX_DURATION_DAYS = 90
 
+# Soft cap on a target's bounty-entry list (bounty-and-reputation.md:192,
+# ratified number — "50 entries"). Collapse (not deletion) via
+# collapse_excess_bounties: over-cap entries merge per-placer, summing
+# amount, into one entry each — no credits lost, list length bounded.
+BOUNTY_SOFT_CAP_ENTRIES = 50
+
 # System-generated bounty thresholds based on personal reputation. These define
 # WHO the Federation wants (a player must be at or below the shallowest tier,
 # -500, to accrue any system bounty) and the per-tier ACCRUAL CAP — the deepest
@@ -751,6 +757,141 @@ class BountyService:
 
         self.db.flush()
         return result
+
+    def admin_force_cancel_bounty(
+        self, target_id: uuid.UUID, bounty_id: str
+    ) -> Dict[str, Any]:
+        """Admin-only force-cancel of a stuck bounty (bounty-and-reputation.md:190
+        — "Bounty placed on player who deletes account: bounty stays attached to
+        deleted target's settings; mark unclaimable; admin tool refunds
+        placers"). Unlike ``cancel_bounty``, this does NOT require the caller to
+        be the original placer — any admin invoking this (via the RBAC-gated
+        route) may force-cancel any player-placed bounty on ``target_id``.
+
+        Refund mirrors ``cancel_bounty`` exactly (escrowed ``amount`` only, fee
+        non-refundable). If the placer's Player row no longer resolves (also
+        deleted, or a corrupted ``placed_by``), the entry is still removed
+        (unstuck) but the refund is skipped and logged — the canon scenario is
+        explicitly "target" deletion, but this guards the symmetric case too
+        rather than leaving the entry unremovable."""
+        target = self.db.query(Player).filter(Player.id == target_id).with_for_update().first()
+        if not target:
+            return {"success": False, "message": "Target player not found"}
+
+        bounties = self._get_bounties(target)
+        entry = next((b for b in bounties if str(b.get("id")) == str(bounty_id)), None)
+        if entry is None:
+            return {"success": False, "message": "Bounty not found or already resolved"}
+
+        if entry.get("type") == "system":
+            return {"success": False, "message": "System bounties cannot be force-cancelled"}
+
+        remaining = [b for b in bounties if str(b.get("id")) != str(bounty_id)]
+        self._set_bounties(target, remaining)
+
+        refund = int(entry.get("amount", 0))
+        placer_id_raw = entry.get("placed_by")
+        placer = None
+        try:
+            placer_id = uuid.UUID(str(placer_id_raw))
+            placer = self.db.query(Player).filter(Player.id == placer_id).with_for_update().first()
+        except (ValueError, TypeError):
+            placer_id = None
+
+        refunded = False
+        if placer is not None:
+            placer.credits += refund
+            refunded = True
+        else:
+            logger.error(
+                "admin_force_cancel_bounty: bounty %s on %s had an unresolvable "
+                "placer (%r) — entry removed, %d credits NOT refunded",
+                bounty_id, target_id, placer_id_raw, refund,
+            )
+
+        self.db.flush()
+
+        logger.info(
+            "Admin force-cancelled bounty %s on %s (placer %s, refund %d, refunded=%s)",
+            bounty_id, target_id, placer_id_raw, refund, refunded,
+        )
+
+        return {
+            "success": True,
+            "bounty_id": str(bounty_id),
+            "target_id": str(target_id),
+            "refund": refund,
+            "refunded": refunded,
+        }
+
+    def collapse_excess_bounties(self, target_id: uuid.UUID) -> Dict[str, Any]:
+        """Soft-cap collapse (bounty-and-reputation.md:192 — "Bounty list grows
+        unbounded (many small placements): soft cap 50 entries; older entries
+        collapsed by placer (sum amounts under one entry)"). No expiry/refund
+        happens here — this only compacts the JSONB list so it can't grow
+        unbounded; every credit stays escrowed exactly as before, just
+        regrouped. System entries are never counted toward the cap (they don't
+        live in the JSONB list) and are left untouched.
+
+        Idempotent: a target already at or under the cap is a no-op."""
+        target = self.db.query(Player).filter(Player.id == target_id).with_for_update().first()
+        if not target:
+            return {"success": False, "message": "Target player not found"}
+
+        bounties = self._get_bounties(target)
+        if len(bounties) <= BOUNTY_SOFT_CAP_ENTRIES:
+            return {
+                "success": True,
+                "target_id": str(target_id),
+                "collapsed": 0,
+                "entry_count": len(bounties),
+            }
+
+        # Oldest-first by placed_at (entries without a parseable timestamp sort
+        # first — treated as oldest, the conservative choice for what to collapse).
+        def _sort_key(b: Dict[str, Any]) -> str:
+            return str(b.get("placed_at") or "")
+
+        ordered = sorted(bounties, key=_sort_key)
+        overflow_count = len(ordered) - BOUNTY_SOFT_CAP_ENTRIES
+        to_collapse = ordered[:overflow_count]
+        kept = ordered[overflow_count:]
+
+        by_placer: Dict[str, Dict[str, Any]] = {}
+        for entry in to_collapse:
+            placer_id = str(entry.get("placed_by"))
+            bucket = by_placer.setdefault(placer_id, {
+                "id": str(uuid.uuid4()),
+                "placed_by": placer_id,
+                "placed_by_name": entry.get("placed_by_name", "Anonymous"),
+                "amount": 0,
+                "placed_at": entry.get("placed_at"),
+                "type": "player",
+                "expires_at": None,  # a collapsed entry drops any individual expiry
+            })
+            bucket["amount"] += int(entry.get("amount", 0))
+            # Keep the EARLIEST placed_at among the collapsed entries for this placer.
+            if entry.get("placed_at") and (
+                not bucket["placed_at"] or entry["placed_at"] < bucket["placed_at"]
+            ):
+                bucket["placed_at"] = entry["placed_at"]
+
+        collapsed_entries = list(by_placer.values())
+        self._set_bounties(target, kept + collapsed_entries)
+        self.db.flush()
+
+        logger.info(
+            "Collapsed %d bounty entries into %d on target %s (soft cap %d)",
+            len(to_collapse), len(collapsed_entries), target_id, BOUNTY_SOFT_CAP_ENTRIES,
+        )
+
+        return {
+            "success": True,
+            "target_id": str(target_id),
+            "collapsed": len(to_collapse),
+            "collapsed_into": len(collapsed_entries),
+            "entry_count": len(kept) + len(collapsed_entries),
+        }
 
     def get_bounties_on_player(self, target_id: uuid.UUID) -> Dict[str, Any]:
         """List all active bounties on a player."""

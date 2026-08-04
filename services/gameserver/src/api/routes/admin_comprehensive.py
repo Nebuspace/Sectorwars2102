@@ -3207,3 +3207,75 @@ async def place_npc_faction_bounty(
         f"of {request.amount} on NPC {npc_id}"
     )
     return result
+
+
+@router.post("/players/{target_id}/bounties/{bounty_id}/force-cancel", response_model=Dict[str, Any])
+async def admin_force_cancel_bounty(
+    target_id: uuid.UUID,
+    bounty_id: str,
+    current_admin: User = Depends(require_scope(ECONOMY_INTERVENE)),
+    db: Session = Depends(get_db),
+):
+    """Force-cancel a stuck bounty on ``target_id`` (bounty-and-reputation.md:190
+    — "Bounty placed on player who deletes account: ... admin tool refunds
+    placers"). Unlike the player-facing cancel, no placer-identity check is
+    required — any admin may force-cancel any player-placed bounty via this
+    RBAC-gated route.
+    """
+    from src.services.bounty_service import BountyService
+
+    result = BountyService(db).admin_force_cancel_bounty(target_id, bounty_id)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("message", "Failed to cancel bounty"))
+
+    log_admin_action(
+        db,
+        actor=current_admin,
+        scope_used=ECONOMY_INTERVENE,
+        action="admin_force_cancel_bounty",
+        target_type="player",
+        target_id=str(target_id),
+        payload={"bounty_id": bounty_id, "refund": result.get("refund"), "refunded": result.get("refunded")},
+    )
+    db.commit()
+
+    logger.info(
+        f"Admin {current_admin.username} force-cancelled bounty {bounty_id} "
+        f"on player {target_id} (refunded={result.get('refunded')})"
+    )
+    return result
+
+
+@router.post("/players/{target_id}/bounties/collapse", response_model=Dict[str, Any])
+async def admin_collapse_bounties(
+    target_id: uuid.UUID,
+    current_admin: User = Depends(require_scope(ECONOMY_INTERVENE)),
+    db: Session = Depends(get_db),
+):
+    """Collapse ``target_id``'s bounty-entry list down to the soft cap
+    (bounty-and-reputation.md:192 — "soft cap: 50 entries; older entries
+    collapsed by placer, sum amounts"). No credits move — entries over the
+    cap are merged per-placer into one summed entry each. Idempotent.
+    """
+    from src.services.bounty_service import BountyService
+
+    result = BountyService(db).collapse_excess_bounties(target_id)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("message", "Failed to collapse bounties"))
+
+    log_admin_action(
+        db,
+        actor=current_admin,
+        scope_used=ECONOMY_INTERVENE,
+        action="admin_collapse_bounties",
+        target_type="player",
+        target_id=str(target_id),
+        payload={"collapsed": result.get("collapsed"), "entry_count": result.get("entry_count")},
+    )
+    db.commit()
+
+    logger.info(
+        f"Admin {current_admin.username} collapsed {result.get('collapsed', 0)} "
+        f"bounty entries on player {target_id}"
+    )
+    return result
