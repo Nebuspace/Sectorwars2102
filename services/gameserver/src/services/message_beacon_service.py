@@ -811,6 +811,70 @@ def report(db: Session, beacon_id: uuid.UUID, player_id: uuid.UUID) -> Dict[str,
     }
 
 
+def clear_flag(db: Session, beacon_id: uuid.UUID) -> Dict[str, Any]:
+    """Admin clear of a player-report flag (WO-BEACON-ADMIN-CLEAR-FLAG).
+
+    Sets ``flagged=false`` (idempotent), rebuilds sector denorm so the cell
+    reappears in ambient view when still ACTIVE/FADING. No player presence
+    gate — admin path. FLUSH-ONLY.
+    """
+    beacon = _load_beacon(db, beacon_id)
+    region_id, sector_id = beacon.region_id, beacon.sector_id
+    _lock_sector(db, region_id, sector_id)
+    beacon = _load_beacon(db, beacon_id)
+    already_clear = not bool(getattr(beacon, "flagged", False))
+    if not already_clear:
+        beacon.flagged = False
+        db.flush()
+        _rebuild_sector_denorm(db, region_id, sector_id)
+        db.flush()
+        logger.info("Beacon %s flag cleared (admin)", beacon_id)
+
+    return {
+        "id": str(beacon.id),
+        "flagged": False,
+        "already_cleared": already_clear,
+    }
+
+
+def list_flagged_beacons(
+    db: Session, *, page: int = 1, limit: int = 100
+) -> Dict[str, Any]:
+    """Paginated admin list of flagged message beacons (newest first)."""
+    page = max(1, int(page))
+    limit = max(1, min(int(limit), 200))
+    q = db.query(MessageBeacon).filter(MessageBeacon.flagged.is_(True))
+    total = q.count()
+    rows = (
+        q.order_by(MessageBeacon.deployed_at.desc())
+        .offset((page - 1) * limit)
+        .limit(limit)
+        .all()
+    )
+    return {
+        "beacons": [
+            {
+                "id": str(b.id),
+                "region_id": str(b.region_id),
+                "sector_id": int(b.sector_id),
+                "deployer_player_id": str(b.deployer_player_id)
+                if b.deployer_player_id
+                else None,
+                "deployer_nickname": b.deployer_nickname_at_deploy,
+                "message": b.message,
+                "preview": (b.message or "")[:60],
+                "deployed_at": b.deployed_at.isoformat() if b.deployed_at else None,
+                "flagged": True,
+            }
+            for b in rows
+        ],
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "pages": (total + limit - 1) // limit if total else 0,
+    }
+
+
 # ── Salvage ─────────────────────────────────────────────────────────────
 
 def salvage(db: Session, beacon_id: uuid.UUID, player_id: uuid.UUID) -> Dict[str, Any]:

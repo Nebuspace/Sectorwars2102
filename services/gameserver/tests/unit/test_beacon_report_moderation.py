@@ -81,3 +81,27 @@ class TestReadHidesFlagged:
             db.query.return_value.filter.return_value.first.return_value = player
             with pytest.raises(BeaconNotFoundError):
                 mbs.read(db, beacon.id, player.id)
+
+
+class TestClearFlag:
+    def test_clears_and_rebuilds(self):
+        beacon = _beacon(flagged=True)
+        db = MagicMock()
+        with patch.object(mbs, "_load_beacon", return_value=beacon):
+            with patch.object(mbs, "_lock_sector"):
+                with patch.object(mbs, "_rebuild_sector_denorm") as rebuild:
+                    result = mbs.clear_flag(db, beacon.id)
+        assert beacon.flagged is False
+        assert result["flagged"] is False
+        assert result["already_cleared"] is False
+        rebuild.assert_called_once()
+
+    def test_idempotent_when_already_clear(self):
+        beacon = _beacon(flagged=False)
+        db = MagicMock()
+        with patch.object(mbs, "_load_beacon", return_value=beacon):
+            with patch.object(mbs, "_lock_sector"):
+                with patch.object(mbs, "_rebuild_sector_denorm") as rebuild:
+                    result = mbs.clear_flag(db, beacon.id)
+        assert result["already_cleared"] is True
+        rebuild.assert_not_called()
