@@ -108,7 +108,15 @@ class Station(Base):
     # the existing REGEN_TICK_HOURS canonical-hours lazy regen gate.
     last_price_recomputed_at = Column(DateTime(timezone=True), nullable=True)
     pending_price_recomputation = Column(Boolean, nullable=False, server_default=text("false"), default=False)
-    
+    # Region-termination-cascade relocation pre-pay (ADR-0050 "Station
+    # relocation paths" B, WO-BUILD-REGION-LIFECYCLE-CLEANUP-CASCADE): set
+    # when the owner pre-pays the 30% relocation fee during Suspended/Grace.
+    # Schema-only for now -- the station-relocation cascade itself is a
+    # discovery-only stub (region_termination_cascade_service.py) pending
+    # Station.acquisition_cost / upgrade-capital-cost tracking, which does
+    # not exist anywhere in this schema yet.
+    relocation_prepaid = Column(Boolean, nullable=True)
+
     # Station properties
     station_class = Column(Enum(StationClass, name="station_class"), nullable=False)
     type = Column(Enum(StationType, name="station_type"), nullable=False)

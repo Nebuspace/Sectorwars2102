@@ -28,6 +28,7 @@ class AuditAction(str, Enum):
     IMPORT = "import"
     INTERVENTION = "intervention"
     EMERGENCY = "emergency"
+    FORFEIT = "forfeit"
 
 
 class AuditService:

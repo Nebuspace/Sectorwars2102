@@ -237,6 +237,12 @@ class Planet(Base):
     # Onboarding sovereign-suppress (M40): a starter planet's contestable window
     # is suppressed and reserved to exactly this player — non-snipeable.
     reserved_for_player_id = Column(UUID(as_uuid=True), ForeignKey("players.id", ondelete="SET NULL"), nullable=True)
+
+    # Region-termination-cascade safe-transport pre-pay (ADR-0050 "Planet-safe
+    # transport paths" B, WO-BUILD-REGION-LIFECYCLE-CLEANUP-CASCADE): set when
+    # the owner pre-pays the 20% transport fee during Suspended/Grace so the
+    # safe transfers to the player's wallet at 100% instead of 80% on cascade.
+    transport_prepaid = Column(Boolean, nullable=True)
     # Timestamp of the first valid SETTLE (ADR-0091 R2: ownership attaches at
     # settle, not at genesis-deploy). NULL until the CAS resolver's UPDATE wins.
     settled_at = Column(DateTime(timezone=True), nullable=True)
