@@ -818,6 +818,14 @@ def jump(
             destination_sector = db.query(Sector).filter(
                 Sector.id == destination.id
             ).first()
+            # sectors.md Phase 3 step 5: any successful arrival (including
+            # misfire) marks the destination discovered. is_discovered is a
+            # separate admin-visibility aggregate from discovered_by_id (the
+            # per-medal first-discoverer column) -- bang-imported sectors can
+            # seed it False, so this is not a no-op. Unconditional (no
+            # first-wins gate needed; a plain bool flip).
+            if destination_sector is not None:
+                destination_sector.is_discovered = True
             if destination_sector is not None and mark_sector_discovered(
                 db, destination_sector, player.id
             ):
