@@ -643,10 +643,18 @@ def jump(
             error_code="ERR_QJ_COOLDOWN_ACTIVE",
         )
     # Player-wide 24h jump cooldown: the canon cooldown is per-pilot, not
-    # per-hull. Swapping to another owned Warp Jumper must not reset it, so
-    # reject if ANY owned ship still carries an active jump cooldown.
+    # per-hull (FEATURES/galaxy/sectors.md, "regardless of which Warp Jumper
+    # they pilot") -- and not per-OWNER either, which reopened the SK11
+    # team-rotation-stacking hole (ADR-0049): an owner_id-only filter never
+    # sees a player who jumped on a teammate's borrowed Warp Jumper, because
+    # they own nothing. current_pilot_id alone is NOT the fix either -- a hull
+    # swap NULLs the old ship's current_pilot_id (ship_service.select_ship),
+    # so a pilot-only filter matches exactly one ship and collapses into the
+    # per-ship gate 15 lines above, restoring hull-swap evasion. Match either
+    # column: a superset of both, covering owned hulls across swaps and the
+    # borrowed hull currently being flown.
     fleet_jump_cd = db.query(func.max(Ship.quantum_jump_cooldown_until)).filter(
-        Ship.owner_id == player.id,
+        or_(Ship.owner_id == player.id, Ship.current_pilot_id == player.id),
         Ship.is_destroyed == False,  # noqa: E712 — SQLAlchemy boolean comparison
     ).scalar()
     if _cooldown_active(fleet_jump_cd):
@@ -1267,13 +1275,15 @@ def get_status(db: Session, player: Player) -> Dict[str, Any]:
         ship and not ship.is_destroyed and ship.type == ShipType.WARP_JUMPER
     )
 
-    # Jump cooldown is per-pilot, not per-hull: surface the player-wide max
-    # across all owned ships so swapping hulls can't hide an active cooldown
-    # (mirrors jump()'s fleet-wide gate).
+    # Jump cooldown is per-pilot, not per-hull and not per-owner: surface the
+    # player-wide max across every ship this player owns OR is currently
+    # piloting, so swapping hulls (owned or borrowed) can't hide an active
+    # cooldown. Must stay filter-identical to jump()'s fleet-wide gate — see
+    # the comment there for why neither column alone is sufficient.
     jump_cd = (
         db.query(func.max(Ship.quantum_jump_cooldown_until))
         .filter(
-            Ship.owner_id == player.id,
+            or_(Ship.owner_id == player.id, Ship.current_pilot_id == player.id),
             Ship.is_destroyed == False,  # noqa: E712 — SQLAlchemy boolean comparison
         )
         .scalar()
