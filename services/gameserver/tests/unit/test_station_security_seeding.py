@@ -110,8 +110,10 @@ class TestOperatorAnchors:
 
     @pytest.mark.parametrize("region_type", ["terran_space", "central_nexus"])
     def test_tier_b_tradedock_in_operator_region_is_not_an_anchor(self, region_type: str) -> None:
-        """Only Tier-A TradeDocks are "hub stations" -- Tier-B falls through
-        to the ordinary NO-CANON default like any other non-anchor port."""
+        """Only Tier-A TradeDocks are "hub stations" -- Tier-B is not an
+        anchor. It still lands on "standard" here, but via the per-class
+        gradient (CLASS_11 is in the high-tier band, ratified 2026-08-04),
+        not via anchor status -- distinct from the anchor branches above."""
         assert (
             _derive_station_security_tier(
                 region_type=region_type,
@@ -120,7 +122,7 @@ class TestOperatorAnchors:
                 is_spacedock=False,
                 tradedock_tier="B",
             )
-            == "basic"
+            == "standard"
         )
 
 
@@ -171,21 +173,33 @@ class TestLawlessClusters:
         )
 
 
+_HIGH_TIER_CLASSES = {
+    StationClass.CLASS_7,
+    StationClass.CLASS_8,
+    StationClass.CLASS_9,
+    StationClass.CLASS_10,
+    StationClass.CLASS_11,
+}
+
+
 @pytest.mark.unit
 class TestOrdinaryPortDefault:
-    """NO-CANON WO-STN-SEC-1 default: every ordinary CLASS_1-11 NPC port (in
-    ANY region, not just player-owned) that isn't a named anchor or in a
-    lawless cluster gets a uniform "basic" floor."""
+    """Ratified 2026-08-04 (Max): ordinary CLASS_1-11 NPC ports (in ANY
+    region, not just player-owned) that aren't a named anchor or in a
+    lawless cluster get a per-class gradient (docking-slips.md precedent),
+    not a uniform "basic" floor -- CLASS_7-11 (premium/refining and up)
+    default to "standard", CLASS_0-6 stay at "basic"."""
 
     @pytest.mark.parametrize("station_class", list(StationClass))
     @pytest.mark.parametrize("region_type", ["terran_space", "central_nexus", "player_owned"])
-    def test_non_anchor_non_lawless_port_defaults_to_basic(
+    def test_non_anchor_non_lawless_port_matches_the_class_gradient(
         self, region_type: str, station_class: StationClass
     ) -> None:
         # CLASS_0 in an operator-managed region IS the anchor -- skip that
         # combination here, it's covered by TestOperatorAnchors.
         if region_type in ("terran_space", "central_nexus") and station_class == StationClass.CLASS_0:
             pytest.skip("covered by TestOperatorAnchors")
+        expected = "standard" if station_class in _HIGH_TIER_CLASSES else "basic"
         assert (
             _derive_station_security_tier(
                 region_type=region_type,
@@ -194,7 +208,7 @@ class TestOrdinaryPortDefault:
                 is_spacedock=False,
                 tradedock_tier=None,
             )
-            == "basic"
+            == expected
         )
 
     def test_player_owned_class_0_capital_is_also_basic(self) -> None:
