@@ -39,6 +39,23 @@ SCOUT_FIRST_SHOT_MULT = 1.10
 SCOUT_DEFENSE_PENALTY_MULT = 1.05  # takes 5% more when targeted
 DEFENDER_ABSORPTION_MULT = 0.90    # existing Defender +10% absorption
 
+# In-battle repair mechanic (WO-BUILD-FLEET-SUPPORT-REPAIR-MECHANIC). No
+# in-battle regen mechanic previously existed AT ALL — fleet-tactics.md only
+# documents Support's "+5% repair regen to nearby members" MODIFIER, with no
+# base rate for it to modify. NO-CANON: BASE_REPAIR_REGEN_PCT is a
+# conservative invented baseline (2% of max_hull/round — slow enough that
+# repair alone can't out-heal sustained fire from an average ship's
+# attack_rating, matching the existing Defender/Scout multipliers' "meaningful
+# but not dominant" scale) flagged for a DECISIONS.md ruling. SUPPORT_REPAIR_
+# REGEN_MULT (+5%) IS canon-given; applied multiplicatively on the base rate,
+# mirroring how DEFENDER_ABSORPTION_MULT/SCOUT_DEFENSE_PENALTY_MULT are
+# multiplicative rather than additive. "Nearby members" has no positional/
+# distance system in fleet battles (ships don't have in-battle coordinates) —
+# interpreted as "any other active Support-role ship in the same fleet",
+# scoped fleet-wide like every other role bonus in this module.
+BASE_REPAIR_REGEN_PCT = 0.02
+SUPPORT_REPAIR_REGEN_MULT = 1.05
+
 
 def scout_outgoing_mult(role: Optional[str], is_first_round: bool) -> float:
     """Outgoing damage multiplier for Scout first-shot (pure helper)."""
@@ -1018,6 +1035,17 @@ class FleetService:
                 # Remove destroyed ships mid-round
                 attacker_ships = [s for s in attacker_ships if (self._get_ship_combat_stat(s, "hull", 0) or 0) > 0]
 
+        # End-of-round repair regen (fleet-tactics.md Support role — WO-BUILD-
+        # FLEET-SUPPORT-REPAIR-MECHANIC). Re-queries active ships fresh from
+        # each Fleet's membership rather than trusting the loop-local
+        # attacker_ships/defender_ships lists (which were mutated in-place
+        # above and may be stale for either side depending on kill order) —
+        # same discipline as attacker_remaining/defender_remaining below.
+        if attacker:
+            self._apply_round_repair(attacker, self._get_active_fleet_ships(attacker))
+        if defender:
+            self._apply_round_repair(defender, self._get_active_fleet_ships(defender))
+
         # Update battle damage statistics
         battle.attacker_damage_dealt = (battle.attacker_damage_dealt or 0) + round_results["attacker_damage"]
         battle.defender_damage_dealt = (battle.defender_damage_dealt or 0) + round_results["defender_damage"]
@@ -1163,6 +1191,37 @@ class FleetService:
                 if hull > 0:
                     active.append(member.ship)
         return active
+
+    def _apply_round_repair(self, fleet: Fleet, active_ships: List[Ship]) -> None:
+        """End-of-round in-battle hull regen (fleet-tactics.md Support role).
+        Every active ship in ``fleet`` regenerates BASE_REPAIR_REGEN_PCT of
+        its max_hull, clamped to max_hull; the whole fleet's regen is boosted
+        by SUPPORT_REPAIR_REGEN_MULT if ANY active ship in the fleet is
+        currently crewed by a Support-role member (fleet-wide, not per-ship —
+        see the module-level NO-CANON note on "nearby"). Runs AFTER both fire
+        exchanges (destroyed ships are already excluded from ``active_ships``,
+        so repair can never revive a kill this round). No-op on an empty
+        fleet."""
+        if not active_ships:
+            return
+
+        active_ids = [s.id for s in active_ships]
+        has_support = self.db.query(FleetMember.id).filter(
+            FleetMember.fleet_id == fleet.id,
+            FleetMember.ship_id.in_(active_ids),
+            FleetMember.role == FleetRole.SUPPORT.value,
+        ).first() is not None
+        regen_mult = SUPPORT_REPAIR_REGEN_MULT if has_support else 1.0
+
+        for ship in active_ships:
+            max_hull = self._get_ship_combat_stat(ship, "max_hull", 0)
+            current_hull = self._get_ship_combat_stat(ship, "hull", 0)
+            if max_hull <= 0 or current_hull <= 0 or current_hull >= max_hull:
+                continue
+            regen = int(max_hull * BASE_REPAIR_REGEN_PCT * regen_mult)
+            if regen <= 0:
+                continue
+            self._set_ship_combat_stat(ship, "hull", min(max_hull, current_hull + regen))
 
     # DEPRECATED + REMOVED — Fleet.morale is now FULLY INERT in combat
     # (WO-BS2, reverts WO-AS). The former ``_morale_factor`` helper mapped
