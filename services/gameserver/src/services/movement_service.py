@@ -2198,9 +2198,9 @@ class MovementService:
         return max(1, base_cost)
 
     # Hull damage one armored mine deals to a hostile ship entering the sector.
-    # Proposed in ADR-0083 (pending Max bless); deterrent-scale, non-lethal
-    # (hull is floored at 1.0 so a minefield cripples but does not destroy —
-    # lethal mines / destruction-on-zero is a documented future refinement).
+    # Ratified in ADR-0083 (Accepted); deterrent-scale, non-lethal (hull is
+    # floored at 1.0 so a minefield cripples but does not destroy — lethal
+    # mines / destruction-on-zero is a documented future refinement).
     MINE_DETONATION_DAMAGE = 200.0
 
     def _detonate_sector_mines(self, player: Player, sector: Sector) -> None:
