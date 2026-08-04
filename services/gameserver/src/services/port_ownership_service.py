@@ -2187,12 +2187,11 @@ def realize_port_revenue(
     (withdrawable), operating -> ownership['operating_fund'].
 
     This is the REALIZATION HOOK for port trade revenue (tariff/tax, docking
-    fees, service charges). It is currently UNWIRED: trade tax is realized
-    inline in routes/trading.py as `station.treasury_balance += tax_amount`
-    (100% to the owner bucket). Re-pointing those realization sites at this
-    function is a FOLLOW-UP for the lane that owns trading.py / docking_service
-    (this lane must not edit them). Unowned stations have no owner cut — the
-    whole gross routes to the operating fund (a credit sink in practice).
+    fees, service charges). Wired from routes/trading.py's buy and sell tax
+    paths (both call this helper for the canon fee-distribution split; each
+    site falls back to `station.treasury_balance += tax_amount` only if this
+    call raises). Unowned stations have no owner cut — the whole gross routes
+    to the operating fund (a credit sink in practice).
 
     No commit; caller owns the transaction."""
     now = now or datetime.now(UTC)
