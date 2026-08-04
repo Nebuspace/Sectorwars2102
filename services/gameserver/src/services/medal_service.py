@@ -1107,8 +1107,9 @@ def check_and_award_governance_medals(db: Session, player_id: uuid.UUID) -> List
     Counter: the number of regional policies this player authored that reached
     IMPLEMENTED (``RegionalPolicy.proposed_by == player AND status==IMPLEMENTED``).
     Dispatched from the governance finalize sweep when a policy is enacted.
-    Defensive. (Note: ``diplomatic.first_citizen`` / governance_votes is NOT
-    wired here — its only earn-event lives behind an AsyncSession and is parked.)
+    Defensive. ``diplomatic.first_citizen`` is a separate hook —
+    :func:`check_and_award_first_citizen_medal` — fired from the AsyncSession
+    vote path via ``db.run_sync``.
     """
     try:
         from src.models.region import RegionalPolicy, PolicyStatus
@@ -1127,6 +1128,44 @@ def check_and_award_governance_medals(db: Session, player_id: uuid.UUID) -> List
         )
     except Exception as e:
         logger.error("check_and_award_governance_medals failed for %s: %s", player_id, e)
+        return []
+
+
+def check_and_award_first_citizen_medal(
+    db: Session, player_id: uuid.UUID
+) -> List[str]:
+    """Award diplomatic.first_citizen (``governance_votes`` >= 1).
+
+    Counter: lifetime RegionalVote rows + RegionalPolicyVote rows for this
+    voter. Dispatched from RegionalGovernanceService.cast_election_vote /
+    cast_policy_vote via ``await db.run_sync(...)`` after the vote row is
+    flushed so the COUNT includes the just-cast vote. Defensive + idempotent.
+    """
+    try:
+        from src.models.region import RegionalPolicyVote, RegionalVote
+
+        election_votes = (
+            db.query(RegionalVote)
+            .filter(RegionalVote.voter_id == player_id)
+            .count()
+        )
+        policy_votes = (
+            db.query(RegionalPolicyVote)
+            .filter(RegionalPolicyVote.voter_id == player_id)
+            .count()
+        )
+        return _evaluate_and_award(
+            db,
+            player_id,
+            "governance_votes",
+            int(election_votes) + int(policy_votes),
+            source_event_key="governance.vote_cast",
+            awarded_via="system",
+        )
+    except Exception as e:
+        logger.error(
+            "check_and_award_first_citizen_medal failed for %s: %s", player_id, e
+        )
         return []
 
 
@@ -1434,6 +1473,7 @@ __all__ = [
     "check_and_award_faction_medals",
     "check_and_award_team_founder_medal",
     "check_and_award_governance_medals",
+    "check_and_award_first_citizen_medal",
     "get_active_medal_bonuses",
     "MEDAL_BONUS_CAPS",
     "MEDAL_PROGRESS_BANDS",

@@ -27,6 +27,23 @@ from src.services.multi_account_service import blocks_vote
 logger = logging.getLogger(__name__)
 
 
+def _dispatch_first_citizen_medal(sync_db, player_id) -> None:
+    """Fire diplomatic.first_citizen after a governance vote is flushed.
+
+    Sync twin for AsyncSession callers via ``await db.run_sync(...)``.
+    Defensive: getattr-resolved, failures logged and swallowed — a medal
+    hiccup must never roll back a recorded vote.
+    """
+    try:
+        import src.services.medal_service as _medal_module
+
+        hook = getattr(_medal_module, "check_and_award_first_citizen_medal", None)
+        if callable(hook):
+            hook(sync_db, player_id)
+    except Exception as e:
+        logger.error("First-citizen medal dispatch hook failed: %s", e)
+
+
 # ---------------------------------------------------------------------------
 # Governance loop — canon constants (sw2102-docs SYSTEMS/regional-governance.md
 # + FEATURES/gameplay/regional-governance.md + ADR-0059 N-D5/N-F5/N-I4).
@@ -1406,6 +1423,13 @@ class RegionalGovernanceService:
             cast_at=now,
         )
         db.add(vote)
+        # Flush so the first-citizen COUNT includes this vote; medal hook is
+        # best-effort and must never block recording the vote itself.
+        try:
+            await db.flush()
+            await db.run_sync(_dispatch_first_citizen_medal, voter.id)
+        except Exception as e:
+            logger.error("First-citizen medal pre-commit hook failed: %s", e)
         try:
             await db.commit()
         except IntegrityError:
@@ -1614,6 +1638,13 @@ class RegionalGovernanceService:
             weight=membership.voting_power,
             created_at=now,
         ))
+        # Flush so the first-citizen COUNT includes this vote; medal hook is
+        # best-effort and must never block recording the vote itself.
+        try:
+            await db.flush()
+            await db.run_sync(_dispatch_first_citizen_medal, voter.id)
+        except Exception as e:
+            logger.error("First-citizen medal pre-commit hook failed: %s", e)
         try:
             await db.commit()
         except IntegrityError:
