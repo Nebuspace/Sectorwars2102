@@ -23,37 +23,6 @@ router = APIRouter(prefix="/genesis", tags=["genesis"])
 #  Request / Response Models
 # ------------------------------------------------------------------ #
 
-class GenesisDeployRequest(BaseModel):
-    """Request to deploy a genesis device."""
-    sector_id: int = Field(..., description="Target sector number")
-    tier: str = Field(
-        ...,
-        pattern="^(basic|enhanced|advanced)$",
-        description="Genesis device tier: basic, enhanced, or advanced",
-    )
-
-
-class GenesisDeployResponse(BaseModel):
-    """Response from deploying a genesis device."""
-    success: bool
-    planet_id: str
-    planet_name: str
-    planet_type: str
-    genesis_tier: str
-    habitability_score: int
-    resource_richness: float
-    size: int
-    formation_status: str
-    formation_started_at: str
-    formation_complete_at: str
-    formation_hours_remaining: float
-    credits_spent: int
-    credits_remaining: int
-    genesis_purchases_this_week: int
-    genesis_purchases_remaining: int
-    ship_sacrificed: Optional[dict] = None
-
-
 class FormationStatusResponse(BaseModel):
     """Response for formation status check."""
     planet_id: str
@@ -114,51 +83,6 @@ class GenesisQuoteResponse(BaseModel):
 # ------------------------------------------------------------------ #
 #  Endpoints
 # ------------------------------------------------------------------ #
-
-@router.post("/deploy", response_model=GenesisDeployResponse)
-async def deploy_genesis_device(
-    request: GenesisDeployRequest,
-    player: Player = Depends(get_current_player),
-    db: Session = Depends(get_db),
-):
-    """
-    DEPRECATED — zero real callers (verified 2026-08-04). The canonical,
-    actually-live route is ``POST /planets/genesis/deploy``
-    (``deploy_genesis_device_legacy`` in api/routes/planets.py) — that is
-    what player-client calls (services/api.ts:190). Per ADR-0094 point 2
-    (one canonical endpoint per action), this route is the deprecated
-    overlap for the genesis-deploy example the ADR itself names. Left live
-    rather than removed pending confirmation no external/API-first client
-    depends on it.
-
-    Deploy a genesis device to create a new planet in the specified sector.
-
-    The player must:
-    - Be in the target sector
-    - Have sufficient credits for the chosen tier
-    - Not have exceeded the weekly purchase limit (3 per week)
-    - Not be docked at a station or landed on a planet
-
-    For the **advanced** tier, the player's current colony ship is sacrificed.
-
-    The newly created planet enters a "forming" state and becomes usable
-    after the formation period (default 48 hours).
-    """
-    service = GenesisService(db)
-
-    try:
-        result = service.deploy_genesis_device(
-            player_id=player.id,
-            sector_id=request.sector_id,
-            tier=request.tier,
-        )
-        return result
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
-
 
 @router.get("/status/{planet_id}", response_model=FormationStatusResponse)
 async def get_formation_status(

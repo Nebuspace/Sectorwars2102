@@ -1884,9 +1884,9 @@ async def deploy_genesis_device_legacy(
 
     Despite the historical "_legacy" function name, this is the live route
     the player-client actually calls (POST /planets/genesis/deploy — see
-    services/player-client/src/services/api.ts). A parallel POST /genesis/deploy
-    route also exists (src/api/routes/genesis.py, deploy_genesis_device) but has
-    no known caller; both share the same GenesisDeployRequest/GenesisService.
+    services/player-client/src/services/api.ts). The orphaned parallel
+    POST /genesis/deploy route (src/api/routes/genesis.py) had zero callers
+    and was removed (2026-08-04) — this is now the sole genesis-deploy route.
     """
     from src.services.genesis_service import GenesisService
 
