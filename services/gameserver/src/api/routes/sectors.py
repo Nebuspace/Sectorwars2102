@@ -150,6 +150,11 @@ class SectorContentsResponse(BaseModel):
     wrecks: List[WreckResponse] = []
     # Gate structures (GET /warp-gates/sector/{id} passthrough).
     warp_gates: SectorStructuresResponse
+    # Ambient message-beacon cells (Sector.message_beacons JSONB denorm
+    # passthrough -- message_beacon_service._rebuild_sector_denorm is the
+    # sole writer; this is a direct, zero-query read of the already-loaded
+    # Sector row, same shape/convention as live_ships above).
+    message_beacons: List[Dict[str, Any]] = []
     # Server-authoritative ENGAGE proximity threshold, in REFERENCE_BAND em
     # (WO-API-A1) -- intrasystem_movement_service.ENGAGE_RANGE_EM, the SAME
     # value POST /combat/engage now enforces server-side. Published here
@@ -549,5 +554,6 @@ async def get_sector_contents(
         formations=formation_responses,
         wrecks=wrecks,
         warp_gates=SectorStructuresResponse(**gates),
+        message_beacons=sector.message_beacons or [],
         engage_range_em=isp.ENGAGE_RANGE_EM,
     )

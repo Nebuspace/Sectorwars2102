@@ -859,6 +859,51 @@ def clear_flag(db: Session, beacon_id: uuid.UUID) -> Dict[str, Any]:
     }
 
 
+def list_my_beacons(
+    db: Session, player_id: uuid.UUID, *, page: int = 1, limit: int = 100
+) -> Dict[str, Any]:
+    """Paginated "My Beacons" listing (message-beacons.md:133) -- every
+    beacon the given player deployed, newest first, regardless of decay
+    state or flag (the owner's own management screen, unlike the ambient
+    sector denorm which hides DARK/flagged/weight-0 cells -- see
+    _rebuild_sector_denorm). Uses idx_message_beacon_deployer, the index
+    this exact query was reserved for at model-definition time."""
+    page = max(1, int(page))
+    limit = max(1, min(int(limit), 200))
+    now = _now()
+    q = db.query(MessageBeacon).filter(MessageBeacon.deployer_player_id == player_id)
+    total = q.count()
+    rows = (
+        q.order_by(MessageBeacon.deployed_at.desc())
+        .offset((page - 1) * limit)
+        .limit(limit)
+        .all()
+    )
+    return {
+        "beacons": [
+            {
+                "id": str(b.id),
+                "sector_id": int(b.sector_id),
+                "preview": (b.message or "")[:60],
+                "deployed_at": b.deployed_at.isoformat() if b.deployed_at else None,
+                "charge_expires_at": (
+                    b.charge_expires_at.isoformat() if b.charge_expires_at else None
+                ),
+                "expiry": b.expiry.isoformat() if b.expiry else None,
+                "state": _decay_state(b, now),
+                "read_once": bool(b.read_once),
+                "read_count": int(b.read_count or 0),
+                "flagged": bool(getattr(b, "flagged", False)),
+            }
+            for b in rows
+        ],
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "pages": (total + limit - 1) // limit if total else 0,
+    }
+
+
 def list_flagged_beacons(
     db: Session, *, page: int = 1, limit: int = 100
 ) -> Dict[str, Any]:

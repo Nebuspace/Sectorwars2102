@@ -76,6 +76,21 @@ async def deploy_beacon(
         return result
 
 
+@router.get("/mine")
+async def list_my_beacons(
+    page: int = 1,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    current_player: Player = Depends(get_current_player),
+) -> Dict[str, Any]:
+    """message-beacons.md:133 "My Beacons" screen -- every beacon the
+    calling player deployed, scoped to their own player id (never another
+    player's, never the admin-only flagged listing)."""
+    return message_beacon_service.list_my_beacons(
+        db, current_player.id, page=page, limit=limit,
+    )
+
+
 @router.get("/{beacon_id}/read")
 async def read_beacon(
     beacon_id: str,

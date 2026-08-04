@@ -83,6 +83,45 @@ class TestReadHidesFlagged:
                 mbs.read(db, beacon.id, player.id)
 
 
+class TestListMyBeacons:
+    def test_scopes_query_to_the_given_player_id(self):
+        """The route (GET /beacons/mine) passes current_player.id as the
+        filter value -- this pins that list_my_beacons actually filters on
+        MessageBeacon.deployer_player_id == player_id (idx_message_beacon_
+        deployer), not e.g. flagged-only (list_flagged_beacons's shape) or
+        an unfiltered listing."""
+        me = uuid4()
+        mine = _beacon(deployer_player_id=me, sector_id=9, message="mine")
+        db = MagicMock()
+        query = db.query.return_value
+        filtered = query.filter.return_value
+        filtered.count.return_value = 1
+        filtered.order_by.return_value.offset.return_value.limit.return_value.all.return_value = [mine]
+
+        with patch.object(mbs, "_decay_state", return_value="ACTIVE"):
+            result = mbs.list_my_beacons(db, me)
+
+        db.query.assert_called_once_with(mbs.MessageBeacon)
+        filter_call_args = query.filter.call_args.args
+        assert len(filter_call_args) == 1
+        assert result["total"] == 1
+        assert len(result["beacons"]) == 1
+        assert result["beacons"][0]["id"] == str(mine.id)
+        assert result["beacons"][0]["sector_id"] == 9
+        assert result["beacons"][0]["state"] == "ACTIVE"
+        assert result["beacons"][0]["read_once"] is False
+
+    def test_does_not_reuse_the_flagged_only_listing(self):
+        """Structural pin: list_my_beacons must not delegate to (or copy
+        the flagged-only predicate of) list_flagged_beacons -- an admin/
+        moderation listing scoped to flagged==True would silently exclude
+        a player's own unflagged beacons from their My Beacons screen."""
+        import inspect
+        source = inspect.getsource(mbs.list_my_beacons)
+        assert "flagged.is_(True)" not in source
+        assert "deployer_player_id ==" in source or "deployer_player_id==" in source
+
+
 class TestClearFlag:
     def test_clears_and_rebuilds(self):
         beacon = _beacon(flagged=True)
