@@ -9,9 +9,8 @@ import os
 import random
 import logging
 from typing import Dict, Any, List, Optional
-from uuid import UUID, uuid4
+from uuid import UUID
 from datetime import datetime, timedelta, timezone
-from collections import deque
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, func, select
 

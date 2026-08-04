@@ -9,7 +9,7 @@ re-deriving them.
 """
 
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Optional
 
 
 @dataclass

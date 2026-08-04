@@ -1,6 +1,5 @@
 import uuid
-from datetime import datetime
-from typing import List, Optional, Dict, Any, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, func, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import relationship
@@ -8,17 +7,7 @@ from sqlalchemy.orm import relationship
 from src.core.database import Base
 
 if TYPE_CHECKING:
-    from src.models.user import User
-    from src.models.ship import Ship
-    from src.models.team import Team
-    from src.models.reputation import Reputation
-    from src.models.sector import Sector
-    from src.models.combat_log import CombatLog
-    from src.models.warp_tunnel import WarpTunnel
-    from src.models.genesis_device import GenesisDevice
-    from src.models.first_login import FirstLoginSession, PlayerFirstLoginState
-    from src.models.region import Region, RegionalMembership, InterRegionalTravel
-    from src.models.enhanced_ai_models import AIComprehensiveAssistant
+    from src.models.region import RegionalMembership, InterRegionalTravel
 
 
 class Player(Base):

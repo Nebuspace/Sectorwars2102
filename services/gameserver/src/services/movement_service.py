@@ -19,8 +19,6 @@ from src.models.player_warp_knowledge import (
     WarpRevealedVia,
 )
 from src.models.team_member import TeamMember
-from src.models.combat import CombatResult
-from src.models.combat_log import CombatLog
 from src.models.drone import Drone, DroneStatus
 from sqlalchemy.orm.attributes import flag_modified
 

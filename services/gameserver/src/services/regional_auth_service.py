@@ -1,17 +1,15 @@
 """Regional authentication and authorization service for multi-regional platform"""
 
-import asyncio
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set
 from enum import Enum
 from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select, and_
 from sqlalchemy.orm import selectinload
 
 from src.core.database import get_async_session
 from src.models.region import Region, RegionalMembership, MembershipType
 from src.models.player import Player
-from src.models.user import User
 
 import logging
 

@@ -8,12 +8,12 @@ from __future__ import annotations
 import inspect
 import uuid
 from types import SimpleNamespace
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi import HTTPException
 
-from src.auth.admin_scopes import META_SCOPES, PLAYERS_VIEW, SCOPES_GRANT
+from src.auth.admin_scopes import META_SCOPES, PLAYERS_VIEW
 from src.api.routes.admin_scopes import grant_scope_to_user, revoke_scope_from_user
 from src.auth import admin as auth_admin
 

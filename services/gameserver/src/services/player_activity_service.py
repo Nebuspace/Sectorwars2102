@@ -9,12 +9,11 @@ infrastructure already in place.
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, List, Optional
-from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select
 
 from src.models.player import Player
 from src.services.redis_service import RedisService, get_redis_service

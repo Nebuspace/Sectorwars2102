@@ -1,6 +1,4 @@
 import uuid
-from datetime import datetime, timedelta
-from typing import List, Optional, Dict, Any
 from sqlalchemy import Column, DateTime, String, Integer, Float, ForeignKey, Text, Boolean, Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import relationship

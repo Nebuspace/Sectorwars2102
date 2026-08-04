@@ -9,13 +9,13 @@ No ML libraries required -- pure statistical methods.
 import logging
 import math
 from typing import List, Dict, Any, Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime
 from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, desc, func
+from sqlalchemy import select
 
 from src.core.commodity_economy import COMMODITY_BASE_PRICES
-from src.models.market_transaction import MarketTransaction, MarketPrice, PriceHistory
+from src.models.market_transaction import MarketPrice, PriceHistory
 from src.models.station import Station
 from src.utils.error_handling import generate_error_id
 
@@ -371,7 +371,7 @@ class MarketPredictionEngine:
                 "model_version": self.model_version,
             }
 
-        except Exception as e:
+        except Exception:
             error_id = generate_error_id()
             logger.exception("Error analysing commodity %s [error_id=%s]", commodity, error_id)
             return {"commodity": commodity, "status": "error", "error_id": error_id}

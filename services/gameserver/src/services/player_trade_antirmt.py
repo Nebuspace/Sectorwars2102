@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Iterable, Optional, Tuple
 
 # --- Flat sink (already live in settle) ---
 FLAT_TAX_RATE = 0.05

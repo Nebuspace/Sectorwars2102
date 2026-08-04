@@ -16,11 +16,11 @@ import uuid
 import json
 import hashlib
 from datetime import datetime, timedelta, date
-from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING
+from typing import Optional, Dict, Any, TYPE_CHECKING
 from enum import Enum
 
 from sqlalchemy import (
-    Boolean, Column, DateTime, String, Integer, Float, ForeignKey, 
+    Boolean, Column, DateTime, String, Integer, ForeignKey, 
     func, Numeric, Date, Text, CheckConstraint, Index, BigInteger,
     UniqueConstraint, event
 )
@@ -30,11 +30,9 @@ from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.sql import and_, or_
 
 from src.core.database import Base
-from src.models.ai_trading import PlayerTradingProfile, AIMarketPrediction, AIRecommendation
 
 if TYPE_CHECKING:
-    from src.models.player import Player
-    from src.models.sector import Sector
+    pass
 
 
 class SecurityLevel(str, Enum):

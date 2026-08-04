@@ -4,9 +4,8 @@ Translation system database models for internationalization support
 
 from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, Index
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import relationship, declarative_base
+from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-from typing import Dict, Any, Optional
 import enum
 from src.core.database import Base
 

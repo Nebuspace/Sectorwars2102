@@ -12,7 +12,6 @@ from sqlalchemy.orm import Session
 
 from src.services.ai_dialogue_service import AIDialogueService
 from src.services.translation_service import TranslationService
-from src.models.user import User
 
 logger = logging.getLogger(__name__)
 

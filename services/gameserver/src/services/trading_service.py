@@ -7,7 +7,7 @@ commodity price range enforcement per spec, and periodic stock regeneration.
 
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, Optional, Tuple, Any
 from datetime import datetime, UTC
 import logging
 

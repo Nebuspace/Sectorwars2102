@@ -1,6 +1,5 @@
 """PayPal subscription service for multi-regional platform monetization"""
 
-import asyncio
 import hashlib
 import json
 import os
@@ -9,7 +8,7 @@ import httpx
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 from pydantic import BaseModel, Field
@@ -317,7 +316,7 @@ class PayPalService:
             await self._make_request("POST", f"/v1/billing/subscriptions/{subscription_id}/cancel", cancel_data)
             logger.info("Successfully cancelled subscription %s", _sub_ref(subscription_id))  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
             return True
-        except Exception as e:
+        except Exception:
             logger.exception("Failed to cancel subscription %s", _sub_ref(subscription_id))  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
             return False
     
@@ -331,7 +330,7 @@ class PayPalService:
             await self._make_request("POST", f"/v1/billing/subscriptions/{subscription_id}/suspend", suspend_data)
             logger.info("Successfully suspended subscription %s", _sub_ref(subscription_id))  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
             return True
-        except Exception as e:
+        except Exception:
             logger.exception("Failed to suspend subscription %s", _sub_ref(subscription_id))  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
             return False
     
@@ -345,7 +344,7 @@ class PayPalService:
             await self._make_request("POST", f"/v1/billing/subscriptions/{subscription_id}/activate", activate_data)
             logger.info("Successfully activated subscription %s", _sub_ref(subscription_id))  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
             return True
-        except Exception as e:
+        except Exception:
             logger.exception("Failed to activate subscription %s", _sub_ref(subscription_id))  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
             return False
     
@@ -398,7 +397,7 @@ class PayPalService:
 
             return True
             
-        except Exception as e:
+        except Exception:
             logger.exception("Failed to process PayPal webhook")
             return False
     
@@ -615,7 +614,7 @@ class PayPalService:
                             "status": details.get("status"),
                             "amount": "$5.00/month"
                         })
-                    except Exception as e:
+                    except Exception:
                         logger.exception("Failed to get galactic subscription details")
             
             # Check for owned regions
@@ -635,7 +634,7 @@ class PayPalService:
                             "status": details.get("status"),
                             "amount": "$25.00/month"
                         })
-                    except Exception as e:
+                    except Exception:
                         logger.exception("Failed to get region subscription details")
         
         return subscriptions
@@ -719,7 +718,7 @@ class PayPalService:
                     logger.error("PayPal verification API error: status=%s", response.status_code)
                     return False
 
-        except Exception as e:
+        except Exception:
             logger.exception("PayPal webhook signature validation error")
             return False
 

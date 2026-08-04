@@ -21,9 +21,8 @@ of the faction system) and the ``sectors.id`` UUID PK.
 """
 
 from uuid import uuid4
-from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, UniqueConstraint, func
+from sqlalchemy import Column, DateTime, Float, ForeignKey, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 

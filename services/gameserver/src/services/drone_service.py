@@ -13,8 +13,6 @@ from sqlalchemy.orm import selectinload
 
 from src.models.drone import Drone, DroneDeployment, DroneType, DroneStatus
 from src.models.player import Player
-from src.models.sector import Sector
-from src.models.team import Team
 from src.models.ship import Ship, ShipSpecification, UpgradeType
 from src.services.turn_service import regenerate_turns, spend_turns, refund_turns
 

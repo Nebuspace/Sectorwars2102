@@ -18,21 +18,18 @@ Security Features:
 
 import logging
 import uuid
-import hashlib
 import re
 import unicodedata
-from datetime import datetime, timedelta, date
-from typing import List, Dict, Any, Optional, Union, Tuple
-from dataclasses import dataclass, asdict
+from datetime import datetime, timedelta
+from typing import List, Dict, Any, Optional, Tuple
+from dataclasses import dataclass
 from enum import Enum
-import asyncio
 import json
 import time
-from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_, desc, text
-from sqlalchemy.orm import selectinload, joinedload
+from sqlalchemy import select, func, or_, text
+from sqlalchemy.orm import selectinload
 from sqlalchemy.exc import SQLAlchemyError
 
 # Import existing ARIA foundation
@@ -46,13 +43,10 @@ from src.models.enhanced_ai_models import (
     AILearningPattern, AIConversationLog, AISecurityAuditLog,
     SecurityLevel, SecurityClassification, DataSensitivity
 )
-from src.models.ai_trading import PlayerTradingProfile, AIMarketPrediction, AIRecommendation
 from src.models.player import Player
-from src.models.sector import Sector
 from src.models.station import Station
 from src.models.planet import Planet
 from src.models.fleet import Fleet, FleetBattle
-from src.models.team import Team
 
 # Security utilities - with fallbacks for development
 try:

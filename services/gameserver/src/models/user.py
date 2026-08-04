@@ -1,6 +1,5 @@
 import uuid
-from datetime import datetime
-from typing import List, TYPE_CHECKING
+from typing import TYPE_CHECKING
 from sqlalchemy import Boolean, Column, DateTime, String, func, TIMESTAMP, exists, and_
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.hybrid import hybrid_property
@@ -10,12 +9,7 @@ from src.core.database import Base
 
 
 if TYPE_CHECKING:
-    from src.models.oauth_account import OAuthAccount
-    from src.models.refresh_token import RefreshToken
-    from src.models.admin_credentials import AdminCredentials
-    from src.models.player_credentials import PlayerCredentials
-    from src.models.player import Player
-    from src.models.mfa import MFASecret, MFAAttempt
+    pass
 
 
 class User(Base):

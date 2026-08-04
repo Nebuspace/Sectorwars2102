@@ -1,10 +1,9 @@
 import json
 import asyncio
 from typing import Dict, List, Set, Optional, Any
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import WebSocket
 from datetime import datetime, UTC
 import logging
-from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -1472,8 +1471,7 @@ async def handle_aria_chat(user_id: str, message_data: Dict[str, Any]):
 
     try:
         from src.core.database import AsyncSessionLocal
-        from src.services.enhanced_ai_service import EnhancedAIService, ConversationContext
-        from src.models.enhanced_ai_models import SecurityLevel
+        from src.services.enhanced_ai_service import EnhancedAIService
 
         async with AsyncSessionLocal() as adb:
             ai_service = EnhancedAIService(adb)

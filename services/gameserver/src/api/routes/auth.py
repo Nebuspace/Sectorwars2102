@@ -2,9 +2,9 @@ import os
 import re
 import logging
 from typing import Any, Dict, Optional
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, Body
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Body
 from fastapi.security import OAuth2PasswordRequestForm
-from fastapi.responses import RedirectResponse, HTMLResponse
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from jwt import PyJWTError as JWTError
 
@@ -21,7 +21,7 @@ from src.auth.oauth import (
 from src.core.database import get_db
 from src.core.config import settings
 from src.models.refresh_token import RefreshToken
-from src.schemas.auth import Token, RefreshToken as RefreshTokenSchema, AuthResponse, LoginForm, RegisterForm
+from src.schemas.auth import RefreshToken as RefreshTokenSchema, AuthResponse, LoginForm, RegisterForm
 from src.services.user_service import authenticate_admin, authenticate_player, update_user_last_login
 from src.services.mfa_service import MFAService
 from src.auth.signup_rate_limit import register_rate_limit, exchange_rate_limit

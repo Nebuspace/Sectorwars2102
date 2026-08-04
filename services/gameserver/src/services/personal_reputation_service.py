@@ -7,7 +7,7 @@ Tracks player morality through combat actions, trade behavior, and diplomacy.
 
 import logging
 import uuid
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 from sqlalchemy.orm import Session
 

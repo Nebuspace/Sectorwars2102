@@ -50,7 +50,6 @@ from src.models.ship import (
     ShipSize,
     ShipSpecification,
     ShipStatus,
-    ShipType,
     size_units_for,
 )
 

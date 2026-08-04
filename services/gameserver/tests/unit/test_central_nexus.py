@@ -5,17 +5,13 @@ Tests the core business logic for Central Nexus generation and management
 
 import pytest
 import uuid
-from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from collections import Counter
 
 from src.services.nexus_generation_service import NexusGenerationService
 from src.models.cluster import ClusterType
 from src.models.region import Region
-from src.models.sector import Sector
-from src.models.planet import Planet
-from src.models.station import Station
 
 
 # ---------------------------------------------------------------------------

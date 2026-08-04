@@ -29,7 +29,7 @@ from src.models.migration_contract import (
 )
 from src.models.planet import Planet, player_planets
 from src.models.player import Player
-from src.models.station import Station, StationClass
+from src.models.station import Station
 from src.services.trading_service import TradingService, COMMODITY_PRICE_RANGES
 
 logger = logging.getLogger(__name__)

@@ -12,9 +12,8 @@ providing sophisticated rule-based dialogue simulation that includes:
 import random
 import re
 import logging
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List
 from dataclasses import dataclass
-from enum import Enum
 
 from src.services.ai_dialogue_service import (
     DialogueContext, ResponseAnalysis, GuardResponse, GuardMood, ShipType

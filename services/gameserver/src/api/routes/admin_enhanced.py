@@ -1,19 +1,15 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import Optional, Dict, Any
 from pydantic import BaseModel
-import random
-import math
-import uuid
 
 from src.core.database import get_db
 from src.auth.admin_scopes import GALAXY_MANAGE, PLAYERS_VIEW
 from src.auth.dependencies import require_scope
 from src.services.admin_action_attempt import admin_action_attempt
 from src.models.user import User
-from src.models.galaxy import Galaxy
-from src.models.cluster import Cluster, ClusterType
-from src.models.sector import Sector, SectorType, SectorSpecialType
+from src.models.cluster import Cluster
+from src.models.sector import Sector, SectorSpecialType
 from src.models.warp_tunnel import WarpTunnel
 from src.models.station import Station, StationClass, StationType, StationStatus
 from src.models.planet import Planet

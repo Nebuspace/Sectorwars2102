@@ -31,14 +31,13 @@ verdict, not re-derive its heuristics.
 """
 from __future__ import annotations
 
-import operator
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, List, Optional
 
 import pytest
-from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
+from sqlalchemy.orm.exc import StaleDataError
 
 from src.models.message_beacon import MessageBeacon
 from src.models.multi_account import MultiAccountFlag, MultiAccountSeverity

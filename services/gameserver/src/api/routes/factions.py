@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from src.core.database import get_db
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
-from src.models.faction import Faction, FactionType
+from src.models.faction import Faction
 from src.models.reputation import Reputation
 from src.models.sector import Sector
 from src.services.faction_service import (

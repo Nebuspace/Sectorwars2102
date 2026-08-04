@@ -15,12 +15,10 @@ OWASP Security Implementation:
 
 import json
 import hashlib
-import hmac
 import heapq
 import math
 from typing import Dict, List, Any, Optional, Tuple, Set
 from datetime import datetime, timedelta, UTC
-from decimal import Decimal
 import statistics
 import numpy as np
 from collections import defaultdict, deque
@@ -29,14 +27,12 @@ from cryptography.fernet import Fernet
 import base64
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_, func, update
-from sqlalchemy.orm import selectinload, Session
+from sqlalchemy import select, and_, func
+from sqlalchemy.orm import Session
 
-from src.models.player import Player
-from src.models.sector import Sector, sector_warps
+from src.models.sector import sector_warps
 from src.models.station import Station
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
-from src.models.market_transaction import MarketTransaction
 from src.models.aria_personal_intelligence import (
     ARIAPersonalMemory, ARIAMarketIntelligence, ARIAExplorationMap,
     ARIAQuantumCache, ARIASecurityLog,
@@ -48,7 +44,6 @@ from src.models.aria_personal_intelligence import (
 # ADR-0038). No longer imported here; see models/aria_personal_intelligence.py's
 # own deprecation note on the class.
 from src.core.config import settings
-from src.core.security import get_password_hash
 from src.core.game_time import scaled_elapsed
 
 logger = logging.getLogger(__name__)

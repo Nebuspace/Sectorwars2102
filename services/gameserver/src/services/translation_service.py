@@ -4,12 +4,11 @@ Provides unified translation management for all applications
 """
 
 import logging
-import json
 import re
 import html
 from typing import Dict, List, Optional, Any, Tuple
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_, func
+from sqlalchemy import and_
 from fastapi import HTTPException, Depends
 from datetime import datetime
 import traceback
@@ -19,7 +18,6 @@ from src.models.translation import (
     UserLanguagePreference, TranslationProgress, TranslationAuditLog,
     DEFAULT_LANGUAGES, DEFAULT_NAMESPACES
 )
-from src.models.user import User
 from src.core.database import get_db
 
 logger = logging.getLogger(__name__)

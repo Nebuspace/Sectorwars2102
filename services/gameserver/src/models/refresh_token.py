@@ -1,4 +1,3 @@
-import uuid
 from datetime import datetime, UTC
 from typing import TYPE_CHECKING
 
@@ -9,7 +8,7 @@ from sqlalchemy.orm import relationship
 from src.core.database import Base
 
 if TYPE_CHECKING:
-    from src.models.user import User
+    pass
 
 
 class RefreshToken(Base):

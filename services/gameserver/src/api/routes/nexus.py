@@ -7,12 +7,11 @@ from typing import Dict, List, Any, Optional
 from pydantic import BaseModel
 
 from src.auth.admin_scopes import GALAXY_MANAGE
-from src.auth.dependencies import get_current_user, get_current_player, require_scope
+from src.auth.dependencies import get_current_user, require_scope
 from src.core.database import get_async_session, get_db
 from sqlalchemy.orm import Session
 from src.services.admin_action_log_service import log_admin_action
 from src.models.user import User
-from src.models.player import Player
 from src.models.sector import Sector
 from src.models.station import Station
 from src.models.planet import Planet
@@ -20,7 +19,6 @@ from src.models.region import Region
 from src.models.cluster import Cluster
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
 from src.services.nexus_generation_service import nexus_generation_service
-from src.services.regional_auth_service import regional_auth, RegionalPermission
 
 import logging
 

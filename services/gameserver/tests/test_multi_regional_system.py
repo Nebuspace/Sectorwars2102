@@ -17,8 +17,6 @@ from src.models.region import (
     GovernanceType, PolicyStatus, ElectionStatus, MembershipType
 )
 from src.models.sector import Sector
-from src.models.planet import Planet
-from src.models.station import Station
 from src.core.config import settings
 
 

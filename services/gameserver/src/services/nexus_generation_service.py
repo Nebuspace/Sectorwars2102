@@ -1,17 +1,14 @@
 """Central Nexus Galaxy Generation Service - Creates the 2000-5000 sector galactic hub"""
 
-import asyncio
 import random
 import math
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Tuple, Optional, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, insert, update, delete
-from sqlalchemy.orm import selectinload
+from sqlalchemy import select, insert
 
 from src.core.commodity_economy import base_price as commodity_base_price
-from src.core.database import get_async_session
 from src.core.station_class_map import apply_class_pattern
 from src.core.station_security_tiers import _derive_station_security_tier
 from src.models.sector import Sector, SectorType
@@ -763,7 +760,6 @@ class NexusGenerationService:
         so we derive market prices from the station class trading patterns.
         """
         from src.models.market_transaction import MarketPrice
-        from src.models.station import StationClass
 
         # Query all stations in this region
         result = await session.execute(

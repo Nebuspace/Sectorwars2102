@@ -34,7 +34,6 @@ import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from src.models.aria_personal_intelligence import ARIAExplorationMap

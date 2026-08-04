@@ -2,13 +2,12 @@ import json
 import logging
 import uuid
 import random
-import math
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
-from sqlalchemy import and_, or_
+from sqlalchemy import or_
 
 from src.models.player import Player
 from src.models.ship import Ship, ShipStatus, ShipType, ShipSpecification
@@ -5261,7 +5260,6 @@ class CombatService:
 
     def _transfer_planet_ownership(self, planet: Planet, new_owner: Player) -> None:
         """Transfer ownership of a planet to a new player via many-to-many."""
-        from src.models.station import player_stations
         # Clear existing owners from the join table
         player_planets = self.db.execute(
             self.db.query(Planet).filter(Planet.id == planet.id).statement

@@ -6,7 +6,6 @@ influence market prices, and provide missions to players.
 """
 
 from uuid import uuid4
-from typing import List, Optional
 from datetime import datetime
 from sqlalchemy import Column, String, DateTime, Text, Float, Integer, ARRAY, Enum as SQLEnum, TypeDecorator
 from sqlalchemy.dialects.postgresql import UUID

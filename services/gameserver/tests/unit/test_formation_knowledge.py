@@ -38,7 +38,6 @@ from typing import Any, List, Optional
 
 import pytest
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.special_formation import (
     SpecialFormation,

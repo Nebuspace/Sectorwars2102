@@ -15,7 +15,6 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from src.models.faction import FactionType
 from src.models.warp_gate import WarpGate, WarpGateStatus
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus, WarpTunnelType
 from src.services import warp_gate_service

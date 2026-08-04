@@ -15,7 +15,6 @@ from src.models.region import (
     GovernanceType, PolicyStatus, ElectionStatus, MembershipType
 )
 from src.models.player import Player
-from src.models.user import User
 
 
 class TestRegionalGovernanceService:

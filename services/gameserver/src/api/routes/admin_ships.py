@@ -14,13 +14,13 @@ logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
-from sqlalchemy import and_, or_, func
+from sqlalchemy import func
 from pydantic import BaseModel, Field
 from enum import Enum
 
 from src.core.database import get_db
 from src.auth.admin_scopes import PLAYERS_VIEW, SHIPS_MANAGE
-from src.auth.dependencies import get_current_user, require_scope
+from src.auth.dependencies import require_scope
 from src.models.user import User
 from src.models.ship import Ship, ShipType, ShipStatus, ShipSpecification
 from src.models.player import Player

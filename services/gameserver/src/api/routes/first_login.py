@@ -554,7 +554,7 @@ async def debug_first_login_state(
     state = service.get_player_first_login_state(player.id)
     
     # Get any active sessions
-    from src.models.first_login import FirstLoginSession, DialogueExchange
+    from src.models.first_login import FirstLoginSession
     sessions = db.query(FirstLoginSession).filter_by(player_id=player.id).all()
     
     return {

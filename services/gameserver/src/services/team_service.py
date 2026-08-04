@@ -9,7 +9,6 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
-from sqlalchemy import and_, or_, func
 from sqlalchemy.exc import IntegrityError
 
 from src.models.team import Team, TeamRecruitmentStatus

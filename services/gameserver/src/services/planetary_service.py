@@ -7,10 +7,10 @@ building construction, defenses, and sieges.
 
 import math
 from typing import Dict, Any, Optional, List
-from uuid import UUID, uuid4
+from uuid import UUID
 from datetime import datetime, timedelta, UTC
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_, func, text
+from sqlalchemy import and_, func, text
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.exc import OperationalError
 import logging
@@ -21,8 +21,7 @@ from src.models.player import Player
 from src.models.planet import Planet, PlanetType, player_planets
 from src.models.sector import Sector
 from src.models.ship import Ship, effective_cargo_capacity
-from src.models.genesis_device import GenesisDevice, GenesisType, GenesisStatus, PlanetFormation
-from src.models.team import Team
+from src.models.genesis_device import GenesisDevice, GenesisStatus, PlanetFormation
 
 logger = logging.getLogger(__name__)
 

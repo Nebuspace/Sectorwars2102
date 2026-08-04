@@ -5,7 +5,6 @@ Run this to ensure the gameserver is providing the expected APIs
 """
 
 import requests
-import json
 
 BASE_URL = "http://localhost:8080/api/v1"
 

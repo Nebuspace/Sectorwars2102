@@ -39,7 +39,6 @@ import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
 
 from src.models.faction import Faction
 from src.models.player import Player

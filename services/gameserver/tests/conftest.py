@@ -90,19 +90,16 @@ print(f"[conftest.py] DATABASE_TEST_URL: {test_db_url[:60]}...")
 
 import pytest
 from fastapi import FastAPI
-import httpx
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.pool import StaticPool
 
 # Import the main application and settings
 # settings will now be loaded with ENVIRONMENT=testing and the DB URLs we just set in os.environ
 from src.main import app as actual_app
 from src.core.config import settings # settings is now loaded with correct DB URLs
 from src.core.database import Base, get_db
-from src.auth.admin import create_default_admin
-from src.core.security import get_password_hash, verify_password
+from src.core.security import get_password_hash
 from src.models.user import User
 from src.models.admin_credentials import AdminCredentials
 

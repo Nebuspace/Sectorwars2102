@@ -4,8 +4,6 @@ from sqlalchemy import text, func, desc, or_
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 from datetime import datetime, timezone
-import random
-import math
 import logging
 
 from src.core.database import get_db
@@ -30,7 +28,6 @@ from src.models.station import Station
 from src.models.planet import Planet
 from src.models.team import Team
 from src.models.game_event import GameEvent, EventEffect, EventParticipation, EventType, EventStatus
-from src.schemas.user import UserAdminResponse
 
 # Request schemas for universe management
 class GalaxyGenerateRequest(BaseModel):

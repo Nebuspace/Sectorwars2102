@@ -13,14 +13,12 @@ Explicitly OUT OF SCOPE per ADR-0028: the ``Player.medal_summary`` JSONB cache
 """
 
 from uuid import uuid4
-from datetime import datetime
 
 from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
     Index,
-    Integer,
     String,
     Text,
     UniqueConstraint,

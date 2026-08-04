@@ -1,7 +1,6 @@
 import uuid
 import enum
-from datetime import datetime
-from typing import List, Optional, Dict, Any, TYPE_CHECKING
+from typing import Optional, Dict, Any, TYPE_CHECKING
 from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, Enum, Table, func, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import relationship
@@ -10,9 +9,7 @@ from src.core.database import Base
 from src.core.commodity_economy import base_price as _commodity_base_price
 
 if TYPE_CHECKING:
-    from src.models.player import Player
-    from src.models.sector import Sector
-    from src.models.resource import Market
+    pass
 
 
 # Association table for player-station relationship

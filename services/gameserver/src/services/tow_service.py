@@ -52,7 +52,7 @@ also relocates the towed ship/pilot on a hauler move.
 import logging
 import uuid
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -63,7 +63,6 @@ from src.models.ship import (
     ShipSize,
     ShipSpecification,
     ShipStatus,
-    size_units_for,
     tow_surcharge_for,
 )
 from src.services.ship_upgrade_service import ShipUpgradeService

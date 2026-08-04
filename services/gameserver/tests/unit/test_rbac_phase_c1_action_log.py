@@ -16,10 +16,7 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from src.auth.admin_scopes import (
-    DISPUTES_RESOLVE,
-    GALAXY_MANAGE,
     PLAYERS_ADJUST_CREDITS,
-    SHIPS_MANAGE,
 )
 from src.services.admin_action_log_service import log_admin_action
 

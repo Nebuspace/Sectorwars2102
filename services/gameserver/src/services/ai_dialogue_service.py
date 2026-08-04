@@ -12,13 +12,11 @@ import asyncio
 import json
 import logging
 import html
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional
 from dataclasses import dataclass
 from enum import Enum
 import os
-from datetime import datetime
 
-from src.services.translation_service import TranslationService
 
 logger = logging.getLogger(__name__)
 

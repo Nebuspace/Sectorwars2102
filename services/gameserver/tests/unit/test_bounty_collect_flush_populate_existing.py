@@ -67,8 +67,6 @@ real-SQLAlchemy regression files).
 """
 from __future__ import annotations
 
-import uuid
-from datetime import UTC, datetime
 
 import pytest
 import sqlalchemy as sa

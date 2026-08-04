@@ -1,5 +1,4 @@
 import json
-import asyncio
 import time
 from collections import defaultdict
 from datetime import datetime

@@ -7,8 +7,7 @@ and provide area control for players and teams.
 
 from uuid import uuid4
 from datetime import datetime
-from typing import Optional
-from sqlalchemy import Column, String, DateTime, Integer, Float, Boolean, ForeignKey, Enum as SQLEnum
+from sqlalchemy import Column, String, DateTime, Integer, Float, Boolean, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 import enum

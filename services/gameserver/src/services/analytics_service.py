@@ -4,9 +4,9 @@ Handles computation and caching of player analytics data
 """
 
 from datetime import datetime, timedelta
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any
 from sqlalchemy.orm import Session
-from sqlalchemy import func, text, and_, or_
+from sqlalchemy import func
 import logging
 
 from src.models.player import Player

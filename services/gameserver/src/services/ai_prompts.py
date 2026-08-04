@@ -9,7 +9,6 @@ Supports three generation types:
 """
 
 from typing import List, Dict, Any
-from src.models.first_login import ShipChoice
 
 
 def _humanize_ship_name(enum_name: str) -> str:

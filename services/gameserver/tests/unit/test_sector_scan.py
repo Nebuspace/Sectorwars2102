@@ -19,7 +19,6 @@ import types
 import uuid
 from datetime import datetime, timezone
 
-import pytest
 
 from src.services.movement_service import MovementService
 

@@ -2,7 +2,6 @@
 Tests for the status endpoints in the API.
 These are the utility endpoints available in /api/v1/status/*
 """
-import pytest
 from fastapi.testclient import TestClient
 
 from src.core.config import settings

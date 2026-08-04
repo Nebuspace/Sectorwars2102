@@ -14,7 +14,6 @@ id, not a relational row. Player references ARE relational FKs.
 
 import enum
 from uuid import uuid4
-from datetime import datetime
 
 from sqlalchemy import (
     Column,

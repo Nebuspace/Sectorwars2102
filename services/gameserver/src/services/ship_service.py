@@ -12,7 +12,6 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.player import Player
 from src.models.ship import Ship, ShipType, ShipSpecification
-from src.core.ship_specifications_seeder import SHIP_SPECIFICATIONS
 
 logger = logging.getLogger(__name__)
 

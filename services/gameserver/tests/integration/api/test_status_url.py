@@ -8,10 +8,7 @@ import os
 import pytest
 import requests
 import json
-import sys
 import subprocess
-import time
-from urllib.parse import urlparse
 
 
 class TestCodespacesUrls:

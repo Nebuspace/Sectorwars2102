@@ -2,7 +2,6 @@
 Unit tests for security-related functions.
 These tests focus on password hashing and verification.
 """
-import pytest
 from src.core.security import get_password_hash, verify_password
 from src.auth.jwt import create_access_token
 

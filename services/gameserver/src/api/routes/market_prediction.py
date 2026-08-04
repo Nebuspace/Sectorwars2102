@@ -108,7 +108,7 @@ async def predict_price(
         prediction = await _engine.predict_prices(
             db, commodity=commodity, station_id=station_id, hours_ahead=hours_ahead
         )
-    except Exception as e:
+    except Exception:
         logger.exception("Price prediction failed for commodity %s", commodity)
         raise HTTPException(
             status_code=500,
@@ -138,7 +138,7 @@ async def predict_all_prices(
         predictions = await _engine.batch_predict(
             db, station_id=station_id, hours_ahead=hours_ahead
         )
-    except Exception as e:
+    except Exception:
         logger.exception("Batch price prediction failed")
         raise HTTPException(
             status_code=500,
@@ -169,7 +169,7 @@ async def find_opportunities(
         opportunities = await _engine.find_opportunities(
             db, min_profit_margin=min_profit_margin, limit=limit
         )
-    except Exception as e:
+    except Exception:
         logger.exception("Opportunity scan failed")
         raise HTTPException(
             status_code=500,
@@ -197,7 +197,7 @@ async def commodity_analysis(
         result = await _engine.get_commodity_analysis(
             db, commodity=commodity, station_id=station_id
         )
-    except Exception as e:
+    except Exception:
         logger.exception("Commodity analysis failed for %s", commodity)
         raise HTTPException(
             status_code=500,

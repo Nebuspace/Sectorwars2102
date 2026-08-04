@@ -1,7 +1,6 @@
 import uuid
 import enum
-from datetime import datetime
-from typing import List, Optional, Dict, Any, TYPE_CHECKING
+from typing import Dict, TYPE_CHECKING
 from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, Enum, func, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
@@ -9,8 +8,7 @@ from sqlalchemy.orm import relationship
 from src.core.database import Base
 
 if TYPE_CHECKING:
-    from src.models.player import Player
-    from src.models.genesis_device import GenesisDevice
+    pass
 
 
 class ShipType(enum.Enum):

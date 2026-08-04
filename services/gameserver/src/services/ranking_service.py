@@ -8,7 +8,7 @@ point awards, promotions, and rank-based bonuses.
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 

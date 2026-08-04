@@ -74,8 +74,6 @@ class TestRegionalGovernanceEndpoints:
         }
         
         # First create user credentials
-        from src.models.admin_credentials import AdminCredentials
-        from src.core.security import get_password_hash
         
         # This would need proper user creation endpoint in real app
         # For testing, we'll use admin login for simplicity

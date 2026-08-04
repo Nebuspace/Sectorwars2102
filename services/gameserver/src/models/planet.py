@@ -1,7 +1,6 @@
 import uuid
 import enum
-from datetime import datetime
-from typing import List, Optional, Dict, Any, TYPE_CHECKING
+from typing import TYPE_CHECKING
 from sqlalchemy import Boolean, Column, DateTime, String, Integer, BigInteger, Float, ForeignKey, Enum, Table, func
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import relationship
@@ -9,9 +8,7 @@ from sqlalchemy.orm import relationship
 from src.core.database import Base
 
 if TYPE_CHECKING:
-    from src.models.player import Player
-    from src.models.sector import Sector
-    from src.models.genesis_device import GenesisDevice, PlanetFormation
+    pass
 
 
 # Association table for player-planet relationship

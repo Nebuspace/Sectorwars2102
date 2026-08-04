@@ -5,7 +5,7 @@ Secure error handling utilities that prevent information disclosure
 import logging
 import traceback
 import uuid
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict
 from datetime import datetime
 from fastapi import HTTPException, Request
 from fastapi.exceptions import RequestValidationError

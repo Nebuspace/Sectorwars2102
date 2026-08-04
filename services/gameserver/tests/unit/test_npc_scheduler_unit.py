@@ -26,7 +26,6 @@ from src.services.npc_engagement_service import _federation_squad_size
 from src.services.npc_scheduler_service import (
     SUSPECT_CLEAR_SWEEP_SECONDS,
     _contract_generation_loop,
-    _npc_scheduler_main_loop,
     _run_contract_expire_sweep_sync,
     _run_pirate_ecosystem_tick_sync,
     _run_suspect_clear_sweep_sync,
@@ -36,7 +35,6 @@ from src.services.npc_scheduler_service import (
     canonical_day_number,
     canonical_minute_of_day,
     canonical_weekday,
-    npc_scheduler_loop,
     resolve_schedule_block,
 )
 from src.services.npc_spawn_service import RESPAWN_COOLDOWN_MINUTES

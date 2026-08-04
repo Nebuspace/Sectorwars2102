@@ -3,9 +3,9 @@ Comprehensive Admin API Routes
 Supports full game administration based on DOCS specifications
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import text, func, desc, and_, or_
+from sqlalchemy import text, func, desc, or_
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 from datetime import datetime, timedelta, timezone
@@ -33,9 +33,7 @@ from src.models.planet import Planet
 from src.models.station import Station, StationStatus
 from src.models.sector import Sector
 from src.models.cluster import Cluster
-from src.models.galaxy import Galaxy
 from src.models.region import Region
-from src.models.zone import Zone
 from src.models.warp_tunnel import WarpTunnel
 from src.models.team import Team
 from src.models.route_optimization_run import RouteOptimizationRun

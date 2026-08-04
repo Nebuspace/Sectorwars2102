@@ -6,11 +6,11 @@ and coordination between multiple ships in organized formations.
 """
 
 from typing import List, Optional, Dict, Any, Tuple, TYPE_CHECKING
-from uuid import UUID, uuid4
-from datetime import datetime, timedelta
+from uuid import UUID
+from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
-from sqlalchemy import and_, or_, func
+from sqlalchemy import and_, or_
 import random
 import logging
 
@@ -23,7 +23,6 @@ from src.models.player import Player
 from src.models.team import Team
 from src.models.treasury_transaction import TreasuryTransaction
 from src.models.sector import Sector
-from src.models.combat_log import CombatLog, CombatOutcome
 
 if TYPE_CHECKING:
     # Forward-ref-only imports for type annotations — resolved at runtime via

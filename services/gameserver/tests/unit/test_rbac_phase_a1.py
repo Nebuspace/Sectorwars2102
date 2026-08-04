@@ -13,11 +13,8 @@ All tests are DB-free: no live Postgres, no ORM session.  Run with:
 from __future__ import annotations
 
 import uuid
-from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
-from unittest.mock import MagicMock, patch
+from typing import Dict, List
 
-import pytest
 
 from src.auth import admin_scopes
 from src.auth.admin_scopes import (

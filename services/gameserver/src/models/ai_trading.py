@@ -1,15 +1,14 @@
 import uuid
 from datetime import datetime
-from typing import List, Optional, Dict, Any, TYPE_CHECKING
-from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, func, Numeric, Date, Text
+from typing import Optional, Dict, Any, TYPE_CHECKING
+from sqlalchemy import Boolean, Column, DateTime, String, Integer, ForeignKey, func, Numeric, Date, Text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 
 from src.core.database import Base
 
 if TYPE_CHECKING:
-    from src.models.player import Player
-    from src.models.sector import Sector
+    pass
 
 
 class AIMarketPrediction(Base):

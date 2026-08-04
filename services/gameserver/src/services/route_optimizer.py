@@ -11,12 +11,11 @@ import logging
 import heapq
 import math
 from typing import List, Dict, Any, Optional, Tuple, Set
-from datetime import datetime
 from dataclasses import dataclass, field
 from enum import Enum
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy import select
 
 from src.models.sector import Sector, sector_warps
 from src.models.station import Station

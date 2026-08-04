@@ -53,7 +53,7 @@ from sqlalchemy.pool import StaticPool
 
 from src.models.planet import PlanetStatus
 from src.models.ship import ShipType
-from src.services import bounty_service, combat_service, terraforming_service
+from src.services import combat_service, terraforming_service
 
 
 def _session_factory(base) -> sessionmaker:
