@@ -89,6 +89,16 @@ class CounterTradeRequest(BaseModel):
     defense_volume: int = Field(..., ge=1, le=500_000)
 
 
+class ShareInviteRequest(BaseModel):
+    # WO-SYNDICATE-CO-OWNERSHIP: primary invites invitee to pct of station (1-99).
+    invitee_player_id: str
+    pct: int = Field(..., ge=1, le=99)
+
+
+class ShareInviteActionRequest(BaseModel):
+    invite_id: str
+
+
 class ServiceChargeRequest(BaseModel):
     # Canon service charge: 0.8x-2.0x of standard.
     multiplier: float = Field(..., ge=0.8, le=2.0)
@@ -512,6 +522,107 @@ async def activate_counter_trade(
             f"Counter-trade absorb {result['defense_volume']:,} at {station.name} "
             f"(cost {result['cost']:,} cr)"
         ),
+        **result,
+    }
+
+
+@router.get("/stations/{station_id}/syndicate")
+async def get_syndicate_status(
+    station_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Co-ownership stake ledger + pending invites (API-only delivery)."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.get_syndicate_status(
+            db, station, current_player
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return result
+
+
+@router.post("/stations/{station_id}/syndicate/invite")
+async def issue_share_invite(
+    station_id: str,
+    request: ShareInviteRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Primary issues a share invite (≤99%, pending+accepted cap enforced)."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        invitee_id = _uuid.UUID(request.invitee_player_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invitee_player_id must be a UUID")
+    try:
+        result = port_ownership_service.issue_share_invite(
+            db, station, current_player, invitee_id, request.pct
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "message": (
+            f"Share invite {request.pct}% issued at {station.name}"
+        ),
+        **result,
+    }
+
+
+@router.post("/stations/{station_id}/syndicate/accept")
+async def accept_share_invite(
+    station_id: str,
+    request: ShareInviteActionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Invitee accepts: 1% acquisition_cost fee from treasury; mode→syndicate."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.accept_share_invite(
+            db, station, current_player, request.invite_id
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "message": (
+            f"Share invite accepted at {station.name} "
+            f"(fee {result['conversion_fee']:,} cr)"
+        ),
+        **result,
+    }
+
+
+@router.post("/stations/{station_id}/syndicate/decline")
+async def decline_share_invite(
+    station_id: str,
+    request: ShareInviteActionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Invitee declines a pending share invite."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.decline_share_invite(
+            db, station, current_player, request.invite_id
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "message": f"Share invite declined at {station.name}",
         **result,
     }
 

@@ -236,6 +236,17 @@ COUNTER_TRADE_MAX_ABSORB = 500_000
 # Statuses where building-phase owner counters may be activated.
 _DEFENSE_COUNTER_STATUSES = frozenset({"building", "eligible"})
 
+# Station.ownership co-ownership / syndicate (WO-SYNDICATE-CO-OWNERSHIP v1).
+# No migration — JSONB only. Votes / buyout / proportional withdraw deferred.
+SYNDICATE_MODE_KEY = "co_ownership_mode"
+SYNDICATE_SHARES_KEY = "co_ownership_shares"
+SYNDICATE_INVITES_KEY = "co_ownership_invites"
+# Canon: 7-day accept window, 1% conversion fee, share invites to 99%, ≤10 members.
+SYNDICATE_INVITE_HOURS = 7 * 24.0
+SYNDICATE_CONVERSION_FEE_PCT = 0.01
+SYNDICATE_MAX_MEMBERS = 10
+SYNDICATE_MAX_INVITEE_PCT = 99  # primary keeps ≥1%
+
 # Campaign statuses considered "active" (a live takeover attempt). Hoisted here
 # so both the economic and military engines reference one source of truth.
 _ACTIVE_CAMPAIGN_STATUSES = ("building", "eligible", "countered", "disputed")
@@ -1625,6 +1636,310 @@ def list_defense_counters(
         "station_id": str(station.id),
         "tax_rate": float(station.tax_rate or 0.0),
         "defense_counters": get_defense_counters(station),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Syndicate co-ownership (WO-SYNDICATE-CO-OWNERSHIP v1)
+# ---------------------------------------------------------------------------
+
+def _syndicate_shares(station: Station) -> List[Dict[str, Any]]:
+    raw = (station.ownership or {}).get(SYNDICATE_SHARES_KEY)
+    if not isinstance(raw, list):
+        return []
+    return [dict(x) for x in raw if isinstance(x, dict)]
+
+
+def _syndicate_invites(station: Station) -> List[Dict[str, Any]]:
+    raw = (station.ownership or {}).get(SYNDICATE_INVITES_KEY)
+    if not isinstance(raw, list):
+        return []
+    return [dict(x) for x in raw if isinstance(x, dict)]
+
+
+def _set_syndicate_state(
+    station: Station,
+    *,
+    mode: Optional[str] = None,
+    shares: Optional[List[Dict[str, Any]]] = None,
+    invites: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    ownership = _ownership(station)
+    if mode is not None:
+        ownership[SYNDICATE_MODE_KEY] = mode
+    if shares is not None:
+        ownership[SYNDICATE_SHARES_KEY] = list(shares)
+    if invites is not None:
+        ownership[SYNDICATE_INVITES_KEY] = list(invites)
+    # Unit tests may pass SimpleNamespace stubs without SA instrumentation.
+    if hasattr(station, "_sa_instance_state"):
+        flag_modified(station, "ownership")
+
+
+def accepted_invitee_pct_total(shares: List[Dict[str, Any]], primary_id: str) -> int:
+    """Sum of pct held by non-primary shareholders."""
+    total = 0
+    for s in shares:
+        if str(s.get("player_id")) == str(primary_id):
+            continue
+        try:
+            total += int(s.get("pct", 0))
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def pending_invite_pct_total(invites: List[Dict[str, Any]]) -> int:
+    total = 0
+    for inv in invites:
+        try:
+            total += int(inv.get("pct", 0))
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def would_oversubscribe(
+    shares: List[Dict[str, Any]],
+    invites: List[Dict[str, Any]],
+    primary_id: str,
+    new_pct: int,
+) -> bool:
+    """True if pending+accepted invitee pct + new_pct would exceed 99."""
+    return (
+        accepted_invitee_pct_total(shares, primary_id)
+        + pending_invite_pct_total(invites)
+        + int(new_pct)
+    ) > SYNDICATE_MAX_INVITEE_PCT
+
+
+def _expire_syndicate_invites(station: Station, now: datetime) -> bool:
+    invites = _syndicate_invites(station)
+    if not invites:
+        return False
+    kept = []
+    changed = False
+    for inv in invites:
+        exp = _parse_counter_ts(inv.get("expires_at"))
+        if exp is not None and now >= exp:
+            changed = True
+            continue
+        kept.append(inv)
+    if changed:
+        _set_syndicate_state(station, invites=kept)
+    return changed
+
+
+def _ensure_primary_share(station: Station) -> List[Dict[str, Any]]:
+    """Return shares list with primary owning remainder (or 100% if empty)."""
+    primary = str(station.owner_id)
+    shares = _syndicate_shares(station)
+    others = [s for s in shares if str(s.get("player_id")) != primary]
+    others_pct = accepted_invitee_pct_total(others, primary)
+    primary_pct = max(1, 100 - others_pct)
+    return [{"player_id": primary, "pct": primary_pct}] + [
+        {"player_id": str(s["player_id"]), "pct": int(s["pct"])}
+        for s in others
+        if int(s.get("pct", 0)) > 0
+    ]
+
+
+def get_syndicate_status(
+    db: Session, station: Station, player: Player, now: Optional[datetime] = None
+) -> Dict[str, Any]:
+    """Co-ownership status for a station (lazy invite expiry)."""
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    _expire_syndicate_invites(station, now)
+    db.flush()
+    mode = (station.ownership or {}).get(SYNDICATE_MODE_KEY) or "solo"
+    shares = _ensure_primary_share(station) if station.owner_id else []
+    invites = _syndicate_invites(station)
+    is_owner = station.owner_id == player.id
+    visible_invites = invites if is_owner else [
+        i for i in invites if str(i.get("invitee_player_id")) == str(player.id)
+    ]
+    return {
+        "station_id": str(station.id),
+        "owner_id": str(station.owner_id) if station.owner_id else None,
+        "mode": mode,
+        "shares": shares,
+        "pending_invites": visible_invites,
+        "is_primary": is_owner,
+    }
+
+
+def issue_share_invite(
+    db: Session,
+    station: Station,
+    owner: Player,
+    invitee_player_id,
+    pct: int,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Primary issues a share invite (API-only delivery)."""
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    _require_owner(station, owner)
+    _expire_syndicate_invites(station, now)
+
+    try:
+        pct_i = int(pct)
+    except (TypeError, ValueError):
+        raise PortOwnershipError(400, "pct must be an integer")
+    if pct_i < 1 or pct_i > SYNDICATE_MAX_INVITEE_PCT:
+        raise PortOwnershipError(
+            400, f"pct must be between 1 and {SYNDICATE_MAX_INVITEE_PCT}"
+        )
+
+    invitee_id = str(invitee_player_id)
+    if invitee_id == str(owner.id):
+        raise PortOwnershipError(400, "Cannot invite yourself")
+    invitee = db.query(Player).filter(Player.id == invitee_player_id).first()
+    if invitee is None:
+        raise PortOwnershipError(404, "Invitee player not found")
+
+    shares = _ensure_primary_share(station)
+    invites = _syndicate_invites(station)
+    # Members after accept = primary + existing others + this invitee (if new)
+    other_ids = {
+        str(s["player_id"]) for s in shares if str(s["player_id"]) != str(owner.id)
+    }
+    members_after = 1 + len(other_ids) + (0 if invitee_id in other_ids else 1)
+    if members_after > SYNDICATE_MAX_MEMBERS:
+        raise PortOwnershipError(
+            400, f"Syndicate cannot exceed {SYNDICATE_MAX_MEMBERS} members"
+        )
+    if would_oversubscribe(shares, invites, str(owner.id), pct_i):
+        raise PortOwnershipError(
+            400,
+            "Pending + accepted invitee shares would exceed "
+            f"{SYNDICATE_MAX_INVITEE_PCT}%",
+        )
+    for inv in invites:
+        if str(inv.get("invitee_player_id")) == invitee_id:
+            raise PortOwnershipError(400, "Invitee already has a pending invite")
+
+    expires = game_time.scaled_deadline(SYNDICATE_INVITE_HOURS, start=now)
+    invite = {
+        "invite_id": str(uuid.uuid4()),
+        "invitee_player_id": invitee_id,
+        "pct": pct_i,
+        "expires_at": _iso(expires),
+        "issued_at": _iso(now),
+    }
+    invites.append(invite)
+    _set_syndicate_state(station, invites=invites)
+    db.flush()
+    logger.info(
+        "Station %s share invite %s%% -> %s by %s",
+        station.id, pct_i, invitee_id, owner.id,
+    )
+    return {
+        "station_id": str(station.id),
+        "invite": invite,
+    }
+
+
+def accept_share_invite(
+    db: Session,
+    station: Station,
+    player: Player,
+    invite_id: str,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Invitee accepts: fee from treasury, stake split, mode=syndicate."""
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    _expire_syndicate_invites(station, now)
+
+    invites = _syndicate_invites(station)
+    match = next((i for i in invites if str(i.get("invite_id")) == str(invite_id)), None)
+    if match is None:
+        raise PortOwnershipError(404, "Invite not found or expired")
+    if str(match.get("invitee_player_id")) != str(player.id):
+        raise PortOwnershipError(403, "Only the invitee can accept this invite")
+    if station.owner_id is None:
+        raise PortOwnershipError(400, "Station has no primary owner")
+
+    pct_i = int(match["pct"])
+    shares = _ensure_primary_share(station)
+    # Re-check oversubscribe without this invite (already counted in pending)
+    pending_others = [i for i in invites if str(i.get("invite_id")) != str(invite_id)]
+    if would_oversubscribe(shares, pending_others, str(station.owner_id), pct_i):
+        raise PortOwnershipError(400, "Accept would oversubscribe shares")
+
+    fee = int(round(_acquisition_cost(station) * SYNDICATE_CONVERSION_FEE_PCT))
+    treasury = station.treasury_balance or 0
+    if treasury < fee:
+        raise PortOwnershipError(
+            400,
+            f"Treasury needs {fee:,} credits for the 1% conversion fee "
+            f"(has {treasury:,})",
+        )
+    station.treasury_balance = treasury - fee
+
+    primary = str(station.owner_id)
+    others = [
+        {"player_id": str(s["player_id"]), "pct": int(s["pct"])}
+        for s in shares
+        if str(s["player_id"]) != primary
+    ]
+    # Merge if invitee already had a share (shouldn't normally)
+    merged = False
+    for s in others:
+        if s["player_id"] == str(player.id):
+            s["pct"] += pct_i
+            merged = True
+            break
+    if not merged:
+        others.append({"player_id": str(player.id), "pct": pct_i})
+    others_pct = sum(int(s["pct"]) for s in others)
+    primary_pct = 100 - others_pct
+    if primary_pct < 1:
+        raise PortOwnershipError(400, "Primary would retain less than 1%")
+    new_shares = [{"player_id": primary, "pct": primary_pct}] + others
+    new_invites = pending_others
+    _set_syndicate_state(
+        station, mode="syndicate", shares=new_shares, invites=new_invites
+    )
+    db.flush()
+    logger.info(
+        "Station %s invite %s accepted by %s (+%s%%, fee=%s)",
+        station.id, invite_id, player.id, pct_i, fee,
+    )
+    return {
+        "station_id": str(station.id),
+        "mode": "syndicate",
+        "shares": new_shares,
+        "conversion_fee": fee,
+        "treasury_balance": station.treasury_balance,
+    }
+
+
+def decline_share_invite(
+    db: Session,
+    station: Station,
+    player: Player,
+    invite_id: str,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Invitee declines — remove invite, no stake change."""
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    _expire_syndicate_invites(station, now)
+    invites = _syndicate_invites(station)
+    match = next((i for i in invites if str(i.get("invite_id")) == str(invite_id)), None)
+    if match is None:
+        raise PortOwnershipError(404, "Invite not found or expired")
+    if str(match.get("invitee_player_id")) != str(player.id):
+        raise PortOwnershipError(403, "Only the invitee can decline this invite")
+    kept = [i for i in invites if str(i.get("invite_id")) != str(invite_id)]
+    _set_syndicate_state(station, invites=kept)
+    db.flush()
+    return {
+        "station_id": str(station.id),
+        "declined_invite_id": str(invite_id),
     }
 
 
