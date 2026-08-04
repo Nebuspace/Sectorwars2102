@@ -38,5 +38,9 @@ def test_passive_income_zero_when_empty():
 
 
 def test_harvester_no_longer_in_equipment_family_deferred():
+    """harvester/lander/tractor are all wired; only mining remains deferred
+    (WO-BUILD-LANDER-MINING-TRACTOR-CONSUMER-WIRING)."""
     assert "harvester" not in _EQUIPMENT_FAMILY_DEFERRED
-    assert "lander" in _EQUIPMENT_FAMILY_DEFERRED
+    assert "lander" not in _EQUIPMENT_FAMILY_DEFERRED
+    assert "tractor" not in _EQUIPMENT_FAMILY_DEFERRED
+    assert "mining" in _EQUIPMENT_FAMILY_DEFERRED

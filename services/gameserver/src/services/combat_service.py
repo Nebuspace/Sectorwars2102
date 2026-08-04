@@ -3466,7 +3466,7 @@ class CombatService:
         attacker_has_tractor = False
         try:
             if attacker_ship is not None:
-                attacker_effects = ShipUpgradeService.get_equipment_effects(attacker_ship)
+                attacker_effects = ShipUpgradeService.get_combined_effects(attacker_ship)
                 attacker_has_tractor = attacker_effects.get("weapon_mode") == "tractor"
                 # WO-AF tow mutual-exclusion (ships.md:365): the Tractor Beam
                 # slot is mutually exclusive with weapon-mode firing while a tow

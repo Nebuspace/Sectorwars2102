@@ -603,7 +603,7 @@ async def claim_planet(
     landing_factor = 1.0
     try:
         from src.services.ship_upgrade_service import ShipUpgradeService
-        raw_factor = ShipUpgradeService.get_equipment_effects(ship).get("landing_bonus")
+        raw_factor = ShipUpgradeService.get_combined_effects(ship).get("landing_bonus")
         if isinstance(raw_factor, (int, float)) and raw_factor > 0:
             landing_factor = float(raw_factor)
     except Exception:
@@ -1175,7 +1175,7 @@ async def transfer_colonists(
         landing_factor = 1.0
         try:
             from src.services.ship_upgrade_service import ShipUpgradeService
-            raw_factor = ShipUpgradeService.get_equipment_effects(ship).get("landing_bonus")
+            raw_factor = ShipUpgradeService.get_combined_effects(ship).get("landing_bonus")
             if isinstance(raw_factor, (int, float)) and raw_factor > 0:
                 landing_factor = float(raw_factor)
         except Exception:

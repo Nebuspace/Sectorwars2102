@@ -21,31 +21,36 @@ logger = logging.getLogger(__name__)
 # SHIP-MODS WO-SM-3 STEP 4 — equipment-family module classes whose legacy
 # effects are consumed out of equipment_slots JSONB (by their EXISTING
 # consumers), NOT from a scalar Ship column. Their effects ARE baked/tracked in
-# Ship.modules["_baked"] by _apply_module_effects, but persisting them into the
-# equipment_slots key each consumer reads is DEFERRED for lander/mining/tractor
-# (see install_module). Until then those modules are fitted-and-baked but
-# runtime-INERT — install_module/remove_module surface ``consumer_inert: True``.
+# Ship.modules["_baked"] by _apply_module_effects. install_module surfaces
+# ``consumer_inert: True`` only for classes still in the set below.
 #
 # harvester (passive_income): WO residual (2) wired get_passive_income to ALSO
 # read Ship.modules["_baked"]["passive_income"] — no equipment_slots write, so
 # no collision with install_equipment("quantum_harvester") / npc_scheduler.
-# harvester is therefore NOT in the deferred set below.
 # WO-QUANTUM-HARVESTER-MODULE-LATTICE-WIRING: lattice harvester install/remove
 # also syncs Ship.quantum_harvester_slot (QR2 harvest gate) via
 # _sync_quantum_harvester_slot — same flag the equipment path flips.
 #
-# WHY STILL DEFERRED for lander/mining/tractor — flagged for the orchestrator:
-#   * lander/mining/tractor (landing_bonus / mining_efficiency / tow_capable /
-#     weapon_mode): get_equipment_effects() MERGES numeric effects ADDITIVELY
-#     across all equipment_slots entries, but each consumer reads landing_bonus /
-#     mining_efficiency as a SINGLE multiplicative factor and tow_capable /
-#     weapon_mode as a presence flag. A synthetic module slot would (a) double-
-#     count against a same-family legacy equipment a player also owns (1.25+1.25),
-#     and (b) deliver the UNTIERED/un-supercharged catalog value, not the baked
-#     tier value. Writing that key would make the module WORK WRONG — STEP 4 says
-#     do not write a wrong key. Correct wiring needs a module-aware effect source
-#     the consumers read (a follow-up WO).
-_EQUIPMENT_FAMILY_DEFERRED = frozenset({"lander", "mining", "tractor"})
+# WO-BUILD-LANDER-MINING-TRACTOR-CONSUMER-WIRING: lander (landing_bonus) and
+# tractor (tow_capable / weapon_mode) are now wired — get_combined_effects()
+# merges the module-lattice's baked/presence values with the legacy
+# equipment_slots values (max-of-both for numeric, either-truthy for presence,
+# never additive, so a ship carrying both sources of the same family never
+# double-counts). planets.py (landing_bonus), tow_service.py (tow_capable), and
+# combat_service.py (weapon_mode) now read get_combined_effects() instead of
+# get_equipment_effects() directly.
+#
+# mining STAYS deferred — flagged for the orchestrator:
+#   * mining_efficiency: canon (economy/mining.md §41) says the legacy
+#     mining_laser's mining_efficiency is consumed via a laser-LEVEL (0-3)
+#     ladder that indexes mining_service.py's `_YIELD_MATRIX` directly — there
+#     is no `level` concept on a lattice module (only Mk I/II/III with an
+#     independently-scaled multiplier: 1.5× / 2.4× / 3.84×, vs the ladder's
+#     1.25× / 1.5× / 2.0×) and no canon mapping from a module tier onto a
+#     laser_col matrix index. Wiring it would require GUESSING that mapping —
+#     a follow-up WO with a NO-CANON ruling on the tier↔laser_col
+#     correspondence (or a parallel yield path) is needed first.
+_EQUIPMENT_FAMILY_DEFERRED = frozenset({"mining"})
 
 # ============================================================================
 # GALACTIC-CITIZEN tier (WO-GC-B). The Citizen tier is DATA + an eligibility
@@ -734,6 +739,58 @@ class ShipUpgradeService:
                         merged[effect_name] = effect_value
                 else:
                     merged[effect_name] = effect_value
+        return merged
+
+    @staticmethod
+    def get_module_effects(ship) -> Dict[str, Any]:
+        """Read the module-lattice's equipment-family effects: the baked
+        multiplicative totals (``landing_bonus``) already tier/supercharge-scaled
+        by ``_apply_module_effects``, plus the tractor's presence flags
+        (``tow_capable`` / ``weapon_mode``) read directly off ``installed`` slot
+        records (never baked into ``_baked`` — see ``_apply_module_effects``
+        step 5). ``mining_efficiency`` is intentionally NOT surfaced here — see
+        ``_EQUIPMENT_FAMILY_DEFERRED``. Returns ``{}`` for a ship with no
+        ``modules`` JSONB."""
+        modules = getattr(ship, "modules", None)
+        if not isinstance(modules, dict):
+            return {}
+        effects: Dict[str, Any] = {}
+        baked = modules.get("_baked")
+        if isinstance(baked, dict):
+            v = baked.get("landing_bonus")
+            if isinstance(v, (int, float)) and v > 0:
+                effects["landing_bonus"] = v
+        installed = modules.get("installed")
+        if isinstance(installed, dict):
+            for m in installed.values():
+                if isinstance(m, dict) and m.get("class") == "tractor":
+                    effects["tow_capable"] = True
+                    effects["weapon_mode"] = "tractor"
+                    break
+        return effects
+
+    @staticmethod
+    def get_combined_effects(ship) -> Dict[str, Any]:
+        """Merge legacy ``equipment_slots`` effects with module-lattice effects
+        for the equipment-family keys (``landing_bonus`` / ``tow_capable`` /
+        ``weapon_mode``) — the two install paths for the SAME mechanic.
+
+        Never additive (that would double-count a ship carrying both a legacy
+        equipment_slot AND a lattice module of the same family — see the
+        class-level DEFERRED note): numeric multiplicative keys take the max of
+        the two sources; presence/string keys take either source being truthy.
+        ``mining_efficiency`` is deliberately excluded — the lattice ``mining``
+        module has no canon-specified mapping onto the laser-level yield-matrix
+        ladder ``mining_service.py`` actually consumes (see
+        ``_EQUIPMENT_FAMILY_DEFERRED``); callers that need it should keep using
+        ``get_equipment_effects`` directly."""
+        merged = dict(ShipUpgradeService.get_equipment_effects(ship))
+        for key, mv in ShipUpgradeService.get_module_effects(ship).items():
+            ev = merged.get(key)
+            if isinstance(mv, (int, float)) and isinstance(ev, (int, float)):
+                merged[key] = max(ev, mv)
+            elif mv:
+                merged.setdefault(key, mv)
         return merged
 
     def __init__(self, db: Session):
@@ -1693,13 +1750,17 @@ class ShipUpgradeService:
             return {"success": False, "message": f"Unknown module: {module_class} Mk{tier}"}
 
         # --- deferred equipment-family guard (reviewer LOW#2 fix) ---
-        # lander/mining/tractor bake into Ship.modules["_baked"] but their effect
-        # is NOT yet wired to its equipment_slots consumer (the deferred MED) —
-        # so installing one would CHARGE 20-40k cr for a runtime-INERT module (a
-        # pay-for-nothing trap). Block install until the consumer-wiring follow-up
-        # lands; the family stays catalog-LISTED (get_ship_modules / the UI can show
-        # it as "coming soon") so it surfaces for when it's unblocked.
-        # harvester: residual (2) wired get_passive_income to _baked — NOT deferred.
+        # A class still in _EQUIPMENT_FAMILY_DEFERRED bakes into
+        # Ship.modules["_baked"] but has no wired consumer yet — installing it
+        # would CHARGE credits for a runtime-INERT module (a pay-for-nothing
+        # trap). Block install until the consumer-wiring follow-up lands; the
+        # family stays catalog-LISTED (get_ship_modules / the UI can show it as
+        # "coming soon") so it surfaces for when it's unblocked.
+        # harvester: residual (2) wired get_passive_income to _baked.
+        # lander/tractor: WO-BUILD-LANDER-MINING-TRACTOR-CONSUMER-WIRING wired
+        # get_combined_effects() into planets.py / tow_service.py /
+        # combat_service.py. Only mining remains deferred (see the class-level
+        # note above _EQUIPMENT_FAMILY_DEFERRED).
         if module_class in _EQUIPMENT_FAMILY_DEFERRED:
             return {
                 "success": False,
@@ -1822,10 +1883,10 @@ class ShipUpgradeService:
             "remaining_credits": player.credits,
             "updated_stats": updated_stats,
         }
-        # lander/mining/tractor are baked but NOT yet wired to their equipment_slots
-        # consumers — see the class-level note + _apply_module_effects. Surface the
-        # deferral so the caller/UI can warn the player the module is install-but-inert.
-        # harvester is live (residual 2) and is not in _EQUIPMENT_FAMILY_DEFERRED.
+        # mining is still deferred — see the class-level note above
+        # _EQUIPMENT_FAMILY_DEFERRED. Surface it so the caller/UI can warn the
+        # player the module is install-but-inert. harvester/lander/tractor are
+        # all live and not in _EQUIPMENT_FAMILY_DEFERRED.
         if module_class in _EQUIPMENT_FAMILY_DEFERRED:
             result["consumer_inert"] = True
             result["consumer_note"] = (

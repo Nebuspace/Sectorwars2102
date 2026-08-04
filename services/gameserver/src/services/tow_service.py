@@ -106,11 +106,13 @@ class TowService:
     # ------------------------------------------------------------------ #
     @staticmethod
     def has_tractor_beam(ship: Ship) -> bool:
-        """True iff ``ship`` carries a tractor_beam in tow_capable mode (WO-BC
-        equipment effects {tow_capable: true}). Defensive: a missing
-        equipment_slots JSONB simply yields False, never a crash."""
+        """True iff ``ship`` carries a tractor_beam in tow_capable mode — either
+        the legacy equipment_slots tractor_beam (WO-BC) or an installed lattice
+        ``tractor`` module (WO-BUILD-LANDER-MINING-TRACTOR-CONSUMER-WIRING).
+        Defensive: a missing equipment_slots/modules JSONB simply yields False,
+        never a crash."""
         try:
-            effects = ShipUpgradeService.get_equipment_effects(ship)
+            effects = ShipUpgradeService.get_combined_effects(ship)
             return bool(effects.get("tow_capable"))
         except Exception as e:
             logger.error("Tractor equipment read failed (treating as no tractor): %s", e)
