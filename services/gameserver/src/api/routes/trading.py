@@ -14,6 +14,7 @@ from src.core.database import get_db
 from src.models.docking import DockingQueueEntry, DockingSlipOccupancy
 from src.models.market_transaction import MarketPrice, MarketTransaction, PriceHistory, TransactionType
 from src.models.player import Player
+from src.models.sector import Sector
 from src.models.ship import Ship, ShipStatus, effective_cargo_capacity
 from src.models.station import Station
 from src.models.user import User
@@ -203,10 +204,32 @@ def _dispatch_trade_medals(db: Session, player: Player) -> None:
             .scalar()
             or 0
         )
+        # economic.cartel_breaker: best single-region lifetime SELL total
+        # (query-derived from the never-deleted enhanced_market_transactions
+        # table, joined through Sector.region_id — no durable counter needed,
+        # mirrors the total_trades/lifetime_credits pattern above).
+        best_region_sales: int = int(
+            db.query(func.sum(MarketTransaction.total_value))
+            .join(Sector, Sector.id == MarketTransaction.sector_uuid)
+            .filter(
+                MarketTransaction.player_id == player.id,
+                MarketTransaction.transaction_type == TransactionType.SELL,
+                Sector.region_id.isnot(None),
+            )
+            .group_by(Sector.region_id)
+            .order_by(func.sum(MarketTransaction.total_value).desc())
+            .limit(1)
+            .scalar()
+            or 0
+        )
         check_and_award_trade_medals(
             db,
             player,
-            {"total_trades": total_trades, "lifetime_credits": lifetime_revenue},
+            {
+                "total_trades": total_trades,
+                "lifetime_credits": lifetime_revenue,
+                "regional_commodity_sales": best_region_sales,
+            },
         )
     except Exception:
         logger.warning("_dispatch_trade_medals failed (non-fatal)", exc_info=True)

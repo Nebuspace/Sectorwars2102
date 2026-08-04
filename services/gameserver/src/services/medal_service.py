@@ -778,8 +778,12 @@ def check_and_award_trade_medals(
 ) -> List[str]:
     """Trade-lane dispatcher (analogous to the combat hook). Defensive.
 
-    ``context`` may carry ``total_trades`` and ``lifetime_credits``; falls back
-    to reading the player row's ``credits`` when not supplied.
+    ``context`` may carry ``total_trades``, ``lifetime_credits``, and
+    ``regional_commodity_sales`` (economic.cartel_breaker — the caller's
+    single best-region lifetime SELL total, live-query-derived; no durable
+    counter needed since ``enhanced_market_transactions`` rows are never
+    deleted). ``lifetime_credits`` falls back to the player row's ``credits``
+    when not supplied.
     """
     try:
         if player is None:
@@ -801,6 +805,13 @@ def check_and_award_trade_medals(
             awarded += _evaluate_and_award(
                 db, player.id, "lifetime_credits", int(lifetime_credits),
                 source_event_key="trade.completed", awarded_via="trade",
+            )
+
+        regional_commodity_sales = context.get("regional_commodity_sales")
+        if regional_commodity_sales is not None:
+            awarded += _evaluate_and_award(
+                db, player.id, "regional_commodity_sales", int(regional_commodity_sales),
+                source_event_key="trade.sell", awarded_via="trade",
             )
         return awarded
     except Exception as e:
