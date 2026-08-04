@@ -57,7 +57,10 @@ class PlayerTradingProfile(Base):
     avoided_sectors = Column(JSONB, nullable=True)  # Sectors the player tends to avoid
     trading_patterns = Column(JSONB, nullable=True)  # Learned behavioral patterns
     performance_metrics = Column(JSONB, nullable=True)  # Historical performance data
-    ai_assistance_level = Column(String(20), nullable=False, default='medium')  # 'minimal', 'medium', 'full'
+    # 4-level canon vocab (ratified 2026-08-04, ADR-0068): 'minimal', 'quiet',
+    # 'standard', 'full' -- was 3-value 'minimal'/'medium'/'full'; 'standard'
+    # replaces 'medium' as the default. Legacy rows backfilled by migration.
+    ai_assistance_level = Column(String(20), nullable=False, default='standard')
     notification_preferences = Column(JSONB, nullable=True)  # When and how to notify
     learning_data = Column(JSONB, nullable=True)  # ML model training data specific to this player
     last_active_sector = Column(UUID(as_uuid=True), ForeignKey("sectors.id", ondelete="SET NULL"), nullable=True)

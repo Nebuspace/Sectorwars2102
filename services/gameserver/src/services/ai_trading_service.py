@@ -357,7 +357,7 @@ class AITradingService:
         profile = PlayerTradingProfile(
             player_id=player.id,
             risk_tolerance=0.5,  # Start with moderate risk
-            ai_assistance_level='medium',
+            ai_assistance_level='standard',
             trading_patterns={},
             performance_metrics={},
             notification_preferences={

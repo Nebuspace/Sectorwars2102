@@ -327,7 +327,8 @@ def test_suppression_p_a3_once_per_team_join():
 
 
 # --------------------------------------------------------------------- #
-# Assistance-level slicing (aria-companion.md, [NO-CANON] 3-level vocab)
+# Assistance-level slicing (aria-companion.md; 4-level vocab ratified
+# 2026-08-04, ADR-0068: minimal/quiet/standard/full)
 # --------------------------------------------------------------------- #
 
 def test_assistance_minimal_suppresses_atmospheric_but_not_standard():
@@ -356,8 +357,8 @@ def test_assistance_minimal_suppresses_atmospheric_but_not_standard():
     assert allowed_f8 is not None
 
 
-def test_assistance_medium_and_full_fire_atmospheric_rows():
-    for level in ("medium", "full"):
+def test_assistance_standard_and_full_fire_atmospheric_rows():
+    for level in ("standard", "full"):
         svc = _svc()
         allowed = svc.record_event(
             "P-A2", "player-9", dedupe_key=f"sector-{level}",
@@ -365,6 +366,16 @@ def test_assistance_medium_and_full_fire_atmospheric_rows():
             context={"sector_type_desc": "a nebula"}, now=NOW,
         )
         assert allowed is not None, f"assistance_level={level} should fire P-A*"
+
+
+def test_assistance_quiet_suppresses_atmospheric_same_as_minimal():
+    svc = _svc()
+    blocked = svc.record_event(
+        "P-A2", "player-quiet", dedupe_key="sector-quiet",
+        assistance_level="quiet",
+        context={"sector_type_desc": "a nebula"}, now=NOW,
+    )
+    assert blocked is None
 
 
 # --------------------------------------------------------------------- #
@@ -426,12 +437,12 @@ def test_resolve_assistance_level_reads_the_profile_column():
     assert resolve_assistance_level(_FakeSession([profile]), player_id) == "full"
 
 
-def test_resolve_assistance_level_defaults_to_medium_when_no_profile():
-    assert resolve_assistance_level(_FakeSession([]), uuid.uuid4()) == "medium"
+def test_resolve_assistance_level_defaults_to_standard_when_no_profile():
+    assert resolve_assistance_level(_FakeSession([]), uuid.uuid4()) == "standard"
 
 
-def test_resolve_assistance_level_defaults_to_medium_on_error():
-    assert resolve_assistance_level(_RaisingSession(), uuid.uuid4()) == "medium"
+def test_resolve_assistance_level_defaults_to_standard_on_error():
+    assert resolve_assistance_level(_RaisingSession(), uuid.uuid4()) == "standard"
 
 
 # --------------------------------------------------------------------- #
