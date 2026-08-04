@@ -102,8 +102,10 @@ HARVEST_COOLDOWN_HOURS = 2.0
 
 # Turn cost charged per harvest attempt — mirrors mining_service.harvest's
 # regenerate_turns -> afford-check -> spend_turns model so a harvest is never
-# a free action. The canon magnitude is doc-split (15 vs 8); 8 is the
-# conservative value pending the orchestrator's doc reconcile [NO-CANON 8-vs-15].
+# a free action. § Harvest mechanics: "A harvest attempt costs 8 turns"
+# (quantum-resources.md:198, also :55/:280/:342) — canon is consistent at 8
+# throughout the doc; re-verified 2026-08-04, no 15-turn reference exists
+# anywhere in it. The prior "doc-split 15 vs 8" framing was stale.
 HARVEST_NEBULA_TURN_COST = 8
 
 # § Harvest mechanics resolution step 4: "Roll crit ~ uniform(0, 1) < 0.02."

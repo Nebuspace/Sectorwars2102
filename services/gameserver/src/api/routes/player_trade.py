@@ -12,6 +12,7 @@ from src.core.database import get_db
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
 from src.services.player_trade_service import PlayerTradeService
+from src.services.fuel_delivery_service import deliver_fuel, FuelDeliveryError
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,48 @@ async def get_open_trade(
     result = PlayerTradeService(db).get(player.open_trade_session_id, player.id)
     if not result.get("success"):
         return {"success": True, "session": None}
+    return result
+
+
+class DeliverFuelRequest(BaseModel):
+    recipient_player_id: str
+    fuel_amount: int = Field(..., ge=1)
+    payment_credits: int = Field(..., ge=0)
+
+
+@router.post("/deliver-fuel")
+async def deliver_fuel_route(
+    body: DeliverFuelRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Immediate same-sector fuel-for-credits handoff (WO-GWQ-STRANDING-2 —
+    "conversely you could pay for someone to deliver you fuel"). Wraps
+    fuel_delivery_service.deliver_fuel, the KERNEL primitive shipped
+    unwired until this route (movement.md "Paid fuel delivery"). No
+    request/board/escrow — both players must already be in the same
+    sector; the caller is the deliverer, the fuel moves onto the
+    recipient's OWN ship (they still have to fly their own Slipdrive
+    escape), and the payment moves from recipient to caller.
+    """
+    try:
+        recipient_id = UUID(body.recipient_player_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid_recipient_id") from exc
+
+    try:
+        result = deliver_fuel(
+            db,
+            deliverer_player_id=player.id,
+            recipient_player_id=recipient_id,
+            fuel_amount=body.fuel_amount,
+            payment_credits=body.payment_credits,
+        )
+    except FuelDeliveryError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    db.commit()
     return result
 
 
