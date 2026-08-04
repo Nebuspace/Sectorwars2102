@@ -189,8 +189,8 @@ api_router.include_router(warp_gates_router, tags=["warp-gates"])
 # (router carries its own /nav prefix)
 api_router.include_router(nav_router, tags=["nav"])
 # Bang galaxy generator admin endpoints (Phase 1C of bang-integration plan).
-# The legacy `/admin/galaxy/generate` route in admin.py stays intact; Phase 4
-# removes it in favour of the new job-based flow defined here.
+# The legacy `/admin/galaxy/generate` route in admin.py was removed in
+# Phase 4 in favour of the job-based flow defined here.
 api_router.include_router(bang_galaxy_router, prefix="/admin", tags=["admin-bang"])
 # Black-market contraband trading (WO-BLACKMARKET kernel): gated catalog + buy +
 # sell with detection roll (router carries its own /trading prefix → endpoints at

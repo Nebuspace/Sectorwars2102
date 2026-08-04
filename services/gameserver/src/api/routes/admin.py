@@ -30,14 +30,6 @@ from src.models.team import Team
 from src.models.game_event import GameEvent, EventEffect, EventParticipation, EventType, EventStatus
 
 # Request schemas for universe management
-class GalaxyGenerateRequest(BaseModel):
-    name: str
-    num_sectors: int
-    config: Optional[dict] = None
-    federation_percentage: Optional[int] = 25
-    border_percentage: Optional[int] = 35
-    frontier_percentage: Optional[int] = 40
-
 class SectorAddRequest(BaseModel):
     num_sectors: int
     config: Optional[dict] = None
@@ -1045,33 +1037,6 @@ async def get_galaxy_info(
             "warp_tunnel_probability": galaxy.density.get("one_way_warp_percentage", 0.1) / 100
         }
     }
-
-@router.post("/galaxy/generate", response_model=dict)
-async def generate_galaxy(
-    request: GalaxyGenerateRequest,
-    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
-):
-    """Deprecated: legacy Python galaxy generator removed in Phase 4 of the
-    sw2102-bang cutover. The synchronous, monolithic generator has been replaced
-    by the bang sidecar pipeline. Galaxy creation now flows through a job-based
-    API that supports preview, commit, live progress, and atomic multi-region
-    builds.
-
-    Use ``POST /api/v1/admin/galaxy/jobs`` instead. See
-    ``DOCS/PLANS/bang-integration.md`` for the new contract.
-    """
-    raise HTTPException(
-        status_code=status.HTTP_410_GONE,
-        detail={
-            "error": "endpoint_removed",
-            "message": (
-                "POST /api/admin/galaxy/generate was removed in the bang "
-                "integration cutover (Phase 4). Use POST /api/v1/admin/galaxy/jobs."
-            ),
-            "replacement": "/api/v1/admin/galaxy/jobs",
-            "docs": "DOCS/PLANS/bang-integration.md",
-        },
-    )
 
 # Zone endpoints removed - zones concept eliminated
 # Architecture: Galaxy → Region → Cluster → Sector

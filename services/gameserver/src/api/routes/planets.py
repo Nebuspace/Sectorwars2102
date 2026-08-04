@@ -73,7 +73,9 @@ class DefenseUpdateRequest(BaseModel):
 
 
 class GenesisDeployRequest(BaseModel):
-    """Genesis device deployment request (legacy - use /genesis/deploy instead)."""
+    """Genesis device deployment request, used by both /planets/genesis/deploy
+    (the route the player-client actually calls) and the parallel /genesis/deploy
+    route in genesis.py."""
     sectorId: str
     planetName: str = Field(..., min_length=3, max_length=50)
     # basic = 1 device, enhanced = 3 devices, advanced = 1 device + the Colony
@@ -1878,10 +1880,13 @@ async def deploy_genesis_device_legacy(
     db: Session = Depends(get_db)
 ):
     """
-    Deploy a genesis device to create a new planet (legacy endpoint).
+    Deploy a genesis device to create a new planet.
 
-    This endpoint is kept for backward compatibility.
-    Use POST /genesis/deploy with the new tiered system instead.
+    Despite the historical "_legacy" function name, this is the live route
+    the player-client actually calls (POST /planets/genesis/deploy — see
+    services/player-client/src/services/api.ts). A parallel POST /genesis/deploy
+    route also exists (src/api/routes/genesis.py, deploy_genesis_device) but has
+    no known caller; both share the same GenesisDeployRequest/GenesisService.
     """
     from src.services.genesis_service import GenesisService
 
