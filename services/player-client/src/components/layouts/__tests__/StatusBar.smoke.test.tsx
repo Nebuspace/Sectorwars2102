@@ -87,6 +87,7 @@ const mockGetMedals = vi.fn();
 const mockGetOwnedPlanets = vi.fn();
 const mockGetTeam = vi.fn();
 const mockGetPermissions = vi.fn();
+const mockBeaconMine = vi.fn();
 
 vi.mock('../../../services/api', () => ({
   factionAPI: {
@@ -108,6 +109,10 @@ vi.mock('../../../services/api', () => ({
   teamAPI: {
     getTeam: (...a: unknown[]) => mockGetTeam(...a),
     getPermissions: (...a: unknown[]) => mockGetPermissions(...a),
+  },
+  // My Beacons dossier tab (1bc7540d) loads on mount when cycled.
+  beaconAPI: {
+    mine: (...a: unknown[]) => mockBeaconMine(...a),
   },
 }));
 
@@ -158,6 +163,7 @@ mockGetRank.mockResolvedValue(FULL_RANK);
 mockGetProgress.mockResolvedValue(FULL_PROGRESS);
 mockGetMedals.mockResolvedValue({ earned: [], available: [] });
 mockGetOwnedPlanets.mockResolvedValue({ planets: [] });
+mockBeaconMine.mockResolvedValue({ beacons: [], total: 0, page: 1, pages: 0 });
 
 import StatusBar from '../StatusBar';
 import { SettingsProvider } from '../../../contexts/SettingsContext';

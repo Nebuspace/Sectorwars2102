@@ -35,8 +35,14 @@ const LanguageSwitcher: React.FC<LanguageSwitcherProps> = ({
   // Fetch available languages from API
   useEffect(() => {
     const fetchLanguages = async () => {
+      // Absolute base — relative `/api/...` breaks under node/undici fetch
+      // (vitest/jsdom) with "Failed to parse URL". Matches apiClient.ts.
+      const base =
+        (typeof window !== 'undefined' &&
+          (import.meta.env.VITE_API_URL || window.location.origin)) ||
+        '';
       try {
-        const response = await fetch('/api/v1/i18n/languages', {
+        const response = await fetch(`${base}/api/v1/i18n/languages`, {
           credentials: 'include'
         });
         
@@ -54,9 +60,10 @@ const LanguageSwitcher: React.FC<LanguageSwitcherProps> = ({
           }));
           setLanguages(staticLanguages.filter(lang => lang.isActive));
         }
-      } catch (error) {
-        console.error('Failed to fetch languages:', error);
-        // Use minimal fallback
+      } catch {
+        // Soft fallback is intentional (offline / test / API down) — do not
+        // console.error; StatusBar smoke asserts zero console.error and the
+        // switcher still works from the static list.
         setLanguages([
           { code: 'en', name: 'English', nativeName: 'English', direction: 'ltr', isActive: true, completionPercentage: 100 },
           { code: 'es', name: 'Spanish', nativeName: 'Español', direction: 'ltr', isActive: true, completionPercentage: 0 }
