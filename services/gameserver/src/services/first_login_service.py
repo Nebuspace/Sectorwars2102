@@ -56,6 +56,108 @@ def apply_cat_mention_score_bonus(
 
 logger = logging.getLogger(__name__)
 
+# ADR-0091 M39 — the number of free, zero-stakes demo expeditions offered
+# during onboarding to teach the re-roll/compare mechanic.
+ONBOARDING_DEMO_EXPEDITION_COUNT = 3
+
+
+def is_first_colony(db: Session, player: Player) -> bool:
+    """Whether `player` has never yet owned a colonized planet (ADR-0091
+    M35: onboarding accommodations apply to colony #1 only).
+
+    No dedicated "colonies founded" counter exists on Player. Uses the same
+    `Planet.owner_id == player.id` ownership query already canonical across
+    abandonment_service / genesis_service / research_service /
+    ranking_service / citadel_service, rather than inventing a new counter
+    column or relying on the separate `player_planets` association table
+    (which those services do not use for ownership checks).
+    """
+    from src.models.planet import Planet
+
+    return db.query(Planet).filter(Planet.owner_id == player.id).count() == 0
+
+
+def get_designated_starter_planet(db: Session, player: Player) -> Optional[Any]:
+    """The planet in the player's home sector — the onboarding starter
+    planet (nexus_generation_service seeds a special habitable planet at
+    sector 1, and Player.home_sector_id defaults to 1)."""
+    from src.models.planet import Planet
+
+    return db.query(Planet).filter(Planet.sector_id == player.home_sector_id).first()
+
+
+def reserve_starter_planet_for_player(db: Session, player: Player) -> Optional[Any]:
+    """ADR-0091 M40 — suppress the starter planet's contestable window and
+    sovereign-reserve it to this player via `reserved_for_player_id`,
+    non-snipeable. No-op if the planet is already owned or already reserved
+    (never overwrites an existing reservation/ownership)."""
+    from src.models.planet import PlanetContestState
+
+    planet = get_designated_starter_planet(db, player)
+    if planet is None:
+        return None
+    if planet.owner_id is not None or planet.reserved_for_player_id is not None:
+        return planet
+    planet.reserved_for_player_id = player.id
+    if planet.contest_state is not None:
+        planet.contest_state = PlanetContestState.SUPPRESSED
+    return planet
+
+
+def get_first_colony_expedition_overrides(
+    db: Session, player: Player, planet: Any
+) -> Dict[str, Any]:
+    """ADR-0091 M38 — kwargs to merge into an `roll_expedition(...)` call so
+    a first-colony player's expedition on their designated starter planet is
+    a forced, guaranteed-good, cost-waived roll (ADR-0091 line ~152).
+    Returns {} when not applicable (not the player's first colony, or not
+    their starter planet) — callers merge this into their normal kwargs
+    rather than branching on it.
+    """
+    starter_planet = get_designated_starter_planet(db, player)
+    if starter_planet is None or planet is None or starter_planet.id != planet.id:
+        return {}
+    if not is_first_colony(db, player):
+        return {}
+    return {"forced_success": True, "guaranteed_good": True, "waive_cost": True}
+
+
+def launch_onboarding_demo_expeditions(
+    db: Session,
+    player: Player,
+    planet: Any,
+    ship: Any,
+    count: int = ONBOARDING_DEMO_EXPEDITION_COUNT,
+) -> List[Any]:
+    """ADR-0091 M39 — launch `count` free, zero-stakes demo expeditions.
+
+    Lazy import + defensive: expedition_service.py (lane2) may not exist yet
+    at the time this runs (concurrent-lane build). Never breaks onboarding
+    completion — mirrors the medal_service dispatch pattern above in
+    complete_first_login. Returns [] (and logs a warning) if lane2 hasn't
+    landed, or if any individual roll raises.
+    """
+    try:
+        from src.services.expedition_service import roll_expedition
+    except ImportError:
+        logger.warning(
+            "expedition_service.roll_expedition not available yet "
+            "(lane2 not landed) - skipping onboarding demo expeditions for %s",
+            player.id,
+        )
+        return []
+
+    results: List[Any] = []
+    for _ in range(count):
+        try:
+            results.append(roll_expedition(db, player, planet, ship, demo=True))
+        except Exception as exc:  # never break onboarding on a demo-roll failure
+            logger.error(
+                "onboarding demo expedition failed for player %s: %s", player.id, exc
+            )
+            break
+    return results
+
 
 class FirstLoginCompletionError(Exception):
     """Raised by complete_first_login when the flow's side effects have
@@ -1910,6 +2012,21 @@ Description: {ship_specs.get('description', 'N/A')}
                 _award_special(self.db, session.id)
         except Exception as _e:  # never break first-login completion on medal award
             logger.error("first-login special-medal award failed for %s: %s", player.id, _e)
+
+        # ADR-0091 M40/M39 — sovereign-reserve the starter planet and offer
+        # free demo expeditions. Defensive: never breaks first-login
+        # completion (mirrors the medal-award dispatch above).
+        try:
+            starter_planet = reserve_starter_planet_for_player(self.db, player)
+            if starter_planet is not None:
+                launch_onboarding_demo_expeditions(
+                    self.db, player, starter_planet, new_ship
+                )
+        except Exception as _e:
+            logger.error(
+                "first-login onboarding expedition setup failed for %s: %s",
+                player.id, _e,
+            )
 
         self.db.commit()
         

@@ -36,6 +36,21 @@ def participation_weight(db: Session, player_id: uuid.UUID) -> float:
     return 0.0 if flagged is not None else 1.0
 
 
+def eligible_for_contest(db: Session, player_id: uuid.UUID, planet_id: uuid.UUID) -> bool:
+    """ADR-0091 §8 Amendment A: the ``settle_contest`` surface.
+
+    Returns True iff ``player_id`` clears the anti-sybil thresholds to
+    contest (settle) ``planet_id``. v1 reuses the existing HARD-flag
+    detection substrate 1:1 with :func:`participation_weight` — a
+    HARD-flagged cluster member is ineligible (False); everyone else is
+    eligible (True). ``planet_id`` is accepted for API-shape parity with the
+    ADR's per-planet-scoped surface and future refinement (e.g. per-planet
+    soft-flag tie-loss / no-relief-between-linked-accounts math); unused
+    today since the underlying detection is account-scoped, not planet-scoped.
+    """
+    return participation_weight(db, player_id) > 0.0
+
+
 def blocks_vote(db: Session, player_id: uuid.UUID) -> bool:
     """ADR-0056 N-V3 ``not multi_account_flag.blocks_vote`` gate.
 

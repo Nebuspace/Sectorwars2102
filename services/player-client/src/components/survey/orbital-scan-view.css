@@ -1,0 +1,53 @@
+/* Orbital-scan cosmetic silhouette (ADR-0091) — matches the citadel/grid
+   design language: dark gradient panels, #4a9eff / #00ffcc accents. */
+.orbital-scan-view {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  border: 1px solid var(--border-color, #334155);
+  border-radius: 8px;
+}
+
+.orbital-scan-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.orbital-scan-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #ccd;
+}
+
+.orbital-scan-planet {
+  font-size: 0.8rem;
+  color: #4a9eff;
+}
+
+.orbital-scan-svg {
+  width: 100%;
+  max-width: 260px;
+  align-self: center;
+  aspect-ratio: 1 / 1;
+}
+
+.orbital-scan-silhouette {
+  fill: rgba(74, 158, 255, 0.12);
+  stroke: #4a9eff;
+  stroke-width: 1.5;
+}
+
+.orbital-scan-dot {
+  fill: #00ffcc;
+  opacity: 0.75;
+}
+
+.orbital-scan-hint {
+  font-size: 0.72rem;
+  color: #889;
+  text-align: center;
+  line-height: 1.4;
+}

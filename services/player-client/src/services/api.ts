@@ -652,6 +652,36 @@ export const gridAPI = {
     }),
 };
 
+// Ground-expedition APIs (ADR-0091 "Planetary Survey & Site Discovery",
+// lane2's src/api/routes/expeditions.py — mounted WITHOUT an extra prefix,
+// i.e. /api/v1/expeditions/*). Every expedition is a fresh RNG roll
+// generated at launch: launch/reroll both return the settled roll
+// (status SUCCESS/PARTIAL/FAILURE + result SiteIntel payload, or PENDING
+// while EXPEDITION_DELAY_MINUTES has not elapsed).
+//
+// settle() calls the existing /planets/{id}/claim route, rewritten in
+// place by lane3-settle-cas to run the ADR §8 CAS resolver (not a new
+// /expeditions/{id}/settle route — corrected post-integration once
+// lane3's actual route location was confirmed).
+export const expeditionAPI = {
+  launch: (planetId: string, shipId?: string | null) =>
+    apiRequest('/api/v1/expeditions/launch', {
+      method: 'POST',
+      body: JSON.stringify({ planet_id: planetId, ship_id: shipId ?? null }),
+    }),
+
+  getStatus: (expeditionId: string) =>
+    apiRequest(`/api/v1/expeditions/${expeditionId}/status`),
+
+  list: () => apiRequest('/api/v1/expeditions'),
+
+  reroll: (expeditionId: string) =>
+    apiRequest(`/api/v1/expeditions/${expeditionId}/reroll`, { method: 'POST' }),
+
+  settle: (planetId: string) =>
+    apiRequest(`/api/v1/planets/${planetId}/claim`, { method: 'POST' }),
+};
+
 // Terraforming capstone (CRT grid). The confirm-biome ACTION reclassifies
 // planet.type (BARREN -> VOLCANIC, ICE -> DESERT) once the area-weighted grid
 // axes have held inside the target biome's band for CAPSTONE_HOLD_TICKS.
@@ -1286,6 +1316,7 @@ export const gameAPI = {
   bounty: bountyAPI,
   citadel: citadelAPI,
   grid: gridAPI,
+  expedition: expeditionAPI,
   researchCockpit: researchCockpitAPI,
   shipUpgrade: shipUpgradeAPI,
   governance: governanceAPI,

@@ -46,6 +46,22 @@ class PlanetStatus(enum.Enum):
     RESTRICTED = "RESTRICTED"
 
 
+class PlanetContestState(enum.Enum):
+    """Ownership-contest state machine (ADR-0091 §8, M22 RESOLVED):
+    FORMING -> CONTEST_PRIORITY (deployer-only priority window) ->
+    CONTEST_OPEN (UNSETTLED, any eligible player) -> SETTLE_LOCKED (atomic CAS
+    in flight) -> CLAIMED; SUPPRESSED is the parallel onboarding-starter branch
+    (M40, sovereign-reserved via reserved_for_player_id, non-snipeable). There
+    is no LAPSED_DORMANT state and no decay timer — an UNSETTLED planet stays
+    contestable indefinitely."""
+    FORMING = "FORMING"
+    PRIORITY = "PRIORITY"
+    OPEN = "OPEN"
+    SETTLE_LOCKED = "SETTLE_LOCKED"
+    CLAIMED = "CLAIMED"
+    SUPPRESSED = "SUPPRESSED"
+
+
 class Planet(Base):
     __tablename__ = "planets"
 
@@ -207,7 +223,28 @@ class Planet(Base):
     
     # Regional association
     region_id = Column(UUID(as_uuid=True), ForeignKey("regions.id"), nullable=True)
-    
+
+    # Site-discovery contestation (ADR-0091 §8; DECISIONS.md citadel-size-cap
+    # superseded). Additive/nullable — a legacy pre-ADR-0091 planet has NULL
+    # contest_state and is treated as already-CLAIMED by existing owner_id
+    # logic; the CAS resolver and its callers are Wave-2, not this schema slice.
+    # [P] provisional, pending calibration.
+    contest_state = Column(Enum(PlanetContestState, name="planet_contest_state"), nullable=True)
+    # Whoever deployed the genesis device that formed this planet (M55: distinct
+    # from discovered_by and owner_id — three first-actor events that never
+    # collapse). Only the deployer may SETTLE during the CONTEST_PRIORITY window.
+    deployer_id = Column(UUID(as_uuid=True), ForeignKey("players.id", ondelete="SET NULL"), nullable=True)
+    # Onboarding sovereign-suppress (M40): a starter planet's contestable window
+    # is suppressed and reserved to exactly this player — non-snipeable.
+    reserved_for_player_id = Column(UUID(as_uuid=True), ForeignKey("players.id", ondelete="SET NULL"), nullable=True)
+    # Timestamp of the first valid SETTLE (ADR-0091 R2: ownership attaches at
+    # settle, not at genesis-deploy). NULL until the CAS resolver's UPDATE wins.
+    settled_at = Column(DateTime(timezone=True), nullable=True)
+    # Native-life hazard-risk input (ADR-0091 §7, M54 additive): weights hazard
+    # rolls alongside radiation_level/temperature. [P] provisional shape —
+    # boolean flag for v1; may grow to a JSONB severity payload post-calibration.
+    native_life = Column(Boolean, nullable=True)
+
     # Relationships
     owner = relationship("Player", secondary=player_planets, back_populates="planets")
     sector = relationship("Sector", foreign_keys=[sector_uuid], back_populates="planets")

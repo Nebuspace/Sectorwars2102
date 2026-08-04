@@ -11,7 +11,7 @@ from typing import List, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from sqlalchemy import func, text, select
+from sqlalchemy import func, text, select, update, or_
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm.attributes import flag_modified
 from pydantic import BaseModel, Field
@@ -443,9 +443,136 @@ async def claim_planet(
             )
         )
 
+    # --- ADR-0091 §8 settle validity + atomic CAS resolution ---------------
+    # Retroactive scope (M28 CANON): the CAS resolver replaces first-come
+    # /claim uniformly, including existing unclaimed worlds. A legacy
+    # pre-ADR-0091 planet has contest_state IS NULL — treated here as the
+    # OPEN branch (any eligible player may settle) since it predates the
+    # contest state machine and was never deployer-gated or reserved.
+    from src.models.planet import PlanetContestState
+    from src.models.expedition import Expedition, ExpeditionStatus
+    from src.services.multi_account_service import eligible_for_contest
+
+    # (M24 CANON / Amendment A) real-player anti-sybil eligibility gate.
+    if not eligible_for_contest(db, player.id, planet.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Your account does not currently clear the anti-sybil "
+                "eligibility check required to contest a planet settle."
+            ),
+        )
+
+    # (M36) >=1 SUCCESS-status ground expedition this player holds on this
+    # planet — the expedition record itself is the proof, no stored "epoch
+    # report". Demo expeditions (M39) can never be the settling expedition.
+    winning_expedition = (
+        db.query(Expedition)
+        .filter(
+            Expedition.planet_id == planet.id,
+            Expedition.player_id == player.id,
+            Expedition.status == ExpeditionStatus.SUCCESS,
+            Expedition.demo.is_(False),
+        )
+        .order_by(Expedition.launched_at.desc())
+        .first()
+    )
+    if winning_expedition is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "You need at least one successful ground expedition on "
+                "this planet before you can settle it."
+            ),
+        )
+
+    # Ship-in-orbit + same-sector proximity are already enforced above
+    # (sector match + assert_dock_land_proximity) — claim auto-lands, so it
+    # shares that gate rather than duplicating it.
+
+    # (M23 REVISED / M40) deployer priority window + onboarding-reserved
+    # branch. Evaluated in Python since the row is already held FOR UPDATE
+    # (locked above), so this cannot race the CAS UPDATE below.
+    contest_state = planet.contest_state
+    if contest_state == PlanetContestState.PRIORITY and planet.deployer_id != player.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This planet is still in its deployer's priority settle window.",
+        )
+    if contest_state == PlanetContestState.SUPPRESSED and planet.reserved_for_player_id != player.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This planet is reserved for another player and cannot be settled.",
+        )
+    if contest_state not in (
+        None,
+        PlanetContestState.PRIORITY,
+        PlanetContestState.OPEN,
+        PlanetContestState.SUPPRESSED,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "This planet is not currently settleable "
+                f"(state: {contest_state.value if contest_state else 'none'})."
+            ),
+        )
+
+    # Atomic CAS resolution (ADR-0091 §8, M29 CANON — verbatim resolution
+    # logic). The route already holds the planet row FOR UPDATE (see the
+    # lock above), so nothing can race between the Python pre-checks above
+    # and this UPDATE inside this transaction — the CAS is the canonical
+    # resolution query / defense-in-depth, not a substitute for the lock.
+    cas_stmt = (
+        update(Planet)
+        .where(
+            Planet.id == planet.id,
+            Planet.owner_id.is_(None),
+            or_(
+                Planet.contest_state.in_([
+                    PlanetContestState.PRIORITY,
+                    PlanetContestState.OPEN,
+                    PlanetContestState.SUPPRESSED,
+                ]),
+                Planet.contest_state.is_(None),
+            ),
+        )
+        .values(
+            owner_id=player.id,
+            status=PlanetStatus.COLONIZED,
+            contest_state=PlanetContestState.CLAIMED,
+            settled_at=func.now(),
+        )
+    )
+    cas_result = db.execute(cas_stmt)
+    if cas_result.rowcount == 0:
+        # Raced away between the row lock above and here — should not
+        # happen given with_for_update(), but never silently 200 on a loss.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Someone else settled this planet first.",
+        )
+
+    # Mirror the CAS's writes onto the in-memory ORM object so the rest of
+    # this route (medals/response, and the redundant-but-harmless
+    # owner_id/status assignment below) sees consistent state.
+    planet.owner_id = player.id
+    planet.status = PlanetStatus.COLONIZED
+    planet.contest_state = PlanetContestState.CLAIMED
+    planet.settled_at = datetime.now(UTC)
+
+    # At-settle citadel-grid materialization (ADR-0091 §8): strictly AFTER
+    # the CAS win, same transaction, using the winning SUCCESS expedition's
+    # SiteIntel. Distinct from structures.py's pre-existing settle() spine —
+    # see materialize_citadel_grid's own docstring.
+    from src.services.structures import materialize_citadel_grid
+    materialize_citadel_grid(planet, winning_expedition, db=db)
+
     # --- All requirements met: execute the claim ---
 
-    # Deduct the founding-grant fee
+    # Deduct the founding-grant fee (ADR-0091 §8: the settle cost, debited
+    # in the same transaction as the CAS above — this route commits once,
+    # at the end).
     player.credits -= CLAIM_CREDIT_COST
 
     # Settle ALL aboard colonists, capped at the L1 Outpost workforce
@@ -531,9 +658,9 @@ async def claim_planet(
         planet.citadel_drone_capacity = level_1["drone_capacity"]
         planet.citadel_max_population = level_1["max_population"]
 
-    # Claim the planet - set owner_id and add to player_planets association
-    planet.owner_id = player.id
-    planet.status = PlanetStatus.COLONIZED
+    # owner_id/status/contest_state/settled_at were already set by the CAS
+    # resolution + its ORM mirror above; just add the player_planets
+    # association row and stamp colonized_at.
     planet.colonized_at = db.query(func.now()).scalar()
 
     # Add to player_planets association table
