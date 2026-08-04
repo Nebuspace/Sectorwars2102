@@ -1625,13 +1625,11 @@ class CombatService:
                     # above), so a notorious trader can be killed — and thus
                     # rewarded — exactly once.
                     #
-                    # ⚠️ NO-CANON NUMBER — FLAG FOR MAX / DECISIONS: ADR-0074 §10
-                    # specifies the positive incentive but gives NO magnitude.
-                    # +25 is a deliberately modest placeholder — well under the
-                    # −100 attack_innocent penalty so bounty-hunting notorious
-                    # traders is a net-positive nudge, not a reputation-farming
-                    # treadmill. Tune once Max sets canon.
-                    NOTORIOUS_TRADER_KILL_REWARD = 25  # NO-CANON, flagged
+                    # Ratified 2026-08-04 (Max): +100, mirroring the −100
+                    # attack_innocent penalty symmetrically. ADR-0074 §10
+                    # specified the positive incentive but gave no magnitude;
+                    # this is the canon value, not a placeholder.
+                    NOTORIOUS_TRADER_KILL_REWARD = 100
                     try:
                         from src.services.personal_reputation_service import (
                             PersonalReputationService,
