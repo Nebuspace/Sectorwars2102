@@ -53,7 +53,7 @@ from src.models.translation import (
 )
 from src.models.aria_personal_intelligence import (
     ARIAPersonalMemory, ARIAMarketIntelligence, ARIAExplorationMap,
-    ARIATradingPattern, ARIAQuantumCache, ARIASecurityLog
+    ARIAQuantumCache, ARIASecurityLog
 )
 from src.models.aria_data_stream import (
     ARIADataStream, ARIADataStreamDomain, ARIADataStreamRetention,
