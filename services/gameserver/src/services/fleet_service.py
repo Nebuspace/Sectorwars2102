@@ -33,6 +33,30 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Fleet-tactics.md Scout role (WO-FLEET-SUPPORT-SCOUT-COMBAT-WIRING):
+# +10% first-shot (round 1 outgoing), −5% defense (incoming). Support
+# (+5% repair regen) deferred — needs an in-battle repair mechanic.
+SCOUT_FIRST_SHOT_MULT = 1.10
+SCOUT_DEFENSE_PENALTY_MULT = 1.05  # takes 5% more when targeted
+DEFENDER_ABSORPTION_MULT = 0.90    # existing Defender +10% absorption
+
+
+def scout_outgoing_mult(role: Optional[str], is_first_round: bool) -> float:
+    """Outgoing damage multiplier for Scout first-shot (pure helper)."""
+    if is_first_round and (role or "") == FleetRole.SCOUT.value:
+        return SCOUT_FIRST_SHOT_MULT
+    return 1.0
+
+
+def role_incoming_damage_mult(role: Optional[str]) -> float:
+    """Incoming damage multiplier from fleet role (Defender absorb / Scout soft)."""
+    r = role or ""
+    if r == FleetRole.DEFENDER.value:
+        return DEFENDER_ABSORPTION_MULT
+    if r == FleetRole.SCOUT.value:
+        return SCOUT_DEFENSE_PENALTY_MULT
+    return 1.0
+
 
 class FleetService:
     """Service for managing fleet operations and battles."""
@@ -962,7 +986,9 @@ class FleetService:
         # Attackers fire at defenders
         for ship in attacker_ships:
             if random.random() < 0.7 and defender_ships:  # 70% hit chance
-                damage = self._calculate_ship_damage(ship, attacker_bonus, attacker)
+                damage = self._calculate_ship_damage(
+                    ship, attacker_bonus, attacker, is_first_round=(round_number == 1)
+                )
                 target = random.choice(defender_ships)
                 target_destroyed = self._apply_damage_to_ship(target, damage, battle, round_results)
                 round_results["attacker_damage"] += damage
@@ -981,7 +1007,9 @@ class FleetService:
         # Defenders return fire at attackers
         for ship in active_defender_ships:
             if random.random() < 0.7 and attacker_ships:  # 70% hit chance
-                damage = self._calculate_ship_damage(ship, defender_bonus, defender)
+                damage = self._calculate_ship_damage(
+                    ship, defender_bonus, defender, is_first_round=(round_number == 1)
+                )
                 target = random.choice(attacker_ships)
                 target_destroyed = self._apply_damage_to_ship(target, damage, battle, round_results)
                 round_results["defender_damage"] += damage
@@ -1200,6 +1228,7 @@ class FleetService:
         ship: Ship,
         fleet_bonus: Dict[str, float],
         fleet: Optional[Fleet] = None,
+        is_first_round: bool = False,
     ) -> int:
         """
         Calculate damage output for a ship.
@@ -1213,6 +1242,7 @@ class FleetService:
             final = base
                   × formation_attack          # formation + supply only
                   × (1 + coordination_bonus)   # static, ADR-0061 S-I3
+                  × scout_first_shot          # +10% if Scout role on round 1
                   × variance
         MORALE WAS REMOVED from this stack (WO-BS, reverts WO-AS; ADR-0061 S-I3
         morale clause retired per Max): combat damage no longer depends on
@@ -1230,6 +1260,11 @@ class FleetService:
         if fleet is not None:
             coordination_bonus = max(0.0, fleet.coordination_bonus or 0.0)
         damage = int(damage * (1 + coordination_bonus))
+
+        # Scout role: +10% first-shot on round 1 (fleet-tactics.md).
+        member = self.db.query(FleetMember).filter(FleetMember.ship_id == ship.id).first()
+        role = member.role if member else None
+        damage = int(damage * scout_outgoing_mult(role, is_first_round))
 
         # Random variance +/- 20%
         damage = int(damage * random.uniform(0.8, 1.2))
@@ -1267,10 +1302,9 @@ class FleetService:
             # full incoming damage.
             if defense_bonus > 0:
                 damage = max(1, int(damage / defense_bonus))
-            # Defender role: +10% damage absorption when targeted
-            # (fleet-tactics.md role assignments).
-            if (member.role or "") == FleetRole.DEFENDER.value:
-                damage = max(1, int(damage * 0.9))
+            # Role incoming modifiers (fleet-tactics.md):
+            # Defender +10% absorption (*0.9); Scout −5% defense (*1.05).
+            damage = max(1, int(damage * role_incoming_damage_mult(member.role)))
 
         current_shields = self._get_ship_combat_stat(ship, "shields", 0)
         current_hull = self._get_ship_combat_stat(ship, "hull", 0)
