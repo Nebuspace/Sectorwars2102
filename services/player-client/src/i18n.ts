@@ -54,7 +54,7 @@ i18n
     debug: import.meta.env.DEV,
     
     defaultNS: 'common',
-    ns: ['common', 'game', 'auth'],
+    ns: ['common', 'game', 'auth', 'ai', 'marketing', 'errors', 'validation'],
     
     interpolation: {
       escapeValue: false, // React already escapes values

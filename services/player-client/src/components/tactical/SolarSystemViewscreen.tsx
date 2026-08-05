@@ -261,6 +261,12 @@ export type HitMeta =
   | { kind: 'wreck'; wreckId: string; shipType: string; cause: string; suspect: boolean }
   /** SCAN layer (#7): a special_formations anomaly, gated behind the SCAN toggle. */
   | { kind: 'formation'; formationId: string; name?: string | null; type?: string | null; discovered: boolean }
+  /** A message beacon (message-beacons.md) present in the sector — always
+   *  visible, not gated behind SCAN (canon: "any player arriving...sees
+   *  them"). Read-only summary card; full read/salvage/recharge/report
+   *  actions live on the deployer's My Beacons screen, mirroring the
+   *  wreck popup's own read-only-info + separate-action-page convention. */
+  | { kind: 'beacon'; beaconId: string; deployerNickname: string; preview: string; deployedAt: string | null; state?: string }
   /** Right-click on open space — synthetic target for the context menu only;
    *  never produced by hitTest, never passed to openPopupFor. */
   | { kind: 'empty' };
@@ -271,7 +277,7 @@ export interface HitTarget {
   x: number;
   y: number;
   r: number;
-  kind: 'star' | 'planet' | 'station' | 'procedural' | 'ship' | 'wreck' | 'formation' | 'empty';
+  kind: 'star' | 'planet' | 'station' | 'procedural' | 'ship' | 'wreck' | 'formation' | 'beacon' | 'empty';
   id?: string;
   name: string;
   lines: string[];
@@ -7809,7 +7815,7 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
       cancelAnimationFrame(rafId);
       vistaStartRef.current = null;
     };
-  }, [scene, reducedMotion]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [scene, reducedMotion]);
 
   // ---------------------------------------------------------------------------
 

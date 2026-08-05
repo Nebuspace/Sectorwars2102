@@ -4,6 +4,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useGame } from '../../contexts/GameContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useSettings } from '../../contexts/SettingsContext';
+import LanguageSwitcher from '../common/LanguageSwitcher';
 import { formatCredits, formatShipType } from '../../utils/formatters';
 import { TurnsIcon } from '../icons/TurnsIcon';
 import { MineIcon } from '../icons/MineIcon';
@@ -13,6 +14,8 @@ import { EmbeddedContext } from '../cockpit/EmbeddedContext';
 import ServiceRecordTab from './ServiceRecordTab';
 import ColoniesRosterTab from './ColoniesRosterTab';
 import TeamSummaryTab from './TeamSummaryTab';
+import GovSummaryTab from './GovSummaryTab';
+import MyBeaconsTab from './MyBeaconsTab';
 import LocationDropdown from './LocationDropdown';
 import RegionOwnerControls from '../governance/RegionOwnerControls';
 import './statusbar.css';
@@ -62,7 +65,7 @@ import './statusbar.css';
  * is built for UserProfile.tsx's sidebar context, not a chip-sized icon
  * button; LogoutButton.tsx itself is untouched and still owns that use.
  */
-type DossierTab = 'identity' | 'reputation' | 'service' | 'fleet' | 'colonies' | 'crew' | 'settings';
+type DossierTab = 'identity' | 'reputation' | 'service' | 'fleet' | 'colonies' | 'crew' | 'governance' | 'beacons' | 'settings';
 
 // REP badge color-grading (canon §05 L614: "reputation visible at all
 // times, color-graded (blue/gray/red grammar)") — the artifact's OWN
@@ -97,6 +100,8 @@ const DOSSIER_TABS: Array<{ id: DossierTab; label: string }> = [
   { id: 'fleet', label: 'FLEET' },
   { id: 'colonies', label: 'COLONIES' },
   { id: 'crew', label: 'CREW' },
+  { id: 'governance', label: 'GOVERNANCE' },
+  { id: 'beacons', label: 'BEACONS' },
   { id: 'settings', label: 'SETTINGS' },
 ];
 
@@ -203,6 +208,11 @@ const SettingsTab: React.FC<{ idPrefix?: string }> = ({ idPrefix = '' }) => {
           />
           <span className="sb-identity-v" aria-live="polite">{currentPercent}</span>
         </div>
+      </div>
+
+      <div className="sb-settings-row">
+        <span className="sb-identity-k">LANGUAGE</span>
+        <LanguageSwitcher variant="compact" showProgress={false} />
       </div>
 
       <div className="sb-settings-row sb-settings-subscription">
@@ -487,6 +497,8 @@ const StatusBar: React.FC = () => {
               )}
               {activeTab === 'colonies' && <ColoniesRosterTab />}
               {activeTab === 'crew' && <TeamSummaryTab />}
+              {activeTab === 'governance' && <GovSummaryTab />}
+              {activeTab === 'beacons' && <MyBeaconsTab />}
               {activeTab === 'settings' && <SettingsTab />}
             </div>
           </div>

@@ -13,9 +13,8 @@ import { SettingsProvider } from './contexts/SettingsContext'
 import { ThemeProvider } from './themes/ThemeProvider'
 
 // Import components
-import LoginForm from './components/auth/LoginForm'
+import LoginPage from './components/pages/LoginPage'
 import RegisterForm from './components/auth/RegisterForm'
-import UserProfile from './components/auth/UserProfile'
 import OAuthCallback from './components/auth/OAuthCallback'
 import LandingPage from './components/landing/LandingPage'
 import GameShellRoute from './components/layouts/GameShellRoute'
@@ -215,7 +214,7 @@ function MainApp() {
   return (
     <>
         {authMode === 'login' ? (
-          <LoginForm
+          <LoginPage
             onLoginSuccess={() => setAuthMode('none')}
             switchToRegister={() => setAuthMode('register')}
             onClose={() => setAuthMode('none')}

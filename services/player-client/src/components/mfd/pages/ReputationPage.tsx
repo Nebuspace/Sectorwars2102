@@ -131,7 +131,6 @@ const ReputationPage: React.FC = () => {
       };
       return next;
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reputationEventSignal, lastReputationChanged]);
 
   // Live team-standing patch — kept in its own teamValue/teamLevel fields,
@@ -150,7 +149,6 @@ const ReputationPage: React.FC = () => {
       };
       return next;
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reputationEventSignal, lastTeamReputationChanged]);
 
   return (

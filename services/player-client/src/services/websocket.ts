@@ -112,6 +112,28 @@ export interface QuantumHarvestMessage {
   timestamp: string;
 }
 
+// Bounty lifecycle push (WO-BOUNTY-REALTIME-EVENTS). Gameserver emits a typed
+// `bounty_updated` frame post-commit from ranking.py place/cancel and
+// combat_service._emit_bounty_collected — see websocket_service.send_bounty_update.
+// `action` is one of "placed" | "collected" | "cancelled". Field presence
+// varies by action; consumers must treat every field but `type`/`action` as
+// optional. Broadcast is global + personal-to-placer/target.
+export interface BountyUpdatedMessage {
+  type: 'bounty_updated';
+  action: 'placed' | 'collected' | 'cancelled' | string;
+  timestamp?: string;
+  bounty_id?: string;
+  target_id?: string;
+  amount?: number;
+  placed_by?: string;
+  placed_by_name?: string;
+  refund?: number;
+  collected_by?: string;
+  total_collected?: number;
+  player_bounties_collected?: number;
+  system_bounties_collected?: number;
+}
+
 // Personal per-faction reputation TIER change (faction_service
 // .update_reputation → manager.send_personal_message). Fires ONLY when
 // current_level actually crosses a boundary, never on every point delta —
@@ -759,6 +781,17 @@ class WebSocketService {
     const handler = (message: WebSocketMessage) => {
       if (message.type === 'quantum_harvest') {
         callback(message as QuantumHarvestMessage);
+      }
+    };
+    this.addMessageHandler(handler);
+    return () => this.removeMessageHandler(handler);
+  }
+
+  // Bounty lifecycle push (see BountyUpdatedMessage above)
+  onBountyUpdated(callback: (message: BountyUpdatedMessage) => void): () => void {
+    const handler = (message: WebSocketMessage) => {
+      if (message.type === 'bounty_updated') {
+        callback(message as BountyUpdatedMessage);
       }
     };
     this.addMessageHandler(handler);

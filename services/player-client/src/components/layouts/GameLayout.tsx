@@ -4,7 +4,6 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useGame } from '../../contexts/GameContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useAutopilot } from '../../contexts/AutopilotContext';
-// import { useTheme } from '../../themes/ThemeProvider'; // Available for future use
 import StatusBar from './StatusBar';
 import Teleprinter from '../aria/Teleprinter';
 import Annunciator from '../hud/Annunciator';
@@ -213,7 +212,6 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
 
   const { user } = useAuth();
   const { playerState, isLoading, isRefreshing, refreshPlayerState } = useGame();
-  // const { currentTheme } = useTheme(); // Available for future use
 
   // ── Teleprinter display toggles (WO-UI1-CHROME-COMPLETE; WO-UI-MAX-
   // BATCH-1 REVISE — Max #22-24 retracted the shipped single 3-state cycle

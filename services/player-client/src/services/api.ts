@@ -353,49 +353,13 @@ export const teamAPI = {
       method: 'DELETE'
     }),
 
-  // Alliance & Diplomacy (Phase 3 - may not be implemented yet)
-  getAlliances: (teamId: string) =>
-    apiRequest(`/api/v1/teams/${teamId}/alliances`),
-
-  getDiplomaticRelations: (teamId: string) =>
-    apiRequest(`/api/v1/teams/${teamId}/relations`),
-
-  proposeAlliance: (teamId: string, data: any) =>
-    apiRequest(`/api/v1/teams/${teamId}/alliances/propose`, {
-      method: 'POST',
-      body: JSON.stringify(data)
-    }),
-
-  proposeTreaty: (teamId: string, data: any) =>
-    apiRequest(`/api/v1/teams/${teamId}/treaties/propose`, {
-      method: 'POST',
-      body: JSON.stringify(data)
-    }),
-
-  changeDiplomaticRelation: (teamId: string, targetTeamId: string, type: string) =>
-    apiRequest(`/api/v1/teams/${teamId}/relations/${targetTeamId}`, {
-      method: 'PUT',
-      body: JSON.stringify({ type })
-    }),
-
-  leaveAlliance: (teamId: string, allianceId: string) =>
-    apiRequest(`/api/v1/teams/${teamId}/alliances/${allianceId}`, {
-      method: 'DELETE'
-    }),
-
   // Analytics
   getTeamAnalytics: (teamId: string, period: 'day' | 'week' | 'month' | 'all-time') =>
     apiRequest(`/api/v1/teams/${teamId}/analytics?period=${period}`),
 
   // Permissions
   getPermissions: (teamId: string) =>
-    apiRequest(`/api/v1/teams/${teamId}/permissions`),
-
-  // Canon gap: GET /api/v1/teams does not exist on the backend. Still bound
-  // because DiplomacyInterface/AllianceManager call it; their fetches fail at
-  // runtime today. Remove together with those call sites.
-  getAvailableTeams: () =>
-    apiRequest('/api/v1/teams')
+    apiRequest(`/api/v1/teams/${teamId}/permissions`)
 };
 
 // Fleet Management APIs
@@ -652,6 +616,36 @@ export const gridAPI = {
     }),
 };
 
+// Ground-expedition APIs (ADR-0091 "Planetary Survey & Site Discovery",
+// lane2's src/api/routes/expeditions.py — mounted WITHOUT an extra prefix,
+// i.e. /api/v1/expeditions/*). Every expedition is a fresh RNG roll
+// generated at launch: launch/reroll both return the settled roll
+// (status SUCCESS/PARTIAL/FAILURE + result SiteIntel payload, or PENDING
+// while EXPEDITION_DELAY_MINUTES has not elapsed).
+//
+// settle() calls the existing /planets/{id}/claim route, rewritten in
+// place by lane3-settle-cas to run the ADR §8 CAS resolver (not a new
+// /expeditions/{id}/settle route — corrected post-integration once
+// lane3's actual route location was confirmed).
+export const expeditionAPI = {
+  launch: (planetId: string, shipId?: string | null) =>
+    apiRequest('/api/v1/expeditions/launch', {
+      method: 'POST',
+      body: JSON.stringify({ planet_id: planetId, ship_id: shipId ?? null }),
+    }),
+
+  getStatus: (expeditionId: string) =>
+    apiRequest(`/api/v1/expeditions/${expeditionId}/status`),
+
+  list: () => apiRequest('/api/v1/expeditions'),
+
+  reroll: (expeditionId: string) =>
+    apiRequest(`/api/v1/expeditions/${expeditionId}/reroll`, { method: 'POST' }),
+
+  settle: (planetId: string) =>
+    apiRequest(`/api/v1/planets/${planetId}/claim`, { method: 'POST' }),
+};
+
 // Terraforming capstone (CRT grid). The confirm-biome ACTION reclassifies
 // planet.type (BARREN -> VOLCANIC, ICE -> DESERT) once the area-weighted grid
 // axes have held inside the target biome's band for CAPSTONE_HOLD_TICKS.
@@ -745,9 +739,10 @@ export const shipUpgradeAPI = {
 
   // installModule → { success, module, supercharged, cost_paid, remaining_credits,
   //                   updated_stats, [consumer_inert] }. The deferred equipment
-  //   families (harvester/lander/mining/tractor) return success:false +
+  //   families (lander/mining/tractor) return success:false +
   //   consumer_inert:true with a "not yet installable" message — surfaced as
   //   "coming soon" in the catalog so they never reach this call.
+  //   harvester is live (residual 2): install succeeds; passive_income from _baked.
   installModule: (shipId: string, slotIndex: number, moduleClass: string, tier: number) =>
     apiRequest(`/api/v1/ships/${shipId}/modules/install`, {
       method: 'POST',
@@ -1194,6 +1189,15 @@ export const contractsAPI = {
       method: 'POST',
       body: JSON.stringify({ tier }),
     }),
+
+  // WO-CONTRACT-INSURANCE-ARBITRATION-SCOPE — acceptor files dispute on an
+  // expired (failed) contract within the 48h window (contracts.md:390).
+  // Server runs Tier-1 sync; unresolvable cases escalate to admin.
+  dispute: (contractId: string, body: { reason: string; evidence_snapshot?: string }) =>
+    apiRequest(`/api/v1/contracts/${contractId}/dispute`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 };
 
 // Storage lockers — multi-trip contract fulfillment (FEATURES/economy/storage-lockers.md).
@@ -1225,6 +1229,69 @@ export const storageAPI = {
   getClaimable: () => apiRequest('/api/v1/storage/lockers/claimable'),
 };
 
+/** ADR-0089 player-to-player trade window (thin client). */
+export const tradeAPI = {
+  initiate: (targetPlayerId: string) =>
+    apiRequest('/api/v1/trade/initiate', {
+      method: 'POST',
+      body: JSON.stringify({ target_player_id: targetPlayerId }),
+    }),
+  accept: (sessionId: string) =>
+    apiRequest(`/api/v1/trade/${sessionId}/accept`, { method: 'POST' }),
+  decline: (sessionId: string) =>
+    apiRequest(`/api/v1/trade/${sessionId}/decline`, { method: 'POST' }),
+  offer: (
+    sessionId: string,
+    offer: {
+      credits?: number;
+      commodities?: Record<string, number>;
+      ship_id?: string | null;
+      ships?: string[];
+    }
+  ) =>
+    apiRequest(`/api/v1/trade/${sessionId}/offer`, {
+      method: 'POST',
+      body: JSON.stringify({
+        credits: offer.credits ?? 0,
+        commodities: offer.commodities ?? {},
+        ship_id: offer.ship_id ?? null,
+        ships: offer.ships ?? [],
+      }),
+    }),
+  confirm: (sessionId: string) =>
+    apiRequest(`/api/v1/trade/${sessionId}/confirm`, { method: 'POST' }),
+  cancel: (sessionId: string) =>
+    apiRequest(`/api/v1/trade/${sessionId}/cancel`, { method: 'POST' }),
+  get: (sessionId: string) => apiRequest(`/api/v1/trade/${sessionId}`),
+  getOpen: () => apiRequest('/api/v1/trade/open'),
+};
+
+// Message beacons (message-beacons.md) -- deploy/read/salvage/recharge/
+// report kernel is server-shipped (services/gameserver/src/api/routes/
+// beacons.py); `mine` lists the calling player's own deployed beacons
+// (GET /api/v1/beacons/mine) for the My Beacons management screen.
+export interface MyBeacon {
+  id: string;
+  sector_id: number;
+  preview: string;
+  deployed_at: string | null;
+  charge_expires_at: string | null;
+  expiry: string | null;
+  state: string;
+  read_once: boolean;
+  read_count: number;
+  flagged: boolean;
+}
+
+export const beaconAPI = {
+  mine: (page = 1, limit = 20): Promise<{ beacons: MyBeacon[]; total?: number }> =>
+    apiRequest(`/api/v1/beacons/mine?page=${page}&limit=${limit}`),
+  read: (beaconId: string) => apiRequest(`/api/v1/beacons/${beaconId}/read`),
+  salvage: (beaconId: string) => apiRequest(`/api/v1/beacons/${beaconId}/salvage`, { method: 'POST' }),
+  recharge: (beaconId: string) => apiRequest(`/api/v1/beacons/${beaconId}/recharge`, { method: 'POST' }),
+  report: (beaconId: string) => apiRequest(`/api/v1/beacons/${beaconId}/report`, { method: 'POST' }),
+};
+
 export const gameAPI = {
   combat: combatAPI,
   greyStatus: greyStatusAPI,
@@ -1239,6 +1306,7 @@ export const gameAPI = {
   bounty: bountyAPI,
   citadel: citadelAPI,
   grid: gridAPI,
+  expedition: expeditionAPI,
   researchCockpit: researchCockpitAPI,
   shipUpgrade: shipUpgradeAPI,
   governance: governanceAPI,
@@ -1249,4 +1317,6 @@ export const gameAPI = {
   resource: resourceAPI,
   contracts: contractsAPI,
   storage: storageAPI,
+  trade: tradeAPI,
+  beacon: beaconAPI,
 };
