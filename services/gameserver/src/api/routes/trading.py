@@ -1,6 +1,6 @@
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
@@ -19,7 +19,7 @@ from src.models.ship import Ship, ShipStatus, effective_cargo_capacity
 from src.models.station import Station
 from src.models.user import User
 from src.services import docking_service, station_security_service
-from src.services.medal_service import check_and_award_trade_medals
+from src.services.medal_service import MedalService, check_and_award_trade_medals
 from src.services.ranking_service import RankingService
 from src.services.trading_service import (
     TradingService,

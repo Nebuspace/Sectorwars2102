@@ -22,8 +22,8 @@ class TestCommoditySetDerivation:
         assert MarketPredictionEngine.COMMODITIES == list(COMMODITY_BASE_PRICES.keys())
 
     def test_commodities_includes_precious_metals(self):
-        """precious_metals is canonical in COMMODITY_BASE_PRICES (mining.md /
-        ADR-0062 E-D1); derivation must keep carrying it."""
+        """Provisional inclusion — auto-tracks Max's pending precious_metals
+        ruling (see DECISIONS); today COMMODITY_BASE_PRICES carries it."""
         assert "precious_metals" in MarketPredictionEngine.COMMODITIES
 
     def test_no_literal_commodity_list_remains_in_source(self):

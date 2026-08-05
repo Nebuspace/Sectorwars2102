@@ -15,6 +15,7 @@ OWASP Security Implementation:
 
 import json
 import hashlib
+import hmac
 import heapq
 import math
 from typing import Dict, List, Any, Optional, Tuple, Set
@@ -30,16 +31,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, func
 from sqlalchemy.orm import Session
 
-from src.models.sector import sector_warps
+from src.models.player import Player
+from src.models.sector import Sector, sector_warps
 from src.models.station import Station
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
+from src.models.market_transaction import MarketTransaction
 from src.models.aria_personal_intelligence import (
     ARIAPersonalMemory, ARIAMarketIntelligence, ARIAExplorationMap,
     ARIAQuantumCache, ARIASecurityLog,
     ARIATradingObservation, ObservationAction, ObservationOutcome,
 )
-# ARIATradingPattern removed (WO-ARIA-GA-CLEANUP, ADR-0038) -- see git history.
+# ARIATradingPattern (the GA/"Trade DNA" model) is DEPRECATED -- WO-ARIA-
+# GA-CLEANUP removed its only callers (evolve_trading_pattern /
+# get_evolved_patterns / _create_trading_pattern / _classify_pattern_type,
+# ADR-0038). No longer imported here; see models/aria_personal_intelligence.py's
+# own deprecation note on the class.
 from src.core.config import settings
+from src.core.security import get_password_hash
 from src.core.game_time import scaled_elapsed
 
 logger = logging.getLogger(__name__)
@@ -2242,8 +2250,11 @@ class ARIAPersonalIntelligenceService:
     # OBSERVATION LOG + RECOMMENDATION ENGINE (WO-ARIA-OBS-LOG, ADR-0038)
     # =============================================================================
     #
-    # Replacement for the GA-based ARIATradingPattern engine, removed via
-    # WO-ARIA-GA-CLEANUP (ADR-0038) -- see git history.
+    # Append-only per-trade observation log mined by SQL aggregates -- the
+    # genetic-algorithm framing (evolve_trading_pattern / get_evolved_
+    # patterns / ARIATradingPattern) was REMOVED (WO-ARIA-GA-CLEANUP,
+    # ADR-0038, zero live callers) rather than merely retired; this section
+    # is its replacement recommendation engine.
     #
     # DELIBERATELY SYNC (Session, not AsyncSession): the intended write-path
     # caller is trading.py's buy/sell routes (lane C of this WO, deferred --

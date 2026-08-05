@@ -204,6 +204,7 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
 
     return () => { cancelled = true; };
     // Re-quote if the player's reputation changes (the Chartered fee scales with it).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [personalReputation]);
 
   const deviceCostFor = (t: 'basic' | 'enhanced' | 'advanced') => quotes[`${t}:registered`]?.device_cost;

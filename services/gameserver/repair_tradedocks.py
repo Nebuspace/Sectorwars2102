@@ -24,6 +24,7 @@ import logging
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import src.models  # register all mappers
 from src.core.commodity_economy import base_price as _commodity_base_price
 from src.core.database import SessionLocal
 from src.core.station_class_map import apply_class_pattern

@@ -12,8 +12,10 @@ import os
 import re
 import html
 import logging
+import hashlib
+import time
 import unicodedata
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from dataclasses import dataclass
 from enum import Enum
 import json
@@ -262,7 +264,7 @@ class AISecurityService:
         violations = []
 
         # Update player profile
-        self.get_or_create_player_profile(player_id, seed_from=seed_from)
+        profile = self.get_or_create_player_profile(player_id, seed_from=seed_from)
 
         # Check if player is blocked
         if self.is_player_blocked(player_id):

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, insert
 
 from src.core.commodity_economy import base_price as commodity_base_price
+from src.core.database import get_async_session
 from src.core.station_class_map import apply_class_pattern
 from src.core.station_security_tiers import _derive_station_security_tier
 from src.models.sector import Sector, SectorType

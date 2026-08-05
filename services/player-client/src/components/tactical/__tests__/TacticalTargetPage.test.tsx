@@ -161,8 +161,16 @@ describe('TacticalTargetPage', () => {
   const name = (idx = 0) => row(idx).querySelector('.target-contact-name') as HTMLElement;
   // ContactActionMenu/HailComposeDialog both portal to document.body.
   const menu = () => document.body.querySelector('.contact-action-menu');
-  const menuItem = (variant: 'engage' | 'hail' | 'approach') =>
-    menu()?.querySelector(`.contact-action-menu-item-${variant}`) as HTMLElement | null;
+  const menuItem = (variant: 'engage' | 'hail' | 'approach' | 'trade') => {
+    // TRADE shares HAIL's CSS variant (no dedicated `.contact-action-menu-
+    // item-trade` class) -- distinguish it by its label text instead.
+    if (variant === 'trade') {
+      return Array.from(menu()?.querySelectorAll('.contact-action-menu-item') ?? []).find(
+        (el) => el.textContent === 'TRADE'
+      ) as HTMLElement | undefined ?? null;
+    }
+    return menu()?.querySelector(`.contact-action-menu-item-${variant}`) as HTMLElement | null;
+  };
   const hailDialog = () => document.body.querySelector('.confirm-dialog-panel[aria-label^="Hail message"]');
   const hailInput = () => hailDialog()?.querySelector('.target-hail-input') as HTMLInputElement | null;
   const hailSendBtn = () => hailDialog()?.querySelector('.confirm-dialog-btn.confirm') as HTMLElement | null;
@@ -280,7 +288,7 @@ describe('TacticalTargetPage', () => {
     expect(menuItem('hail')).toBeNull();
   });
 
-  it('menu shows BOTH ENGAGE and HAIL for an IN-RANGE hostile PLAYER contact (the old inline row could only ever show one)', async () => {
+  it('menu shows ENGAGE, HAIL, and TRADE for an IN-RANGE hostile PLAYER contact (the old inline row could only ever show one; ADR-0089 TRADE follows HAIL\'s own no-hostility-gate)', async () => {
     await mount([
       { player_id: 'p1', ship_id: '1', username: 'Dredge', reputation_tier: 'Outlaw', personal_reputation: -300 },
     ]);
@@ -288,7 +296,8 @@ describe('TacticalTargetPage', () => {
     await click(name());
     expect(menuItem('engage')).toBeTruthy();
     expect(menuItem('hail')).toBeTruthy();
-    expect(menu()?.querySelectorAll('.contact-action-menu-item').length).toBe(2);
+    expect(menuItem('trade')).toBeTruthy();
+    expect(menu()?.querySelectorAll('.contact-action-menu-item').length).toBe(3);
   });
 
   it('ENGAGE on an IN-RANGE BLUE/clean contact carries the rep-cost tooltip (title + aria-label) — v1 is a warning, not a hard block', async () => {

@@ -79,7 +79,7 @@ import math
 import re
 import uuid
 from collections import defaultdict, deque
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import or_
@@ -106,9 +106,9 @@ from src.models.warp_tunnel import (
     WarpTunnelStatus,
     WarpTunnelType,
 )
+from src.services.central_bank_service import ENTRY_WARP_GATE_CASCADE_REFUND, credit_wallet_or_bank
 from src.services.ship_service import ShipService
-from src.services.turn_service import refund_turns, spend_turns
-from src.services import central_bank_service as _central_bank  # gate-cascade refund routing
+from src.services.turn_service import spend_turns, refund_turns
 
 logger = logging.getLogger(__name__)
 
@@ -2495,6 +2495,7 @@ def set_gate_access_layers(
     }
 
 
+
 # --- Ownership transfer / sale (WO-DBB-WG2) ---------------------------------
 
 def transfer_gate(
@@ -2734,11 +2735,12 @@ def cascade_region_gate_teardown(db: Session, region_id) -> Dict[str, Any]:
          raised -- the region is terminating regardless of the owner row's
          fate.
 
-    CENTRAL-BANK ROUTING (WO-BUILD-PLAYER-CENTRAL-BANK-ACCOUNT): canon refunds
-    the ONLINE owner's Player.credits, or PlayerCentralBankAccount if offline.
-    Online status is a best-effort sync Redis probe
-    (``central_bank_service.is_player_online_sync``); unproven online → Bank.
-    Routing goes through ``central_bank_service.credit_wallet_or_bank``.
+    CENTRAL-BANK ROUTING: refunds the ONLINE owner's Player.credits, or the
+    Bank (PlayerCentralBankAccount, ADR-0050) if offline / unreadable, via
+    central_bank_service.credit_wallet_or_bank -- the same online/offline
+    router the other two GAP call sites (planet-safe transfer, station-loss
+    compensation) use. A Redis outage (is_player_online_sync returns None)
+    is treated as offline, never invented as online.
 
     Both endpoints of a single gate are torn down inside one flush sequence
     per gate. A failure mid-loop propagates out of this function uncaught
@@ -2831,20 +2833,16 @@ def cascade_region_gate_teardown(db: Session, region_id) -> Dict[str, Any]:
             )
             orphaned_owners += 1
         else:
-            destination = _central_bank.credit_wallet_or_bank(
+            credit_wallet_or_bank(
                 db,
                 owner,
                 refund_amount,
-                entry_type=_central_bank.ENTRY_WARP_GATE_CASCADE_REFUND,
-                source=f"warp_gate:{gate.id}",
-                notes="region_termination_gate_cascade_half_refund",
+                entry_type=ENTRY_WARP_GATE_CASCADE_REFUND,
+                source="warp_gate_cascade",
+                notes=f"Region {region_name} termination -- gate {gate_name} destroyed",
             )
             total_refunded += refund_amount
             _notify_gate_cascade_destroyed(db, owner, gate_name, region_name, refund_amount)
-            logger.info(
-                "Cascade teardown: gate %s refund %d → %s (owner=%s)",
-                gate.id, refund_amount, destination, owner.id,
-            )
 
         db.flush()
         processed.append(str(gate.id))

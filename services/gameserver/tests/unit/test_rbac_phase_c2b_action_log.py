@@ -11,6 +11,8 @@ import inspect
 from src.auth.admin_scopes import (
     GALAXY_MANAGE,
     PLAYERS_ADJUST_CREDITS,
+    PLAYERS_ADJUST_REP,
+    SHIPS_MANAGE,
 )
 
 

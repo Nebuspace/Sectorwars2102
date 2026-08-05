@@ -42,7 +42,8 @@ Two test tiers:
 from __future__ import annotations
 
 import uuid
-from typing import Any, Dict
+from datetime import UTC, datetime
+from typing import Any, Dict, Optional
 from unittest.mock import AsyncMock, patch
 
 import pytest

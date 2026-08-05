@@ -223,7 +223,7 @@ def test_negotiation_bonus_trade_bonus_is_flush_visible_via_reassignment():
     original_settings_ref = player.settings
     svc, db = _make_service(session, player)
 
-    svc.complete_first_login(session.id, nickname_confirmed=False)
+    result = svc.complete_first_login(session.id, nickname_confirmed=False)
 
     assert player.settings["trade_bonus"] == 0.1
     assert player.settings is not original_settings_ref, (

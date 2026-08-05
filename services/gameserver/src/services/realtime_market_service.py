@@ -23,6 +23,10 @@ import redis.asyncio as redis
 
 from src.models.market_transaction import MarketTransaction
 from src.models.ai_trading import AIMarketPrediction, PlayerTradingProfile
+from src.models.station import Station
+from src.models.sector import Sector
+from src.models.player import Player
+from src.core.config import settings
 from src.core.commodity_economy import get_commodity_price_ranges
 from src.core.resource_registry_seeder import (
     CATEGORY_CORE,

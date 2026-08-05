@@ -1,5 +1,6 @@
 import uuid
-from typing import TYPE_CHECKING
+from datetime import datetime
+from typing import List, TYPE_CHECKING
 from sqlalchemy import Boolean, Column, DateTime, String, func, TIMESTAMP, exists, and_
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.hybrid import hybrid_property

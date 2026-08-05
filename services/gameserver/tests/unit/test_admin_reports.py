@@ -7,7 +7,7 @@ to drive the route functions directly without an actual Postgres connection.
 """
 import pytest
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from src.api.routes.admin_reports import (
     _METRIC_CATALOG,
@@ -19,6 +19,7 @@ from src.api.routes.admin_reports import (
     export_data,
     get_performance_metrics,
     ReportTemplate,
+    ReportFilter,
 )
 
 

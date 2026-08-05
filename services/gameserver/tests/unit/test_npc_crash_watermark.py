@@ -25,6 +25,7 @@ from src.services.scheduler._common import (
     LOOP_A_CRASH_CATCHUP_MAX_TICKS,
     LOOP_A_SECONDS,
     LOOP_A_WATERMARK_STATE_KEY,
+    LOOP_B_SECONDS,
     LOOP_B_WATERMARK_STATE_KEY,
     LOOP_C_WATERMARK_STATE_KEY,
     _loop_a_catchup_ticks,

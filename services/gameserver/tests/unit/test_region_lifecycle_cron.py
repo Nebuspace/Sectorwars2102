@@ -30,6 +30,8 @@ from sqlalchemy.sql import operators
 from src.models.galaxy import Galaxy
 from src.models.planet import Planet
 from src.models.region import Region, RegionStatus
+from src.models.sector import Sector
+from src.models.station import Station
 from src.services import region_lifecycle_service
 from src.services.scheduler import economy_governance_sweeps
 from src.services.scheduler._common import _REGION_LIFECYCLE_STATE_KEY
@@ -72,16 +74,16 @@ def _condition_matches(row, condition) -> bool:
     if op is operators.is_not:
         return actual is not None
     if op is operators.is_:
-        return actual is None
+        right = getattr(condition.right, "value", None)
+        return actual is right
     if op is operators.le:
         return actual is not None and actual <= condition.right.value
     raise AssertionError(f"unhandled operator {op!r} on column {column!r}")
 
 
 class _FakeRegionReadQuery:
-    """db.query(Region).filter(...).all() -- dispatch_terminated_cleanup's
-    eligibility scan (full Region objects, since the dispatch mutates
-    ``cleanup_completed_at`` on each match)."""
+    """db.query(Region.id, Region.name).filter(...).all() --
+    dispatch_terminated_cleanup's read-only discovery query."""
 
     def __init__(self, store, session):
         self._store = store
@@ -99,17 +101,23 @@ class _FakeRegionReadQuery:
             if all(_condition_matches(r, c) for c in self._conditions)
         ]
 
+    def first(self):
+        matches = self.all()
+        return matches[0] if matches else None
 
-class _FakePlanetQuery:
-    """db.query(Planet).filter(Planet.region_id == ...).all() -- always
-    empty in these tests (planet-cascade behavior is covered by mocking
-    process_planet_termination directly, not by hand-rolling a Planet
-    fake-query interpreter here)."""
+
+class _FakeEmptyQuery:
+    """dispatch_terminated_cleanup's `db.query(Planet).filter(...).all()`
+    per-region planet scan -- no planet fixtures are exercised by this
+    module's tests, so this always yields an empty set."""
 
     def __init__(self, session):
         self._session = session
 
     def filter(self, *conditions):
+        return self
+
+    def join(self, *args, **kwargs):
         return self
 
     def all(self):
@@ -158,7 +166,11 @@ class FakeRegionLifecycleSession:
         if owner is Galaxy:
             return _FakeGalaxyQuery(self.galaxy, self)
         if owner is Planet:
-            return _FakePlanetQuery(self)
+            return _FakeEmptyQuery(self)
+        if owner is Station:
+            return _FakeEmptyQuery(self)
+        if owner is Sector:
+            return _FakeEmptyQuery(self)
         raise AssertionError(f"unexpected query owner {owner!r}")
 
     def execute(self, stmt):
@@ -333,7 +345,7 @@ class TestAdvanceToTerminated:
 # dispatch_terminated_cleanup -- cascade without false-complete stamp
 # --------------------------------------------------------------------------- #
 
-class TestDispatchTerminatedCleanup:
+class TestDispatchTerminatedCleanup_feat:
     def test_eligible_region_dispatches_cascade_without_stamping(self, monkeypatch) -> None:
         """Station termination is still discovery-only: do NOT stamp
         cleanup_completed_at (WO-ESCALATE-CYCLE26-DESIGN-FLAGS)."""
@@ -437,6 +449,47 @@ class TestDispatchTerminatedCleanup:
 
         assert len(station_calls) == 2
         assert region.cleanup_completed_at is None
+
+
+# --------------------------------------------------------------------------- #
+# dispatch_terminated_cleanup -- discovery only, never writes
+# --------------------------------------------------------------------------- #
+
+class TestDispatchTerminatedCleanup:
+    def test_eligible_region_counted_never_mutated(self) -> None:
+        region = FakeRegionRow(
+            status=RegionStatus.TERMINATED,
+            scheduled_hard_delete_at=_NOW - timedelta(hours=1),
+        )
+        session = FakeRegionLifecycleSession(regions=[region])
+
+        result = region_lifecycle_service.dispatch_terminated_cleanup(session, now=_NOW)
+
+        assert result == {"cleanup_eligible": 1}
+        assert region.status == RegionStatus.TERMINATED  # untouched
+        assert session.executes == 0  # read-only -- no UPDATE issued
+
+    def test_not_yet_due_region_excluded(self) -> None:
+        region = FakeRegionRow(
+            status=RegionStatus.TERMINATED,
+            scheduled_hard_delete_at=_NOW + timedelta(hours=1),
+        )
+        session = FakeRegionLifecycleSession(regions=[region])
+
+        result = region_lifecycle_service.dispatch_terminated_cleanup(session, now=_NOW)
+
+        assert result == {"cleanup_eligible": 0}
+
+    def test_non_terminated_region_never_counted(self) -> None:
+        region = FakeRegionRow(
+            status=RegionStatus.GRACE,
+            scheduled_hard_delete_at=_NOW - timedelta(days=100),  # nonsensical but defensive
+        )
+        session = FakeRegionLifecycleSession(regions=[region])
+
+        result = region_lifecycle_service.dispatch_terminated_cleanup(session, now=_NOW)
+
+        assert result == {"cleanup_eligible": 0}
 
 
 # --------------------------------------------------------------------------- #

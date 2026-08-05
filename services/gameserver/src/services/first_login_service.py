@@ -24,7 +24,7 @@ from src.services.ai_dialogue_service import (
     ShipType as AIShipType,
     GuardMood
 )
-from src.services.ai_provider_service import ProviderType
+from src.services.ai_provider_service import get_ai_provider_service, ProviderType
 from src.services.nickname_validation_service import validate_nickname
 from src.utils.guard_personalities import get_guard_for_session, personality_threshold_modifier
 from src.core.ship_specifications_seeder import SHIP_SPECIFICATIONS

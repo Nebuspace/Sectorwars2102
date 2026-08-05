@@ -517,7 +517,11 @@ class _OrderedFakeSession:
         return [(e[1], e[2]) for e in self.events if e[0] == "lock"]
 
     def query(self, model):
-        return _OrderedFakeQuery(self._pools.get(model, []), self, model.__name__)
+        # WO-BUILD-STATION-PROTECTION-ARREST-DETENTION's has_support check
+        # queries a single column (FleetMember.id), not the mapped class --
+        # resolve back to the owning model so the pool lookup still hits.
+        model_cls = model if isinstance(model, type) else model.class_
+        return _OrderedFakeQuery(self._pools.get(model_cls, []), self, model_cls.__name__)
 
     def add(self, obj):
         self.added.append(obj)

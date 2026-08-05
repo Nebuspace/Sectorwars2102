@@ -22,6 +22,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, List, Optional
 
+import pytest
 
 from src.models.player import Player
 from src.services import suspect_service

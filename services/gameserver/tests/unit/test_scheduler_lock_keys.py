@@ -169,24 +169,22 @@ EXPECTED_NAME_SITE_MAP = {
     "_run_beacon_expire_sweep_sync": "_BEACON_EXPIRE_LOCK_KEY",
     # P9-realtime-npc-crash-watermark — startup Loop A/B/C catch-up.
     "_run_loop_crash_catchup_sync": "_LOOP_CRASH_CATCHUP_LOCK_KEY",
-    # WO-BUILD-WANTED-TRIGGERS-STOLEN-SHIP-LOW-REP / follow-on wanted/bounty
-    # sweeps wired into the loop dispatch since this map was last pinned.
+    # WO-FIX-SHIP-REGISTRY-* / WO-BUILD-SHIP-REGISTRY-CONTESTED-TRANSFER
+    # / WO-BUILD-WANTED-UNTIL-TIMER / mining-harvest-resolve /
+    # abandonment-archive sweeps — six new sync-sweep lock sites added
+    # since this file's original pin.
     "_run_stolen_ship_rep_penalty_sweep_sync": "_STOLEN_SHIP_REP_PENALTY_LOCK_KEY",
+    "_run_transfer_claim_autocomplete_sweep_sync": "_TRANSFER_CLAIM_AUTOCOMPLETE_LOCK_KEY",
     "_run_bounty_expire_sweep_sync": "_BOUNTY_EXPIRE_LOCK_KEY",
     "_run_wanted_clear_sweep_sync": "_WANTED_CLEAR_LOCK_KEY",
     "_run_mining_harvest_resolve_sync": "_MINING_HARVEST_LOCK_KEY",
-    # WO-BUILD-SHIP-REGISTRY-CONTESTED-TRANSFER-SALVAGE-CLAIM — 24h
-    # dispute-window auto-complete sweep.
-    "_run_transfer_claim_autocomplete_sweep_sync": "_TRANSFER_CLAIM_AUTOCOMPLETE_LOCK_KEY",
+    "_run_abandonment_archive_sweep_sync": "_ABANDONMENT_ARCHIVE_LOCK_KEY",
 }
 
-# 34 bare-Name sites + 1 Call-form site (bootstrap_region_sync) + 1 extra
-# pre-existing duplicate binding for _run_suspect_clear_sweep_sync
-# (core_loop.py calls it at two separate dispatch sites, both under its own
-# key -- same name, two AST Name bindings) = the true lock-site count
-# (superseding any stale figure quoted anywhere else -- this file is the
-# enumeration of record going forward).
-EXPECTED_TOTAL_LOCK_SITES = len(EXPECTED_NAME_SITE_MAP) + 1 + 1
+# 29 bare-Name sites + 1 Call-form site (bootstrap_region_sync) = the true
+# lock-site count (superseding any stale figure quoted anywhere else --
+# this file is the enumeration of record going forward).
+EXPECTED_TOTAL_LOCK_SITES = len(EXPECTED_NAME_SITE_MAP) + 1
 
 
 def _lock_key_bindings(tree: ast.Module):

@@ -27,10 +27,14 @@ from src.core.database import get_async_session
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
 from src.services.enhanced_ai_service import (
-    EnhancedAIService, AISystemType
+    EnhancedAIService, AISystemType, CrossSystemRecommendation,
+    ConversationContext, RecommendationPriority, RiskAssessment
 )
 from src.services.ai_security_service import AISecurityService, get_security_service
 from src.services.aria_data_index_service import ARIADataIndexService
+from src.models.enhanced_ai_models import AIComprehensiveAssistant, SecurityLevel
+from src.utils.validation import validate_uuid
+from src.middleware.rate_limit import RateLimitMiddleware
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ai", tags=["Enhanced AI"])

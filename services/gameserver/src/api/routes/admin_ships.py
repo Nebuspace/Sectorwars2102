@@ -20,7 +20,7 @@ from enum import Enum
 
 from src.core.database import get_db
 from src.auth.admin_scopes import PLAYERS_VIEW, SHIPS_MANAGE
-from src.auth.dependencies import require_scope
+from src.auth.dependencies import get_current_user, require_scope
 from src.models.user import User
 from src.models.ship import Ship, ShipType, ShipStatus, ShipSpecification
 from src.models.player import Player

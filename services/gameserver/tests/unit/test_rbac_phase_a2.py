@@ -14,15 +14,17 @@ from __future__ import annotations
 import asyncio
 import inspect
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import Boolean
 from sqlalchemy.sql.elements import BinaryExpression
 
-from src.auth.admin_scopes import PLAYERS_VIEW
+from src.auth import admin_scopes
+from src.auth.admin_scopes import PLAYERS_VIEW, SCOPES_GRANT
 from src.auth.dependencies import require_scope, user_has_active_scope
 from src.models.user import User
 

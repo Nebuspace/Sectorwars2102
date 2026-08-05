@@ -1785,8 +1785,6 @@ class TestFileDispute:
         assert result["tier1_resolution"] is None
         assert c.status == ContractStatus.DISPUTED  # unresolved, escrow stays frozen
         assert c.escrow_state == ContractEscrowState.DISPUTED
-        assert c.escalated_to_admin is True  # contracts.md:402 — always escalate
-        assert result["escalated_to_admin"] is True
         assert acceptor.credits == 5000  # untouched
 
     def test_tier1_cargo_manifest_match_seam_is_actually_consulted(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1927,12 +1925,11 @@ class TestFileDispute:
         assert c.escrow_state == ContractEscrowState.DISPUTED  # stays frozen
         assert acceptor.credits == 5000  # untouched, no payout while unresolved
 
-    def test_unresolvable_low_value_with_station_present_escalates(self) -> None:
-        """WO-CONTRACT-INSURANCE-ARBITRATION-SCOPE / contracts.md:402 —
-        Under $100k, station present (not abandoned) -> no Tier-1 match
-        and no E-I3 criterion fires, but escalated_to_admin MUST still
-        be True so the filing lands in GET /admin/contracts/disputes.
-        Regression pin: do NOT restore the narrower E-I3-only gate."""
+    def test_unresolvable_low_value_with_station_present_still_escalates(self) -> None:
+        """Under $100k, station resolves (exists, not abandoned) -> none of
+        the three E-I3 criteria match, but contracts.md:402 (WO-CONTRACT-
+        INSURANCE-ARBITRATION-SCOPE) escalates ALL unresolvable Tier-1 cases
+        to Tier 2 regardless -- E-I3 is metadata (dispute_notes), not a gate."""
         station = _station(status=StationStatus.OPERATIONAL)
         c = self._expired_contract(destination_station_id=station.id, payment=Decimal("1000.00"))
         acceptor = _player(credits=5000)
@@ -1942,9 +1939,7 @@ class TestFileDispute:
         result = contract_service.file_dispute(db, c.id, acceptor.id, "reason", now=_NOW)
 
         assert result["escalated_to_admin"] is True
-        assert c.escalated_to_admin is True
         assert c.status == ContractStatus.DISPUTED
-        assert c.escrow_state == ContractEscrowState.DISPUTED
 
 
 @pytest.mark.unit

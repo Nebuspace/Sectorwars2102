@@ -17,12 +17,13 @@ from src.core.database import get_async_db
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
 from src.models.ai_trading import (
+    AIMarketPrediction,
     PlayerTradingProfile,
     AIRecommendation,
     AIModelPerformance
 )
 from src.models.route_optimization_run import RouteOptimizationRun
-from src.services.ai_trading_service import AITradingService
+from src.services.ai_trading_service import AITradingService, TradingRecommendation, MarketAnalysis, OptimalRoute
 
 router = APIRouter(prefix="/ai", tags=["AI Trading Intelligence"])
 logger = logging.getLogger(__name__)

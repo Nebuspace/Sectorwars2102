@@ -106,6 +106,8 @@ def _fake_ship(**overrides: Any) -> SimpleNamespace:
         is_abandoned=False,
         abandoned_at=None,
         cargo={"capacity": 100, "used": 40, "contents": {"organics": 40}},
+        current_pilot_id=None,
+        current_pilot_since=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
