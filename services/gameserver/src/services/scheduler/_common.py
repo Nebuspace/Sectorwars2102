@@ -597,6 +597,15 @@ WANTED_CLEAR_SWEEP_SECONDS = int(
     os.environ.get("WANTED_CLEAR_SWEEP_SECONDS", str(5 * 60))
 )
 
+# Abandoned-ship 7-day auto-archive (WO-FIX-SHIP-REGISTRY-AUTO-ARCHIVE-MISSING)
+# — ship_registry_service.archive_expired_abandoned_ships. Same 5-minute
+# due-check cadence as wanted/suspect clears; the 7-day threshold lives in
+# the service constant ABANDONMENT_ARCHIVE_DAYS.
+_ABANDONMENT_ARCHIVE_STATE_KEY = "abandonment_archive_last_run_at"
+ABANDONMENT_ARCHIVE_SWEEP_SECONDS = int(
+    os.environ.get("ABANDONMENT_ARCHIVE_SWEEP_SECONDS", str(5 * 60))
+)
+
 # Team-reputation recalculation sweep (WO-RT-TEAM-REP held wiring) —
 # team_reputation_service.sweep_due_team_reputations.
 # RECALCULATION_INTERVAL (team_reputation_service.py) is 1 day; checking
@@ -762,6 +771,9 @@ _SUSPECT_CLEAR_LOCK_KEY = _mnemonic_lock_key("SUSP")
 # second gameserver instance can't double-flush the same expired rows.
 # 'WANT' = WANTed clear.
 _WANTED_CLEAR_LOCK_KEY = _mnemonic_lock_key("WANT")
+# Abandoned-ship auto-archive (WO-FIX-SHIP-REGISTRY-AUTO-ARCHIVE-MISSING).
+# 'AARC' = Abandonment ARChive.
+_ABANDONMENT_ARCHIVE_LOCK_KEY = _mnemonic_lock_key("AARC")
 # Pirate-ecosystem weekly growth + evolution tick sweep (WO-PIRATE-ECO-2
 # held wiring) — own key; covers the whole per-region growth + per-holding
 # evolution pass in one lock (mirrors the citizen-rebake sweep's own

@@ -15,8 +15,11 @@ approve_transfer_claim / _complete_transfer_claim here, the auto-complete
 scheduler sweep in economy_sweeps.py (mirroring the stolen-ship-rep-penalty
 sweep's discipline), and a cancel-on-stolen-report hook added to
 report_stolen below.
+WO-FIX-SHIP-REGISTRY-AUTO-ARCHIVE-MISSING: archive_expired_abandoned_ships
+(7 real-day auto-archive → DESTROYED + CargoWreck) + scheduler wrapper.
 """
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
@@ -26,10 +29,15 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.bounty_claim import BountyClaim, BountyClaimStatus
 from src.models.player import Player
-from src.models.ship import Ship, ShipSpecification
+from src.models.ship import Ship, ShipSpecification, ShipStatus
 from src.models.ship_registry import RegistryEventType, ShipRegistry, generate_registration_number
 from src.services.bounty_service import BountyService
 from src.services.wanted_service import recompute_is_wanted
+
+logger = logging.getLogger(__name__)
+
+# ship-registry.md "Abandonment" step 5 — 7 real-time days unclaimed.
+ABANDONMENT_ARCHIVE_DAYS = 7
 
 # 30% of the ship's appraised value, charged to the claimant AT FILING TIME
 # (ship-registry.md "Legal ownership transfer" step 2, "Fee assessment" --
@@ -523,6 +531,77 @@ def claim_abandoned_ship(db: Session, *, ship: Ship, claimant: Player, port_id: 
         "registered_owner_id": str(claimant.id),
         "claimed_at": now.isoformat(),
     }
+
+
+def archive_expired_abandoned_ships(
+    db: Session, *, now: Optional[datetime] = None,
+) -> int:
+    """Auto-archive abandoned ships unclaimed for 7 real days (ship-registry.md
+    "Abandonment" step 5 / SYSTEMS/ship-registry.md:316). Marks each hull
+    DESTROYED with ``destruction_cause=abandonment_expired``, appends an
+    ARCHIVED registry event, and best-effort spawns a CargoWreck for remaining
+    cargo (CombatService._spawn_cargo_wreck — empty holds skip the wreck).
+    Does **not** call ``ShipService.destroy_ship`` (that path transfers cargo
+    to an escape pod; canon wants the hold contents in the wreck).
+    Flushes but does not commit — the scheduler wrapper owns the commit.
+    Returns the number of ships archived."""
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=ABANDONMENT_ARCHIVE_DAYS)
+    ships = (
+        db.query(Ship)
+        .filter(
+            Ship.is_abandoned.is_(True),
+            Ship.abandoned_at.isnot(None),
+            Ship.abandoned_at <= cutoff,
+            Ship.is_destroyed.is_(False),
+        )
+        .all()
+    )
+    archived = 0
+    for ship in ships:
+        previous_owner_id = ship.registered_owner_id or ship.owner_id
+        original_owner = None
+        if previous_owner_id is not None:
+            original_owner = db.query(Player).filter(Player.id == previous_owner_id).first()
+
+        ship.is_destroyed = True
+        ship.is_active = False
+        ship.status = ShipStatus.DESTROYED
+        ship.destruction_cause = "abandonment_expired"
+        ship.is_abandoned = False
+        ship.current_pilot_id = None
+
+        try:
+            from src.services.combat_service import CombatService
+            CombatService(db)._spawn_cargo_wreck(
+                ship, "abandonment_expired", original_owner, None,
+            )
+        except Exception as e:
+            logger.error(
+                "Abandonment-archive CargoWreck spawn failed for ship %s: %s",
+                ship.id, e,
+            )
+
+        # Hold emptied into the wreck (or was already empty) — clear residual.
+        if ship.cargo:
+            ship.cargo = {"contents": {}}
+            flag_modified(ship, "cargo")
+
+        append_registry_event(
+            db,
+            ship=ship,
+            event_type=RegistryEventType.ARCHIVED,
+            original_owner_id=ship_registry_original_owner_id(db, ship),
+            previous_owner_id=previous_owner_id,
+            event_metadata={
+                "via": "abandonment_expired",
+                "abandoned_at": (
+                    ship.abandoned_at.isoformat() if ship.abandoned_at else None
+                ),
+            },
+        )
+        archived += 1
+    return archived
 
 
 def ship_registry_original_owner_id(db: Session, ship: Ship) -> Optional[UUID]:

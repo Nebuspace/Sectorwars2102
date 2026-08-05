@@ -103,6 +103,7 @@ from src.services.scheduler.contract_sweeps import (
 )
 from src.services.scheduler.beacon_sweeps import _run_beacon_expire_sweep_sync
 from src.services.scheduler.mining_sweeps import _run_mining_harvest_resolve_sync
+from src.services.scheduler.ship_registry_sweeps import _run_abandonment_archive_sweep_sync
 
 logger = logging.getLogger(__name__)
 
@@ -1036,6 +1037,23 @@ async def _npc_scheduler_main_loop() -> None:
             raise
         except Exception:
             logger.exception("NPC scheduler: wanted clear sweep crashed (loop continues)")
+
+        # Abandoned-ship 7-day auto-archive (WO-FIX-SHIP-REGISTRY-AUTO-ARCHIVE-MISSING)
+        try:
+            abandoned_archived = await asyncio.to_thread(
+                _run_abandonment_archive_sweep_sync
+            )
+            if abandoned_archived:
+                logger.info(
+                    "NPC scheduler: abandonment archive sweep — archived %d ship(s)",
+                    abandoned_archived,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "NPC scheduler: abandonment archive sweep crashed (loop continues)"
+            )
 
         # Suspect auto-clear sweep (WO-CMB-SUSPECT-LIFE-1 held wiring) —
         # ships.md:293's "auto-clears at suspect_until" guarantee needed a
