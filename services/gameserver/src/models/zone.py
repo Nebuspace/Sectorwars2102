@@ -21,7 +21,6 @@ Zone Types by Region:
 
 import uuid
 import enum
-from datetime import datetime
 from sqlalchemy import Column, String, Integer, ForeignKey, DateTime, CheckConstraint, Enum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship

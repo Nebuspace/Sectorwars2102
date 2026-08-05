@@ -5,7 +5,7 @@ Input validation and sanitization utilities for enhanced security
 import re
 import html
 import uuid
-from typing import Any, Optional, List, Dict, Union
+from typing import Any, Optional
 from pydantic import BaseModel, Field, validator
 from fastapi import HTTPException
 

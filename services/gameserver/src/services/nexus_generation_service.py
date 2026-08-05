@@ -273,6 +273,12 @@ class NexusGenerationService:
         nexus_region = Region(
             name="central-nexus",
             display_name="Central Nexus",
+            # No bang-import seed exists for the Nexus (this generator is
+            # gameserver-native, not bang-driven) -- server-generated per
+            # galaxy-generation.md:231 ("Random seed not provided -> use a
+            # server-generated UUID seed"). uint64-positive range to match
+            # the bang seed's own storage convention (BigInteger).
+            generation_seed=random.getrandbits(63),
             region_type=RegionType.CENTRAL_NEXUS,  # Special region type
             owner_id=None,  # Platform-owned
             subscription_tier="nexus",

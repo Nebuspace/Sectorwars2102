@@ -183,16 +183,13 @@ def apply_stock_levels(
         commodities[commodity_name]["quantity"] = stock_level
         commodities[commodity_name]["production_rate"] = production_rate
 
-        # Adjust pricing for premium ports
-        base_price = commodity_data.get("base_price", 50)
-        if is_premium_seller and commodity_name in pattern.get("sells", []):
-            # Premium sellers charge less (better deals for players)
-            commodities[commodity_name]["current_price"] = int(base_price * 0.8)
-        elif is_premium_buyer and commodity_name in pattern.get("buys", []):
-            # Premium buyers pay more (better deals for players)
-            commodities[commodity_name]["current_price"] = int(base_price * 1.3)
-        else:
-            commodities[commodity_name]["current_price"] = base_price
+        # Bootstrap current_price = base only. Class 8/9 premiums live in
+        # trading_service (CLASS_8_BUY_PREMIUM / CLASS_9_SELL_PREMIUM) at
+        # transaction time — a prior 0.8x Class-9 bootstrap was inverted vs
+        # canon and was always overwritten on first reprice (dead).
+        commodities[commodity_name]["current_price"] = commodity_data.get(
+            "base_price", 50
+        )
 
     return commodities
 

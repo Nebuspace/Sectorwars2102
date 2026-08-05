@@ -209,14 +209,14 @@ def create_default_factions(db: Session, max_retries: int = 3) -> None:
     aggression, and diplomacy stance follow faction-lore.md /
     factions-and-teams.md per faction.
 
-    Roster scope (7 rows): the six allyable factions canon marks as seeded —
+    Roster scope (8 rows): the six allyable factions canon marks as seeded —
     Terran Federation (FEDERATION), Mercantile Guild (MERCHANTS), Frontier
     Coalition (INDEPENDENTS), Astral Mining Consortium (MINING, per ADR-0033),
     Nova Scientific Institute (EXPLORERS), Fringe Alliance (OUTLAWS) — plus
-    the hostile-only Pirates (PIRATES).
+    Shadow Syndicate (SYNDICATE, WO-PULL-FACTION-ROSTER-SEED) and the
+    hostile-only Pirates (PIRATES).
 
     Deliberately NOT seeded (canon, not an oversight):
-      - Shadow Syndicate (SYNDICATE): faction-lore.md "🚧 seed pending".
       - Galactic Concord (CONCORD): police-forces.md "📐 Design-only,
         operator-managed; not in the standard NPC-faction list".
       - The Cabal: 📐 Design-only and not present in the FactionType enum.
@@ -315,6 +315,19 @@ def create_default_factions(db: Session, max_retries: int = 3) -> None:
             "diplomacy_stance": "hostile",
             "color_primary": "#996600",
             "color_secondary": "#000000",
+        },
+        {
+            "name": "Shadow Syndicate",
+            "faction_type": FactionType.SYNDICATE,
+            "description": (
+                "Organized black-market trade network — fences, racketeers, "
+                "and contraband logistics. The illicit shadow of the "
+                "Mercantile Guild's legitimate trade infrastructure."
+            ),
+            "aggression_level": 6,
+            "diplomacy_stance": "hostile",
+            "color_primary": "#1A1A2E",
+            "color_secondary": "#C9A227",
         },
         {
             "name": "Pirates",
