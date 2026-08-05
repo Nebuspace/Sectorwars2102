@@ -11,13 +11,20 @@ security_level / security_rank). This module owns the four-tier ladder
 JSONB column (additive nullable, migration a1d7c4e92f6b) — no schema change.
 
 LAZY ENGINE (matches port_ownership_service's listing/takeover pattern):
-there is no background worker. upgrade_security_tier / downgrade_security_
-tier / get_security_status all call _settle_pending() first, which flips a
-completed pending op to its target tier and clears the pending keys. This is
-IDEMPOTENT: the flip happens under the station's row lock
-(with_for_update), so two "simultaneous" completion reads are serialized by
-Postgres — the first flips and clears, the second sees already-cleared
-pending keys and no-ops. No commit anywhere here; the calling route owns the
+voluntary upgrade/downgrade still has no per-request background worker —
+upgrade_security_tier / downgrade_security_tier / get_security_status all
+call _settle_pending() first, which flips a completed pending op to its
+target tier and clears the pending keys. That path is IDEMPOTENT: the flip
+happens under the station's row lock (with_for_update), so two
+"simultaneous" completion reads are serialized by Postgres — the first
+flips and clears, the second sees already-cleared pending keys and no-ops.
+
+DEFENSE UNDERFUNDING CASCADE (ADR-0093 §3 / station-protection.md): a
+once-per-canonical-day sweep (`tick_defense_underfunding_cascade`, gated
+via Galaxy.state) monitors player-owned stations whose fee `defense_pct`
+is below 0.35 and applies the day-1 warn / day-3 one-tier / day-7 force-
+none rule. Streak state lives in `station.security` JSONB (no migration).
+No commit anywhere in this module; the calling route or sweep owns the
 transaction (matches every sibling service in this codebase).
 
 Canon durations ("24 real-time hours", "72 real-time hours", "7 real-time
@@ -135,6 +142,18 @@ SECURITY_UPKEEP_PCT = {
     "standard": 0.10,
     "premium": 0.20,
 }
+
+# ADR-0093 §3 / station-protection.md "Defense underfunding cascade".
+# defense_pct < 0.35 defines underfunding; consecutive accounting-tick days
+# while underfunded drive warn → one-tier drop → force none.
+DEFENSE_UNDERFUND_PCT = 0.35
+DEFICIT_WARN_DAY = 1
+DEFICIT_DOWNGRADE_DAY = 3
+DEFICIT_FORCE_NONE_DAY = 7
+DEFICIT_DAYS_KEY = "defense_deficit_days"
+DEFICIT_LAST_DAY_KEY = "defense_deficit_last_day"
+DEFICIT_WARNED_KEY = "defense_deficit_warned"
+DEFICIT_STEP_KEY = "defense_deficit_step_applied"
 
 
 # ---------------------------------------------------------------------------
@@ -924,3 +943,346 @@ def surrender_tractor_locked_ship(
         "detained": detained_until is not None,
         "detained_until": detained_until.isoformat() if detained_until else None,
     }
+
+
+
+# ---------------------------------------------------------------------------
+# Defense underfunding cascade (ADR-0093 §3)
+# ---------------------------------------------------------------------------
+
+def _clear_pending_security_ops(sec: Dict[str, Any]) -> None:
+    """Drop any voluntary pending upgrade/downgrade — auto cascade wins."""
+    sec["upgrade_to"] = None
+    sec["upgrade_completes_at"] = None
+    sec["downgrade_completes_at"] = None
+
+
+def _apply_immediate_tier(station: Station, new_tier: str) -> None:
+    """Force ``station.security['tier']`` immediately (no 24h pending clock).
+
+    Clears pending voluntary ops so a mid-flight owner upgrade cannot race
+    the cascade. Caller must ``flag_modified`` + flush.
+    """
+    sec = _security(station)
+    sec["tier"] = new_tier
+    _clear_pending_security_ops(sec)
+
+
+def _reset_deficit_streak(sec: Dict[str, Any]) -> bool:
+    """Clear underfunding streak keys. Returns True if anything changed."""
+    mutated = False
+    for key in (
+        DEFICIT_DAYS_KEY,
+        DEFICIT_WARNED_KEY,
+        DEFICIT_STEP_KEY,
+        DEFICIT_LAST_DAY_KEY,
+    ):
+        if key in sec:
+            del sec[key]
+            mutated = True
+    return mutated
+
+
+def _notify_defense_deficit(
+    db: Session,
+    owner: Player,
+    station: Station,
+    *,
+    subject: str,
+    content: str,
+    priority: str,
+) -> None:
+    """Best-effort self-addressed system Message (warp-gate cascade pattern).
+
+    Durable inbox half only — no ConnectionManager on the sync sweep path.
+    Never raises into the cascade.
+    """
+    try:
+        from src.models.message import Message
+
+        db.add(
+            Message(
+                sender_id=owner.id,
+                recipient_id=owner.id,
+                subject=subject,
+                content=content,
+                message_type="system",
+                priority=priority,
+            )
+        )
+    except Exception:
+        logger.warning(
+            "Defense-deficit notification failed for owner %s station %s",
+            owner.id,
+            station.id,
+            exc_info=True,
+        )
+
+
+def _persist_deficit_counters(sec: Dict[str, Any], days: int, this_day: int) -> None:
+    sec[DEFICIT_DAYS_KEY] = days
+    sec[DEFICIT_LAST_DAY_KEY] = this_day
+
+
+def _maybe_warn_deficit(
+    db: Session,
+    owner: Optional[Player],
+    station: Station,
+    sec: Dict[str, Any],
+    *,
+    days: int,
+    defense_pct: float,
+    summary: Dict[str, Any],
+) -> None:
+    if days < DEFICIT_WARN_DAY or sec.get(DEFICIT_WARNED_KEY):
+        return
+    sec[DEFICIT_WARNED_KEY] = True
+    summary["warned"] = True
+    if owner is None:
+        return
+    _notify_defense_deficit(
+        db,
+        owner,
+        station,
+        subject="Station defense underfunded",
+        content=(
+            f"Defense funding at {station.name} has dropped below "
+            f"{DEFENSE_UNDERFUND_PCT:.0%} of revenue "
+            f"(currently {defense_pct:.0%}). After "
+            f"{DEFICIT_DOWNGRADE_DAY} consecutive deficit days "
+            f"security will auto-downgrade one tier; after "
+            f"{DEFICIT_FORCE_NONE_DAY} days it will drop to none."
+        ),
+        priority="high",
+    )
+
+
+def _maybe_step_downgrade(
+    station: Station,
+    sec: Dict[str, Any],
+    *,
+    days: int,
+    this_day: int,
+    tier: str,
+    summary: Dict[str, Any],
+) -> str:
+    """Day-3 one-tier drop. Returns (possibly updated) tier."""
+    if days < DEFICIT_DOWNGRADE_DAY or sec.get(DEFICIT_STEP_KEY) or tier == "none":
+        return tier
+    target = next_tier_down(tier) or "none"
+    _apply_immediate_tier(station, target)
+    sec = _security(station)
+    sec[DEFICIT_STEP_KEY] = True
+    _persist_deficit_counters(sec, days, this_day)
+    if summary.get("warned") or sec.get(DEFICIT_WARNED_KEY):
+        sec[DEFICIT_WARNED_KEY] = True
+    summary["tier_dropped"] = True
+    return target
+
+
+def _maybe_force_none(
+    db: Session,
+    owner: Optional[Player],
+    station: Station,
+    sec: Dict[str, Any],
+    *,
+    days: int,
+    this_day: int,
+    tier: str,
+    summary: Dict[str, Any],
+) -> None:
+    if days < DEFICIT_FORCE_NONE_DAY or tier == "none":
+        return
+    _apply_immediate_tier(station, "none")
+    sec = _security(station)
+    _persist_deficit_counters(sec, days, this_day)
+    sec[DEFICIT_STEP_KEY] = True
+    sec[DEFICIT_WARNED_KEY] = True
+    summary["forced_none"] = True
+    if owner is None:
+        return
+    _notify_defense_deficit(
+        db,
+        owner,
+        station,
+        subject="Your station is undefended",
+        content=(
+            f"{station.name} has been underfunded for "
+            f"{DEFICIT_FORCE_NONE_DAY} consecutive days. Security "
+            f"has been forced to none — the station is undefended."
+        ),
+        priority="urgent",
+    )
+
+
+def process_station_defense_deficit(
+    db: Session,
+    station: Station,
+    this_day: int,
+    owner: Optional[Player] = None,
+) -> Dict[str, Any]:
+    """Advance one station's underfunding streak for ``this_day``.
+
+    Underfunded iff effective fee ``defense_pct < DEFENSE_UNDERFUND_PCT``.
+    Flush-only. Returns a small action summary for the sweep aggregator.
+    """
+    from src.services.port_ownership_service import _effective_fee_split_pcts
+
+    summary: Dict[str, Any] = {
+        "station_id": str(station.id),
+        "underfunded": False,
+        "days": 0,
+        "warned": False,
+        "tier_dropped": False,
+        "forced_none": False,
+        "skipped": False,
+    }
+
+    if station.owner_id is None:
+        summary["skipped"] = True
+        return summary
+
+    defense_pct, _, _ = _effective_fee_split_pcts(station)
+    sec = _security(station)
+    tier = (sec.get("tier") or station.security_level or "none").lower()
+
+    if defense_pct >= DEFENSE_UNDERFUND_PCT:
+        if _reset_deficit_streak(sec):
+            flag_modified(station, "security")
+            db.flush()
+        return summary
+
+    summary["underfunded"] = True
+
+    last_day = sec.get(DEFICIT_LAST_DAY_KEY)
+    try:
+        last_day_i = int(last_day) if last_day is not None else None
+    except (TypeError, ValueError):
+        last_day_i = None
+
+    if last_day_i is not None and last_day_i >= this_day:
+        summary["skipped"] = True
+        summary["days"] = int(sec.get(DEFICIT_DAYS_KEY) or 0)
+        return summary
+
+    days = int(sec.get(DEFICIT_DAYS_KEY) or 0) + 1
+    _persist_deficit_counters(sec, days, this_day)
+    summary["days"] = days
+
+    if owner is None:
+        owner = db.query(Player).filter(Player.id == station.owner_id).first()
+
+    _maybe_warn_deficit(
+        db, owner, station, sec, days=days, defense_pct=defense_pct, summary=summary
+    )
+    tier = _maybe_step_downgrade(
+        station, sec, days=days, this_day=this_day, tier=tier, summary=summary
+    )
+    # Re-read after possible step mutation
+    sec = _security(station)
+    _maybe_force_none(
+        db, owner, station, sec, days=days, this_day=this_day, tier=tier, summary=summary
+    )
+
+    flag_modified(station, "security")
+    db.flush()
+    return summary
+
+
+def tick_defense_underfunding_cascade(db: Session) -> Dict[str, Any]:
+    """Process every player-owned station once for the current canon day.
+
+    Flush-only — caller owns commit. Idempotent per station via
+    ``defense_deficit_last_day``.
+    """
+    from src.services.scheduler._common import canonical_day_number
+
+    this_day = canonical_day_number()
+    stations = (
+        db.query(Station)
+        .filter(Station.owner_id.isnot(None))
+        .all()
+    )
+    result: Dict[str, Any] = {
+        "stations_checked": 0,
+        "underfunded": 0,
+        "warned": 0,
+        "tier_dropped": 0,
+        "forced_none": 0,
+        "actions": [],
+    }
+    for station in stations:
+        # Re-lock individually so concurrent owner writes serialize.
+        locked = (
+            db.query(Station)
+            .filter(Station.id == station.id)
+            .with_for_update()
+            .first()
+        )
+        if locked is None or locked.owner_id is None:
+            continue
+        result["stations_checked"] += 1
+        owner = db.query(Player).filter(Player.id == locked.owner_id).first()
+        action = process_station_defense_deficit(
+            db, locked, this_day, owner=owner
+        )
+        result["actions"].append(action)
+        if action.get("underfunded") and not action.get("skipped"):
+            result["underfunded"] += 1
+        if action.get("warned"):
+            result["warned"] += 1
+        if action.get("tier_dropped"):
+            result["tier_dropped"] += 1
+        if action.get("forced_none"):
+            result["forced_none"] += 1
+    return result
+
+
+def run_defense_underfunding_cascade_gated(db: Session) -> Dict[str, Any]:
+    """Once-per-canonical-day gate around ``tick_defense_underfunding_cascade``.
+
+    Mirrors ``anchor_repair_service.run_daily_scan_gated`` Galaxy.state
+    day-anchor discipline. Intended to ride governance Phase 9 under the
+    shared governance advisory lock (caller owns commit).
+    """
+    from src.models.galaxy import Galaxy
+    from src.services.scheduler._common import (
+        _DEFENSE_UNDERFUND_STATE_KEY,
+        canonical_day_number,
+    )
+
+    result: Dict[str, Any] = {
+        "defense_underfund_skipped": False,
+        "stations_checked": 0,
+        "underfunded": 0,
+        "warned": 0,
+        "tier_dropped": 0,
+        "forced_none": 0,
+    }
+
+    this_day = canonical_day_number()
+    galaxy = db.query(Galaxy).order_by(Galaxy.created_at.asc()).first()
+    gstate = dict(galaxy.state or {}) if galaxy is not None else {}
+    last_day = gstate.get(_DEFENSE_UNDERFUND_STATE_KEY)
+    already_today = (
+        galaxy is not None
+        and last_day is not None
+        and int(last_day) >= this_day
+    )
+    if already_today:
+        result["defense_underfund_skipped"] = True
+        return result
+
+    tick = tick_defense_underfunding_cascade(db)
+    result["stations_checked"] = tick["stations_checked"]
+    result["underfunded"] = tick["underfunded"]
+    result["warned"] = tick["warned"]
+    result["tier_dropped"] = tick["tier_dropped"]
+    result["forced_none"] = tick["forced_none"]
+
+    if galaxy is not None:
+        gstate = dict(galaxy.state or {})
+        gstate[_DEFENSE_UNDERFUND_STATE_KEY] = this_day
+        galaxy.state = gstate
+        flag_modified(galaxy, "state")
+    return result
