@@ -1500,11 +1500,12 @@ class ARIAPersonalIntelligenceService:
     # quantum-calculation cache read/write pair) removed 2026-08-04 —
     # zero callers anywhere in the codebase (grep-confirmed). The table
     # (ARIAQuantumCache) is still live via the repurposed observation-log
-    # aggregate cache (_cache_aggregates_sync / its read counterpart just
-    # above), which is the ONLY production-reachable writer today and
-    # always stores dummy quantum_states/expected_value/confidence_interval
-    # values — those columns remain permanently zeroed by design under the
-    # current repurposing, not because anything here still populates them.
+    # aggregate cache (_cache_aggregates_sync / its read counterpart).
+    # NOT NULL columns quantum_states / expected_value / confidence_interval
+    # are filled with empty/zero placeholders on INSERT only — the read path
+    # returns entry.ghost_results (the real recommendation bundle) and never
+    # serializes those legacy columns to any API response
+    # (WO-CLEANUP-ARIA-INTELLIGENCE-DUMMY-DATA-VERIFY).
     
     # =============================================================================
     # CONSCIOUSNESS & RELATIONSHIP TRACKING
@@ -2593,10 +2594,10 @@ class ARIAPersonalIntelligenceService:
                 commodity=self._AGGREGATE_CACHE_SCOPE_COMMODITY,
                 station_id=None,
                 sector_id=None,
-                quantum_states=[],  # unused for this repurposed cache use
+                quantum_states=[],  # NOT NULL placeholder — never returned to clients
                 ghost_results=bundle,
-                expected_value=0.0,  # unused for this repurposed cache use
-                confidence_interval=[0, 0],  # unused for this repurposed cache use
+                expected_value=0.0,  # NOT NULL placeholder — never returned to clients
+                confidence_interval=[0, 0],  # NOT NULL placeholder — never returned to clients
                 expires_at=expires_at,
             ))
 
