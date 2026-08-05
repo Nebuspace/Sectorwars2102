@@ -28,15 +28,11 @@ sibling module, `contract_bulk.py` (see WO-CONTRACT-REFACTOR-SPLIT below
 for why; this module re-exports both by name, unchanged for callers), see
 that module's own docstring and `sweep_expired_accepted_contracts`'s own
 "[KNOWN GAP]" note below for the one deliberately-unbuilt piece (an
-in_progress-status deadline sweep). Nothing in this codebase yet
-GENERATES or POSTS a bulk_procurement row (contract_generator.py's own
-WO-CONTRACT-3-NPCGEN-TYPES build produced express_delivery/hazardous_
-transport only; `post_player_contract` below still hardcodes
-cargo_delivery) -- `deliver`/`walk_away_bulk_procurement` are built and
-DB-free-tested against hand-constructed fixtures, function-only until a
-future WO wires a real posting/generation path to them, matching this
-module's own established `resolve_dispute`-style "function only"
-precedent.
+in_progress-status deadline sweep). Player-posted `bulk_procurement` is
+live via `post_player_contract` + `PostContractRequest` (cargo_delivery |
+bulk_procurement allowlist — NPC-only types stay generator-gated). The
+retired pro-rata `deliver`/`walk_away_bulk_procurement` helpers in
+`contract_bulk.py` remain unwired (locker path superseded them).
 
 WO-CONTRACT-REFACTOR-SPLIT: this module was split (pure move, zero
 behavior change) once it grew past this project's 1500-line Python
