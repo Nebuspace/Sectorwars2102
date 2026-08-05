@@ -48,12 +48,23 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 import docker
 from docker import errors as docker_errors
 from requests.exceptions import ReadTimeout
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from src.core.commodity_economy import base_price as _commodity_base_price
 from src.core.market_bootstrap import build_market_prices
 from src.core.station_class_map import apply_class_pattern
+
+# Station-protection security-tier seeding (WO-STN-SEC-1, FEATURES/economy/
+# station-protection.md § Security tiers). Lives in src.core.station_
+# security_tiers (WO-TD-NEXGEN-1) so nexus_generation_service can seed the
+# same rule without importing this module (which pulls in the docker SDK at
+# module scope). Re-imported here so every existing `from
+# src.services.bang_import_service import _derive_station_security_tier` call
+# site (this module's own _apply_region, plus
+# tests/unit/test_station_security_seeding.py) keeps working unchanged.
+from src.core.station_security_tiers import _derive_station_security_tier
 from src.models.bang_generation_job import (
     BangGenerationJob,
     BangGenerationJobStatus,
@@ -64,25 +75,136 @@ from src.models.planet import Planet, PlanetStatus, PlanetType
 from src.models.region import Region
 from src.models.sector import Sector, SectorType, sector_warps
 from src.models.special_formation import SpecialFormation, SpecialFormationType
-from src.models.warp_tunnel import WarpTunnel, WarpTunnelType
 from src.models.station import (
     Station,
     StationClass,
     StationStatus,
     StationType,
 )
+from src.models.warp_tunnel import WarpTunnel, WarpTunnelType
 from src.schemas.bang_config import BangConfig, RegionType
-# Station-protection security-tier seeding (WO-STN-SEC-1, FEATURES/economy/
-# station-protection.md § Security tiers). Lives in src.core.station_
-# security_tiers (WO-TD-NEXGEN-1) so nexus_generation_service can seed the
-# same rule without importing this module (which pulls in the docker SDK at
-# module scope). Re-imported here so every existing `from
-# src.services.bang_import_service import _derive_station_security_tier` call
-# site (this module's own _apply_region, plus
-# tests/unit/test_station_security_seeding.py) keeps working unchanged.
-from src.core.station_security_tiers import _derive_station_security_tier
+from src.services.galaxy_validation import (
+    ERR_BANG_VALIDATION_FAILED,
+    GalaxyValidationError,
+    validate_insert_plan_or_raise,
+    validate_region_plan_or_raise,
+)
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# ADR-0050 SK17 -- per-phase row-count sentinels
+# ---------------------------------------------------------------------------
+#
+# SYSTEMS/galaxy-generator-design.md (status: "Partial ... does NOT exist as
+# designed") describes an aspirational 14-phase orchestrated generator that
+# commits a checksum at each phase boundary (phase_1..phase_14) and can
+# resume from the last verified phase on restart. That orchestrator is not
+# committed gameserver code -- the actual generation pipeline is
+# BangImportService.run_generation_job(): bang runs 3x out-of-process,
+# translate() is pure, and apply() writes every region's rows (clusters ->
+# sectors -> warps -> stations -> planets -> formations, see _apply_region)
+# inside ONE Postgres transaction (module docstring above; run_generation_job
+# wraps it in `async with session.begin(): ...`). A crash mid-apply already
+# rolls the whole transaction back to nothing -- there is no partially-
+# committed, resumable mid-generation state to recover today, and no
+# restart-from-phase-N caller exists anywhere in this module.
+#
+# What SK17 buys under that real architecture:
+#   1. Per-stage telemetry (row_count/duration_ms/completed_at) written into
+#      the SAME transaction as the inserts, keyed by the REAL insert-order
+#      stage names (clusters/sectors/warps/stations/planets/formations) --
+#      not fabricated phase_1..phase_14 labels for stages that don't exist.
+#      Once a generation succeeds this is durable, useful ops visibility
+#      into where time/rows went.
+#   2. verify_region_phase_checksums(): a standalone re-verification
+#      primitive (re-run each phase's COUNT query, diff against the stored
+#      sentinel) that a FUTURE partial-resume design can call before
+#      trusting a stored checksum. Nothing wires it into a restart path
+#      today because no such path exists to wire it into.
+def _record_phase_checksum(
+    region_row: Optional["Region"],
+    phase: str,
+    row_count: int,
+    started_at: float,
+) -> None:
+    """Merge one phase's row-count sentinel into ``Region.generation_phase_checksums``.
+
+    Never overwrites prior phases (dict-merge). No-op if ``region_row`` is
+    ``None`` (defensive -- ``_apply_region`` always resolves a real Region
+    before calling this, but a missing row should degrade the sentinel
+    write, never abort an otherwise-durable import).
+    """
+    if region_row is None:
+        return
+    checksums = dict(region_row.generation_phase_checksums or {})
+    checksums[phase] = {
+        "row_count": row_count,
+        "duration_ms": int((time.monotonic() - started_at) * 1000),
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    region_row.generation_phase_checksums = checksums  # type: ignore[assignment]
+    flag_modified(region_row, "generation_phase_checksums")
+
+
+# Phase name -> ORM class + FK column used to re-count its rows live.
+# `warps` is handled separately below (it's an association table joined
+# through Sector, not a mapped class with its own region_id column).
+_SK17_PHASE_MODELS: Dict[str, Any] = {
+    "clusters": Cluster,
+    "sectors": Sector,
+    "stations": Station,
+    "planets": Planet,
+    "formations": SpecialFormation,
+}
+
+
+async def verify_region_phase_checksums(
+    session: AsyncSession, region: "Region"
+) -> Dict[str, Dict[str, Any]]:
+    """Re-run each stored phase's row-count query against live DB state.
+
+    Returns only the phases whose live count disagrees with the stored
+    sentinel: ``{phase: {"stored": N, "live": M}}``. An empty dict means
+    every stored phase re-verified clean (or nothing was stored yet).
+
+    ADR-0050 SK17. See the module-level comment above for why this is not
+    (yet) invoked from any restart/resume flow.
+    """
+    stored = region.generation_phase_checksums or {}
+    if not stored:
+        return {}
+
+    mismatches: Dict[str, Dict[str, Any]] = {}
+    for phase, model in _SK17_PHASE_MODELS.items():
+        if phase not in stored:
+            continue
+        live_count = (
+            await session.execute(
+                select(func.count()).select_from(model).where(model.region_id == region.id)
+            )
+        ).scalar_one()
+        stored_count = stored[phase].get("row_count")
+        if stored_count != live_count:
+            mismatches[phase] = {"stored": stored_count, "live": live_count}
+
+    if "warps" in stored:
+        live_warp_count = (
+            await session.execute(
+                select(func.count())
+                .select_from(sector_warps)
+                .select_from(
+                    sector_warps.join(Sector, sector_warps.c.source_sector_id == Sector.id)
+                )
+                .where(Sector.region_id == region.id)
+            )
+        ).scalar_one()
+        stored_warp_count = stored["warps"].get("row_count")
+        if stored_warp_count != live_warp_count:
+            mismatches["warps"] = {"stored": stored_warp_count, "live": live_warp_count}
+
+    return mismatches
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -357,6 +479,8 @@ def _gx1_sector_bias(
 #: this module (or its existing tests) needs to change.
 from src.services.nebula_color import (  # noqa: E402
     NEBULA_COLOR_HEX as _NEBULA_COLOR_HEX,
+)
+from src.services.nebula_color import (
     derive_nebula_color as _derive_nebula_color,
 )
 
@@ -1321,6 +1445,11 @@ class BangImportService:
                 if sector_id_offset > 0:
                     self._offset_region_sector_ids(region_plan, sector_id_offset)
 
+                # ADR-0050 SK20: same canonical gate as run_generation_job,
+                # applied to the single-region plan (this path never builds
+                # a full multi-region InsertPlan).
+                validate_region_plan_or_raise(region_plan)
+
                 region_id_str = (
                     region_metadata.get("regions", {})
                     .get("player_owned", {})
@@ -1629,6 +1758,9 @@ class BangImportService:
 
                 plan = self.translate(universes, region_metadata)
 
+                # ADR-0050 SK20: same canonical gate as run_generation_job.
+                validate_insert_plan_or_raise(plan)
+
                 async with session.begin():
                     galaxy = await self.apply_regeneration(
                         galaxy_id, plan, existing_region_ids, session
@@ -1684,7 +1816,14 @@ class BangImportService:
         natural+latent Nexus warp). apply() uses these to wire the inter-region
         WarpTunnel rows after every region is in place.
         """
+        # ADR-0050 SK17: resolve the Region row up front so each insert stage
+        # below can write its row-count sentinel as it completes. Fetching
+        # early is a no-op change vs. the later `session.get(Region, ...)`
+        # this function already did (identity-map cached, same object).
+        region_row = await session.get(Region, region_id)
+
         cluster_uuid_by_int: Dict[int, uuid.UUID] = {}
+        _sk17_t0 = time.monotonic()
         for cs in region_plan.clusters:
             cluster = Cluster(
                 region_id=region_id,
@@ -1717,8 +1856,10 @@ class BangImportService:
             session.add(cluster)
             await session.flush()
             cluster_uuid_by_int[cs.cluster_int_id] = cluster.id  # type: ignore[assignment]
+        _record_phase_checksum(region_row, "clusters", len(region_plan.clusters), _sk17_t0)
 
         sector_uuid_by_int: Dict[int, uuid.UUID] = {}
+        _sk17_t0 = time.monotonic()
         # ADR-0043: keep the global-sector_id → region-local number mapping so
         # the Nexus-landing selection can record Region.nexus_warp_sector as the
         # region-local sector number (not the global, offset id).
@@ -1764,8 +1905,10 @@ class BangImportService:
             session.add(sector)
             await session.flush()
             sector_uuid_by_int[ss.sector_id] = sector.id  # type: ignore[assignment]
+        _record_phase_checksum(region_row, "sectors", len(region_plan.sectors), _sk17_t0)
 
         # Warps — direct INSERT into the association table for batching.
+        _sk17_t0 = time.monotonic()
         for w in region_plan.warps:
             await session.execute(
                 sector_warps.insert().values(
@@ -1778,6 +1921,7 @@ class BangImportService:
                     warp_stability=w.warp_stability,
                 )
             )
+        _record_phase_checksum(region_row, "warps", len(region_plan.warps), _sk17_t0)
 
         # WO-STN-SEC-1: sector→cluster-type lookup so the security-tier
         # derivation below can see "is this station in a frontier/lawless
@@ -1791,6 +1935,7 @@ class BangImportService:
         }
 
         created_stations: List[Station] = []
+        _sk17_t0 = time.monotonic()
         for stsp in region_plan.stations:
             station_kwargs = dict(
                 name=stsp.name,
@@ -1836,7 +1981,9 @@ class BangImportService:
             station = Station(**station_kwargs)
             session.add(station)
             created_stations.append(station)
+        _record_phase_checksum(region_row, "stations", len(created_stations), _sk17_t0)
 
+        _sk17_t0 = time.monotonic()
         for ps in region_plan.planets:
             planet = Planet(
                 name=ps.name,
@@ -1864,7 +2011,9 @@ class BangImportService:
                 ),
             )
             session.add(planet)
+        _record_phase_checksum(region_row, "planets", len(region_plan.planets), _sk17_t0)
 
+        _sk17_t0 = time.monotonic()
         for fs in region_plan.formations:
             formation_enum = _coerce_formation_type(fs.type)
             formation = SpecialFormation(
@@ -1878,6 +2027,7 @@ class BangImportService:
                 is_discovered=fs.is_discovered,
             )
             session.add(formation)
+        _record_phase_checksum(region_row, "formations", len(region_plan.formations), _sk17_t0)
 
         await session.flush()
 
@@ -2183,6 +2333,14 @@ class BangImportService:
                     await session.commit()
 
                 plan = self.translate(universes, region_metadata)
+
+                # ADR-0050 SK20: gameserver-canonical validation gate. Runs
+                # AFTER bang's own generation-time rules (bang already ran
+                # its 102 rules to produce this JSON) and BEFORE apply()
+                # commits a single row -- a violation here aborts the
+                # import cleanly, same as any other translate()-stage
+                # ValueError caught below.
+                validate_insert_plan_or_raise(plan)
 
                 async with session.begin():
                     galaxy = await self.apply(plan, session)
@@ -3173,4 +3331,6 @@ __all__ = [
     "ValidationReport",
     "GALAXY_GEN_LOCK_KEY",
     "COMMODITY_WIRE_ORDER",
+    "ERR_BANG_VALIDATION_FAILED",
+    "GalaxyValidationError",
 ]
