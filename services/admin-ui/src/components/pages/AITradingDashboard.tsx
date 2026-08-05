@@ -59,14 +59,12 @@ const AITradingDashboard: React.FC = () => {
 
   // WebSocket event handlers
   const handleModelUpdate = useCallback((data: any) => {
-    console.log('AI model update:', data);
     setModels(prev => prev.map(model => 
       model.id === data.modelId ? { ...model, ...data } : model
     ));
   }, []);
 
   const handlePredictionUpdate = useCallback((data: any) => {
-    console.log('Prediction update:', data);
     // Update metrics with new prediction data
     if (metrics) {
       setMetrics({

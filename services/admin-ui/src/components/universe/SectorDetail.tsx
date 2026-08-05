@@ -28,17 +28,13 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
 
   const loadSectorDetails = async () => {
     setLoading(true);
-    console.log('Loading sector details for sector:', sector);
-    console.log('Sector has_port:', sector.has_port, 'has_planet:', sector.has_planet);
-    
+
     try {
       // Always try to load port data, regardless of has_port flag
       try {
         const portResponse = await api.get(`/api/v1/admin/sectors/${sector.sector_id}/port`);
         setPortData(portResponse.data);
-        console.log('Station data loaded:', portResponse.data);
-      } catch (portError) {
-        console.log('No port found or error loading port data:', portError);
+      } catch (_portError) {
         setPortData(null);
       }
 
