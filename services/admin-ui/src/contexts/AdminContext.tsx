@@ -3,6 +3,7 @@ import axios from 'axios';
 import { useAuth } from './AuthContext';
 import type {
   BangConfig,
+  BangJobListItem,
   BangJobResponse,
 } from '../components/universe/bang/types';
 import {
@@ -207,7 +208,7 @@ interface AdminContextType {
   deactivateUser: (userId: string) => Promise<void>;
 
   // sw2102-bang generation (Phase 3 — admin UI integration)
-  bangHistory: BangJobResponse[];
+  bangHistory: BangJobListItem[];
   bangHistoryTotal: number;
   bangGalaxy: (config: BangConfig, galaxyName?: string) => Promise<BangJobResponse | null>;
   loadBangHistory: (page?: number, pageSize?: number) => Promise<void>;
@@ -240,7 +241,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const [players, setPlayers] = useState<PlayerAccount[]>([]);
 
   // sw2102-bang state
-  const [bangHistory, setBangHistory] = useState<BangJobResponse[]>([]);
+  const [bangHistory, setBangHistory] = useState<BangJobListItem[]>([]);
   const [bangHistoryTotal, setBangHistoryTotal] = useState<number>(0);
   
   // Set up axios instance (headers set per request)
@@ -432,7 +433,6 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       setClusters([]);
       setSectors([]);
 
-      console.log('Galaxy data cleared successfully');
     } catch (error) {
       console.error('Error clearing galaxy data:', error);
       setError('Failed to clear galaxy data');
@@ -469,9 +469,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   
   // Load sectors for visualization
   const loadSectors = async (): Promise<void> => {
-    console.log('loadSectors called - user:', user?.is_admin, 'galaxyState:', galaxyState?.id);
     if (!user || !user.is_admin || !galaxyState) {
-      console.log('loadSectors early return - missing user or galaxy');
       return;
     }
     
@@ -479,9 +477,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setError(null);
     
     try {
-      console.log('loadSectors: Making API call to /api/v1/admin/sectors');
       const response = await api.get<{sectors: SectorData[]}>('/admin/sectors');
-      console.log('loadSectors: Got response:', response.data);
       setSectors(response.data.sectors || []);
     } catch (error) {
       console.error('Error loading sectors:', error);
@@ -502,7 +498,6 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       const response = await api.get<{users: UserAccount[]}>('/admin/users', {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
-      console.log('loadUsers: Got response:', response.data);
       setUsers(response.data.users || []);
     } catch (error) {
       console.error('Error loading users:', error);
@@ -523,7 +518,6 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       const response = await api.get<{players: PlayerAccount[]}>('/admin/players', {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
-      console.log('loadPlayers: Got response:', response.data);
       setPlayers(response.data.players || []);
     } catch (error) {
       console.error('Error loading players:', error);
@@ -623,12 +617,12 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         setBangHistory(result.items ?? []);
         setBangHistoryTotal(result.total ?? 0);
       } catch (err) {
-        // History listing endpoint is planned but may not yet exist —
-        // degrade to an empty list rather than blocking the whole page.
+        // Endpoint is live (GET /admin/galaxy/jobs); surface real failures.
         console.error('Error loading bang history:', err);
         setBangHistory([]);
         setBangHistoryTotal(0);
         setError('Failed to load bang generation history');
+        throw err;
       } finally {
         setIsLoading(false);
       }

@@ -1,10 +1,9 @@
 /**
- * Thin axios wrappers around the five sw2102-bang admin endpoints.
+ * Thin axios wrappers around the sw2102-bang admin endpoints.
  *
  *   POST   /api/v1/admin/galaxy/jobs           — start a generation job
  *   POST   /api/v1/admin/galaxy/preview        — preview / validate only
- *   GET    /api/v1/admin/galaxy/jobs/{id}      — job detail
- *   GET    /api/v1/admin/galaxy/jobs?page=...  — history listing (planned)
+ *   GET    /api/v1/admin/galaxy/jobs?page=...  — history listing (BangJobListItem)
  *   DELETE /api/v1/admin/galaxy/{galaxy_id}    — hard-delete (typed-name)
  *
  * SSE log stream is *not* here — see `hooks/useBangGenerationStream.ts`
@@ -76,25 +75,11 @@ export async function previewBangConfig(
   return response.data;
 }
 
-/** GET /admin/galaxy/jobs/{id} — full job record. */
-export async function getBangJob(
-  jobId: string,
-  token: string | null,
-): Promise<BangJobResponse> {
-  const response = await api.get<BangJobResponse>(
-    `/admin/galaxy/jobs/${jobId}`,
-    { headers: authHeaders(token) },
-  );
-  return response.data;
-}
-
 /**
  * GET /admin/galaxy/jobs?page=&page_size= — paginated history.
  *
- * NOTE: as of Phase 3 the backend list endpoint is planned but not yet
- * implemented (see DOCS/PLANS/bang-integration.md § Phase 1D). The shape
- * below is what Phase 3 expects; the History component degrades to an
- * empty list if the endpoint 404s.
+ * Returns slim BangJobListItem rows (warning_count; no log_text /
+ * warnings_json). Detail + SSE remain on GET /jobs/{id}.
  */
 export async function listBangJobs(
   page: number,
