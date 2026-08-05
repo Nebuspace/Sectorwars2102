@@ -184,6 +184,10 @@ services:
       - NPC_SCHEDULER_ENABLED=${NPC_SCHEDULER_ENABLED:-false}
       # Duration compression for dev (1.0 in prod): construction days,
       # grace windows, slip tenures, takeover months all scale by this
+      # Genesis device formation wall-clock hours (code default 48).
+      # Forward so staged fast-test overrides (e.g. 0.03) reach the container
+      # on a clean stack — FINDINGS / WO-FIX-GENESIS-FORMATION-HOURS-COMPOSE-DRIFT.
+      - GENESIS_FORMATION_HOURS=${GENESIS_FORMATION_HOURS:-48}
       - GAME_TIME_SCALE=${GAME_TIME_SCALE:-1.0}
       - AI_PROVIDER_PRIMARY=${AI_PROVIDER_PRIMARY:-openai}
       - AI_PROVIDER_SECONDARY=${AI_PROVIDER_SECONDARY:-anthropic}
