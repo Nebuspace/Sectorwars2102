@@ -7,7 +7,7 @@ from typing import Dict, List, Any, Optional
 from pydantic import BaseModel
 
 from src.auth.admin_scopes import GALAXY_MANAGE
-from src.auth.dependencies import get_current_user, get_current_player, require_scope
+from src.auth.dependencies import get_current_user, require_scope
 from src.core.database import get_async_session, get_db
 from sqlalchemy.orm import Session
 from src.services.admin_action_log_service import log_admin_action

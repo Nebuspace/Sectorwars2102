@@ -10,7 +10,7 @@ from typing import Dict, Any, Optional, List
 from uuid import UUID
 from datetime import datetime, timedelta, UTC
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, func, text
+from sqlalchemy import and_, text
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.exc import OperationalError
 import logging
