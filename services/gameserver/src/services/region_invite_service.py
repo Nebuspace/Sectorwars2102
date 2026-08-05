@@ -46,7 +46,7 @@ import logging
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, Optional, Tuple
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.exc import IntegrityError

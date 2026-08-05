@@ -12,18 +12,14 @@ from typing import List, Dict, Any, Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, or_, desc
 from sqlalchemy.orm import selectinload
-import asyncio
-import json
 import statistics
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from enum import Enum
 
 from src.models.ai_trading import (
     AIMarketPrediction, 
     PlayerTradingProfile, 
-    AIRecommendation, 
-    AIModelPerformance, 
-    AITrainingData
+    AIRecommendation
 )
 from src.models.player import Player
 from src.models.sector import Sector, sector_warps
@@ -361,7 +357,7 @@ class AITradingService:
         profile = PlayerTradingProfile(
             player_id=player.id,
             risk_tolerance=0.5,  # Start with moderate risk
-            ai_assistance_level='medium',
+            ai_assistance_level='standard',
             trading_patterns={},
             performance_metrics={},
             notification_preferences={

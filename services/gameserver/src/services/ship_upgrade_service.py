@@ -18,35 +18,39 @@ from src.models.ship import Ship, ShipType, ShipSpecification, UpgradeType
 logger = logging.getLogger(__name__)
 
 
-# SHIP-MODS WO-SM-3 STEP 4 — the four EQUIPMENT-FAMILY module classes whose
-# legacy effects are consumed out of the equipment_slots JSONB (by their EXISTING
+# SHIP-MODS WO-SM-3 STEP 4 — equipment-family module classes whose legacy
+# effects are consumed out of equipment_slots JSONB (by their EXISTING
 # consumers), NOT from a scalar Ship column. Their effects ARE baked/tracked in
-# Ship.modules["_baked"] by _apply_module_effects, but persisting them into the
-# equipment_slots key each consumer reads is DEFERRED to a follow-up WO (see the
-# rationale in install_module). Until then a module of one of these classes is
-# fitted-and-baked but runtime-INERT — install_module/remove_module surface
-# ``consumer_inert: True`` so the UI can warn the player.
+# Ship.modules["_baked"] by _apply_module_effects. install_module surfaces
+# ``consumer_inert: True`` only for classes still in the set below.
 #
-# WHY DEFERRED (not wired here) — flagged for the orchestrator/Max:
-#   * harvester (passive_income): get_passive_income() keys off the literal
-#     EQUIPMENT_DEFINITIONS slug ("quantum_harvester") and reads the CATALOG
-#     effect, not a stored slot value. A synthetic module key is unrecognized
-#     (silently 0); writing the literal "quantum_harvester" key COLLIDES with
-#     install_equipment's own slot, the npc_scheduler daily-credit anchor logic,
-#     and the legacy "is the equipment installed?" detection. Wiring it correctly
-#     needs a consumer change (a new module-aware passive-income source), which is
-#     out of SM-3's no-new-consumer scope.
-#   * lander/mining/tractor (landing_bonus / mining_efficiency / tow_capable /
-#     weapon_mode): get_equipment_effects() MERGES numeric effects ADDITIVELY
-#     across all equipment_slots entries, but each consumer reads landing_bonus /
-#     mining_efficiency as a SINGLE multiplicative factor and tow_capable /
-#     weapon_mode as a presence flag. A synthetic module slot would (a) double-
-#     count against a same-family legacy equipment a player also owns (1.25+1.25),
-#     and (b) deliver the UNTIERED/un-supercharged catalog value, not the baked
-#     tier value. Writing that key would make the module WORK WRONG — STEP 4 says
-#     do not write a wrong key. Correct wiring needs a module-aware effect source
-#     the consumers read (a follow-up WO).
-_EQUIPMENT_FAMILY_DEFERRED = frozenset({"harvester", "lander", "mining", "tractor"})
+# harvester (passive_income): WO residual (2) wired get_passive_income to ALSO
+# read Ship.modules["_baked"]["passive_income"] — no equipment_slots write, so
+# no collision with install_equipment("quantum_harvester") / npc_scheduler.
+# WO-QUANTUM-HARVESTER-MODULE-LATTICE-WIRING: lattice harvester install/remove
+# also syncs Ship.quantum_harvester_slot (QR2 harvest gate) via
+# _sync_quantum_harvester_slot — same flag the equipment path flips.
+#
+# WO-BUILD-LANDER-MINING-TRACTOR-CONSUMER-WIRING: lander (landing_bonus) and
+# tractor (tow_capable / weapon_mode) are now wired — get_combined_effects()
+# merges the module-lattice's baked/presence values with the legacy
+# equipment_slots values (max-of-both for numeric, either-truthy for presence,
+# never additive, so a ship carrying both sources of the same family never
+# double-counts). planets.py (landing_bonus), tow_service.py (tow_capable), and
+# combat_service.py (weapon_mode) now read get_combined_effects() instead of
+# get_equipment_effects() directly.
+#
+# mining STAYS deferred — flagged for the orchestrator:
+#   * mining_efficiency: canon (economy/mining.md §41) says the legacy
+#     mining_laser's mining_efficiency is consumed via a laser-LEVEL (0-3)
+#     ladder that indexes mining_service.py's `_YIELD_MATRIX` directly — there
+#     is no `level` concept on a lattice module (only Mk I/II/III with an
+#     independently-scaled multiplier: 1.5× / 2.4× / 3.84×, vs the ladder's
+#     1.25× / 1.5× / 2.0×) and no canon mapping from a module tier onto a
+#     laser_col matrix index. Wiring it would require GUESSING that mapping —
+#     a follow-up WO with a NO-CANON ruling on the tier↔laser_col
+#     correspondence (or a parallel yield path) is needed first.
+_EQUIPMENT_FAMILY_DEFERRED = frozenset({"mining"})
 
 # ============================================================================
 # GALACTIC-CITIZEN tier (WO-GC-B). The Citizen tier is DATA + an eligibility
@@ -201,7 +205,9 @@ class ShipUpgradeService:
         "quantum_harvester": {
             "name": "Quantum Harvester",
             "description": "Harvests quantum particles from space, providing passive income",
-            "cost": 25000,
+            # CANON (sw2102-docs FEATURES/galaxy/quantum-resources.md): 50,000 cr.
+            # Prior 25,000 was initial-impl / 1:1 SHIP-MODS port — not a deliberate retune.
+            "cost": 50000,
             "compatible_ships": [ShipType.SCOUT_SHIP, ShipType.FAST_COURIER, ShipType.DEFENDER, ShipType.WARP_JUMPER],
             "effects": {"passive_income": 100}
         },
@@ -238,6 +244,32 @@ class ShipUpgradeService:
             "cost": 40000,
             "compatible_ships": [ShipType.CARGO_HAULER, ShipType.DEFENDER, ShipType.CARRIER, ShipType.WARP_JUMPER],
             "effects": {"tow_capable": True, "weapon_mode": "tractor"}
+        },
+        # Combat-class tactical equipment (ship-systems.md §2.6 / §3):
+        # weapons stay hull-signature (attack_rating fixed at purchase); equipment
+        # offers tactical modifiers (ECM, stealth), NEVER raw firepower.
+        # Costs [NO-CANON — launch values; flag for bless]. Compatible-ship lists
+        # mirror the combat/utility hulls named in the planned-equipment prose.
+        "ecm_suite": {
+            "name": "ECM Suite",
+            "description": "Electronic countermeasures that degrade incoming fire accuracy",
+            "cost": 45000,
+            "compatible_ships": [
+                ShipType.SCOUT_SHIP, ShipType.DEFENDER, ShipType.CARRIER, ShipType.WARP_JUMPER,
+            ],
+            # Fraction subtracted from the opponent's hit_chance when THIS ship
+            # is the defender. combat_service applies it at the hit roll.
+            "effects": {"ecm_hit_penalty": 0.15},
+        },
+        "stealth_module": {
+            "name": "Stealth Module",
+            "description": "Signature dampers that raise effective evasion in combat",
+            "cost": 40000,
+            "compatible_ships": [
+                ShipType.SCOUT_SHIP, ShipType.FAST_COURIER, ShipType.WARP_JUMPER,
+            ],
+            # Flat evasion points folded into _calculate_ship_defense.
+            "effects": {"stealth_evasion_bonus": 15},
         },
     }
 
@@ -425,25 +457,24 @@ class ShipUpgradeService:
             "name": "Cargo Module",
             "description": "Increases cargo capacity (consumed via effective_cargo_capacity).",
         },
-        # drone: STILL INERT. The drone_capacity_bonus bake has no scalar Ship
-        # column, and the live consumer (drone_service._drone_bay_bonus) reads the
-        # Drone Bay level out of Ship.upgrades[DRONE_BAY] — the legacy UpgradeType
-        # JSONB — NOT the module bake. So a drone MODULE is fitted-and-baked but its
-        # capacity bonus is never read. Making it live needs a module-aware
-        # drone-capacity source (a separate WO); kept `inert` until then.
+        # drone: now CONSUMED. drone_service._drone_bay_bonus reads BOTH the legacy
+        # Ship.upgrades[DRONE_BAY] level AND Ship.modules["_baked"].drone_capacity_bonus,
+        # summed additively (mirrors the cargo/genesis legacy+module stacking pattern).
+        # The `inert` marker is therefore removed — the module's effect is live.
         "drone": {
             "base_cost": 10000,
             "base_effects": {"drone_capacity_bonus": 2},
             "compatible_ships": None,
             "requires": None,
             "slot_class": None,
-            "inert": True,  # [NO-CANON] module bake unread — consumer reads Ship.upgrades[DRONE_BAY], not the bake
             "name": "Drone Bay Module",
-            "description": "Increases drone capacity (module bake NOT yet consumed — consumer reads the legacy upgrade level; wiring is a separate WO).",
+            "description": "Increases drone capacity (consumed via drone_service._drone_bay_bonus).",
         },
         # --- ported from EQUIPMENT_DEFINITIONS (the 4 player equipment plug-ins) ---
         "harvester": {
-            "base_cost": 25000,
+            # CANON (quantum-resources.md): 50,000 cr — kept in lockstep with
+            # EQUIPMENT_DEFINITIONS["quantum_harvester"]["cost"].
+            "base_cost": 50000,
             "base_effects": {"passive_income": 100},
             # Mirrors quantum_harvester compatible_ships.
             "compatible_ships": [
@@ -497,6 +528,31 @@ class ShipUpgradeService:
             "slot_class": "combat",
             "name": "Tractor Beam Module",
             "description": "Dual-use tractor: combat escape-denial (no damage) + ship-tow rig.",
+        },
+        # Combat tactical equipment (ship-systems.md §2.6) — ECM / stealth,
+        # NOT raw firepower. slot_class "combat" matches tractor's tactical face.
+        "ecm": {
+            "base_cost": 45000,
+            "base_effects": {"ecm_hit_penalty": 0.15},
+            "compatible_ships": [
+                ShipType.SCOUT_SHIP, ShipType.DEFENDER,
+                ShipType.CARRIER, ShipType.WARP_JUMPER,
+            ],
+            "requires": None,
+            "slot_class": "combat",
+            "name": "ECM Suite Module",
+            "description": "Electronic countermeasures that degrade incoming fire accuracy.",
+        },
+        "stealth": {
+            "base_cost": 40000,
+            "base_effects": {"stealth_evasion_bonus": 15},
+            "compatible_ships": [
+                ShipType.SCOUT_SHIP, ShipType.FAST_COURIER, ShipType.WARP_JUMPER,
+            ],
+            "requires": None,
+            "slot_class": "combat",
+            "name": "Stealth Module",
+            "description": "Signature dampers that raise effective evasion in combat.",
         },
     }
 
@@ -657,25 +713,24 @@ class ShipUpgradeService:
 
     @staticmethod
     def get_passive_income(ship) -> int:
-        """Total per-period passive_income a ship's installed equipment grants.
+        """Total per-period passive_income a ship's installed equipment + modules grant.
 
-        Read-only. Authoritative source is EQUIPMENT_DEFINITIONS keyed by the
-        equipment actually installed in the ship's equipment_slots JSONB — NOT
-        the effects snapshot stored on the slot at install time — so a future
-        re-tuning of the canonical passive_income figure (e.g. a DECISIONS.md
-        ruling) takes effect for already-equipped ships without a backfill. If a
-        ship carries the effect via MULTIPLE equipment sources, their
-        passive_income values are SUMMED. Returns 0 when the ship carries no
-        passive_income equipment (the common case), so the idle-income sweep
-        skips it cleanly.
+        Read-only. Two additive sources (no double-write collision):
 
-        Used by npc_scheduler_service's daily idle-income credit-grant sweep
-        (ship-systems.md §passive_income: "applied per-tick by an idle-income
-        job"). Magnitude/cadence are NO-CANON (the doc marks the effect
-        📐 Design-only) — flagged for the orchestrator.
+        1. EQUIPMENT_DEFINITIONS keyed by equipment_slots JSONB keys (catalog
+           re-read so retunes apply without backfill) — typically
+           ``quantum_harvester``.
+        2. Ship.modules["_baked"]["passive_income"] — tiered totals already
+           summed by _apply_module_effects for installed harvester-family
+           modules (WO residual (2)). Does NOT write equipment_slots.
+
+        Returns 0 when neither source contributes, so the idle-income sweep
+        skips cleanly. Used by npc_scheduler_service's daily idle-income
+        credit-grant sweep. Magnitude/cadence are NO-CANON (ship-systems.md
+        §passive_income is 📐 Design-only).
         """
-        equipment_slots = getattr(ship, "equipment_slots", None) or {}
         total = 0
+        equipment_slots = getattr(ship, "equipment_slots", None) or {}
         for eq_key in equipment_slots.keys():
             eq_def = ShipUpgradeService.EQUIPMENT_DEFINITIONS.get(eq_key)
             if not eq_def:
@@ -683,7 +738,37 @@ class ShipUpgradeService:
             value = eq_def.get("effects", {}).get("passive_income")
             if isinstance(value, (int, float)):
                 total += int(value)
+
+        modules = getattr(ship, "modules", None) or {}
+        baked = modules.get("_baked") if isinstance(modules, dict) else None
+        if isinstance(baked, dict):
+            baked_pi = baked.get("passive_income")
+            if isinstance(baked_pi, (int, float)):
+                total += int(baked_pi)
         return total
+
+    @staticmethod
+    def _sync_quantum_harvester_slot(ship) -> bool:
+        """Set ``Ship.quantum_harvester_slot`` from equipment OR lattice modules.
+
+        True when either ``equipment_slots`` carries ``quantum_harvester`` or any
+        installed module record has ``class == "harvester"``. Used by the QR2
+        harvest gate (quantum_service) so lattice-only fits are not invisible.
+        Returns the new flag value.
+        """
+        equipment_slots = getattr(ship, "equipment_slots", None) or {}
+        if "quantum_harvester" in equipment_slots:
+            ship.quantum_harvester_slot = True
+            return True
+        modules = getattr(ship, "modules", None) or {}
+        installed = modules.get("installed") if isinstance(modules, dict) else None
+        if isinstance(installed, dict):
+            for record in installed.values():
+                if isinstance(record, dict) and record.get("class") == "harvester":
+                    ship.quantum_harvester_slot = True
+                    return True
+        ship.quantum_harvester_slot = False
+        return False
 
     @staticmethod
     def get_equipment_effects(ship) -> Dict[str, Any]:
@@ -705,6 +790,58 @@ class ShipUpgradeService:
                         merged[effect_name] = effect_value
                 else:
                     merged[effect_name] = effect_value
+        return merged
+
+    @staticmethod
+    def get_module_effects(ship) -> Dict[str, Any]:
+        """Read the module-lattice's equipment-family effects: the baked
+        multiplicative totals (``landing_bonus``) already tier/supercharge-scaled
+        by ``_apply_module_effects``, plus the tractor's presence flags
+        (``tow_capable`` / ``weapon_mode``) read directly off ``installed`` slot
+        records (never baked into ``_baked`` — see ``_apply_module_effects``
+        step 5). ``mining_efficiency`` is intentionally NOT surfaced here — see
+        ``_EQUIPMENT_FAMILY_DEFERRED``. Returns ``{}`` for a ship with no
+        ``modules`` JSONB."""
+        modules = getattr(ship, "modules", None)
+        if not isinstance(modules, dict):
+            return {}
+        effects: Dict[str, Any] = {}
+        baked = modules.get("_baked")
+        if isinstance(baked, dict):
+            v = baked.get("landing_bonus")
+            if isinstance(v, (int, float)) and v > 0:
+                effects["landing_bonus"] = v
+        installed = modules.get("installed")
+        if isinstance(installed, dict):
+            for m in installed.values():
+                if isinstance(m, dict) and m.get("class") == "tractor":
+                    effects["tow_capable"] = True
+                    effects["weapon_mode"] = "tractor"
+                    break
+        return effects
+
+    @staticmethod
+    def get_combined_effects(ship) -> Dict[str, Any]:
+        """Merge legacy ``equipment_slots`` effects with module-lattice effects
+        for the equipment-family keys (``landing_bonus`` / ``tow_capable`` /
+        ``weapon_mode``) — the two install paths for the SAME mechanic.
+
+        Never additive (that would double-count a ship carrying both a legacy
+        equipment_slot AND a lattice module of the same family — see the
+        class-level DEFERRED note): numeric multiplicative keys take the max of
+        the two sources; presence/string keys take either source being truthy.
+        ``mining_efficiency`` is deliberately excluded — the lattice ``mining``
+        module has no canon-specified mapping onto the laser-level yield-matrix
+        ladder ``mining_service.py`` actually consumes (see
+        ``_EQUIPMENT_FAMILY_DEFERRED``); callers that need it should keep using
+        ``get_equipment_effects`` directly."""
+        merged = dict(ShipUpgradeService.get_equipment_effects(ship))
+        for key, mv in ShipUpgradeService.get_module_effects(ship).items():
+            ev = merged.get(key)
+            if isinstance(mv, (int, float)) and isinstance(ev, (int, float)):
+                merged[key] = max(ev, mv)
+            elif mv:
+                merged.setdefault(key, mv)
         return merged
 
     def __init__(self, db: Session):
@@ -1152,19 +1289,21 @@ class ShipUpgradeService:
             updated["max_genesis_devices"] = ship.max_genesis_devices
 
         # EQUIPMENT-FAMILY effects (harvester.passive_income / lander.landing_bonus
-        # / mining.mining_efficiency) + drone.drone_capacity_bonus are KERNEL-INERT
-        # here (reviewer SM-2 HIGH gate-fix). Unlike engine/shield/hull/sensor/
-        # maintenance/genesis (which write real scalar/JSONB stat columns above),
-        # these four have NO scalar column on the Ship model — their legacy
-        # consumers read them out of the equipment_slots JSONB that install_equipment
-        # writes (quantum_service passive income, the landing/mining/tow paths). The
-        # earlier draft wrote ship.passive_income/landing_bonus/mining_efficiency,
-        # which DO NOT EXIST on Ship → silent hasattr no-ops (the HIGH). Rather than
-        # ship a misleading dead write, the kernel tracks these totals in _baked
-        # (below) — a correct, re-tune-safe snapshot — and DEFERS their consumer
-        # persistence to WO-SM-3, which wires install_module + writes each
-        # equipment-family effect into the equipment_slots key its existing consumer
-        # already reads (no new consumer, no double-count vs install_equipment).
+        # / mining.mining_efficiency) here have NO scalar column on the Ship model
+        # (reviewer SM-2 HIGH gate-fix) — their legacy consumers read them out of
+        # the equipment_slots JSONB that install_equipment writes (quantum_service
+        # passive income, the landing/mining/tow paths). The earlier draft wrote
+        # ship.passive_income/landing_bonus/mining_efficiency, which DO NOT EXIST
+        # on Ship → silent hasattr no-ops (the HIGH). Rather than ship a misleading
+        # dead write, the kernel tracks these totals in _baked (below) — a correct,
+        # re-tune-safe snapshot — and DEFERS their consumer persistence to WO-SM-3,
+        # which wires install_module + writes each equipment-family effect into the
+        # equipment_slots key its existing consumer already reads (no new consumer,
+        # no double-count vs install_equipment).
+        # drone.drone_capacity_bonus is tracked here the same way (also no scalar
+        # column) but IS already consumed: drone_service._drone_bay_bonus reads
+        # Ship.modules["_baked"]["drone_capacity_bonus"] directly and sums it with
+        # the legacy upgrade level.
         # Surfaced in `updated` for observability so SM-3's bake-correctness test can
         # assert the tracked totals.
         for _inert_key in (
@@ -1427,9 +1566,10 @@ class ShipUpgradeService:
         }
         flag_modified(ship, 'equipment_slots')
 
-        # WO-DBB-QR1: the Quantum Harvester flips the dedicated slot flag (prereq for QR2).
+        # WO-DBB-QR1 + WO-QUANTUM-HARVESTER-MODULE-LATTICE-WIRING: keep the
+        # dedicated slot flag in sync with equipment AND lattice harvester fits.
         if equipment_key == "quantum_harvester":
-            ship.quantum_harvester_slot = True
+            self._sync_quantum_harvester_slot(ship)
 
         self.db.flush()
 
@@ -1448,8 +1588,10 @@ class ShipUpgradeService:
         }
 
     def uninstall_equipment(self, ship_id: uuid.UUID, player_id: uuid.UUID, equipment_key: str) -> Dict[str, Any]:
-        """
-        Uninstall a piece of equipment from a ship. No credit refund.
+        """Uninstall equipment and refund ``int(catalog_cost × SALVAGE_FRACTION)``.
+
+        CANON (quantum-resources.md Quantum Field Harvester): removable, refunds
+        25% of purchase cost. Same salvage fraction as module remove_module.
         """
         ship, player, error = self._get_ship_and_player(ship_id, player_id)
         if error:
@@ -1466,25 +1608,34 @@ class ShipUpgradeService:
 
         eq_def = self.EQUIPMENT_DEFINITIONS.get(equipment_key, {})
         eq_name = eq_def.get("name", equipment_key)
+        cost = int(eq_def.get("cost", 0) or 0)
+        refund = int(cost * self.SALVAGE_FRACTION)
 
         # Remove from equipment_slots JSONB
         del ship.equipment_slots[equipment_key]
         flag_modified(ship, 'equipment_slots')
 
-        # WO-DBB-QR1: removing the Quantum Harvester clears the slot flag.
+        # WO-DBB-QR1 + WO-QUANTUM-HARVESTER-MODULE-LATTICE-WIRING: recompute
+        # from remaining equipment / lattice (lattice harvester may still be fitted).
         if equipment_key == "quantum_harvester":
-            ship.quantum_harvester_slot = False
+            self._sync_quantum_harvester_slot(ship)
+
+        if refund > 0:
+            player.credits += refund
 
         self.db.flush()
 
         logger.info(
-            f"Player {player_id} uninstalled {eq_name} from ship {ship.name} (no refund)"
+            "Player %s uninstalled %s from ship %s (refund %s credits)",
+            player_id, eq_name, ship.name, f"{refund:,}",
         )
 
         return {
             "success": True,
-            "message": f"{eq_name} uninstalled (no credit refund)",
+            "message": f"{eq_name} uninstalled (salvage refund {refund:,} cr)",
             "equipment": equipment_key,
+            "refund": refund,
+            "remaining_credits": player.credits,
         }
 
     def purchase_mining_laser_upgrade(
@@ -1650,12 +1801,17 @@ class ShipUpgradeService:
             return {"success": False, "message": f"Unknown module: {module_class} Mk{tier}"}
 
         # --- deferred equipment-family guard (reviewer LOW#2 fix) ---
-        # harvester/lander/mining/tractor bake into Ship.modules["_baked"] but their
-        # effect is NOT yet wired to its equipment_slots consumer (the deferred MED) —
-        # so installing one would CHARGE 20-40k cr for a runtime-INERT module (a
-        # pay-for-nothing trap). Block install until the consumer-wiring follow-up
-        # lands; the family stays catalog-LISTED (get_ship_modules / the UI can show
-        # it as "coming soon") so it surfaces for when it's unblocked.
+        # A class still in _EQUIPMENT_FAMILY_DEFERRED bakes into
+        # Ship.modules["_baked"] but has no wired consumer yet — installing it
+        # would CHARGE credits for a runtime-INERT module (a pay-for-nothing
+        # trap). Block install until the consumer-wiring follow-up lands; the
+        # family stays catalog-LISTED (get_ship_modules / the UI can show it as
+        # "coming soon") so it surfaces for when it's unblocked.
+        # harvester: residual (2) wired get_passive_income to _baked.
+        # lander/tractor: WO-BUILD-LANDER-MINING-TRACTOR-CONSUMER-WIRING wired
+        # get_combined_effects() into planets.py / tow_service.py /
+        # combat_service.py. Only mining remains deferred (see the class-level
+        # note above _EQUIPMENT_FAMILY_DEFERRED).
         if module_class in _EQUIPMENT_FAMILY_DEFERRED:
             return {
                 "success": False,
@@ -1758,6 +1914,10 @@ class ShipUpgradeService:
         updated_stats = self._apply_module_effects(ship)
         flag_modified(ship, "modules")
 
+        # Lattice harvester must flip QR2's dedicated slot flag (same as equipment path).
+        if module_class == "harvester":
+            self._sync_quantum_harvester_slot(ship)
+
         self.db.flush()
 
         logger.info(
@@ -1774,10 +1934,10 @@ class ShipUpgradeService:
             "remaining_credits": player.credits,
             "updated_stats": updated_stats,
         }
-        # EQUIPMENT-FAMILY families (harvester/lander/mining/tractor) are baked but
-        # NOT yet wired to their equipment_slots consumers — see the class-level
-        # note + _apply_module_effects. Surface the deferral so the caller/UI can
-        # warn the player the module is install-but-inert.
+        # mining is still deferred — see the class-level note above
+        # _EQUIPMENT_FAMILY_DEFERRED. Surface it so the caller/UI can warn the
+        # player the module is install-but-inert. harvester/lander/tractor are
+        # all live and not in _EQUIPMENT_FAMILY_DEFERRED.
         if module_class in _EQUIPMENT_FAMILY_DEFERRED:
             result["consumer_inert"] = True
             result["consumer_note"] = (
@@ -1835,6 +1995,10 @@ class ShipUpgradeService:
         ship.modules = modules  # same dict, "_baked" intact
         updated_stats = self._apply_module_effects(ship)
         flag_modified(ship, "modules")
+
+        # Recompute QR2 flag — equipment quantum_harvester may still keep it true.
+        if module_class == "harvester":
+            self._sync_quantum_harvester_slot(ship)
 
         if refund > 0:
             player.credits += refund

@@ -6,11 +6,11 @@ and coordination between multiple ships in organized formations.
 """
 
 from typing import List, Optional, Dict, Any, Tuple, TYPE_CHECKING
-from uuid import UUID, uuid4
-from datetime import datetime, timedelta
+from uuid import UUID
+from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
-from sqlalchemy import and_, or_, func
+from sqlalchemy import and_, or_
 import random
 import logging
 
@@ -23,7 +23,6 @@ from src.models.player import Player
 from src.models.team import Team
 from src.models.treasury_transaction import TreasuryTransaction
 from src.models.sector import Sector
-from src.models.combat_log import CombatLog, CombatOutcome
 
 if TYPE_CHECKING:
     # Forward-ref-only imports for type annotations — resolved at runtime via
@@ -32,6 +31,47 @@ if TYPE_CHECKING:
     from src.services.personal_reputation_service import PersonalReputationService
 
 logger = logging.getLogger(__name__)
+
+# Fleet-tactics.md Scout role (WO-FLEET-SUPPORT-SCOUT-COMBAT-WIRING):
+# +10% first-shot (round 1 outgoing), −5% defense (incoming). Support
+# (+5% repair regen) deferred — needs an in-battle repair mechanic.
+SCOUT_FIRST_SHOT_MULT = 1.10
+SCOUT_DEFENSE_PENALTY_MULT = 1.05  # takes 5% more when targeted
+DEFENDER_ABSORPTION_MULT = 0.90    # existing Defender +10% absorption
+
+# In-battle repair mechanic (WO-BUILD-FLEET-SUPPORT-REPAIR-MECHANIC). No
+# in-battle regen mechanic previously existed AT ALL — fleet-tactics.md only
+# documents Support's "+5% repair regen to nearby members" MODIFIER, with no
+# base rate for it to modify. NO-CANON: BASE_REPAIR_REGEN_PCT is a
+# conservative invented baseline (2% of max_hull/round — slow enough that
+# repair alone can't out-heal sustained fire from an average ship's
+# attack_rating, matching the existing Defender/Scout multipliers' "meaningful
+# but not dominant" scale) flagged for a DECISIONS.md ruling. SUPPORT_REPAIR_
+# REGEN_MULT (+5%) IS canon-given; applied multiplicatively on the base rate,
+# mirroring how DEFENDER_ABSORPTION_MULT/SCOUT_DEFENSE_PENALTY_MULT are
+# multiplicative rather than additive. "Nearby members" has no positional/
+# distance system in fleet battles (ships don't have in-battle coordinates) —
+# interpreted as "any other active Support-role ship in the same fleet",
+# scoped fleet-wide like every other role bonus in this module.
+BASE_REPAIR_REGEN_PCT = 0.02
+SUPPORT_REPAIR_REGEN_MULT = 1.05
+
+
+def scout_outgoing_mult(role: Optional[str], is_first_round: bool) -> float:
+    """Outgoing damage multiplier for Scout first-shot (pure helper)."""
+    if is_first_round and (role or "") == FleetRole.SCOUT.value:
+        return SCOUT_FIRST_SHOT_MULT
+    return 1.0
+
+
+def role_incoming_damage_mult(role: Optional[str]) -> float:
+    """Incoming damage multiplier from fleet role (Defender absorb / Scout soft)."""
+    r = role or ""
+    if r == FleetRole.DEFENDER.value:
+        return DEFENDER_ABSORPTION_MULT
+    if r == FleetRole.SCOUT.value:
+        return SCOUT_DEFENSE_PENALTY_MULT
+    return 1.0
 
 
 class FleetService:
@@ -864,7 +904,7 @@ class FleetService:
         # Player-then-Team, the REVERSE of team_service.py's own internal
         # Team-then-Player order (deposit_to_treasury / withdraw_from_
         # treasury / transfer_to_player) and this codebase's documented
-        # resource-before-player deadlock contract (trading.py:513,
+        # resource-before-player deadlock contract (trading.py:1016,
         # planet_grid.py:245, auth.py:549). A concurrent team-treasury call
         # from a player who is also a kill-reward participant/target is a
         # real, player-triggerable AB-BA deadlock on the ordinary attrition-
@@ -962,7 +1002,9 @@ class FleetService:
         # Attackers fire at defenders
         for ship in attacker_ships:
             if random.random() < 0.7 and defender_ships:  # 70% hit chance
-                damage = self._calculate_ship_damage(ship, attacker_bonus, attacker)
+                damage = self._calculate_ship_damage(
+                    ship, attacker_bonus, attacker, is_first_round=(round_number == 1)
+                )
                 target = random.choice(defender_ships)
                 target_destroyed = self._apply_damage_to_ship(target, damage, battle, round_results)
                 round_results["attacker_damage"] += damage
@@ -981,7 +1023,9 @@ class FleetService:
         # Defenders return fire at attackers
         for ship in active_defender_ships:
             if random.random() < 0.7 and attacker_ships:  # 70% hit chance
-                damage = self._calculate_ship_damage(ship, defender_bonus, defender)
+                damage = self._calculate_ship_damage(
+                    ship, defender_bonus, defender, is_first_round=(round_number == 1)
+                )
                 target = random.choice(attacker_ships)
                 target_destroyed = self._apply_damage_to_ship(target, damage, battle, round_results)
                 round_results["defender_damage"] += damage
@@ -990,6 +1034,17 @@ class FleetService:
                 })
                 # Remove destroyed ships mid-round
                 attacker_ships = [s for s in attacker_ships if (self._get_ship_combat_stat(s, "hull", 0) or 0) > 0]
+
+        # End-of-round repair regen (fleet-tactics.md Support role — WO-BUILD-
+        # FLEET-SUPPORT-REPAIR-MECHANIC). Re-queries active ships fresh from
+        # each Fleet's membership rather than trusting the loop-local
+        # attacker_ships/defender_ships lists (which were mutated in-place
+        # above and may be stale for either side depending on kill order) —
+        # same discipline as attacker_remaining/defender_remaining below.
+        if attacker:
+            self._apply_round_repair(attacker, self._get_active_fleet_ships(attacker))
+        if defender:
+            self._apply_round_repair(defender, self._get_active_fleet_ships(defender))
 
         # Update battle damage statistics
         battle.attacker_damage_dealt = (battle.attacker_damage_dealt or 0) + round_results["attacker_damage"]
@@ -1137,19 +1192,39 @@ class FleetService:
                     active.append(member.ship)
         return active
 
-    # DEPRECATED + REMOVED — Fleet.morale is now FULLY INERT in combat
-    # (WO-BS2, reverts WO-AS). The former ``_morale_factor`` helper mapped
-    # Fleet.morale to an outer ``(1 + morale_modifier)`` combat multiplier
-    # (ADR-0061 S-I3). Max ruled the combat-morale coupling CUT entirely — the
-    # ADR-0061 morale clause is retired. WO-BS removed the damage coupling (this
-    # helper + its attack/defense applications) and the per-round attrition
-    # decrement; WO-BS2 removed the LAST residual coupling — the battle-DURATION
-    # path — by deleting the flagship -30, the post-battle -20, and the < 20
-    # morale-collapse battle-end check. The combat path now writes/reads
-    # Fleet.morale NOWHERE (identical battle outcome AND duration at morale
-    # 100 / 50 / 0). The Fleet.morale COLUMN is intentionally kept
-    # (non-destructive, no migration) but is cosmetic only — touched solely by
-    # the admin adjust helper (another file) for display.
+    def _apply_round_repair(self, fleet: Fleet, active_ships: List[Ship]) -> None:
+        """End-of-round in-battle hull regen (fleet-tactics.md Support role).
+        Every active ship in ``fleet`` regenerates BASE_REPAIR_REGEN_PCT of
+        its max_hull, clamped to max_hull; the whole fleet's regen is boosted
+        by SUPPORT_REPAIR_REGEN_MULT if ANY active ship in the fleet is
+        currently crewed by a Support-role member (fleet-wide, not per-ship —
+        see the module-level NO-CANON note on "nearby"). Runs AFTER both fire
+        exchanges (destroyed ships are already excluded from ``active_ships``,
+        so repair can never revive a kill this round). No-op on an empty
+        fleet."""
+        if not active_ships:
+            return
+
+        active_ids = [s.id for s in active_ships]
+        has_support = self.db.query(FleetMember.id).filter(
+            FleetMember.fleet_id == fleet.id,
+            FleetMember.ship_id.in_(active_ids),
+            FleetMember.role == FleetRole.SUPPORT.value,
+        ).first() is not None
+        regen_mult = SUPPORT_REPAIR_REGEN_MULT if has_support else 1.0
+
+        for ship in active_ships:
+            max_hull = self._get_ship_combat_stat(ship, "max_hull", 0)
+            current_hull = self._get_ship_combat_stat(ship, "hull", 0)
+            if max_hull <= 0 or current_hull <= 0 or current_hull >= max_hull:
+                continue
+            regen = int(max_hull * BASE_REPAIR_REGEN_PCT * regen_mult)
+            if regen <= 0:
+                continue
+            self._set_ship_combat_stat(ship, "hull", min(max_hull, current_hull + regen))
+
+    # Fleet.morale combat coupling fully removed (WO-BS2, ADR-0061) -- column
+    # kept, cosmetic only, see git history.
 
     def _calculate_formation_bonus(self, fleet: Fleet) -> Dict[str, float]:
         """
@@ -1200,6 +1275,7 @@ class FleetService:
         ship: Ship,
         fleet_bonus: Dict[str, float],
         fleet: Optional[Fleet] = None,
+        is_first_round: bool = False,
     ) -> int:
         """
         Calculate damage output for a ship.
@@ -1213,6 +1289,7 @@ class FleetService:
             final = base
                   × formation_attack          # formation + supply only
                   × (1 + coordination_bonus)   # static, ADR-0061 S-I3
+                  × scout_first_shot          # +10% if Scout role on round 1
                   × variance
         MORALE WAS REMOVED from this stack (WO-BS, reverts WO-AS; ADR-0061 S-I3
         morale clause retired per Max): combat damage no longer depends on
@@ -1230,6 +1307,11 @@ class FleetService:
         if fleet is not None:
             coordination_bonus = max(0.0, fleet.coordination_bonus or 0.0)
         damage = int(damage * (1 + coordination_bonus))
+
+        # Scout role: +10% first-shot on round 1 (fleet-tactics.md).
+        member = self.db.query(FleetMember).filter(FleetMember.ship_id == ship.id).first()
+        role = member.role if member else None
+        damage = int(damage * scout_outgoing_mult(role, is_first_round))
 
         # Random variance +/- 20%
         damage = int(damage * random.uniform(0.8, 1.2))
@@ -1267,10 +1349,9 @@ class FleetService:
             # full incoming damage.
             if defense_bonus > 0:
                 damage = max(1, int(damage / defense_bonus))
-            # Defender role: +10% damage absorption when targeted
-            # (fleet-tactics.md role assignments).
-            if (member.role or "") == FleetRole.DEFENDER.value:
-                damage = max(1, int(damage * 0.9))
+            # Role incoming modifiers (fleet-tactics.md):
+            # Defender +10% absorption (*0.9); Scout −5% defense (*1.05).
+            damage = max(1, int(damage * role_incoming_damage_mult(member.role)))
 
         current_shields = self._get_ship_combat_stat(ship, "shields", 0)
         current_hull = self._get_ship_combat_stat(ship, "hull", 0)

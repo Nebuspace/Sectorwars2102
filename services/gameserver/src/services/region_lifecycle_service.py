@@ -26,13 +26,19 @@ the caller (economy_governance_sweeps._run_region_lifecycle_advance_gated,
 Phase 7 of the daily governance sweep) owns the commit.
 """
 import logging
-from datetime import datetime, timedelta, UTC
+from datetime import UTC, datetime, timedelta
 from typing import Dict, Optional
 
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
+from src.models.planet import Planet
 from src.models.region import Region, RegionStatus
+from src.services.region_termination_cascade_service import (
+    dispatch_station_termination,
+    process_planet_termination,
+)
+from src.services.warp_gate_service import cascade_region_gate_teardown
 
 logger = logging.getLogger(__name__)
 
@@ -114,39 +120,57 @@ def advance_to_terminated(db: Session, now: Optional[datetime] = None) -> Dict[s
 
 
 def dispatch_terminated_cleanup(db: Session, now: Optional[datetime] = None) -> Dict[str, int]:
-    """DISCOVERY STUB (WO-P8 lane c), NOT a cleanup implementation. Finds
-    TERMINATED regions past their ``scheduled_hard_delete_at`` (region-
-    lifecycle.md:293's ``cleanup_orchestrator`` daily-cron trigger
-    condition) and logs them as eligible -- the discoverable dispatch
-    POINT gate-cascade (W12, ruled GO) wires the real cascade onto when it
-    lands. Deliberately does NOTHING destructive: no ship evacuation,
-    station relocation, planet-safe Bank transfer, or ``hard_delete_
-    region`` call.
+    """Finds TERMINATED regions past their ``scheduled_hard_delete_at``
+    (region-lifecycle.md:293's ``cleanup_orchestrator`` daily-cron trigger
+    condition) and dispatches ``region_termination_cascade_service``'s
+    reduced-scope cascade (WO-BUILD-REGION-LIFECYCLE-CLEANUP-CASCADE,
+    commit bae0abcf) against each eligible region's planets and stations:
+    ``process_planet_termination`` per planet (planet-safe transport +
+    Genesis compensation), ``dispatch_station_termination`` for the region
+    as a whole (still a discovery-only stub there pending the
+    acquisition_cost/upgrade-capital blocker documented in that module --
+    this dispatch does not change that module's own scope), and
+    ``cascade_region_gate_teardown`` (ADR-0052 SK38) to tear down every
+    player-built warp gate with an endpoint in the region. ADR-0052 SK38
+    states no ordering dependency between the gate cascade and the
+    planet/station cascade -- each processes a disjoint entity type -- so
+    the gate teardown runs alongside them in the same per-region pass.
 
-    Canon's ``cleanup_started_at`` / ``cleanup_completed_at`` tracking
-    columns (region-lifecycle.md:303 pseudocode) are NOT in the shipped
-    schema -- P8-region-lifecycle-schema's migration only added
-    ``suspended_at`` / ``terminated_at`` / ``scheduled_hard_delete_at``.
-    Adding them would be a NEW schema change outside this WO's additive-
-    only scope, so this stub can only detect ELIGIBILITY, not track an
-    in-progress/completed cleanup state across ticks (idempotent by
-    construction: re-finding the same eligible region every day until
-    gate-cascade actually processes it is harmless — a read-only re-log,
-    not a re-charge or re-mutation). Read-only; never writes."""
+    Does NOT stamp ``Region.cleanup_completed_at`` while
+    ``dispatch_station_termination`` remains discovery-only
+    (WO-ESCALATE-CYCLE26-DESIGN-FLAGS / DECISIONS.md cycle26-design-flags-fix):
+    asserting "cleanup complete" while stations are never terminated is a
+    data-integrity bug. Planet re-entry is gated by
+    ``Planet.termination_compensated_at`` instead; gate teardown is already
+    status-flip idempotent. Eligibility still filters
+    ``cleanup_completed_at IS NULL`` so a future station-termination
+    implementation can stamp the region marker once and stop re-dispatch.
+
+    Flush-only -- caller owns the commit, per this codebase's
+    route-owns-commit convention (mirrors both cascade functions below it)."""
     now = now or datetime.now(UTC)
     eligible = (
-        db.query(Region.id, Region.name)
+        db.query(Region)
         .filter(
             Region.status == RegionStatus.TERMINATED,
             Region.scheduled_hard_delete_at.isnot(None),
             Region.scheduled_hard_delete_at <= now,
+            Region.cleanup_completed_at.is_(None),
         )
         .all()
     )
-    if eligible:
+    for region in eligible:
+        planets = db.query(Planet).filter(Planet.region_id == region.id).all()
+        for planet in planets:
+            process_planet_termination(db, planet, now=now)
+        dispatch_station_termination(db, region.id)
+        cascade_region_gate_teardown(db, region.id)
+        # Intentionally leave cleanup_completed_at NULL until station
+        # termination is real (cycle26-design-flags-fix).
         logger.info(
-            "region_lifecycle: %d region(s) eligible for cleanup cascade "
-            "(gate-cascade dispatch not yet wired -- discovery only)",
-            len(eligible),
+            "region_lifecycle: dispatched cleanup cascade for region %s "
+            "(%d planet(s) processed; cleanup_completed_at deferred — "
+            "station termination still discovery-only)",
+            region.id, len(planets),
         )
     return {"cleanup_eligible": len(eligible)}

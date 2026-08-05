@@ -1,14 +1,12 @@
 """Central Nexus Galaxy Generation Service - Creates the 2000-5000 sector galactic hub"""
 
-import asyncio
 import random
 import math
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Tuple, Optional, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, insert, update, delete
-from sqlalchemy.orm import selectinload
+from sqlalchemy import select, insert
 
 from src.core.commodity_economy import base_price as commodity_base_price
 from src.core.database import get_async_session
@@ -180,9 +178,11 @@ class NexusGenerationService:
                 start_sector = current_sector_num
                 end_sector = start_sector + sectors_per_cluster - 1
 
-                # Last cluster gets any remaining sectors (extends to sector 5300)
+                # total_sectors (5000) divides evenly by cluster_count (20), so
+                # this is a redundant no-op recompute of the same end_sector --
+                # not remainder handling. Central Nexus ends at sector 5300
+                # (301 + 5000 - 1, since Terran Space occupies sectors 1-300).
                 if idx == len(nexus_clusters) - 1:
-                    # Central Nexus ends at sector 5300 (301 + 5000 - 1, since Terran Space ends at 300)
                     end_sector = 300 + self.total_sectors
 
                 cluster_stats = await self._generate_cluster_sectors(
@@ -284,7 +284,13 @@ class NexusGenerationService:
             subscription_tier="nexus",
             status="active",
             governance_type="autocracy",
-            tax_rate=0.05,  # Minimum allowed by valid_tax_rate constraint
+            # Deliberately the floor of the valid_tax_rate CHECK (0.05-0.25,
+            # FEATURES/gameplay/regional-governance.md:215). Central Nexus is
+            # platform-owned, not a real taxing economy; commit 4bf5b37f
+            # (2025-11-16) fixed an earlier attempt at 0.0 which violated the
+            # constraint outright -- 0.05 is the lowest legal value, not the
+            # model default of 0.10.
+            tax_rate=0.05,
             economic_specialization="galactic_hub",
             starting_credits=100,  # Minimum allowed by valid_starting_credits constraint
             starting_ship="none",
@@ -507,10 +513,10 @@ class NexusGenerationService:
                 # NO-CANON patrol count: 2-4 patrol ships per military sector.
                 patrol_count = random.randint(2, 4)
                 # WO-GX1 CRITICAL: patrol_ships MUST be a SCALAR INT, never a
-                # list-of-dicts — four live consumers read it via int()
-                # (combat_service.py:3506, port_ownership_service.py:1792,
-                # admin.py:1495, admin_comprehensive.py:970); a list detonates
-                # combat + admin in every military sector.
+                # list-of-dicts — live consumers read it as a number
+                # (combat_service.py:4425 + port_ownership_service.py:2151 via
+                # int(); admin.py:1569 + admin_comprehensive.py:1127 via .get);
+                # a list detonates combat + admin in every military sector.
                 sector_data["defenses"] = {
                     "owner_id": None,
                     "owner_name": None,
@@ -769,7 +775,6 @@ class NexusGenerationService:
         so we derive market prices from the station class trading patterns.
         """
         from src.models.market_transaction import MarketPrice
-        from src.models.station import StationClass
 
         # Query all stations in this region
         result = await session.execute(

@@ -6,9 +6,9 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_, or_, desc
+from sqlalchemy import func, or_, desc
 
-from src.models.combat_log import CombatLog, CombatStats
+from src.models.combat_log import CombatLog
 from src.models.player import Player
 from src.models.ship import Ship
 from src.models.planet import Planet

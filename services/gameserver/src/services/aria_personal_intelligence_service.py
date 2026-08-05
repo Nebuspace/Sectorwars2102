@@ -20,7 +20,6 @@ import heapq
 import math
 from typing import Dict, List, Any, Optional, Tuple, Set
 from datetime import datetime, timedelta, UTC
-from decimal import Decimal
 import statistics
 import numpy as np
 from collections import defaultdict, deque
@@ -29,8 +28,8 @@ from cryptography.fernet import Fernet
 import base64
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_, func, update
-from sqlalchemy.orm import selectinload, Session
+from sqlalchemy import select, and_, func
+from sqlalchemy.orm import Session
 
 from src.models.player import Player
 from src.models.sector import Sector, sector_warps
@@ -1497,46 +1496,15 @@ class ARIAPersonalIntelligenceService:
 
         return profitable_paths
     
-    async def _get_quantum_cache(self, player_id: str, cache_key: str,
-                               db: AsyncSession) -> Optional[Dict[str, Any]]:
-        """Get cached quantum calculation"""
-        stmt = select(ARIAQuantumCache).where(
-            and_(
-                ARIAQuantumCache.player_id == player_id,
-                ARIAQuantumCache.cache_key == cache_key,
-                ARIAQuantumCache.expires_at > datetime.now(UTC)
-            )
-        )
-        result = await db.execute(stmt)
-        cache_entry = result.scalar_one_or_none()
-        
-        if cache_entry:
-            cache_entry.hit_count += 1
-            await db.commit()
-            return cache_entry.ghost_results
-        
-        return None
-    
-    async def _cache_quantum_result(self, player_id: str, cache_key: str,
-                                  result: Dict[str, Any], db: AsyncSession):
-        """Cache quantum calculation result"""
-        # Calculate expiry based on market volatility
-        # More volatile = shorter cache
-        expiry = datetime.now(UTC) + timedelta(minutes=15)
-        
-        cache_entry = ARIAQuantumCache(
-            player_id=player_id,
-            cache_key=cache_key,
-            commodity=result.get("commodity", "UNKNOWN"),
-            quantum_states=[],  # Would store actual states
-            ghost_results=result,
-            expected_value=result.get("expected_cost", result.get("expected_revenue", 0)),
-            confidence_interval=[0, 0],  # Would calculate
-            expires_at=expiry
-        )
-        
-        db.add(cache_entry)
-        await db.commit()
+    # _get_quantum_cache / _cache_quantum_result (the original ghost-trade
+    # quantum-calculation cache read/write pair) removed 2026-08-04 —
+    # zero callers anywhere in the codebase (grep-confirmed). The table
+    # (ARIAQuantumCache) is still live via the repurposed observation-log
+    # aggregate cache (_cache_aggregates_sync / its read counterpart just
+    # above), which is the ONLY production-reachable writer today and
+    # always stores dummy quantum_states/expected_value/confidence_interval
+    # values — those columns remain permanently zeroed by design under the
+    # current repurposing, not because anything here still populates them.
     
     # =============================================================================
     # CONSCIOUSNESS & RELATIONSHIP TRACKING
@@ -1852,10 +1820,11 @@ class ARIAPersonalIntelligenceService:
         WO-ARIA-PROGRESSION consolidation: this is now the SINGLE source of
         truth, replacing the four duplicated inline threshold blocks
         (movement_service.py, combat_service.py, trading.py buy + sell) AND
-        the two now-removed redundant siblings (update_consciousness_level /
-        update_relationship_score, both zero-caller dead code before this
-        WO). See update_consciousness_and_relationship_sync for the
-        sync-Session twin the three sync call sites use.
+        the two removed redundant siblings (update_consciousness_level /
+        update_relationship_score — deleted; zero callers confirmed again
+        2026-08-04, WO-CLEANUP-UPDATE-RELATIONSHIP-SCORE-DEAD-FUNCTION). See
+        update_consciousness_and_relationship_sync for the sync-Session twin
+        the three sync call sites use.
 
         Per call: +1 aria_total_interactions, +1 aria_relationship_score
         (capped 100) -- aria-companion.md:139 "Rises +1 per significant
@@ -1924,7 +1893,25 @@ class ARIAPersonalIntelligenceService:
                 .scalar()
             ) or 0
 
-            return self._apply_consciousness_and_relationship(player, total_memories)
+            result = self._apply_consciousness_and_relationship(player, total_memories)
+
+            # Medal dispatch hook (ADR-0028 / medals lane): special.arias_favor
+            # (aria_consciousness >= 5). Best-effort — resolved by getattr (the
+            # medals lane may be absent) and any failure is logged and
+            # swallowed, a medal hiccup must never break ARIA progression.
+            # Uses THIS sync twin specifically (not the async method above) so
+            # the dispatch runs on a plain sync Session — see WO-BUILD-MEDAL-
+            # AUTO-AWARD-BATCH's diplomatic.first_citizen note for why an
+            # AsyncSession-only earn-event is a real blocker for this pattern.
+            try:
+                import src.services.medal_service as _medal_module
+                hook = getattr(_medal_module, "check_and_award_aria_medals", None)
+                if callable(hook):
+                    hook(db, player.id, player.aria_consciousness_level)
+            except Exception as e:
+                logger.error("ARIA medal dispatch hook failed: %s", e)
+
+            return result
         except Exception as e:
             logger.warning(
                 "update_consciousness_and_relationship_sync failed for player %s: %s",

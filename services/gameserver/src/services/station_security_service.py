@@ -382,6 +382,18 @@ def upgrade_security_tier(
     sec["upgrade_to"] = target
     sec["upgrade_completes_at"] = completes_at.isoformat()
     flag_modified(station, "security")
+
+    # Ledger the capital spend -- ADR-0050 relocation-fee formula's "sum of
+    # upgrade capital costs" half (WO-BUILD-STATION-ACQUISITION-COST-CAPITAL-
+    # LEDGER). Lazy import mirrors this module's own existing import-from-
+    # port_ownership_service convention (see apply_acquisition_default /
+    # upkeep_for_gross call sites there) to avoid a circular top-level import.
+    from src.services.port_ownership_service import append_capital_cost
+
+    append_capital_cost(
+        station, source=f"security_upgrade:{target}", amount=cost, now=now
+    )
+    flag_modified(station, "capital_cost_ledger")
     db.flush()
     logger.info(
         "Station %s security upgrade initiated: %s -> %s, cost %s, completes %s",
@@ -508,6 +520,17 @@ SURRENDER_FINE_PCT = 0.15
 # as the same order of misconduct as attacking an innocent player.
 SURRENDER_REPUTATION_PENALTY = -100
 SURRENDER_REPUTATION_REASON = "station_tractor_surrender"
+
+# Arrest/detention on surrender (station-protection.md:99, 1–6h range).
+# [NO-CANON] exact hours within canon range — stolen hull = top of band,
+# wanted pilot = mid. deny_listed is station-owner preference, not a
+# criminal arrest → no detention. Durations are CANONICAL hours through
+# game_time.scaled_deadline (same as security upgrade windows).
+DETENTION_HOURS_BY_REASON = {
+    "stolen_ship": 6,
+    "wanted_pilot": 3,
+}
+SERIOUS_DETENTION_REASONS = frozenset(DETENTION_HOURS_BY_REASON)
 
 
 def _break_attempt_cost_label(strength: str) -> str:
@@ -721,6 +744,60 @@ def _cargo_credit_value(ship: Ship) -> int:
     return total
 
 
+def is_player_detained(
+    player: Player, *, now: Optional[datetime] = None
+) -> bool:
+    """True while ``Player.detained_until`` is in the future.
+
+    Lazy-clears an expired stamp (sets column to None) so callers don't
+    need a separate sweep. Pure aside from that write — FLUSH-ONLY.
+    """
+    until = getattr(player, "detained_until", None)
+    if until is None:
+        return False
+    now = now or datetime.now(UTC)
+    if until.tzinfo is None:
+        until = until.replace(tzinfo=UTC)
+    if until <= now:
+        player.detained_until = None
+        return False
+    return True
+
+
+def require_ship_access(
+    player: Player, new_ship: Optional[Ship], *, now: Optional[datetime] = None
+) -> None:
+    """Gate non-escape-pod boarding while detained (station-protection.md:99).
+
+    Escape-pod reseat (surrender / eject) is always allowed — the detainee
+    stays on their pod. Switching onto any other hull raises 403.
+    """
+    if new_ship is None:
+        return
+    if not is_player_detained(player, now=now):
+        return
+    if getattr(new_ship, "type", None) == ShipType.ESCAPE_POD:
+        return
+    raise StationSecurityError(
+        403,
+        "ERR_DETAINED: ship access locked until detention expires",
+    )
+
+
+def apply_surrender_detention(
+    player: Player, reason: str, *, now: Optional[datetime] = None
+) -> Optional[datetime]:
+    """Stamp ``detained_until`` for serious surrender reasons. Returns the
+    expiry (or None when reason is not detention-eligible)."""
+    hours = DETENTION_HOURS_BY_REASON.get(reason)
+    if hours is None:
+        return None
+    now = now or datetime.now(UTC)
+    until = game_time.scaled_deadline(hours, start=now)
+    player.detained_until = until
+    return until
+
+
 def _notify_registered_owner(ship: Ship, ship_name: str, station: Station, surrendering_player_id) -> None:
     """Best-effort WebSocket notice to the ship's registered/legal owner
     (mirrors docking_service._notify_bumped's try/except pattern -- a
@@ -764,10 +841,10 @@ def surrender_tractor_locked_ship(
     the pilot into an Escape Pod at the SAME sector (they stay docked --
     they never left), and best-effort notifies the ship's registered owner.
 
-    Deliberately does NOT build canon's "serious violations result in
-    arrest and detention... (Design-only)" clause -- that clause is itself
-    marked design-only in canon and there is no detention/turn-freeze
-    mechanic anywhere in this codebase to hook it to."""
+    Serious lock reasons (stolen_ship / wanted_pilot) also stamp
+    ``Player.detained_until`` (1–6h canon band via DETENTION_HOURS_BY_REASON)
+    — freezes turn regen + gates non-pod ship boarding until expiry
+    (WO-BUILD-STATION-PROTECTION-ARREST-DETENTION)."""
     now = now or datetime.now(UTC)
     station = _lock_station(db, station.id)
     player = _lock_owner(db, player.id)
@@ -783,6 +860,7 @@ def surrender_tractor_locked_ship(
     lock = locks.get(str(ship.id))
     if not isinstance(lock, dict):
         raise StationSecurityError(400, "Your ship is not tractor-locked at this station")
+    lock_reason = str(lock.get("reason") or "")
 
     fine = int(_cargo_credit_value(ship) * SURRENDER_FINE_PCT)
     player.credits = max(0, (player.credits or 0) - fine)
@@ -800,6 +878,8 @@ def surrender_tractor_locked_ship(
     ship.is_abandoned = True
     ship.abandoned_at = now
     ship.current_pilot_id = None
+
+    detained_until = apply_surrender_detention(player, lock_reason, now=now)
 
     try:
         from src.models.ship_registry import RegistryEventType
@@ -820,15 +900,17 @@ def surrender_tractor_locked_ship(
     # QUEUE-REGISTRY-PILOT-WIRING: old ship's current_pilot_id already
     # cleared explicitly above (line ~802, part of the surrender/abandon
     # flow) -- only the new escape pod's pointer needs setting here.
-    sync_current_pilot(player, escape_pod)
+    sync_current_pilot(player, escape_pod, db=db)
 
     db.flush()
 
     _notify_registered_owner(ship, abandoned_ship_name, station, player.id)
 
     logger.info(
-        "Tractor surrender: ship %s abandoned at station %s by player %s (fine=%s cr, rep=%s)",
+        "Tractor surrender: ship %s abandoned at station %s by player %s "
+        "(fine=%s cr, rep=%s, detained_until=%s)",
         abandoned_ship_id, station.id, player.id, fine, SURRENDER_REPUTATION_PENALTY,
+        detained_until.isoformat() if detained_until else None,
     )
     return {
         "success": True,
@@ -839,4 +921,6 @@ def surrender_tractor_locked_ship(
         "reputation_penalty": SURRENDER_REPUTATION_PENALTY,
         "credits": player.credits,
         "new_ship_id": str(escape_pod.id),
+        "detained": detained_until is not None,
+        "detained_until": detained_until.isoformat() if detained_until else None,
     }

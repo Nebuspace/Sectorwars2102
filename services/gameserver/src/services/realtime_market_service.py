@@ -12,16 +12,13 @@ and the game's database, providing:
 
 import asyncio
 import json
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta, UTC
-from decimal import Decimal
 from dataclasses import dataclass, asdict
 import logging
-from collections import defaultdict
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_, desc, text
-from sqlalchemy.orm import selectinload
+from sqlalchemy import select, and_, text
 import redis.asyncio as redis
 
 from src.models.market_transaction import MarketTransaction

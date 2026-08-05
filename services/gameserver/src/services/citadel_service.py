@@ -672,6 +672,142 @@ class CitadelService:
             "citadel_level": current_level,
         }
 
+    def handle_prerequisite_loss(
+        self,
+        planet_id: uuid.UUID,
+        lost_building_key: str,
+        lost_building_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Auto-cancel an in-progress citadel upgrade when a required defensive
+        building/shield tier it depends on goes offline mid-upgrade (ADR-0059
+        N-F3 / N-V5; citadels.md "Mid-upgrade cancellation flow").
+
+        CALLER CONTRACT: the caller (a future combat/destruction/repair-loss
+        producer — none exists yet in this codebase) applies the prerequisite-
+        loss state change (e.g. decrements `active_events['defense_buildings']`,
+        or drops `defense_shields`) on the SAME `Planet` row in the SAME
+        transaction BEFORE calling this method. This method only flushes (never
+        commits) so the caller's eventual commit is the single atomic boundary
+        covering both the loss and the cancellation+refund (canon requirement #1).
+
+        Re-evaluates the in-progress upgrade's prerequisites fresh via
+        `_check_upgrade_prereqs` rather than assuming the named building is
+        automatically disqualifying: an "any" (OR) mode level (L3: Defense Grid
+        OR Turret Network) stays satisfied if the OTHER leg is still up, so
+        losing one specific building must NOT cancel that upgrade.
+
+        Returns `{"success": False, ...}` (not an error — callers don't need to
+        branch on it) when there's no upgrade in progress, the target level has
+        no prerequisites, or the prerequisites are still satisfied post-loss.
+        On an actual cancellation returns `{"success": True, ...}` with the
+        canon `cancelled_upgrade` / `reason` / `lost_building` / `credits_refunded`
+        fields. The citadel's LEVEL itself is untouched — only forward
+        progression stops; passive defense bonuses at the current level persist.
+        """
+        planet = (
+            self.db.query(Planet)
+            .filter(Planet.id == planet_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if not planet:
+            return {"success": False, "message": "Planet not found"}
+
+        if not getattr(planet, "citadel_upgrading", False):
+            return {"success": False, "message": "No citadel upgrade is in progress"}
+
+        current_level = getattr(planet, "citadel_level", 0) or 0
+        target_level = current_level + 1
+        spec = CITADEL_UPGRADE_PREREQS.get(target_level)
+        if not spec:
+            return {"success": False, "message": "Upgrade target level has no defensive prerequisites"}
+
+        # Fresh re-evaluation of the CURRENT (post state-change) planet row is
+        # the authoritative signal — not an assumption that losing the named
+        # building always disqualifies an "any"-mode level.
+        prereq_failure = self._check_upgrade_prereqs(planet, target_level)
+        if prereq_failure is None:
+            return {
+                "success": False,
+                "message": "Prerequisites for the in-progress upgrade are still satisfied",
+            }
+
+        target_info = CITADEL_LEVELS.get(target_level, {})
+        target_name = target_info.get("name", f"level {target_level}")
+
+        resolved_name = lost_building_name
+        if not resolved_name:
+            for req in spec["requirements"]:
+                if req.get("key") == lost_building_key:
+                    resolved_name = req.get("name")
+                    break
+        if not resolved_name:
+            resolved_name = DEFENSE_BUILDINGS.get(lost_building_key, {}).get("name", lost_building_key)
+
+        # Full refund (canon: "full refund, not 50% — the loss event was
+        # external, not a player-initiated cancel"). Credits back to the
+        # player's wallet, planet resources back onto the planet — the exact
+        # inverse of the start_upgrade deduction. Uses the same
+        # target_info-derived cost cancel_upgrade already reads (the optional
+        # promotion_levy empire surcharge is 0 today — EMPIRE_SCALE_K=0 — so
+        # this equals what was actually charged; a pre-existing simplification
+        # shared with cancel_upgrade, not new debt introduced here).
+        credits_refund = int(target_info.get("upgrade_cost", 0) or 0)
+        resource_refund = dict(target_info.get("resource_cost", {}) or {})
+
+        player = None
+        if credits_refund > 0:
+            player = (
+                self.db.query(Player)
+                .filter(Player.id == planet.owner_id)
+                .populate_existing()
+                .with_for_update()
+                .first()
+            )
+            if player:
+                player.credits += credits_refund
+
+        for resource, amount in resource_refund.items():
+            current_value = getattr(planet, resource, 0) or 0
+            setattr(planet, resource, current_value + amount)
+
+        planet.citadel_upgrading = False
+        planet.citadel_upgrade_started_at = None
+        planet.citadel_upgrade_complete_at = None
+
+        self.db.flush()
+
+        logger.info(
+            f"Planet {planet_id} citadel upgrade to level {target_level} auto-cancelled: "
+            f"prerequisite {resolved_name!r} went offline; refunded {credits_refund} credits "
+            f"+ {resource_refund}"
+        )
+
+        now = datetime.now(UTC)
+        if player is None:
+            player = self.db.query(Player).filter(Player.id == planet.owner_id).first()
+
+        _dispatch_upgrade_cancelled_event(
+            self.db, planet, target_name, resolved_name, credits_refund, now,
+        )
+        if player is not None:
+            _dispatch_prerequisite_loss_narration(player, target_name, resolved_name)
+
+        return {
+            "success": True,
+            "message": (
+                f"Upgrade to {target_name} was auto-cancelled — {resolved_name} is offline. "
+                f"{credits_refund:,} cr refunded."
+            ),
+            "citadel_level": current_level,
+            "cancelled_upgrade": target_name,
+            "reason": "prerequisite_building_offline",
+            "lost_building": resolved_name,
+            "credits_refunded": credits_refund,
+            "resources_refunded": resource_refund,
+        }
+
     def check_upgrade_completion(self, planet_id: uuid.UUID) -> Dict[str, Any]:
         """Check if an in-progress citadel upgrade has completed, and apply it if so."""
         planet = self.db.query(Planet).filter(Planet.id == planet_id).first()
@@ -1186,11 +1322,15 @@ class CitadelService:
             )
             if reason == "prerequisite_building_offline":
                 msg = (
-                    f"Upgrade to {level_name_str} requires {name} to be operational, "
-                    f"but it is still under construction."
+                    f"ERR_CITADEL_PREREQUISITE_OFFLINE: Upgrade to {level_name_str} requires "
+                    f"{name} to be operational, but it is still under construction."
                 )
-            else:
-                msg = f"Upgrade to {level_name_str} requires {name} — build it first."
+                return {
+                    "success": False, "reason": reason,
+                    "error_code": "ERR_CITADEL_PREREQUISITE_OFFLINE",
+                    "message": msg,
+                }
+            msg = f"Upgrade to {level_name_str} requires {name} — build it first."
             return {"success": False, "reason": reason, "message": msg}
 
         if req["type"] == "shield":
@@ -1206,14 +1346,18 @@ class CitadelService:
             )
             if reason == "prerequisite_building_offline":
                 msg = (
-                    f"Upgrade to {level_name_str} requires {name}, but the shield "
-                    f"generator is still upgrading (current: L{current})."
+                    f"ERR_CITADEL_PREREQUISITE_OFFLINE: Upgrade to {level_name_str} requires "
+                    f"{name}, but the shield generator is still upgrading (current: L{current})."
                 )
-            else:
-                msg = (
-                    f"Upgrade to {level_name_str} requires {name} "
-                    f"(current shield generator: L{current})."
-                )
+                return {
+                    "success": False, "reason": reason,
+                    "error_code": "ERR_CITADEL_PREREQUISITE_OFFLINE",
+                    "message": msg,
+                }
+            msg = (
+                f"Upgrade to {level_name_str} requires {name} "
+                f"(current shield generator: L{current})."
+            )
             return {"success": False, "reason": reason, "message": msg}
 
         # Unknown requirement type: log a warning and return a blocking failure.
@@ -1636,3 +1780,88 @@ class CitadelService:
             "build_hours": spec["build_hours"],
             "effects": spec["effects"],
         }
+
+
+# ---------------------------------------------------------------------------
+# N-F3 auto-cancel realtime + ARIA dispatch (module-level, mirrors
+# medal_service._dispatch_medal_awarded_event / movement_service's P-A5 hook).
+# ---------------------------------------------------------------------------
+
+def _dispatch_upgrade_cancelled_event(
+    db: Session,
+    planet: Planet,
+    cancelled_upgrade_name: str,
+    lost_building_name: str,
+    credits_refunded: int,
+    at: datetime,
+) -> None:
+    """Schedule the async player-scoped ``citadel.upgrade_cancelled`` WS push
+    (ADR-0059 N-F3; citadels.md "Mid-upgrade cancellation flow" #3 — exact
+    payload shape). Mirrors medal_service._dispatch_medal_awarded_event:
+    resolve the owner's User.id, build the canon payload, grab the running
+    loop, schedule with loop.create_task so it never blocks the caller's
+    transaction, and swallow every failure (no loop, no socket) so a quiet
+    connection can never affect the already-flushed cancellation.
+    """
+    try:
+        user_id = (
+            db.query(Player.user_id).filter(Player.id == planet.owner_id).scalar()
+        )
+        if not user_id:
+            return
+
+        payload = {
+            "type": "citadel.upgrade_cancelled",
+            "planet_id": str(planet.id),
+            "cancelled_upgrade": cancelled_upgrade_name,
+            "reason": "prerequisite_building_offline",
+            "lost_building": lost_building_name,
+            "credits_refunded": int(credits_refunded),
+            "at": at.isoformat(),
+        }
+
+        import asyncio
+
+        from src.services.websocket_service import connection_manager
+
+        loop = asyncio.get_running_loop()
+        loop.create_task(connection_manager.send_personal_message(str(user_id), payload))
+    except Exception:
+        logger.debug(
+            "Skipped citadel.upgrade_cancelled WS notice for planet %s (no loop or socket)",
+            planet.id, exc_info=True,
+        )
+
+
+def _dispatch_prerequisite_loss_narration(
+    player: Player, cancelled_upgrade_name: str, lost_building_name: str
+) -> None:
+    """Trigger ARIA's N-F3 narration line for the auto-cancellation (citadels.md
+    #4: "Your <target_level> upgrade was cancelled — <lost_building> is offline.
+    Rebuild it to resume the upgrade."). Mirrors movement_service's P-A5 hook:
+    record_event through the shared narration kernel (dedupe/ceiling apply),
+    dispatch the line over WS only when accepted+immediate. Best-effort —
+    swallowed on any failure so a narration hiccup can never affect the
+    already-flushed cancellation.
+    """
+    try:
+        from src.services.aria_narration_service import (
+            dispatch_narration_push,
+            get_aria_narration_service,
+        )
+        # dedupe_key is unique per occurrence (a fresh cancellation is always a
+        # distinct, always-deliverable notice — never suppressed as a repeat).
+        dedupe_key = f"{cancelled_upgrade_name}:{lost_building_name}:{datetime.now(UTC).timestamp()}"
+        narration_line = get_aria_narration_service().record_event(
+            "P-F9",
+            player.id,
+            dedupe_key=dedupe_key,
+            context={
+                "cancelled_upgrade": cancelled_upgrade_name,
+                "lost_building": lost_building_name,
+            },
+        )
+        if narration_line is not None and narration_line.delivered_immediately:
+            dispatch_narration_push(player, narration_line)
+    except Exception:
+        logger.debug("ARIA narration hook failed (P-F9)", exc_info=True)

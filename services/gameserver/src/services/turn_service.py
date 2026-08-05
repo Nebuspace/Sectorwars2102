@@ -122,6 +122,27 @@ def regenerate_turns(db: Session, player: Player) -> Dict[str, Any]:
     """
     now = datetime.now(timezone.utc)
 
+    # Station-protection detention (station-protection.md:99): zero turn
+    # regen while detained_until is in the future. Advance the regen
+    # anchor so elapsed detention time does not bank for later.
+    try:
+        from src.services.station_security_service import is_player_detained
+        if is_player_detained(player, now=now):
+            player.last_turn_regeneration = now
+            max_turns = _calculate_max_turns(player)
+            if player.max_turns != max_turns:
+                player.max_turns = max_turns
+            return {
+                "regenerated": False,
+                "turns_added": 0,
+                "old_turns": player.turns or 0,
+                "new_turns": player.turns or 0,
+                "max_turns": max_turns,
+                "detained": True,
+            }
+    except Exception as e:  # never let detention check break turn spend
+        logger.error("Detention check in regenerate_turns failed: %s", e)
+
     # Recompute the cap from rank so a fresh promotion lifts the ceiling
     # without a separate write path; persist it onto the stored column.
     max_turns = _calculate_max_turns(player)
@@ -329,8 +350,10 @@ def welcome_back(player: Player, prior_last_game_login: Optional[datetime]) -> D
     ``player.last_game_login`` to *now*. The next login within 7 days therefore
     measures a fresh, sub-threshold gap and grants 0 — the bonus can only fire
     once per genuine return. ``last_game_login`` is the live login-recency clock
-    for the auth path (track_login is called without a db arg, so this is the
-    only writer of that column on the live login route).
+    for the auth path; ``PlayerActivityService.track_login`` (also called on
+    the live login route, now with ``db``) redundantly refreshes it to the
+    same instant a moment later, so this remains the authoritative first
+    write for idempotency purposes.
 
     The bonus is added to the balance and clamped to ``player.max_turns`` so a
     returning player is topped up *to* their cap at most — never overflowed past

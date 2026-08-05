@@ -581,6 +581,57 @@ def seed(planet, *, db=None) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# At-settle citadel-grid materialization (ADR-0091 §8) — NOT the planetary
+# tick spine above. ``settle()`` (this module's original owner) advances
+# production/siege/terraform once per call, on an already-owned planet, for
+# every planet in the game. ``materialize_citadel_grid`` below is a
+# completely separate concern: it runs EXACTLY ONCE, at the moment a
+# planet's ownership CAS wins (src/api/routes/planets.py claim_planet, ADR-
+# 0091 §8 M29), and lays the winning ground expedition's SiteIntel onto the
+# planet's structures grid. Two different "settle" words in the same module
+# — do not conflate them; this function is deliberately NOT named settle()
+# or *_settle to keep that distinction obvious to a future reader.
+# ---------------------------------------------------------------------------
+def materialize_citadel_grid(planet, expedition, *, db=None) -> dict:
+    """Stamp the winning SUCCESS expedition's SiteIntel onto ``Planet.structures``.
+
+    Idempotent (first-settle-wins, mirroring the CAS's own once-only
+    semantics): a planet whose structures already carry a ``site`` key is
+    left untouched. Calls :func:`seed` first so the legacy size-seeded
+    grid/plots/terraform anchor exist too — a settled planet always has
+    both. Remains inside structures.py, the sole writer of
+    ``Planet.structures`` (spec §1) — this is an additive materialization
+    step, not a second writer.
+
+    ``expedition.result`` is the ephemeral SiteIntel payload documented on
+    the Expedition model (shape_class/template_id/usable_slots/energy/
+    resources/hazards/native_life); only the settled result persists, onto
+    ``structures['site']``, exactly per that model's own docstring. Caller
+    (the claim_planet route) commits.
+    """
+    base = seed(planet, db=db)
+    if isinstance(base.get("site"), dict):
+        return base
+
+    intel = expedition.result if isinstance(getattr(expedition, "result", None), dict) else {}
+    base["site"] = {
+        "shape_class": intel.get("shape_class"),
+        "template_id": intel.get("template_id"),
+        "usable_slots": intel.get("usable_slots"),
+        "energy": intel.get("energy"),
+        "resources": intel.get("resources"),
+        "hazards": intel.get("hazards"),
+        "native_life": intel.get("native_life"),
+        "settled_from_expedition_id": (
+            str(expedition.id) if getattr(expedition, "id", None) else None
+        ),
+    }
+    planet.structures = base
+    flag_modified(planet, "structures")
+    return base
+
+
+# ---------------------------------------------------------------------------
 # Grid construction (K1b-1) — sized by Planet.size; plots are the scarce resource
 # ---------------------------------------------------------------------------
 def _grid_dims_for(size: int) -> tuple:

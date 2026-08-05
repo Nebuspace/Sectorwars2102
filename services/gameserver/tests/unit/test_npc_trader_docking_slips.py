@@ -46,6 +46,7 @@ from sqlalchemy.sql import operators as sa_operators
 from src.models.docking import DockingQueueEntry, DockingSlipOccupancy
 from src.models.npc_character import NPCCharacter, NPCLifecycleStage
 from src.models.player import Player
+from src.models.ship import Ship
 from src.models.station import Station, StationClass
 from src.services import docking_service, npc_trading_service
 
@@ -163,6 +164,7 @@ class FakeDB:
         self.npcs: List[Any] = []
         self.players: List[Any] = []
         self.queue_entries: List[Any] = []
+        self.ships: List[Any] = []
 
     def query(self, model):
         if model is Station:
@@ -175,6 +177,10 @@ class FakeDB:
             return _FakeQuery(self.players)
         if model is DockingQueueEntry:
             return _FakeQuery(self.queue_entries)
+        if model is Ship:
+            # _check_stolen_ship_impound's pre-dock query -- empty pool means
+            # "no stolen ship on file", the None-impound fast path.
+            return _FakeQuery(self.ships)
         raise AssertionError(f"FakeDB: unexpected model queried: {model}")
 
     def add(self, obj):
@@ -206,6 +212,8 @@ def make_station(station_id=None, capacity_class=StationClass.CLASS_3, **overrid
         tradedock_tier=None,
         reputation_threshold=0,  # gate skipped -- no Faction/Reputation queries needed
         name="Test Station",
+        ownership={},  # defense_policy defaults open -- no owner-gate queries needed
+        owner_id=None,
     )
     for k, v in overrides.items():
         setattr(station, k, v)
@@ -350,7 +358,7 @@ class TestPlayerNpcOccupancyParity:
             granted = docking_service.acquire_for_npc(db, station, npc)
             assert granted is True
 
-        walk_up_player = SimpleNamespace(id=uuid.uuid4())
+        walk_up_player = SimpleNamespace(id=uuid.uuid4(), current_ship_id=None)
         result = docking_service.acquire(db, station, walk_up_player)
 
         assert result["status"] == "full"

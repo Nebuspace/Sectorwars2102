@@ -7,13 +7,31 @@ Tracks player morality through combat actions, trade behavior, and diplomacy.
 
 import logging
 import uuid
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 from sqlalchemy.orm import Session
 
 from src.models.player import Player
+from src.services.wanted_service import recompute_is_wanted
 
 logger = logging.getLogger(__name__)
+
+
+def _recompute_wanted_defensively(db: Session, player) -> None:
+    """Fires the personal_reputation Wanted-trigger recompute (ranking.md
+    "Wanted status") without ever breaking the caller. Mirrors ship_service.
+    _dispatch_fleet_medals's own defensive-hook convention: adjust_reputation
+    is called from dozens of pre-existing sites (combat, bounty, contraband,
+    ...), many exercised by tests with lightweight Player stand-ins
+    (SimpleNamespace, hand-rolled stubs) that predate this trigger and don't
+    carry ``is_wanted``/``wanted_until``/``personal_reputation`` or a
+    ``Ship.id``-query-capable fake session. The Wanted flag is a side
+    effect of a reputation change, not the reason for it -- a stub gap here
+    must never swallow the actual reputation adjustment."""
+    try:
+        recompute_is_wanted(db, player)
+    except Exception as e:  # never let the Wanted-trigger break reputation adjustment
+        logger.error("Wanted-trigger recompute failed for player %s: %s", getattr(player, "id", "?"), e)
 
 # 8-tier reputation system: (min_score, max_score, tier_name, color)
 REPUTATION_TIERS = [
@@ -69,6 +87,11 @@ class PersonalReputationService:
         player.reputation_tier = tier
         player.name_color = color
 
+        # Wanted-trigger (ranking.md "Wanted status"): personal_reputation
+        # crossing -500 in either direction. This is the only write site
+        # for personal_reputation (apply_weekly_decay is the other, below).
+        _recompute_wanted_defensively(self.db, player)
+
         self.db.flush()
 
         logger.info(
@@ -106,6 +129,9 @@ class PersonalReputationService:
             effects["faction_standing_bonus"] = 5
         elif score >= 250:
             effects["station_price_discount"] = 5
+            effects["faction_standing_bonus"] = 5
+        elif score >= 1:
+            effects["station_price_discount"] = 5
 
         return {
             "success": True,
@@ -117,7 +143,8 @@ class PersonalReputationService:
         }
 
     def apply_weekly_decay(self, player_id: uuid.UUID) -> Dict[str, Any]:
-        """Decay reputation toward 0 by 5 points per week for extreme values."""
+        """Decay reputation toward 0 by 5 points per week for any nonzero
+        score (ADR-0025's whole-range ruling) -- not just extreme values."""
         player = self.db.query(Player).filter(Player.id == player_id).first()
         if not player:
             return {"success": False, "message": "Player not found"}
@@ -136,6 +163,8 @@ class PersonalReputationService:
         tier, color = self._get_tier_for_score(new_score)
         player.reputation_tier = tier
         player.name_color = color
+
+        _recompute_wanted_defensively(self.db, player)
 
         self.db.flush()
 

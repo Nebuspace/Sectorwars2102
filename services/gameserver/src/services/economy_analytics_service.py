@@ -168,7 +168,7 @@ class EconomyAnalyticsService:
                             "price_change_percent": round(price_change, 2),
                             "recommended_action": self._get_recommended_action(price_change, price.commodity)
                         })
-        except Exception as e:
+        except Exception:
             # If price alert detection fails, return empty list rather than crashing
             pass
 

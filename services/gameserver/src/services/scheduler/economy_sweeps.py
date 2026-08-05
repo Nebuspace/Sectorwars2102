@@ -31,10 +31,19 @@ from src.services.scheduler._common import (
     _IDLE_INCOME_LOCK_KEY,
     _DAILY_STIPEND_LOCK_KEY,
     _BOUNTY_ACCRUAL_LOCK_KEY,
+    _STOLEN_SHIP_REP_PENALTY_LOCK_KEY,
+    _TRANSFER_CLAIM_AUTOCOMPLETE_LOCK_KEY,
     _PORT_OPERATING_COSTS_LOCK_KEY,
     _STATION_RECOVERY_LOCK_KEY,
     _RECLAIM_FLAG_LOCK_KEY,
     _PRICE_HISTORY_LOCK_KEY,
+    _BOUNTY_EXPIRE_LOCK_KEY,
+    _BOUNTY_EXPIRE_STATE_KEY,
+    BOUNTY_EXPIRE_SWEEP_SECONDS,
+    _WANTED_CLEAR_LOCK_KEY,
+    _WANTED_CLEAR_STATE_KEY,
+    WANTED_CLEAR_SWEEP_SECONDS,
+    _sweep_due_and_advance,
     canonical_day_number,
 )
 
@@ -302,10 +311,11 @@ def _run_daily_stipend_sweep_sync() -> Dict[str, int]:
         # Candidate players: active accounts whose USER logged in today (UTC).
         # The durable login timestamp is User.last_login, written on every login
         # by user_service.update_user_last_login / authenticate_player (auth
-        # flow). NOTE: Player has no last_login column (it was renamed to
-        # last_game_login), and last_game_login is NOT written by the live auth
-        # path (track_login is called without a db arg) — so User.last_login is
-        # the only reliable active-that-day signal. Filter on the
+        # flow). Player.last_game_login is ALSO now refreshed on the live login
+        # path (PlayerActivityService.track_login, WO-BUILD-RETENTION-SIGNALS-
+        # WRITEBACK), but User.last_login remains the field this sweep was
+        # already built against and is kept as the active-that-day signal here
+        # for continuity. Filter on the
         # [today 00:00 UTC, tomorrow 00:00 UTC) half-open window in SQL (join
         # Player->User) so the gate is cheap and idle players never enter the set.
         day_start = datetime(today.year, today.month, today.day, tzinfo=UTC)
@@ -500,6 +510,303 @@ def _run_bounty_accrual_sweep_sync() -> Dict[str, int]:
         db.close()
 
 
+def _run_stolen_ship_rep_penalty_sweep_sync() -> Dict[str, int]:
+    """Apply the −100/canonical-day personal-reputation penalty (ship-registry.md
+    "Wanted Status") to every player currently piloting a `stolen_status = True`
+    ship, once per canonical day. Mirrors _run_bounty_accrual_sweep_sync's
+    discipline exactly: own SessionLocal, xact-level advisory lock (skip on
+    contention rather than double-charge), a candidate query, then a per-row
+    with_for_update re-read, per-row commit + per-row try/except so one bad
+    row can't abort the batch.
+
+    IDEMPOTENCY: the durable per-player anchor is the canonical-day index
+    under Player.settings[STOLEN_SHIP_REP_PENALTY_PERIOD_KEY] — a restart,
+    duplicate wake, or re-run within the same canonical day re-reads it and
+    skips, so the penalty never double-applies in one day. Additive JSONB
+    only; NO migration, NO new table (mirrors the bounty-pot-period anchor's
+    exact shape).
+
+    CANDIDATE GATE: Ship.stolen_status is True AND Ship.current_pilot_id is
+    NOT NULL (someone must actually be aboard to be penalized — an
+    unpiloted/drifting stolen hull accrues nothing, matching "while STILL IN
+    POSSESSION of the stolen ship"). The per-row re-read re-confirms both
+    conditions on the locked player row's CURRENT ship (a concurrent impound
+    or ship-swap since the candidate query clears stolen_status or moves the
+    pilot off, in which case this row simply adds 0 but still advances the
+    anchor so the period isn't re-evaluated).
+
+    Returns {"pilots": n_penalized, "reputation_delta": total_cr_...} — actually
+    {"pilots": n_penalized, "total_penalty": total_negative_rep_applied}."""
+    from src.core.database import SessionLocal
+    from src.models.player import Player
+    from src.models.ship import Ship
+
+    STOLEN_SHIP_REP_PENALTY_PER_DAY = -100  # ship-registry.md "Wanted Status"
+    STOLEN_SHIP_REP_PENALTY_PERIOD_KEY = "stolen_ship_rep_penalty_period"
+
+    result = {"pilots": 0, "total_penalty": 0}
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _STOLEN_SHIP_REP_PENALTY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return result
+        db.commit()
+
+        period = canonical_day_number()
+
+        candidate_ids = (
+            db.query(Ship.current_pilot_id)
+            .filter(
+                Ship.stolen_status.is_(True),
+                Ship.current_pilot_id.isnot(None),
+            )
+            .all()
+        )
+
+        for (player_id,) in candidate_ids:
+            try:
+                player = (
+                    db.query(Player)
+                    .filter(Player.id == player_id)
+                    .with_for_update()
+                    .first()
+                )
+                if player is None or not player.is_active:
+                    db.rollback()
+                    continue
+
+                ship = (
+                    db.query(Ship)
+                    .filter(Ship.id == player.current_ship_id)
+                    .first()
+                )
+                still_piloting_stolen = (
+                    ship is not None
+                    and ship.stolen_status
+                    and ship.current_pilot_id == player.id
+                )
+
+                settings = player.settings or {}
+                try:
+                    last_period = int(settings.get(STOLEN_SHIP_REP_PENALTY_PERIOD_KEY))
+                except (TypeError, ValueError):
+                    last_period = None
+
+                if last_period is not None and last_period >= period:
+                    db.rollback()
+                    continue
+
+                if still_piloting_stolen:
+                    player.personal_reputation = (
+                        player.personal_reputation or 0
+                    ) + STOLEN_SHIP_REP_PENALTY_PER_DAY
+                    result["pilots"] += 1
+                    result["total_penalty"] += STOLEN_SHIP_REP_PENALTY_PER_DAY
+
+                # Wanted-trigger backstop: report_stolen/retract_stolen_
+                # report already recompute this player's is_wanted
+                # immediately on file/retract. This daily pass is the
+                # backstop for the OTHER way the stolen-piloting condition
+                # can change -- the pilot switching away from the stolen
+                # hull to a different ship (no dedicated writer for that
+                # today; see ship_service.sync_current_pilot) -- so a
+                # departed pilot's Wanted flag doesn't persist past this
+                # sweep's cadence once no longer piloting.
+                from src.services.wanted_service import recompute_is_wanted
+                recompute_is_wanted(db, player)
+
+                if player.settings is None:
+                    player.settings = {}
+                player.settings[STOLEN_SHIP_REP_PENALTY_PERIOD_KEY] = int(period)
+                flag_modified(player, "settings")
+
+                db.commit()
+            except Exception:
+                logger.exception(
+                    "Stolen-ship rep-penalty sweep: penalty failed for player %s",
+                    player_id,
+                )
+                db.rollback()
+
+        if result["pilots"]:
+            logger.info(
+                "Stolen-ship rep-penalty sweep: canonical-day %d — penalized %d "
+                "pilot(s), %d total reputation",
+                period, result["pilots"], result["total_penalty"],
+            )
+        return result
+    except Exception:
+        logger.exception("Stolen-ship rep-penalty sweep failed")
+        db.rollback()
+        return result
+    finally:
+        db.close()
+
+
+def _run_transfer_claim_autocomplete_sweep_sync() -> Dict[str, int]:
+    """Auto-complete any contested registration-transfer claim whose 24h
+    owner-dispute window has elapsed with no owner response (ship-registry.md
+    "Legal ownership transfer" step 4, "Owner takes no action -> transfer
+    completes automatically at the deadline" / failure-modes table). Own
+    SessionLocal, xact-level advisory lock (skip on contention), a candidate
+    query, then a per-row with_for_update re-read + per-row commit + per-row
+    try/except -- same discipline as
+    ``_run_stolen_ship_rep_penalty_sweep_sync`` directly above.
+
+    IDEMPOTENCY: the candidate gate itself is the idempotency anchor --
+    ``Ship.pending_transfer_claimant_id IS NOT NULL``. Completion (via
+    ``ship_registry_service._complete_transfer_claim``) clears that column,
+    so a completed claim drops out of the candidate set and can never be
+    re-completed by a duplicate wake or restart. The per-row re-read re-
+    confirms both the claim is still pending AND the deadline has still
+    passed (a concurrent owner-approve or stolen-report-cancel since the
+    candidate query would have already cleared/changed it).
+
+    Returns {"claims": n_completed}."""
+    from src.core.database import SessionLocal
+    from src.models.ship import Ship
+    from src.services.ship_registry_service import _complete_transfer_claim
+
+    result = {"claims": 0}
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _TRANSFER_CLAIM_AUTOCOMPLETE_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return result
+        db.commit()
+
+        now = datetime.now(UTC)
+
+        candidate_ids = (
+            db.query(Ship.id)
+            .filter(
+                Ship.pending_transfer_claimant_id.isnot(None),
+                Ship.pending_transfer_deadline.isnot(None),
+                Ship.pending_transfer_deadline <= now,
+            )
+            .all()
+        )
+
+        for (ship_id,) in candidate_ids:
+            try:
+                ship = (
+                    db.query(Ship)
+                    .filter(Ship.id == ship_id)
+                    .with_for_update()
+                    .first()
+                )
+                still_pending_and_due = (
+                    ship is not None
+                    and ship.pending_transfer_claimant_id is not None
+                    and ship.pending_transfer_deadline is not None
+                    and ship.pending_transfer_deadline <= now
+                )
+                if not still_pending_and_due:
+                    db.rollback()
+                    continue
+
+                _complete_transfer_claim(db, ship=ship, via="auto_complete")
+                result["claims"] += 1
+                db.commit()
+            except Exception:
+                logger.exception(
+                    "Transfer-claim autocomplete sweep: completion failed for ship %s",
+                    ship_id,
+                )
+                db.rollback()
+
+        if result["claims"]:
+            logger.info(
+                "Transfer-claim autocomplete sweep: completed %d pending claim(s)",
+                result["claims"],
+            )
+        return result
+    except Exception:
+        logger.exception("Transfer-claim autocomplete sweep failed")
+        db.rollback()
+        return result
+    finally:
+        db.close()
+
+
+def _run_bounty_expire_sweep_sync() -> Dict[str, int]:
+    """Auto-cancel + refund every player-placed bounty past its optional
+    ``expires_at`` (bounty-and-reputation.md 📐 "auto-refund-minus-fee on
+    expiry"). Thin session/lock/due-check wrapper — the pure, testable logic
+    is ``BountyService.expire_due_bounties`` (mirrors
+    ``_run_beacon_expire_sweep_sync`` wrapping ``message_beacon_service.
+    sweep_expired`` exactly). Lock acquired FIRST, only a successful
+    acquirer proceeds to the due-check (WO-SWEEP-SILENT-SWEEPS discipline —
+    lock contention returns a zeroed result, not a silent no-op)."""
+    from src.core.database import SessionLocal
+    from src.services.bounty_service import BountyService
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _BOUNTY_EXPIRE_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            logger.info("NPC scheduler: bounty expire sweep — lock busy, skipped")
+            return {"expired": 0, "total_refunded": 0}
+        if not _sweep_due_and_advance(
+            db, _BOUNTY_EXPIRE_STATE_KEY, BOUNTY_EXPIRE_SWEEP_SECONDS, datetime.now(UTC),
+        ):
+            return {"expired": 0, "total_refunded": 0}
+        result = BountyService(db).expire_due_bounties(now=datetime.now(UTC))
+        db.commit()
+        return result
+    except Exception:
+        logger.exception("Bounty expire sweep failed")
+        db.rollback()
+        return {"expired": 0, "total_refunded": 0}
+    finally:
+        db.close()
+
+
+def _run_wanted_clear_sweep_sync() -> int:
+    """Auto-clear every Wanted flag past its ``wanted_until`` (WO-BUILD-
+    WANTED-UNTIL-TIMER). Thin session/lock/due-check wrapper — the pure,
+    testable logic is ``wanted_service.clear_expired_wanted``. The sibling
+    suspect-auto-clear sweep (mirrors this one) lives in
+    ``pirate_npc_sweeps._run_suspect_clear_sweep_sync`` (WO-CMB-SUSPECT-
+    LIFE-1 held wiring, moved verbatim into that module during the
+    WO-QUALITY-techdebt-scheduler-split — not duplicated here). Lock
+    acquired FIRST, only a successful acquirer proceeds to the due-check."""
+    from src.core.database import SessionLocal
+    from src.services import wanted_service
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _WANTED_CLEAR_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            logger.info("NPC scheduler: wanted clear sweep — lock busy, skipped")
+            return 0
+        if not _sweep_due_and_advance(
+            db, _WANTED_CLEAR_STATE_KEY, WANTED_CLEAR_SWEEP_SECONDS, datetime.now(UTC),
+        ):
+            return 0
+        cleared = wanted_service.clear_expired_wanted(db, now=datetime.now(UTC))
+        db.commit()
+        return cleared
+    except Exception:
+        logger.exception("Wanted clear sweep failed")
+        db.rollback()
+        return 0
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------

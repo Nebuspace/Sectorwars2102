@@ -72,16 +72,18 @@ class _DeploySession:
 
     Order: get(Drone) -> execute(lock, full Player) -> run_sync(regenerate_turns)
     -> get(Player) -> get(Ship) -> execute(max_drones) -> execute(deployed_count)
-    -> [execute(prior deployment) -> add/commit/refresh on success].
+    -> execute(sector-exclusivity rival check) -> [execute(prior deployment)
+    -> add/commit/refresh on success].
     """
 
     def __init__(self, *, drone, player, ship, max_drones=99, deployed_count=0,
-                 prior_deployment=None, commit_side_effect=None):
+                 rival_deployment_id=None, prior_deployment=None, commit_side_effect=None):
         self.get = AsyncMock(side_effect=[drone, player, ship])
         self.execute = AsyncMock(side_effect=[
             _result(scalar_one_or_none=player),
             _result(scalar_one_or_none=max_drones),
             _result(scalar=deployed_count),
+            _result(scalar_one_or_none=rival_deployment_id),
             _result(scalar_one_or_none=prior_deployment),
         ])
         self.run_sync = AsyncMock(side_effect=lambda fn, *a, **kw: fn(None, *a, **kw))
@@ -212,6 +214,7 @@ async def test_deploy_drone_lock_query_requests_for_update():
         _result(scalar_one_or_none=player),
         _result(scalar_one_or_none=99),
         _result(scalar=0),
+        _result(scalar_one_or_none=None),
         _result(scalar_one_or_none=None),
     ]
 

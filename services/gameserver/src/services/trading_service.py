@@ -7,7 +7,7 @@ commodity price range enforcement per spec, and periodic stock regeneration.
 
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, Optional, Tuple, Any
 from datetime import datetime, UTC
 import logging
 
@@ -404,11 +404,8 @@ BUY_SPREAD = 0.85    # Station buy price is 15% below dynamic midpoint
 # they survive every dynamic reprice. Values are the trading.md
 # #class-8--class-9-premium-pricing design target (+20% buy / +25% sell,
 # both UPWARD: Class 8 pays players more, Class 9 charges players more).
-# The bootstrap-only current_price multipliers in
-# core/station_class_map.apply_stock_levels (1.3x / 0.8x — Class 9
-# DIRECTION inverted vs canon) were never live behavior — they were
-# overwritten on the first reprice — so code-wins does not attach to them.
-# Conflict recorded in the run-14 report.
+# Live premiums — apply_stock_levels bootstraps current_price to base only
+# (the old inverted Class-9 0.8x bootstrap was deleted; see station_class_map).
 CLASS_8_BUY_PREMIUM = 1.2    # Black Hole pays players 20% more for what it buys
 CLASS_9_SELL_PREMIUM = 1.25  # Nova charges players 25% more for what it sells
 
@@ -1021,6 +1018,8 @@ class TradingService:
         Returns:
             Tuple of (can_trade: bool, reason: str).
         """
+        from src.services.station_service import is_station_functional
+
         # Check if player is docked
         if not player.is_docked:
             return False, "You must be docked at a port to trade"
@@ -1028,5 +1027,9 @@ class TradingService:
         # Check if player is in the same sector as the station
         if player.current_sector_id != station.sector_id:
             return False, "You must be in the same sector as the port"
+
+        # Destroyed / 24h rebuild window — trading.md recovery clauses
+        if not is_station_functional(station):
+            return False, "This station is destroyed and rebuilding — trading is suspended"
 
         return True, "OK"

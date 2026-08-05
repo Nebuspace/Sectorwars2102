@@ -2,7 +2,7 @@ import uuid
 import random
 import logging
 from datetime import datetime
-from typing import List, Dict, Optional, Tuple, Any, Union
+from typing import List, Dict, Optional, Tuple, Any
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -26,10 +26,137 @@ from src.services.ai_dialogue_service import (
 )
 from src.services.ai_provider_service import get_ai_provider_service, ProviderType
 from src.services.nickname_validation_service import validate_nickname
-from src.utils.guard_personalities import get_guard_for_session
+from src.utils.guard_personalities import get_guard_for_session, personality_threshold_modifier
 from src.core.ship_specifications_seeder import SHIP_SPECIFICATIONS
+from src.services.enhanced_manual_provider import CatBoostDetector
+
+# Canon FEATURES/gameplay/first-login.md: flat +15% on persuasion score when the
+# player mentions the cat (whole-word), applied once before threshold checks.
+CAT_MENTION_SCORE_BONUS = 0.15
+
+
+def apply_cat_mention_score_bonus(
+    score: float, player_responses: List[str]
+) -> Tuple[float, bool]:
+    """Add flat CAT_MENTION_SCORE_BONUS once if any response mentions the cat.
+
+    Returns (possibly_boosted_score, applied). Caps at 1.0. Pure helper so the
+    ship-claim path and unit tests share one implementation (WO-FIRSTLOGIN-
+    CAT-BONUS-WIRING) — per-exchange CatBoostDetector boosts in the manual
+    provider are not enough when AI providers score exchanges.
+    """
+    mentioned = any(
+        CatBoostDetector.detect_cat_mention(text or "")
+        for text in player_responses
+    )
+    if not mentioned:
+        return float(score), False
+    return min(1.0, float(score) + CAT_MENTION_SCORE_BONUS), True
+
 
 logger = logging.getLogger(__name__)
+
+# ADR-0091 M39 — the number of free, zero-stakes demo expeditions offered
+# during onboarding to teach the re-roll/compare mechanic.
+ONBOARDING_DEMO_EXPEDITION_COUNT = 3
+
+
+def is_first_colony(db: Session, player: Player) -> bool:
+    """Whether `player` has never yet owned a colonized planet (ADR-0091
+    M35: onboarding accommodations apply to colony #1 only).
+
+    No dedicated "colonies founded" counter exists on Player. Uses the same
+    `Planet.owner_id == player.id` ownership query already canonical across
+    abandonment_service / genesis_service / research_service /
+    ranking_service / citadel_service, rather than inventing a new counter
+    column or relying on the separate `player_planets` association table
+    (which those services do not use for ownership checks).
+    """
+    from src.models.planet import Planet
+
+    return db.query(Planet).filter(Planet.owner_id == player.id).count() == 0
+
+
+def get_designated_starter_planet(db: Session, player: Player) -> Optional[Any]:
+    """The planet in the player's home sector — the onboarding starter
+    planet (nexus_generation_service seeds a special habitable planet at
+    sector 1, and Player.home_sector_id defaults to 1)."""
+    from src.models.planet import Planet
+
+    return db.query(Planet).filter(Planet.sector_id == player.home_sector_id).first()
+
+
+def reserve_starter_planet_for_player(db: Session, player: Player) -> Optional[Any]:
+    """ADR-0091 M40 — suppress the starter planet's contestable window and
+    sovereign-reserve it to this player via `reserved_for_player_id`,
+    non-snipeable. No-op if the planet is already owned or already reserved
+    (never overwrites an existing reservation/ownership)."""
+    from src.models.planet import PlanetContestState
+
+    planet = get_designated_starter_planet(db, player)
+    if planet is None:
+        return None
+    if planet.owner_id is not None or planet.reserved_for_player_id is not None:
+        return planet
+    planet.reserved_for_player_id = player.id
+    if planet.contest_state is not None:
+        planet.contest_state = PlanetContestState.SUPPRESSED
+    return planet
+
+
+def get_first_colony_expedition_overrides(
+    db: Session, player: Player, planet: Any
+) -> Dict[str, Any]:
+    """ADR-0091 M38 — kwargs to merge into an `roll_expedition(...)` call so
+    a first-colony player's expedition on their designated starter planet is
+    a forced, guaranteed-good, cost-waived roll (ADR-0091 line ~152).
+    Returns {} when not applicable (not the player's first colony, or not
+    their starter planet) — callers merge this into their normal kwargs
+    rather than branching on it.
+    """
+    starter_planet = get_designated_starter_planet(db, player)
+    if starter_planet is None or planet is None or starter_planet.id != planet.id:
+        return {}
+    if not is_first_colony(db, player):
+        return {}
+    return {"forced_success": True, "guaranteed_good": True, "waive_cost": True}
+
+
+def launch_onboarding_demo_expeditions(
+    db: Session,
+    player: Player,
+    planet: Any,
+    ship: Any,
+    count: int = ONBOARDING_DEMO_EXPEDITION_COUNT,
+) -> List[Any]:
+    """ADR-0091 M39 — launch `count` free, zero-stakes demo expeditions.
+
+    Lazy import + defensive: expedition_service.py (lane2) may not exist yet
+    at the time this runs (concurrent-lane build). Never breaks onboarding
+    completion — mirrors the medal_service dispatch pattern above in
+    complete_first_login. Returns [] (and logs a warning) if lane2 hasn't
+    landed, or if any individual roll raises.
+    """
+    try:
+        from src.services.expedition_service import roll_expedition
+    except ImportError:
+        logger.warning(
+            "expedition_service.roll_expedition not available yet "
+            "(lane2 not landed) - skipping onboarding demo expeditions for %s",
+            player.id,
+        )
+        return []
+
+    results: List[Any] = []
+    for _ in range(count):
+        try:
+            results.append(roll_expedition(db, player, planet, ship, demo=True))
+        except Exception as exc:  # never break onboarding on a demo-roll failure
+            logger.error(
+                "onboarding demo expedition failed for player %s: %s", player.id, exc
+            )
+            break
+    return results
 
 
 class FirstLoginCompletionError(Exception):
@@ -1488,6 +1615,18 @@ Description: {ship_specs.get('description', 'N/A')}
         logger.info(f"Final Persuasion Score: {final_persuasion_score:.4f}")
         logger.info(f"  Formula: ({avg_consistency:.4f} * 0.5) + ({avg_confidence:.4f} * 0.3) + ({avg_persuasiveness:.4f} * 0.2)")
 
+        # Canon flat +0.15 when any exchange mentions the cat (session-level,
+        # once) — applied before skill band + ship-claim threshold checks.
+        final_persuasion_score, cat_bonus_applied = apply_cat_mention_score_bonus(
+            final_persuasion_score,
+            [ex.player_response for ex in exchanges],
+        )
+        if cat_bonus_applied:
+            logger.info(
+                f"Cat-mention bonus applied: +{CAT_MENTION_SCORE_BONUS:.2f} → "
+                f"{final_persuasion_score:.4f}"
+            )
+
         # HARD-FAIL CHECKS: Instant denial for critical failures
         hard_fail_reason = None
 
@@ -1543,14 +1682,12 @@ Description: {ship_specs.get('description', 'N/A')}
         else:
             base_threshold = ship_config.weak_threshold
 
-        # Apply guard personality modifier to threshold
-        # Friendly guards are easier (lower threshold)
-        # Strict/paranoid guards are harder (higher threshold)
-        personality_modifier = 0.0
-        if session.guard_base_suspicion <= 0.35:  # Friendly Veteran
-            personality_modifier = -0.10  # 10% easier
-        elif session.guard_base_suspicion >= 0.60:  # Strict Rule-Follower or Paranoid Newbie
-            personality_modifier = +0.10  # 10% harder
+        # Apply guard personality modifier to threshold.
+        # Trait-keyed map (WO-FIRSTLOGIN-NIGHTSHIFTER): Night-Shifter @ 0.40
+        # was skipped by the old <=0.35 / >=0.60 suspicion buckets.
+        personality_modifier = personality_threshold_modifier(
+            session.guard_trait, session.guard_base_suspicion
+        )
 
         threshold = base_threshold + personality_modifier
         threshold = max(0.2, min(0.95, threshold))  # Clamp between 0.2 and 0.95
@@ -1693,7 +1830,6 @@ Description: {ship_specs.get('description', 'N/A')}
     def _generate_guard_outcome_response_fallback(self, session: FirstLoginSession) -> str:
         """Fallback static response if AI generation fails"""
         claimed_ship = session.ship_claimed or ShipChoice.ESCAPE_POD
-        awarded_ship = session.awarded_ship or ShipChoice.ESCAPE_POD
 
         if session.outcome == DialogueOutcome.SUCCESS:
             if claimed_ship == ShipChoice.ESCAPE_POD:
@@ -1829,7 +1965,7 @@ Description: {ship_specs.get('description', 'N/A')}
         from src.services.ship_service import sync_current_pilot
         # QUEUE-REGISTRY-PILOT-WIRING: no old ship -- every pre-existing
         # ship was hard-deleted above (self-healing stale-data cleanup).
-        sync_current_pilot(player, new_ship)
+        sync_current_pilot(player, new_ship, db=self.db)
         
         # Apply any bonuses or penalties from the dialogue outcome
         if session.negotiation_bonus_flag:
@@ -1876,6 +2012,21 @@ Description: {ship_specs.get('description', 'N/A')}
                 _award_special(self.db, session.id)
         except Exception as _e:  # never break first-login completion on medal award
             logger.error("first-login special-medal award failed for %s: %s", player.id, _e)
+
+        # ADR-0091 M40/M39 — sovereign-reserve the starter planet and offer
+        # free demo expeditions. Defensive: never breaks first-login
+        # completion (mirrors the medal-award dispatch above).
+        try:
+            starter_planet = reserve_starter_planet_for_player(self.db, player)
+            if starter_planet is not None:
+                launch_onboarding_demo_expeditions(
+                    self.db, player, starter_planet, new_ship
+                )
+        except Exception as _e:
+            logger.error(
+                "first-login onboarding expedition setup failed for %s: %s",
+                player.id, _e,
+            )
 
         self.db.commit()
         

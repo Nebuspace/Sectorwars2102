@@ -10,7 +10,7 @@ dispatch point — ``apply_emergent_action(player, action, context)`` — that:
   1. looks the action up in the canon trigger table,
   2. fans out to the canon per-faction faction-rep deltas in ONE transaction,
   3. emits the rivalry-cascade fractional negative on positive deltas, and
-  4. (future) applies the per-(player, faction) daily throttle.
+  4. applies the per-(player, faction) daily throttle (live, per ADR-0056 N-V1).
 
 This module is the dispatcher. It does NOT reinvent the rep mutation: it reuses
 ``faction_service.apply_faction_rep_delta`` (the proven sync, flush-only,

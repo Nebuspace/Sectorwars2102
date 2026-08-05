@@ -1,20 +1,32 @@
 """
-Player Activity Tracking Service (Redis-backed)
+Player Activity Tracking Service (Redis-backed, with a durable Postgres
+session/activity mirror — WO-BUILD-RETENTION-SIGNALS-WRITEBACK).
 
-Tracks player session activity, key events, and analytics summaries
-using Redis with TTL-based expiration.  No new database tables required --
-leverages the existing Player model's last_game_login and the Redis
-infrastructure already in place.
+Tracks player session activity, key events, and analytics summaries using
+Redis with TTL-based expiration (fast reads for online-presence / current
+session UI). At the two existing session boundaries -- login and logout --
+this also durably mirrors into ``PlayerSession`` / ``PlayerActivity``
+(Postgres), the tables ``RetentionService`` reads for the
+``declining_session_length`` / ``early_logout_streak`` at-risk signals and
+the tables the WO-G18 governance sweep reads for ``Region.active_players_30d``.
+Both tables already existed (created for this purpose) but had zero writers
+until this writeback -- see ``retention_service.py``'s "SIGNAL DATA-SOURCE
+STATUS" note.
+
+The mirror writes at LOGIN and LOGOUT only (not per-action) -- matching the
+one existing low-frequency hook in the auth flow, not a new one. A synchronous
+``Session`` (not ``AsyncSession``) is accepted because the only production
+caller (``src/api/routes/auth.py``) already holds a sync ``Session`` from
+``get_db``; the writeback is fully best-effort/non-fatal, mirroring the
+existing (previously dead) ``last_game_login`` refresh block it replaces.
 """
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, List, Optional
-from uuid import UUID
 
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy.orm import Session
 
 from src.models.player import Player
 from src.services.redis_service import RedisService, get_redis_service
@@ -78,12 +90,17 @@ class PlayerActivityService:
     async def track_login(
         self,
         player_id: str,
-        db: Optional[AsyncSession] = None,
+        db: Optional[Session] = None,
     ) -> Dict[str, Any]:
         """
         Record a player login event and start a session.
 
-        Optionally updates the Player.last_game_login in the database.
+        Optionally updates Player.last_game_login and (if ``db`` is provided)
+        durably opens a ``PlayerSession`` row + a "login" ``PlayerActivity``
+        row, mirroring the Redis session so the retention sweep's
+        session-length signals and the WO-G18 region-activity recompute have
+        real data. The new ``PlayerSession.id`` is stashed on the Redis
+        session dict (``db_session_id``) so ``track_logout`` can complete it.
         """
         redis = await self._get_redis()
         now = datetime.utcnow()
@@ -100,6 +117,37 @@ class PlayerActivityService:
             "sectors_visited": [],
         }
 
+        # Optionally update DB + open the durable session/activity mirror.
+        # Done BEFORE the Redis cache_set below so db_session_id (if created)
+        # is included in the persisted session dict.
+        if db:
+            try:
+                from src.models.player_analytics import PlayerActivity, PlayerSession
+
+                player = db.query(Player).filter(Player.id == player_id).first()
+                if player:
+                    player.last_game_login = now
+
+                db_session = PlayerSession(player_id=player_id, start_time=now)
+                db.add(db_session)
+                db.flush()  # populate db_session.id (client-side default)
+                session_data["db_session_id"] = str(db_session.id)
+
+                db.add(PlayerActivity(
+                    player_id=player_id,
+                    session_id=db_session.id,
+                    activity_type=ActivityEventType.LOGIN,
+                    sector_id=player.current_sector_id if player else None,
+                    timestamp=now,
+                ))
+                db.commit()
+            except Exception as e:
+                logger.warning(f"Could not persist login session for {player_id}: {e}")
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+
         await redis.cache_set(session_key, session_data, ttl=_SESSION_TTL)
         await self._record_event(player_id, ActivityEventType.LOGIN)
 
@@ -107,25 +155,23 @@ class PlayerActivityService:
         if redis.redis_pool:
             await redis.redis_pool.sadd(_GLOBAL_ONLINE_KEY, player_id)
 
-        # Optionally update DB
-        if db:
-            try:
-                result = await db.execute(
-                    select(Player).where(Player.id == player_id)
-                )
-                player = result.scalar_one_or_none()
-                if player:
-                    player.last_game_login = now
-                    await db.commit()
-            except Exception as e:
-                logger.warning(f"Could not update last_game_login for {player_id}: {e}")
-
         logger.info(f"Player {player_id} logged in")
         return session_data
 
-    async def track_logout(self, player_id: str) -> Optional[Dict[str, Any]]:
+    async def track_logout(
+        self,
+        player_id: str,
+        db: Optional[Session] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         Record a player logout event and finalise the session summary.
+
+        If ``db`` is provided and the Redis session carries a
+        ``db_session_id`` (set by ``track_login``), also durably completes
+        the matching ``PlayerSession`` row (end_time/duration_minutes/
+        actions/sectors) and writes a "logout" ``PlayerActivity`` row --
+        closing the retention-sweep session-length signals and feeding
+        WO-G18's ``Region.active_players_30d`` recompute.
 
         Returns the completed session summary including duration.
         """
@@ -144,6 +190,45 @@ class PlayerActivityService:
         duration_seconds = (now - login_at).total_seconds()
         session_data["logout_at"] = now.isoformat()
         session_data["duration_seconds"] = duration_seconds
+
+        # Complete the durable session/activity mirror opened at login.
+        if db:
+            db_session_id = session_data.get("db_session_id")
+            if db_session_id:
+                try:
+                    from src.models.player_analytics import PlayerActivity, PlayerSession
+
+                    db_session = (
+                        db.query(PlayerSession)
+                        .filter(PlayerSession.id == db_session_id)
+                        .first()
+                    )
+                    if db_session is not None:
+                        db_session.end_time = now
+                        db_session.duration_minutes = int(duration_seconds // 60)
+                        db_session.actions_performed = session_data.get("actions_count", 0)
+                        db_session.sectors_visited = session_data.get("sectors_visited", [])
+
+                    player = db.query(Player).filter(Player.id == player_id).first()
+                    db.add(PlayerActivity(
+                        player_id=player_id,
+                        session_id=db_session_id,
+                        activity_type=ActivityEventType.LOGOUT,
+                        sector_id=player.current_sector_id if player else None,
+                        timestamp=now,
+                    ))
+                    db.commit()
+                except Exception as e:
+                    logger.warning(f"Could not persist logout session for {player_id}: {e}")
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
+            else:
+                logger.debug(
+                    f"No db_session_id on Redis session for {player_id}; "
+                    "skipping durable session completion"
+                )
 
         # Persist session to rolling summary
         await self._update_summary(player_id, session_data)

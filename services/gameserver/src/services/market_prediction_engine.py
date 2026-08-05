@@ -9,10 +9,10 @@ No ML libraries required -- pure statistical methods.
 import logging
 import math
 from typing import List, Dict, Any, Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime
 from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, desc, func
+from sqlalchemy import select
 
 from src.core.commodity_economy import COMMODITY_BASE_PRICES
 from src.models.market_transaction import MarketTransaction, MarketPrice, PriceHistory
@@ -98,8 +98,9 @@ class MarketPredictionEngine:
     # single price table (WO-ARCH-RES-2H-RUNTIME-VOCAB) instead of a hand-kept
     # literal that had drifted from the 9-commodity wire (was missing
     # precious_metals). Import-time only — no DB read; auto-tracks any future
-    # change to COMMODITY_BASE_PRICES (incl. Max's pending precious_metals
-    # ruling — see DECISIONS).
+    # change to COMMODITY_BASE_PRICES. precious_metals is canonical there
+    # (mining.md Secondary drop, ADR-0062 E-D1, Station.commodities JSONB
+    # default in models/station.py) — not a pending Max ruling.
     COMMODITIES = list(COMMODITY_BASE_PRICES)
 
     def __init__(self):
@@ -370,7 +371,7 @@ class MarketPredictionEngine:
                 "model_version": self.model_version,
             }
 
-        except Exception as e:
+        except Exception:
             error_id = generate_error_id()
             logger.exception("Error analysing commodity %s [error_id=%s]", commodity, error_id)
             return {"commodity": commodity, "status": "error", "error_id": error_id}
