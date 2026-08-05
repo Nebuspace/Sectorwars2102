@@ -13,8 +13,6 @@ from sqlalchemy.orm import selectinload
 
 from src.models.drone import Drone, DroneDeployment, DroneType, DroneStatus
 from src.models.player import Player
-from src.models.sector import Sector
-from src.models.team import Team
 from src.models.ship import Ship, ShipSpecification, UpgradeType
 from src.services.turn_service import regenerate_turns, spend_turns, refund_turns
 
@@ -179,21 +177,42 @@ class DroneService:
 
     @staticmethod
     def _drone_bay_bonus(ship: Ship) -> int:
-        """The Drone Bay upgrade's +2/level capacity bonus for ``ship``.
+        """The Drone Bay's capacity bonus for ``ship`` -- legacy upgrade level
+        PLUS any fitted Drone Bay module, summed (mirrors how cargo/genesis
+        stack their legacy JSONB contribution with the module bake -- see
+        ``ship_upgrade_service._apply_module_effects``).
 
-        Reads the installed Drone Bay level from ``Ship.upgrades`` (the
-        UpgradeType-keyed JSONB ship_upgrade_service writes on purchase) and
-        multiplies by ``DRONE_CAPACITY_BONUS_PER_BAY_LEVEL``. A ship with no
+        Legacy half: reads the installed Drone Bay level from ``Ship.upgrades``
+        (the UpgradeType-keyed JSONB ship_upgrade_service writes on purchase)
+        and multiplies by ``DRONE_CAPACITY_BONUS_PER_BAY_LEVEL``. A ship with no
         Drone Bay level (upgrades absent/empty/non-dict) contributes 0.
+
+        Module half: ``drone_capacity_bonus`` was tracked KERNEL-INERT in
+        ``Ship.modules["_baked"]`` (reviewer SM-2 gate-fix) pending this wiring
+        -- a fitted Drone Bay module previously gave zero capacity change. Read
+        directly; it is already the post-best-3-cap, post-adjacency total
+        _apply_module_effects computed, so no re-derivation here.
         """
         upgrades = getattr(ship, "upgrades", None)
-        if not isinstance(upgrades, dict):
-            return 0
-        try:
-            level = int(upgrades.get(UpgradeType.DRONE_BAY.value, 0))
-        except (TypeError, ValueError):
-            return 0
-        return max(0, level) * DRONE_CAPACITY_BONUS_PER_BAY_LEVEL
+        legacy_bonus = 0
+        if isinstance(upgrades, dict):
+            try:
+                level = int(upgrades.get(UpgradeType.DRONE_BAY.value, 0))
+            except (TypeError, ValueError):
+                level = 0
+            legacy_bonus = max(0, level) * DRONE_CAPACITY_BONUS_PER_BAY_LEVEL
+
+        module_bonus = 0
+        modules = getattr(ship, "modules", None)
+        if isinstance(modules, dict):
+            baked = modules.get("_baked")
+            if isinstance(baked, dict):
+                try:
+                    module_bonus = max(0, int(baked.get("drone_capacity_bonus", 0)))
+                except (TypeError, ValueError):
+                    module_bonus = 0
+
+        return legacy_bonus + module_bonus
 
     async def _count_live_drones(self, player_id: UUID) -> int:
         """Count a player's non-destroyed drones (the ones that occupy a cap slot)."""
@@ -302,6 +321,22 @@ class DroneService:
             raise ValueError(
                 f"Drone deployment limit reached: your current ship can field "
                 f"at most {max_drones} drone(s) (you have {deployed} deployed)."
+            )
+
+        # combat.md § Sector control: one player per sector. Own additional
+        # or redeployed drones in the same sector are fine; another player's
+        # active deployment blocks. Checked before the turn debit so a
+        # rejected exclusive deploy never spends turns.
+        rival = await self.session.execute(
+            select(DroneDeployment.id).where(and_(
+                DroneDeployment.sector_id == sector_id,
+                DroneDeployment.is_active == True,
+                DroneDeployment.player_id != drone.player_id,
+            )).limit(1)
+        )
+        if rival.scalar_one_or_none() is not None:
+            raise ValueError(
+                "Sector already defended by another player's drones"
             )
 
         # turns.md:87 — checked (and cleanly rejected, before any state

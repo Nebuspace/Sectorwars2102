@@ -12,9 +12,8 @@ providing sophisticated rule-based dialogue simulation that includes:
 import random
 import re
 import logging
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List
 from dataclasses import dataclass
-from enum import Enum
 
 from src.services.ai_dialogue_service import (
     DialogueContext, ResponseAnalysis, GuardResponse, GuardMood, ShipType
@@ -332,8 +331,7 @@ class EnhancedManualProvider(AIProvider):
         # Basic text analysis
         words = response.split()
         word_count = len(words)
-        char_count = len(response)
-        
+
         # Base scores
         persuasiveness = self._calculate_base_persuasiveness(response, word_count)
         confidence = self._calculate_confidence(response)

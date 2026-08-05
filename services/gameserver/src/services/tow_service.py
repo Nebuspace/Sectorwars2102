@@ -52,7 +52,7 @@ also relocates the towed ship/pilot on a hauler move.
 import logging
 import uuid
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -63,7 +63,6 @@ from src.models.ship import (
     ShipSize,
     ShipSpecification,
     ShipStatus,
-    size_units_for,
     tow_surcharge_for,
 )
 from src.services.ship_upgrade_service import ShipUpgradeService
@@ -107,11 +106,13 @@ class TowService:
     # ------------------------------------------------------------------ #
     @staticmethod
     def has_tractor_beam(ship: Ship) -> bool:
-        """True iff ``ship`` carries a tractor_beam in tow_capable mode (WO-BC
-        equipment effects {tow_capable: true}). Defensive: a missing
-        equipment_slots JSONB simply yields False, never a crash."""
+        """True iff ``ship`` carries a tractor_beam in tow_capable mode — either
+        the legacy equipment_slots tractor_beam (WO-BC) or an installed lattice
+        ``tractor`` module (WO-BUILD-LANDER-MINING-TRACTOR-CONSUMER-WIRING).
+        Defensive: a missing equipment_slots/modules JSONB simply yields False,
+        never a crash."""
         try:
-            effects = ShipUpgradeService.get_equipment_effects(ship)
+            effects = ShipUpgradeService.get_combined_effects(ship)
             return bool(effects.get("tow_capable"))
         except Exception as e:
             logger.error("Tractor equipment read failed (treating as no tractor): %s", e)
@@ -419,6 +420,9 @@ class TowService:
         if towed.owner_id is not None:
             pilot = self.db.query(Player).filter(Player.id == towed.owner_id).first()
             if pilot is not None and pilot.current_ship_id == towed.id:
+                # WO-K2b: snapshot the ORIGIN before the next line overwrites it —
+                # the contraband scan at the end of this block needs it.
+                pilot_origin_sector_id = pilot.current_sector_id
                 pilot.current_sector_id = destination_sector_id
                 pilot.current_region_id = region_id
                 pilot.is_docked = False
@@ -429,6 +433,23 @@ class TowService:
                 # undocks the pilot; release the slip or it orphans + 500s redock.
                 from src.services.docking_service import release as _release_docking_slip
                 _release_docking_slip(self.db, None, pilot)
+
+                # WO-K2b: being towed across a border is still crossing it, and
+                # at 0 turns it is the cheapest crossing in the game — so it is
+                # scanned like any other. Against the TOWED PILOT's own cooldown
+                # anchor, not the hauler's: the hauler is not the one carrying the
+                # contraband. Flush-only and savepoint-scoped, riding this
+                # hauler-move transaction; it can never strand the tow.
+                from src.services.contraband_service import (
+                    scan_in_transit_best_effort,
+                )
+                scan_in_transit_best_effort(
+                    self.db,
+                    player=pilot,
+                    ship_id=towed.id,
+                    origin_sector_id=pilot_origin_sector_id,
+                    destination_sector_id=destination_sector_id,
+                )
         logger.info(
             "Tow ride-along: hauler %s carried towed %s to sector %s",
             hauler.id, towed.id, destination_sector_id,

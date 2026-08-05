@@ -748,6 +748,29 @@ def check_and_award_combat_medals(
         return []
 
 
+def check_and_award_untouchable_medal(
+    db: Session,
+    player: Player,
+    flawless_combats: int,
+) -> List[str]:
+    """combat.untouchable dispatcher (2026-08-04 orchestrator ruling: the
+    counter is a STREAK, reset to 0 on any ship loss — see
+    ``combat_service._track_flawless_combat_streak``, the durable per-player
+    JSONB counter this reads). Defensive — NEVER raises into the combat lane.
+    """
+    try:
+        if player is None:
+            return []
+        return _evaluate_and_award(
+            db, player.id, "flawless_combats", int(flawless_combats or 0),
+            source_event_key="combat.flawless",
+            awarded_via="combat",
+        )
+    except Exception as e:  # defensive: never break combat
+        logger.error("check_and_award_untouchable_medal failed for %s: %s", getattr(player, "id", "?"), e)
+        return []
+
+
 def check_and_award_trade_medals(
     db: Session,
     player: Player,
@@ -755,8 +778,12 @@ def check_and_award_trade_medals(
 ) -> List[str]:
     """Trade-lane dispatcher (analogous to the combat hook). Defensive.
 
-    ``context`` may carry ``total_trades`` and ``lifetime_credits``; falls back
-    to reading the player row's ``credits`` when not supplied.
+    ``context`` may carry ``total_trades``, ``lifetime_credits``, and
+    ``regional_commodity_sales`` (economic.cartel_breaker — the caller's
+    single best-region lifetime SELL total, live-query-derived; no durable
+    counter needed since ``enhanced_market_transactions`` rows are never
+    deleted). ``lifetime_credits`` falls back to the player row's ``credits``
+    when not supplied.
     """
     try:
         if player is None:
@@ -779,6 +806,13 @@ def check_and_award_trade_medals(
                 db, player.id, "lifetime_credits", int(lifetime_credits),
                 source_event_key="trade.completed", awarded_via="trade",
             )
+
+        regional_commodity_sales = context.get("regional_commodity_sales")
+        if regional_commodity_sales is not None:
+            awarded += _evaluate_and_award(
+                db, player.id, "regional_commodity_sales", int(regional_commodity_sales),
+                source_event_key="trade.sell", awarded_via="trade",
+            )
         return awarded
     except Exception as e:
         logger.error("check_and_award_trade_medals failed for %s: %s", getattr(player, "id", "?"), e)
@@ -796,7 +830,7 @@ def check_and_award_exploration_medals(
             return []
         context = context or {}
         awarded: List[str] = []
-        for trigger in ("sectors_visited", "planets_created", "planets_colonized"):
+        for trigger in ("sectors_visited", "sectors_discovered", "planets_created", "planets_colonized", "void_jumps"):
             value = context.get(trigger)
             if value is not None:
                 awarded += _evaluate_and_award(
@@ -895,6 +929,107 @@ def check_and_award_bounty_medals(db: Session, collector_id: uuid.UUID) -> List[
         return []
 
 
+def check_and_award_contract_medals(db: Session, player_id: uuid.UUID) -> List[str]:
+    """Award economic.quartermaster (``contracts_completed`` >= 25).
+
+    Counter: COUNT of Contract rows where this player is the acceptor and
+    status == COMPLETED. Dispatched from contract_service.complete() after a
+    successful delivery, inside the same unit of work (mirrors the bounty
+    hook's own frozen-hook pattern). Defensive."""
+    try:
+        from src.models.contract import Contract, ContractStatus
+
+        contracts_completed = (
+            db.query(Contract)
+            .filter(
+                Contract.acceptor_player_id == player_id,
+                Contract.status == ContractStatus.COMPLETED,
+            )
+            .count()
+        )
+        return _evaluate_and_award(
+            db, player_id, "contracts_completed", int(contracts_completed),
+            source_event_key="contract.completed", awarded_via="trade",
+        )
+    except Exception as e:
+        logger.error("check_and_award_contract_medals failed for %s: %s", player_id, e)
+        return []
+
+
+def check_and_award_aria_medals(db: Session, player_id: uuid.UUID, aria_consciousness: int) -> List[str]:
+    """Award special.arias_favor (``aria_consciousness`` >= 5).
+
+    ``aria_consciousness`` is caller-supplied (``Player.aria_consciousness_
+    level``, already live-tracked and monotonic — no under/over-counting risk
+    like beacons_placed). Dispatched from ``aria_personal_intelligence_
+    service.update_consciousness_and_relationship_sync`` on a sync Session
+    (the async twin is NOT hooked — see that call site's own comment).
+    Defensive."""
+    try:
+        return _evaluate_and_award(
+            db, player_id, "aria_consciousness", int(aria_consciousness),
+            source_event_key="aria.consciousness_evolved", awarded_via="aria",
+        )
+    except Exception as e:
+        logger.error("check_and_award_aria_medals failed for %s: %s", player_id, e)
+        return []
+
+
+def check_and_award_drone_medals(db: Session, player_id: uuid.UUID, drones_cleared: int) -> List[str]:
+    """Award combat.drone_reaper (``drones_cleared`` >= 100).
+
+    ``drones_cleared`` is a caller-supplied durable lifetime count
+    (combat_service maintains it in Player.settings JSONB, since
+    DroneDeployment.player_id tracks the drone's DEPLOYER/owner, not the
+    attacker who destroyed it -- there's no table to derive this from).
+    Dispatched from combat_service after a sector drone-clear victory, same
+    unit of work as the destroy_pirate_drones reputation hook. Defensive."""
+    try:
+        return _evaluate_and_award(
+            db, player_id, "drones_cleared", int(drones_cleared),
+            source_event_key="combat.drones_cleared", awarded_via="combat",
+        )
+    except Exception as e:
+        logger.error("check_and_award_drone_medals failed for %s: %s", player_id, e)
+        return []
+
+
+def check_and_award_siege_medals(db: Session, player_id: uuid.UUID, planetary_assaults: int) -> List[str]:
+    """Award combat.siege_master (``planetary_assaults`` >= 25, i.e. successful
+    captures). Caller-supplied durable lifetime count (combat_service
+    maintains it in Player.settings JSONB -- no captured-only outcome column
+    exists on CombatLog to derive this from a query). Dispatched from
+    combat_service.attack_planet's capture branch. Defensive."""
+    try:
+        return _evaluate_and_award(
+            db, player_id, "planetary_assaults", int(planetary_assaults),
+            source_event_key="combat.planet_captured", awarded_via="combat",
+        )
+    except Exception as e:
+        logger.error("check_and_award_siege_medals failed for %s: %s", player_id, e)
+        return []
+
+
+def check_and_award_beacon_medals(db: Session, player_id: uuid.UUID, beacons_placed: int) -> List[str]:
+    """Award diplomatic.beacon_keeper (``beacons_placed`` >= 10).
+
+    ``beacons_placed`` is a CALLER-SUPPLIED lifetime count, not derived here
+    by counting live MessageBeacon rows -- the expiry sweep HARD-DELETES
+    expired beacons (message_beacon_service.sweep_expired), so a live-row
+    COUNT would under-count (and could even un-award) a lifetime achievement
+    as old beacons age out. The caller (message_beacon_service.deploy)
+    maintains a durable per-player counter for this reason. Dispatched
+    inside the same unit of work as the deploy. Defensive."""
+    try:
+        return _evaluate_and_award(
+            db, player_id, "beacons_placed", int(beacons_placed),
+            source_event_key="beacon.deployed", awarded_via="social",
+        )
+    except Exception as e:
+        logger.error("check_and_award_beacon_medals failed for %s: %s", player_id, e)
+        return []
+
+
 def check_and_award_faction_medals(db: Session, player_id: uuid.UUID) -> List[str]:
     """Award diplomatic faction medals (peacemaker @3, ambassadors_star @10).
 
@@ -972,8 +1107,9 @@ def check_and_award_governance_medals(db: Session, player_id: uuid.UUID) -> List
     Counter: the number of regional policies this player authored that reached
     IMPLEMENTED (``RegionalPolicy.proposed_by == player AND status==IMPLEMENTED``).
     Dispatched from the governance finalize sweep when a policy is enacted.
-    Defensive. (Note: ``diplomatic.first_citizen`` / governance_votes is NOT
-    wired here — its only earn-event lives behind an AsyncSession and is parked.)
+    Defensive. ``diplomatic.first_citizen`` is a separate hook —
+    :func:`check_and_award_first_citizen_medal` — fired from the AsyncSession
+    vote path via ``db.run_sync``.
     """
     try:
         from src.models.region import RegionalPolicy, PolicyStatus
@@ -992,6 +1128,44 @@ def check_and_award_governance_medals(db: Session, player_id: uuid.UUID) -> List
         )
     except Exception as e:
         logger.error("check_and_award_governance_medals failed for %s: %s", player_id, e)
+        return []
+
+
+def check_and_award_first_citizen_medal(
+    db: Session, player_id: uuid.UUID
+) -> List[str]:
+    """Award diplomatic.first_citizen (``governance_votes`` >= 1).
+
+    Counter: lifetime RegionalVote rows + RegionalPolicyVote rows for this
+    voter. Dispatched from RegionalGovernanceService.cast_election_vote /
+    cast_policy_vote via ``await db.run_sync(...)`` after the vote row is
+    flushed so the COUNT includes the just-cast vote. Defensive + idempotent.
+    """
+    try:
+        from src.models.region import RegionalPolicyVote, RegionalVote
+
+        election_votes = (
+            db.query(RegionalVote)
+            .filter(RegionalVote.voter_id == player_id)
+            .count()
+        )
+        policy_votes = (
+            db.query(RegionalPolicyVote)
+            .filter(RegionalPolicyVote.voter_id == player_id)
+            .count()
+        )
+        return _evaluate_and_award(
+            db,
+            player_id,
+            "governance_votes",
+            int(election_votes) + int(policy_votes),
+            source_event_key="governance.vote_cast",
+            awarded_via="system",
+        )
+    except Exception as e:
+        logger.error(
+            "check_and_award_first_citizen_medal failed for %s: %s", player_id, e
+        )
         return []
 
 
@@ -1291,9 +1465,15 @@ __all__ = [
     "check_and_award_fleet_medals",
     "check_and_award_port_medals",
     "check_and_award_bounty_medals",
+    "check_and_award_contract_medals",
+    "check_and_award_beacon_medals",
+    "check_and_award_aria_medals",
+    "check_and_award_drone_medals",
+    "check_and_award_siege_medals",
     "check_and_award_faction_medals",
     "check_and_award_team_founder_medal",
     "check_and_award_governance_medals",
+    "check_and_award_first_citizen_medal",
     "get_active_medal_bonuses",
     "MEDAL_BONUS_CAPS",
     "MEDAL_PROGRESS_BANDS",

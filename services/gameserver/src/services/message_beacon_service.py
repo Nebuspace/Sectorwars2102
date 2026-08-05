@@ -38,13 +38,13 @@ from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
 
 from src.models.message_beacon import MessageBeacon
-from src.models.multi_account import MultiAccountFlag, MultiAccountSeverity
 from src.models.player import Player
 from src.models.region import Region
 from src.models.sector import Sector
 from src.models.ship import Ship
 from src.services import turn_service
 from src.services.ai_security_service import get_security_service
+from src.services.multi_account_service import participation_weight as _participation_weight
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +71,20 @@ SALVAGE_CREDIT_REFUND = 250  # equipment is NOT refunded -- destroyed with the c
 # ── Message constraints (message-beacons.md:24, :109) ─────────────────────
 MESSAGE_MIN_LENGTH = 1
 MESSAGE_MAX_LENGTH = 500
+
+# ── Trust-score auto-flag (message-beacons.md:118) ────────────────────────
+# Canon: ARIA trust model auto-flags very-low-trust deployers' beacons for
+# moderator review before they become player-visible (distinct from the
+# player-initiated report() path). Threshold mirrors ai_security_service's
+# high-risk band (trust_score < 0.2). [NO-CANON — launch value; flag for bless.]
+TRUST_AUTOFLAG_THRESHOLD = 0.2
+
+# ── Admin-confirmed abuse → deployer trust dock (message-beacons.md:120) ──
+# [NO-CANON launch magnitude] — matches AISecurityService's default /
+# RATE_LIMIT_EXCEEDED / INAPPROPRIATE_CONTENT class (0.1). Suspension /
+# time-ban stays Max-gated: this path docks trust + bumps violation_count
+# only; it never sets aria_blocked_until.
+TRUST_DOCK_CONFIRMED_ABUSE = 0.1
 
 # ── Per-sector visibility cap (message-beacons.md:56, ADR-0056 N-V2) ──────
 DEFAULT_SECTOR_CAP = 10
@@ -186,30 +200,8 @@ def _lock_sector(db: Session, region_id: uuid.UUID, sector_id: int) -> None:
 
 
 # ── Anti-account-multiplication hook (message-beacons.md:115, ADR-0056 E-V5) ─
-
-def _participation_weight(db: Session, player_id: uuid.UUID) -> float:
-    """Free-tier accounts in a flagged HARD-severity multi-account cluster
-    weight 0x for beacon-cap/visibility purposes (canon:115); everyone else
-    is 1.0.
-
-    [SOFT-DEP] The real `participation_weight` computation is explicitly
-    OUT OF SCOPE for the schema-owning WO that built `MultiAccountFlag`
-    (models/multi_account.py's own docstring: "that computation itself is
-    out of scope for this WO") -- this is a genuine seam consulting the
-    live schema those flags land in, NOT a fake/stubbed detector. It reads
-    real rows if any detection service ever writes them, and reads nothing
-    (defaults 1.0) while none exists -- never blocks on the absent service,
-    never invents a heuristic of its own.
-    """
-    flagged = (
-        db.query(MultiAccountFlag)
-        .filter(
-            MultiAccountFlag.player_id == player_id,
-            MultiAccountFlag.severity == MultiAccountSeverity.HARD,
-        )
-        .first()
-    )
-    return 0.0 if flagged is not None else 1.0
+# Shared implementation: src.services.multi_account_service.participation_weight
+# (imported above as `_participation_weight` so call sites stay stable).
 
 
 def _sector_cap(region: Region) -> int:
@@ -323,7 +315,11 @@ def _rebuild_sector_denorm(
     )
     visible = [
         _beacon_summary(b, now) for b in rows
-        if _participation_weight(db, b.deployer_player_id) > 0.0 and _decay_state(b, now) != "DARK"
+        if (
+            _participation_weight(db, b.deployer_player_id) > 0.0
+            and _decay_state(b, now) != "DARK"
+            and not bool(getattr(b, "flagged", False))
+        )
     ]
     sector.message_beacons = visible
     flag_modified(sector, "message_beacons")
@@ -656,6 +652,12 @@ def deploy(
     # keeps "no new scheduler" true).
     now = _now()
     charge_expires_at = now + CHARGE_CELL_DURATION
+    # Trust-score auto-flag (message-beacons.md:118): very-low ARIA trust
+    # → flagged before denorm rebuild, so the cell never appears in ambient
+    # sector view / read list until an admin clear_flag. Player.aria_trust_score
+    # is the durable column (ai_security_service persists through it).
+    deployer_trust = float(getattr(player, "aria_trust_score", 1.0) or 1.0)
+    trust_autoflagged = deployer_trust < TRUST_AUTOFLAG_THRESHOLD
     beacon = MessageBeacon(
         id=uuid.uuid4(),
         region_id=sector.region_id,
@@ -668,9 +670,37 @@ def deploy(
         last_charged_at=now,
         read_once=read_once,
         deployed_at=now,
+        flagged=trust_autoflagged,
     )
     db.add(beacon)
     db.flush()
+    if trust_autoflagged:
+        logger.info(
+            "Beacon %s auto-flagged on deploy (deployer trust %.3f < %.3f)",
+            beacon.id, deployer_trust, TRUST_AUTOFLAG_THRESHOLD,
+        )
+
+    # Medal dispatch hook (ADR-0028 / medals lane): diplomatic.beacon_keeper
+    # (beacons_placed >= 10). A durable per-player JSONB counter is
+    # maintained HERE (not derived by counting live MessageBeacon rows) --
+    # the expiry sweep HARD-DELETES expired beacons, so a live-row count
+    # would under-count this lifetime achievement as beacons age out. Best-
+    # effort: resolved by getattr (the medals lane may be absent) and any
+    # failure is logged and swallowed, a medal hiccup must never break a
+    # deploy.
+    try:
+        settings = dict(player.settings) if player.settings else {}
+        lifetime_beacons = int(settings.get("beacons_placed_lifetime", 0)) + 1
+        settings["beacons_placed_lifetime"] = lifetime_beacons
+        player.settings = settings
+        flag_modified(player, "settings")
+
+        import src.services.medal_service as _medal_module
+        hook = getattr(_medal_module, "check_and_award_beacon_medals", None)
+        if callable(hook):
+            hook(db, player_id, lifetime_beacons)
+    except Exception as e:
+        logger.error("Beacon medal dispatch hook failed: %s", e)
 
     region = db.query(Region).filter(Region.id == sector.region_id).first()
     cap = _sector_cap(region) if region is not None else DEFAULT_SECTOR_CAP
@@ -701,6 +731,8 @@ def deploy(
         "charge_expires_at": beacon.charge_expires_at,
         "read_once": beacon.read_once,
         "deployed_at": beacon.deployed_at,
+        "flagged": bool(getattr(beacon, "flagged", False)),
+        "trust_autoflagged": trust_autoflagged,
         "credits": player.credits,
         "turns": player.turns,
     }
@@ -728,6 +760,10 @@ def read(db: Session, beacon_id: uuid.UUID, player_id: uuid.UUID) -> Dict[str, A
     if player is None:
         raise BeaconError(f"Player {player_id} not found")
     if player.current_sector_id != beacon.sector_id:
+        raise BeaconNotFoundError(f"Beacon {beacon_id} not found")
+    # WO-BEACON-REPORT-MODERATION: flagged beacons are unread by id (anti-oracle
+    # — same 404 as wrong-sector / missing).
+    if bool(getattr(beacon, "flagged", False)):
         raise BeaconNotFoundError(f"Beacon {beacon_id} not found")
 
     result = {
@@ -790,6 +826,241 @@ def read(db: Session, beacon_id: uuid.UUID, player_id: uuid.UUID) -> Dict[str, A
         raise BeaconNotFoundError(f"Beacon {beacon_id} not found") from None
     result["read_count"] = beacon.read_count
     return result
+
+
+def report(db: Session, beacon_id: uuid.UUID, player_id: uuid.UUID) -> Dict[str, Any]:
+    """Player report → immediate hide (WO-BEACON-REPORT-MODERATION).
+
+    Sets ``flagged=true`` (idempotent), rebuilds sector denorm so the cell
+    disappears from ambient view. Same-sector gate + anti-oracle 404 as
+    read/salvage. No reason string. Trust-score auto-flag lives on deploy()
+    (message-beacons.md:118), not here. FLUSH-ONLY.
+    """
+    beacon = _load_beacon(db, beacon_id)
+    player = db.query(Player).filter(Player.id == player_id).first()
+    if player is None:
+        raise BeaconError(f"Player {player_id} not found")
+    if player.current_sector_id != beacon.sector_id:
+        raise BeaconNotFoundError(f"Beacon {beacon_id} not found")
+
+    region_id, sector_id = beacon.region_id, beacon.sector_id
+    _lock_sector(db, region_id, sector_id)
+    # Re-load under sector lock for a consistent flagged write + denorm rebuild.
+    beacon = _load_beacon(db, beacon_id)
+    already = bool(getattr(beacon, "flagged", False))
+    if not already:
+        beacon.flagged = True
+        db.flush()
+        _rebuild_sector_denorm(db, region_id, sector_id)
+        db.flush()
+        logger.info("Beacon %s flagged by player %s", beacon_id, player_id)
+
+    return {
+        "id": str(beacon.id),
+        "flagged": True,
+        "already_flagged": already,
+    }
+
+
+def clear_flag(db: Session, beacon_id: uuid.UUID) -> Dict[str, Any]:
+    """Admin clear of a player-report flag (WO-BEACON-ADMIN-CLEAR-FLAG).
+
+    Sets ``flagged=false`` (idempotent), rebuilds sector denorm so the cell
+    reappears in ambient view when still ACTIVE/FADING. No player presence
+    gate — admin path. FLUSH-ONLY.
+    """
+    beacon = _load_beacon(db, beacon_id)
+    region_id, sector_id = beacon.region_id, beacon.sector_id
+    _lock_sector(db, region_id, sector_id)
+    beacon = _load_beacon(db, beacon_id)
+    already_clear = not bool(getattr(beacon, "flagged", False))
+    if not already_clear:
+        beacon.flagged = False
+        db.flush()
+        _rebuild_sector_denorm(db, region_id, sector_id)
+        db.flush()
+        logger.info("Beacon %s flag cleared (admin)", beacon_id)
+
+    return {
+        "id": str(beacon.id),
+        "flagged": False,
+        "already_cleared": already_clear,
+    }
+
+
+def confirm_abuse(db: Session, beacon_id: uuid.UUID) -> Dict[str, Any]:
+    """Admin-confirmed abusive beacon (WO-BUILD-MESSAGE-BEACON-DEPLOYER-CONSEQUENCES).
+
+    Requires ``flagged=True`` (player-report or trust-autoflag queue). Docks
+    the deployer's ``aria_trust_score`` by ``TRUST_DOCK_CONFIRMED_ABUSE``,
+    increments ``aria_violation_count`` (warn ladder counter), deletes the
+    beacon row + rebuilds sector denorm so re-confirm 404s (idempotent
+    without a new column). Does **not** set ``aria_blocked_until`` —
+    suspension/time-ban remains Max-gated. FLUSH-ONLY.
+    """
+    peek = _load_beacon(db, beacon_id)
+    region_id, sector_id = peek.region_id, peek.sector_id
+    _lock_sector(db, region_id, sector_id)
+
+    beacon = (
+        db.query(MessageBeacon)
+        .filter(MessageBeacon.id == beacon_id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    if beacon is None:
+        raise BeaconNotFoundError(f"Beacon {beacon_id} not found")
+    if not bool(getattr(beacon, "flagged", False)):
+        raise BeaconError(
+            "ERR_BEACON_NOT_FLAGGED: confirm-abuse requires a flagged beacon "
+            "(use clear-flag for false reports)"
+        )
+
+    deployer_id = beacon.deployer_player_id
+    deployer = (
+        db.query(Player)
+        .filter(Player.id == deployer_id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    if deployer is None:
+        raise BeaconError(f"Deployer {deployer_id} not found")
+
+    trust_before = float(getattr(deployer, "aria_trust_score", 1.0) or 1.0)
+    violations_before = int(getattr(deployer, "aria_violation_count", 0) or 0)
+    trust_after = max(0.0, trust_before - TRUST_DOCK_CONFIRMED_ABUSE)
+    violations_after = violations_before + 1
+    deployer.aria_trust_score = trust_after
+    deployer.aria_violation_count = violations_after
+
+    # Keep in-process AISecurityService profile coherent with the Player
+    # row — trust + count only; never trip the auto-block ladder here.
+    try:
+        sec = get_security_service()
+        profile = sec.get_or_create_player_profile(
+            str(deployer.id), seed_from=deployer
+        )
+        profile.trust_score = trust_after
+        profile.violation_count = violations_after
+    except Exception:  # noqa: BLE001 — never fail moderation on cache sync
+        logger.exception(
+            "confirm_abuse: in-memory trust sync failed for deployer %s",
+            deployer_id,
+        )
+
+    beacon_id_str = str(beacon.id)
+    try:
+        db.delete(beacon)
+        db.flush()
+    except (StaleDataError, ObjectDeletedError):
+        raise BeaconNotFoundError(f"Beacon {beacon_id} not found") from None
+    _rebuild_sector_denorm(db, region_id, sector_id)
+    db.flush()
+
+    logger.info(
+        "Beacon %s confirmed abusive (admin): deployer %s trust %.3f→%.3f "
+        "violations %d→%d; row deleted",
+        beacon_id_str,
+        deployer_id,
+        trust_before,
+        trust_after,
+        violations_before,
+        violations_after,
+    )
+    return {
+        "id": beacon_id_str,
+        "removed": True,
+        "deployer_player_id": str(deployer_id),
+        "trust_before": trust_before,
+        "trust_after": trust_after,
+        "trust_dock": TRUST_DOCK_CONFIRMED_ABUSE,
+        "aria_violation_count": violations_after,
+    }
+
+
+def list_my_beacons(
+    db: Session, player_id: uuid.UUID, *, page: int = 1, limit: int = 100
+) -> Dict[str, Any]:
+    """Paginated "My Beacons" listing (message-beacons.md:133) -- every
+    beacon the given player deployed, newest first, regardless of decay
+    state or flag (the owner's own management screen, unlike the ambient
+    sector denorm which hides DARK/flagged/weight-0 cells -- see
+    _rebuild_sector_denorm). Uses idx_message_beacon_deployer, the index
+    this exact query was reserved for at model-definition time."""
+    page = max(1, int(page))
+    limit = max(1, min(int(limit), 200))
+    now = _now()
+    q = db.query(MessageBeacon).filter(MessageBeacon.deployer_player_id == player_id)
+    total = q.count()
+    rows = (
+        q.order_by(MessageBeacon.deployed_at.desc())
+        .offset((page - 1) * limit)
+        .limit(limit)
+        .all()
+    )
+    return {
+        "beacons": [
+            {
+                "id": str(b.id),
+                "sector_id": int(b.sector_id),
+                "preview": (b.message or "")[:60],
+                "deployed_at": b.deployed_at.isoformat() if b.deployed_at else None,
+                "charge_expires_at": (
+                    b.charge_expires_at.isoformat() if b.charge_expires_at else None
+                ),
+                "expiry": b.expiry.isoformat() if b.expiry else None,
+                "state": _decay_state(b, now),
+                "read_once": bool(b.read_once),
+                "read_count": int(b.read_count or 0),
+                "flagged": bool(getattr(b, "flagged", False)),
+            }
+            for b in rows
+        ],
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "pages": (total + limit - 1) // limit if total else 0,
+    }
+
+
+def list_flagged_beacons(
+    db: Session, *, page: int = 1, limit: int = 100
+) -> Dict[str, Any]:
+    """Paginated admin list of flagged message beacons (newest first)."""
+    page = max(1, int(page))
+    limit = max(1, min(int(limit), 200))
+    q = db.query(MessageBeacon).filter(MessageBeacon.flagged.is_(True))
+    total = q.count()
+    rows = (
+        q.order_by(MessageBeacon.deployed_at.desc())
+        .offset((page - 1) * limit)
+        .limit(limit)
+        .all()
+    )
+    return {
+        "beacons": [
+            {
+                "id": str(b.id),
+                "region_id": str(b.region_id),
+                "sector_id": int(b.sector_id),
+                "deployer_player_id": str(b.deployer_player_id)
+                if b.deployer_player_id
+                else None,
+                "deployer_nickname": b.deployer_nickname_at_deploy,
+                "message": b.message,
+                "preview": (b.message or "")[:60],
+                "deployed_at": b.deployed_at.isoformat() if b.deployed_at else None,
+                "flagged": True,
+            }
+            for b in rows
+        ],
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "pages": (total + limit - 1) // limit if total else 0,
+    }
 
 
 # ── Salvage ─────────────────────────────────────────────────────────────

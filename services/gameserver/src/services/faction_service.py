@@ -4,7 +4,7 @@ Faction service for managing faction relationships, reputation, and missions.
 
 from uuid import UUID
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, func
 from sqlalchemy.exc import IntegrityError
@@ -674,7 +674,6 @@ class FactionService:
         ).all()
 
         now = datetime.utcnow()
-        decay_threshold = timedelta(days=30)
         max_decay = 50  # absolute cap on total decay applied per invocation
         results: List[Dict[str, Any]] = []
 

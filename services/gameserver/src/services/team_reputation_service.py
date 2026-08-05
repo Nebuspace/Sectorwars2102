@@ -17,16 +17,11 @@ interactions CONSUMING team standing (pricing/mission gates/etc. -- canon's
 "faction interactions treat the team as a unified diplomatic entity") is
 NOT built here -- flagged as an explicit follow-up, not silently implied.
 
-[NO-CANON, model divergence -- flagged for DECISIONS, not silently
-resolved]: BOTH ``Team.reputation_calculation_method`` (models/team.py:40)
-AND ``TeamReputation.calculation_method`` (models/reputation.py:116) exist
--- two String(20) columns for the same concept, both defaulting to
-"AVERAGE", both with zero readers/writers before this module. This service
-treats ``TeamReputation.calculation_method`` as the single source of truth
-(it lives on the reputation aggregate row this WO's brief names directly)
-and never touches ``Team.reputation_calculation_method`` -- the duplicate
-column is a genuine, unresolved model-level divergence that needs a real
-decision (migrate one away, or wire a sync), not a silent pick.
+[RULED 2026-08-04 — DECISIONS.md team-reputation-calculation-method-canonical]:
+``TeamReputation.calculation_method`` is the sole source of truth.
+``Team.reputation_calculation_method`` is deprecated (retained for additive-
+schema safety; no DROP without Max GO). This service reads/writes only
+``TeamReputation.calculation_method`` and never touches the Team duplicate.
 
 Sync Session throughout; every function flushes, never commits -- the
 caller (API route / eventual scheduler wrapper) owns the transaction

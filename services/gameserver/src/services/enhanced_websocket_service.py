@@ -16,34 +16,32 @@ import hashlib
 import hmac
 import os
 import time
-from typing import Dict, List, Set, Optional, Any, Union
-from datetime import datetime, timedelta, UTC
-from dataclasses import dataclass, asdict
+from typing import Dict, List, Set, Any
+from datetime import datetime, UTC
+from dataclasses import dataclass
 from collections import defaultdict
 from uuid import uuid4, UUID
 import logging
 
-from fastapi import WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import WebSocket
 import jwt as jose_jwt
 from jwt import PyJWTError as JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_, func
+from sqlalchemy import select, func
 import redis.asyncio as redis
 
 # Import existing services
-from src.services.websocket_service import ConnectionManager, connection_manager
+from src.services.websocket_service import connection_manager
 from src.services.ai_trading_service import AITradingService
 from src.services.trading_service import TradingService
 from src.services.enhanced_ai_service import EnhancedAIService
-from src.services.realtime_market_service import RealTimeMarketService, get_market_service
-from src.services.redis_pubsub_service import RedisPubSubService, get_pubsub_service
+from src.services.realtime_market_service import get_market_service
+from src.services.redis_pubsub_service import get_pubsub_service
 from src.models.player import Player
 from src.models.user import User
 from src.models.market_transaction import MarketTransaction
-from src.models.ai_trading import AIMarketPrediction
 from src.core.config import settings
 from src.core.database import AsyncSessionLocal
-from src.core.security import verify_password
 
 logger = logging.getLogger(__name__)
 
@@ -1112,7 +1110,7 @@ class EnhancedWebSocketService:
         
         # Add ARIA personal intelligence summary
         from src.services.aria_personal_intelligence_service import get_aria_intelligence_service
-        aria_intel = get_aria_intelligence_service()
+        get_aria_intelligence_service()
         
         # Get exploration summary
         from src.models.aria_personal_intelligence import ARIAExplorationMap
@@ -1172,10 +1170,10 @@ class EnhancedWebSocketService:
         try:
             # Store in ARIA personal memory for learning
             from src.services.aria_personal_intelligence_service import get_aria_intelligence_service
-            aria_intel = get_aria_intelligence_service()
+            get_aria_intelligence_service()
             
             # Create memory of this interaction
-            memory_content = {
+            {
                 "type": "conversation",
                 "input": user_input,
                 "response_summary": response.get("response", "")[:200],  # First 200 chars

@@ -387,6 +387,22 @@ def complete_charge(
         from src.services.movement_service import MovementService
         MovementService(db)._update_player_presence(player, old_sector_id, destination.sector_id)
 
+        # WO-K2b: a Slipdrive ESCAPE is still a border crossing. Ruled
+        # deliberately (orchestrator, 2026-08-03): the detection model keys on
+        # crossing into tighter security with contraband aboard, never on the
+        # mechanism or the motive, and an "it was an emergency" exemption would
+        # simply become the smuggler's preferred crossing. Inside the
+        # moved-sectors branch, and flush-only — the ROUTE owns the commit here
+        # (see the flush below), so committing would break that contract.
+        from src.services.contraband_service import scan_in_transit_best_effort
+        scan_in_transit_best_effort(
+            db,
+            player=player,
+            ship_id=ship.id,
+            origin_sector_id=old_sector_id,
+            destination_sector_id=destination.sector_id,
+        )
+
     _set_slot(ship, None)
 
     db.flush()  # route owns the commit

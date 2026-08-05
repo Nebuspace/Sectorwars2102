@@ -405,9 +405,8 @@ MEDAL_CATALOG: Dict[str, Dict[str, Any]] = {
         # effect -2% per-pioneer migration fee at a Capital Class-0 station. Aligned
         # category/tier/criterion to canon (was Special/Unique "civic-recognition"
         # code drift); stable id + legacy_key kept so existing PlayerMedal rows are
-        # unaffected. STILL UNWIRED — gated on a lifetime-colonist-transport counter
-        # that doesn't exist yet (filed as a future counter WO); distinct trigger_type
-        # keeps it admin-grant-safe + collision-proof. No auto-award dispatcher.
+        # unaffected. AUTO-AWARD WIRED — Player.colonists_transported_lifetime
+        # counter + direct _evaluate_and_award from planets claim/disembark routes.
         "colonists_transported_lifetime", 10000, "pillar_pioneer", "pioneer_office_pillar",
         # FINAL: Pioneer Office keeps published −2%. Sign convention: positive
         # magnitude on trading_discount = a buy discount / sell uplift.

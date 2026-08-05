@@ -158,7 +158,7 @@ CATCHUP_EVAL_LIMIT = 3              # lazy month catch-up: evaluate at most the
                                     # trailing N months individually; older
                                     # months batch-skip as unsatisfied
 
-MIN_TAX_RATE = 0.0
+MIN_TAX_RATE = 0.05  # canon floor 5-25% (lifecycle.md; port-ownership-station-trade-tariff-bounds-5-25 ruling)
 MAX_TAX_RATE = 0.25
 
 # Canon "Treasury & cash flow > Owner withdrawals" (port-ownership.md:361-367):
@@ -203,6 +203,53 @@ DOCKING_FEE_KEY = "docking_fee"                 # owner-set flat docking charge
 DOCKING_FEE_ENABLED_KEY = "docking_fee_enabled"  # toggle (canon "toggle + amount")
 SERVICE_CHARGE_KEY = "service_charge_multiplier"  # owner-set repair/refuel multiplier
 STORAGE_RENTAL_KEY = "storage_rental_per_day"   # owner-set cr/day per storage slot
+
+# Station.ownership["defense_policy"] levers (WO-STATION-DEFENSE-POLICY-LEVERS).
+# Persisted in the existing ownership JSONB — no migration.
+DEFENSE_POLICY_KEY = "defense_policy"
+DOCKING_ACCESS_MODES = frozenset({"open", "faction", "whitelist", "hostile_deny"})
+PUNITIVE_FEE_MULT_MIN = 1.0
+PUNITIVE_FEE_MULT_MAX = 5.0
+DRONE_ALLOCATION_PCT_MIN = 0
+DRONE_ALLOCATION_PCT_MAX = 100
+DEFAULT_DEFENSE_POLICY: Dict[str, Any] = {
+    "docking_access": "open",
+    "hostility_list": [],
+    "punitive_fee_mult": 1.0,
+    "defender_posture": "passive",
+    "drone_allocation_pct": 100,
+    "patrol_radius": 0,
+}
+
+# Station.ownership["defense_counters"] — owner-side takeover counters
+# (WO-TAKEOVER-DEFENSE-COUNTERMOVES). No migration. Friendly-faction
+# contract + allied-response rally deferred.
+DEFENSE_COUNTERS_KEY = "defense_counters"
+# Ratified 2026-08-04 (DECISIONS.md port-ownership-takeover-counter-magnitudes-ratify):
+# TARIFF_CUT_FRACTION / COUNTER_TRADE_CREDITS_PER_VOLUME / COUNTER_TRADE_MAX_ABSORB.
+# Counter-trade volume is ledgered as real MarketTransaction rows
+# (DECISIONS.md counter-trade-real-market-orders); legacy synthetic
+# defense_volume records remain honored by defense_volume_for_month.
+TARIFF_CUT_FRACTION = 0.5
+TARIFF_CUT_DURATION_HOURS = COUNTER_WINDOW_HOURS
+COUNTER_TRADE_CREDITS_PER_VOLUME = 1
+COUNTER_TRADE_MAX_ABSORB = 500_000
+# Ledger commodity for defense MarketTransactions — one-sided BUY so the
+# absorb cannot self-cancel against an owner SELL in the same activation.
+COUNTER_TRADE_COMMODITY = "Equipment"
+# Statuses where building-phase owner counters may be activated.
+_DEFENSE_COUNTER_STATUSES = frozenset({"building", "eligible"})
+
+# Station.ownership co-ownership / syndicate (WO-SYNDICATE-CO-OWNERSHIP v1).
+# No migration — JSONB only. Votes / buyout / proportional withdraw deferred.
+SYNDICATE_MODE_KEY = "co_ownership_mode"
+SYNDICATE_SHARES_KEY = "co_ownership_shares"
+SYNDICATE_INVITES_KEY = "co_ownership_invites"
+# Canon: 7-day accept window, 1% conversion fee, share invites to 99%, ≤10 members.
+SYNDICATE_INVITE_HOURS = 7 * 24.0
+SYNDICATE_CONVERSION_FEE_PCT = 0.01
+SYNDICATE_MAX_MEMBERS = 10
+SYNDICATE_MAX_INVITEE_PCT = 99  # primary keeps ≥1%
 
 # Campaign statuses considered "active" (a live takeover attempt). Hoisted here
 # so both the economic and military engines reference one source of truth.
@@ -663,6 +710,44 @@ def _acquisition_cost(station: Station) -> int:
     return int(base) if base else 500_000
 
 
+RELOCATION_FEE_PCT = 0.30  # ADR-0050 "Station relocation paths" -- 30% of
+# (acquisition cost + sum of upgrade capital costs).
+
+
+def append_capital_cost(
+    station: Station, *, source: str, amount: int, now: Optional[datetime] = None
+) -> None:
+    """Append a one-time capital-spend entry to ``station.capital_cost_
+    ledger`` (WO-BUILD-STATION-ACQUISITION-COST-CAPITAL-LEDGER). Caller
+    holds the station lock and must ``flag_modified(station,
+    'capital_cost_ledger')`` + flush, matching this codebase's other
+    JSONB-mutation call sites (mirrors _security's caller-flags-modified
+    contract in station_security_service). No-op on amount <= 0."""
+    if amount <= 0:
+        return
+    now = now or datetime.now(UTC)
+    ledger = list(station.capital_cost_ledger or [])
+    ledger.append({"source": source, "amount": int(amount), "at": now.isoformat()})
+    station.capital_cost_ledger = ledger
+
+
+def total_capital_cost(station: Station) -> int:
+    """Sum of every ledgered capital spend -- the "sum of upgrade capital
+    costs" half of ADR-0050's relocation-fee formula."""
+    ledger = station.capital_cost_ledger or []
+    return sum(int(e.get("amount", 0) or 0) for e in ledger if isinstance(e, dict))
+
+
+def relocation_fee(station: Station) -> int:
+    """ADR-0050 "Station relocation paths" -- 30% of (acquisition cost + sum
+    of upgrade capital costs). Unblocks the formula itself; the region-
+    termination-cascade wiring that would actually charge/debit this stays
+    a separately-deferred discovery-only stub (region_termination_cascade_
+    service.py) per this WO's own scope."""
+    basis = _acquisition_cost(station) + total_capital_cost(station)
+    return int(basis * RELOCATION_FEE_PCT)
+
+
 def _transfer_station(
     db: Session,
     station: Station,
@@ -1091,6 +1176,854 @@ def set_docking_fee(
     }
 
 
+def _ownership(station: Station) -> Dict[str, Any]:
+    """Mutable handle on station.ownership (created if absent). Caller MUST
+    flag_modified(station, 'ownership') after mutating."""
+    if station.ownership is None:
+        station.ownership = {}
+    return station.ownership
+
+
+def normalize_defense_policy(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return a fully-populated defense_policy dict with clamped defaults.
+
+    Pure helper — no DB. Unknown / missing keys fall back to defaults.
+    Does NOT raise on patrol_radius > 0 (set_defense_policy rejects that);
+    normalize clamps patrol_radius to 0 for safe reads of legacy/bad data.
+    """
+    src = raw if isinstance(raw, dict) else {}
+    access = src.get("docking_access", DEFAULT_DEFENSE_POLICY["docking_access"])
+    if access not in DOCKING_ACCESS_MODES:
+        access = DEFAULT_DEFENSE_POLICY["docking_access"]
+
+    hostility_raw = src.get("hostility_list", [])
+    hostility_list: List[str] = []
+    if isinstance(hostility_raw, (list, tuple)):
+        for item in hostility_raw:
+            if item is None:
+                continue
+            hostility_list.append(str(item))
+
+    try:
+        mult = float(src.get("punitive_fee_mult", DEFAULT_DEFENSE_POLICY["punitive_fee_mult"]))
+    except (TypeError, ValueError):
+        mult = float(DEFAULT_DEFENSE_POLICY["punitive_fee_mult"])
+    mult = max(PUNITIVE_FEE_MULT_MIN, min(PUNITIVE_FEE_MULT_MAX, mult))
+
+    posture = src.get("defender_posture", DEFAULT_DEFENSE_POLICY["defender_posture"])
+    if not isinstance(posture, str) or not posture:
+        posture = str(DEFAULT_DEFENSE_POLICY["defender_posture"])
+
+    try:
+        drone_pct = int(src.get(
+            "drone_allocation_pct", DEFAULT_DEFENSE_POLICY["drone_allocation_pct"]
+        ))
+    except (TypeError, ValueError):
+        drone_pct = int(DEFAULT_DEFENSE_POLICY["drone_allocation_pct"])
+    drone_pct = max(DRONE_ALLOCATION_PCT_MIN, min(DRONE_ALLOCATION_PCT_MAX, drone_pct))
+
+    # v1: patrol is deferred; clamp reads to 0 (setter rejects >0).
+    patrol = 0
+
+    return {
+        "docking_access": access,
+        "hostility_list": hostility_list,
+        "punitive_fee_mult": float(mult),
+        "defender_posture": posture,
+        "drone_allocation_pct": drone_pct,
+        "patrol_radius": patrol,
+    }
+
+
+def get_defense_policy(station: Station) -> Dict[str, Any]:
+    """Effective defense_policy for `station` (normalized defaults)."""
+    raw = (station.ownership or {}).get(DEFENSE_POLICY_KEY)
+    return normalize_defense_policy(raw if isinstance(raw, dict) else None)
+
+
+def set_defense_policy(
+    db: Session,
+    station: Station,
+    owner: Player,
+    policy: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Owner lever: persist Station.ownership['defense_policy'] (no migration).
+
+    Rejects patrol_radius > 0 (patrol deferred to a later WO). Owner-gated
+    under the station lock; no commit.
+    """
+    station = _lock_station(db, station.id)
+    _require_owner(station, owner)
+
+    if not isinstance(policy, dict):
+        raise PortOwnershipError(400, "defense_policy must be an object")
+
+    # Reject patrol before normalize (normalize would clamp and hide the error).
+    raw_patrol = policy.get("patrol_radius", 0)
+    try:
+        patrol_val = int(raw_patrol) if raw_patrol is not None else 0
+    except (TypeError, ValueError):
+        raise PortOwnershipError(400, "patrol_radius must be an integer")
+    if patrol_val > 0:
+        raise PortOwnershipError(
+            400,
+            "patrol_radius > 0 is not supported yet — patrol is deferred",
+        )
+    if patrol_val < 0:
+        raise PortOwnershipError(400, "patrol_radius must be 0")
+
+    access = policy.get("docking_access", DEFAULT_DEFENSE_POLICY["docking_access"])
+    if access not in DOCKING_ACCESS_MODES:
+        raise PortOwnershipError(
+            400,
+            f"docking_access must be one of: {', '.join(sorted(DOCKING_ACCESS_MODES))}",
+        )
+
+    try:
+        mult = float(policy.get(
+            "punitive_fee_mult", DEFAULT_DEFENSE_POLICY["punitive_fee_mult"]
+        ))
+    except (TypeError, ValueError):
+        raise PortOwnershipError(400, "punitive_fee_mult must be a number")
+    if not (PUNITIVE_FEE_MULT_MIN <= mult <= PUNITIVE_FEE_MULT_MAX):
+        raise PortOwnershipError(
+            400,
+            f"punitive_fee_mult must be between {PUNITIVE_FEE_MULT_MIN} and "
+            f"{PUNITIVE_FEE_MULT_MAX}",
+        )
+
+    try:
+        drone_pct = int(policy.get(
+            "drone_allocation_pct", DEFAULT_DEFENSE_POLICY["drone_allocation_pct"]
+        ))
+    except (TypeError, ValueError):
+        raise PortOwnershipError(400, "drone_allocation_pct must be an integer")
+    if not (DRONE_ALLOCATION_PCT_MIN <= drone_pct <= DRONE_ALLOCATION_PCT_MAX):
+        raise PortOwnershipError(
+            400,
+            f"drone_allocation_pct must be between {DRONE_ALLOCATION_PCT_MIN} and "
+            f"{DRONE_ALLOCATION_PCT_MAX}",
+        )
+
+    normalized = normalize_defense_policy({
+        **policy,
+        "docking_access": access,
+        "punitive_fee_mult": mult,
+        "drone_allocation_pct": drone_pct,
+        "patrol_radius": 0,
+    })
+    ownership = _ownership(station)
+    ownership[DEFENSE_POLICY_KEY] = normalized
+    flag_modified(station, "ownership")
+    db.flush()
+    logger.info(
+        "Station %s defense_policy set (access=%s) by %s",
+        station.id, normalized["docking_access"], owner.id,
+    )
+    return {
+        "station_id": str(station.id),
+        "defense_policy": normalized,
+    }
+
+
+def evaluate_defense_dock_access(
+    db: Session, station: Station, player: Player
+) -> Dict[str, Any]:
+    """Evaluate defense_policy docking access for `player` at `station`.
+
+    Returns {allowed, reason?, on_hostility_list, punitive_fee_mult}.
+    Owner always bypasses access deny. Punitive mult applies when the
+    visitor is on the hostility list AND docking is allowed.
+    """
+    policy = get_defense_policy(station)
+    player_id_str = str(player.id)
+    on_list = player_id_str in policy["hostility_list"]
+    access = policy["docking_access"]
+    base_mult = float(policy["punitive_fee_mult"])
+
+    # Owner always docks (bypass access deny).
+    if station.owner_id is not None and station.owner_id == player.id:
+        punitive = base_mult if on_list else 1.0
+        return {
+            "allowed": True,
+            "on_hostility_list": on_list,
+            "punitive_fee_mult": punitive,
+        }
+
+    allowed = True
+    reason: Optional[str] = None
+
+    if access == "open":
+        allowed = True
+    elif access == "whitelist":
+        if not on_list:
+            allowed = False
+            reason = "Docking denied: this station only admits whitelisted visitors."
+    elif access == "hostile_deny":
+        if on_list:
+            allowed = False
+            reason = "Docking denied: you are on this station's hostility list."
+    elif access == "faction":
+        # Lazy import avoids a cycle with docking_service (which imports
+        # realize_port_revenue from this module at call time).
+        from src.services.docking_service import check_reputation_gate
+
+        rep_allowed, rep_value, threshold = check_reputation_gate(db, station, player)
+        if not rep_allowed:
+            allowed = False
+            reason = (
+                f"Docking denied: your standing with this station's faction is "
+                f"{rep_value}; minimum required is {threshold}."
+            )
+        else:
+            allowed = True
+
+    punitive = base_mult if (allowed and on_list) else 1.0
+    result: Dict[str, Any] = {
+        "allowed": allowed,
+        "on_hostility_list": on_list,
+        "punitive_fee_mult": punitive,
+    }
+    if reason is not None:
+        result["reason"] = reason
+    return result
+
+
+def public_defense_policy_fields(station: Station) -> Dict[str, Any]:
+    """Public-safe defense policy summary — never exposes hostility_list."""
+    policy = get_defense_policy(station)
+    return {
+        "docking_access": policy["docking_access"],
+        "punitive_fees_apply": float(policy["punitive_fee_mult"]) > 1.0,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Takeover defense counters (WO-TAKEOVER-DEFENSE-COUNTERMOVES v1)
+# ---------------------------------------------------------------------------
+
+def tariff_cut_rate(prior: float) -> float:
+    """Compute the cut tax rate from a prior rate (pure helper)."""
+    return max(MIN_TAX_RATE, round(float(prior) * TARIFF_CUT_FRACTION, 4))
+
+
+def month_share_with_defense(
+    station_vol: int, challenger_vol: int, defense_vol: int
+) -> float:
+    """Challenger share after adding legacy synthetic defense_volume.
+
+    New counter-trade activations write MarketTransaction rows that already
+    inflate ``station_vol`` via monthly_volume — pass defense_vol=0 for those.
+    ``defense_vol`` remains for pre-conversion synthetic ledger rows.
+    """
+    total = int(station_vol) + max(0, int(defense_vol))
+    if total <= 0:
+        return 0.0
+    return round(int(challenger_vol) / total, 4)
+
+
+def get_defense_counters(station: Station) -> List[Dict[str, Any]]:
+    """Copy of Station.ownership['defense_counters'] (list of records)."""
+    raw = (station.ownership or {}).get(DEFENSE_COUNTERS_KEY)
+    if not isinstance(raw, list):
+        return []
+    return [dict(item) for item in raw if isinstance(item, dict)]
+
+
+def _set_defense_counters(station: Station, counters: List[Dict[str, Any]]) -> None:
+    ownership = _ownership(station)
+    ownership[DEFENSE_COUNTERS_KEY] = list(counters)
+    # Unit tests may pass SimpleNamespace stubs without SA instrumentation.
+    if hasattr(station, "_sa_instance_state"):
+        flag_modified(station, "ownership")
+
+
+def defense_volume_for_month(station: Station, campaign_id, month_index: int) -> int:
+    """Sum of LEGACY synthetic counter_trade absorbs for campaign+month.
+
+    Rows that carry ``market_transaction_id`` (post-conversion activations)
+    contribute 0 here — their volume is already in monthly_volume via the
+    MarketTransaction ledger. Only pre-conversion records with a positive
+    ``defense_volume`` and no MT id still dilute via this path.
+    """
+    cid = str(campaign_id)
+    total = 0
+    for rec in get_defense_counters(station):
+        if rec.get("type") != "counter_trade":
+            continue
+        if str(rec.get("campaign_id")) != cid:
+            continue
+        if rec.get("market_transaction_id"):
+            continue
+        try:
+            if int(rec.get("month", -1)) != int(month_index):
+                continue
+        except (TypeError, ValueError):
+            continue
+        try:
+            total += max(0, int(rec.get("defense_volume", 0)))
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def _parse_counter_ts(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return _aware(value)
+    if isinstance(value, str):
+        try:
+            return _aware(datetime.fromisoformat(value.replace("Z", "+00:00")))
+        except ValueError:
+            return None
+    return None
+
+
+def _threat_campaign_for_defense(
+    db: Session, station: Station, now: datetime
+) -> TakeoverCampaign:
+    """Most advanced active economic campaign the owner may counter against."""
+    campaigns = (
+        db.query(TakeoverCampaign)
+        .filter(
+            TakeoverCampaign.station_id == station.id,
+            TakeoverCampaign.status.in_(_ACTIVE_CAMPAIGN_STATUSES),
+        )
+        .all()
+    )
+    economic = [c for c in campaigns if not _is_military(c)]
+    if not economic:
+        raise PortOwnershipError(
+            400, "No active economic takeover campaign to defend against"
+        )
+    order = {"eligible": 0, "countered": 1, "disputed": 2, "building": 3}
+    return sorted(economic, key=lambda c: (order.get(c.status, 9), str(c.id)))[0]
+
+
+def tick_defense_counters(
+    db: Session, station: Station, now: Optional[datetime] = None
+) -> None:
+    """Expire tariff cuts (restore prior tax) and drop counters for dead campaigns.
+
+    Idempotent; called from evaluate_campaign and owner defense activates.
+    """
+    now = now or datetime.now(UTC)
+    counters = get_defense_counters(station)
+    if not counters:
+        return
+
+    active_ids = {
+        str(cid)
+        for (cid,) in db.query(TakeoverCampaign.id)
+        .filter(
+            TakeoverCampaign.station_id == station.id,
+            TakeoverCampaign.status.in_(_ACTIVE_CAMPAIGN_STATUSES),
+        )
+        .all()
+    }
+
+    kept: List[Dict[str, Any]] = []
+    changed = False
+    for rec in counters:
+        ctype = rec.get("type")
+        cid = str(rec.get("campaign_id") or "")
+        if cid and cid not in active_ids:
+            if ctype == "tariff_cut":
+                try:
+                    station.tax_rate = float(rec.get("prior_tax_rate", station.tax_rate))
+                except (TypeError, ValueError):
+                    pass
+            changed = True
+            continue
+        if ctype == "tariff_cut":
+            expires = _parse_counter_ts(rec.get("expires_at"))
+            if expires is not None and now >= expires:
+                try:
+                    station.tax_rate = float(rec.get("prior_tax_rate", station.tax_rate))
+                except (TypeError, ValueError):
+                    pass
+                changed = True
+                continue
+        kept.append(rec)
+
+    if changed or len(kept) != len(counters):
+        _set_defense_counters(station, kept)
+
+
+def activate_tariff_cut(
+    db: Session,
+    station: Station,
+    owner: Player,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Owner lever: temporarily halve tax_rate during building|eligible."""
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    _require_owner(station, owner)
+    tick_defense_counters(db, station, now)
+
+    campaign = _threat_campaign_for_defense(db, station, now)
+    if campaign.status not in _DEFENSE_COUNTER_STATUSES:
+        raise PortOwnershipError(
+            400,
+            f"Tariff cut only allowed while campaign is building or eligible "
+            f"(current: {campaign.status})",
+        )
+
+    counters = get_defense_counters(station)
+    for rec in counters:
+        if rec.get("type") == "tariff_cut":
+            raise PortOwnershipError(400, "A tariff cut is already active")
+
+    prior = float(station.tax_rate or 0.0)
+    new_rate = tariff_cut_rate(prior)
+    expires = game_time.scaled_deadline(TARIFF_CUT_DURATION_HOURS, start=now)
+    counters.append({
+        "type": "tariff_cut",
+        "campaign_id": str(campaign.id),
+        "prior_tax_rate": prior,
+        "tax_rate": new_rate,
+        "expires_at": _iso(expires),
+        "activated_at": _iso(now),
+    })
+    station.tax_rate = new_rate
+    _set_defense_counters(station, counters)
+    db.flush()
+    logger.info(
+        "Station %s tariff_cut %.4f -> %.4f (campaign %s) by %s",
+        station.id, prior, new_rate, campaign.id, owner.id,
+    )
+    return {
+        "station_id": str(station.id),
+        "campaign_id": str(campaign.id),
+        "type": "tariff_cut",
+        "prior_tax_rate": prior,
+        "tax_rate": new_rate,
+        "expires_at": _iso(expires),
+    }
+
+
+def activate_counter_trade(
+    db: Session,
+    station: Station,
+    owner: Player,
+    defense_volume: int,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Owner lever: spend credits to place a real MarketTransaction absorb.
+
+    DECISIONS.md counter-trade-real-market-orders: writes a one-sided BUY
+    MarketTransaction (total_value == requested volume) so monthly_volume
+    and share math see real ledger footprint a challenger can out-trade.
+    Does not mutate station inventory — ledger-only defense trade.
+    """
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    _require_owner(station, owner)
+    tick_defense_counters(db, station, now)
+
+    try:
+        volume = int(defense_volume)
+    except (TypeError, ValueError):
+        raise PortOwnershipError(400, "defense_volume must be an integer")
+    if volume <= 0:
+        raise PortOwnershipError(400, "defense_volume must be positive")
+    if volume > COUNTER_TRADE_MAX_ABSORB:
+        raise PortOwnershipError(
+            400,
+            f"defense_volume cannot exceed {COUNTER_TRADE_MAX_ABSORB:,}",
+        )
+
+    campaign = _threat_campaign_for_defense(db, station, now)
+    if campaign.status not in _DEFENSE_COUNTER_STATUSES:
+        raise PortOwnershipError(
+            400,
+            f"Counter-trade only allowed while campaign is building or eligible "
+            f"(current: {campaign.status})",
+        )
+
+    cost = volume * COUNTER_TRADE_CREDITS_PER_VOLUME
+    if owner.credits < cost:
+        raise PortOwnershipError(
+            400,
+            f"Insufficient credits: counter-trade costs {cost:,}, "
+            f"you have {owner.credits:,}",
+        )
+
+    month_index = int(
+        game_time.canonical_hours_since(campaign.started_at, now) // MONTH_HOURS
+    )
+    owner.credits -= cost
+
+    # unit_price=1, quantity=volume → total_value exactly matches absorb.
+    tx = MarketTransaction(
+        player_id=owner.id,
+        station_id=station.id,
+        transaction_type=TransactionType.BUY,
+        commodity=COUNTER_TRADE_COMMODITY,
+        quantity=volume,
+        unit_price=1,
+        total_value=volume,
+        station_buy_price=1,
+        station_sell_price=1,
+        owner_tariff_rate=0.0,
+        port_owner_id=owner.id,
+        admin_notes="counter_trade_defense",
+        timestamp=now,
+    )
+    db.add(tx)
+    db.flush()
+
+    counters = get_defense_counters(station)
+    counters.append({
+        "type": "counter_trade",
+        "campaign_id": str(campaign.id),
+        "month": month_index,
+        "defense_volume": 0,  # volume lives on the MarketTransaction
+        "market_transaction_id": str(tx.id),
+        "cost": cost,
+        "activated_at": _iso(now),
+    })
+    _set_defense_counters(station, counters)
+    db.flush()
+    logger.info(
+        "Station %s counter_trade absorb=%s cost=%s month=%s (campaign %s) "
+        "by %s mt=%s",
+        station.id, volume, cost, month_index, campaign.id, owner.id, tx.id,
+    )
+    return {
+        "station_id": str(station.id),
+        "campaign_id": str(campaign.id),
+        "type": "counter_trade",
+        "month": month_index,
+        "defense_volume": volume,
+        "market_transaction_id": str(tx.id),
+        "cost": cost,
+        "credits": owner.credits,
+    }
+
+
+def list_defense_counters(
+    db: Session, station: Station, owner: Player, now: Optional[datetime] = None
+) -> Dict[str, Any]:
+    """Owner-only read of active defense_counters (after tick)."""
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    _require_owner(station, owner)
+    tick_defense_counters(db, station, now)
+    db.flush()
+    return {
+        "station_id": str(station.id),
+        "tax_rate": float(station.tax_rate or 0.0),
+        "defense_counters": get_defense_counters(station),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Syndicate co-ownership (WO-SYNDICATE-CO-OWNERSHIP v1)
+# ---------------------------------------------------------------------------
+
+def _syndicate_shares(station: Station) -> List[Dict[str, Any]]:
+    raw = (station.ownership or {}).get(SYNDICATE_SHARES_KEY)
+    if not isinstance(raw, list):
+        return []
+    return [dict(x) for x in raw if isinstance(x, dict)]
+
+
+def _syndicate_invites(station: Station) -> List[Dict[str, Any]]:
+    raw = (station.ownership or {}).get(SYNDICATE_INVITES_KEY)
+    if not isinstance(raw, list):
+        return []
+    return [dict(x) for x in raw if isinstance(x, dict)]
+
+
+def _set_syndicate_state(
+    station: Station,
+    *,
+    mode: Optional[str] = None,
+    shares: Optional[List[Dict[str, Any]]] = None,
+    invites: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    ownership = _ownership(station)
+    if mode is not None:
+        ownership[SYNDICATE_MODE_KEY] = mode
+    if shares is not None:
+        ownership[SYNDICATE_SHARES_KEY] = list(shares)
+    if invites is not None:
+        ownership[SYNDICATE_INVITES_KEY] = list(invites)
+    # Unit tests may pass SimpleNamespace stubs without SA instrumentation.
+    if hasattr(station, "_sa_instance_state"):
+        flag_modified(station, "ownership")
+
+
+def accepted_invitee_pct_total(shares: List[Dict[str, Any]], primary_id: str) -> int:
+    """Sum of pct held by non-primary shareholders."""
+    total = 0
+    for s in shares:
+        if str(s.get("player_id")) == str(primary_id):
+            continue
+        try:
+            total += int(s.get("pct", 0))
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def pending_invite_pct_total(invites: List[Dict[str, Any]]) -> int:
+    total = 0
+    for inv in invites:
+        try:
+            total += int(inv.get("pct", 0))
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def would_oversubscribe(
+    shares: List[Dict[str, Any]],
+    invites: List[Dict[str, Any]],
+    primary_id: str,
+    new_pct: int,
+) -> bool:
+    """True if pending+accepted invitee pct + new_pct would exceed 99."""
+    return (
+        accepted_invitee_pct_total(shares, primary_id)
+        + pending_invite_pct_total(invites)
+        + int(new_pct)
+    ) > SYNDICATE_MAX_INVITEE_PCT
+
+
+def _expire_syndicate_invites(station: Station, now: datetime) -> bool:
+    invites = _syndicate_invites(station)
+    if not invites:
+        return False
+    kept = []
+    changed = False
+    for inv in invites:
+        exp = _parse_counter_ts(inv.get("expires_at"))
+        if exp is not None and now >= exp:
+            changed = True
+            continue
+        kept.append(inv)
+    if changed:
+        _set_syndicate_state(station, invites=kept)
+    return changed
+
+
+def _ensure_primary_share(station: Station) -> List[Dict[str, Any]]:
+    """Return shares list with primary owning remainder (or 100% if empty)."""
+    primary = str(station.owner_id)
+    shares = _syndicate_shares(station)
+    others = [s for s in shares if str(s.get("player_id")) != primary]
+    others_pct = accepted_invitee_pct_total(others, primary)
+    primary_pct = max(1, 100 - others_pct)
+    return [{"player_id": primary, "pct": primary_pct}] + [
+        {"player_id": str(s["player_id"]), "pct": int(s["pct"])}
+        for s in others
+        if int(s.get("pct", 0)) > 0
+    ]
+
+
+def get_syndicate_status(
+    db: Session, station: Station, player: Player, now: Optional[datetime] = None
+) -> Dict[str, Any]:
+    """Co-ownership status for a station (lazy invite expiry)."""
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    _expire_syndicate_invites(station, now)
+    db.flush()
+    mode = (station.ownership or {}).get(SYNDICATE_MODE_KEY) or "solo"
+    shares = _ensure_primary_share(station) if station.owner_id else []
+    invites = _syndicate_invites(station)
+    is_owner = station.owner_id == player.id
+    visible_invites = invites if is_owner else [
+        i for i in invites if str(i.get("invitee_player_id")) == str(player.id)
+    ]
+    return {
+        "station_id": str(station.id),
+        "owner_id": str(station.owner_id) if station.owner_id else None,
+        "mode": mode,
+        "shares": shares,
+        "pending_invites": visible_invites,
+        "is_primary": is_owner,
+    }
+
+
+def issue_share_invite(
+    db: Session,
+    station: Station,
+    owner: Player,
+    invitee_player_id,
+    pct: int,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Primary issues a share invite (API-only delivery)."""
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    _require_owner(station, owner)
+    _expire_syndicate_invites(station, now)
+
+    try:
+        pct_i = int(pct)
+    except (TypeError, ValueError):
+        raise PortOwnershipError(400, "pct must be an integer")
+    if pct_i < 1 or pct_i > SYNDICATE_MAX_INVITEE_PCT:
+        raise PortOwnershipError(
+            400, f"pct must be between 1 and {SYNDICATE_MAX_INVITEE_PCT}"
+        )
+
+    invitee_id = str(invitee_player_id)
+    if invitee_id == str(owner.id):
+        raise PortOwnershipError(400, "Cannot invite yourself")
+    invitee = db.query(Player).filter(Player.id == invitee_player_id).first()
+    if invitee is None:
+        raise PortOwnershipError(404, "Invitee player not found")
+
+    shares = _ensure_primary_share(station)
+    invites = _syndicate_invites(station)
+    # Members after accept = primary + existing others + this invitee (if new)
+    other_ids = {
+        str(s["player_id"]) for s in shares if str(s["player_id"]) != str(owner.id)
+    }
+    members_after = 1 + len(other_ids) + (0 if invitee_id in other_ids else 1)
+    if members_after > SYNDICATE_MAX_MEMBERS:
+        raise PortOwnershipError(
+            400, f"Syndicate cannot exceed {SYNDICATE_MAX_MEMBERS} members"
+        )
+    if would_oversubscribe(shares, invites, str(owner.id), pct_i):
+        raise PortOwnershipError(
+            400,
+            "Pending + accepted invitee shares would exceed "
+            f"{SYNDICATE_MAX_INVITEE_PCT}%",
+        )
+    for inv in invites:
+        if str(inv.get("invitee_player_id")) == invitee_id:
+            raise PortOwnershipError(400, "Invitee already has a pending invite")
+
+    expires = game_time.scaled_deadline(SYNDICATE_INVITE_HOURS, start=now)
+    invite = {
+        "invite_id": str(uuid.uuid4()),
+        "invitee_player_id": invitee_id,
+        "pct": pct_i,
+        "expires_at": _iso(expires),
+        "issued_at": _iso(now),
+    }
+    invites.append(invite)
+    _set_syndicate_state(station, invites=invites)
+    db.flush()
+    logger.info(
+        "Station %s share invite %s%% -> %s by %s",
+        station.id, pct_i, invitee_id, owner.id,
+    )
+    return {
+        "station_id": str(station.id),
+        "invite": invite,
+    }
+
+
+def accept_share_invite(
+    db: Session,
+    station: Station,
+    player: Player,
+    invite_id: str,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Invitee accepts: fee from treasury, stake split, mode=syndicate."""
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    _expire_syndicate_invites(station, now)
+
+    invites = _syndicate_invites(station)
+    match = next((i for i in invites if str(i.get("invite_id")) == str(invite_id)), None)
+    if match is None:
+        raise PortOwnershipError(404, "Invite not found or expired")
+    if str(match.get("invitee_player_id")) != str(player.id):
+        raise PortOwnershipError(403, "Only the invitee can accept this invite")
+    if station.owner_id is None:
+        raise PortOwnershipError(400, "Station has no primary owner")
+
+    pct_i = int(match["pct"])
+    shares = _ensure_primary_share(station)
+    # Re-check oversubscribe without this invite (already counted in pending)
+    pending_others = [i for i in invites if str(i.get("invite_id")) != str(invite_id)]
+    if would_oversubscribe(shares, pending_others, str(station.owner_id), pct_i):
+        raise PortOwnershipError(400, "Accept would oversubscribe shares")
+
+    fee = int(round(_acquisition_cost(station) * SYNDICATE_CONVERSION_FEE_PCT))
+    treasury = station.treasury_balance or 0
+    if treasury < fee:
+        raise PortOwnershipError(
+            400,
+            f"Treasury needs {fee:,} credits for the 1% conversion fee "
+            f"(has {treasury:,})",
+        )
+    station.treasury_balance = treasury - fee
+
+    primary = str(station.owner_id)
+    others = [
+        {"player_id": str(s["player_id"]), "pct": int(s["pct"])}
+        for s in shares
+        if str(s["player_id"]) != primary
+    ]
+    # Merge if invitee already had a share (shouldn't normally)
+    merged = False
+    for s in others:
+        if s["player_id"] == str(player.id):
+            s["pct"] += pct_i
+            merged = True
+            break
+    if not merged:
+        others.append({"player_id": str(player.id), "pct": pct_i})
+    others_pct = sum(int(s["pct"]) for s in others)
+    primary_pct = 100 - others_pct
+    if primary_pct < 1:
+        raise PortOwnershipError(400, "Primary would retain less than 1%")
+    new_shares = [{"player_id": primary, "pct": primary_pct}] + others
+    new_invites = pending_others
+    _set_syndicate_state(
+        station, mode="syndicate", shares=new_shares, invites=new_invites
+    )
+    db.flush()
+    logger.info(
+        "Station %s invite %s accepted by %s (+%s%%, fee=%s)",
+        station.id, invite_id, player.id, pct_i, fee,
+    )
+    return {
+        "station_id": str(station.id),
+        "mode": "syndicate",
+        "shares": new_shares,
+        "conversion_fee": fee,
+        "treasury_balance": station.treasury_balance,
+    }
+
+
+def decline_share_invite(
+    db: Session,
+    station: Station,
+    player: Player,
+    invite_id: str,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Invitee declines — remove invite, no stake change."""
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    _expire_syndicate_invites(station, now)
+    invites = _syndicate_invites(station)
+    match = next((i for i in invites if str(i.get("invite_id")) == str(invite_id)), None)
+    if match is None:
+        raise PortOwnershipError(404, "Invite not found or expired")
+    if str(match.get("invitee_player_id")) != str(player.id):
+        raise PortOwnershipError(403, "Only the invitee can decline this invite")
+    kept = [i for i in invites if str(i.get("invite_id")) != str(invite_id)]
+    _set_syndicate_state(station, invites=kept)
+    db.flush()
+    return {
+        "station_id": str(station.id),
+        "declined_invite_id": str(invite_id),
+    }
+
+
 def set_service_charge(
     db: Session, station: Station, owner: Player, multiplier: float
 ) -> Dict[str, Any]:
@@ -1317,10 +2250,8 @@ def revenue_summary(db: Session, station: Station, days: int = 30) -> Dict[str, 
 
 def _ledger(station: Station) -> Dict[str, Any]:
     """Mutable handle on station.ownership (created if absent). Caller MUST
-    flag_modified(station, 'ownership') after mutating."""
-    if station.ownership is None:
-        station.ownership = {}
-    return station.ownership
+    flag_modified(station, 'ownership') after mutating. Alias of _ownership."""
+    return _ownership(station)
 
 
 def _bucket(station: Station, key: str) -> int:
@@ -1337,12 +2268,11 @@ def realize_port_revenue(
     (withdrawable), operating -> ownership['operating_fund'].
 
     This is the REALIZATION HOOK for port trade revenue (tariff/tax, docking
-    fees, service charges). It is currently UNWIRED: trade tax is realized
-    inline in routes/trading.py as `station.treasury_balance += tax_amount`
-    (100% to the owner bucket). Re-pointing those realization sites at this
-    function is a FOLLOW-UP for the lane that owns trading.py / docking_service
-    (this lane must not edit them). Unowned stations have no owner cut — the
-    whole gross routes to the operating fund (a credit sink in practice).
+    fees, service charges). Wired from routes/trading.py's buy and sell tax
+    paths (both call this helper for the canon fee-distribution split; each
+    site falls back to `station.treasury_balance += tax_amount` only if this
+    call raises). Unowned stations have no owner cut — the whole gross routes
+    to the operating fund (a credit sink in practice).
 
     No commit; caller owns the transaction."""
     now = now or datetime.now(UTC)
@@ -1792,6 +2722,7 @@ def _month_stats(
     anchor = _aware(campaign.started_at)
     start, end = _month_bounds(anchor, month_index)
     station_vol = monthly_volume(db, station, month_index, anchor)
+    defense_vol = defense_volume_for_month(station, campaign.id, month_index)
     challenger_vol = int(
         db.query(func.coalesce(func.sum(MarketTransaction.total_value), 0))
         .filter(
@@ -1804,13 +2735,15 @@ def _month_stats(
         .scalar()
         or 0
     )
-    share = (challenger_vol / station_vol) if station_vol > 0 else 0.0
+    share = month_share_with_defense(station_vol, challenger_vol, defense_vol)
     hostile = _month_hostility(db, station.id, campaign.challenger_id, start, end)
     return {
         "month": month_index,
-        "station_volume": station_vol,
+        "station_volume": station_vol + max(0, defense_vol),
+        "market_volume": station_vol,
+        "defense_volume": defense_vol,
         "challenger_volume": challenger_vol,
-        "share": round(share, 4),
+        "share": share,
         "hostile": hostile,
         "satisfied": month_satisfied(share, hostile),
     }
@@ -1835,6 +2768,9 @@ def evaluate_campaign(
     )
     if campaign is None:
         raise PortOwnershipError(404, "Campaign not found")
+
+    # Expire tariff cuts / drop dead-campaign counters before month math.
+    tick_defense_counters(db, station, now)
 
     # Military campaigns are driven by the siege/occupy actions, NOT the
     # economic monthly-volume engine — never month-evaluate them here.
@@ -2727,7 +3663,7 @@ def get_station_listing_status(
     else:
         status = "unlisted"
 
-    return {
+    payload = {
         "station_id": str(station.id),
         "owner_id": str(station.owner_id) if station.owner_id else None,
         "owner_name": owner_name,
@@ -2743,3 +3679,5 @@ def get_station_listing_status(
         "treasury_balance": station.treasury_balance or 0,
         "status": status,
     }
+    payload.update(public_defense_policy_fields(station))
+    return payload

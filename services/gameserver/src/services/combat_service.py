@@ -2,13 +2,12 @@ import json
 import logging
 import uuid
 import random
-import math
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
-from sqlalchemy import and_, or_
+from sqlalchemy import or_
 
 from src.models.player import Player
 from src.models.ship import Ship, ShipStatus, ShipType, ShipSpecification
@@ -199,6 +198,47 @@ def _dispatch_combat_medals(db: Session, killer: Player, context: Dict[str, Any]
             MedalService(db).check_and_award_combat_medals(db, killer, context)
     except Exception as e:  # never let a medal hiccup break combat
         logger.error("Combat medal dispatch hook failed: %s", e)
+
+
+def _dispatch_untouchable_medal(db: Session, player: Player, flawless_combats: int) -> None:
+    """Fire the medals-lane hook ``check_and_award_untouchable_medal`` after a
+    combat resolves without ``player`` losing their ship. Same defensive
+    getattr contract as ``_dispatch_combat_medals`` — a medal hiccup must
+    NEVER break combat resolution."""
+    try:
+        import src.services.medal_service as _medal_module
+        hook = getattr(_medal_module, "check_and_award_untouchable_medal", None)
+        if callable(hook):
+            hook(db, player, flawless_combats)
+    except Exception as e:  # never let a medal hiccup break combat
+        logger.error("Untouchable medal dispatch hook failed: %s", e)
+
+
+def _track_flawless_combat_streak(db: Session, player: Optional[Player], ship_destroyed: bool) -> None:
+    """combat.untouchable (2026-08-04 orchestrator ruling: STREAK, not a
+    lifetime cumulative count — "Untouchable" claims an unbroken run, so a
+    player who lost a ship once early and then fought flawlessly for 100
+    fights must not read the same as a genuine 100-fight unbroken streak).
+    Reset to 0 on ANY ship loss (this ship or any other combat context —
+    every ``*_ship_destroyed`` site for a real Player calls this); increment
+    on every combat resolved without one. Durable per-player JSONB counter
+    (mirrors ``beacons_placed_lifetime`` / ``drones_cleared_lifetime`` —
+    no live query can derive a streak retroactively). Defensive: never lets
+    a counter hiccup break combat resolution."""
+    if player is None:
+        return
+    try:
+        settings = dict(player.settings or {})
+        if ship_destroyed:
+            settings["flawless_combats"] = 0
+        else:
+            settings["flawless_combats"] = int(settings.get("flawless_combats", 0) or 0) + 1
+        player.settings = settings
+        flag_modified(player, "settings")
+        if not ship_destroyed:
+            _dispatch_untouchable_medal(db, player, settings["flawless_combats"])
+    except Exception as e:
+        logger.error("Failed to track flawless-combat streak for %s: %s", getattr(player, "id", "?"), e)
 
 
 def _dispatch_bounty_medals(db: Session, collector_id) -> None:
@@ -915,7 +955,20 @@ class CombatService:
         # Check if combat is allowed in this sector (could have special rules)
         if not self._is_combat_allowed(sector, attacker, defender):
             return {"success": False, "message": "Combat is not allowed in this sector"}
-        
+
+        # WO-MINING-PVP-INTERRUPT: engaging a mining hull cancels the PENDING
+        # harvest (50% turn refund) before resolution. Canon mining.md § PvP —
+        # refund fires on engage regardless of whether damage lands. Only after
+        # gates that mean this attack will resolve (sector/range/turns/rules).
+        if defender.current_ship.status == ShipStatus.MINING:
+            from src.services.mining_service import MiningService
+
+            MiningService(self.db).interrupt_pending_for_ship(
+                defender.current_ship_id,
+                reason_code="pvp_attack",
+                leave_in_combat=True,
+            )
+
         # Resolve combat
         combat_result = self._resolve_ship_combat(attacker, defender, sector)
         
@@ -1008,6 +1061,9 @@ class CombatService:
             self._transfer_quantum_wallet(victor=defender, victim=attacker)
             self._handle_ship_destruction(attacker, defender, "combat")
 
+        _track_flawless_combat_streak(self.db, defender, combat_result["defender_ship_destroyed"])
+        _track_flawless_combat_streak(self.db, attacker, combat_result["attacker_ship_destroyed"])
+
         # Update drone counts
         if combat_result["attacker_drones_lost"] > 0:
             attacker.attack_drones = max(0, attacker.attack_drones - combat_result["attacker_drones_lost"])
@@ -1075,6 +1131,18 @@ class CombatService:
                     "kind": "pvp",
                 },
             )
+            # Team-war score / victory (WO-BUILD-TEAM-WAR-SCORE-HOOK-VICTORY).
+            # Best-effort: a war-score hiccup must never break combat.
+            try:
+                from src.services import team_war_service
+
+                team_war_service.record_pvp_kill(self.db, attacker, defender)
+            except Exception:
+                logger.exception(
+                    "team_war: record_pvp_kill failed for attacker=%s defender=%s",
+                    getattr(attacker, "id", None),
+                    getattr(defender, "id", None),
+                )
 
         # Grey-flag PvP status (WO-BL). Two interacting facts, both evaluated
         # against PRE-resolution standing so a kill that drops the defender's rep
@@ -1557,13 +1625,11 @@ class CombatService:
                     # above), so a notorious trader can be killed — and thus
                     # rewarded — exactly once.
                     #
-                    # ⚠️ NO-CANON NUMBER — FLAG FOR MAX / DECISIONS: ADR-0074 §10
-                    # specifies the positive incentive but gives NO magnitude.
-                    # +25 is a deliberately modest placeholder — well under the
-                    # −100 attack_innocent penalty so bounty-hunting notorious
-                    # traders is a net-positive nudge, not a reputation-farming
-                    # treadmill. Tune once Max sets canon.
-                    NOTORIOUS_TRADER_KILL_REWARD = 25  # NO-CANON, flagged
+                    # Ratified 2026-08-04 (Max): +100, mirroring the −100
+                    # attack_innocent penalty symmetrically. ADR-0074 §10
+                    # specified the positive incentive but gave no magnitude;
+                    # this is the canon value, not a placeholder.
+                    NOTORIOUS_TRADER_KILL_REWARD = 100
                     try:
                         from src.services.personal_reputation_service import (
                             PersonalReputationService,
@@ -1762,6 +1828,23 @@ class CombatService:
                             "Failed KILL_PIRATE_NPC emergent-rep hook: %s", e
                         )
 
+                # Faction-issued bounty payout (bounties.md:26 — "Federation
+                # putting a bounty on a specific pirate captain that pays out
+                # only to faction members"). Best-effort, flush-only (folds
+                # into this method's single commit below): a no-op when the
+                # NPC carries no faction bounty; pays the attacker iff their
+                # own standing with the issuing faction clears the gate
+                # (bounty_service.collect_faction_bounty), otherwise the
+                # bounty is left standing for a future eligible hunter.
+                try:
+                    from src.services.bounty_service import collect_faction_bounty
+                    collect_faction_bounty(self.db, dead_npc, attacker)
+                except Exception as e:
+                    logger.error(
+                        "Failed faction-bounty collection hook for NPC %s: %s",
+                        dead_npc.id, e,
+                    )
+
             # Medal dispatch hook (ADR-0028 / medals lane) for a resolved NPC
             # kill. defender_id is NULL on NPC combat logs (no Player behind
             # the ship), so kind="npc" lets the idempotent medals-lane hook
@@ -1778,6 +1861,8 @@ class CombatService:
 
         if combat_result["attacker_ship_destroyed"]:
             self._handle_ship_destruction(attacker, None, "combat")
+
+        _track_flawless_combat_streak(self.db, attacker, combat_result["attacker_ship_destroyed"])
 
         # Update attacker drone count
         if combat_result["attacker_drones_lost"] > 0:
@@ -1945,6 +2030,17 @@ class CombatService:
         if sector is None:
             return {"success": False, "message": "Sector not found"}
 
+        # WO-MINING-PVP-INTERRUPT: NPC engage cancels PENDING harvest (canon:
+        # incoming combat from player or NPC). Same hook as attack_player.
+        if defender.current_ship.status == ShipStatus.MINING:
+            from src.services.mining_service import MiningService
+
+            MiningService(self.db).interrupt_pending_for_ship(
+                defender.current_ship_id,
+                reason_code="npc_pvp_attack",
+                leave_in_combat=True,
+            )
+
         combat_result = self._resolve_ship_combat(
             attacker=None, defender=defender, sector=sector, attacker_ship=npc_ship,
         )
@@ -1981,6 +2077,8 @@ class CombatService:
         dead_npc = None
         if combat_result["defender_ship_destroyed"]:
             self._handle_ship_destruction(defender, None, "npc_combat")
+
+        _track_flawless_combat_streak(self.db, defender, combat_result["defender_ship_destroyed"])
 
         if combat_result["attacker_ship_destroyed"]:
             npc_ship.is_destroyed = True
@@ -2152,6 +2250,8 @@ class CombatService:
         if combat_result["attacker_ship_destroyed"]:
             self._handle_ship_destruction(attacker, None, "drone_combat")
 
+        _track_flawless_combat_streak(self.db, attacker, combat_result["attacker_ship_destroyed"])
+
         # Update attacker's carried drone count if any were lost
         if combat_result["attacker_drones_lost"] > 0:
             attacker.attack_drones = max(
@@ -2185,6 +2285,30 @@ class CombatService:
                 )
             except Exception as e:
                 logger.error("Failed destroy_pirate_drones reputation hook: %s", e)
+
+        # Medal dispatch hook (ADR-0028 / medals lane): combat.drone_reaper
+        # (drones_cleared >= 100). A durable per-player JSONB counter is
+        # maintained HERE (not derived by querying DroneDeployment) --
+        # DroneDeployment.player_id is the drone's DEPLOYER/owner, not the
+        # attacker who destroyed it, so there is no table this attacker's
+        # lifetime destroyed-drone count could be queried from. Best-effort:
+        # resolved by getattr (the medals lane may be absent) and any
+        # failure is logged and swallowed, a medal hiccup must never fail
+        # combat resolution.
+        if destroyed_drone_ids:
+            try:
+                settings = dict(attacker.settings) if attacker.settings else {}
+                lifetime_cleared = int(settings.get("drones_cleared_lifetime", 0)) + len(destroyed_drone_ids)
+                settings["drones_cleared_lifetime"] = lifetime_cleared
+                attacker.settings = settings
+                flag_modified(attacker, "settings")
+
+                import src.services.medal_service as _medal_module
+                hook = getattr(_medal_module, "check_and_award_drone_medals", None)
+                if callable(hook):
+                    hook(self.db, attacker.id, lifetime_cleared)
+            except Exception as e:
+                logger.error("Drone-reaper medal dispatch hook failed: %s", e)
 
         # Update last_combat timestamp for sector
         sector.last_combat = datetime.now()
@@ -2287,7 +2411,9 @@ class CombatService:
         # Apply combat effects
         if combat_result["attacker_ship_destroyed"]:
             self._handle_ship_destruction(attacker, None, "planet_defense")
-        
+
+        _track_flawless_combat_streak(self.db, attacker, combat_result["attacker_ship_destroyed"])
+
         # Update drone counts
         if combat_result["attacker_drones_lost"] > 0:
             attacker.attack_drones = max(0, attacker.attack_drones - combat_result["attacker_drones_lost"])
@@ -2313,7 +2439,26 @@ class CombatService:
             self._award_planet_capture_rewards(
                 attacker, planet, planet_owner, sector, combat_result
             )
-        
+
+            # Medal dispatch hook (ADR-0028 / medals lane): combat.siege_master
+            # (planetary_assaults >= 25 -- "successful planetary assaults",
+            # i.e. captures, matching this branch's own gate). Durable
+            # per-player JSONB counter (no captured-only outcome column exists
+            # on CombatLog to derive this from a query). Best-effort.
+            try:
+                settings = dict(attacker.settings) if attacker.settings else {}
+                lifetime_assaults = int(settings.get("planetary_assaults_lifetime", 0)) + 1
+                settings["planetary_assaults_lifetime"] = lifetime_assaults
+                attacker.settings = settings
+                flag_modified(attacker, "settings")
+
+                import src.services.medal_service as _medal_module
+                hook = getattr(_medal_module, "check_and_award_siege_medals", None)
+                if callable(hook):
+                    hook(self.db, attacker.id, lifetime_assaults)
+            except Exception as e:
+                logger.error("Siege-master medal dispatch hook failed: %s", e)
+
         # Update last_attacked timestamp for planet
         planet.last_attacked = datetime.now()
 
@@ -2358,11 +2503,10 @@ class CombatService:
     def attack_port(self, attacker_id: uuid.UUID, station_id: uuid.UUID) -> Dict[str, Any]:
         """Attack a space station.
 
-        WARNING: not wired to any player route — port assault is disabled
-        this pass (economically sensitive: it transfers port ownership).
-        The Station model currently has no defense_level / shields /
-        defense_weapons columns, so this path cannot resolve until the
-        station-defense schema lands (canon gap: station defense stats).
+        Defense stats live in ``Station.defenses`` JSONB (read/written by
+        ``_resolve_port_combat``). Capture remains mathematically unreachable
+        in the shipped kernel (per-round hull ceiling vs hull_armor floor);
+        ownership transfer only fires if ``port_captured`` is true.
         """
         # Get attacker
         attacker = self.db.query(Player).filter(Player.id == attacker_id).first()
@@ -2438,15 +2582,25 @@ class CombatService:
         # Apply combat effects
         if combat_result["attacker_ship_destroyed"]:
             self._handle_ship_destruction(attacker, None, "port_defense")
-        
+
+        _track_flawless_combat_streak(self.db, attacker, combat_result["attacker_ship_destroyed"])
+
         # Update drone counts
         if combat_result["attacker_drones_lost"] > 0:
             attacker.attack_drones = max(0, attacker.attack_drones - combat_result["attacker_drones_lost"])
 
-        # Update port defenses
-        station.defense_level = max(0, station.defense_level - combat_result["port_damage"])
+        # Persist hull damage into Station.defenses JSONB (WO attack-port-build
+        # corrected scope — never write a bare station.defense_level attribute;
+        # that column does not exist and would AttributeError).
+        defenses = dict(station.defenses or {})
+        hull_before = int(defenses.get("hull_armor", 5000) or 0)
+        defenses["hull_armor"] = max(0, hull_before - int(combat_result.get("port_damage") or 0))
+        if "shield_pool_after" in combat_result:
+            defenses["shield_pool"] = max(0, int(combat_result["shield_pool_after"]))
+        station.defenses = defenses
+        flag_modified(station, "defenses")
 
-        # If port was captured, transfer ownership
+        # If port was captured, transfer ownership (unreachable in current kernel)
         if combat_result["port_captured"]:
             self._transfer_port_ownership(station, attacker)
 
@@ -2462,8 +2616,7 @@ class CombatService:
         # regardless of capture/outcome (this line is only reached after every
         # guard has passed and the attack has definitively proceeded). MAX rule
         # applied inside set_grey. Best-effort: a grey-flag hiccup never breaks
-        # combat resolution. (attack_port is not yet route-wired — port assault
-        # returns 501 — but the rail is ready for when it lands.)
+        # combat resolution.
         try:
             from src.services.grey_flag_service import (
                 GreyFlagService,
@@ -3317,7 +3470,7 @@ class CombatService:
         attacker_has_tractor = False
         try:
             if attacker_ship is not None:
-                attacker_effects = ShipUpgradeService.get_equipment_effects(attacker_ship)
+                attacker_effects = ShipUpgradeService.get_combined_effects(attacker_ship)
                 attacker_has_tractor = attacker_effects.get("weapon_mode") == "tractor"
                 # WO-AF tow mutual-exclusion (ships.md:365): the Tractor Beam
                 # slot is mutually exclusive with weapon-mode firing while a tow
@@ -3434,6 +3587,7 @@ class CombatService:
             if not attacker_ship_destroyed:
                 # Calculate chance to hit
                 hit_chance = min(0.8, attacker_attack / (defender_defense * 1.5) * 0.6)
+                hit_chance = self._apply_defender_ecm(hit_chance, defender_ship)
                 
                 # Random element
                 if random.random() < hit_chance:
@@ -3545,6 +3699,7 @@ class CombatService:
             if not defender_ship_destroyed:
                 # Calculate chance to hit
                 hit_chance = min(0.8, defender_defense / (attacker_attack * 1.5) * 0.6)
+                hit_chance = self._apply_defender_ecm(hit_chance, attacker_ship)
 
                 # Random element
                 if random.random() < hit_chance:
@@ -4398,11 +4553,9 @@ class CombatService:
         lie), but capture requires grinding ``hull_armor`` (default 5000) to
         zero, and a per-round damage CEILING (150) combined with the 8-round
         limit caps total reachable hull damage at ~1200 << 5000 — so capture is
-        mathematically unreachable here regardless of drone count. The ONLY
-        caller, attack_port, is DISABLED/unwired; this resolver does not
-        transfer ownership and is unreachable from any route. Making the
-        defense formidable + fixing the AttributeError crash must NOT make a
-        station capturable or the path live — and it does not.
+        mathematically unreachable here regardless of drone count. Ownership
+        transfer in ``attack_port`` only fires when ``port_captured`` is true,
+        which this kernel never produces.
         """
         # --- Attacker ---
         attacker_ship = attacker.current_ship
@@ -4599,6 +4752,7 @@ class CombatService:
             "attacker_ship_destroyed": attacker_ship_destroyed,
             "port_damage": port_damage,
             "port_captured": port_captured,
+            "shield_pool_after": shield_pool,
             "combat_details": combat_details
         }
     
@@ -4941,13 +5095,45 @@ class CombatService:
         shield_bonus = combat_data.get("shield_bonus", 0)
         hull_bonus = combat_data.get("hull_bonus", 0)
         evasion = combat_data.get("evasion", 0)
+
+        # Stealth-module tactical bonus (ship-systems.md §2.6 — evasion, not
+        # firepower). Read via combined equipment/module effects so both
+        # install paths count; never crash combat on a missing accessory.
+        stealth_bonus = 0
+        try:
+            effects = ShipUpgradeService.get_combined_effects(ship)
+            raw = effects.get("stealth_evasion_bonus", 0) or 0
+            stealth_bonus = int(raw) if isinstance(raw, (int, float)) else 0
+        except Exception as e:
+            logger.error("Stealth equipment read failed (continuing without): %s", e)
         
         # Each drone contributes to defense
         drone_defense = drones * 1.5
 
         # Maintenance condition scales overall combat effectiveness (ships.md bands).
         from src.services.maintenance_service import combat_multiplier
-        return (base_defense + shield_bonus + hull_bonus + evasion + drone_defense) * combat_multiplier(ship)
+        return (
+            base_defense + shield_bonus + hull_bonus + evasion + stealth_bonus + drone_defense
+        ) * combat_multiplier(ship)
+
+    def _apply_defender_ecm(self, hit_chance: float, defender_ship) -> float:
+        """Reduce hit_chance by the defender's ECM suite penalty, if any.
+
+        ship-systems.md §2.6: combat equipment is tactical (ECM), never raw
+        firepower. ``ecm_hit_penalty`` is a fraction in [0, 1) subtracted from
+        the incoming hit roll. Missing/broken equipment reads as no ECM.
+        """
+        if defender_ship is None or hit_chance <= 0:
+            return hit_chance
+        try:
+            effects = ShipUpgradeService.get_combined_effects(defender_ship)
+            raw = effects.get("ecm_hit_penalty", 0) or 0
+            penalty = float(raw) if isinstance(raw, (int, float)) else 0.0
+            penalty = max(0.0, min(0.9, penalty))  # hard ceiling — never zero hit
+            return max(0.0, hit_chance * (1.0 - penalty))
+        except Exception as e:
+            logger.error("ECM equipment read failed (continuing without): %s", e)
+            return hit_chance
     
     def _handle_ship_destruction(self, player: Player, destroyer: Optional[Player], cause: str) -> None:
         """Handle a player's ship being destroyed."""
@@ -5225,9 +5411,8 @@ class CombatService:
 
     def _transfer_planet_ownership(self, planet: Planet, new_owner: Player) -> None:
         """Transfer ownership of a planet to a new player via many-to-many."""
-        from src.models.station import player_stations
         # Clear existing owners from the join table
-        player_planets = self.db.execute(
+        self.db.execute(
             self.db.query(Planet).filter(Planet.id == planet.id).statement
         )
         # Use direct SQL to clear the many-to-many

@@ -76,6 +76,7 @@ Interpretations where canon leaves room (documented per NEON rules):
 """
 import logging
 import math
+import re
 import uuid
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, UTC
@@ -105,6 +106,7 @@ from src.models.warp_tunnel import (
     WarpTunnelStatus,
     WarpTunnelType,
 )
+from src.services.central_bank_service import ENTRY_WARP_GATE_CASCADE_REFUND, credit_wallet_or_bank
 from src.services.ship_service import ShipService
 from src.services.turn_service import spend_turns, refund_turns
 
@@ -2345,6 +2347,73 @@ def _validate_toll_bypass(raw: Any) -> Optional[List[str]]:
     return _validate_uuid_list(raw, "toll_bypass")
 
 
+# WO-WARP-GATE-FACTION-ACCESS: the NPC-faction grant list npc_movement_
+# service.py's _npc_gate_access_granted already READS (default-DENY —
+# FEATURES/economy/npc-traders.md "Cross-region routing and warp gates")
+# but nothing ever WROTE, mirroring this module's own pre-existing
+# faction_rep_min/max + toll_bypass gap (module comment above). MUST MATCH
+# npc_movement_service._NPC_FACTION_GRANT_KEY exactly — duplicated as a
+# literal (not imported) to avoid a warp_gate_service -> npc_movement_
+# service -> movement_service -> warp_gate_service import cycle
+# (movement_service imports `from src.services import warp_gate_service`
+# at module scope). test_gate_access_setters.py asserts the two constants
+# are equal so drift is caught immediately.
+_NPC_FACTION_GRANT_KEY = "npc_factions"  # MUST MATCH npc_movement_service._NPC_FACTION_GRANT_KEY
+
+# Faction codes are snake_case identifiers (e.g. "terran_federation"), the
+# same convention FactionType-adjacent NO-CANON string keys use elsewhere
+# in this module. No canonical faction-code registry exists to validate
+# membership against, so this only enforces SHAPE, not "is this a real
+# faction" -- an owner can grant a code no NPC ever presents, which is
+# inert (never matched) rather than harmful.
+_FACTION_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
+_MAX_FACTION_CODE_LEN = 50
+
+
+def _validate_npc_factions(raw: Any) -> Optional[List[str]]:
+    """Validate + canonicalize an inbound npc_factions grant list (see
+    _NPC_FACTION_GRANT_KEY above). None means "omitted" (leave unchanged,
+    same convention as _validate_faction_rep_layer/_validate_toll_bypass);
+    an empty list is a valid, explicit "revoke every faction's access."
+
+    Each entry must be a non-empty snake_case string (^[a-z][a-z0-9_]*$),
+    at most _MAX_FACTION_CODE_LEN chars, and the list is capped at
+    MAX_ACCESS_LIST_ENTRIES (mirrors _validate_uuid_list's own cap) and
+    deduplicated preserving first-seen order."""
+    if raw is None:
+        return None
+    if not isinstance(raw, (list, tuple)):
+        raise WarpGateError(400, "npc_factions must be a list of faction codes")
+    if len(raw) > MAX_ACCESS_LIST_ENTRIES:
+        raise WarpGateError(
+            400,
+            f"npc_factions may hold at most {MAX_ACCESS_LIST_ENTRIES} entries",
+        )
+    out: List[str] = []
+    seen = set()
+    for value in raw:
+        if not isinstance(value, str) or not value:
+            raise WarpGateError(
+                400, f"npc_factions contains an invalid faction code: {value!r}",
+            )
+        if len(value) > _MAX_FACTION_CODE_LEN:
+            raise WarpGateError(
+                400,
+                f"npc_factions faction code exceeds {_MAX_FACTION_CODE_LEN} "
+                f"characters: {value!r}",
+            )
+        if not _FACTION_CODE_PATTERN.match(value):
+            raise WarpGateError(
+                400,
+                "npc_factions faction codes must be snake_case (e.g. "
+                f"'terran_federation'): {value!r}",
+            )
+        if value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
+
+
 def set_gate_access_layers(
     db: Session,
     player: Player,
@@ -2352,14 +2421,17 @@ def set_gate_access_layers(
     faction_rep_min: Optional[Dict[str, Any]] = None,
     faction_rep_max: Optional[Dict[str, Any]] = None,
     toll_bypass: Optional[List[str]] = None,
+    npc_factions: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """WO-QUALITY-techdebt-gate-access-setters -- owner-only setter for the
     optional layered access gates on top of a gate's base mode
     (_check_faction_rep_layers' faction_rep_min/max, collect_toll's
     toll_bypass) that were previously unreachable (see module comment
-    above).
+    above). WO-WARP-GATE-FACTION-ACCESS extends this with npc_factions --
+    the NPC-side grant list npc_movement_service._npc_gate_access_granted
+    reads (same gap, same fix shape).
 
-    Each of the three parameters is OPTIONAL and, like set_gate_
+    Each of the four parameters is OPTIONAL and, like set_gate_
     permissions' own `toll` parameter, PRESERVED UNCHANGED when omitted
     (None) -- an owner adding a toll_bypass entry should never silently
     wipe an already-configured faction_rep_min, and vice versa. There is
@@ -2368,7 +2440,7 @@ def set_gate_access_layers(
     already has) -- a real gap if ever needed, but out of this WO's
     scope; flagged, not silently worked around.
 
-    All three are validated BEFORE anything is locked or mutated, so a
+    All four are validated BEFORE anything is locked or mutated, so a
     rejected call leaves the gate's JSONB completely unchanged (same
     discipline as set_gate_permissions' toll bound-check).
 
@@ -2381,6 +2453,7 @@ def set_gate_access_layers(
     validated_rep_min = _validate_faction_rep_layer(faction_rep_min, "faction_rep_min")
     validated_rep_max = _validate_faction_rep_layer(faction_rep_max, "faction_rep_max")
     validated_bypass = _validate_toll_bypass(toll_bypass)
+    validated_npc_factions = _validate_npc_factions(npc_factions)
 
     gate = _resolve_owned_active_gate(db, player, gate_id, lock=True)
     if not gate.warp_tunnel_id:
@@ -2401,22 +2474,26 @@ def set_gate_access_layers(
         reqs["faction_rep_max"] = validated_rep_max
     if validated_bypass is not None:
         reqs["toll_bypass"] = validated_bypass
+    if validated_npc_factions is not None:
+        reqs[_NPC_FACTION_GRANT_KEY] = validated_npc_factions
     tunnel.access_requirements = reqs
     flag_modified(tunnel, "access_requirements")
     db.flush()
 
     logger.info(
         "Player %s set warp gate %s access layers (faction_rep_min=%s "
-        "faction_rep_max=%s toll_bypass=%d entries)",
+        "faction_rep_max=%s toll_bypass=%d entries npc_factions=%d entries)",
         player.id, gate.id, reqs.get("faction_rep_min"), reqs.get("faction_rep_max"),
-        len(reqs.get("toll_bypass") or []),
+        len(reqs.get("toll_bypass") or []), len(reqs.get(_NPC_FACTION_GRANT_KEY) or []),
     )
     return {
         "gate_id": str(gate.id),
         "faction_rep_min": reqs.get("faction_rep_min"),
         "faction_rep_max": reqs.get("faction_rep_max"),
         "toll_bypass": reqs.get("toll_bypass") or [],
+        "npc_factions": reqs.get(_NPC_FACTION_GRANT_KEY) or [],
     }
+
 
 
 # --- Ownership transfer / sale (WO-DBB-WG2) ---------------------------------
@@ -2658,17 +2735,12 @@ def cascade_region_gate_teardown(db: Session, region_id) -> Dict[str, Any]:
          raised -- the region is terminating regardless of the owner row's
          fate.
 
-    CENTRAL-BANK ROUTING GAP (flagged, not built): canon says refund the
-    ONLINE owner's Player.credits, or PlayerCentralBankAccount if offline.
-    `PlayerCentralBankAccount` does not exist anywhere in src/models -- it is
-    100% design-only text in ADR-0050 (no migration ever created the table).
-    There is also no synchronously-readable "is this player online" signal
-    reachable from a flush-only (db, region_id) kernel (the nearest thing,
-    redis_service.sync_player_online_status, is async/Redis-backed
-    infrastructure, not a plain column read). This function therefore
-    refunds EVERY owner's credits unconditionally to Player.credits, online
-    or not, until the Central Bank feature exists to receive the offline
-    branch.
+    CENTRAL-BANK ROUTING: refunds the ONLINE owner's Player.credits, or the
+    Bank (PlayerCentralBankAccount, ADR-0050) if offline / unreadable, via
+    central_bank_service.credit_wallet_or_bank -- the same online/offline
+    router the other two GAP call sites (planet-safe transfer, station-loss
+    compensation) use. A Redis outage (is_player_online_sync returns None)
+    is treated as offline, never invented as online.
 
     Both endpoints of a single gate are torn down inside one flush sequence
     per gate. A failure mid-loop propagates out of this function uncaught
@@ -2761,7 +2833,14 @@ def cascade_region_gate_teardown(db: Session, region_id) -> Dict[str, Any]:
             )
             orphaned_owners += 1
         else:
-            owner.credits += refund_amount
+            credit_wallet_or_bank(
+                db,
+                owner,
+                refund_amount,
+                entry_type=ENTRY_WARP_GATE_CASCADE_REFUND,
+                source="warp_gate_cascade",
+                notes=f"Region {region_name} termination -- gate {gate_name} destroyed",
+            )
             total_refunded += refund_amount
             _notify_gate_cascade_destroyed(db, owner, gate_name, region_name, refund_amount)
 

@@ -15,7 +15,21 @@ from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.models.planet import Planet
+from src.models.sector import Sector
 from src.models.sector_celestial import SectorFeatureDiscovery
+
+
+def mark_sector_discovered(db: Session, sector: Sector, player_id) -> bool:
+    """Record the first discoverer of a sector (galaxy-wide, Sector.discovered_by_id
+    — previously schema-only/unwired, wired here per the 2026-08-04 orchestrator
+    ruling on exploration.void_walker's "uncharted void" semantics). Idempotent
+    (first wins). Returns True only when newly set."""
+    if sector.discovered_by_id is not None:
+        return False
+    sector.discovered_by_id = player_id
+    sector.discovery_date = datetime.now(UTC)
+    db.flush()
+    return True
 
 
 def mark_planet_discovered(db: Session, planet: Planet, player_id) -> bool:

@@ -7,10 +7,10 @@ building construction, defenses, and sieges.
 
 import math
 from typing import Dict, Any, Optional, List
-from uuid import UUID, uuid4
+from uuid import UUID
 from datetime import datetime, timedelta, UTC
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_, func, text
+from sqlalchemy import and_, func, text
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.exc import OperationalError
 import logging
@@ -21,8 +21,7 @@ from src.models.player import Player
 from src.models.planet import Planet, PlanetType, player_planets
 from src.models.sector import Sector
 from src.models.ship import Ship, effective_cargo_capacity
-from src.models.genesis_device import GenesisDevice, GenesisType, GenesisStatus, PlanetFormation
-from src.models.team import Team
+from src.models.genesis_device import GenesisDevice, GenesisStatus, PlanetFormation
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +29,16 @@ logger = logging.getLogger(__name__)
 SIEGE_TURNS_THRESHOLD = 3       # Consecutive turns enemies must be present to trigger siege
 SIEGE_MORALE_LOSS_PER_TURN = 5  # Morale % lost per turn under siege
 SIEGE_PRODUCTION_PENALTY = 0.25 # 25% production reduction during siege
+
+# Siege resource theft (defense.md "Resource theft" — "a fraction of generated
+# commodities should transfer to the besieger"; previously 📐 Design-only —
+# the production PENALTY above was applied but no transfer ever happened).
+# NO-CANON: the doc gives no figure, only the mechanic — 0.15 (15% of each
+# tick's newly-produced fuel/organics/equipment, ON TOP OF the existing 25%
+# production penalty, i.e. the planet nets 0.75 × 0.85 ≈ 63.75% of its
+# unbesieged output) is a conservative implementer default, flagged for a
+# DECISIONS.md ruling. Applied in _apply_siege_resource_theft below.
+SIEGE_RESOURCE_THEFT_FRACTION = 0.15
 
 # Low-habitability resource-cost penalty (WO-F5; canon anchor
 # FEATURES/planets/colonization.md "Low-habitability resource cost penalty",
@@ -41,16 +50,14 @@ SIEGE_PRODUCTION_PENALTY = 0.25 # 25% production reduction during siege
 # rates DOWN by the same fraction (the extra cost is paid out of output), applied
 # exactly like SIEGE_PRODUCTION_PENALTY's siege_multiplier just below it.
 #
-# NO-CANON: the doc marks this 📐 Design-only and the threshold/percentage are
-# given as a TARGET ("< 30", "+20%"), not a settled rule. LOW_HABITABILITY_
-# THRESHOLD = 30 and LOW_HABITABILITY_PRODUCTION_PENALTY = 0.20 are the WO/doc
-# target values — FLAGGED for DECISIONS, not invented. Below the threshold the
-# colony already DECLINES in population (HABITABILITY_GROWTH_THRESHOLD = 20);
-# this penalty additionally taxes commodity output across the marginal band
-# (hab < 30), so a hab-20 world both shrinks AND nets ~20% less than a hab-50
-# world with identical allocations/buildings.
-LOW_HABITABILITY_THRESHOLD = 30           # NO-CANON: target threshold (doc line 213)
-LOW_HABITABILITY_PRODUCTION_PENALTY = 0.20  # NO-CANON: target "+20% resource costs"
+# Ratified 2026-08-04 (Max): mutually exclusive with the population-decline
+# band, not stacked. HABITABILITY_GROWTH_THRESHOLD = 20 already declines
+# population below hab 20; this output penalty applies ONLY across the
+# marginal band [20, 30) — a hab<20 world gets population decline alone, no
+# double-hit. LOW_HABITABILITY_THRESHOLD = 30 and LOW_HABITABILITY_
+# PRODUCTION_PENALTY = 0.20 are the ratified band/magnitude.
+LOW_HABITABILITY_THRESHOLD = 30
+LOW_HABITABILITY_PRODUCTION_PENALTY = 0.20
 
 # --- PL4b TAX-RATE BOUNDS (DEFERRED, COLUMN-ONLY — I11) ----------------------
 # Planet.tax_rate ships as a NULLABLE, INERT column (migration d7a2f1c9e3b5).
@@ -1048,6 +1055,22 @@ class PlanetaryService:
         # at/over the cap (e.g. deposited above it before caps existed) is left
         # untouched here — the clamp only refuses NEW accrual past the cap, never
         # retroactively confiscates pre-existing stock (max(new, current_over_cap)).
+        # Siege resource theft (defense.md "Resource theft"): a fraction of
+        # each resource's freshly-generated units diverts to the besieger
+        # BEFORE the planet's own storage-cap accounting below — stolen
+        # units never touch the planet's stockpile (they're seized at the
+        # point of generation, not skimmed off storage), so this must run
+        # before the cap-clamp loop that follows.
+        stolen_totals: Dict[str, int] = {}
+        if planet.under_siege and planet.siege_attacker_id:
+            for col in list(gains.keys()):
+                gained, remainder = gains[col]
+                if gained > 0:
+                    stolen = int(gained * SIEGE_RESOURCE_THEFT_FRACTION)
+                    if stolen > 0:
+                        gains[col] = (gained - stolen, remainder)
+                        stolen_totals[col] = stolen
+
         cap = storage_cap_for(planet.citadel_level or 0)
         overflow = {}
         for col, (gained, remainder) in gains.items():
@@ -1130,6 +1153,19 @@ class PlanetaryService:
             }
         else:
             new_events.pop("overflow_warning", None)
+        # Siege resource theft delivery: the stolen units were already carved
+        # out of `gains` above (never reached the planet's own stockpile);
+        # this delivers them into the besieger's cargo. Best-effort — a
+        # besieger lookup/cargo failure must never break the planet's own
+        # production tick (the theft is simply lost that tick, not retried).
+        if stolen_totals:
+            try:
+                self._deliver_siege_theft(planet, stolen_totals)
+            except Exception as e:
+                logger.error(
+                    "Siege resource theft delivery failed for planet %s: %s",
+                    planet.id, e,
+                )
         # Starvation-warning surfacing (CANON: production-tick.md "Outputs /
         # state changes" — "planet.starvation_warning — if food deficit
         # occurred"). Mirrors overflow_warning's stamp/clear idiom directly
@@ -1162,6 +1198,77 @@ class PlanetaryService:
             + (f", -{starvation_deaths} colonists (starvation)" if starvation_deaths > 0 else "")
         )
         return True
+
+    def _deliver_siege_theft(self, planet: Planet, stolen: Dict[str, int]) -> None:
+        """Deliver siege-stolen resources into the besieger's ship cargo.
+
+        `stolen` keys are Planet-column commodity names (fuel_ore/organics/
+        equipment); cargo JSONB speaks the canonical commodity vocabulary
+        (fuel_ore -> ore), resolved via commodity_economy.canonical_commodity
+        — the SAME alias table trading.py's buy/sell paths use, so a stolen
+        unit lands under the identical key a port would sell it under.
+
+        Best-effort: no besieger Player row, no current ship, or a full hold
+        all silently drop the (remaining) theft rather than raising — the
+        caller already wraps this in a try/except, but every internal early-
+        return here is itself a legitimate "nothing to deliver" outcome, not
+        an error. Clamped to the ship's remaining cargo capacity exactly like
+        combat_service._transfer_cargo — theft cannot overflow the besieger's
+        hold; anything that doesn't fit is lost (not returned to the planet,
+        matching "generated commodities transfer to the besieger" — the
+        planet already lost these units at generation time)."""
+        from src.core.commodity_economy import canonical_commodity
+
+        besieger = (
+            self.db.query(Player)
+            .filter(Player.id == planet.siege_attacker_id)
+            .first()
+        )
+        if besieger is None or not besieger.current_ship_id:
+            return
+        ship = (
+            self.db.query(Ship)
+            .filter(Ship.id == besieger.current_ship_id)
+            .first()
+        )
+        if ship is None:
+            return
+
+        cargo = ship.cargo or {}
+        contents: Dict[str, int] = dict(cargo.get("contents") or {})
+        capacity = effective_cargo_capacity(ship)
+        used = sum(q for q in contents.values() if isinstance(q, (int, float)))
+        remaining_capacity = max(0, int(capacity) - int(used))
+        if remaining_capacity <= 0:
+            return
+
+        delivered_any = False
+        for col, amount in stolen.items():
+            if remaining_capacity <= 0:
+                break
+            if amount <= 0:
+                continue
+            key = canonical_commodity(col)
+            moved = min(int(amount), remaining_capacity)
+            if moved <= 0:
+                continue
+            contents[key] = int(contents.get(key, 0)) + moved
+            remaining_capacity -= moved
+            delivered_any = True
+
+        if not delivered_any:
+            return
+
+        cargo["contents"] = contents
+        cargo["used"] = sum(int(q) for q in contents.values())
+        ship.cargo = cargo
+        flag_modified(ship, "cargo")
+
+        logger.info(
+            "Siege resource theft: planet %s -> besieger %s (ship %s): %s",
+            planet.id, besieger.id, ship.id,
+            {canonical_commodity(c): a for c, a in stolen.items() if a > 0},
+        )
 
     def realize_production(self, planet: Planet, *, _via_settle: bool = False) -> bool:
         """Force-advance one planet's commodity production to the canonical now.
@@ -2669,7 +2776,14 @@ class PlanetaryService:
         # path can never raise; on any hiccup the colony simply pays no penalty.
         try:
             low_hab_score = planet.habitability_score
-            if low_hab_score is not None and low_hab_score < LOW_HABITABILITY_THRESHOLD:
+            # Mutually exclusive with population decline (HABITABILITY_GROWTH_
+            # THRESHOLD = 20): only the marginal [20, 30) band pays this output
+            # penalty. Below 20 the colony already shrinks; it does not also
+            # net less output on top of that.
+            if (
+                low_hab_score is not None
+                and HABITABILITY_GROWTH_THRESHOLD <= low_hab_score < LOW_HABITABILITY_THRESHOLD
+            ):
                 low_hab_multiplier = 1.0 - LOW_HABITABILITY_PRODUCTION_PENALTY
                 fuel_rate *= low_hab_multiplier
                 organics_rate *= low_hab_multiplier

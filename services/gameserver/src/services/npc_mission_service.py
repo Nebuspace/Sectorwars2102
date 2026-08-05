@@ -28,7 +28,6 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.planet import Planet
-from src.models.sector import Sector
 from src.models.ship import Ship
 
 logger = logging.getLogger(__name__)

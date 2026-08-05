@@ -30,6 +30,10 @@ TICK_SECONDS = 60
 # ADR-0042: the PendingEngagement sweep runs every minute, distinct
 # from Loop A.
 ENGAGEMENT_SWEEP_SECONDS = 60
+# WO-MINING-ASYNC-HARVEST: complete PENDING mining_harvests past resolves_at.
+# Matches the main tick so a 30s harvest window settles within one tick after
+# due (worst case ≈ 90s from start).
+MINING_HARVEST_SWEEP_SECONDS = 60
 # Loop A runs every tick (60s). The OLD 5-minute cadence made patrols read as
 # dead: a co-located squad held position for 4m59s then teleported one hop in
 # unison. At the tick cadence, combined with the per-NPC phase stagger in
@@ -149,6 +153,10 @@ _TREASURY_RECON_STATE_KEY = "treasury_reconciliation_last_day"
 # ONCE per canonical day — mirroring _TREASURY_RECON_STATE_KEY's discipline
 # exactly (same already-locked-session, no lock of its own).
 _REGION_LIFECYCLE_STATE_KEY = "region_lifecycle_advance_last_day"
+# Galaxy.state JSONB key holding the canonical-DAY index of the last anchor-
+# repair detect scan (WO-ANCHOR-REPAIR-SERVICE). Rides the governance sweep
+# as Phase 8, gated once per canonical day — mirrors _REGION_LIFECYCLE_STATE_KEY.
+_ANCHOR_REPAIR_STATE_KEY = "anchor_repair_scan_last_day"
 # Galaxy.state JSONB key holding the canonical-DAY index of the last ARIA
 # storage-prune pass (WO-F16). The dormant prune kernel
 # (ARIAPersonalIntelligenceService.prune_player_storage) evicts each player's
@@ -221,6 +229,7 @@ _SUSPECT_CLEAR_STATE_KEY = "suspect_clear_last_run_at"
 _CONTRACT_GENERATION_STATE_KEY = "contract_generation_last_run_at"
 _CONTRACT_EXPIRE_STATE_KEY = "contract_expire_last_run_at"
 _BEACON_EXPIRE_STATE_KEY = "beacon_expire_last_run_at"
+_BOUNTY_EXPIRE_STATE_KEY = "bounty_expire_last_run_at"
 _TEAM_REPUTATION_SWEEP_STATE_KEY = "team_reputation_sweep_last_run_at"
 _PIRATE_ECOSYSTEM_TICK_STATE_KEY = "pirate_ecosystem_tick_last_run_at"
 # Deliberately NO coarse elapsed pre-filter for these 4 (unlike the
@@ -354,6 +363,24 @@ DAILY_STIPEND_CHECK_SECONDS = int(
 # kill), so the idempotency anchor and the per-tier caps are load-bearing.
 BOUNTY_ACCRUAL_CHECK_SECONDS = int(
     os.environ.get("BOUNTY_ACCRUAL_CHECK_SECONDS", str(40 * 60))
+)
+
+# Stolen-ship possession rep-penalty sweep pre-filter (ship-registry.md "Wanted
+# Status" — "Personal reputation hit — −100/day while still in possession of
+# the stolen ship; cumulative"). Same coarse-elapsed-pre-filter + durable
+# per-player canonical-day anchor discipline as the bounty-accrual sweep just
+# above (Player.settings[stolen_ship_rep_penalty_period]); offset to 42m so it
+# doesn't land on the same wake as the 40m bounty-accrual probe.
+STOLEN_SHIP_REP_PENALTY_CHECK_SECONDS = int(
+    os.environ.get("STOLEN_SHIP_REP_PENALTY_CHECK_SECONDS", str(42 * 60))
+)
+
+# Contested registration-transfer 24h auto-complete sweep pre-filter
+# (ship-registry.md "Legal ownership transfer" -- a real-time deadline, not a
+# canonical-day cadence like the sweeps above, so this runs on a much finer
+# 5-minute cadence rather than the ~40min coarse pre-filters used elsewhere).
+TRANSFER_CLAIM_AUTOCOMPLETE_CHECK_SECONDS = int(
+    os.environ.get("TRANSFER_CLAIM_AUTOCOMPLETE_CHECK_SECONDS", str(5 * 60))
 )
 
 # Port operating-cost sweep pre-filter (WO-B3). The maintenance/upkeep accrual
@@ -543,6 +570,15 @@ BEACON_EXPIRE_SWEEP_SECONDS = int(
     os.environ.get("BEACON_EXPIRE_SWEEP_SECONDS", str(10 * 60))
 )
 
+# Bounty expiry sweep (bounty-and-reputation.md 📐 "auto-refund-minus-fee on
+# expiry" — design-only, no ratified cadence). Mirrors BEACON_EXPIRE_SWEEP_
+# SECONDS: bounties are placer-visible but not urgent (an expired bounty
+# just stops being collectable and gets refunded), so a coarse 10-minute
+# cadence is a conservative default pending a DECISIONS.md ruling.
+BOUNTY_EXPIRE_SWEEP_SECONDS = int(
+    os.environ.get("BOUNTY_EXPIRE_SWEEP_SECONDS", str(10 * 60))
+)
+
 # Suspect auto-clear sweep (WO-CMB-SUSPECT-LIFE-1 held wiring) —
 # suspect_service.clear_expired_suspects. NO-CANON: ships.md:293 names the
 # auto-clear BEHAVIOR ("auto-clears at suspect_until") but not a sweep
@@ -550,6 +586,24 @@ BEACON_EXPIRE_SWEEP_SECONDS = int(
 # reasonably prompt without hammering the player table on every 60s wake.
 SUSPECT_CLEAR_SWEEP_SECONDS = int(
     os.environ.get("SUSPECT_CLEAR_SWEEP_SECONDS", str(5 * 60))
+)
+
+# Wanted auto-clear sweep (WO-BUILD-WANTED-UNTIL-TIMER) —
+# wanted_service.clear_expired_wanted. Same cadence rationale as the
+# suspect sweep directly above (Wanted is the stronger flag but shares the
+# same "reasonably prompt, not hammering every 60s wake" tradeoff).
+_WANTED_CLEAR_STATE_KEY = "wanted_clear_last_run_at"
+WANTED_CLEAR_SWEEP_SECONDS = int(
+    os.environ.get("WANTED_CLEAR_SWEEP_SECONDS", str(5 * 60))
+)
+
+# Abandoned-ship 7-day auto-archive (WO-FIX-SHIP-REGISTRY-AUTO-ARCHIVE-MISSING)
+# — ship_registry_service.archive_expired_abandoned_ships. Same 5-minute
+# due-check cadence as wanted/suspect clears; the 7-day threshold lives in
+# the service constant ABANDONMENT_ARCHIVE_DAYS.
+_ABANDONMENT_ARCHIVE_STATE_KEY = "abandonment_archive_last_run_at"
+ABANDONMENT_ARCHIVE_SWEEP_SECONDS = int(
+    os.environ.get("ABANDONMENT_ARCHIVE_SWEEP_SECONDS", str(5 * 60))
 )
 
 # Team-reputation recalculation sweep (WO-RT-TEAM-REP held wiring) —
@@ -679,6 +733,11 @@ _ECONOMIC_METRICS_LOCK_KEY = _mnemonic_lock_key("ECMT")
 _IDLE_INCOME_LOCK_KEY = _mnemonic_lock_key("IDLI")
 _DAILY_STIPEND_LOCK_KEY = _mnemonic_lock_key("STIP")
 _BOUNTY_ACCRUAL_LOCK_KEY = _mnemonic_lock_key("BNTY")
+_STOLEN_SHIP_REP_PENALTY_LOCK_KEY = _mnemonic_lock_key("STLN")
+# Contested registration-transfer 24h auto-complete sweep (ship-registry.md
+# "Legal ownership transfer") -- WO-BUILD-SHIP-REGISTRY-CONTESTED-TRANSFER-
+# SALVAGE-CLAIM.
+_TRANSFER_CLAIM_AUTOCOMPLETE_LOCK_KEY = _mnemonic_lock_key("TCLM")
 _SUSTAINED_DRIP_LOCK_KEY = _mnemonic_lock_key("SDRP")
 _PORT_OPERATING_COSTS_LOCK_KEY = _mnemonic_lock_key("PORT")
 _STATION_RECOVERY_LOCK_KEY = _mnemonic_lock_key("STRC")
@@ -708,6 +767,13 @@ _RETENTION_SWEEP_LOCK_KEY = _mnemonic_lock_key("RETN")
 # instances double-flushing the same rows in the same instant, not for
 # correctness.
 _SUSPECT_CLEAR_LOCK_KEY = _mnemonic_lock_key("SUSP")
+# Wanted auto-clear sweep (WO-BUILD-WANTED-UNTIL-TIMER) — own key so a
+# second gameserver instance can't double-flush the same expired rows.
+# 'WANT' = WANTed clear.
+_WANTED_CLEAR_LOCK_KEY = _mnemonic_lock_key("WANT")
+# Abandoned-ship auto-archive (WO-FIX-SHIP-REGISTRY-AUTO-ARCHIVE-MISSING).
+# 'AARC' = Abandonment ARChive.
+_ABANDONMENT_ARCHIVE_LOCK_KEY = _mnemonic_lock_key("AARC")
 # Pirate-ecosystem weekly growth + evolution tick sweep (WO-PIRATE-ECO-2
 # held wiring) — own key; covers the whole per-region growth + per-holding
 # evolution pass in one lock (mirrors the citizen-rebake sweep's own
@@ -731,6 +797,12 @@ _CONTRACT_EXPIRE_LOCK_KEY = _mnemonic_lock_key("CEXP")
 # second gameserver instance can't double-delete/double-broadcast the same
 # expired beacons. 'BCNX' = BeaCoN eXpire.
 _BEACON_EXPIRE_LOCK_KEY = _mnemonic_lock_key("BCNX")
+_BOUNTY_EXPIRE_LOCK_KEY = _mnemonic_lock_key("BNTX")
+
+# Async asteroid-harvest resolve sweep (WO-MINING-ASYNC-HARVEST) — own key so
+# two gameserver instances don't double-complete the same PENDING row.
+# 'MHRV' = Mining HaRVest.
+_MINING_HARVEST_LOCK_KEY = _mnemonic_lock_key("MHRV")
 
 # ADR-0063: recruit lifecycle stage lasts 7 canonical days, then ACTIVE.
 RECRUIT_STAGE_HOURS = 7 * 24
@@ -950,17 +1022,23 @@ LOOP_A_WATERMARK_STATE_KEY = "loop_a_watermark"
 LOOP_B_WATERMARK_STATE_KEY = "loop_b_watermark"
 LOOP_C_WATERMARK_STATE_KEY = "loop_c_watermark"
 
-# NO-CANON (2026-07-16): bounds how many missed Loop-A cadence intervals a
-# single restart-wake will synchronously replay. canon's own "if the
-# scheduler was down for 6 hours, Loop A executes 6 ticks" (npc-
-# scheduler.md "Crash recovery") is a worked EXAMPLE, not a stated hard
-# cap -- flagging this bound for orchestrator/Max blessing. Beyond this
-# cap the watermark advances only by the bounded amount (not all the way
-# to `now`), so an exceptionally long outage self-heals over several
-# subsequent restart-catch-ups rather than either (a) silently losing the
-# untraveled gap forever or (b) synchronously blocking the scheduler's
-# worker thread on a huge unbounded backfill (the GIL/burst-length
-# caution this WO was briefed with).
+# CANON (ratified by Max 2026-08-02, was NO-CANON 2026-07-16): bounds how
+# many missed Loop-A cadence intervals a single restart-wake will
+# synchronously replay. At LOOP_A_SECONDS = 60 this caps one wake at 24
+# ticks == 24 minutes of replayed patrol movement.
+#
+# canon's own "if the scheduler was down for 6 hours, Loop A executes 6
+# ticks" (npc-scheduler.md "Crash recovery") is a worked EXAMPLE and does
+# NOT state a hard cap -- note it is also not self-consistent with a
+# 60-second cadence (6h of downtime is 360 missed intervals, not 6), which
+# is why an explicit bound is set here rather than inferred from the doc.
+#
+# Beyond this cap the watermark advances only by the bounded amount (not
+# all the way to `now`), so an exceptionally long outage self-heals over
+# several subsequent restart-catch-ups rather than either (a) silently
+# losing the untraveled gap forever or (b) synchronously blocking the
+# scheduler's worker thread on a huge unbounded backfill (the
+# GIL/burst-length caution this WO was briefed with).
 LOOP_A_CRASH_CATCHUP_MAX_TICKS = 24
 
 
@@ -1063,6 +1141,21 @@ async def _broadcast_events(events: List[Dict[str, Any]]) -> None:
                     logger.exception(
                         "NPC scheduler: genesis_progress send failed for owner %s",
                         owner_id,
+                    )
+            continue
+
+        # WO-MINING-ASYNC-HARVEST: personal frame when a PENDING harvest completes.
+        if event.get("type") == "mining_harvest_completed":
+            player_id = event.get("player_id")
+            if player_id is not None:
+                try:
+                    await connection_manager.send_personal_message(
+                        str(player_id), dict(event)
+                    )
+                except Exception:
+                    logger.exception(
+                        "NPC scheduler: mining_harvest_completed send failed for %s",
+                        player_id,
                     )
             continue
 
