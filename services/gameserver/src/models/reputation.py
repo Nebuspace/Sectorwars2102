@@ -1,7 +1,20 @@
 import uuid
 import enum
 from typing import TYPE_CHECKING
-from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, Enum, func
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    String,
+    Integer,
+    Float,
+    ForeignKey,
+    Enum,
+    Index,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 
@@ -61,8 +74,17 @@ class Reputation(Base):
     faction = relationship("Faction", back_populates="reputation_records")
 
     __table_args__ = (
-        # Ensure player can only have one reputation per faction
-        {'sqlite_autoincrement': True},
+        # Canon DATA_MODELS/player.md § Reputation indexes (ADR-0052 / SK32).
+        UniqueConstraint(
+            "player_id", "faction_id", name="uq_reputations_player_faction"
+        ),
+        Index(
+            "ix_reputations_faction_current_value",
+            "faction_id",
+            text("current_value DESC"),
+        ),
+        Index("ix_reputations_player_id", "player_id"),
+        {"sqlite_autoincrement": True},
     )
 
     def __repr__(self):
