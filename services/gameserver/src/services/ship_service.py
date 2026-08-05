@@ -52,11 +52,25 @@ def sync_current_pilot(
     ids match, so a redundant call never wipes the pointer it's about to
     set right back to it.
 
+    WO-BUILD-STATION-PROTECTION-ARREST-DETENTION: while the player is
+    detained, boarding any non-Escape-Pod hull is rejected (403). Pod
+    reseat (surrender / eject) remains allowed.
+
     WO-ESCALATE-CYCLE26-DESIGN-FLAGS: when ``db`` is provided, recompute
     ``Player.is_wanted`` after the pilot pointers settle so boarding a
     reported-stolen ship flips Wanted immediately (closes the ~24h
     daily-sweep-only exploit window). Callers without a Session keep the
     prior signature; the daily sweep remains the backstop."""
+    if new_ship is not None:
+        try:
+            from src.services.station_security_service import require_ship_access
+            require_ship_access(player, new_ship)
+        except Exception as e:
+            # Re-raise StationSecurityError; swallow nothing that is a gate.
+            from src.services.station_security_service import StationSecurityError
+            if isinstance(e, StationSecurityError):
+                raise
+            logger.error("Detention ship-access check failed: %s", e)
     if old_ship is not None and (new_ship is None or old_ship.id != new_ship.id):
         old_ship.current_pilot_id = None
         old_ship.current_pilot_since = None

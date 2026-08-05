@@ -122,6 +122,27 @@ def regenerate_turns(db: Session, player: Player) -> Dict[str, Any]:
     """
     now = datetime.now(timezone.utc)
 
+    # Station-protection detention (station-protection.md:99): zero turn
+    # regen while detained_until is in the future. Advance the regen
+    # anchor so elapsed detention time does not bank for later.
+    try:
+        from src.services.station_security_service import is_player_detained
+        if is_player_detained(player, now=now):
+            player.last_turn_regeneration = now
+            max_turns = _calculate_max_turns(player)
+            if player.max_turns != max_turns:
+                player.max_turns = max_turns
+            return {
+                "regenerated": False,
+                "turns_added": 0,
+                "old_turns": player.turns or 0,
+                "new_turns": player.turns or 0,
+                "max_turns": max_turns,
+                "detained": True,
+            }
+    except Exception as e:  # never let detention check break turn spend
+        logger.error("Detention check in regenerate_turns failed: %s", e)
+
     # Recompute the cap from rank so a fresh promotion lifts the ceiling
     # without a separate write path; persist it onto the stored column.
     max_turns = _calculate_max_turns(player)
