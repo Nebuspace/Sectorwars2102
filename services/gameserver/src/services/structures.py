@@ -35,8 +35,9 @@ regardless. See the orchestrator STATUS note flagging the spec's "convert to can
 vs. the actual wall-clock storage (equivalent for a single global scale; argmax of wall instants
 == argmin of canonical-hours-since).
 
-K1a-1 lands this DORMANT: ``settle()`` calls the unchanged bodies behind ``_via_settle=True`` but
-NO call-site is flipped to it yet (the cutover is Max-gated, spec §8).
+CRT cutover landed: ``PlanetaryService`` / economy_governance_sweeps route the planetary
+tick through ``settle()``; ``CITADEL_DERIVE_AUTHORITATIVE`` is True. The K1a-1 "dormant /
+no call-site" note is historical — do not treat this module as unwired.
 """
 
 import logging
@@ -838,14 +839,13 @@ def assert_research_for_kind(kind: str, researched: Optional[Set[str]]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# derive_citadel_level (K1b-1) — the SHADOW faucet (spec §2.1). A pure read of the
-# placed/powered/populated grid that reproduces the shipped CITADEL_LEVELS ladder.
-# DORMANT: not wired into settle() yet, and not yet calibrated against the live planet
-# distribution (that lands with seed-buildings-from-legacy). The button stays authoritative.
+# derive_citadel_level (K1b-1 → CRT-1 cutover, Max-ruled 2026-06-21). Pure read of the
+# placed/powered/populated grid that reproduces the CITADEL_LEVELS ladder.
+# LIVE: settle() step-3 calls this (CITADEL_DERIVE_AUTHORITATIVE=True writes the scalar
+# + caps); citadel upgrade completion + planet_grid reads also call it. Not dormant.
 # ---------------------------------------------------------------------------
-# NO-CANON derivation thresholds (spec §1.2 "tuned to reproduce the ladder"). These are
-# PLACEHOLDERS — the calibration target is derive_citadel_level(seed(legacy)) == the planet's
-# shipped citadel_level for every live planet, tuned with the seed-buildings step. Propose for bless.
+# Derivation thresholds (spec §1.2 "tuned to reproduce the ladder") — calibrated so
+# derive_citadel_level(seed(legacy)) matches the size-gated upgrade ladder / CITADEL_MIN_CELLS.
 FLOOR_AREA = {1: 2, 2: 4, 3: 8, 4: 14, 5: 24}        # Σ(footprint cells × level) over operational eco/civic
 HOUSING = {1: 0, 2: 0, 3: 50000, 4: 100000, 5: 200000}  # Σ powered HAB_DOME capacity
 
@@ -931,9 +931,13 @@ def key_buildings_present(structures: dict, level: int) -> bool:
 def derive_citadel_level(structures: dict) -> int:
     """Pure derivation of the citadel level from the placed/powered/populated grid (spec §2.1):
     L5→1, first match wins, on powered_floor_area ≥ FLOOR_AREA[L] AND key_buildings_present(L) AND
-    population_housed ≥ HOUSING[L]. Returns 0 for an empty/ungridded planet. SHADOW only in K1b-1 —
-    the shipped citadel_level column stays authoritative; settle() will log derived-vs-button
-    divergence (the cutover is a separate Max-gated WO after calibration proves byte-identical)."""
+    population_housed ≥ HOUSING[L]. Returns 0 for an empty/ungridded planet.
+
+    CRT-1 cutover (Max-ruled 2026-06-21): settle() step-3 consumes this; when
+    ``CITADEL_DERIVE_AUTHORITATIVE`` is True (current default) a divergence writes
+    ``planet.citadel_level`` + caps. Also used by citadel upgrade completion and
+    planet_grid reads — not a dormant/shadow-only helper anymore.
+    """
     if not isinstance(structures, dict):
         return 0
     pfa = powered_floor_area(structures)
@@ -2028,8 +2032,9 @@ def settle(planet, now: Optional[datetime] = None, *, db=None) -> SettleResult:
     step-6 window key — NEVER passed into a legacy body. Single transaction; the CALLER commits
     (matching the per-planet commit/rollback discipline in _run_planetary_advance_sync).
 
-    DORMANT in K1a-1: built + provable, but no call-site routes through it yet (cutover is
-    Max-gated, spec §8)."""
+    LIVE: PlanetaryService routes the planetary tick through this spine
+    (economy_governance_sweeps → settle). K1a-1 "dormant / no call-site" is historical.
+    """
     if db is None:
         raise ValueError("structures.settle() requires a db session to advance planetary clocks")
 
