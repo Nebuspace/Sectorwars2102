@@ -21,9 +21,7 @@ from src.core.database import get_db
 from src.auth.admin_scopes import COMBAT_INTERVENE, PLAYERS_VIEW
 from src.auth.dependencies import get_current_user, require_scope
 from src.models.user import User
-from src.models.fleet import Fleet, FleetBattle, FleetMember, FleetBattleCasualty, FleetStatus
-from src.models.team import Team
-from src.models.player import Player
+from src.models.fleet import Fleet, FleetBattle, FleetBattleCasualty, FleetStatus
 from src.services.fleet_service import FleetService
 from src.services.audit_service import AuditService, AuditAction
 

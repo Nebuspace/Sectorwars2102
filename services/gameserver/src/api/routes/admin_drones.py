@@ -11,7 +11,6 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from pydantic import BaseModel
-from datetime import datetime
 
 from src.core.database import get_async_session
 from src.auth.admin_scopes import PLAYERS_VIEW, SHIPS_MANAGE

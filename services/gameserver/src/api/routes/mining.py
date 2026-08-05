@@ -64,36 +64,71 @@ async def harvest_asteroids(
     player: Player = Depends(get_current_player),
     db: Session = Depends(get_db),
 ):
-    """Harvest the asteroid field in the player's current sector.
+    """Start an interruptible asteroid harvest in the player's current sector.
 
-    Delegates to the server-authoritative, atomic ``MiningService.harvest`` —
-    that method takes the player+ship row locks, regenerates and spends turns,
-    grants cargo, applies faction rep, and decrements the sector depletion pool
-    in a single transaction. A failed harvest (precondition gate) returns a
-    stable ``reason`` code which this layer maps onto an HTTP status; on success
-    the full harvest result dict is returned verbatim (ore / precious_metals /
-    quantum_shards / turns_spent / depletion_state / am_rep_delta /
-    remaining_turns)."""
+    Delegates to ``MiningService.harvest`` — gates, prepaid turn spend,
+    ``Ship.status = MINING``, and a PENDING ``MiningHarvest`` row. Yields
+    apply when the scheduler (or an explicit resolve) completes the row.
+    Success returns ``status=in_progress`` with ``harvest_id`` /
+    ``resolves_at``; yield fields stay 0 until completion."""
     result = MiningService(db).harvest(request.ship_id, player.id)
     if not result.get("success"):
-        # Discard any partial side effects (MINING status flip, lazy backfill)
-        # from a failed gate; nothing should persist on a rejected harvest.
+        # Discard any partial side effects from a failed gate.
         db.rollback()
         reason = result.get("reason")
         raise HTTPException(
             status_code=_status_for_reason(reason),
             detail=reason or "Harvest failed",
         )
-    # The service flushed only; the route owns the commit (mirrors
-    # ship_upgrades.py / trading.py). Without this the whole harvest —
-    # cargo grant, 5-turn spend, depletion decrement, AM rep — silently
-    # rolls back when get_db() closes the session.
     try:
         db.commit()
     except Exception:
         db.rollback()
         raise
     return result
+
+
+@router.get("/harvest/{harvest_id}")
+async def get_harvest_status(
+    harvest_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Poll a harvest row owned by the authenticated player."""
+    from uuid import UUID
+
+    from src.models.mining_harvest import MiningHarvest
+
+    try:
+        hid = UUID(harvest_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="invalid_harvest_id",
+        ) from exc
+
+    row = (
+        db.query(MiningHarvest)
+        .filter(MiningHarvest.id == hid, MiningHarvest.player_id == player.id)
+        .first()
+    )
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="harvest_not_found",
+        )
+    return {
+        "harvest_id": str(row.id),
+        "status": row.status.value if hasattr(row.status, "value") else str(row.status),
+        "resolves_at": row.resolves_at.isoformat() if row.resolves_at else None,
+        "resolved_at": row.resolved_at.isoformat() if row.resolved_at else None,
+        "ore": row.ore_yield or 0,
+        "precious_metals": row.precious_metals_yield or 0,
+        "quantum_shards": row.quantum_shards_yield or 0,
+        "am_rep_delta": row.am_rep_delta or 0,
+        "turns_spent": row.turns_spent,
+        "terminal_reason": row.terminal_reason,
+    }
 
 
 @router.post("/license")

@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from src.core.database import get_db
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
-from src.models.fleet import FleetRole, FleetStatus
+from src.models.fleet import FleetRole
 from src.services.fleet_service import FleetService
 
 router = APIRouter(prefix="/fleets", tags=["fleets"])

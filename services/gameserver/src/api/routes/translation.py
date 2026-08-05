@@ -6,9 +6,7 @@ import logging
 from typing import Dict, List, Optional, Any
 from fastapi import APIRouter, Depends, HTTPException, Request, Header
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
 
-from src.core.database import get_async_session
 from src.services.translation_service import TranslationService, get_translation_service
 from src.auth.admin_scopes import GALAXY_MANAGE, PLAYERS_VIEW
 from src.auth.dependencies import get_current_user, require_scope

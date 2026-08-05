@@ -1,34 +1,20 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import Optional, Dict, Any
 from pydantic import BaseModel
-import random
-import math
-import uuid
 
 from src.core.database import get_db
 from src.auth.admin_scopes import GALAXY_MANAGE, PLAYERS_VIEW
 from src.auth.dependencies import require_scope
 from src.services.admin_action_attempt import admin_action_attempt
 from src.models.user import User
-from src.models.galaxy import Galaxy
-from src.models.cluster import Cluster, ClusterType
-from src.models.sector import Sector, SectorType, SectorSpecialType
+from src.models.cluster import Cluster
+from src.models.sector import Sector, SectorSpecialType
 from src.models.warp_tunnel import WarpTunnel
 from src.models.station import Station, StationClass, StationType, StationStatus
 from src.models.planet import Planet
 
 # Enhanced request schemas
-# DEPRECATED: EnhancedGalaxyConfig no longer used (zone-based generation removed)
-# class EnhancedGalaxyConfig(BaseModel):
-#     name: str
-#     total_sectors: int
-#     region_distribution: Dict[str, int]  # federation, border, frontier percentages
-#     density: Dict[str, float]  # port_density, planet_density, one_way_warp_percentage
-#     warp_tunnel_config: Dict[str, Any]  # min_per_region, max_per_region, stability_range
-#     resource_distribution: Dict[str, Dict[str, int]]  # min/max by region type
-#     hazard_levels: Dict[str, Dict[str, int]]  # min/max by region type
-
 class SectorUpdateRequest(BaseModel):
     name: Optional[str] = None
     type: Optional[str] = None

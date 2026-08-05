@@ -22,7 +22,7 @@ from src.auth.dependencies import get_current_player, require_scope
 from src.models.player import Player
 from src.models.user import User
 from src.services.medal_service import MedalService
-from src.services.medal_catalog import MEDAL_CATALOG, get_catalog_entry
+from src.services.medal_catalog import get_catalog_entry
 
 router = APIRouter(
     prefix="/medals",

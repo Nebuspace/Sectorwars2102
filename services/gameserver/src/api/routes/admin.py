@@ -4,8 +4,6 @@ from sqlalchemy import text, func, desc, or_
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 from datetime import datetime, timezone
-import random
-import math
 import logging
 
 from src.core.database import get_db
@@ -30,17 +28,8 @@ from src.models.station import Station
 from src.models.planet import Planet
 from src.models.team import Team
 from src.models.game_event import GameEvent, EventEffect, EventParticipation, EventType, EventStatus
-from src.schemas.user import UserAdminResponse
 
 # Request schemas for universe management
-class GalaxyGenerateRequest(BaseModel):
-    name: str
-    num_sectors: int
-    config: Optional[dict] = None
-    federation_percentage: Optional[int] = 25
-    border_percentage: Optional[int] = 35
-    frontier_percentage: Optional[int] = 40
-
 class SectorAddRequest(BaseModel):
     num_sectors: int
     config: Optional[dict] = None
@@ -1051,7 +1040,7 @@ async def get_galaxy_info(
 
 @router.post("/galaxy/generate", response_model=dict)
 async def generate_galaxy(
-    request: GalaxyGenerateRequest,
+    request: dict,
     current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
 ):
     """Deprecated: legacy Python galaxy generator removed in Phase 4 of the

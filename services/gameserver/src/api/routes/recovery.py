@@ -24,8 +24,9 @@ from sqlalchemy.orm import Session
 from src.auth.dependencies import get_current_player
 from src.core.database import get_db
 from src.models.player import Player
-from src.services import distress_service, slipdrive_service
+from src.services import distress_service, escape_pod_service, slipdrive_service
 from src.services.distress_service import DistressError
+from src.services.escape_pod_service import EscapePodError
 from src.services.slipdrive_service import SlipdriveError
 
 logger = logging.getLogger(__name__)
@@ -114,6 +115,27 @@ async def complete_slipdrive_charge(
         db.commit()
         return result
     except SlipdriveError as e:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception:
+        db.rollback()
+        raise
+
+
+@router.post("/escape-pod")
+async def escape_pod_eject(
+    request: _EmptyRequest = None,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Escape Pod egress: free (zero fuel, zero turns, zero reputation),
+    at the cost of abandoning the current ship. Usable on any hull, from
+    any sector -- teleports to the nearest non-sink sector."""
+    try:
+        result = escape_pod_service.eject_to_escape_pod(db, player.id)
+        db.commit()
+        return result
+    except EscapePodError as e:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception:

@@ -11,11 +11,94 @@ import logging
 import time
 import hashlib
 import secrets
-import json
-from typing import Callable
-from sqlalchemy.orm import Session
+from typing import Callable, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Admin REST rate-limit tiers — canon OPERATIONS/admin-ui.md § Admin REST
+# rate limits (Read 100/min · Write 30/min · Bulk 10/min · Reports 5/hr).
+# Constants only — no ORM. Unwired duplicate middleware/rate_limit.py stays dead.
+# ---------------------------------------------------------------------------
+ADMIN_TIER_READ = "read"
+ADMIN_TIER_WRITE = "write"
+ADMIN_TIER_BULK = "bulk"
+ADMIN_TIER_REPORTS = "reports"
+
+# (limit, window_seconds)
+ADMIN_TIER_LIMITS: dict[str, Tuple[int, int]] = {
+    ADMIN_TIER_READ: (100, 60),
+    ADMIN_TIER_WRITE: (30, 60),
+    ADMIN_TIER_BULK: (10, 60),
+    ADMIN_TIER_REPORTS: (5, 3600),
+}
+
+# Path substrings that classify as reports/exports (any method).
+_ADMIN_REPORT_MARKERS = ("/report", "/reports", "/export", "/exports")
+# Path substrings that classify as bulk (mutating methods only).
+_ADMIN_BULK_MARKERS = ("/bulk", "/batch", "/mass")
+
+
+def classify_admin_tier(method: str, path: str) -> Optional[str]:
+    """Classify an admin request into a canon rate-limit tier.
+
+    Returns None if ``path`` is not an admin API path.
+
+    Classifier rules (documented):
+    1. Path must contain ``/admin`` (covers ``/api/v1/admin/*`` and legacy
+       ``/admin/*``).
+    2. Reports — path contains ``/report(s)`` or ``/export(s)`` → reports
+       (5/hour), regardless of method.
+    3. Bulk — mutating method (POST/PUT/PATCH/DELETE) AND path contains
+       ``/bulk``, ``/batch``, or ``/mass`` → bulk (10/min).
+    4. Write — any other mutating method → write (30/min).
+    5. Read — GET/HEAD/OPTIONS → read (100/min).
+    """
+    if "/admin" not in path:
+        return None
+
+    path_lower = path.lower()
+    method_upper = method.upper()
+
+    if any(marker in path_lower for marker in _ADMIN_REPORT_MARKERS):
+        return ADMIN_TIER_REPORTS
+
+    is_mutating = method_upper in ("POST", "PUT", "PATCH", "DELETE")
+    if is_mutating and any(marker in path_lower for marker in _ADMIN_BULK_MARKERS):
+        return ADMIN_TIER_BULK
+
+    if is_mutating:
+        return ADMIN_TIER_WRITE
+
+    return ADMIN_TIER_READ
+
+
+def peek_request_user_id(request: Request) -> Optional[str]:
+    """Best-effort user id for rate-limit keying.
+
+    Prefers ``request.state.user_id`` (set by admin auth dependency after the
+    route runs — useful when present). For the *current* request, middleware
+    runs before dependencies, so we also lightly decode a Bearer JWT ``sub``
+    when present. Decode failures fall through to IP keying — never raise.
+    """
+    state_uid = getattr(request.state, "user_id", None)
+    if state_uid is not None:
+        return str(state_uid)
+
+    auth = request.headers.get("Authorization") or request.headers.get("authorization") or ""
+    if not auth.lower().startswith("bearer "):
+        return None
+    token = auth.split(" ", 1)[1].strip()
+    if not token:
+        return None
+    try:
+        from src.auth.jwt import decode_token
+
+        payload = decode_token(token)
+        sub = payload.get("sub")
+        return str(sub) if sub else None
+    except Exception:
+        return None
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -106,106 +189,170 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 class RateLimitingMiddleware(BaseHTTPMiddleware):
     """
-    Enhanced rate limiting middleware with different limits per endpoint type
+    Enhanced rate limiting middleware with different limits per endpoint type.
+
+    Admin ``/admin`` paths use canon per-admin tiers (see ``classify_admin_tier``
+    + ``ADMIN_TIER_LIMITS``). Non-admin paths keep the legacy per-IP buckets.
     """
-    
-    def __init__(self, app, 
-                 default_requests_per_minute: int = 60,
-                 auth_requests_per_minute: int = 10,
-                 admin_requests_per_minute: int = 120):
+
+    def __init__(
+        self,
+        app,
+        default_requests_per_minute: int = 60,
+        auth_requests_per_minute: int = 10,
+        admin_requests_per_minute: int = 120,
+    ):
         super().__init__(app)
         self.default_limit = default_requests_per_minute
         self.auth_limit = auth_requests_per_minute
+        # Legacy flat admin_limit retained for constructor compat; unused when
+        # tier classification succeeds (all /admin paths classify).
         self.admin_limit = admin_requests_per_minute
-        self.request_counts = {}
+        self.request_counts: dict[str, int] = {}
         self.cleanup_interval = 300  # Cleanup old entries every 5 minutes
         self.last_cleanup = time.time()
-        
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        # Skip rate limiting for test clients
+
+    def _client_ip(self, request: Request) -> str:
+        if request.client and request.client.host:
+            return request.client.host
+        return "unknown"
+
+    def _legacy_client_id(self, request: Request) -> str:
         user_agent = request.headers.get("User-Agent", "")
-        if "testclient" in user_agent:
+        client_ip = self._client_ip(request)
+        return hashlib.sha256(f"{client_ip}:{user_agent}".encode()).hexdigest()
+
+    def _admin_bucket_key(
+        self, request: Request, tier: str, window_start: int
+    ) -> str:
+        """Per-admin key when identity is known; else per-IP fallback.
+
+        Two admins behind one IP get independent budgets when each presents
+        a distinct Bearer ``sub`` / ``request.state.user_id``.
+        """
+        user_id = peek_request_user_id(request)
+        if user_id:
+            identity = f"admin:{user_id}"
+        else:
+            identity = f"admin-ip:{self._client_ip(request)}"
+        return f"{identity}:{tier}:{window_start}"
+
+    def _check_and_increment(
+        self, key: str, limit: int
+    ) -> Tuple[bool, int]:
+        """Increment the bucket. Returns (allowed, remaining_after)."""
+        count = self.request_counts.get(key, 0)
+        if count >= limit:
+            return False, 0
+        self.request_counts[key] = count + 1
+        return True, max(0, limit - (count + 1))
+
+    def _rate_limit_response(
+        self, limit: int, window: int, window_start: int, tier: Optional[str] = None
+    ) -> JSONResponse:
+        retry_after = max(1, int(window_start + window - time.time()))
+        content = {
+            "error": "Rate limit exceeded",
+            "message": "Too many requests. Please try again later.",
+            "retry_after": retry_after,
+        }
+        if tier:
+            content["tier"] = tier
+        return JSONResponse(
+            status_code=429,
+            content=content,
+            headers={
+                "Retry-After": str(retry_after),
+                "X-RateLimit-Limit": str(limit),
+                "X-RateLimit-Remaining": "0",
+                "X-RateLimit-Reset": str(window_start + window),
+            },
+        )
+
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        # Skip rate limiting for non-admin testclient traffic (legacy).
+        # Admin tier tests must exercise real enforcement — do not skip /admin.
+        user_agent = request.headers.get("User-Agent", "")
+        path = str(request.url.path)
+        if "testclient" in user_agent and "/admin" not in path:
             return await call_next(request)
-        
-        # Cleanup old entries periodically
+
         current_time = time.time()
         if current_time - self.last_cleanup > self.cleanup_interval:
             self._cleanup_old_entries(current_time)
             self.last_cleanup = current_time
-        
-        # Get client identifier (IP + User-Agent for better tracking)
-        client_ip = request.client.host
-        client_id = hashlib.sha256(f"{client_ip}:{user_agent}".encode()).hexdigest()
-        
-        # Determine rate limit based on endpoint
-        path = str(request.url.path)
+
+        admin_tier = classify_admin_tier(request.method, path)
+        if admin_tier is not None:
+            limit, window = ADMIN_TIER_LIMITS[admin_tier]
+            window_start = int(current_time / window) * window
+            key = self._admin_bucket_key(request, admin_tier, window_start)
+            allowed, remaining = self._check_and_increment(key, limit)
+            if not allowed:
+                logger.warning(
+                    "Admin rate limit exceeded tier=%s path=%s key=%s",
+                    admin_tier,
+                    path,
+                    key.split(":")[0],
+                )
+                return self._rate_limit_response(limit, window, window_start, admin_tier)
+            response = await call_next(request)
+            response.headers["X-RateLimit-Limit"] = str(limit)
+            response.headers["X-RateLimit-Remaining"] = str(remaining)
+            response.headers["X-RateLimit-Reset"] = str(window_start + window)
+            response.headers["X-RateLimit-Tier"] = admin_tier
+            return response
+
+        # Legacy non-admin buckets (auth / default)
+        client_id = self._legacy_client_id(request)
         if "/auth" in path:
             limit = self.auth_limit
-            window = 60  # 1 minute window for auth endpoints
-        elif "/admin" in path:
-            limit = self.admin_limit
             window = 60
         else:
             limit = self.default_limit
             window = 60
-        
-        # Check rate limit
+
         window_start = int(current_time / window) * window
         key = f"{client_id}:{window_start}:{path}"
-        
-        if key in self.request_counts:
-            if self.request_counts[key] >= limit:
-                logger.warning(f"Rate limit exceeded for {client_ip} on {path}")
-                return JSONResponse(
-                    status_code=429,
-                    content={
-                        "error": "Rate limit exceeded",
-                        "message": f"Too many requests. Please try again later.",
-                        "retry_after": window
-                    },
-                    headers={
-                        "Retry-After": str(window),
-                        "X-RateLimit-Limit": str(limit),
-                        "X-RateLimit-Remaining": "0",
-                        "X-RateLimit-Reset": str(window_start + window)
-                    }
-                )
-            self.request_counts[key] += 1
-        else:
-            self.request_counts[key] = 1
-        
-        # Process request
+
+        allowed, remaining = self._check_and_increment(key, limit)
+        if not allowed:
+            logger.warning(
+                "Rate limit exceeded for %s on %s", self._client_ip(request), path
+            )
+            return self._rate_limit_response(limit, window, window_start)
+
         response = await call_next(request)
-        
-        # Add rate limit headers
-        remaining = limit - self.request_counts[key]
         response.headers["X-RateLimit-Limit"] = str(limit)
-        response.headers["X-RateLimit-Remaining"] = str(max(0, remaining))
+        response.headers["X-RateLimit-Remaining"] = str(remaining)
         response.headers["X-RateLimit-Reset"] = str(window_start + window)
-        
         return response
-    
+
     def _cleanup_old_entries(self, current_time: float) -> None:
-        """Remove old entries from request counts"""
-        cutoff_time = current_time - 120  # Keep 2 minutes of history
+        """Remove old entries from request counts.
+
+        Retain up to ~2 hours so the reports (5/hr) window is not wiped
+        mid-bucket by the legacy 2-minute cutoff.
+        """
+        cutoff_time = current_time - 7200
         keys_to_remove = []
-        
+
         for key in self.request_counts:
-            # Extract timestamp from key
-            parts = key.split(":")
-            if len(parts) >= 2:
+            # Keys end with …:{window_start} — take the last numeric segment.
+            parts = key.rsplit(":", 1)
+            if len(parts) == 2:
                 try:
                     timestamp = int(parts[1])
                     if timestamp < cutoff_time:
                         keys_to_remove.append(key)
                 except ValueError:
                     continue
-        
+
         for key in keys_to_remove:
             del self.request_counts[key]
-        
+
         if keys_to_remove:
-            logger.info(f"Cleaned up {len(keys_to_remove)} old rate limit entries")
+            logger.info("Cleaned up %s old rate limit entries", len(keys_to_remove))
 
 
 class InputValidationMiddleware(BaseHTTPMiddleware):

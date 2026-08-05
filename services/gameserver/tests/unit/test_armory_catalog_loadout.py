@@ -93,6 +93,7 @@ def make_player(*, current_ship_id=None, attack_drones=0, defense_drones=0,
         credits=credits,
         is_docked=is_docked,
         current_port_id=current_port_id,
+        settings={},
     )
 
 
@@ -156,6 +157,7 @@ def test_current_loadout_returns_counts_and_caps_when_ship_and_spec_resolve():
         "attack_drones": 3,
         "defense_drones": 1,
         "mines": 2,
+        "limpet_mines": 0,
         "caps": {"attack_drones": 12, "defense_drones": 12, "mines": 25},
     }
 
@@ -218,6 +220,7 @@ async def test_catalog_includes_loadout_with_caps_for_player_with_ship():
         "attack_drones": 4,
         "defense_drones": 2,
         "mines": 0,
+        "limpet_mines": 0,
         "caps": {"attack_drones": 15, "defense_drones": 15, "mines": 25},
     }
 
@@ -249,6 +252,7 @@ async def test_purchase_response_loadout_caps_match_helper_formula():
         "attack_drones": 8,  # 3 + 5
         "defense_drones": 0,
         "mines": 0,
+        "limpet_mines": 0,
         "caps": {"attack_drones": 12, "defense_drones": 12, "mines": 25},
     }
     assert db.committed is True

@@ -5,7 +5,7 @@ Message API endpoints for player communication
 import logging
 from typing import Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, Query, HTTPException, Request
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 
@@ -79,7 +79,7 @@ async def send_message(
         raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to send message")
         raise HTTPException(status_code=500, detail="Failed to send message")
 
@@ -105,7 +105,7 @@ async def get_inbox(
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to load inbox")
         raise HTTPException(status_code=500, detail="Failed to load inbox")
 
@@ -133,7 +133,7 @@ async def get_team_messages(
         raise
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to load team messages")
         raise HTTPException(status_code=500, detail="Failed to load team messages")
 
@@ -159,7 +159,7 @@ async def mark_message_read(
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to mark message read")
         raise HTTPException(status_code=500, detail="Failed to mark message as read")
 
@@ -185,7 +185,7 @@ async def delete_message(
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to delete message")
         raise HTTPException(status_code=500, detail="Failed to delete message")
 
@@ -209,7 +209,7 @@ async def get_conversations(
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to load conversations")
         raise HTTPException(status_code=500, detail="Failed to load conversations")
 
@@ -237,6 +237,6 @@ async def flag_message(
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to flag message")
         raise HTTPException(status_code=500, detail="Failed to flag message")

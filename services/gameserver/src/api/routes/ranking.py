@@ -580,6 +580,12 @@ async def get_player_reputation(
 class PlaceBountyRequest(BaseModel):
     target_id: uuid.UUID
     amount: int = Field(..., gt=0, le=1000000, description="Bounty amount (1 to 1,000,000 credits)")
+    duration_days: Optional[int] = Field(
+        None,
+        ge=1,
+        le=90,
+        description="Optional expiry in days (1-90); omit for no expiry, the default",
+    )
 
 
 @router.post("/bounties/place")
@@ -591,7 +597,7 @@ async def place_bounty(
     """Place a bounty on another player. Costs amount + 10% fee."""
     bounty_service = BountyService(db)
     result = bounty_service.place_bounty(
-        player.id, request.target_id, request.amount
+        player.id, request.target_id, request.amount, request.duration_days
     )
     if not result.get("success"):
         raise HTTPException(

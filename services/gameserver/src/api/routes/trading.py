@@ -83,6 +83,13 @@ def _get_station_or_404(db: Session, station_id: str) -> Station:
     return station
 
 
+def _require_can_trade(player: Player, station: Station) -> None:
+    """Docked + co-located + station functional (WO-STATION-DESTROYED-TRADE-GATE)."""
+    ok, reason = TradingService.can_player_trade(player, station)
+    if not ok:
+        raise HTTPException(status_code=400, detail=reason)
+
+
 def _ensure_market_prices(db: Session, station: Station) -> None:
     """Bridge the station's commodities JSONB into MarketPrice rows, then
     run the lazy stock-regen tick.
@@ -197,10 +204,32 @@ def _dispatch_trade_medals(db: Session, player: Player) -> None:
             .scalar()
             or 0
         )
+        # economic.cartel_breaker: best single-region lifetime SELL total
+        # (query-derived from the never-deleted enhanced_market_transactions
+        # table, joined through Sector.region_id — no durable counter needed,
+        # mirrors the total_trades/lifetime_credits pattern above).
+        best_region_sales: int = int(
+            db.query(func.sum(MarketTransaction.total_value))
+            .join(Sector, Sector.id == MarketTransaction.sector_uuid)
+            .filter(
+                MarketTransaction.player_id == player.id,
+                MarketTransaction.transaction_type == TransactionType.SELL,
+                Sector.region_id.isnot(None),
+            )
+            .group_by(Sector.region_id)
+            .order_by(func.sum(MarketTransaction.total_value).desc())
+            .limit(1)
+            .scalar()
+            or 0
+        )
         check_and_award_trade_medals(
             db,
             player,
-            {"total_trades": total_trades, "lifetime_credits": lifetime_revenue},
+            {
+                "total_trades": total_trades,
+                "lifetime_credits": lifetime_revenue,
+                "regional_commodity_sales": best_region_sales,
+            },
         )
     except Exception:
         logger.warning("_dispatch_trade_medals failed (non-fatal)", exc_info=True)
@@ -550,17 +579,9 @@ async def buy_resource(
     current_player: Player = Depends(get_current_player)
 ):
     """Buy a resource from a station"""
-    
-    # Verify player is docked at this port
-    if not current_player.is_docked:
-        raise HTTPException(status_code=400, detail="You must be docked at a station to trade")
 
-    # Get the station
     station = _get_station_or_404(db, trade_request.station_id)
-
-    # Verify player is in the same sector as the station
-    if current_player.current_sector_id != station.sector_id:
-        raise HTTPException(status_code=400, detail="You must be in the same sector as the station")
+    _require_can_trade(current_player, station)
 
     # Populate MarketPrice rows from the commodities JSONB if missing
     _ensure_market_prices(db, station)
@@ -908,16 +929,8 @@ async def sell_resource(
 ):
     """Sell a resource to a station"""
 
-    # Verify player is docked at this port
-    if not current_player.is_docked:
-        raise HTTPException(status_code=400, detail="You must be docked at a station to trade")
-
-    # Get the station
     station = _get_station_or_404(db, trade_request.station_id)
-
-    # Verify player is in the same sector as the station
-    if current_player.current_sector_id != station.sector_id:
-        raise HTTPException(status_code=400, detail="You must be in the same sector as the station")
+    _require_can_trade(current_player, station)
 
     # Populate MarketPrice rows from the commodities JSONB if missing
     # (may COMMIT — must run before any row locks are taken)
@@ -1305,13 +1318,8 @@ async def get_trade_quote(
     if action not in ("buy", "sell"):
         raise HTTPException(status_code=400, detail="action must be 'buy' or 'sell'")
 
-    if not current_player.is_docked:
-        raise HTTPException(status_code=400, detail="You must be docked at a station to trade")
-
     station = _get_station_or_404(db, quote_request.station_id)
-
-    if current_player.current_sector_id != station.sector_id:
-        raise HTTPException(status_code=400, detail="You must be in the same sector as the station")
+    _require_can_trade(current_player, station)
 
     # Same lazy-init idiom GET /market/{id} already uses — populates
     # MarketPrice rows from the commodities JSONB on first read. Not a
@@ -1540,6 +1548,14 @@ async def dock_at_station(
     if not station:
         raise HTTPException(status_code=404, detail="Station not found")
 
+    from src.services.station_service import is_station_functional
+
+    if not is_station_functional(station):
+        raise HTTPException(
+            status_code=400,
+            detail="This station is destroyed and rebuilding — docking is suspended",
+        )
+
     # Lock player row to prevent concurrent turn deduction races
     # (after the station lock — see lock-order note above)
     current_player = db.query(Player).filter(Player.id == current_player.id).populate_existing().with_for_update().first()
@@ -1595,7 +1611,9 @@ async def dock_at_station(
     # shown by /slips and the charge here always agree. Validated after the
     # turn check, in addition to the 1-turn dock cost.
     docking_ship_size = docking_service.ship_size_for(db, current_ship)
-    docking_fee = docking_service.docking_fee_for(station, docking_ship_size)
+    docking_fee = docking_service.docking_fee_for(
+        station, docking_ship_size, player=current_player
+    )
     if current_player.credits < docking_fee:
         raise HTTPException(
             status_code=400,
@@ -1607,6 +1625,22 @@ async def dock_at_station(
     slip_result = docking_service.acquire(
         db, station, current_player, ship_id=current_player.current_ship_id
     )
+
+    # Access denials (reputation gate / defense_policy) — mirror long-term
+    # mooring's reputation_denied → HTTP 403; do not enqueue.
+    if slip_result["status"] in ("reputation_denied", "access_denied"):
+        db.rollback()
+        raise HTTPException(status_code=403, detail=slip_result["detail"])
+
+    # Stolen-ship impound (ship-registry.md "Port-docking impound"): the ship
+    # never enters the slip queue at all — it's seized. acquire() already
+    # applied the fine/rep-hit/eject in-memory (flush-only); commit here and
+    # report it plainly rather than falling into the queue/full branch below
+    # (which expects queue_length/occupied/capacity/bumpable keys this
+    # result doesn't carry).
+    if slip_result["status"] == "impounded":
+        db.commit()
+        return JSONResponse(status_code=403, content=slip_result)
 
     if slip_result["status"] != "granted":
         # All transient slips taken (or the free slot belongs to the queue

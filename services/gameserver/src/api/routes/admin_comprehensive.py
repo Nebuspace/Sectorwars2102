@@ -3,9 +3,9 @@ Comprehensive Admin API Routes
 Supports full game administration based on DOCS specifications
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import text, func, desc, and_, or_
+from sqlalchemy import text, func, desc, or_
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 from datetime import datetime, timedelta, timezone
@@ -33,9 +33,7 @@ from src.models.planet import Planet
 from src.models.station import Station, StationStatus
 from src.models.sector import Sector
 from src.models.cluster import Cluster
-from src.models.galaxy import Galaxy
 from src.models.region import Region
-from src.models.zone import Zone
 from src.models.warp_tunnel import WarpTunnel
 from src.models.team import Team
 from src.models.route_optimization_run import RouteOptimizationRun
@@ -782,7 +780,7 @@ async def delete_ship(
             if owner and owner.current_ship_id == ship.id:
                 owner.current_ship_id = None
                 from src.services.ship_service import sync_current_pilot
-                sync_current_pilot(owner, None, old_ship=ship)
+                sync_current_pilot(owner, None, old_ship=ship, db=db)
 
             try:
                 from src.services.pioneer_service import reabsorb_on_ship_loss
@@ -854,6 +852,41 @@ async def teleport_ship(
         except Exception as e:
             logger.error(f"Error teleporting ship {ship_id}: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to teleport ship: {str(e)}") from e
+
+
+@router.post("/ships/registry/backfill", response_model=Dict[str, Any])
+async def admin_backfill_ship_registry(
+    current_admin: User = Depends(require_scope(SHIPS_MANAGE)),
+    db: Session = Depends(get_db),
+):
+    """One-shot invocation of ``ship_registry_service.backfill_initial_registrations``
+    (WO-P10-green-ship-registry-schema) — emits an INITIAL_REGISTRATION
+    ShipRegistry row (and assigns a registration_number) for every existing
+    Ship that predates the auto-registration mapper events and doesn't
+    already have one. Idempotent — safe to invoke more than once; ships
+    that already have an INITIAL_REGISTRATION row are skipped.
+    """
+    from src.services.ship_registry_service import backfill_initial_registrations
+
+    backfilled = backfill_initial_registrations(db)
+
+    log_admin_action(
+        db,
+        actor=current_admin,
+        scope_used=SHIPS_MANAGE,
+        action="admin_backfill_ship_registry",
+        target_type="ship_registry",
+        target_id=None,
+        payload={"backfilled": backfilled},
+    )
+    db.commit()
+
+    logger.info(
+        f"Admin {current_admin.username} backfilled {backfilled} ship registry "
+        "INITIAL_REGISTRATION row(s)"
+    )
+    return {"backfilled": backfilled}
+
 
 # Player Management Endpoints
 
@@ -2317,18 +2350,18 @@ async def create_port_in_sector(
                     sector = db.query(Sector).filter(Sector.sector_id == sector_int).first()
                 except ValueError:
                     raise HTTPException(status_code=400, detail="Invalid sector ID format")
-        
+
             if not sector:
                 raise HTTPException(status_code=404, detail="Sector not found")
-        
+
             # Check if sector already has a port
             existing_station = db.query(Station).filter(
                 Station.sector_uuid == sector.id
             ).first()
-        
+
             if existing_station:
                 raise HTTPException(status_code=400, detail="Sector already has a port")
-        
+
             # Import and validate enums
             from src.models.station import Station, StationClass, StationType, StationStatus
 
@@ -3133,14 +3166,12 @@ async def get_ai_system_metrics(
     """Get AI system metrics for admin dashboard"""
     try:
         # Get actual player and activity data
-        total_players = db.query(Player).count()
+        db.query(Player).count()
         day_ago = datetime.utcnow() - timedelta(days=1)
-        active_players = db.query(Player).filter(Player.last_game_login >= day_ago).count()
+        db.query(Player).filter(Player.last_game_login >= day_ago).count()
         
         # Honest metrics: no AI prediction engine, model registry, or job queue
         # exists yet — only real ARIA interaction counts are reportable.
-        # (De-mocked: the previous hardcoded 3247/79.8/67.3/12/45 figures were
-        # fabrications presented as live telemetry.)
         total_aria_interactions = db.query(
             func.coalesce(func.sum(Player.aria_total_interactions), 0)
         ).scalar() or 0
@@ -3317,3 +3348,130 @@ async def get_ai_behavior_analytics(
     except Exception as e:
         logger.error(f"Error getting AI behavior analytics: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get AI behavior analytics: {str(e)}")
+
+
+class FactionBountyRequest(BaseModel):
+    faction_type: str = Field(..., description="FactionType value, e.g. 'Federation'")
+    amount: int = Field(..., ge=1000, description="Bounty amount in credits")
+    reason: str = Field(..., min_length=1, max_length=200)
+
+
+@router.post("/npcs/{npc_id}/faction-bounty", response_model=Dict[str, Any])
+async def place_npc_faction_bounty(
+    npc_id: uuid.UUID,
+    request: FactionBountyRequest,
+    current_admin: User = Depends(require_scope(ECONOMY_INTERVENE)),
+    db: Session = Depends(get_db),
+):
+    """Place a faction-issued bounty on an NPC pirate captain (bounties.md:26
+    — "the Federation putting a bounty on a specific pirate captain that pays
+    out only to faction members"). Payout fires automatically when a player
+    kills the NPC (combat_service._handle_ship_destruction's dead_npc hook,
+    via bounty_service.collect_faction_bounty) and is gated on the killer's
+    own standing with the issuing faction being at least RECOGNIZED.
+    """
+    from src.models.npc_character import NPCCharacter
+    from src.models.faction import FactionType
+    from src.services.bounty_service import place_faction_bounty
+
+    npc = db.query(NPCCharacter).filter(NPCCharacter.id == npc_id).with_for_update().first()
+    if not npc:
+        raise HTTPException(status_code=404, detail="NPC not found")
+
+    try:
+        faction_type = FactionType(request.faction_type)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unrecognized faction_type: {request.faction_type}")
+
+    result = place_faction_bounty(db, npc, faction_type, request.amount, request.reason)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("message", "Failed to place bounty"))
+
+    log_admin_action(
+        db,
+        actor=current_admin,
+        scope_used=ECONOMY_INTERVENE,
+        action="place_npc_faction_bounty",
+        target_type="npc_character",
+        target_id=str(npc_id),
+        payload={"faction_type": faction_type.value, "amount": request.amount, "reason": request.reason},
+    )
+    db.commit()
+
+    logger.info(
+        f"Admin {current_admin.username} placed a {faction_type.value} bounty "
+        f"of {request.amount} on NPC {npc_id}"
+    )
+    return result
+
+
+@router.post("/players/{target_id}/bounties/{bounty_id}/force-cancel", response_model=Dict[str, Any])
+async def admin_force_cancel_bounty(
+    target_id: uuid.UUID,
+    bounty_id: str,
+    current_admin: User = Depends(require_scope(ECONOMY_INTERVENE)),
+    db: Session = Depends(get_db),
+):
+    """Force-cancel a stuck bounty on ``target_id`` (bounty-and-reputation.md:190
+    — "Bounty placed on player who deletes account: ... admin tool refunds
+    placers"). Unlike the player-facing cancel, no placer-identity check is
+    required — any admin may force-cancel any player-placed bounty via this
+    RBAC-gated route.
+    """
+    from src.services.bounty_service import BountyService
+
+    result = BountyService(db).admin_force_cancel_bounty(target_id, bounty_id)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("message", "Failed to cancel bounty"))
+
+    log_admin_action(
+        db,
+        actor=current_admin,
+        scope_used=ECONOMY_INTERVENE,
+        action="admin_force_cancel_bounty",
+        target_type="player",
+        target_id=str(target_id),
+        payload={"bounty_id": bounty_id, "refund": result.get("refund"), "refunded": result.get("refunded")},
+    )
+    db.commit()
+
+    logger.info(
+        f"Admin {current_admin.username} force-cancelled bounty {bounty_id} "
+        f"on player {target_id} (refunded={result.get('refunded')})"
+    )
+    return result
+
+
+@router.post("/players/{target_id}/bounties/collapse", response_model=Dict[str, Any])
+async def admin_collapse_bounties(
+    target_id: uuid.UUID,
+    current_admin: User = Depends(require_scope(ECONOMY_INTERVENE)),
+    db: Session = Depends(get_db),
+):
+    """Collapse ``target_id``'s bounty-entry list down to the soft cap
+    (bounty-and-reputation.md:192 — "soft cap: 50 entries; older entries
+    collapsed by placer, sum amounts"). No credits move — entries over the
+    cap are merged per-placer into one summed entry each. Idempotent.
+    """
+    from src.services.bounty_service import BountyService
+
+    result = BountyService(db).collapse_excess_bounties(target_id)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("message", "Failed to collapse bounties"))
+
+    log_admin_action(
+        db,
+        actor=current_admin,
+        scope_used=ECONOMY_INTERVENE,
+        action="admin_collapse_bounties",
+        target_type="player",
+        target_id=str(target_id),
+        payload={"collapsed": result.get("collapsed"), "entry_count": result.get("entry_count")},
+    )
+    db.commit()
+
+    logger.info(
+        f"Admin {current_admin.username} collapsed {result.get('collapsed', 0)} "
+        f"bounty entries on player {target_id}"
+    )
+    return result
