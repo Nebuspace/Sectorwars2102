@@ -218,8 +218,6 @@ const SectorsManager: React.FC = () => {
     if (selectedSector?.id === updatedSector.id) {
       setSelectedSector(updatedSector);
     }
-    
-    console.log('Sector updated successfully:', updatedSector.name);
   };
   
   return (
