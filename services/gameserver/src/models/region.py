@@ -127,6 +127,19 @@ class Region(Base):
         ),
     )
     generation_phase_checksums = Column(JSONB, nullable=True, server_default='{}')
+    # ADR-0050 SK22 — Phase 14 (Nexus-warp cross-region attachment, ADR-0043)
+    # retry bookkeeping. attempt_count/next_retry_at drive the exponential
+    # backoff retry loop (RegionAttachmentService); operator_confirmed gates
+    # the attachment_pending refund path and is NEVER set automatically —
+    # see region_attachment_service.refund_trigger_reason.
+    nexus_attach_attempt_count = Column(Integer, nullable=False, server_default="0")
+    nexus_attach_next_retry_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    nexus_attach_operator_confirmed = Column(Boolean, nullable=False, server_default="false")
+    # Set once the Phase-14 cross-region WarpTunnel insert actually succeeds.
+    # Deliberately distinct from nexus_warp_sector (set during region-content
+    # generation regardless of whether the cross-region tunnel has landed) —
+    # this is the real "Phase 14 done" signal the retry sweep queries on.
+    nexus_attach_completed_at = Column(TIMESTAMP(timezone=True), nullable=True)
     created_at = Column(TIMESTAMP, nullable=False, server_default=func.now())
     updated_at = Column(TIMESTAMP, nullable=False, server_default=func.now(), onupdate=func.now())
     

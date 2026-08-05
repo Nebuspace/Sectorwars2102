@@ -118,7 +118,14 @@ class WarpTunnel(Base):
     expires_at = Column(DateTime(timezone=True), nullable=True)  # When will it collapse
     special_effects = Column(JSONB, nullable=False, default={})  # Effects on ships using the tunnel
     description = Column(String, nullable=True)
-    
+
+    # ADR-0050 SK22 — Phase 14 retry idempotency key (``region.id +
+    # attempt_n``). Nullable/unique: only Phase-14 cross-region Nexus-
+    # attachment tunnels set this; ordinary player/NPC-created tunnels leave
+    # it NULL. Backs the ``INSERT ... ON CONFLICT (idempotency_key) DO
+    # NOTHING`` idempotent retry insert (region_attachment_service.py).
+    idempotency_key = Column(String(120), nullable=True, unique=True)
+
     # Relationships
     origin_sector = relationship("Sector", foreign_keys=[origin_sector_id], back_populates="warp_tunnels_origin")
     destination_sector = relationship("Sector", foreign_keys=[destination_sector_id], back_populates="warp_tunnels_destination")

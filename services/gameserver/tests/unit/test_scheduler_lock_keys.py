@@ -179,6 +179,8 @@ EXPECTED_NAME_SITE_MAP = {
     "_run_wanted_clear_sweep_sync": "_WANTED_CLEAR_LOCK_KEY",
     "_run_mining_harvest_resolve_sync": "_MINING_HARVEST_LOCK_KEY",
     "_run_abandonment_archive_sweep_sync": "_ABANDONMENT_ARCHIVE_LOCK_KEY",
+    # ADR-0050 SK22 — Phase-14 (Nexus cross-region attachment) retry sweep.
+    "_run_phase14_attachment_retry_sweep_sync": "_PHASE14_ATTACHMENT_RETRY_LOCK_KEY",
 }
 
 # 29 bare-Name sites + 1 Call-form site (bootstrap_region_sync) = the true
