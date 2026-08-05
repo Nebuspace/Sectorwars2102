@@ -29,7 +29,7 @@ from src.models.npc_character import (
     NPCRoster,
     NPCStatus,
 )
-from src.models.pending_engagement import EngagementStatus, PendingEngagement
+from src.models.pending_engagement import EngagementStatus
 from src.models.player import Player
 from src.models.region import Region, RegionType
 from src.models.sector import Sector

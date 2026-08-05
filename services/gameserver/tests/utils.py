@@ -2,7 +2,6 @@
 This module provides a utility to override settings for testing.
 """
 import os
-from unittest.mock import patch
 import pytest
 
 def load_env_file():

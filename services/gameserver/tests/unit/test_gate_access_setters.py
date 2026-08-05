@@ -21,7 +21,7 @@ from src.models.faction import Faction, FactionType
 from src.models.reputation import Reputation
 from src.models.warp_gate import WarpGate, WarpGateStatus
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus, WarpTunnelType
-from src.services import warp_gate_service
+from src.services import npc_movement_service, warp_gate_service
 from src.services.warp_gate_service import WarpGateError
 
 
@@ -176,6 +176,70 @@ class TestValidateTollBypass:
 
     def test_empty_list_is_valid_and_clears_bypass(self) -> None:
         assert warp_gate_service._validate_toll_bypass([]) == []
+
+
+@pytest.mark.unit
+class TestNpcFactionGrantKeyMustMatch:
+    """warp_gate_service duplicates npc_movement_service._NPC_FACTION_GRANT_KEY
+    as a literal string (rather than importing it) to avoid a warp_gate_
+    service -> npc_movement_service -> movement_service -> warp_gate_service
+    import cycle (movement_service does `from src.services import
+    warp_gate_service` at module scope). This test is the drift guard the
+    duplication's own comment promises."""
+
+    def test_keys_are_identical(self) -> None:
+        assert (
+            warp_gate_service._NPC_FACTION_GRANT_KEY
+            == npc_movement_service._NPC_FACTION_GRANT_KEY
+        )
+
+
+@pytest.mark.unit
+class TestValidateNpcFactions:
+    def test_none_passes_through_unchanged(self) -> None:
+        assert warp_gate_service._validate_npc_factions(None) is None
+
+    def test_empty_list_is_valid_and_clears_grants(self) -> None:
+        assert warp_gate_service._validate_npc_factions([]) == []
+
+    def test_valid_snake_case_codes_accepted(self) -> None:
+        result = warp_gate_service._validate_npc_factions(
+            ["terran_federation", "pirates"],
+        )
+        assert result == ["terran_federation", "pirates"]
+
+    def test_dedupes_preserving_first_seen_order(self) -> None:
+        result = warp_gate_service._validate_npc_factions(
+            ["pirates", "terran_federation", "pirates"],
+        )
+        assert result == ["pirates", "terran_federation"]
+
+    def test_non_list_rejected(self) -> None:
+        with pytest.raises(WarpGateError, match="npc_factions must be a list"):
+            warp_gate_service._validate_npc_factions("terran_federation")
+
+    def test_too_many_entries_rejected(self) -> None:
+        codes = [f"faction_{i}" for i in range(warp_gate_service.MAX_ACCESS_LIST_ENTRIES + 1)]
+        with pytest.raises(WarpGateError, match="may hold at most"):
+            warp_gate_service._validate_npc_factions(codes)
+
+    @pytest.mark.parametrize("bad_value", [123, None, True, ""])
+    def test_non_string_or_empty_entry_rejected(self, bad_value: Any) -> None:
+        with pytest.raises(WarpGateError, match="invalid faction code"):
+            warp_gate_service._validate_npc_factions([bad_value])
+
+    def test_entry_too_long_rejected(self) -> None:
+        too_long = "a" * (warp_gate_service._MAX_FACTION_CODE_LEN + 1)
+        with pytest.raises(WarpGateError, match="exceeds .* characters"):
+            warp_gate_service._validate_npc_factions([too_long])
+
+    @pytest.mark.parametrize(
+        "bad_code",
+        ["Terran_Federation", "1pirates", "terran federation", "terran-federation", "_pirates"],
+    )
+    def test_non_snake_case_code_rejected(self, bad_code: str) -> None:
+        with pytest.raises(WarpGateError, match="must be snake_case"):
+            warp_gate_service._validate_npc_factions([bad_code])
 
 
 # --- set_gate_access_layers --------------------------------------------------

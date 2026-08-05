@@ -1,7 +1,5 @@
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
-import uuid  # For creating mock user IDs if needed for register tests
 
 from src.core.config import settings
 from src.models.user import User

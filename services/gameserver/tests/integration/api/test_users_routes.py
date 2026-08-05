@@ -1,12 +1,10 @@
 # Tests for user-related API routes
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 import uuid
 
 from src.core.config import settings
 from src.models.user import User
-from src.schemas.user import UserCreate, UserUpdate, AdminCreate # Ensure these are imported
 
 # Helper to create a unique user for testing to avoid conflicts
 def create_unique_user_data(is_admin: bool = False):

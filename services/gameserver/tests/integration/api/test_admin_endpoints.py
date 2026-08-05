@@ -4,10 +4,6 @@ Part of self-improving development strategy to prevent regressions.
 """
 
 import pytest
-from fastapi.testclient import TestClient
-from src.main import app
-from src.core.database import SessionLocal
-from src.models.user import User
 
 
 class TestAdminEndpoints:
