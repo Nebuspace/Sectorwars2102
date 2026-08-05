@@ -507,11 +507,10 @@ class CitadelService:
         # that ceiling BEFORE charging credits/resources or starting the timer — otherwise the
         # authoritative settle() derive would just refuse to confirm the new level and the player
         # would pay for a level the planet cannot hold.
-        from src.services.structures import max_citadel_level_for_size
+        from src.services.structures import max_citadel_level_for_size, plot_count_for_size
         size_cap = max_citadel_level_for_size(getattr(planet, "size", 5) or 5)
         if next_level > size_cap:
-            plot_count = (4 + 2 * (getattr(planet, "size", 5) or 5))
-            plot_count = max(6, min(30, plot_count))
+            plot_count = plot_count_for_size(getattr(planet, "size", 5) or 5)
             return {
                 "success": False,
                 "message": (

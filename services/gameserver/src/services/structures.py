@@ -635,10 +635,19 @@ def materialize_citadel_grid(planet, expedition, *, db=None) -> dict:
 # ---------------------------------------------------------------------------
 # Grid construction (K1b-1) — sized by Planet.size; plots are the scarce resource
 # ---------------------------------------------------------------------------
+def plot_count_for_size(size: int) -> int:
+    """Canon plot count from Planet.size (1–10): clamp(4 + 2·size, 6, 30).
+
+    Single source for citadel_service size-gate messaging and grid layout
+    (citadel-grid.md / CRT-MASTER §1.4).
+    """
+    return max(6, min(30, 4 + 2 * int(size or 5)))
+
+
 def _grid_dims_for(size: int) -> tuple:
     """(cols, rows, plot_count) from Planet.size (1-10): plot_count = clamp(4 + 2·size, 6, 30)
     (CRT-MASTER §1.4, NO-CANON), laid out in a near-square cols×rows bounding box."""
-    plot_count = max(6, min(30, 4 + 2 * int(size or 5)))
+    plot_count = plot_count_for_size(size)
     cols = int(math.ceil(math.sqrt(plot_count)))
     rows = int(math.ceil(plot_count / cols))
     return cols, rows, plot_count
