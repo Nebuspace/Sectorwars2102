@@ -3,7 +3,7 @@ Regional Governance API Routes
 Provides endpoints for regional owners to manage their territories, governance, and policies
 """
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 from sqlalchemy import select, update, func, and_, or_
@@ -13,14 +13,13 @@ from datetime import datetime, timedelta
 import uuid
 
 from src.core.database import get_async_session, get_db
-from src.auth.dependencies import get_current_user, require_auth
+from src.auth.dependencies import require_auth
 from src.models.user import User
 from src.models.region import (
     Region, RegionalMembership, RegionalPolicy, RegionalElection, 
-    RegionalVote, RegionalTreaty, GovernanceType, PolicyStatus, ElectionStatus
+    RegionalTreaty, PolicyStatus, ElectionStatus
 )
 from src.models.player import Player
-from src.models.sector import Sector
 from src.models.planet import Planet
 from src.models.station import Station
 from src.models.ship import Ship

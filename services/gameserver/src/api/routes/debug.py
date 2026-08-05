@@ -1,9 +1,8 @@
 """Debug endpoints for troubleshooting authentication and player issues.
 All debug endpoints require admin authentication."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from typing import Optional
 
 from src.core.database import get_db
 from src.auth.admin_scopes import AUDIT_VIEW

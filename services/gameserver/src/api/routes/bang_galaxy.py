@@ -9,8 +9,8 @@ Five endpoints (per Phase 1D of ``DOCS/PLANS/bang-integration.md``):
 * ``DELETE /admin/galaxy/{galaxy_id}``  — hard-delete galaxy (requires header)
 
 All endpoints are admin-only via :func:`require_scope` (BANG_REGENERATE). The legacy
-``POST /admin/galaxy/generate`` (in :mod:`src.api.routes.admin`) is kept
-intact; Phase 4 removes it.
+``POST /admin/galaxy/generate`` (in :mod:`src.api.routes.admin`) was removed
+in Phase 4.
 """
 from __future__ import annotations
 

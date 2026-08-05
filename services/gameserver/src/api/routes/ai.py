@@ -12,7 +12,6 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, desc
 from pydantic import BaseModel, UUID4, Field
-import uuid
 
 from src.core.database import get_async_db
 from src.auth.dependencies import get_current_player
@@ -88,7 +87,9 @@ class PlayerTradingProfileResponse(BaseModel):
 
 
 class AIPreferences(BaseModel):
-    ai_assistance_level: str = Field(..., pattern="^(minimal|medium|full)$")
+    # 4-level canon vocab (ratified 2026-08-04, ADR-0068) -- was 3-value
+    # minimal/medium/full; 'quiet' added, 'medium' renamed to 'standard'.
+    ai_assistance_level: str = Field(..., pattern="^(minimal|quiet|standard|full)$")
     risk_tolerance: float = Field(..., ge=0.0, le=1.0)
     notification_preferences: Optional[Dict[str, bool]] = None
 
@@ -391,7 +392,7 @@ async def get_player_trading_profile(
             profile = PlayerTradingProfile(
                 player_id=current_player.id,
                 risk_tolerance=0.5,
-                ai_assistance_level='medium'
+                ai_assistance_level='standard'
             )
             db.add(profile)
             await db.commit()

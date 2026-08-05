@@ -5,7 +5,7 @@ Provides endpoints for creating, deploying, and managing drones.
 """
 
 import logging
-from uuid import UUID, uuid4
+from uuid import UUID
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession

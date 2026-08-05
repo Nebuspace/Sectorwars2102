@@ -14,20 +14,19 @@ OWASP Security Implementation:
 import asyncio
 import json
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from datetime import datetime, UTC
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Query, Header
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Query
+from fastapi.security import HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 import redis.asyncio as redis
 
 from sqlalchemy.orm import Session
-from src.core.database import get_async_db, get_async_session, get_db
-from src.auth.dependencies import get_current_user, validate_websocket_token
+from src.core.database import get_async_session, get_db
+from src.auth.dependencies import validate_websocket_token
 from src.services.enhanced_websocket_service import get_enhanced_websocket_service
 from src.services.audit_service import AuditService
-from src.models.player import Player
 from src.core.config import settings
 from src.core.commodity_economy import COMMODITY_BASE_PRICES
 

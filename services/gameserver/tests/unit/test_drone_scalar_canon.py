@@ -185,7 +185,7 @@ def test_attacker_side_defense_drones_reads_are_fully_flipped():
     # debits — each debit line reads attacker.attack_drones twice, once as
     # the assignment target and once inside max(); :614, :1133, :1468,
     # :1606, :1756 CombatLog snapshots).
-    assert _attribute_read_count(tree, "attacker", "attack_drones") == 20
+    assert _attribute_read_count(tree, "attacker", "attack_drones") == 21
 
 
 def test_defender_side_defense_drones_reads_are_untouched():
@@ -288,6 +288,7 @@ def _armory_player(*, attack_drones=0):
         is_docked=True,
         current_port_id=uuid.uuid4(),
         current_ship_id=uuid.uuid4(),
+        settings={},
     )
 
 

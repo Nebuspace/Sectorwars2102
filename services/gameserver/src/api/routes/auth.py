@@ -4,7 +4,7 @@ import logging
 from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, Body
 from fastapi.security import OAuth2PasswordRequestForm
-from fastapi.responses import RedirectResponse, HTMLResponse
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from jwt import PyJWTError as JWTError
 
@@ -21,7 +21,7 @@ from src.auth.oauth import (
 from src.core.database import get_db
 from src.core.config import settings
 from src.models.refresh_token import RefreshToken
-from src.schemas.auth import Token, RefreshToken as RefreshTokenSchema, AuthResponse, LoginForm, RegisterForm
+from src.schemas.auth import RefreshToken as RefreshTokenSchema, AuthResponse, LoginForm, RegisterForm
 from src.services.user_service import authenticate_admin, authenticate_player, update_user_last_login
 from src.services.mfa_service import MFAService
 from src.auth.signup_rate_limit import register_rate_limit, exchange_rate_limit
@@ -83,10 +83,11 @@ async def _track_player_login(db: Session, user_id) -> Optional[Dict[str, Any]]:
 
         from src.services.player_activity_service import get_player_activity_service
         activity_service = await get_player_activity_service()
-        # Call without the optional db arg: the routes' Session is sync, and
-        # track_login only uses db to refresh last_game_login (optional). The
-        # Redis session/online-set tracking is the part we need here.
-        await activity_service.track_login(str(player.id))
+        # db is the routes' sync Session; track_login accepts sync Session
+        # (WO-BUILD-RETENTION-SIGNALS-WRITEBACK) and uses it to refresh
+        # last_game_login AND open the durable PlayerSession/PlayerActivity
+        # mirror the retention sweep + WO-G18 region-activity recompute read.
+        await activity_service.track_login(str(player.id), db=db)
     except Exception:
         logger.warning("player-login activity tracking failed (non-fatal)", exc_info=True)
     return welcome_back_outcome
@@ -105,7 +106,7 @@ async def _track_player_logout(db: Session, user_id) -> None:
             return
         from src.services.player_activity_service import get_player_activity_service
         activity_service = await get_player_activity_service()
-        await activity_service.track_logout(str(player.id))
+        await activity_service.track_logout(str(player.id), db=db)
     except Exception:
         logger.warning("player-logout activity tracking failed (non-fatal)", exc_info=True)
 
@@ -878,7 +879,7 @@ async def github_callback(request: Request, code: str, register: bool = False, s
     api_base_url = settings.get_api_base_url()
 
     # Get the actual request URL used to access this endpoint
-    callback_url = str(request.url)
+    str(request.url)
 
     # Detailed debug for the callback
     logger.debug("GitHub OAuth callback received (env=%s)", settings.detect_environment())

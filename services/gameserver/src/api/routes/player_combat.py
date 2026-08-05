@@ -252,14 +252,14 @@ async def engage_combat(
             result = service.attack_player(player.id, ship.owner_id)
     elif request.targetType == "planet":
         result = _execute_planet_assault(db, player, target_id)
+    elif request.targetType == "port":
+        # WO attack-port-build (corrected scope): JSONB defenses + live route.
+        # Capture remains unreachable in the station-defense kernel.
+        result = service.attack_port(player.id, target_id)
     else:
-        # Port assault transfers station ownership — economically sensitive,
-        # deliberately disabled this pass. Return 501 Not Implemented (not a
-        # 200 "error" body) so the client treats it as a permanently-unavailable
-        # feature, not a transient/game-logic failure worth retrying.
         raise HTTPException(
-            status_code=501,
-            detail="Port assault operations are not yet authorized."
+            status_code=400,
+            detail=f"Unsupported targetType: {request.targetType}"
         )
 
     if not result.get("success"):

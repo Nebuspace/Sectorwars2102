@@ -126,6 +126,10 @@ def _current_loadout(player: Player, db: Session) -> dict | None:
         "attack_drones": player.attack_drones,
         "defense_drones": player.defense_drones,
         "mines": player.mines,
+        # Limpet mines carry a SEPARATE counter from armored mines (schema:no
+        # — no new Player column, reuses the existing settings JSONB scratch
+        # space) since deploy needs to know which type is being laid.
+        "limpet_mines": int((player.settings or {}).get("limpet_mines", 0) or 0),
         "caps": _armory_caps(ship, spec),
     }
 
@@ -155,15 +159,8 @@ async def get_armory_catalog(
                 "price": entry["price"],
                 "description": entry["description"],
                 "service": entry["service"],
-                # Armored mines are deployable (proximity detonation on hostile
-                # sector entry — POST /armory/deploy). Limpet mines need a
-                # tracking/surveillance mechanic that isn't built yet, so they
-                # stay flagged unavailable rather than sold as a no-op.
-                "available": key != "limpet_mine",
-                "reason": (
-                    "Limpet tracking mechanic is in design"
-                    if key == "limpet_mine" else None
-                ),
+                "available": True,
+                "reason": None,
             }
             for key, entry in ARMORY_CATALOG.items()
         ]
@@ -190,14 +187,6 @@ async def purchase_armory_item(
     row in a single transaction.
     """
     entry = ARMORY_CATALOG[request.item]
-
-    # Armored mines are now deployable (POST /armory/deploy). Limpet mines still
-    # have no tracking mechanic, so selling one would burn credits for a no-op.
-    if request.item == "limpet_mine":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Limpet mines aren't deployable yet — their tracking mechanic is still in design.",
-        )
 
     # Lock the player row to prevent concurrent purchases double-spending
     # credits or overshooting loadout caps
@@ -247,23 +236,29 @@ async def purchase_armory_item(
     # already loaded locally here, so we call the caps-only helper directly
     # rather than _current_loadout(player, db), which would re-query both.
     caps = _armory_caps(ship, spec)
+    # Limpet mines carry a SEPARATE counter from armored mines (player.settings
+    # JSONB scratch field, no schema change) since /deploy needs to know which
+    # carried stock — and which sector.defenses field-pair — to act on.
+    limpet_mines = int((player.settings or {}).get("limpet_mines", 0) or 0)
     current = {
         "attack_drones": player.attack_drones,
         "defense_drones": player.defense_drones,
         "mines": player.mines,
+        "limpet_mines": limpet_mines,
     }
     slot = {
         "attack_drone": "attack_drones",
         "defense_drone": "defense_drones",
-        "limpet_mine": "mines",
+        "limpet_mine": "limpet_mines",
         "armored_mine": "mines",
     }[request.item]
+    cap_key = "mines" if slot == "limpet_mines" else slot
 
-    if current[slot] + request.quantity > caps[slot]:
+    if current[slot] + request.quantity > caps[cap_key]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                f"Capacity exceeded: {current[slot]}/{caps[slot]} {slot.replace('_', ' ')} "
+                f"Capacity exceeded: {current[slot]}/{caps[cap_key]} {slot.replace('_', ' ')} "
                 f"carried, cannot add {request.quantity}"
             ),
         )
@@ -282,6 +277,12 @@ async def purchase_armory_item(
         player.attack_drones += request.quantity
     elif slot == "defense_drones":
         player.defense_drones += request.quantity
+    elif slot == "limpet_mines":
+        from sqlalchemy.orm.attributes import flag_modified
+        settings = dict(player.settings or {})
+        settings["limpet_mines"] = limpet_mines + request.quantity
+        player.settings = settings
+        flag_modified(player, "settings")
     else:
         player.mines += request.quantity
 
@@ -302,13 +303,23 @@ async def purchase_armory_item(
             "attack_drones": player.attack_drones,
             "defense_drones": player.defense_drones,
             "mines": player.mines,
+            "limpet_mines": int((player.settings or {}).get("limpet_mines", 0) or 0),
             "caps": caps,
         },
     }
 
 
 class MineDeployRequest(BaseModel):
-    quantity: int = Field(..., ge=1, le=MINES_CAP, description="Number of armored mines to lay in the current sector")
+    item: Literal["armored_mine", "limpet_mine"] = "armored_mine"
+    quantity: int = Field(..., ge=1, le=MINES_CAP, description="Number of mines to lay in the current sector")
+
+
+# Field-set for each mine type's sector.defenses entry — parallel structures
+# so the armored (damage) and limpet (tracking) fields never collide.
+_MINE_FIELDS = {
+    "armored_mine": {"count": "mines", "owner": "mine_owner_id", "team": "mine_team_id"},
+    "limpet_mine": {"count": "limpet_mines", "owner": "limpet_owner_id", "team": "limpet_team_id"},
+}
 
 
 @router.post("/deploy")
@@ -317,14 +328,19 @@ async def deploy_mines(
     player: Player = Depends(get_current_player),
     db: Session = Depends(get_db),
 ):
-    """Lay armored mines in the player's current sector (open space only).
+    """Lay mines in the player's current sector (open space only).
 
-    Deployed mines detonate against the next hostile ship to enter the sector
-    (MovementService._detonate_sector_mines). A sector holds one commander's
-    minefield at a time; a player can reinforce their own field but not stack on
+    Armored mines detonate against the next hostile ship to enter the sector
+    (MovementService._detonate_sector_mines). Limpet mines instead attach a
+    tracker to the next hostile ship to enter and signal the owner on that
+    ship's subsequent moves (MovementService._attach_limpet_trackers /
+    _dispatch_limpet_signals). A sector holds one commander's field per mine
+    type at a time; a player can reinforce their own field but not stack on
     a rival's.
     """
     from src.models.sector import Sector
+
+    field = _MINE_FIELDS[request.item]
 
     player = db.query(Player).filter(Player.id == player.id).populate_existing().with_for_update().first()
 
@@ -335,10 +351,15 @@ async def deploy_mines(
         )
     if not player.current_sector_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You are not in a sector")
-    if player.mines < request.quantity:
+
+    if request.item == "limpet_mine":
+        carried = int((player.settings or {}).get("limpet_mines", 0) or 0)
+    else:
+        carried = player.mines
+    if carried < request.quantity:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"You carry {player.mines} mines, cannot deploy {request.quantity}.",
+            detail=f"You carry {carried} {request.item.replace('_', ' ')}s, cannot deploy {request.quantity}.",
         )
 
     sector = (
@@ -350,32 +371,45 @@ async def deploy_mines(
     if not sector:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Sector not found")
 
+    from sqlalchemy.orm.attributes import flag_modified
+
     defenses = dict(sector.defenses or {})
-    existing = int(defenses.get("mines", 0) or 0)
-    existing_owner = defenses.get("mine_owner_id")
+    existing = int(defenses.get(field["count"], 0) or 0)
+    existing_owner = defenses.get(field["owner"])
     if existing > 0 and existing_owner and str(existing_owner) != str(player.id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This sector already holds another commander's minefield.",
         )
 
-    from sqlalchemy.orm.attributes import flag_modified
-    defenses["mines"] = existing + request.quantity
-    defenses["mine_owner_id"] = str(player.id)
-    defenses["mine_team_id"] = str(player.team_id) if player.team_id else None
+    defenses[field["count"]] = existing + request.quantity
+    defenses[field["owner"]] = str(player.id)
+    defenses[field["team"]] = str(player.team_id) if player.team_id else None
     sector.defenses = defenses
     flag_modified(sector, "defenses")
-    player.mines -= request.quantity
+
+    if request.item == "limpet_mine":
+        settings = dict(player.settings or {})
+        settings["limpet_mines"] = carried - request.quantity
+        player.settings = settings
+        flag_modified(player, "settings")
+        remaining = settings["limpet_mines"]
+    else:
+        player.mines -= request.quantity
+        remaining = player.mines
+
     db.commit()
 
+    field_count = defenses[field["count"]]
     logger.info(
-        f"Player {player.id} deployed {request.quantity} mines in sector {player.current_sector_id} "
-        f"(field now {defenses['mines']})"
+        f"Player {player.id} deployed {request.quantity} {request.item} in sector "
+        f"{player.current_sector_id} (field now {field_count})"
     )
     return {
         "success": True,
-        "message": f"Laid {request.quantity} armored mine(s). Sector field: {defenses['mines']}.",
+        "message": f"Laid {request.quantity} {request.item.replace('_', ' ')}(s). Sector field: {field_count}.",
         "sector_id": player.current_sector_id,
-        "sector_mines": defenses["mines"],
-        "mines_remaining": player.mines,
+        "item": request.item,
+        "sector_mines": field_count,
+        "mines_remaining": remaining,
     }

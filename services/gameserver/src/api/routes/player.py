@@ -10,7 +10,6 @@ from src.models.player import Player
 from src.models.ship import Ship, ShipType, effective_cargo_capacity
 from src.models.sector import Sector
 from src.models.station import Station
-from src.models.warp_tunnel import WarpTunnel
 from src.services.movement_service import MovementService
 from src.services.ranking_service import RankingService
 from src.services.ship_service import ShipService

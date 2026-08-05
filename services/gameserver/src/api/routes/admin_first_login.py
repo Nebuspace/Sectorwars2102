@@ -14,7 +14,6 @@ from src.auth.admin_scopes import PLAYERS_VIEW
 from src.auth.dependencies import require_scope
 from src.models.first_login import FirstLoginSession, DialogueExchange, DialogueOutcome
 from src.models.player import Player
-from src.models.user import User
 
 router = APIRouter(
     prefix="/admin/first-login",

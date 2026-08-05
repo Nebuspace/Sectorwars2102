@@ -138,9 +138,9 @@ async def ai_providers_health():
                 import openai
                 client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
                 # Use a minimal request to test connectivity
-                response = client.models.list()
+                client.models.list()
                 openai_reachable = True
-            except Exception as e:
+            except Exception:
                 openai_error_id = generate_error_id()
                 logger.error(
                     "OpenAI health-check connectivity test failed [error_id=%s]",
@@ -160,7 +160,7 @@ async def ai_providers_health():
             "error": openai_error,
             "error_id": openai_error_id
         }
-    except Exception as e:
+    except Exception:
         openai_error_id = generate_error_id()
         logger.error(
             "OpenAI health check failed [error_id=%s]", openai_error_id, exc_info=True,
@@ -192,13 +192,13 @@ async def ai_providers_health():
                 import anthropic
                 client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
                 # Use a minimal request to test connectivity
-                response = client.messages.create(
+                client.messages.create(
                     model="claude-3-haiku-20240307",
                     max_tokens=10,
                     messages=[{"role": "user", "content": "test"}]
                 )
                 anthropic_reachable = True
-            except Exception as e:
+            except Exception:
                 anthropic_error_id = generate_error_id()
                 logger.error(
                     "Anthropic health-check connectivity test failed [error_id=%s]",
@@ -218,7 +218,7 @@ async def ai_providers_health():
             "error": anthropic_error,
             "error_id": anthropic_error_id
         }
-    except Exception as e:
+    except Exception:
         anthropic_error_id = generate_error_id()
         logger.error(
             "Anthropic health check failed [error_id=%s]", anthropic_error_id, exc_info=True,
@@ -275,9 +275,9 @@ async def openai_health():
             import openai
             client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
             # Quick test with OpenAI API
-            response = client.models.list()
+            client.models.list()
             reachable = True
-        except Exception as e:
+        except Exception:
             error_id = generate_error_id()
             logger.error("OpenAI health check failed [error_id=%s]", error_id, exc_info=True)
             error = "OpenAI health check failed"
@@ -319,13 +319,13 @@ async def anthropic_health():
             import anthropic
             client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
             # Quick test with Anthropic API
-            response = client.messages.create(
+            client.messages.create(
                 model="claude-3-haiku-20240307",
                 max_tokens=10,
                 messages=[{"role": "user", "content": "test"}]
             )
             reachable = True
-        except Exception as e:
+        except Exception:
             error_id = generate_error_id()
             logger.error("Anthropic health check failed [error_id=%s]", error_id, exc_info=True)
             error = "Anthropic health check failed"
@@ -356,9 +356,8 @@ async def containers_health():
     This endpoint does not require authentication.
     """
     import subprocess
-    import json
     import time
-    from datetime import datetime, timedelta
+    from datetime import datetime
     
     start_time = time.time()
     containers_status = {}
@@ -451,7 +450,7 @@ async def containers_health():
     except FileNotFoundError:
         error = "Docker command not found"
         overall_healthy = False
-    except Exception as e:
+    except Exception:
         error_id = generate_error_id()
         logger.error("Container health check failed [error_id=%s]", error_id, exc_info=True)
         error = "Container health check failed"
@@ -495,7 +494,7 @@ def _check_database_health():
     unchanged from the pre-existing single-endpoint implementation.
     """
     import time
-    from sqlalchemy import text, inspect
+    from sqlalchemy import text
     from src.core.database import engine
     from src.core.config import settings
     from urllib.parse import urlparse
@@ -552,7 +551,7 @@ def _check_database_health():
                 "active_connections": connections_result.active_connections
             }
 
-    except Exception as e:
+    except Exception:
         error_id = generate_error_id()
         logger.error("Database health check failed [error_id=%s]", error_id, exc_info=True)
         error = "Database health check failed"

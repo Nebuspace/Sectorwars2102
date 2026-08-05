@@ -14,6 +14,7 @@ from src.api.routes.events import router as events_router
 from src.api.routes.websocket import router as websocket_router
 from src.api.routes.trading import router as trading_router
 from src.api.routes.mining import router as mining_router
+from src.api.routes.player_trade import router as player_trade_router
 from src.api.routes.player import router as player_router
 from src.api.routes.sectors import router as sectors_router
 from src.api.routes.ai import router as ai_router
@@ -23,6 +24,7 @@ from src.api.routes.market_prediction import router as market_prediction_router 
 from src.api.routes.audit import router as audit_router
 from src.api.routes.messages import router as messages_router
 from src.api.routes.admin_messages import router as admin_messages_router
+from src.api.routes.admin_beacons import router as admin_beacons_router
 from src.api.routes.factions import router as factions_router
 from src.api.routes.admin_factions import router as admin_factions_router
 from src.api.routes.drones import router as drones_router
@@ -51,6 +53,7 @@ from src.api.routes.hangar import router as hangar_router
 from src.api.routes.tow import router as tow_router
 from src.api.routes.armory import router as armory_router
 from src.api.routes.registry import router as registry_router
+from src.api.routes.ship_registry_behaviors import router as ship_registry_behaviors_router
 from src.api.routes.bang_galaxy import router as bang_galaxy_router
 from src.api.routes.construction import router as construction_router
 from src.api.routes.port_ownership import router as port_ownership_router
@@ -59,6 +62,7 @@ from src.api.routes.ranking import router as ranking_router
 from src.api.routes.quantum import router as quantum_router
 from src.api.routes.refining import router as refining_router
 from src.api.routes.recovery import router as recovery_router
+from src.api.routes.expeditions import router as expeditions_router
 from src.api.routes.warp_gates import router as warp_gates_router
 from src.api.routes.nav import router as nav_router
 from src.api.routes.medals import router as medals_router
@@ -102,6 +106,7 @@ api_router.include_router(events_router, tags=["events"])
 api_router.include_router(websocket_router, tags=["websocket"])
 api_router.include_router(trading_router, tags=["trading"])
 api_router.include_router(mining_router, tags=["mining"])  # WO-MINING (router carries /mining prefix)
+api_router.include_router(player_trade_router, tags=["player-trade"])  # ADR-0089 P2P trade (prefix /trade)
 api_router.include_router(haggle_router, tags=["haggle"])  # ADR-0079 numerical haggling (router carries /haggle prefix)
 api_router.include_router(player_router, tags=["player"])
 api_router.include_router(sectors_router, tags=["sectors"])
@@ -112,6 +117,7 @@ api_router.include_router(market_prediction_router, tags=["market"])  # WO-MP1 (
 api_router.include_router(audit_router, tags=["audit"])
 api_router.include_router(messages_router, tags=["messages"])
 api_router.include_router(admin_messages_router, tags=["admin-messages"])
+api_router.include_router(admin_beacons_router, tags=["admin-beacons"])
 api_router.include_router(factions_router, tags=["factions"])
 api_router.include_router(admin_factions_router, tags=["admin-factions"])
 api_router.include_router(drones_router, tags=["drones"])
@@ -132,7 +138,6 @@ api_router.include_router(nexus_router, tags=["nexus"])
 api_router.include_router(regional_governance_router, tags=["regional-governance"])
 api_router.include_router(translation_router, tags=["translation"])
 api_router.include_router(enhanced_websocket_router, tags=["websocket", "real-time"])
-api_router.include_router(debug_router, tags=["debug"])
 api_router.include_router(gambling_router, tags=["gambling"])
 api_router.include_router(genesis_router, tags=["genesis"])
 api_router.include_router(ship_upgrades_router, tags=["ship-upgrades"])
@@ -146,6 +151,7 @@ api_router.include_router(tow_router, tags=["tow"])
 api_router.include_router(armory_router, tags=["armory"])
 # Black-market planet registry lookup (router carries its own /registry prefix)
 api_router.include_router(registry_router, tags=["registry"])
+api_router.include_router(ship_registry_behaviors_router, tags=["ship-registry"])
 # TradeDock ship construction (router carries its own /construction prefix)
 api_router.include_router(construction_router, tags=["construction"])
 # Port ownership: listings/auctions, owner powers, economic takeover
@@ -173,6 +179,9 @@ api_router.include_router(refining_router, tags=["refining"])
 # 24h cooldown) + Warp Jumper Slipdrive (quantum_jump_capable hulls, charge +
 # fuel-scaled escape) (router carries its own /recovery prefix)
 api_router.include_router(recovery_router, tags=["recovery"])
+# Ground-expedition risk-roll engine (ADR-0091 §1/§3, "at-launch expedition
+# model") -- router carries its own /expeditions prefix.
+api_router.include_router(expeditions_router, tags=["expeditions"])
 # Player warp gates: three-phase construction ritual (ADR-0029) + sector
 # structure listing (router carries its own /warp-gates prefix; traversal
 # itself rides the normal /player/move endpoints via MovementService)
@@ -181,8 +190,8 @@ api_router.include_router(warp_gates_router, tags=["warp-gates"])
 # (router carries its own /nav prefix)
 api_router.include_router(nav_router, tags=["nav"])
 # Bang galaxy generator admin endpoints (Phase 1C of bang-integration plan).
-# The legacy `/admin/galaxy/generate` route in admin.py stays intact; Phase 4
-# removes it in favour of the new job-based flow defined here.
+# The legacy `/admin/galaxy/generate` route in admin.py was removed in
+# Phase 4 in favour of the job-based flow defined here.
 api_router.include_router(bang_galaxy_router, prefix="/admin", tags=["admin-bang"])
 # Black-market contraband trading (WO-BLACKMARKET kernel): gated catalog + buy +
 # sell with detection roll (router carries its own /trading prefix → endpoints at
@@ -216,10 +225,11 @@ api_router.include_router(storage_router, tags=["storage"])
 api_router.include_router(intrasystem_router, tags=["intrasystem"])
 api_router.include_router(admin_reports_router, tags=["admin-reports"])  # WO-PADMIN-analytics
 
-# Only include test routes in development/test environments
+# Only include test + debug routes in development/test environments.
+# debug_router is admin-scoped (AUDIT_VIEW) but still dumps full player/ship/
+# sector state — keep it off production the same way as test_router
+# (WO-CLEANUP-DEBUG-ROUTES-ENV-GATE).
 if settings.TESTING or settings.DEVELOPMENT_MODE:
+    api_router.include_router(debug_router, tags=["debug"])
     api_router.include_router(test_router, prefix="/test", tags=["test"])
 
-# Add additional routers here as they are created
-# Example:
-# api_router.include_router(game_router, prefix="/game", tags=["game"])

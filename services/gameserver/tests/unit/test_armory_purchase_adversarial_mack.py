@@ -99,6 +99,7 @@ def make_player(*, current_ship_id=None, attack_drones=0, defense_drones=0,
         credits=credits,
         is_docked=is_docked,
         current_port_id=current_port_id,
+        settings={},
     )
 
 

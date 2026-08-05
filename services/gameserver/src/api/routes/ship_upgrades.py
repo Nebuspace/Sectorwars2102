@@ -503,7 +503,7 @@ async def purchase_ship(
         player.current_ship_id = ship.id
         ship.is_flagship = True
         from src.services.ship_service import sync_current_pilot
-        sync_current_pilot(player, ship)  # QUEUE-REGISTRY-PILOT-WIRING: no old ship (player had none)
+        sync_current_pilot(player, ship, db=db)  # QUEUE-REGISTRY-PILOT-WIRING: no old ship (player had none)
     else:
         ship.is_flagship = False
 
@@ -580,7 +580,7 @@ async def set_active_ship(
     # endpoint"). old_ship is the hull the player was piloting immediately
     # before this switch -- its pilot pointer clears; ship's pilot pointer
     # is set to this player.
-    sync_current_pilot(locked_player, ship, old_ship=old_ship)
+    sync_current_pilot(locked_player, ship, old_ship=old_ship, db=db)
     db.commit()
     return {
         "message": f"{ship.name} is now your active ship",
@@ -819,7 +819,11 @@ async def uninstall_ship_equipment(
     player: Player = Depends(get_current_player),
     db: Session = Depends(get_db),
 ):
-    """Uninstall equipment from a ship's equipment slot. No refund."""
+    """Uninstall equipment from a ship's equipment slot.
+
+    Refunds int(catalog cost × SALVAGE_FRACTION) credits (25% salvage,
+    matching module remove). Zero refund if the catalog has no cost entry.
+    """
     service = ShipUpgradeService(db)
     result = service.uninstall_equipment(ship_id, player.id, request.equipment_key)
     if not result.get("success"):

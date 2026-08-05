@@ -12,7 +12,6 @@ from src.core.database import get_async_session, get_db
 from sqlalchemy.orm import Session
 from src.services.admin_action_log_service import log_admin_action
 from src.models.user import User
-from src.models.player import Player
 from src.models.sector import Sector
 from src.models.station import Station
 from src.models.planet import Planet
@@ -20,7 +19,6 @@ from src.models.region import Region
 from src.models.cluster import Cluster
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
 from src.services.nexus_generation_service import nexus_generation_service
-from src.services.regional_auth_service import regional_auth, RegionalPermission
 
 import logging
 
@@ -449,7 +447,7 @@ async def generate_nexus_task(
     try:
         async with get_async_session() as session:
             # Full Central Nexus generation with 20 clusters organizing 5000 sectors
-            result = await nexus_generation_service.generate_central_nexus(session)
+            await nexus_generation_service.generate_central_nexus(session)
             logger.info("Central Nexus generation completed successfully")
 
     except Exception as e:

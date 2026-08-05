@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
-from sqlalchemy import and_, or_, func
+from sqlalchemy import func
 from pydantic import BaseModel, Field
 from enum import Enum
 
@@ -563,12 +563,3 @@ async def create_ship(
             "created_at": new_ship.created_at.isoformat()
         }
     }
-
-
-
-
-# DEPRECATED: Ship specifications are now fetched from ShipSpecification database table
-# This function used incorrect field names (armor instead of hull) and is no longer used
-# def get_ship_specifications(ship_type: ShipType) -> Dict[str, int]:
-#     """Get ship specifications based on type."""
-#     # See ShipSpecification model for actual specifications

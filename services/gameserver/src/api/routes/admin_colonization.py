@@ -5,10 +5,9 @@ Handles colony production, genesis devices, and planetary management for admin U
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_, or_, desc
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta, timezone
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 import logging
 
 from src.core.database import get_db
@@ -774,7 +773,6 @@ async def tick_planet_production(
     elapsed × rate once and is a no-op once caught up — it never double-counts.
     """
     from uuid import UUID
-    from src.services.planetary_service import PlanetaryService
 
     try:
         pid = UUID(planet_id)

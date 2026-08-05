@@ -633,7 +633,7 @@ async def get_treasury_balance(
         team_service = TeamService(db)
         balance = team_service.get_treasury_balance(team_id)
         return TreasuryBalanceResponse(**balance)
-    except ValueError as e:
+    except ValueError:
         raise HTTPException(status_code=404, detail="Team not found")
     except Exception as e:
         logger.error(f"Failed to get treasury balance: {e}")
