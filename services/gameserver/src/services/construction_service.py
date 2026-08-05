@@ -214,8 +214,8 @@ EVENT_CATALOG = {
     },
     "resource_shortage": {
         "class": "negative",
-        "overrun_pct_min": 10,
-        "overrun_pct_max": 26,   # roll 2d8+10: [10, 25]; +1 for exclusive upper
+        "overrun_pct_min": 12,
+        "overrun_pct_max": 26,   # roll 2d8+10 inclusive → 12–26%; matches tradedock-shipyard.md
         "description": "Supply chain disrupted: cost overrun on next milestone OR deliver extra resource.",
     },
     "inspection_delay": {
