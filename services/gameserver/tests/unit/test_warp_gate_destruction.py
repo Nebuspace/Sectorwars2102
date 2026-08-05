@@ -92,6 +92,17 @@ class _FakeQuery:
     def all(self) -> List[Any]:
         return self._matching()
 
+    def scalar(self) -> Any:
+        # CombatService._is_same_team uses query(Player.team_id).filter(...).scalar().
+        # Column-entity queries are routed with entity="Player.team_id" below.
+        matches = self._matching()
+        if not matches:
+            return None
+        row = matches[0]
+        if self._entity == "Player.team_id":
+            return getattr(row, "team_id", None)
+        return row
+
 
 class _FakeSession:
     def __init__(
@@ -125,6 +136,9 @@ class _FakeSession:
         head = entities[0]
         if head is Player:
             return _FakeQuery(self.players, session=self, entity="Player")
+        if head is Player.team_id:
+            # Friendly-fire helper: column-scalar team_id reads.
+            return _FakeQuery(self.players, session=self, entity="Player.team_id")
         if head is Ship:
             return _FakeQuery(self.ships, session=self, entity="Ship")
         if head is WarpGate:
