@@ -15,7 +15,6 @@ OWASP Security Implementation:
 
 import json
 import hashlib
-import hmac
 import heapq
 import math
 from typing import Dict, List, Any, Optional, Tuple, Set
@@ -32,10 +31,9 @@ from sqlalchemy import select, and_, func
 from sqlalchemy.orm import Session
 
 from src.models.player import Player
-from src.models.sector import Sector, sector_warps
+from src.models.sector import sector_warps
 from src.models.station import Station
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
-from src.models.market_transaction import MarketTransaction
 from src.models.aria_personal_intelligence import (
     ARIAPersonalMemory, ARIAMarketIntelligence, ARIAExplorationMap,
     ARIAQuantumCache, ARIASecurityLog,
@@ -47,7 +45,6 @@ from src.models.aria_personal_intelligence import (
 # ADR-0038). No longer imported here; see models/aria_personal_intelligence.py's
 # own deprecation note on the class.
 from src.core.config import settings
-from src.core.security import get_password_hash
 from src.core.game_time import scaled_elapsed
 
 logger = logging.getLogger(__name__)
@@ -800,7 +797,6 @@ class ARIAPersonalIntelligenceService:
         buy_resource/sell_resource's "must be docked" + "must be in the
         same sector" checks).
         """
-        from src.models.player import Player
 
         stmt = select(Player).where(Player.id == player_id)
         result = await db.execute(stmt)
@@ -820,7 +816,6 @@ class ARIAPersonalIntelligenceService:
         callers (WO-ARIA-MARKET-OBS) -- same Player.is_docked +
         current_sector_id-vs-station.sector_id check, same bug-fix
         rationale as the async version above."""
-        from src.models.player import Player
 
         player = db.query(Player).filter(Player.id == player_id).first()
         if player is None or not player.is_docked:
@@ -1612,7 +1607,6 @@ class ARIAPersonalIntelligenceService:
         Decay relationship score based on days of inactivity.
         -1 point per day inactive, minimum 0.
         """
-        from src.models.player import Player
 
         stmt = select(Player).where(Player.id == player_id)
         result = await db.execute(stmt)
@@ -1852,7 +1846,6 @@ class ARIAPersonalIntelligenceService:
         dispatch report for the full proof and a dedicated falsifying test.
         The threshold NUMBERS themselves (10/30/75/150) are unchanged.
         """
-        from src.models.player import Player
 
         stmt = select(Player).where(Player.id == player_id)
         result = await db.execute(stmt)
@@ -2010,7 +2003,6 @@ class ARIAPersonalIntelligenceService:
 
         Returns a list of 1-3 recommendation strings (in English).
         """
-        from src.models.player import Player
 
         stmt = select(Player).where(Player.id == player_id)
         result = await db.execute(stmt)
@@ -2173,7 +2165,6 @@ class ARIAPersonalIntelligenceService:
         interaction count, memory breakdown, next-level requirements, and
         progress percentage toward the next tier.
         """
-        from src.models.player import Player
 
         stmt = select(Player).where(Player.id == player_id)
         result = await db.execute(stmt)

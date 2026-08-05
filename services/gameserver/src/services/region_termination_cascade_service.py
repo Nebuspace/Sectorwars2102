@@ -47,7 +47,6 @@ from sqlalchemy.orm import Session
 from src.models.genesis_device import GenesisDevice, GenesisStatus, GenesisType
 from src.models.planet import Planet
 from src.models.player import Player
-from src.models.region import Region
 from src.models.sector import Sector
 from src.models.station import Station
 from src.services import central_bank_service as bank

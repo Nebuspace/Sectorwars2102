@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from src.core.database import get_db
 from src.auth.admin_scopes import AUDIT_VIEW
-from src.auth.dependencies import get_current_user, get_current_player, require_scope
+from src.auth.dependencies import require_scope
 from src.models.user import User
 from src.models.player import Player
 from src.models.ship import Ship
