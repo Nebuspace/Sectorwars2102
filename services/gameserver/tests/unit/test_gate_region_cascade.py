@@ -619,3 +619,4 @@ class TestOfflineOwnerBanksRefund:
         assert owner.id in banks
         assert banks[owner.id].credits == 510_000
         assert banks[owner.id].ledger[-1]["type"] == "warp_gate_cascade_refund"
+

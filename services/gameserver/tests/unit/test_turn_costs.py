@@ -72,12 +72,12 @@ class _DeploySession:
 
     Order: get(Drone) -> execute(lock, full Player) -> run_sync(regenerate_turns)
     -> get(Player) -> get(Ship) -> execute(max_drones) -> execute(deployed_count)
-    -> execute(rival exclusive) -> [execute(prior deployment) -> add/commit/refresh].
+    -> execute(sector-exclusivity rival check) -> [execute(prior deployment)
+    -> add/commit/refresh on success].
     """
 
     def __init__(self, *, drone, player, ship, max_drones=99, deployed_count=0,
-                 prior_deployment=None, rival_deployment_id=None,
-                 commit_side_effect=None):
+                 rival_deployment_id=None, prior_deployment=None, commit_side_effect=None):
         self.get = AsyncMock(side_effect=[drone, player, ship])
         self.execute = AsyncMock(side_effect=[
             _result(scalar_one_or_none=player),
@@ -214,8 +214,8 @@ async def test_deploy_drone_lock_query_requests_for_update():
         _result(scalar_one_or_none=player),
         _result(scalar_one_or_none=99),
         _result(scalar=0),
-        _result(scalar_one_or_none=None),  # rival exclusive
-        _result(scalar_one_or_none=None),  # prior deployment
+        _result(scalar_one_or_none=None),
+        _result(scalar_one_or_none=None),
     ]
 
     async def _spy_execute(stmt, *a, **kw):

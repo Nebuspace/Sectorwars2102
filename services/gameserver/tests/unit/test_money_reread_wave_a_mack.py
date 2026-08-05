@@ -39,6 +39,7 @@ Sections:
 """
 from __future__ import annotations
 
+import uuid
 
 import sqlalchemy as sa
 from sqlalchemy.orm import declarative_base, sessionmaker

@@ -196,7 +196,7 @@ class TestSqliteRoundTrip:
                 admin_decision=MultiAccountAdminDecision.PENDING,
                 all_paid_subscribers=False,
             ))
-            uuid.uuid4()
+            player_id = uuid.uuid4()
             conn.execute(flag_table.insert().values(
                 id=uuid.uuid4(), cluster_id=cluster_id,
                 signal="device_fingerprint", severity=MultiAccountSeverity.HARD,

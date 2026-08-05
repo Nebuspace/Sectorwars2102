@@ -1699,7 +1699,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     return unsubscribe;
   }, [user]);
-
   // Hyperspace echo scan along a bearing (spends turns; far band spends a shard)
   const quantumScan = async (payload: QuantumBearing): Promise<QuantumScanResult> => {
     if (!user || !playerState) throw new Error('Not authenticated');

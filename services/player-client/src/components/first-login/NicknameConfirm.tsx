@@ -30,6 +30,7 @@ const NicknameConfirm: React.FC<NicknameConfirmProps> = ({ extractedName, disabl
     dispatch({ type: 'RESET', extractedName });
     resolvedRef.current = false;
     setDraft('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [extractedName]);
 
   useEffect(() => {

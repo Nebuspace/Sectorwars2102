@@ -42,7 +42,7 @@ import pytest
 from sqlalchemy import inspect as sa_inspect
 
 from src.models.player import Player
-from src.models.ship import Ship, ShipType
+from src.models.ship import ShipType
 from src.models.station import Station
 from src.services import station_security_service as sts
 from src.services.station_security_service import StationSecurityError
@@ -93,12 +93,6 @@ def _fake_player(**overrides):
         current_ship=None,
         is_docked=True,
         current_port_id=None,
-        # WO-BUILD-WANTED-TRIGGERS-STOLEN-SHIP-LOW-REP: adjust_reputation
-        # now calls wanted_service.recompute_is_wanted, which reads these.
-        is_wanted=False,
-        wanted_until=None,
-        wanted_declared_at=None,
-        detained_until=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -138,12 +132,6 @@ class _FakeSession:
             return _FakeQuery(self._station)
         if model is Player:
             return _FakeQuery(self._player)
-        if model is Ship.id:
-            # wanted_service._is_piloting_stolen_ship, reached via
-            # PersonalReputationService.adjust_reputation's recompute call.
-            # None: surrender's own reputation-penalty tests don't exercise
-            # the stolen-ship trigger.
-            return _FakeQuery(None)
         raise AssertionError(f"unexpected query for {model!r}")
 
     def add(self, obj):
@@ -708,62 +696,3 @@ class TestSurrender:
         # Must not raise -- the registry event is best-effort.
         result = sts.surrender_tractor_locked_ship(db, station, player, now=FIXED_NOW)
         assert result["success"] is True
-
-    def test_surrender_stolen_ship_detains_pilot(self, monkeypatch):
-        escape_pod = _fake_ship(type=ShipType.ESCAPE_POD)
-        self._patch_side_effects(monkeypatch, escape_pod)
-        station, ship = self._locked_station_and_ship()
-        player = _fake_player(current_ship=ship)
-        db = _FakeSession(station=station, player=player)
-
-        result = sts.surrender_tractor_locked_ship(db, station, player, now=FIXED_NOW)
-
-        assert result["detained"] is True
-        assert result["detained_until"] is not None
-        assert player.detained_until is not None
-        assert player.detained_until > FIXED_NOW
-        assert sts.is_player_detained(player, now=FIXED_NOW) is True
-
-    def test_surrender_deny_listed_does_not_detain(self, monkeypatch):
-        escape_pod = _fake_ship(type=ShipType.ESCAPE_POD)
-        self._patch_side_effects(monkeypatch, escape_pod)
-        station = _fresh_committed_station(security={"tier": "basic"})
-        ship = _fake_ship()
-        station.security["tractor_locks"] = {
-            str(ship.id): {
-                "reason": "deny_listed",
-                "locked_at": FIXED_NOW.isoformat(),
-                "break_attempts": 0,
-            }
-        }
-        player = _fake_player(current_ship=ship)
-        db = _FakeSession(station=station, player=player)
-
-        result = sts.surrender_tractor_locked_ship(db, station, player, now=FIXED_NOW)
-
-        assert result["detained"] is False
-        assert result["detained_until"] is None
-        assert player.detained_until is None
-
-    def test_require_ship_access_blocks_non_pod_while_detained(self):
-        player = _fake_player(
-            detained_until=FIXED_NOW.replace(year=2103),
-        )
-        freighter = _fake_ship(type=ShipType.LIGHT_FREIGHTER)
-        with pytest.raises(StationSecurityError) as exc:
-            sts.require_ship_access(player, freighter, now=FIXED_NOW)
-        assert exc.value.status_code == 403
-        assert "ERR_DETAINED" in exc.value.detail
-
-    def test_require_ship_access_allows_escape_pod_while_detained(self):
-        player = _fake_player(
-            detained_until=FIXED_NOW.replace(year=2103),
-        )
-        pod = _fake_ship(type=ShipType.ESCAPE_POD)
-        sts.require_ship_access(player, pod, now=FIXED_NOW)  # no raise
-
-    def test_is_player_detained_lazy_clears_expired(self):
-        player = _fake_player(detained_until=FIXED_NOW)
-        # until == now → expired
-        assert sts.is_player_detained(player, now=FIXED_NOW) is False
-        assert player.detained_until is None

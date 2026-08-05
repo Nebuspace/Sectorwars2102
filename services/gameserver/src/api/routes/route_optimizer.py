@@ -10,7 +10,7 @@ request an optimal route from a start sector under a chosen objective:
 
 import logging
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Dict, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import desc, select

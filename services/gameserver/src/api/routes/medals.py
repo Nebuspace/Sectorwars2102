@@ -17,7 +17,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from pydantic import BaseModel
 
 from src.core.database import get_db
-from src.auth.admin_scopes import PLAYERS_ADJUST_REP
+from src.auth.admin_scopes import PLAYERS_ADJUST_REP, PLAYERS_VIEW
 from src.auth.dependencies import get_current_player, require_scope
 from src.models.player import Player
 from src.models.user import User

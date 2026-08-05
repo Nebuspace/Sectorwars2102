@@ -38,6 +38,7 @@ from typing import Any, List, Optional
 
 import pytest
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.special_formation import (
     SpecialFormation,
@@ -334,6 +335,7 @@ class TestIndependentPerPlayerRows:
 
 class TestIdempotentRevisit:
     def test_same_player_revisit_one_row_zero_new(self, one_formation):
+        formation = one_formation
         db = _FakeSession()
         player_a = make_player()
         sector = make_sector()

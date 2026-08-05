@@ -79,7 +79,6 @@ from src.services.scheduler.economy_sweeps import (
     _run_stolen_ship_rep_penalty_sweep_sync,
     _run_transfer_claim_autocomplete_sweep_sync,
     _run_bounty_expire_sweep_sync,
-    _run_suspect_clear_sweep_sync,
     _run_wanted_clear_sweep_sync,
     _run_port_operating_costs_sync,
     _run_station_recovery_sync,

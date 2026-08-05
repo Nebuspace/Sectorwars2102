@@ -7,6 +7,8 @@ import os
 import datetime
 import logging
 from fastapi import APIRouter, Request, Depends
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 logger = logging.getLogger(__name__)
 

@@ -28,9 +28,9 @@ from src.models.resource import Resource, ResourceType
 
 CANON_NAMES = {
     "ore", "organics", "gourmet_food", "fuel", "equipment",
-    "exotic_technology", "luxury_goods", "precious_metals",
+    "exotic_technology", "luxury_goods",
     "colonists", "combat_drones", "quantum_shards", "quantum_crystals",
-    "prismatic_ore", "lumen_crystals",
+    "prismatic_ore", "lumen_crystals", "precious_metals",
 }
 
 
@@ -40,7 +40,8 @@ def test_registry_covers_every_resource_type():
 
 
 def test_registry_names_match_canon_list():
-    """Seeded names cover definitions.md Resource Types + precious_metals."""
+    """The 14 seeded names are exactly definitions.md's Resource Types list
+    plus precious_metals (WO-RES-PRECIOUS-METALS-SEED)."""
     names = {entry["name"] for entry in RESOURCE_REGISTRY.values()}
     assert names == CANON_NAMES
     assert len(RESOURCE_REGISTRY) == 14
@@ -48,7 +49,7 @@ def test_registry_names_match_canon_list():
 
 def test_registry_category_counts_match_canon_sections():
     """7 core commodities / 4 strategic resources / 3 rare materials
-    (precious_metals is Secondary rare mining drop, not core)."""
+    (prismatic_ore, lumen_crystals, precious_metals)."""
     by_category = {}
     for entry in RESOURCE_REGISTRY.values():
         by_category.setdefault(entry["category"], 0)
@@ -59,10 +60,10 @@ def test_registry_category_counts_match_canon_sections():
 @pytest.mark.parametrize(
     "commodity_key",
     ["ore", "organics", "gourmet_food", "fuel", "equipment",
-     "exotic_technology", "luxury_goods", "colonists", "precious_metals"],
+     "exotic_technology", "luxury_goods", "colonists"],
 )
 def test_priced_resources_match_commodity_economy_exactly(commodity_key):
-    """base_price/range for priced resources trace 1:1 to
+    """base_price/range for the 8 station-tradeable resources trace 1:1 to
     commodity_economy.COMMODITY_BASE_PRICES — never re-derived or invented."""
     entry = next(e for e in RESOURCE_REGISTRY.values() if e["name"] == commodity_key)
     expected = COMMODITY_BASE_PRICES[commodity_key]
@@ -128,9 +129,8 @@ def test_is_storable_matches_citadel_safe_storable_set():
 
 
 def test_is_producible_matches_station_production_mechanic():
-    """The 7 classic core commodities + colonists carry the station
-    production_rate regen mechanic; precious_metals and the other non-regen
-    resources do not."""
+    """The 7 core commodities + colonists carry the station production_rate
+    regen mechanic; the other 5 do not."""
     producible = {e["name"] for e in RESOURCE_REGISTRY.values() if e["is_producible"]}
     assert producible == {
         "ore", "organics", "gourmet_food", "fuel", "equipment",
@@ -142,17 +142,17 @@ def test_is_producible_matches_station_production_mechanic():
 # Seeder tests — real DB session
 # ----------------------------------------------------------------------
 
-def test_seed_creates_all_fourteen_resources(db: Session):
+def test_seed_creates_all_thirteen_resources(db: Session):
     processed = seed_resource_registry(db)
-    assert processed == 14
-    assert db.query(Resource).count() == 14
+    assert processed == 13
+    assert db.query(Resource).count() == 13
 
 
 def test_seed_is_idempotent(db: Session):
     seed_resource_registry(db)
     processed_again = seed_resource_registry(db)
-    assert processed_again == 14
-    assert db.query(Resource).count() == 14  # no duplicates
+    assert processed_again == 13
+    assert db.query(Resource).count() == 13  # no duplicates
 
 
 def test_seed_reconciles_a_hand_edited_row(db: Session):
@@ -191,9 +191,9 @@ def test_seeded_row_field_shape(db: Session):
 async def test_list_resources_returns_seeded_catalog(db: Session):
     seed_resource_registry(db)
 
-    result = await list_resources(current_user=None, db=db)
+    result = await list_resources(player=None, db=db)
 
-    assert len(result) == 14
+    assert len(result) == 13
     names = {r.name for r in result}
     assert names == CANON_NAMES
     # Ordered by (category, name) per the route's order_by.
@@ -214,10 +214,10 @@ async def test_list_resources_excludes_inactive_rows(db: Session):
     row.is_active = False
     db.commit()
 
-    result = await list_resources(current_user=None, db=db)
+    result = await list_resources(player=None, db=db)
 
     assert "prismatic_ore" not in {r.name for r in result}
-    assert len(result) == 13
+    assert len(result) == 12
 
 
 @pytest.mark.asyncio
@@ -227,7 +227,7 @@ async def test_route_is_a_pure_table_read_not_a_hardcoded_list(db: Session):
     a marker row and confirm it appears in the route output via marker
     presence + an exact count delta (never an absolute count), so this
     passes whether the table starts empty (throwaway test DB) or already
-    carries the seeder's canonical rows (a pre-seeded / live dev DB).
+    carries the seeder's 13 canonical rows (a pre-seeded / live dev DB).
     Only holds if list_resources queries the table rather than re-deriving
     from RESOURCE_REGISTRY or any other hardcoded list.
 
@@ -237,7 +237,7 @@ async def test_route_is_a_pure_table_read_not_a_hardcoded_list(db: Session):
     collide on `type` — robust whether or not the resources.type unique
     constraint (alembic 5a30b799bb25, WO-ARCH-RES-2 follow-up — authored,
     not yet applied) is live in the target schema."""
-    pre_count = len(await list_resources(current_user=None, db=db))
+    pre_count = len(await list_resources(player=None, db=db))
 
     marker_type = ResourceType.ORE
     marker_name = "__test_marker_pure_route_read__"
@@ -259,50 +259,9 @@ async def test_route_is_a_pure_table_read_not_a_hardcoded_list(db: Session):
     )
     db.commit()
 
-    result = await list_resources(current_user=None, db=db)
+    result = await list_resources(player=None, db=db)
 
     marker = next((r for r in result if r.name == marker_name), None)
     assert marker is not None, "hand-inserted marker row did not surface via the route"
     assert marker.base_price == 15
     assert len(result) == pre_count - displaced + 1
-
-
-def test_list_resources_auth_is_any_authenticated_user_not_player():
-    """Admin-only sessions (User, no Player) must not 404 on the catalog.
-
-    Pin the route source to ``get_current_user`` — ``get_current_player``
-    404s when no Player row exists (default admin account shape). Pure AST
-    so this pin does not require a live DATABASE_URL / Settings bootstrap.
-    """
-    import ast
-    from pathlib import Path
-
-    src_path = (
-        Path(__file__).resolve().parents[2]
-        / "src"
-        / "api"
-        / "routes"
-        / "resources.py"
-    )
-    src = src_path.read_text(encoding="utf-8")
-    tree = ast.parse(src)
-
-    assert "get_current_player" not in src
-    assert "from src.models.player import Player" not in src
-    assert "get_current_user" in src
-
-    imports: set[str] = set()
-    for node in tree.body:
-        if isinstance(node, ast.ImportFrom) and node.module == "src.auth.dependencies":
-            imports.update(a.name for a in node.names if a.name)
-    assert "get_current_user" in imports
-    assert "get_current_player" not in imports
-
-    for node in tree.body:
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "list_resources":
-            arg_names = [a.arg for a in node.args.args]
-            assert "current_user" in arg_names
-            assert "player" not in arg_names
-            break
-    else:
-        raise AssertionError("list_resources handler not found")

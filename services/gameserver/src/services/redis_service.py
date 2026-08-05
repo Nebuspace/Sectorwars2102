@@ -7,7 +7,7 @@ import json
 import asyncio
 import logging
 from typing import Any, Optional, Dict, List
-from datetime import datetime
+from datetime import datetime, timedelta
 # aioredis is archived upstream and dead on Python 3.12 (its import chain
 # hits `distutils`, removed in 3.12); redis-py >=4.2 absorbed the aioredis
 # 2.x codebase as `redis.asyncio`, so this is a drop-in swap — no new

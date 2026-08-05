@@ -31,13 +31,14 @@ verdict, not re-derive its heuristics.
 """
 from __future__ import annotations
 
+import operator
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, List, Optional
 
 import pytest
-from sqlalchemy.orm.exc import StaleDataError
+from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
 
 from src.models.message_beacon import MessageBeacon
 from src.models.multi_account import MultiAccountFlag, MultiAccountSeverity
@@ -239,8 +240,6 @@ def _player(**overrides: Any) -> SimpleNamespace:
         id=player_id, username="Voyager7", nickname=None, credits=10000, turns=1000,
         personal_reputation=0, is_docked=False, current_sector_id=42,
         current_ship_id=ship_id, current_ship=ship,
-        # Default trusted — trust auto-flag tests override aria_trust_score.
-        aria_trust_score=1.0,
         # last_turn_regeneration pinned to "now" -- turn_service.
         # regenerate_turns (called unconditionally at the top of deploy())
         # is the REAL function, not mocked; anchoring far in the past would

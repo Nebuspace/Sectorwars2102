@@ -652,7 +652,7 @@ class TestSimulateBattleRoundNoneFleetGuard:
         defender_team = make_team(treasury_credits=500)
         defender_fleet = make_fleet(team=defender_team)
         d_ship = make_ship(hull=100, max_hull=100)
-        make_member(fleet=defender_fleet, ship=d_ship)
+        d_member = make_member(fleet=defender_fleet, ship=d_ship)
 
         battle = FleetBattle(
             id=uuid4(),
