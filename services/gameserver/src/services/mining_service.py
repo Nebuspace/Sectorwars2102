@@ -121,6 +121,14 @@ _RICHNESS_TIER_NAMES = {1: "depleted", 3: "moderate", 4: "rich", 5: "abundant"}
 # "Asteroid depletion" table). Pool size scales with tier: tier × 100 (canon
 # § frozen contract (D); canon "tier 1 = 100 units, tier 5 = 500 units").
 DEPLETION_POOL_PER_TIER = 100
+# Real-time auto-replenishment (mining.md § Asteroid depletion) — full restore
+# after last depleting harvest, not a gradual drip:
+#   Light/Moderate (<50% consumed) → 24h wall-clock
+#   Heavy (≥50% consumed) → 7 days wall-clock
+DEPLETION_REPLENISH_LIGHT_HOURS = 24
+DEPLETION_REPLENISH_HEAVY_HOURS = 24 * 7
+DEPLETION_HEAVY_CONSUMED_FRACTION = 0.50
+DEPLETION_LAST_HARVEST_AT_KEY = "depletion_last_harvest_at"
 
 
 def _derive_richness_tier(resource_regeneration: Optional[float]) -> int:
@@ -151,6 +159,75 @@ def _depletion_yield_modifier(pool_consumed_fraction: float) -> float:
     if pool_consumed_fraction <= 0.90:
         return 0.5
     return 0.0  # Exhausted — the 1-ore hard floor takes over in harvest().
+
+
+def _depletion_replenish_hours(pool_size: int, depletion_pool: int) -> int:
+    """Wall-clock hours until a full restore, from current consumed fraction.
+
+    Aligns with ``_depletion_yield_modifier``: Moderate is ≤50% consumed
+    (24h restore); Heavy is >50% (7-day restore).
+    """
+    if pool_size <= 0:
+        return DEPLETION_REPLENISH_LIGHT_HOURS
+    consumed_fraction = max(0.0, (pool_size - depletion_pool) / pool_size)
+    if consumed_fraction > DEPLETION_HEAVY_CONSUMED_FRACTION:
+        return DEPLETION_REPLENISH_HEAVY_HOURS
+    return DEPLETION_REPLENISH_LIGHT_HOURS
+
+
+def _parse_depletion_last_harvest_at(raw: Any) -> Optional[datetime]:
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+    if isinstance(raw, str):
+        try:
+            # Accept trailing Z from isoformat().
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return None
+
+
+def _maybe_replenish_depletion_pool(
+    resources: Dict[str, Any],
+    *,
+    tier: int,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Full-restore the depletion pool when the idle window since last depleting
+    harvest has elapsed. Mutates ``resources`` in place. Returns True if changed.
+
+    Canon (mining.md § Asteroid depletion): Light/Moderate → 24h after last
+    harvest; Heavy → 7 real-time days. Restore is atomic to full pool size —
+    not a gradual drip.
+    """
+    pool_size = tier * DEPLETION_POOL_PER_TIER
+    depletion_pool = resources.get("depletion_pool", pool_size)
+    if not isinstance(depletion_pool, int):
+        depletion_pool = pool_size
+    if depletion_pool >= pool_size:
+        # Already full — drop a stale timer stamp if present.
+        if DEPLETION_LAST_HARVEST_AT_KEY in resources:
+            resources.pop(DEPLETION_LAST_HARVEST_AT_KEY, None)
+            return True
+        return False
+
+    last_at = _parse_depletion_last_harvest_at(
+        resources.get(DEPLETION_LAST_HARVEST_AT_KEY)
+    )
+    if last_at is None:
+        return False
+
+    now = now or datetime.now(timezone.utc)
+    need = timedelta(hours=_depletion_replenish_hours(pool_size, depletion_pool))
+    if now - last_at < need:
+        return False
+
+    resources["depletion_pool"] = pool_size
+    resources.pop(DEPLETION_LAST_HARVEST_AT_KEY, None)
+    return True
 
 
 class MiningService:
@@ -266,6 +343,12 @@ class MiningService:
         if "has_deep_asteroids" not in resources:
             # Default false — only worldgen/import flips deep-asteroid sectors.
             resources["has_deep_asteroids"] = False
+            mutated = True
+
+        # Real-time auto-replenishment (WO-BUILD-MINING-DEPLETION-POOL-
+        # REPLENISH-TIMER): lazy apply so a visit/harvest after the idle
+        # window sees a full pool without requiring a separate scheduler.
+        if _maybe_replenish_depletion_pool(resources, tier=tier):
             mutated = True
 
         if mutated:
@@ -568,6 +651,10 @@ class MiningService:
         if not floor_fired:
             depletion_pool = max(0, depletion_pool - ore)
             resources["depletion_pool"] = depletion_pool
+            # Stamp last depleting harvest for the 24h / 7d full-restore timer.
+            resources[DEPLETION_LAST_HARVEST_AT_KEY] = datetime.now(
+                timezone.utc
+            ).isoformat()
             sector.resources = resources
             flag_modified(sector, "resources")
 
