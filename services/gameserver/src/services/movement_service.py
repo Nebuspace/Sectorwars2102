@@ -2701,7 +2701,8 @@ class MovementService:
         # method's single commit below.
         try:
             from src.services.special_formation_service import flip_formation_discovery
-            flip_formation_discovery(self.db, player, destination_sector)
+            with self.db.begin_nested():
+                flip_formation_discovery(self.db, player, destination_sector)
         except Exception as e:
             logger.error("Special-formation discovery hook failed during movement: %s", e)
 
@@ -2714,7 +2715,8 @@ class MovementService:
         # column meaningful for ordinary movement too. Best-effort, flush-only.
         try:
             from src.services.discovery_service import mark_sector_discovered
-            mark_sector_discovered(self.db, destination_sector, player.id)
+            with self.db.begin_nested():
+                mark_sector_discovered(self.db, destination_sector, player.id)
         except Exception as e:
             logger.error("Sector first-discoverer hook failed during movement: %s", e)
 
@@ -2723,9 +2725,14 @@ class MovementService:
         # record — one row per (player, sector) — so its DISTINCT-sector count
         # for this player IS the player's sectors_visited statistic. We dispatch
         # here, AFTER the visit row is added/incremented but BEFORE this method's
-        # single commit, so the medal-award SAVEPOINT folds into the same commit
-        # exactly like the combat medal hook. Best-effort: a medal hiccup must
-        # never strand the move (mirrors the ARIA hooks above). The medals-lane
+        # single commit. ``_count_unique_sectors_visited`` flushes the pending
+        # visit row first, then the actual award is wrapped in its own
+        # begin_nested() SAVEPOINT (2026-08-05, WO-FIX-MOVEMENT-HOOK-SAVEPOINTS
+        # — a prior version of this comment claimed the savepoint "folds into
+        # the same commit" but no savepoint actually wrapped this call; that
+        # was a documentation/implementation mismatch, fixed here alongside
+        # the missing savepoint itself). Best-effort: a medal hiccup must
+        # never strand the move (mirrors the ARIA hook above). The medals-lane
         # hook is idempotent (UNIQUE(player_id, medal_id) + threshold gating), so
         # it no-ops on every move except the one that first crosses 500 sectors —
         # never re-awards.
@@ -2739,11 +2746,12 @@ class MovementService:
             # AWARD-BATCH, exploration domain, verify-first: no separate
             # discovery-vs-visit distinction exists in the schema).
             unique_sectors = self._count_unique_sectors_visited(player.id)
-            _dispatch_exploration_medals(
-                self.db,
-                player,
-                {"sectors_visited": unique_sectors, "sectors_discovered": unique_sectors},
-            )
+            with self.db.begin_nested():
+                _dispatch_exploration_medals(
+                    self.db,
+                    player,
+                    {"sectors_visited": unique_sectors, "sectors_discovered": unique_sectors},
+                )
         except Exception as e:
             logger.error("Exploration medal dispatch hook failed during movement: %s", e)
 
