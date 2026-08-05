@@ -2,7 +2,7 @@
 Trade Contract API routes. WO-ECON-CONTRACT-1-KERNEL lane 4 shipped
 board/mine/{id} reads and accept/complete/abandon writes. WO-ECON-
 CONTRACT-2-PLAYER-ESCROW adds player-issued posting (`POST /contracts`,
-cargo_delivery only) and issuer-only `POST /contracts/{id}/cancel`.
+cargo_delivery or bulk_procurement) and issuer-only `POST /contracts/{id}/cancel`.
 WO-1a-CORE adds `POST /contracts/{id}/insure` (contracts.md:219/:224).
 A claim-filing route (the state-transition diagram's "cargo destroyed in
 transit -> cancelled (insurance pays if held)" edge, :84) was built and
