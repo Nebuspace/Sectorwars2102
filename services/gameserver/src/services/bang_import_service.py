@@ -54,6 +54,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.commodity_economy import base_price as _commodity_base_price
 from src.core.market_bootstrap import build_market_prices
 from src.core.station_class_map import apply_class_pattern
+
+# Station-protection security-tier seeding (WO-STN-SEC-1, FEATURES/economy/
+# station-protection.md § Security tiers). Lives in src.core.station_
+# security_tiers (WO-TD-NEXGEN-1) so nexus_generation_service can seed the
+# same rule without importing this module (which pulls in the docker SDK at
+# module scope). Re-imported here so every existing `from
+# src.services.bang_import_service import _derive_station_security_tier` call
+# site (this module's own _apply_region, plus
+# tests/unit/test_station_security_seeding.py) keeps working unchanged.
+from src.core.station_security_tiers import _derive_station_security_tier
 from src.models.bang_generation_job import (
     BangGenerationJob,
     BangGenerationJobStatus,
@@ -64,23 +74,20 @@ from src.models.planet import Planet, PlanetStatus, PlanetType
 from src.models.region import Region
 from src.models.sector import Sector, SectorType, sector_warps
 from src.models.special_formation import SpecialFormation, SpecialFormationType
-from src.models.warp_tunnel import WarpTunnel, WarpTunnelType
 from src.models.station import (
     Station,
     StationClass,
     StationStatus,
     StationType,
 )
+from src.models.warp_tunnel import WarpTunnel, WarpTunnelType
 from src.schemas.bang_config import BangConfig, RegionType
-# Station-protection security-tier seeding (WO-STN-SEC-1, FEATURES/economy/
-# station-protection.md § Security tiers). Lives in src.core.station_
-# security_tiers (WO-TD-NEXGEN-1) so nexus_generation_service can seed the
-# same rule without importing this module (which pulls in the docker SDK at
-# module scope). Re-imported here so every existing `from
-# src.services.bang_import_service import _derive_station_security_tier` call
-# site (this module's own _apply_region, plus
-# tests/unit/test_station_security_seeding.py) keeps working unchanged.
-from src.core.station_security_tiers import _derive_station_security_tier
+from src.services.galaxy_validation import (
+    ERR_BANG_VALIDATION_FAILED,
+    GalaxyValidationError,
+    validate_insert_plan_or_raise,
+    validate_region_plan_or_raise,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -357,6 +364,8 @@ def _gx1_sector_bias(
 #: this module (or its existing tests) needs to change.
 from src.services.nebula_color import (  # noqa: E402
     NEBULA_COLOR_HEX as _NEBULA_COLOR_HEX,
+)
+from src.services.nebula_color import (
     derive_nebula_color as _derive_nebula_color,
 )
 
@@ -1280,6 +1289,11 @@ class BangImportService:
                 if sector_id_offset > 0:
                     self._offset_region_sector_ids(region_plan, sector_id_offset)
 
+                # ADR-0050 SK20: same canonical gate as run_generation_job,
+                # applied to the single-region plan (this path never builds
+                # a full multi-region InsertPlan).
+                validate_region_plan_or_raise(region_plan)
+
                 region_id_str = (
                     region_metadata.get("regions", {})
                     .get("player_owned", {})
@@ -1587,6 +1601,9 @@ class BangImportService:
                     await session.commit()
 
                 plan = self.translate(universes, region_metadata)
+
+                # ADR-0050 SK20: same canonical gate as run_generation_job.
+                validate_insert_plan_or_raise(plan)
 
                 async with session.begin():
                     galaxy = await self.apply_regeneration(
@@ -2142,6 +2159,14 @@ class BangImportService:
                     await session.commit()
 
                 plan = self.translate(universes, region_metadata)
+
+                # ADR-0050 SK20: gameserver-canonical validation gate. Runs
+                # AFTER bang's own generation-time rules (bang already ran
+                # its 102 rules to produce this JSON) and BEFORE apply()
+                # commits a single row -- a violation here aborts the
+                # import cleanly, same as any other translate()-stage
+                # ValueError caught below.
+                validate_insert_plan_or_raise(plan)
 
                 async with session.begin():
                     galaxy = await self.apply(plan, session)
@@ -3132,4 +3157,6 @@ __all__ = [
     "ValidationReport",
     "GALAXY_GEN_LOCK_KEY",
     "COMMODITY_WIRE_ORDER",
+    "ERR_BANG_VALIDATION_FAILED",
+    "GalaxyValidationError",
 ]
