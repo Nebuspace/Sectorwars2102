@@ -571,6 +571,71 @@ class MovementService:
             except Exception:
                 pass
 
+    def _roll_hull_condition_failure(self, player: Player, result: Dict[str, Any]) -> None:
+        """Per-jump hull-condition band failure (WO-BUILD-HULL-FAILURE-TIER-DICE-ROLL).
+
+        Distinct from ``_roll_mechanical_failure`` (MAINTENANCE_SYSTEM upgrade
+        degrade at 2%/jump). This roll consumes the performance-band
+        ``failure`` / ``failure_tier`` values and applies FailureType effects
+        (MINOR sensors offline / MAJOR immobilized / CATASTROPHIC destroy-or-1%).
+
+        Best-effort: never strand an already-committed move. Catastrophic
+        destruction commits via ShipService.destroy_ship (cause=hull_failure).
+        """
+        try:
+            ship = player.current_ship
+            if not ship:
+                return
+
+            from src.services.maintenance_service import apply_hull_condition_failure_roll
+            outcome = apply_hull_condition_failure_roll(ship)
+            if not outcome:
+                return
+
+            if outcome.get("needs_destroy"):
+                from src.services.ship_service import ShipService
+                ShipService(self.db).destroy_ship(ship, cause="hull_failure")
+                self.db.commit()
+                result["hull_failure"] = {
+                    "failure_type": outcome.get("failure_type"),
+                    "effect": "destroyed",
+                    "message": (
+                        "Catastrophic hull failure — the ship was destroyed. "
+                        "If you ejected, you are in an Escape Pod."
+                    ),
+                }
+                return
+
+            self.db.commit()
+            effect = outcome.get("effect")
+            ftype = outcome.get("failure_type")
+            messages = {
+                "sensors_offline": (
+                    f"Minor systems failure ({ftype}): sensors offline until repaired"
+                ),
+                "immobilized": (
+                    f"Major systems failure ({ftype}): ship immobilized until repaired "
+                    "at a shipyard"
+                ),
+                "hull_critical": (
+                    f"Catastrophic hull failure ({ftype}): hull integrity critical "
+                    f"({outcome.get('condition')}%) — seek emergency repair"
+                ),
+            }
+            result["hull_failure"] = {
+                "failure_type": ftype,
+                "effect": effect,
+                "condition": outcome.get("condition"),
+                "message": messages.get(effect, f"Hull failure: {ftype}"),
+            }
+        except Exception as e:
+            logger.error("Hull-condition failure roll failed during movement: %s", e)
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
+
+
     # Scanner-array detection model (WO-AY). After a SUCCESSFUL move, a
     # best-effort sweep finds planets within the scanner_array's
     # detection_range_sectors (JUMPS) of the destination that have an
@@ -974,6 +1039,17 @@ class MovementService:
         if not player.current_ship:
             return {"success": False, "message": "No active ship selected", "turn_cost": 0}
 
+        # Hull-condition MAJOR failure immobilizes until shipyard repair
+        # (WO-BUILD-HULL-FAILURE-TIER-DICE-ROLL / ships.md Failure types).
+        from src.services.maintenance_service import ship_is_immobilized
+        if ship_is_immobilized(player.current_ship):
+            return {
+                "success": False,
+                "message": "Ship immobilized by major systems failure — repair at a shipyard before moving",
+                "turn_cost": 0,
+                "error_code": "SHIP_IMMOBILIZED",
+            }
+
         # A Warp Jumper harmonizing into a gate focus is frozen in place
         # (ADR-0029 / ADR-0036). Reject movement before any turn charge so a
         # mid-build hull can't fly off mid-harmonization. 0 turn cost.
@@ -1092,6 +1168,8 @@ class MovementService:
             # WO-AY: a successful gate jump is a real arrival — sweep for
             # scanner-array detections (best-effort; only on real success).
             if result.get("success"):
+                self._roll_mechanical_failure(player, result)
+                self._roll_hull_condition_failure(player, result)
                 self._sweep_scanner_detection(player, destination_sector_id)
                 # WO-K2: a player-built gate is still a border crossing — customs
                 # scan the hold. Wired on ALL THREE success paths so a smuggler
@@ -1126,6 +1204,7 @@ class MovementService:
             # mechanical failure (best-effort; only fires on a real move success).
             if result.get("success"):
                 self._roll_mechanical_failure(player, result)
+                self._roll_hull_condition_failure(player, result)
                 # WO-AY: same success path — sweep for scanner-array detections.
                 self._sweep_scanner_detection(player, destination_sector_id)
                 # WO-K2: customs scan on a direct warp (see the gate branch).
@@ -1165,6 +1244,7 @@ class MovementService:
             # mechanical failure (best-effort; only fires on a real move success).
             if result.get("success"):
                 self._roll_mechanical_failure(player, result)
+                self._roll_hull_condition_failure(player, result)
                 # WO-AY: same success path — sweep for scanner-array detections.
                 self._sweep_scanner_detection(player, destination_sector_id)
                 # WO-K2: customs scan on a natural warp tunnel (see the gate branch).

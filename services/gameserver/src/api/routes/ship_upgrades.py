@@ -992,11 +992,13 @@ def _maintenance_status(ship: Ship, condition: float, station: Station = None) -
             "failure_pct": round(band["failure"] * 100),
             "failure_tier": band["failure_tier"],
         },
-        # Honesty: the combat-effectiveness band is consumed in combat, and the
-        # speed band is now consumed in the move-cost path (WO-MAINTBANDS). The
-        # fuel modifier has no consuming surface — movement costs turns, not fuel
-        # — so it stays unconsumed by design, not oversight.
-        "applied_effects": ["combat", "speed"],
+        # Honesty: the combat-effectiveness band is consumed in combat, the
+        # speed band in the move-cost path (WO-MAINTBANDS), and the per-jump
+        # failure%/failure_tier roll on successful jumps
+        # (WO-BUILD-HULL-FAILURE-TIER-DICE-ROLL). The fuel modifier has no
+        # consuming surface — movement costs turns, not fuel — so it stays
+        # unconsumed by design, not oversight.
+        "applied_effects": ["combat", "speed", "hull_failure_roll"],
         "repair_options": options,
     }
 
@@ -1097,6 +1099,7 @@ async def repair_ship_maintenance(
     m["last_maintenance"] = datetime.now(timezone.utc).isoformat()
     m["repair_needed"] = False
     m["failure_status"] = "NONE"
+    m.pop("sensors_offline", None)
     ship.maintenance = m
     flag_modified(ship, "maintenance")
     db.commit()
