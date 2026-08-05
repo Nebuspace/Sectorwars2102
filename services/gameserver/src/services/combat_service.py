@@ -784,7 +784,20 @@ class CombatService:
     def __init__(self, db: Session):
         self.db = db
         self.ship_service = ShipService(db)
-    
+
+    def _is_same_team(self, player_a_id: uuid.UUID, player_b_id: uuid.UUID) -> bool:
+        """True iff both players share a non-null ``team_id``.
+
+        Friendly-fire prevention (factions-and-teams.md): same-team players
+        cannot attack each other or each other's owned infrastructure.
+        Column-scalar ``team_id`` reads only (no full-object load) so the
+        check can run before row locks without identity-map poisoning.
+        Shared-``None`` is NOT a team — both teamless players may engage.
+        """
+        team_a = self.db.query(Player.team_id).filter(Player.id == player_a_id).scalar()
+        team_b = self.db.query(Player.team_id).filter(Player.id == player_b_id).scalar()
+        return team_a is not None and team_a == team_b
+
     def attack_player(self, attacker_id: uuid.UUID, defender_id: uuid.UUID) -> Dict[str, Any]:
         """Initiate ship-to-ship combat between two players."""
         # Self-attack guard (combat-resolver.md Invariant 5:
@@ -792,16 +805,9 @@ class CombatService:
         if attacker_id == defender_id:
             return {"success": False, "message": "You cannot attack yourself"}
 
-        # Friendly-fire prevention (factions-and-teams.md:383): same-team
-        # players cannot attack each other. Column-scalar team_id reads (no
-        # full-object load, so no identity-map poisoning of the
-        # .populate_existing() locked reads below; no row lock acquired,
-        # matching "reject before any lock"). Mirrors the identical
-        # db.query(Player.team_id)...scalar() shape already used at
-        # movement_service.py:203.
-        attacker_team = self.db.query(Player.team_id).filter(Player.id == attacker_id).scalar()
-        defender_team = self.db.query(Player.team_id).filter(Player.id == defender_id).scalar()
-        if attacker_team is not None and attacker_team == defender_team:
+        # Friendly-fire prevention (factions-and-teams.md): same-team
+        # players cannot attack each other. Reject before any lock/charge.
+        if self._is_same_team(attacker_id, defender_id):
             return {"success": False, "message": "Friendly-fire prevention: you cannot attack a teammate"}
 
         # Get players with row locks to prevent concurrent combat race
@@ -2200,6 +2206,22 @@ class CombatService:
         if not target_drones:
             return {"success": False, "message": "No hostile drones present in this sector"}
 
+        # Friendly-fire: drop teammate-owned drones from the target set
+        # (mirrors excluding the attacker's own drones above). If nothing
+        # remains, reject — the only "hostile" drones were teammates'.
+        non_teammate_drones = []
+        for d in target_drones:
+            owner_id = getattr(d, "player_id", None)
+            if owner_id is not None and self._is_same_team(attacker_id, owner_id):
+                continue
+            non_teammate_drones.append(d)
+        if not non_teammate_drones:
+            return {
+                "success": False,
+                "message": "Friendly-fire prevention: you cannot attack a teammate's drones",
+            }
+        target_drones = non_teammate_drones
+
         # Check if attacker has enough turns (canon 2-turn drone engagement)
         turn_cost = 2
         # Lazy ADR-0004 regen before the affordability check / spend.
@@ -2386,7 +2408,14 @@ class CombatService:
         planet_owner = planet.owner[0] if planet.owner else None
         if planet_owner and planet_owner.id == attacker.id:
             return {"success": False, "message": "Cannot attack your own planet"}
-        
+
+        # Friendly-fire prevention: same-team cannot attack a teammate's planet
+        if planet_owner and self._is_same_team(attacker.id, planet_owner.id):
+            return {
+                "success": False,
+                "message": "Friendly-fire prevention: you cannot attack a teammate's planet",
+            }
+
         # Check if attacker has enough turns
         turn_cost = 3  # Higher cost for attacking planets
         # Lazy ADR-0004 regen before the affordability check / spend.
@@ -2719,6 +2748,14 @@ class CombatService:
 
         if gate.player_id == attacker_id:
             return {"success": False, "message": "Cannot attack your own warp gate"}
+
+        # Friendly-fire prevention: same-team cannot attack a teammate's gate
+        # (before locking the attacker — reject cheap, matching attack_player).
+        if gate.player_id is not None and self._is_same_team(attacker_id, gate.player_id):
+            return {
+                "success": False,
+                "message": "Friendly-fire prevention: you cannot attack a teammate's warp gate",
+            }
 
         # Lock the attacker row before any charge (mirrors attack_planet)
         # -- AFTER the gate, per the lock-order contract above.
