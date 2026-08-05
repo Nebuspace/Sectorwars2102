@@ -235,6 +235,12 @@ _CONTRACT_GENERATION_STATE_KEY = "contract_generation_last_run_at"
 _CONTRACT_EXPIRE_STATE_KEY = "contract_expire_last_run_at"
 _BEACON_EXPIRE_STATE_KEY = "beacon_expire_last_run_at"
 _BOUNTY_EXPIRE_STATE_KEY = "bounty_expire_last_run_at"
+# ADR-0050 SK22 — Phase 14 (Nexus cross-region attachment) retry sweep.
+# The sweep itself runs on this coarse cadence, but each region retries on
+# its OWN exponential-backoff schedule (nexus_attach_next_retry_at) — the
+# sweep is just the periodic "is anything due yet" scan, mirroring the
+# price-alert sweep's per-row cooldown pattern.
+_PHASE14_ATTACHMENT_RETRY_STATE_KEY = "phase14_attachment_retry_last_run_at"
 _TEAM_REPUTATION_SWEEP_STATE_KEY = "team_reputation_sweep_last_run_at"
 _PIRATE_ECOSYSTEM_TICK_STATE_KEY = "pirate_ecosystem_tick_last_run_at"
 # Deliberately NO coarse elapsed pre-filter for these 4 (unlike the
@@ -584,6 +590,14 @@ BOUNTY_EXPIRE_SWEEP_SECONDS = int(
     os.environ.get("BOUNTY_EXPIRE_SWEEP_SECONDS", str(10 * 60))
 )
 
+# ADR-0050 SK22 — how often the Phase-14 retry sweep SCANS for due regions.
+# The finest backoff step is 1s (region_attachment_service.
+# PHASE14_BACKOFF_SCHEDULE_SECONDS), so a 30s scan cadence is a reasonable
+# floor without hammering the regions table every core-loop tick.
+PHASE14_ATTACHMENT_RETRY_SWEEP_SECONDS = int(
+    os.environ.get("PHASE14_ATTACHMENT_RETRY_SWEEP_SECONDS", str(30))
+)
+
 # Suspect auto-clear sweep (WO-CMB-SUSPECT-LIFE-1 held wiring) —
 # suspect_service.clear_expired_suspects. NO-CANON: ships.md:293 names the
 # auto-clear BEHAVIOR ("auto-clears at suspect_until") but not a sweep
@@ -803,6 +817,9 @@ _CONTRACT_EXPIRE_LOCK_KEY = _mnemonic_lock_key("CEXP")
 # expired beacons. 'BCNX' = BeaCoN eXpire.
 _BEACON_EXPIRE_LOCK_KEY = _mnemonic_lock_key("BCNX")
 _BOUNTY_EXPIRE_LOCK_KEY = _mnemonic_lock_key("BNTX")
+
+# ADR-0050 SK22 — Phase 14 attachment-retry sweep. 'PH14' = PHase 14.
+_PHASE14_ATTACHMENT_RETRY_LOCK_KEY = _mnemonic_lock_key("PH14")
 
 # Async asteroid-harvest resolve sweep (WO-MINING-ASYNC-HARVEST) — own key so
 # two gameserver instances don't double-complete the same PENDING row.
@@ -1145,6 +1162,36 @@ async def _broadcast_events(events: List[Dict[str, Any]]) -> None:
                 except Exception:
                     logger.exception(
                         "NPC scheduler: genesis_progress send failed for owner %s",
+                        owner_id,
+                    )
+            continue
+
+        # ADR-0050 SK22: Phase-14 attachment-retry exhaustion. Admin/ops
+        # fan-out — same channel every other scheduler ops alert uses.
+        if event.get("type") == "region_attachment_pending":
+            try:
+                await connection_manager.broadcast_to_admins(dict(event))
+            except Exception:
+                logger.exception(
+                    "NPC scheduler: region_attachment_pending admin broadcast "
+                    "failed for region %s", event.get("region_id"),
+                )
+            continue
+
+        # ADR-0050 SK22: ARIA narration personal frame to the region owner
+        # on Phase-14 retry exhaustion — mirrors genesis_progress's personal-
+        # frame routing above. owner_id absent => no recipient (a region
+        # with no owner, e.g. still mid-purchase, has nobody to narrate to).
+        if event.get("type") == "aria_narration":
+            owner_id = event.get("owner_id")
+            if owner_id is not None:
+                try:
+                    await connection_manager.send_personal_message(
+                        str(owner_id), dict(event)
+                    )
+                except Exception:
+                    logger.exception(
+                        "NPC scheduler: aria_narration send failed for owner %s",
                         owner_id,
                     )
             continue

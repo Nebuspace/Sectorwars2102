@@ -80,6 +80,7 @@ from src.services.scheduler.economy_sweeps import (
     _run_transfer_claim_autocomplete_sweep_sync,
     _run_bounty_expire_sweep_sync,
     _run_wanted_clear_sweep_sync,
+    _run_phase14_attachment_retry_sweep_sync,
     _run_port_operating_costs_sync,
     _run_station_recovery_sync,
     _run_reclaim_flag_sweep_sync,
@@ -1036,6 +1037,32 @@ async def _npc_scheduler_main_loop() -> None:
             raise
         except Exception:
             logger.exception("NPC scheduler: wanted clear sweep crashed (loop continues)")
+
+        # Phase-14 attachment retry sweep (ADR-0050 SK22) — exponential
+        # backoff retry of the cross-region Nexus warp-tunnel attach for any
+        # region whose synchronous attempt-1 (at purchase time,
+        # bang_import_service.apply_additional_region) failed. Own
+        # session/lock/due-check, same discipline as every sweep above.
+        # Broadcasts an ops alert (admins) + ARIA narration personal frame
+        # (owner) on the event loop only when a region exhausts all 5
+        # retries and flips to attachment_pending — never on an ordinary
+        # in-progress retry.
+        try:
+            phase14_retried, phase14_events = await asyncio.to_thread(
+                _run_phase14_attachment_retry_sweep_sync
+            )
+            if phase14_retried:
+                logger.info(
+                    "NPC scheduler: Phase-14 attachment retry sweep — "
+                    "retried %d region(s)",
+                    phase14_retried,
+                )
+            if phase14_events:
+                await _broadcast_events(phase14_events)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("NPC scheduler: Phase-14 attachment retry sweep crashed (loop continues)")
 
         # Abandoned-ship 7-day auto-archive (WO-FIX-SHIP-REGISTRY-AUTO-ARCHIVE-MISSING)
         try:

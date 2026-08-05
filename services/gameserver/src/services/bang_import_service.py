@@ -42,7 +42,7 @@ import random
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 import docker
@@ -1167,20 +1167,61 @@ class BangImportService:
         # — ADR-0034's "latent until a Warp Jumper scan" pattern governs
         # ordinary in-region natural tunnels only, not this gateway.
         if nexus_gate_id is not None:
+            # ADR-0050 SK22: Phase 14 is decoupled from the rest of region
+            # provisioning — a failure wiring the cross-region Nexus warp
+            # must NOT roll back the (already-good) region content above.
+            # attempt_n=1 for this first, synchronous, at-purchase-time try;
+            # the retry sweep (region_attachment_service.py /
+            # scheduler/economy_sweeps.py::_run_phase14_attachment_retry_
+            # sweep_sync) picks up attempt_n 2+ on the exponential-backoff
+            # schedule if this one fails.
+            from src.services.region_attachment_service import make_idempotency_key
+
             spoke_endpoint = attachment.nexus_landing_sector_id or new_gate
-            session.add(WarpTunnel(
-                name="Player Owned ↔ Central Nexus",
-                origin_sector_id=spoke_endpoint,
-                destination_sector_id=nexus_gate_id,
-                type=WarpTunnelType.NATURAL,
-                is_bidirectional=True,
-                is_latent=False,
-                description=(
-                    "Natural Nexus warp linking new player_owned region "
-                    "(Frontier Gateway Plaza) to central_nexus — pre-discovered "
-                    "gateway, visible to every player (Terran + Nexus canon)."
-                ),
-            ))
+            idempotency_key = make_idempotency_key(region_id, 1)
+            try:
+                from sqlalchemy.dialects.postgresql import insert as _pg_insert
+
+                stmt = (
+                    _pg_insert(WarpTunnel)
+                    .values(
+                        name="Player Owned ↔ Central Nexus",
+                        origin_sector_id=spoke_endpoint,
+                        destination_sector_id=nexus_gate_id,
+                        type=WarpTunnelType.NATURAL,
+                        is_bidirectional=True,
+                        is_latent=False,
+                        description=(
+                            "Natural Nexus warp linking new player_owned region "
+                            "(Frontier Gateway Plaza) to central_nexus — "
+                            "pre-discovered gateway, visible to every player "
+                            "(Terran + Nexus canon)."
+                        ),
+                        idempotency_key=idempotency_key,
+                    )
+                    .on_conflict_do_nothing(index_elements=["idempotency_key"])
+                )
+                await session.execute(stmt)
+            except Exception:  # pragma: no cover - defensive, mirrors
+                # _choose_nexus_landing_sector's "never abort the durable
+                # region import" discipline directly above.
+                logger.exception(
+                    "ADR-0050 SK22: Phase 14 Nexus-attachment insert failed "
+                    "for region %s (attempt 1); scheduling retry",
+                    region_id,
+                )
+                region_row = await session.get(Region, region_id)
+                if region_row is not None:
+                    region_row.nexus_attach_attempt_count = 1  # type: ignore[assignment]
+                    region_row.nexus_attach_next_retry_at = (  # type: ignore[assignment]
+                        datetime.now(timezone.utc) + timedelta(seconds=1)
+                    )
+            else:
+                region_row = await session.get(Region, region_id)
+                if region_row is not None:
+                    region_row.nexus_attach_attempt_count = 0  # type: ignore[assignment]
+                    region_row.nexus_attach_next_retry_at = None  # type: ignore[assignment]
+                    region_row.nexus_attach_completed_at = datetime.now(timezone.utc)  # type: ignore[assignment]
 
         # Track the new region in bang_snapshot.additional_regions so the
         # wipe endpoint can find it (the existing bang_snapshot.regions
