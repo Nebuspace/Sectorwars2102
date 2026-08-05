@@ -376,8 +376,6 @@ const UniverseManager: React.FC = () => {
 
   // Render sectors grid
   const renderSectorsGrid = () => {
-    console.log('Rendering sectors grid, sectors:', sectors);
-    
     return (
       <div className="sectors-grid-container">
         {sectors.length === 0 ? (
