@@ -157,6 +157,11 @@ _REGION_LIFECYCLE_STATE_KEY = "region_lifecycle_advance_last_day"
 # repair detect scan (WO-ANCHOR-REPAIR-SERVICE). Rides the governance sweep
 # as Phase 8, gated once per canonical day — mirrors _REGION_LIFECYCLE_STATE_KEY.
 _ANCHOR_REPAIR_STATE_KEY = "anchor_repair_scan_last_day"
+# Galaxy.state JSONB key holding the canonical-DAY index of the last station
+# defense-underfunding cascade pass (ADR-0093 §3 /
+# WO-FIX-STATION-DEFENSE-AUTO-DOWNGRADE-CASCADE). Rides governance as Phase 9,
+# gated once per canonical day — mirrors _ANCHOR_REPAIR_STATE_KEY.
+_DEFENSE_UNDERFUND_STATE_KEY = "defense_underfund_cascade_last_day"
 # Galaxy.state JSONB key holding the canonical-DAY index of the last ARIA
 # storage-prune pass (WO-F16). The dormant prune kernel
 # (ARIAPersonalIntelligenceService.prune_player_storage) evicts each player's
