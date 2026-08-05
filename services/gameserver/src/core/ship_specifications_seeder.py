@@ -10,37 +10,20 @@ import logging
 logger = logging.getLogger(__name__)
 
 # ----------------------------------------------------------------------------
-# [NO-CANON] Per-hull combat-mitigation table (B3) — shield_resistance &
-# armor_rating. These two columns (Ship: models/ship.py:263-264,
-# ShipSpecification: models/ship.py:393-394, defaulted 0.0) are CONSUMED by the
-# combat resolver (combat_service._apply_weapon_damage, combat_service.py:2162,
-# fraction clamp in _resistance_fraction, combat_service.py:2139): they are
-# FRACTIONS of incoming damage absorbed (shield component & hull component
-# respectively), clamped to [0.0, 0.9]. Until now the seeder never set them, so
-# every hull absorbed 0% — these mitigations were inert. This table makes them
-# non-zero.
+# Per-hull combat-mitigation table (B3) — shield_resistance & armor_rating.
+# These two columns (Ship / ShipSpecification, defaulted 0.0) are consumed by
+# the combat resolver as fractions of incoming damage absorbed, clamped to
+# [0.0, 0.9].
 #
-# *** THESE ARE [NO-CANON] MAGNITUDES — sw2102-docs gives no shield_resistance /
-# armor_rating numbers. The values below are a PROPOSAL for Max to bless. ***
-# Design: conservative + gently hull/class-tiered. Civilian / utility hulls get
-# little-to-nothing; dedicated combat hulls get the most. Even the heaviest
-# combat hull stays at 0.20 (well under the 0.90 clamp) so this is a SMALL
-# rebalance, not a wall of immunity.
+# Ratified: DECISIONS.md hull-combat-mitigation-table (Max 2026-06-22) —
+# 0.00–0.20 scale; Defender 0.10, Carrier + NPC Marshal 0.15, NPC Sentinel 0.20;
+# light/fast hulls at or near 0.00. Values below match that ruling.
 #
-# *** BALANCE NOTE: this CHANGES combat absorption from 0% -> non-zero. It is a
-# deliberate (conservative) balance change; flagged for Max. ***
-#
-# WIRING (out of THIS file's lane): combat reads these off the Ship ROW
-# (getattr(defender_ship, "shield_resistance"...)). All four Ship()
-# constructors now COPY shield_resistance / armor_rating from the spec onto
-# new Ship rows — ship_service.py:105-106, npc_spawn_service.py:424-425,
-# admin_ships.py:467-468, and first_login_service.py (starter ship, as of
-# WO-SB-CR2). The only open residual is pre-existing Ship rows created before
-# these copies landed: those stay at the column default 0.0 until a
-# human-gated backfill migration runs (deliberately deferred; see the WO's
-# openQuestions — NOT this file's lane).
+# WIRING: combat reads these off the Ship row. Ship constructors copy from the
+# spec onto new rows. Pre-existing Ship rows created before the copy landed stay
+# at column default 0.0 until a human-gated backfill (deferred).
 # ----------------------------------------------------------------------------
-_NO_CANON_MITIGATION = {
+_HULL_COMBAT_MITIGATION = {
     # ESCAPE_POD: indestructible already; no mitigation needed. Keep 0.0.
     ShipType.ESCAPE_POD:      {"shield_resistance": 0.0,  "armor_rating": 0.0},
     # Civilian / light haulers & couriers — token armor, ~no shield resistance.
@@ -772,7 +755,7 @@ def seed_ship_specifications(db: Session) -> None:
     updated_count = 0
 
     for ship_type, spec_data in SHIP_SPECIFICATIONS.items():
-        # [NO-CANON] B3: merge the per-hull combat-mitigation values
+        # B3: merge the ratified per-hull combat-mitigation values
         # (shield_resistance / armor_rating) onto this spec's data so they flow
         # through BOTH the create (**spec_data) and the update (setattr) paths
         # below. A shallow copy keeps SHIP_SPECIFICATIONS (module-level) pristine.
@@ -781,7 +764,7 @@ def seed_ship_specifications(db: Session) -> None:
         # column default (0.0) for any hull absent from the table.
         spec_data = {
             **spec_data,
-            **_NO_CANON_MITIGATION.get(
+            **_HULL_COMBAT_MITIGATION.get(
                 ship_type, {"shield_resistance": 0.0, "armor_rating": 0.0}
             ),
             "insurable": ship_type not in _NON_INSURABLE_TYPES,
