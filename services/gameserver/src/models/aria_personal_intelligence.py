@@ -302,6 +302,8 @@ class ARIATradingObservation(Base):
     dest_station_id = Column(UUID(as_uuid=True), ForeignKey("stations.id"), nullable=True)  # nullable for buy-only events
     source_sector_id = Column(Integer, nullable=True)
     dest_sector_id = Column(Integer, nullable=True)  # nullable for buy-only events
+    # ADR-0050 SK24 (sketch name aria_observation_log) — non-FK region snapshot.
+    region_id_snapshot = Column(UUID(as_uuid=True), nullable=True)
 
     quantity = Column(Integer, nullable=False)
     unit_price = Column(Integer, nullable=False)

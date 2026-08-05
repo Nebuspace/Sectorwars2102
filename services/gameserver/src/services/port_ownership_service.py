@@ -1669,6 +1669,7 @@ def activate_counter_trade(
         station_sell_price=1,
         owner_tariff_rate=0.0,
         port_owner_id=owner.id,
+        region_id_snapshot=getattr(station, "region_id", None),
         admin_notes="counter_trade_defense",
         timestamp=now,
     )

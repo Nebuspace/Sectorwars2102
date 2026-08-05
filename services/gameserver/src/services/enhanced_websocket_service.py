@@ -592,6 +592,15 @@ class EnhancedWebSocketService:
                 price_used = market_price.sell_price
             
             # Create transaction record
+            region_snap = None
+            try:
+                from src.models.station import Station
+                st_row = (
+                    await db.execute(select(Station).where(Station.id == station_id))
+                ).scalar_one_or_none()
+                region_snap = getattr(st_row, "region_id", None) if st_row else None
+            except Exception:
+                region_snap = None
             transaction = MarketTransaction(
                 player_id=player.id,
                 station_id=station_id,
@@ -600,6 +609,7 @@ class EnhancedWebSocketService:
                 quantity=quantity,
                 unit_price=price_used,
                 total_value=total_cost if action == "buy" else total_revenue,
+                region_id_snapshot=region_snap,
                 timestamp=datetime.now(UTC)
             )
             db.add(transaction)
