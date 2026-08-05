@@ -5,17 +5,9 @@ P8-region-lifecycle-schema (``RegionStatus`` enum + ``suspended_at`` /
 ``b7e4a29f1c68_region_lifecycle_columns.py``, verified present) -- this WO
 is additive-only, no new schema.
 
-CANON-VS-WO-BRIEF CONFLICT (flagged, not silently resolved either way):
-this WO's own brief cited ``suspended_at + 8 days -> GRACE`` and
-``suspended_at + 31 days -> TERMINATED``. ``SYSTEMS/region-lifecycle.md``'s
-state diagram (lines 17-46), transition-trigger table (lines 59-60), and
-worked pseudocode (lines 764/770/773-774) unambiguously say **7** and
-**30** days instead -- both measured from the ORIGINAL ``Region.
-suspended_at``, not reset on entering grace -- with a **7**-day terminated
--> hard-delete window (line 80, 773-774), which DOES match the brief's
-third number. Built against the DOCUMENTED numbers (7/30/7) per this
-codebase's docs-win convention; the 8/31 discrepancy is surfaced back to
-the lead for a ruling, not silently picked either way.
+Timers follow ``SYSTEMS/region-lifecycle.md``: suspended_at + 7d → GRACE,
+suspended_at + 30d → TERMINATED (both from the original suspended_at, not
+reset on grace), then a 7-day terminated → hard-delete window.
 
 Both advance functions are pure, session-injectable BULK conditional
 UPDATEs -- canon's trigger table lists no per-region side effect for
