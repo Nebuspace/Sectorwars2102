@@ -30,7 +30,7 @@ class MarketInterventionRequest(BaseModel):
         ...,
         description=(
             "Type of intervention: price_adjustment, inject_liquidity, "
-            "reset_market (freeze_trading is off-canon; returns 501)"
+            "reset_market"
         ),
     )
     parameters: dict = Field(..., description="Intervention-specific parameters")
@@ -306,12 +306,8 @@ async def perform_market_intervention(
     3. **reset_market**: Reset prices to baseline values
        - Parameters: resource_type
 
-    **freeze_trading** is NOT a supported intervention — it is off-canon
-    (no trade path anywhere checks a freeze flag) and now returns
-    **501 Not Implemented** rather than a canned success response.
-
     Every intervention that actually commits a state change is logged in
-    the audit trail; a rejected or failed call (400/501/500) writes no
+    the audit trail; a rejected or failed call (400/500) writes no
     audit row.
 
     **Required permissions**: Admin access
