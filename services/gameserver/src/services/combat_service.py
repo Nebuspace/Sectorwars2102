@@ -1365,12 +1365,14 @@ class CombatService:
         The defender is a Ship row with no owning Player (owner_id is NULL /
         is_npc flag set), so there are no defender turn costs and no defender
         reputation/rank hooks. Attacker-side rank/bounty hooks are skipped
-        for NPC kills. The one canon-numeric reputation hook IS applied:
-        killing a Federation Marshal Interdictor crashes the attacker's
-        Terran Federation reputation by -250 per kill (police-forces.md).
-        Sentinel kills canonically crash Galactic Concord standing, but
-        canon gives no numeric value and the CONCORD FactionType is
-        Design-only — deferred with a logged TODO, not invented.
+        for NPC kills. Two reputation hooks apply: killing a Federation
+        Marshal Interdictor crashes the attacker's Terran Federation
+        reputation by -250 per kill (police-forces.md, canon-numeric).
+        Killing a Sentinel crashes Galactic Concord standing by the same
+        -250 magnitude — canon states the standing loss but gives no
+        numeric value, so this mirrors the Marshal penalty as a flagged
+        NO-CANON placeholder pending Max's ruling (see SENTINEL_KILL_
+        CONCORD_PENALTY below).
         """
         attacker = self.db.query(Player).filter(Player.id == attacker_id).populate_existing().with_for_update().first()
         if not attacker:
