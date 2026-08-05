@@ -1,5 +1,5 @@
 """Unit coverage for WO-ADM-ECON-TRUTH: the admin economy /intervention
-endpoint's inject_liquidity and freeze_trading actions, plus the
+endpoint's inject_liquidity action, plus the
 INTERVENTION audit-write conditioning that wraps every intervention type.
 
 Three lies fixed here (2H's sibling file, test_economy_analytics_vocab.py,
@@ -9,8 +9,7 @@ covers the fourth — _reset_market_prices — and is untouched):
      (the JSONB TradingService reprices from) AND the mirrored MarketPrice
      row (what GET /admin/economy/market-data and the buy/sell stock-gate
      both read), then re-syncs pricing off the new stock.
-  2. _freeze_trading previously returned a canned success dict for an
-     off-canon, zero-consumer capability — now raises InterventionError(501).
+  2. freeze_trading (off-canon 501 stub) was removed entirely — unknown type.
   3. perform_market_intervention wrote an unconditional INTERVENTION audit
      row on EVERY outcome, including failures — now a rejected/failed call
      writes no audit row at all (fixture-scoped delta assertions below,
@@ -158,22 +157,16 @@ class TestInjectLiquidityPersists:
 
 
 @pytest.mark.unit
-class TestFreezeTradingIsHonest501:
-    def test_freeze_trading_raises_501(self, service: EconomyAnalyticsService):
-        with pytest.raises(InterventionError) as exc_info:
-            service._freeze_trading({"duration_minutes": 60})
-        assert exc_info.value.status_code == 501
-
-    def test_freeze_trading_via_dispatcher_writes_no_audit_row(
+class TestFreezeTradingRemoved:
+    def test_freeze_trading_is_unknown_intervention(
         self, db: Session, service: EconomyAnalyticsService
     ):
+        """freeze_trading branch removed (cycle-33) — treated as unknown type."""
         pre_count = _intervention_audit_count(db)
-
-        with pytest.raises(InterventionError):
+        with pytest.raises(ValueError, match="Unknown intervention type"):
             service.perform_market_intervention(
                 "freeze_trading", {"admin_id": uuid4(), "duration_minutes": 60}
             )
-
         assert _intervention_audit_count(db) == pre_count
 
 

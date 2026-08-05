@@ -189,16 +189,12 @@ def _aria_governor_text(rp_per_day: int, throughput_pct: int) -> str:
     )
 
 
-# --- A.4 RULING (Max): WIPE + REFUND TO CREDITS -----------------------------
+# --- A.4 first-sweep wipe + refund to credits -----------------------------
 # On a player's first-ever sweep, their accrued research_points (summed across
 # their planets' active_events on that sweep) are ZEROED and an equivalent in
-# CREDITS is refunded. The RP->credit conversion rate is [NO-CANON]; ship
-# CONSERVATIVE. Rationale: RP in the kernel is "expensive money you make from
-# money" (CRT-MASTER §1.3) — accrued at 25 RP / lab-level / day. A small
-# credits-per-RP keeps the refund modest (a generous rate would dump a credit
-# windfall on long-running planets). 10 cr/RP is conservative relative to the
-# ~150k–500k credit defense-building costs the refunded credits can be spent on.
-RP_TO_CREDIT_RATE = 10  # credits refunded per 1 banked RP (NO-CANON — Max to bless)
+# CREDITS is refunded. Rate is canon: SYSTEMS/research-tech-tree.md § first-
+# ever sweep — "10 credits per RP".
+RP_TO_CREDIT_RATE = 10  # credits refunded per 1 banked RP (canon)
 
 
 # --- T1.5-1 FLYWHEEL GOVERNOR (CRT-4 / CRT-T15-MASTER §2) ---------------------
