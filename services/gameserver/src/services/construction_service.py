@@ -476,7 +476,8 @@ def roll_construction_event(
     else:
         # Negative: Resource Shortage or Inspection Delay (50/50).
         if rng.random() < 0.5:
-            # Roll 2d8 + 10 for overrun percentage (range 12–26, canon says 10–25).
+            # Roll 2d8 + 10 for overrun percentage (range 12–26%; canon
+            # tradedock-shipyard.md matches this dice formula).
             overrun_pct = rng.randint(1, 8) + rng.randint(1, 8) + 10
             event = dict(EVENT_CATALOG["resource_shortage"])
             event["type"] = "resource_shortage"
