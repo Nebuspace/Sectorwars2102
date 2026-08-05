@@ -46,3 +46,26 @@ async def clear_beacon_flag(
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {"success": True, **result}
+
+
+@router.post("/{beacon_id}/confirm-abuse")
+async def confirm_beacon_abuse(
+    beacon_id: UUID,
+    admin: User = Depends(require_scope(SECURITY_ACT)),
+    db: Session = Depends(get_db),
+):
+    """Confirm flagged beacon as abusive: dock deployer trust, remove row.
+
+    Does not auto-suspend / time-ban (Max-gated). False reports use
+    clear-flag instead.
+    """
+    try:
+        result = message_beacon_service.confirm_abuse(db, beacon_id)
+        db.commit()
+    except BeaconNotFoundError as e:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except BeaconError as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"success": True, **result}

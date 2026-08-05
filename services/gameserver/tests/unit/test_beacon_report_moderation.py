@@ -144,3 +144,66 @@ class TestClearFlag:
                     result = mbs.clear_flag(db, beacon.id)
         assert result["already_cleared"] is True
         rebuild.assert_not_called()
+
+
+class TestConfirmAbuse:
+    def test_rejects_unflagged(self):
+        beacon = _beacon(flagged=False)
+        db = MagicMock()
+        locked = MagicMock()
+        locked.populate_existing.return_value.with_for_update.return_value.first.return_value = beacon
+        db.query.return_value.filter.return_value = locked
+        with patch.object(mbs, "_load_beacon", return_value=beacon):
+            with patch.object(mbs, "_lock_sector"):
+                with pytest.raises(mbs.BeaconError) as ei:
+                    mbs.confirm_abuse(db, beacon.id)
+        assert "ERR_BEACON_NOT_FLAGGED" in str(ei.value)
+
+    def test_docks_trust_deletes_no_auto_block(self):
+        deployer_id = uuid4()
+        beacon = _beacon(flagged=True, deployer_player_id=deployer_id)
+        deployer = SimpleNamespace(
+            id=deployer_id,
+            aria_trust_score=0.8,
+            aria_violation_count=1,
+            aria_blocked_until=None,
+        )
+        db = MagicMock()
+
+        def _query(model):
+            q = MagicMock()
+            filt = MagicMock()
+            if model is mbs.MessageBeacon:
+                filt.populate_existing.return_value.with_for_update.return_value.first.return_value = (
+                    beacon
+                )
+            else:
+                filt.populate_existing.return_value.with_for_update.return_value.first.return_value = (
+                    deployer
+                )
+            q.filter.return_value = filt
+            return q
+
+        db.query.side_effect = _query
+        profile = SimpleNamespace(trust_score=0.8, violation_count=1, is_blocked=False)
+        fake_sec = MagicMock()
+        fake_sec.get_or_create_player_profile.return_value = profile
+
+        with patch.object(mbs, "_load_beacon", return_value=beacon):
+            with patch.object(mbs, "_lock_sector"):
+                with patch.object(mbs, "_rebuild_sector_denorm") as rebuild:
+                    with patch.object(mbs, "get_security_service", return_value=fake_sec):
+                        result = mbs.confirm_abuse(db, beacon.id)
+
+        assert result["removed"] is True
+        assert result["trust_before"] == 0.8
+        assert result["trust_after"] == pytest.approx(0.7)
+        assert result["trust_dock"] == mbs.TRUST_DOCK_CONFIRMED_ABUSE
+        assert result["aria_violation_count"] == 2
+        assert deployer.aria_trust_score == pytest.approx(0.7)
+        assert deployer.aria_violation_count == 2
+        assert deployer.aria_blocked_until is None
+        assert profile.is_blocked is False
+        assert profile.trust_score == pytest.approx(0.7)
+        db.delete.assert_called_once_with(beacon)
+        rebuild.assert_called_once()

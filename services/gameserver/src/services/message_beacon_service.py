@@ -79,6 +79,13 @@ MESSAGE_MAX_LENGTH = 500
 # high-risk band (trust_score < 0.2). [NO-CANON — launch value; flag for bless.]
 TRUST_AUTOFLAG_THRESHOLD = 0.2
 
+# ── Admin-confirmed abuse → deployer trust dock (message-beacons.md:120) ──
+# [NO-CANON launch magnitude] — matches AISecurityService's default /
+# RATE_LIMIT_EXCEEDED / INAPPROPRIATE_CONTENT class (0.1). Suspension /
+# time-ban stays Max-gated: this path docks trust + bumps violation_count
+# only; it never sets aria_blocked_until.
+TRUST_DOCK_CONFIRMED_ABUSE = 0.1
+
 # ── Per-sector visibility cap (message-beacons.md:56, ADR-0056 N-V2) ──────
 DEFAULT_SECTOR_CAP = 10
 MAX_SECTOR_CAP = 50
@@ -878,6 +885,98 @@ def clear_flag(db: Session, beacon_id: uuid.UUID) -> Dict[str, Any]:
         "id": str(beacon.id),
         "flagged": False,
         "already_cleared": already_clear,
+    }
+
+
+def confirm_abuse(db: Session, beacon_id: uuid.UUID) -> Dict[str, Any]:
+    """Admin-confirmed abusive beacon (WO-BUILD-MESSAGE-BEACON-DEPLOYER-CONSEQUENCES).
+
+    Requires ``flagged=True`` (player-report or trust-autoflag queue). Docks
+    the deployer's ``aria_trust_score`` by ``TRUST_DOCK_CONFIRMED_ABUSE``,
+    increments ``aria_violation_count`` (warn ladder counter), deletes the
+    beacon row + rebuilds sector denorm so re-confirm 404s (idempotent
+    without a new column). Does **not** set ``aria_blocked_until`` —
+    suspension/time-ban remains Max-gated. FLUSH-ONLY.
+    """
+    peek = _load_beacon(db, beacon_id)
+    region_id, sector_id = peek.region_id, peek.sector_id
+    _lock_sector(db, region_id, sector_id)
+
+    beacon = (
+        db.query(MessageBeacon)
+        .filter(MessageBeacon.id == beacon_id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    if beacon is None:
+        raise BeaconNotFoundError(f"Beacon {beacon_id} not found")
+    if not bool(getattr(beacon, "flagged", False)):
+        raise BeaconError(
+            "ERR_BEACON_NOT_FLAGGED: confirm-abuse requires a flagged beacon "
+            "(use clear-flag for false reports)"
+        )
+
+    deployer_id = beacon.deployer_player_id
+    deployer = (
+        db.query(Player)
+        .filter(Player.id == deployer_id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    if deployer is None:
+        raise BeaconError(f"Deployer {deployer_id} not found")
+
+    trust_before = float(getattr(deployer, "aria_trust_score", 1.0) or 1.0)
+    violations_before = int(getattr(deployer, "aria_violation_count", 0) or 0)
+    trust_after = max(0.0, trust_before - TRUST_DOCK_CONFIRMED_ABUSE)
+    violations_after = violations_before + 1
+    deployer.aria_trust_score = trust_after
+    deployer.aria_violation_count = violations_after
+
+    # Keep in-process AISecurityService profile coherent with the Player
+    # row — trust + count only; never trip the auto-block ladder here.
+    try:
+        sec = get_security_service()
+        profile = sec.get_or_create_player_profile(
+            str(deployer.id), seed_from=deployer
+        )
+        profile.trust_score = trust_after
+        profile.violation_count = violations_after
+    except Exception:  # noqa: BLE001 — never fail moderation on cache sync
+        logger.exception(
+            "confirm_abuse: in-memory trust sync failed for deployer %s",
+            deployer_id,
+        )
+
+    beacon_id_str = str(beacon.id)
+    try:
+        db.delete(beacon)
+        db.flush()
+    except (StaleDataError, ObjectDeletedError):
+        raise BeaconNotFoundError(f"Beacon {beacon_id} not found") from None
+    _rebuild_sector_denorm(db, region_id, sector_id)
+    db.flush()
+
+    logger.info(
+        "Beacon %s confirmed abusive (admin): deployer %s trust %.3f→%.3f "
+        "violations %d→%d; row deleted",
+        beacon_id_str,
+        deployer_id,
+        trust_before,
+        trust_after,
+        violations_before,
+        violations_after,
+    )
+    return {
+        "id": beacon_id_str,
+        "removed": True,
+        "deployer_player_id": str(deployer_id),
+        "trust_before": trust_before,
+        "trust_after": trust_after,
+        "trust_dock": TRUST_DOCK_CONFIRMED_ABUSE,
+        "aria_violation_count": violations_after,
     }
 
 
