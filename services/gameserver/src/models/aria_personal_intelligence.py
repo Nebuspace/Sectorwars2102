@@ -273,9 +273,10 @@ class ARIATradingObservation(Base):
     player_id = Column(UUID(as_uuid=True), ForeignKey("players.id"), nullable=False)
 
     # The underlying trading-service event, when one materialized at insert
-    # time. Nullable: this WO leaves the trading.py insert hook (lane C)
-    # deferred/unwired, so a defensive nullable FK avoids over-committing to
-    # an insert-time guarantee no caller exists to satisfy yet.
+    # time. Populated by trading.py's _record_aria_trade_hooks on every live
+    # trade. Nullable defensively (not because the hook is unwired) so a
+    # historical/partial observation row can exist without a backing
+    # MarketTransaction id.
     trade_id = Column(UUID(as_uuid=True), ForeignKey("enhanced_market_transactions.id"), nullable=True)
 
     commodity = Column(String(50), nullable=False)

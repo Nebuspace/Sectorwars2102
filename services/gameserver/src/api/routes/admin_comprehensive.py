@@ -3197,26 +3197,6 @@ async def get_ai_system_metrics(
         logger.error(f"Error getting AI system metrics: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get AI system metrics: {str(e)}")
 
-@router.post("/ai/models/{model_id}/{action}", response_model=Dict[str, Any])
-async def ai_model_action(
-    model_id: str,
-    action: str,
-    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
-    db: Session = Depends(get_db)
-):
-    """Take action on AI model (start, stop, train)"""
-    if action not in ["start", "stop", "train"]:
-        raise HTTPException(status_code=400, detail="Invalid action")
-
-    # No AI model registry exists in the system (see GET /ai/models), so
-    # there is nothing to start/stop/train. The previous implementation
-    # returned a fabricated success message without doing anything.
-    logger.info(f"Admin {current_admin.username} attempted {action} on AI model {model_id} (not implemented)")
-    raise HTTPException(
-        status_code=501,
-        detail="No AI model registry exists; model actions are not implemented"
-    )
-
 @router.get("/ai/predictions", response_model=List[Dict[str, Any]])
 async def get_ai_predictions(
     timeframe: str = Query("1h", description="Prediction timeframe"),
