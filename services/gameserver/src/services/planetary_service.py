@@ -282,6 +282,10 @@ SPECIALIZATION_BONUSES = {
 # design decision — see DECISIONS colony-research-points-sink.
 RESEARCH_POINTS_PER_LAB_LEVEL_PER_DAY = 25
 
+# Commodity production base (SYSTEMS/planetary-production-tick.md:55):
+# 10 units / colonist / day per allocated commodity before building bonuses.
+PRODUCTION_BASE_RATE_PER_COLONIST_PER_DAY = 10
+
 # T1.5-1 PER-PLANET RP BACKSTOP (CRT-4 / CRT-T15-MASTER §2.3) — defense-in-depth.
 # The per-empire flywheel governor (research_service.governed_rp at the sweep) is
 # PRIMARY; this is the seatbelt: even if the per-empire SUM has an aggregation bug,
@@ -2538,7 +2542,7 @@ class PlanetaryService:
 
     def _calculate_production_rates(self, planet: Planet) -> Dict[str, float]:
         """Calculate production rates based on allocations, buildings, habitability, and siege state."""
-        base_rate = 10  # Base production per colonist per day
+        base_rate = PRODUCTION_BASE_RATE_PER_COLONIST_PER_DAY
 
         # Get building levels
         factory_level = planet.factory_level or 0
