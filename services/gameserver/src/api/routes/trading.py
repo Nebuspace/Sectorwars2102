@@ -794,6 +794,7 @@ async def buy_resource(
             # stations. These only RECORD context; they do not change the charge.
             owner_tariff_rate=tariff_rate_eff,
             port_owner_id=station.owner_id,
+            region_id_snapshot=getattr(station, "region_id", None),
             timestamp=datetime.now(UTC)
         )
         db.add(transaction)
@@ -1112,6 +1113,7 @@ async def sell_resource(
             # stations. These only RECORD context; they do not change the payout.
             owner_tariff_rate=tariff_rate_eff,
             port_owner_id=station.owner_id,
+            region_id_snapshot=getattr(station, "region_id", None),
             timestamp=datetime.now(UTC)
         )
         db.add(transaction)

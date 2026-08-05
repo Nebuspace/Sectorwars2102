@@ -1285,6 +1285,20 @@ class BountyService:
         flush would poison the session and make combat's terminal commit raise
         PendingRollbackError). The savepoint also keeps the row visible to
         subsequent same-txn dedup reads; the caller owns the outer commit."""
+        snap = None
+        try:
+            from src.models.player import Player
+            from src.models.sector import Sector
+            claimant = self.db.query(Player).filter(Player.id == claimant_id).first()
+            if claimant and claimant.current_sector_id is not None:
+                sec = (
+                    self.db.query(Sector)
+                    .filter(Sector.sector_id == claimant.current_sector_id)
+                    .first()
+                )
+                snap = getattr(sec, "region_id", None) if sec else None
+        except Exception:
+            snap = None
         claim = BountyClaim(
             bounty_ref=bounty_ref,
             claimant_id=claimant_id,
@@ -1292,6 +1306,7 @@ class BountyService:
             amount=amount,
             status=BountyClaimStatus.PAID,
             resolved_at=resolved_at,
+            region_id_snapshot=snap,
         )
         with self.db.begin_nested():
             self.db.add(claim)

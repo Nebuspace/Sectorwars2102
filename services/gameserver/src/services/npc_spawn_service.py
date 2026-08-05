@@ -1404,6 +1404,7 @@ def handle_npc_ship_destroyed(
                 with db.begin_nested():
                     db.add(PirateKillLog(
                         region_id=holding.region_id,
+                        region_id_snapshot=holding.region_id,
                         holding_id=holding.id,
                         tier=holding.tier,
                         kill_weight=tier_kill_weight.get(holding.tier, 1),
@@ -1439,6 +1440,7 @@ def handle_npc_ship_destroyed(
             killed_by_player_id=killed_by_player_id,
             sector_id=sector_id,
             home_region_id=npc.home_region_id,
+            region_id_snapshot=npc.home_region_id,
             combat_log_id=combat_log_id,
             destruction_cause=destruction_cause,
             killed_at=now,

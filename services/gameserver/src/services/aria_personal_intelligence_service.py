@@ -2333,6 +2333,18 @@ class ARIAPersonalIntelligenceService:
                 else:
                     outcome = ObservationOutcome.loss
 
+            region_snap = trade_result.get("region_id_snapshot")
+            if region_snap is None:
+                try:
+                    from src.models.station import Station
+                    st = (
+                        db.query(Station)
+                        .filter(Station.id == trade_result["source_station_id"])
+                        .first()
+                    )
+                    region_snap = getattr(st, "region_id", None) if st else None
+                except Exception:
+                    region_snap = None
             observation = ARIATradingObservation(
                 player_id=player_id,
                 trade_id=trade_result.get("trade_id"),
@@ -2342,6 +2354,7 @@ class ARIAPersonalIntelligenceService:
                 dest_station_id=trade_result.get("dest_station_id"),
                 source_sector_id=trade_result.get("source_sector_id"),
                 dest_sector_id=trade_result.get("dest_sector_id"),
+                region_id_snapshot=region_snap,
                 quantity=trade_result["quantity"],
                 unit_price=trade_result["unit_price"],
                 total_credits=trade_result["total_credits"],

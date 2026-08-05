@@ -43,6 +43,8 @@ class MarketTransaction(Base):
     # Location and timing  
     sector_id = Column(Integer, nullable=True)  # Human-readable sector number
     sector_uuid = Column(UUID(as_uuid=True), ForeignKey("sectors.id", ondelete="SET NULL"), nullable=True)
+    # ADR-0050 SK24 — plain UUID snapshot (no FK) so audit survives region delete.
+    region_id_snapshot = Column(UUID(as_uuid=True), nullable=True)
     timestamp = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     
     # Transaction metadata
