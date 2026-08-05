@@ -433,7 +433,6 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       setClusters([]);
       setSectors([]);
 
-      console.log('Galaxy data cleared successfully');
     } catch (error) {
       console.error('Error clearing galaxy data:', error);
       setError('Failed to clear galaxy data');
@@ -470,9 +469,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   
   // Load sectors for visualization
   const loadSectors = async (): Promise<void> => {
-    console.log('loadSectors called - user:', user?.is_admin, 'galaxyState:', galaxyState?.id);
     if (!user || !user.is_admin || !galaxyState) {
-      console.log('loadSectors early return - missing user or galaxy');
       return;
     }
     
@@ -480,9 +477,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setError(null);
     
     try {
-      console.log('loadSectors: Making API call to /api/v1/admin/sectors');
       const response = await api.get<{sectors: SectorData[]}>('/admin/sectors');
-      console.log('loadSectors: Got response:', response.data);
       setSectors(response.data.sectors || []);
     } catch (error) {
       console.error('Error loading sectors:', error);
@@ -503,7 +498,6 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       const response = await api.get<{users: UserAccount[]}>('/admin/users', {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
-      console.log('loadUsers: Got response:', response.data);
       setUsers(response.data.users || []);
     } catch (error) {
       console.error('Error loading users:', error);
@@ -524,7 +518,6 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       const response = await api.get<{players: PlayerAccount[]}>('/admin/players', {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
-      console.log('loadPlayers: Got response:', response.data);
       setPlayers(response.data.players || []);
     } catch (error) {
       console.error('Error loading players:', error);

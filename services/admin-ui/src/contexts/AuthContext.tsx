@@ -70,7 +70,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
     
     try {
-      console.log('Attempting to refresh token with refresh_token:', refreshTokenStr.substring(0, 5) + '...');
       
       // Use relative URL to go through Vite proxy
       const apiPath = '/api/v1';
@@ -95,7 +94,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       
       // Get response text for debugging
       const responseText = await response.text();
-      console.log('Raw refresh token response:', responseText);
       
       if (!responseText || responseText.trim() === '') {
         console.error('Empty response from refresh endpoint');
@@ -106,7 +104,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       let data;
       try {
         data = JSON.parse(responseText);
-        console.log('Parsed refresh token data:', data);
       } catch (parseError) {
         console.error('Failed to parse refresh token response:', parseError);
         throw new Error(`Invalid JSON response: ${responseText.substring(0, 50)}...`);
@@ -192,7 +189,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         // Try to get user profile
         const response = await axios.get<User>('/api/v1/auth/me');
         setUser(response.data);
-        console.log('Auth successful - user loaded:', response.data);
       } catch (error: any) {
         // Check if it's a rate limit error (429)
         if (error?.response?.status === 429) {
@@ -210,7 +206,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
             await refreshToken();
             const userResponse = await axios.get<User>('/api/v1/auth/me');
             setUser(userResponse.data);
-            console.log('Auth successful after refresh');
           } catch (refreshError: any) {
             if (refreshError?.response?.status === 429) {
               console.warn('Rate limit hit during token refresh');
@@ -241,14 +236,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     setIsLoading(true);
     
     try {
-      console.log('Attempting login with username:', username);
       
       // Use relative URL to go through Vite proxy
       const apiPath = '/api/v1';
-      console.log('Using API via Vite proxy');
       
       try {
-        console.log('Attempting direct login call to gameserver API');
         
         // Use fetch API instead of axios for better control
         const directResponse = await fetch(`${apiPath}/auth/login/direct`, {
@@ -276,7 +268,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         
         // Get response text first for debugging
         const responseText = await directResponse.text();
-        console.log('Raw API response:', responseText);
         
         if (!responseText || responseText.trim() === '') {
           throw new Error('Empty response from server');
@@ -286,7 +277,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         let data;
         try {
           data = JSON.parse(responseText);
-          console.log('Parsed login data:', data);
         } catch (parseError) {
           console.error('Failed to parse login response:', parseError);
           throw new Error(`Invalid JSON response: ${responseText.substring(0, 50)}...`);
@@ -294,7 +284,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         
         // Check if MFA is required
         if (data.requires_mfa && data.session_token) {
-          console.log('MFA required for user');
           // The session token is returned to the caller (LoginForm owns the
           // authoritative copy) rather than mirrored into provider state.
           return { requiresMFA: true, sessionToken: data.session_token };
@@ -319,7 +308,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
 
         // Get user data
-        console.log('Fetching user data from /auth/me');
         try {
           const userResponse = await fetch(`${apiPath}/auth/me`, {
             headers: {
@@ -335,7 +323,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           
           const userData = await userResponse.json();
           setUser(userData);
-          console.log('Login successful with direct login endpoint');
         } catch (userError) {
           console.error('Failed to fetch user data, but login was successful:', userError);
           // Fetch user data failed, but login succeeded
@@ -488,7 +475,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         timeout: 1000 // 1 second timeout
       }).catch(() => {
         // Just log the error, don't block logout
-        console.log('Logout token invalidation skipped');
       });
     }
 
