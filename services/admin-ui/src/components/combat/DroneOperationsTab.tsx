@@ -60,10 +60,9 @@ interface DroneCombatLogEntry {
 }
 
 // Matches one entry of `recent_combats` in the GET /admin/drones/{id} response
-// (admin_drones.py:259-271). NOTE: that route does not currently serialize
-// combat_log/combat_details at all — they're typed here as optional so this panel
-// starts rendering them the moment a future backend change adds either key, with no
-// further FE change required.
+// (admin_drones.py:276-287). `combat_log` is serialized (via `_parse_combat_log`,
+// null when missing/unparseable). `combat_details` is not a response key — kept
+// optional only as a defensive alias for older/alternate shapes.
 interface DroneRecentCombat {
   id: string;
   started_at: string;

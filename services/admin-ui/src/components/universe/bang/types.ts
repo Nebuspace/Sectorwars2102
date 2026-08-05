@@ -72,6 +72,23 @@ export interface BangJobResponse {
   log_text: string;
 }
 
+/**
+ * Slim history-list row from `GET /admin/galaxy/jobs`.
+ * Matches gameserver `BangJobListItem` — no log_text / warnings_json;
+ * warning_count is derived server-side.
+ */
+export interface BangJobListItem {
+  id: string;
+  admin_user_id: string;
+  status: BangJobStatus;
+  params_json: BangConfig & Record<string, unknown>;
+  started_at: string;
+  completed_at?: string | null;
+  duration_ms?: number | null;
+  error_message?: string | null;
+  warning_count: number;
+}
+
 /** Stats card payload from POST /admin/galaxy/preview. */
 export interface BangPreviewStats {
   diameter?: number;
@@ -100,7 +117,7 @@ export interface BangPreviewResponse {
 
 /** Paginated history list. Matches gameserver BangJobListResponse. */
 export interface BangJobHistoryPage {
-  items: BangJobResponse[];
+  items: BangJobListItem[];
   total: number;
   page: number;
   page_size: number;

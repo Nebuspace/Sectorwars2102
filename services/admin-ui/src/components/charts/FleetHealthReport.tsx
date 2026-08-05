@@ -3,7 +3,7 @@ import * as d3 from 'd3';
 import { api } from '../../utils/auth';
 import './charts.css';
 
-// Matches backend HealthReportResponse (admin_ships.py:67, GET /admin/ships/health-report)
+// Matches backend HealthReportResponse (admin_ships.py:73, GET /admin/ships/health-report)
 interface MaintenanceShip {
   id: string;
   name: string;
