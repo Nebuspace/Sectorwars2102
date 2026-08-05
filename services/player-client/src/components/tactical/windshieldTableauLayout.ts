@@ -843,19 +843,6 @@ export function otherShipFlightPose(
   return { ...to, headingDeg: faceArrival, phase: 'idle', burning: false };
 }
 
-/** @deprecated Use otherShipFlightPose — kept for any stray import during cutover. */
-export function otherShipPose(
-  id: string,
-  tSec: number,
-  opts?: {
-    archetype?: string | null;
-    activity?: string | null;
-    bandAspect?: number;
-  },
-): OtherShipFlightPose {
-  return otherShipFlightPose(id, tSec, [], opts);
-}
-
 /** The player's own ship's RESTING anchor when there is no better seed (no
  *  last-docked/landed host to emerge from) — a fresh arrival into the
  *  sector. Purely cosmetic, matching the existing "no real intrasystem

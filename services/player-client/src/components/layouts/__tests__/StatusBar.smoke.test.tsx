@@ -87,6 +87,7 @@ const mockGetMedals = vi.fn();
 const mockGetOwnedPlanets = vi.fn();
 const mockGetTeam = vi.fn();
 const mockGetPermissions = vi.fn();
+const mockBeaconMine = vi.fn();
 
 vi.mock('../../../services/api', () => ({
   factionAPI: {
@@ -108,6 +109,10 @@ vi.mock('../../../services/api', () => ({
   teamAPI: {
     getTeam: (...a: unknown[]) => mockGetTeam(...a),
     getPermissions: (...a: unknown[]) => mockGetPermissions(...a),
+  },
+  // My Beacons dossier tab (1bc7540d) loads on mount when cycled.
+  beaconAPI: {
+    mine: (...a: unknown[]) => mockBeaconMine(...a),
   },
 }));
 
@@ -158,6 +163,7 @@ mockGetRank.mockResolvedValue(FULL_RANK);
 mockGetProgress.mockResolvedValue(FULL_PROGRESS);
 mockGetMedals.mockResolvedValue({ earned: [], available: [] });
 mockGetOwnedPlanets.mockResolvedValue({ planets: [] });
+mockBeaconMine.mockResolvedValue({ beacons: [], total: 0, page: 1, pages: 0 });
 
 import StatusBar from '../StatusBar';
 import { SettingsProvider } from '../../../contexts/SettingsContext';
@@ -283,7 +289,7 @@ describe('StatusBar — live-mount smoke', () => {
     const tabpanel = container.querySelector('[role="tabpanel"]');
     expect(tabpanel).not.toBeNull();
     const tabs = container.querySelectorAll('[role="tab"]');
-    expect(tabs.length).toBe(7);
+    expect(tabs.length).toBe(9);
     // exactly one tab starts selected (Identity, the default active tab)
     expect(Array.from(tabs).filter((t) => t.getAttribute('aria-selected') === 'true').length).toBe(1);
 
@@ -359,7 +365,7 @@ describe('StatusBar — live-mount smoke', () => {
 
     const tablist = container.querySelector('[role="tablist"]') as HTMLElement;
     const tabs = Array.from(container.querySelectorAll('[role="tab"]')) as HTMLButtonElement[];
-    expect(tabs.length).toBe(7);
+    expect(tabs.length).toBe(9);
 
     const pressKey = async (key: string) => {
       await act(async () => {
@@ -380,10 +386,10 @@ describe('StatusBar — live-mount smoke', () => {
     expect(tabs[1].tabIndex).toBe(0);
     expect(tabs[0].tabIndex).toBe(-1);
 
-    // End: jump straight to the last tab (Settings, index 6).
+    // End: jump straight to the last tab (Settings, index 8).
     await pressKey('End');
-    expect(tabs[6].getAttribute('aria-selected')).toBe('true');
-    expect(document.activeElement).toBe(tabs[6]);
+    expect(tabs[8].getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(tabs[8]);
 
     // ArrowRight wraps from the last tab back to the first.
     await pressKey('ArrowRight');
@@ -392,8 +398,8 @@ describe('StatusBar — live-mount smoke', () => {
 
     // ArrowLeft wraps from the first tab back to the last.
     await pressKey('ArrowLeft');
-    expect(tabs[6].getAttribute('aria-selected')).toBe('true');
-    expect(document.activeElement).toBe(tabs[6]);
+    expect(tabs[8].getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(tabs[8]);
 
     // Home: jump straight back to the first tab.
     await pressKey('Home');

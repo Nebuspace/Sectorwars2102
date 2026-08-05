@@ -6,7 +6,6 @@ import { WindshieldFlightProvider, useWindshieldFlight } from '../../contexts/Wi
 import { useFirstLogin } from '../../contexts/FirstLoginContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useShellSlots } from '../layouts/ShellContext';
-// import { useTheme } from '../../themes/ThemeProvider'; // Available for future use
 import TradingInterface from '../trading/TradingInterface';
 import SpaceDockInterface from '../spacedock/SpaceDockInterface';
 import PortOfficeVenue from '../spacedock/PortOfficeVenue';
@@ -34,6 +33,7 @@ import { projectedWarpBearing, subscribeWarpDepart, WARP_TURN_MS } from '../../s
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { TurnsIcon } from '../icons/TurnsIcon';
 import { formatRegionType } from '../../utils/formatters';
+import { movementAlertVariant, movementAlertHeader, shouldShowMovementEncounters } from './movementAlertPresentation';
 import './game-dashboard.css';
 import './cockpit.css';
 import '../tactical/tactical-layout.css';
@@ -1666,7 +1666,7 @@ const GameDashboardInner: React.FC = () => {
 
   // Colonist disembark ceiling = the LOWER of the citadel headcount cap
   // (baseMaxColonists) and the habitability demographic cap (maxPopulation) —
-  // the server enforces BOTH (planets.py:982 citadel + :993 habitability; settle
+  // the server enforces BOTH (planets.py:1005-1009 citadel + :1010 habitability; settle
   // clamps to min). NOT maxColonists/effectiveMaxColonists (habitability-scaled
   // DISPLAY value, not enforced) and NOT maxPopulation alone (misses the citadel
   // cap). Using baseMaxColonists alone over-filled the Max preset → server 400 when
@@ -1952,7 +1952,6 @@ const GameDashboardInner: React.FC = () => {
       out[role] = alloc > 0 && Number.isFinite(rate) ? rate / alloc : null;
     }
     return out;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allocRates, landedPlanetDetail]);
 
   // The station we're docked at — drives the docked scene HUD chips and the
@@ -2211,6 +2210,7 @@ const GameDashboardInner: React.FC = () => {
     insufficient_turns: 'Not enough turns to run a harvest cycle.',
     not_an_asteroid_field: 'No asteroids here — harvesting requires an asteroid field.',
     ship_not_found: 'Active ship not found — re-select a ship and try again.',
+    already_mining: 'Mining laser already deployed — wait for the current harvest to finish.',
   };
 
   const handleHarvest = async () => {
@@ -2224,8 +2224,21 @@ const GameDashboardInner: React.FC = () => {
     setHarvestBusy(true);
     try {
       const response = await apiClient.post('/api/v1/mining/harvest', { ship_id: shipId });
-      setHarvestResult({ success: true, ...response.data });
-      // Turns + cargo changed server-side — pull the fresh player state.
+      const data = response.data || {};
+      if (data.status === 'in_progress') {
+        setHarvestResult({
+          success: true,
+          status: 'in_progress',
+          harvest_id: data.harvest_id,
+          resolves_at: data.resolves_at,
+          turns_spent: data.turns_spent,
+          remaining_turns: data.remaining_turns,
+          message: 'Mining in progress — hold position while the laser works the field.',
+        });
+      } else {
+        setHarvestResult({ success: true, ...data });
+      }
+      // Turns prepaid server-side — pull fresh player state (cargo still pending).
       await refreshPlayerState();
     } catch (error: any) {
       const reason = error?.response?.data?.detail;
@@ -2415,10 +2428,10 @@ const GameDashboardInner: React.FC = () => {
         )}
 
         {movementResult && (
-          <div className="cockpit-alert success">
-            <div className="alert-header">✅ NAVIGATION COMPLETE</div>
+          <div className={`cockpit-alert ${movementAlertVariant(movementResult)}`} role="status">
+            <div className="alert-header">{movementAlertHeader(movementResult)}</div>
             <div className="alert-message">{movementResult.message}</div>
-            {movementResult.encounters && movementResult.encounters.length > 0 && (
+            {shouldShowMovementEncounters(movementResult) && movementResult.encounters && movementResult.encounters.length > 0 && (
               <div className="encounter-log">
                 <div className="log-header">ENCOUNTER LOG:</div>
                 <ul className="encounter-list">

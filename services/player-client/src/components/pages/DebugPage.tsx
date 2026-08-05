@@ -40,7 +40,6 @@ const DebugPage: React.FC = () => {
         };
 
         const apiUrl = getApiUrl();
-        console.log('Testing API with URL:', apiUrl);
 
         // Test auth endpoint
         const authResponse = await axios.get(`${apiUrl}/api/v1/auth/me`, {

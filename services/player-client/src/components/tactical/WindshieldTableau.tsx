@@ -76,7 +76,7 @@ import {
   type TravelPhase,
 } from './windshieldTableauHelpers';
 import { renderTableauPopupContent } from './windshieldTableauPopupContent';
-import { HazardArcsLayer, PlayerShipAndWarpLayer, ScanLayer } from './windshieldTableauChrome';
+import { BeaconLayer, HazardArcsLayer, PlayerShipAndWarpLayer, ScanLayer } from './windshieldTableauChrome';
 import './solar-system-viewscreen.css';
 
 // Re-exported for existing external consumers (TacticalTargetPage.tsx's own
@@ -1386,6 +1386,9 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
 
         {/* SCAN layer — wrecks + formations, gated behind scanActive */}
         <ScanLayer scanActive={scanActive} wrecks={wrecks} formations={formations} star={star} onOpenPopup={openPopup} />
+
+        {/* Message beacons — always visible (message-beacons.md), not scan-gated */}
+        <BeaconLayer beacons={system?.messageBeacons ?? []} star={star} onOpenPopup={openPopup} />
 
         {/* other ships — prefer server ISP pose/leg; fall back to local flight
             profile until the sector presence carries pose (Loop A tick). */}

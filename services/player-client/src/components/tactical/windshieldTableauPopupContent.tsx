@@ -206,6 +206,15 @@ export function renderTableauPopupContent(params: TableauPopupContentParams): Re
           <div className="ssv-popup-status">{meta.suspect ? 'SALVAGE FLAGGED — CAUTION' : 'UNCLAIMED SALVAGE'}</div>
         </>
       );
+    case 'beacon':
+      return (
+        <>
+          <div className="ssv-popup-title">MESSAGE BEACON</div>
+          <div className="ssv-popup-line">FROM — {meta.deployerNickname.toUpperCase()}</div>
+          <div className="ssv-popup-line">"{meta.preview}"</div>
+          <div className="ssv-popup-status">MESSAGE IN A BOTTLE — {meta.deployedAt ? new Date(meta.deployedAt).toLocaleDateString() : 'UNDATED'}</div>
+        </>
+      );
     case 'formation':
       return (
         <>

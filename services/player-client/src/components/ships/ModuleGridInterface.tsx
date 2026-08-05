@@ -16,7 +16,7 @@ import './module-grid-interface.css';
 // route serves the legacy UpgradeType hull catalog, not these modules), so the
 // installable catalog is encoded CLIENT-SIDE below, mirroring the gameserver's
 // ship_upgrade_service._MODULE_FAMILIES 1:1 (classes, base costs, hull gates,
-// the 4 deferred equipment families). Cost per tier is computed with the same
+// the 3 deferred equipment families: lander/mining/tractor). Cost per tier is computed with the same
 // curve the server uses (base × MODULE_TIER_COST_MULT^(tier-1)) so the price
 // shown == the price the server charges; the server remains the source of truth
 // and rejects anything the client mis-derives.
@@ -108,10 +108,12 @@ const MODULE_FAMILIES: ModuleFamily[] = [
     description: 'Increases cargo capacity.' },
   { cls: 'drone', name: 'Drone Bay Module', icon: '🤖', baseCost: 10000, compatibleShips: null, slotClass: null,
     description: 'Increases drone capacity.' },
-  // --- deferred equipment families: listed, install server-blocked ("coming soon") ---
-  { cls: 'harvester', name: 'Quantum Harvester Module', icon: '⚡', baseCost: 25000, deferred: true, slotClass: null,
+  // Live after WO residual (2): server get_passive_income reads modules._baked.
+  // baseCost lockstep with ship_upgrade_service MODULE_DEFINITIONS harvester (50k).
+  { cls: 'harvester', name: 'Quantum Harvester Module', icon: '⚡', baseCost: 50000, slotClass: null,
     compatibleShips: ['SCOUT_SHIP', 'FAST_COURIER', 'DEFENDER', 'WARP_JUMPER'],
     description: 'Harvests quantum particles for passive income.' },
+  // --- deferred equipment families: listed, install server-blocked ("coming soon") ---
   { cls: 'lander', name: 'Planetary Lander Module', icon: '🛬', baseCost: 20000, deferred: true, slotClass: null,
     compatibleShips: ['COLONY_SHIP', 'LIGHT_FREIGHTER', 'CARGO_HAULER'],
     description: 'Improves planet-landing interaction.' },

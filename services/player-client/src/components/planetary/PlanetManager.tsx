@@ -192,7 +192,6 @@ export const PlanetManager: React.FC = () => {
     if (planetaryEventSignal === planetaryEventRef.current) return;
     planetaryEventRef.current = planetaryEventSignal;
     loadPlanets();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [planetaryEventSignal]);
 
   const fmtFormationLeft = (ms: number): string => {
