@@ -37,6 +37,17 @@ Deliberately duck-typed against the ``InsertPlan``/``RegionInsertPlan``
 dataclass *shapes* (attribute access only, no runtime import of
 ``bang_import_service``) so this module can be imported from either side of
 the translator boundary without a circular import.
+
+**Known coverage gap (self-audit finding, 2026-08-05):** ADR-0069 names
+station/planet inventories and ``NPCRoster`` rows as part of bang's
+canonical snapshot contract alongside clusters/formations. ``InsertPlan``
+does carry NPC-roster data (``raw_npc_rosters``) and station/planet
+inventory fields, but no invariant here checks either -- only structural/
+referential integrity for sectors/warps/clusters/stations/planets/
+formations is covered (see ``_REGION_CHECKS`` below). NPC-roster
+count-and-host-sector correctness and inventory-content validity remain
+unvalidated by this gate today; a follow-on WO would extend the invariant
+set to cover them.
 """
 from __future__ import annotations
 
