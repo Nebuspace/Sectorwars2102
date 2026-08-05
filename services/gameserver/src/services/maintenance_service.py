@@ -6,17 +6,21 @@ performance-band penalty. Decay is applied lazily (advance-on-read), mirroring
 PlanetaryService.apply_population_growth / the market regen anchor — no scheduler.
 
 The combat-effectiveness band is consumed in combat, and the speed band is now
-consumed in the move-cost path (WO-MAINTBANDS, movement_service). The fuel
-modifier stays unconsumed because the game has no per-move fuel sink (movement
-costs turns, not fuel); the status payload reports applied-vs-unconsumed effects
-honestly rather than pretending the fuel band bites.
+consumed in the move-cost path (WO-MAINTBANDS, movement_service). The per-jump
+hull-condition failure roll (MINOR/MAJOR/CATASTROPHIC) is consumed on successful
+jumps via ``apply_hull_condition_failure_roll`` (WO-BUILD-HULL-FAILURE-TIER-DICE-ROLL).
+The fuel modifier stays unconsumed because the game has no per-move fuel sink
+(movement costs turns, not fuel); the status payload reports applied-vs-unconsumed
+effects honestly rather than pretending the fuel band bites.
 """
 from datetime import datetime, timezone
 import logging
+import random
+from typing import Any, Dict, Optional
 
 from sqlalchemy.orm.attributes import flag_modified
 
-from src.models.ship import Ship, ShipType
+from src.models.ship import FailureType, Ship, ShipType
 
 logger = logging.getLogger(__name__)
 
@@ -130,3 +134,84 @@ def apply_maintenance_decay(ship: Ship) -> float:
     ship.maintenance = m
     flag_modified(ship, "maintenance")
     return new_cond
+
+# Canon catastrophic survival: 20% destruction chance, else hull ~1% (ships.md:81).
+CATASTROPHIC_DESTROY_CHANCE = 0.20
+CATASTROPHIC_SURVIVE_CONDITION = 1.0
+
+
+def ship_is_immobilized(ship: Ship) -> bool:
+    """MAJOR hull failure immobilizes until shipyard repair (ships.md:80)."""
+    if ship is None:
+        return False
+    m = ship.maintenance if isinstance(ship.maintenance, dict) else {}
+    return str(m.get("failure_status") or "").upper() == FailureType.MAJOR.value
+
+
+def apply_hull_condition_failure_roll(
+    ship: Ship, *, rng=random
+) -> Optional[Dict[str, Any]]:
+    """Per-jump roll against the performance-band failure chance (ships.md:68-81).
+
+    Mutates ``ship.maintenance`` on a hit. Returns a small result dict, or None
+    when no failure fires. Catastrophic destruction is signalled via
+    ``needs_destroy=True`` — the caller owns ``ShipService.destroy_ship`` so
+    this module stays free of ship-lifecycle imports.
+
+    Flush-only; caller owns commit (mirrors movement's mechanical-failure hook).
+    """
+    if ship is None or ship.type == ShipType.ESCAPE_POD:
+        return None
+
+    apply_maintenance_decay(ship)
+    band = maintenance_band(effective_condition(ship))
+    chance = float(band.get("failure") or 0.0)
+    tier_name = band.get("failure_tier")
+    if chance <= 0.0 or not tier_name:
+        return None
+    if rng.random() >= chance:
+        return None
+
+    try:
+        tier = FailureType(str(tier_name).upper())
+    except ValueError:
+        logger.warning("Unknown hull failure_tier %r on ship %s", tier_name, ship.id)
+        return None
+
+    m = dict(ship.maintenance or {})
+    outcome: Dict[str, Any] = {
+        "failure_type": tier.value,
+        "band_tier": band.get("tier"),
+        "needs_destroy": False,
+        "condition": float(m.get("condition", 100.0)),
+    }
+
+    if tier == FailureType.MINOR:
+        m["failure_status"] = FailureType.MINOR.value
+        m["sensors_offline"] = True
+        outcome["effect"] = "sensors_offline"
+    elif tier == FailureType.MAJOR:
+        m["failure_status"] = FailureType.MAJOR.value
+        outcome["effect"] = "immobilized"
+    else:  # CATASTROPHIC
+        if rng.random() < CATASTROPHIC_DESTROY_CHANCE:
+            outcome["needs_destroy"] = True
+            outcome["effect"] = "destroyed"
+            # Leave failure_status unset — hull is about to be destroyed.
+        else:
+            m["failure_status"] = FailureType.CATASTROPHIC.value
+            m["condition"] = CATASTROPHIC_SURVIVE_CONDITION
+            m["repair_needed"] = True
+            outcome["condition"] = CATASTROPHIC_SURVIVE_CONDITION
+            outcome["effect"] = "hull_critical"
+
+    if not outcome["needs_destroy"]:
+        ship.maintenance = m
+        flag_modified(ship, "maintenance")
+
+    logger.info(
+        "Hull-condition failure on ship %s: %s (%s)",
+        ship.id, tier.value, outcome.get("effect"),
+    )
+    return outcome
+
