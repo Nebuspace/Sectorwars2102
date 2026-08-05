@@ -67,7 +67,12 @@ class TestTaxonomyDerivation:
         }
 
     def test_rare_materials_uses_lumen_crystals_not_photonic_crystals(self, service):
-        assert set(service.rare_materials) == {"prismatic_ore", "lumen_crystals"}
+        # precious_metals joined CATEGORY_RARE per WO-RES-PRECIOUS-METALS-
+        # SEED (a separately-canonical priced mining rare drop, not part of
+        # definitions.md's narrower "Rare Materials" pair) -- rare_materials
+        # derives straight from the registry's category split, so it now
+        # carries all three.
+        assert set(service.rare_materials) == {"prismatic_ore", "lumen_crystals", "precious_metals"}
 
     def test_strategic_resources_membership_unchanged(self, service):
         assert set(service.strategic_resources) == {
