@@ -1827,6 +1827,27 @@ class CombatService:
                         logger.error(
                             "Failed KILL_PIRATE_NPC emergent-rep hook: %s", e
                         )
+                elif dead_npc.faction_code == "cabal":
+                    # Parallel canon row to pirates (factions-and-teams.md TF
+                    # table + ADR-0032): same +5 Federation via its own
+                    # KILL_CABAL_NPC trigger so the table stays the tuning
+                    # surface. Cabal NPCs themselves remain 📐 Design-only
+                    # (no FactionType / spawn yet) — this branch is
+                    # forward-compatible when they land.
+                    try:
+                        from src.services.emergent_reputation_service import (
+                            apply_emergent_action,
+                        )
+                        apply_emergent_action(
+                            self.db,
+                            attacker,
+                            "KILL_CABAL_NPC",
+                            {"sector_id": sector.sector_id},
+                        )
+                    except Exception as e:
+                        logger.error(
+                            "Failed KILL_CABAL_NPC emergent-rep hook: %s", e
+                        )
 
                 # Faction-issued bounty payout (bounties.md:26 — "Federation
                 # putting a bounty on a specific pirate captain that pays out
