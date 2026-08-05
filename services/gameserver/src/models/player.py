@@ -1,6 +1,5 @@
 import uuid
-from datetime import datetime
-from typing import List, Optional, Dict, Any, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, func, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import relationship
@@ -8,17 +7,7 @@ from sqlalchemy.orm import relationship
 from src.core.database import Base
 
 if TYPE_CHECKING:
-    from src.models.user import User
-    from src.models.ship import Ship
-    from src.models.team import Team
-    from src.models.reputation import Reputation
-    from src.models.sector import Sector
-    from src.models.combat_log import CombatLog
-    from src.models.warp_tunnel import WarpTunnel
-    from src.models.genesis_device import GenesisDevice
-    from src.models.first_login import FirstLoginSession, PlayerFirstLoginState
-    from src.models.region import Region, RegionalMembership, InterRegionalTravel
-    from src.models.enhanced_ai_models import AIComprehensiveAssistant
+    from src.models.region import RegionalMembership, InterRegionalTravel
 
 
 class Player(Base):
@@ -69,6 +58,13 @@ class Player(Base):
     aria_blocked_until = Column(DateTime(timezone=True), nullable=True)
 
     current_ship_id = Column(UUID(as_uuid=True), ForeignKey("ships.id", ondelete="SET NULL"), nullable=True)
+    # ADR-0089 / WO-P2P-TRADING-SYSTEM: at most one open bilateral trade session.
+    open_trade_session_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("player_trade_sessions.id", ondelete="SET NULL", use_alter=True),
+        nullable=True,
+        unique=True,
+    )
     home_sector_id = Column(Integer, nullable=False, default=1)
     current_sector_id = Column(Integer, nullable=False, default=1)
     is_docked = Column(Boolean, nullable=False, default=False)
@@ -119,6 +115,12 @@ class Player(Base):
     last_activity_at = Column(DateTime(timezone=True), nullable=True)
     turn_reset_at = Column(DateTime(timezone=True), nullable=True)
     return_boost_until = Column(DateTime(timezone=True), nullable=True)  # WO-RE1: welcome-back ×1.5 emergent-rep window
+    # Station-protection arrest/detention (station-protection.md:99).
+    # Set on tractor-surrender for serious lock reasons; NULL = not detained.
+    # Lazy-cleared when now >= detained_until. Gates non-pod ship boarding
+    # and freezes turn regen while active (WO-BUILD-STATION-PROTECTION-
+    # ARREST-DETENTION).
+    detained_until = Column(DateTime(timezone=True), nullable=True)
     # ADR-0004: continuous turn regeneration anchor + stored cap.
     last_turn_regeneration = Column(DateTime(timezone=True), nullable=True)
     max_turns = Column(Integer, nullable=False, default=1000, server_default=text("1000"))
@@ -141,6 +143,14 @@ class Player(Base):
     # (src.services.suspect_service.clear_expired_suspects).
     suspect_until = Column(DateTime(timezone=True), nullable=True)
     suspect_team_snapshot = Column(ARRAY(UUID(as_uuid=True)), nullable=True)
+    # WO-BUILD-WANTED-UNTIL-TIMER (2026-08-04). Fixed-duration auto-clear
+    # timestamp, but ONLY for the black-market Severe-bust Wanted trigger
+    # (src.services.wanted_service) -- the stolen-ship and reputation-
+    # recovery triggers (ranking.md#wanted-status) auto-clear on their own
+    # condition and never touch this column. Parallel field to
+    # suspect_until. NULL when not Wanted, or Wanted via a condition-based
+    # trigger.
+    wanted_until = Column(DateTime(timezone=True), nullable=True)
     # Grey-flag PvP status (WO-BL, Max-ruled). A temporary "open season" mark
     # earned by aggressing on a lawful target:
     #   - attacking a GOOD-STANDING player → grey 1h (grey_kind="player_attack");
@@ -161,6 +171,17 @@ class Player(Base):
     # beacon; the cooldown deadline is derived at read time via
     # scaled_deadline(24, start=last_distress_at) -- never stored pre-computed.
     last_distress_at = Column(DateTime(timezone=True), nullable=True)
+    # Black-market TRANSIT-scan cooldown (WO-K2, black-market.md [OPEN-9]).
+    # The brief's default is a PER-SECTOR cooldown -- "one scan per sector per
+    # traversal (no re-roll on immediate re-entry)" -- which a lone timestamp
+    # cannot express, so the scanned sector is stored alongside it. The pair is
+    # written in the SAME transaction as the bust it guards, which is why this
+    # lives here and not in Redis (a key outside the move's transaction can
+    # drift from the DB if that transaction rolls back).
+    # NULL/NULL = never scanned in transit; the roll is always eligible.
+    # contraband_service.scan_in_transit owns this contract.
+    last_contraband_scan_at = Column(DateTime(timezone=True), nullable=True)
+    last_contraband_scan_sector_id = Column(Integer, nullable=True)
     settings = Column(JSONB, nullable=False, default={})
     first_login = Column(JSONB, nullable=False, default={"completed": False})
     # CRT WO-K0-2: the research ledger. ONE additive NULLABLE JSONB column — the
@@ -220,10 +241,6 @@ class Player(Base):
     first_login_sessions = relationship("FirstLoginSession", back_populates="player", cascade="all, delete-orphan")
     first_login_state = relationship("PlayerFirstLoginState", back_populates="player", uselist=False, cascade="all, delete-orphan")
     
-    # Analytics relationships (TODO: Create PlayerSession and PlayerActivity models)
-    # sessions = relationship("PlayerSession", back_populates="player", cascade="all, delete-orphan")
-    # activities = relationship("PlayerActivity", cascade="all, delete-orphan")
-    
     # Multi-regional relationships
     home_region = relationship("Region", foreign_keys=[home_region_id])
     current_region = relationship("Region", foreign_keys=[current_region_id])
@@ -238,11 +255,6 @@ class Player(Base):
     aria_memories = relationship("ARIAPersonalMemory", back_populates="player", cascade="all, delete-orphan")
     aria_market_intelligence = relationship("ARIAMarketIntelligence", back_populates="player", cascade="all, delete-orphan")
     aria_exploration_map = relationship("ARIAExplorationMap", back_populates="player", cascade="all, delete-orphan")
-    # DEPRECATED (WO-ARIA-GA-CLEANUP, pending Max ruling) -- see
-    # ARIATradingPattern's own deprecation note in models/aria_personal_
-    # intelligence.py. Zero live callers as of the GA-strip; relationship
-    # kept (not dropped) until a DECISIONS ruling on the proposed DROP.
-    aria_trading_patterns = relationship("ARIATradingPattern", back_populates="player", cascade="all, delete-orphan")
     aria_trading_observations = relationship("ARIATradingObservation", back_populates="player", cascade="all, delete-orphan")
     
     # Fleet relationships

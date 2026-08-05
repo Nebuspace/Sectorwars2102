@@ -1,6 +1,5 @@
 import uuid
 import enum
-from datetime import datetime, UTC
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
@@ -18,7 +17,7 @@ from sqlalchemy.orm import relationship
 from src.core.database import Base
 
 if TYPE_CHECKING:
-    from src.models.player import Player
+    pass
 
 
 class WarpLayer(enum.Enum):

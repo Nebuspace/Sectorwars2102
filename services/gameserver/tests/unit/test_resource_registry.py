@@ -31,6 +31,12 @@ CANON_NAMES = {
     "exotic_technology", "luxury_goods",
     "colonists", "combat_drones", "quantum_shards", "quantum_crystals",
     "prismatic_ore", "lumen_crystals",
+    # precious_metals (WO-RES-PRECIOUS-METALS-SEED): a 14th CATEGORY_RARE
+    # entry, priced mining-drop rare material -- not part of definitions.md's
+    # narrower "Rare Materials" subsection (prismatic_ore/lumen_crystals
+    # only) but still a real registry row (resource_registry_seeder.py's own
+    # module docstring documents the rationale in full).
+    "precious_metals",
 }
 
 
@@ -40,19 +46,24 @@ def test_registry_covers_every_resource_type():
 
 
 def test_registry_names_match_canon_list():
-    """The 13 seeded names are exactly definitions.md's Resource Types list."""
+    """The 14 seeded names are definitions.md's Resource Types list plus
+    precious_metals (WO-RES-PRECIOUS-METALS-SEED, a separately-canonical
+    priced mining rare drop, not one of definitions.md's narrower "Rare
+    Materials" pair)."""
     names = {entry["name"] for entry in RESOURCE_REGISTRY.values()}
     assert names == CANON_NAMES
-    assert len(RESOURCE_REGISTRY) == 13
+    assert len(RESOURCE_REGISTRY) == 14
 
 
 def test_registry_category_counts_match_canon_sections():
-    """7 core commodities / 4 strategic resources / 2 rare materials."""
+    """7 core commodities / 4 strategic resources / 3 rare materials
+    (prismatic_ore, lumen_crystals, precious_metals -- see
+    WO-RES-PRECIOUS-METALS-SEED)."""
     by_category = {}
     for entry in RESOURCE_REGISTRY.values():
         by_category.setdefault(entry["category"], 0)
         by_category[entry["category"]] += 1
-    assert by_category == {CATEGORY_CORE: 7, CATEGORY_STRATEGIC: 4, CATEGORY_RARE: 2}
+    assert by_category == {CATEGORY_CORE: 7, CATEGORY_STRATEGIC: 4, CATEGORY_RARE: 3}
 
 
 @pytest.mark.parametrize(

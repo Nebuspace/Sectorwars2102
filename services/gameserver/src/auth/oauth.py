@@ -192,7 +192,7 @@ async def create_oauth_user(
     db.add(oauth_account)
 
     # Create Player record for OAuth user (with optional invite placement override)
-    player = await create_player_for_user(
+    await create_player_for_user(
         db, user, invite_code=invite_code, ip_hash=ip_hash
     )
 
@@ -336,7 +336,7 @@ async def create_player_for_user(
     # Set the starter ship as current ship
     player.current_ship_id = starter_ship.id
     from src.services.ship_service import sync_current_pilot
-    sync_current_pilot(player, starter_ship)  # QUEUE-REGISTRY-PILOT-WIRING: no old ship (brand-new player)
+    sync_current_pilot(player, starter_ship, db=db)  # QUEUE-REGISTRY-PILOT-WIRING: no old ship (brand-new player)
 
     return player
 

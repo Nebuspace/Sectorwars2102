@@ -1,9 +1,7 @@
 import uuid
 import enum
-from datetime import datetime
-from typing import List, Dict, Optional, Any
 from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, Enum, func
-from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 
 from src.core.database import Base
@@ -34,10 +32,10 @@ class ResourceType(enum.Enum):
 
     See /DOCS/STATUS/COMMODITY_NAMING_ANALYSIS.md for detailed analysis.
 
-    Categories:
-    - Core Commodities (7): Basic trading resources
+    Categories (registry category strings — see resource_registry_seeder):
+    - Core Commodities (7): Basic station-traded resources
     - Strategic Resources (4): Advanced gameplay materials
-    - Rare Materials (2): Endgame high-value materials
+    - Rare Materials (3): Endgame finds + precious_metals (Secondary mining drop)
     """
 
     # Core Commodities (7)
@@ -58,7 +56,9 @@ class ResourceType(enum.Enum):
     QUANTUM_CRYSTALS = "QUANTUM_CRYSTALS"
     COMBAT_DRONES = "COMBAT_DRONES"
 
-    # Rare Materials (2)
+    # Rare Materials (3) — PRECIOUS_METALS is CATEGORY_RARE in the seeder
+    # (priced Secondary mining drop); prismatic_ore / lumen_crystals unpriced.
+    PRECIOUS_METALS = "PRECIOUS_METALS"
     PRISMATIC_ORE = "PRISMATIC_ORE"
     PHOTONIC_CRYSTALS = "PHOTONIC_CRYSTALS"
 

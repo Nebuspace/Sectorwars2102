@@ -1,7 +1,6 @@
 import uuid
 import enum
-from datetime import datetime
-from typing import List, Optional, Dict, Any, TYPE_CHECKING
+from typing import Optional, Dict, Any, TYPE_CHECKING
 from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, Enum, Table, func, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import relationship
@@ -10,9 +9,7 @@ from src.core.database import Base
 from src.core.commodity_economy import base_price as _commodity_base_price
 
 if TYPE_CHECKING:
-    from src.models.player import Player
-    from src.models.sector import Sector
-    from src.models.resource import Market
+    pass
 
 
 # Association table for player-station relationship
@@ -111,7 +108,25 @@ class Station(Base):
     # the existing REGEN_TICK_HOURS canonical-hours lazy regen gate.
     last_price_recomputed_at = Column(DateTime(timezone=True), nullable=True)
     pending_price_recomputation = Column(Boolean, nullable=False, server_default=text("false"), default=False)
-    
+    # Region-termination-cascade relocation pre-pay (ADR-0050 "Station
+    # relocation paths" B, WO-BUILD-REGION-LIFECYCLE-CLEANUP-CASCADE): set
+    # when the owner pre-pays the 30% relocation fee during Suspended/Grace.
+    # Schema-only for now -- the station-relocation cascade itself remains a
+    # discovery-only stub (region_termination_cascade_service.py), but the
+    # 30%-of-(acquisition + upgrade capital costs) fee formula itself is now
+    # computable: acquisition_cost already lives in ownership['acquisition_
+    # cost'] (port_ownership_service._acquisition_cost), and capital_cost_
+    # ledger below tracks upgrade spend (WO-BUILD-STATION-ACQUISITION-COST-
+    # CAPITAL-LEDGER). See port_ownership_service.relocation_fee.
+    relocation_prepaid = Column(Boolean, nullable=True)
+    # Append-only ledger of one-time capital spend on this station (station-
+    # security-tier upgrades today; any future station-upgrade purchase
+    # should append here too). List of {"source": str, "amount": int, "at":
+    # ISO8601 str}. Feeds port_ownership_service.total_capital_cost(), the
+    # "sum of upgrade capital costs" half of ADR-0050's relocation-fee
+    # formula (WO-BUILD-STATION-ACQUISITION-COST-CAPITAL-LEDGER).
+    capital_cost_ledger = Column(JSONB, nullable=False, default=list)
+
     # Station properties
     station_class = Column(Enum(StationClass, name="station_class"), nullable=False)
     type = Column(Enum(StationType, name="station_type"), nullable=False)
@@ -371,6 +386,11 @@ class Station(Base):
     # too because StarDock-special-location hosts also get this flag for queries
     # that don't load the parent sector's special_features array).
     is_spacedock = Column(Boolean, nullable=False, default=False, server_default="false")
+    # WO-ANCHOR-REPAIR-SERVICE: Phase-11 SpaceDock role within a region —
+    # 'starter' (starter-cluster anchor) or 'frontier'. Nullable: unset means
+    # role unknown; the detect-only daily scan treats that as unverifiable,
+    # not false-missing. Backfill is a separate worldgen/ops pass.
+    region_assignment_role = Column(String(32), nullable=True)
     # Central Nexus Starport Prime discriminator (FEATURES/economy/docking-slips
     # §Per-station-class slip counts). Both Starport Prime and a regional Capital
     # are StationClass.CLASS_0, but their docking-slip pools differ: Starport

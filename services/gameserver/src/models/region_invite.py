@@ -37,14 +37,12 @@ from sqlalchemy import (
     TIMESTAMP,
     ForeignKey,
     CheckConstraint,
-    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from enum import Enum
 from datetime import datetime
-from typing import Optional
 import uuid
 
 from src.core.database import Base

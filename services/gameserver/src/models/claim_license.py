@@ -25,7 +25,6 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     UniqueConstraint,
-    func,
 )
 from sqlalchemy.dialects.postgresql import UUID
 

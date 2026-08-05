@@ -28,7 +28,7 @@ deterministic, available proxy the canon itself uses for archetype placement.
 from __future__ import annotations
 
 import enum
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 
 # ── Archetype enum (mirrors models.station.TraderPersonalityType values) ──────

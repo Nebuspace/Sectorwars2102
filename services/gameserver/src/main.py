@@ -114,6 +114,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     )
                 except Exception as inner:
                     logger.warning("i18n seed failed for %s: %s", path, inner)
+
+            # Seed non-English locales with English base keys as fallback
+            seed_counts = await tservice.seed_non_english_from_english()
+            if seed_counts:
+                logger.info(f"Non-English translation seed: {seed_counts}")
         finally:
             db.close()
     except Exception as e:

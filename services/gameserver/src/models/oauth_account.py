@@ -1,8 +1,6 @@
 import uuid
-from datetime import datetime
 from typing import TYPE_CHECKING
 
-import sqlalchemy
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -10,7 +8,7 @@ from sqlalchemy.orm import relationship
 from src.core.database import Base
 
 if TYPE_CHECKING:
-    from src.models.user import User
+    pass
 
 
 class OAuthAccount(Base):

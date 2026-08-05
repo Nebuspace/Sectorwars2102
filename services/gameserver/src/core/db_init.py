@@ -1,9 +1,7 @@
 import logging
 import os
-import subprocess
-import sys
 import time
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
 from alembic.config import Config
 from alembic import command
@@ -105,11 +103,6 @@ def create_tables_directly():
         logger.info("Creating database tables directly using SQLAlchemy models...")
         
         # Import all models to ensure they're registered with Base.metadata
-        from src.models.user import User
-        from src.models.admin_credentials import AdminCredentials
-        from src.models.oauth_account import OAuthAccount 
-        from src.models.refresh_token import RefreshToken
-        from src.models.player_credentials import PlayerCredentials
         
         # Create all tables
         Base.metadata.create_all(bind=engine)

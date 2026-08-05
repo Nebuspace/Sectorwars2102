@@ -6,10 +6,9 @@ Fleets are groups of ships that can engage in large-scale battles.
 
 from uuid import uuid4
 from datetime import datetime
-from typing import Optional, List
 import enum
 from sqlalchemy import Column, String, DateTime, Integer, Float, Boolean, ForeignKey, JSON
-from sqlalchemy.dialects.postgresql import UUID, ARRAY
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from src.core.database import Base

@@ -1,8 +1,6 @@
 import uuid
-from datetime import datetime
-from typing import Optional, Dict, Any
 from enum import Enum
-from sqlalchemy import Column, DateTime, String, Integer, Float, ForeignKey, Text, JSON, Boolean
+from sqlalchemy import Column, DateTime, String, Integer, Float, ForeignKey, Text, Boolean
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy import func
@@ -148,9 +146,3 @@ class CombatStats(Base):
     # Relationships
     most_active_attacker = relationship("Player", foreign_keys=[most_active_attacker_id])
     most_active_defender = relationship("Player", foreign_keys=[most_active_defender_id])
-
-
-# Add combat relationships to existing models
-# This would be added to the Player model:
-# combat_logs_as_attacker = relationship("CombatLog", foreign_keys="CombatLog.attacker_id", back_populates="attacker")
-# combat_logs_as_defender = relationship("CombatLog", foreign_keys="CombatLog.defender_id", back_populates="defender")

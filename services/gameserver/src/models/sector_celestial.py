@@ -12,7 +12,6 @@ endpoint and gets its own timestamps; the sectors hot path stays lean.
 """
 
 import uuid
-from datetime import datetime
 
 from sqlalchemy import Column, DateTime, String, Integer, BigInteger, ForeignKey, func, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB

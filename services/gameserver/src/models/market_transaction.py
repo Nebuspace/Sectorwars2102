@@ -1,8 +1,6 @@
 import uuid
-from datetime import datetime
-from typing import Optional, Dict, Any
 from sqlalchemy import Column, DateTime, String, Integer, Float, ForeignKey, Boolean, Enum as SQLEnum
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy import func, Index
 import enum
@@ -275,14 +273,3 @@ class PriceAlert(Base):
         Index('ix_price_alerts_active', 'is_active'),
         Index('ix_price_alerts_triggered', 'triggered_at'),
     )
-
-
-# Add economic relationships to existing models
-# This would be added to the Player model:
-# market_transactions = relationship("MarketTransaction", back_populates="player")
-
-# This would be added to the Station model:
-# market_prices = relationship("MarketPrice", back_populates="port")
-# price_history = relationship("PriceHistory", back_populates="port")
-# price_alerts = relationship("PriceAlert", back_populates="port")
-# market_transactions = relationship("MarketTransaction", back_populates="port")
