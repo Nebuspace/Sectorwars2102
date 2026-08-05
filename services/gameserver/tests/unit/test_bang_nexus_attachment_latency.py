@@ -14,6 +14,7 @@ from __future__ import annotations
 import inspect
 import uuid
 from typing import Any, List
+from unittest.mock import MagicMock
 
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelType
 from src.services.bang_import_service import BangImportService, RegionAttachment

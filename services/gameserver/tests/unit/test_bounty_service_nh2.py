@@ -21,6 +21,7 @@ from uuid import uuid4
 import pytest
 
 from src.services import bounty_service as bs
+from src.services import personal_reputation_service as prs
 
 
 @pytest.fixture(autouse=True)

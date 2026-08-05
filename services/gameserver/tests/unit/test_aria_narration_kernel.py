@@ -74,9 +74,6 @@ def test_zero_llm_imports():
 # --------------------------------------------------------------------- #
 
 def test_registry_covers_exactly_the_five_buildable_rows():
-    # P-A5 (warp-tunnel reveal) and P-F9 (ADR-0059 N-F3 citadel
-    # prerequisite-loss auto-cancel) were added after this kernel's original
-    # 5-row build; this pin tracks the full live registry.
     assert set(REGISTRY.keys()) == {"P-F1", "P-F7", "P-F8", "P-F9", "P-A2", "P-A3", "P-A5"}
     assert REGISTRY["P-F1"].suppression_scope == "session"
     assert REGISTRY["P-F9"].suppression_scope == "session"
@@ -327,8 +324,7 @@ def test_suppression_p_a3_once_per_team_join():
 
 
 # --------------------------------------------------------------------- #
-# Assistance-level slicing (aria-companion.md; 4-level vocab ratified
-# 2026-08-04, ADR-0068: minimal/quiet/standard/full)
+# Assistance-level slicing (aria-companion.md, [NO-CANON] 3-level vocab)
 # --------------------------------------------------------------------- #
 
 def test_assistance_minimal_suppresses_atmospheric_but_not_standard():
@@ -357,8 +353,8 @@ def test_assistance_minimal_suppresses_atmospheric_but_not_standard():
     assert allowed_f8 is not None
 
 
-def test_assistance_standard_and_full_fire_atmospheric_rows():
-    for level in ("standard", "full"):
+def test_assistance_medium_and_full_fire_atmospheric_rows():
+    for level in ("medium", "full"):
         svc = _svc()
         allowed = svc.record_event(
             "P-A2", "player-9", dedupe_key=f"sector-{level}",
@@ -366,16 +362,6 @@ def test_assistance_standard_and_full_fire_atmospheric_rows():
             context={"sector_type_desc": "a nebula"}, now=NOW,
         )
         assert allowed is not None, f"assistance_level={level} should fire P-A*"
-
-
-def test_assistance_quiet_suppresses_atmospheric_same_as_minimal():
-    svc = _svc()
-    blocked = svc.record_event(
-        "P-A2", "player-quiet", dedupe_key="sector-quiet",
-        assistance_level="quiet",
-        context={"sector_type_desc": "a nebula"}, now=NOW,
-    )
-    assert blocked is None
 
 
 # --------------------------------------------------------------------- #
@@ -438,6 +424,9 @@ def test_resolve_assistance_level_reads_the_profile_column():
 
 
 def test_resolve_assistance_level_defaults_to_standard_when_no_profile():
+    """ADR-0068 (ratified 2026-08-04): 4-level vocab (minimal/quiet/standard/
+    full) replaces the old 3-level minimal/medium/full -- 'standard' is now
+    the no-profile default, not 'medium'."""
     assert resolve_assistance_level(_FakeSession([]), uuid.uuid4()) == "standard"
 
 

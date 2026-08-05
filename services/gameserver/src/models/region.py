@@ -1,6 +1,6 @@
 """Regional models for multi-regional platform"""
 
-from sqlalchemy import Column, String, Integer, BigInteger, DECIMAL, Boolean, Text, TIMESTAMP, ForeignKey, CheckConstraint, UniqueConstraint
+from sqlalchemy import Column, String, Integer, BigInteger, DECIMAL, Boolean, Text, TIMESTAMP, ForeignKey, CheckConstraint, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -110,7 +110,22 @@ class Region(Base):
     # exists, server-generated uint64-positive fallback otherwise), and
     # migration ae4f2ed102fc backfilled every pre-existing NULL row
     # (deterministic md5-of-id derivation) before flipping this NOT NULL.
-    generation_seed = Column(BigInteger, nullable=False)
+    # server_default MUST be mirrored here (not just the migration's raw
+    # ALTER TABLE ... SET DEFAULT) -- without it, SQLAlchemy's metadata
+    # doesn't know a DB-side default exists, so on flush it sends an
+    # explicit NULL for any Region() built without generation_seed
+    # (16 test fixtures do exactly this), which violates NOT NULL despite
+    # the column technically having a default at the DB level. Found via
+    # tests/integration/test_core_loop_playthrough.py surfacing the gap at
+    # runtime -- the original WO's "safety net" was never actually
+    # exercised against a live Postgres before this promotion slice.
+    generation_seed = Column(
+        BigInteger,
+        nullable=False,
+        server_default=text(
+            "(('x' || substr(md5(random()::text || clock_timestamp()::text), 1, 16))::bit(63)::bigint)"
+        ),
+    )
     generation_phase_checksums = Column(JSONB, nullable=True, server_default='{}')
     created_at = Column(TIMESTAMP, nullable=False, server_default=func.now())
     updated_at = Column(TIMESTAMP, nullable=False, server_default=func.now(), onupdate=func.now())

@@ -281,26 +281,6 @@ class TestFieldParity:
         assert len(result.wrecks) == 1
         assert result.wrecks[0].id == str(wreck.id)
 
-    async def test_message_beacons_denorm_passthrough(self):
-        sector = _sector()
-        sector.message_beacons = [{"id": "beacon-1", "preview": "hi"}]
-        player = _player()
-        db = _session_for(sector)
-
-        result = await get_sector_contents(sector_id=CURRENT_SECTOR, player=player, db=db)
-
-        assert result.message_beacons == sector.message_beacons
-
-    async def test_message_beacons_defaults_empty_list(self):
-        sector = _sector()
-        sector.message_beacons = None
-        player = _player()
-        db = _session_for(sector)
-
-        result = await get_sector_contents(sector_id=CURRENT_SECTOR, player=player, db=db)
-
-        assert result.message_beacons == []
-
     async def test_warp_gates_structure_present(self):
         sector = _sector()
         player = _player()

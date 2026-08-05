@@ -16,6 +16,7 @@ in the house style of test_ship_module_bake.py.
 import types
 import uuid
 
+import pytest
 
 from src.services.first_login_service import FirstLoginService
 from src.models.first_login import ShipChoice

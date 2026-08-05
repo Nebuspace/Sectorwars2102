@@ -112,6 +112,9 @@ class TestEveryCurrentShipIdWriteSitePairsWithSyncCurrentPilot:
         "services/station_security_service.py": (1, 1),
         "services/escape_pod_service.py": (1, 1),
         "services/first_login_service.py": (1, 1),
+        # docking_service.py -- stolen-ship impound-and-eject (station-
+        # protection arrest surrender flow); ship_registry_service.py --
+        # abandonment's owner-pointer clear (ship-registry.md "Abandonment").
         "services/docking_service.py": (1, 1),
         "services/ship_registry_service.py": (1, 1),
         # ship_service.py DEFINES sync_current_pilot -- the def line itself

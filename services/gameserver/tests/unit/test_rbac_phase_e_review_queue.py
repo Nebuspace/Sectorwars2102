@@ -5,6 +5,7 @@ DB-free source asserts + sqlite ordering smoke for stale-first / HIGH_IMPACT fil
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 

@@ -144,27 +144,18 @@ class _DeploySession:
     get (Drone) -> execute (lock, now the FULL Player row) -> run_sync
     (regenerate_turns bridge) -> get (Player, inside _get_max_drones)
     -> get (Ship) -> execute (max_drones) -> execute (deployed count)
-    -> execute (rival exclusive-sector check) -> [execute (prior deployment)
-    -> add/commit/refresh on success].
+    -> execute (sector-exclusivity rival check) -> [execute (prior
+    deployment) -> add/commit/refresh on success].
     """
 
-    def __init__(
-        self,
-        *,
-        drone,
-        player,
-        ship,
-        max_drones,
-        deployed_count,
-        prior_deployment=None,
-        rival_deployment_id=None,
-    ):
+    def __init__(self, *, drone, player, ship, max_drones, deployed_count,
+                 rival_deployment_id=None, prior_deployment=None):
         self.get = AsyncMock(side_effect=[drone, player, ship])
         self.execute = AsyncMock(side_effect=[
             _result(scalar_one_or_none=player),                   # lock check (full Player, WO-PROG-TURN-COSTS)
             _result(scalar_one_or_none=max_drones),               # ShipSpecification.max_drones
             _result(scalar=deployed_count),                       # _count_deployed_drones
-            _result(scalar_one_or_none=rival_deployment_id),      # one-player-per-sector
+            _result(scalar_one_or_none=rival_deployment_id),      # sector-exclusivity rival check
             _result(scalar_one_or_none=prior_deployment),         # prior active deployment
         ])
         # AsyncSession.run_sync(fn, *args) -> fn(sync_session, *args). These
@@ -339,3 +330,4 @@ class TestDroneBayBonusModuleAndLegacyStack:
         ship = _ship()
         ship.modules = None
         assert DroneService._drone_bay_bonus(ship) == 0
+

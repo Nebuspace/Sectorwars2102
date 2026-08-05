@@ -480,7 +480,6 @@
   font-size: 0.7692em;
   color: var(--color-text-muted, #7e8ca0);
 }
-
 /* ── Crew (team summary) tab ─────────────────────────────────────────────── */
 .sb-crew-loading,
 .sb-crew-error {
