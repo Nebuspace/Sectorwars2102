@@ -142,17 +142,17 @@ def test_is_producible_matches_station_production_mechanic():
 # Seeder tests — real DB session
 # ----------------------------------------------------------------------
 
-def test_seed_creates_all_thirteen_resources(db: Session):
+def test_seed_creates_all_fourteen_resources(db: Session):
     processed = seed_resource_registry(db)
-    assert processed == 13
-    assert db.query(Resource).count() == 13
+    assert processed == 14
+    assert db.query(Resource).count() == 14
 
 
 def test_seed_is_idempotent(db: Session):
     seed_resource_registry(db)
     processed_again = seed_resource_registry(db)
-    assert processed_again == 13
-    assert db.query(Resource).count() == 13  # no duplicates
+    assert processed_again == 14
+    assert db.query(Resource).count() == 14  # no duplicates
 
 
 def test_seed_reconciles_a_hand_edited_row(db: Session):
@@ -193,7 +193,7 @@ async def test_list_resources_returns_seeded_catalog(db: Session):
 
     result = await list_resources(player=None, db=db)
 
-    assert len(result) == 13
+    assert len(result) == 14
     names = {r.name for r in result}
     assert names == CANON_NAMES
     # Ordered by (category, name) per the route's order_by.
@@ -217,7 +217,7 @@ async def test_list_resources_excludes_inactive_rows(db: Session):
     result = await list_resources(player=None, db=db)
 
     assert "prismatic_ore" not in {r.name for r in result}
-    assert len(result) == 12
+    assert len(result) == 13
 
 
 @pytest.mark.asyncio
@@ -227,7 +227,7 @@ async def test_route_is_a_pure_table_read_not_a_hardcoded_list(db: Session):
     a marker row and confirm it appears in the route output via marker
     presence + an exact count delta (never an absolute count), so this
     passes whether the table starts empty (throwaway test DB) or already
-    carries the seeder's 13 canonical rows (a pre-seeded / live dev DB).
+    carries the seeder's 14 canonical rows (a pre-seeded / live dev DB).
     Only holds if list_resources queries the table rather than re-deriving
     from RESOURCE_REGISTRY or any other hardcoded list.
 
