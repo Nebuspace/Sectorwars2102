@@ -116,13 +116,9 @@ class TestApplyClassPattern:
             assert result[key]["buys"] is False
             assert result[key]["sells"] is False
 
-    def test_bootstrap_price_is_always_base_price(self) -> None:
-        # apply_class_pattern's bootstrap no longer applies a premium/
-        # discount multiplier at seed time -- that logic was inverted vs
-        # canon and always overwritten on first reprice anyway (dead).
-        # Class 8/9 premiums now live in trading_service
-        # (CLASS_8_BUY_PREMIUM / CLASS_9_SELL_PREMIUM) at transaction time;
-        # bootstrap current_price is just base_price for every class.
+    def test_bootstrap_current_price_is_base_only(self) -> None:
+        # Premiums are applied at transaction time in trading_service, not
+        # at stock bootstrap (old Class-9 0.8x / Class-8 1.3x multipliers removed).
         black_hole = apply_class_pattern(_commodities(), StationClass.CLASS_8, random.Random(1))
         assert black_hole["ore"]["current_price"] == 50
         nova = apply_class_pattern(_commodities(), StationClass.CLASS_9, random.Random(1))

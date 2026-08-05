@@ -5,7 +5,7 @@ Tests all security protection mechanisms against real attack scenarios
 
 import pytest
 from datetime import datetime, timedelta
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from src.services.ai_security_service import (
     AISecurityService,
@@ -332,7 +332,6 @@ class TestAISecurityService:
     def test_concurrent_access(self):
         """Test thread safety and concurrent access"""
         import threading
-        import time
         
         results = []
         

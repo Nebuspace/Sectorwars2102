@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy.orm import Session
 
 from src.api.routes.resources import list_resources
-from src.core.commodity_economy import COMMODITY_BASE_PRICES
+from src.core.commodity_economy import COMMODITY_BASE_PRICES, SAFE_STORABLE_COMMODITIES
 from src.core.resource_registry_seeder import (
     CATEGORY_CORE,
     CATEGORY_RARE,
@@ -30,13 +30,7 @@ CANON_NAMES = {
     "ore", "organics", "gourmet_food", "fuel", "equipment",
     "exotic_technology", "luxury_goods",
     "colonists", "combat_drones", "quantum_shards", "quantum_crystals",
-    "prismatic_ore", "lumen_crystals",
-    # precious_metals (WO-RES-PRECIOUS-METALS-SEED): a 14th CATEGORY_RARE
-    # entry, priced mining-drop rare material -- not part of definitions.md's
-    # narrower "Rare Materials" subsection (prismatic_ore/lumen_crystals
-    # only) but still a real registry row (resource_registry_seeder.py's own
-    # module docstring documents the rationale in full).
-    "precious_metals",
+    "prismatic_ore", "lumen_crystals", "precious_metals",
 }
 
 
@@ -46,10 +40,8 @@ def test_registry_covers_every_resource_type():
 
 
 def test_registry_names_match_canon_list():
-    """The 14 seeded names are definitions.md's Resource Types list plus
-    precious_metals (WO-RES-PRECIOUS-METALS-SEED, a separately-canonical
-    priced mining rare drop, not one of definitions.md's narrower "Rare
-    Materials" pair)."""
+    """The 14 seeded names are exactly definitions.md's Resource Types list
+    plus precious_metals (WO-RES-PRECIOUS-METALS-SEED)."""
     names = {entry["name"] for entry in RESOURCE_REGISTRY.values()}
     assert names == CANON_NAMES
     assert len(RESOURCE_REGISTRY) == 14
@@ -57,8 +49,7 @@ def test_registry_names_match_canon_list():
 
 def test_registry_category_counts_match_canon_sections():
     """7 core commodities / 4 strategic resources / 3 rare materials
-    (prismatic_ore, lumen_crystals, precious_metals -- see
-    WO-RES-PRECIOUS-METALS-SEED)."""
+    (prismatic_ore, lumen_crystals, precious_metals)."""
     by_category = {}
     for entry in RESOURCE_REGISTRY.values():
         by_category.setdefault(entry["category"], 0)
@@ -100,6 +91,35 @@ def test_combat_drones_price_spans_both_canon_figures():
     assert entry["base_price"] == 1000
     assert entry["price_range_min"] == 1000
     assert entry["price_range_max"] == 1200
+
+
+def test_precious_metals_row_pinned(db: Session):
+    """WO-RES-PRECIOUS-METALS-SEED — priced Secondary mining drop
+    (rare_material), not core_commodity, not safe-storable, not
+    production_rate regen; surfaces via the seeder + list route."""
+    entry = RESOURCE_REGISTRY[ResourceType.PRECIOUS_METALS]
+    expected = COMMODITY_BASE_PRICES["precious_metals"]
+    lo, hi = expected["range"]
+    assert entry["name"] == "precious_metals"
+    assert entry["label"] == "Precious Metals"
+    assert entry["category"] == CATEGORY_RARE
+    assert entry["base_price"] == expected["base"] == 130
+    assert entry["price_range_min"] == lo == 80
+    assert entry["price_range_max"] == hi == 180
+    assert entry["is_storable"] is False
+    assert "precious_metals" not in SAFE_STORABLE_COMMODITIES
+    assert entry["is_producible"] is False
+
+    seed_resource_registry(db)
+    row = db.query(Resource).filter(Resource.name == "precious_metals").first()
+    assert row is not None
+    assert row.type == ResourceType.PRECIOUS_METALS
+    assert row.category == CATEGORY_RARE
+    assert row.base_price == 130
+    assert row.price_range_min == 80
+    assert row.price_range_max == 180
+    assert row.is_storable is False
+    assert row.is_producible is False
 
 
 def test_is_storable_matches_citadel_safe_storable_set():

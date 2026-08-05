@@ -339,36 +339,3 @@ class TestGetBangVersion:
     def test_unauthenticated_rejected(self, client: TestClient) -> None:
         resp = client.get(f"{API}/bang/version")
         assert resp.status_code in {401, 403}
-
-
-# ---------------------------------------------------------------------------
-# Legacy endpoint — POST /admin/galaxy/generate  (now 410 Gone per Phase 4A)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.integration
-class TestLegacyGenerateEndpointGone:
-    """``POST /admin/galaxy/generate`` returns 410 Gone with a replacement field."""
-
-    def test_returns_410_with_replacement_field(
-        self,
-        client: TestClient,
-        admin_auth_headers: Dict[str, str],
-    ) -> None:
-        resp = client.post(
-            f"{API}/galaxy/generate",
-            json={"name": "X", "num_sectors": 100},
-            headers=admin_auth_headers,
-        )
-        assert resp.status_code == 410
-        body = resp.json()
-        assert "replacement" in body or (
-            "detail" in body
-            and isinstance(body["detail"], dict)
-            and "replacement" in body["detail"]
-        )
-        replacement = body.get("replacement") or body.get("detail", {}).get(
-            "replacement"
-        )
-        assert replacement is not None
-        assert "/admin/galaxy/jobs" in replacement

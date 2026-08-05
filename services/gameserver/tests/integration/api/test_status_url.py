@@ -8,10 +8,7 @@ import os
 import pytest
 import requests
 import json
-import sys
 import subprocess
-import time
-from urllib.parse import urlparse
 
 
 class TestCodespacesUrls:
@@ -33,7 +30,7 @@ class TestCodespacesUrls:
             
             # Check if the server is running locally
             try:
-                response = requests.get(cls.base_url, timeout=2)
+                requests.get(cls.base_url, timeout=2)
                 print(f"Local server is running at {cls.base_url}")
             except requests.RequestException:
                 print("⚠️ Local server not responding, attempting to start it...")
