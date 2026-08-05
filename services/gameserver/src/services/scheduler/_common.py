@@ -592,10 +592,14 @@ BOUNTY_EXPIRE_SWEEP_SECONDS = int(
 
 # ADR-0050 SK22 — how often the Phase-14 retry sweep SCANS for due regions.
 # The finest backoff step is 1s (region_attachment_service.
-# PHASE14_BACKOFF_SCHEDULE_SECONDS), so a 30s scan cadence is a reasonable
-# floor without hammering the regions table every core-loop tick.
+# PHASE14_BACKOFF_SCHEDULE_SECONDS). This sweep is wired into the same
+# core-loop tick as every other sweep in this module (TICK_SECONDS=60
+# above), so the effective scan cadence is floored at 60s regardless of
+# this value -- a sub-tick default here would just be misleading. Set to
+# TICK_SECONDS so the constant reflects the actual achievable cadence;
+# lower it only if this sweep is ever moved onto its own faster loop.
 PHASE14_ATTACHMENT_RETRY_SWEEP_SECONDS = int(
-    os.environ.get("PHASE14_ATTACHMENT_RETRY_SWEEP_SECONDS", str(30))
+    os.environ.get("PHASE14_ATTACHMENT_RETRY_SWEEP_SECONDS", str(TICK_SECONDS))
 )
 
 # Suspect auto-clear sweep (WO-CMB-SUSPECT-LIFE-1 held wiring) —
