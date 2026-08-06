@@ -523,6 +523,28 @@ _EXPECTED_SECTOR_COUNT: Dict[RegionType, Optional[int]] = {
     "central_nexus": 5000,
 }
 
+# police-forces.md / central-nexus-clusters.md: Gateway Plaza = Nexus-local
+# sectors 2251–2500 (includes Capital 2251). Phase 12.5b stamps these
+# ``is_nexus_protected=True`` on bang-import so Sentinel breach response
+# covers the Capital + arrival cluster (not the whole 5k Nexus).
+NEXUS_GATEWAY_PLAZA_SECTOR_LO = 2251
+NEXUS_GATEWAY_PLAZA_SECTOR_HI = 2500
+
+
+def _should_stamp_nexus_protected(region_type: str, sector_number: int) -> bool:
+    """True when bang-import should set ``Sector.is_nexus_protected``.
+
+    Canon (police-forces.md § is_nexus_protected): Capital 2251 + every
+    Gateway Plaza cluster sector (2251–2500 inclusive) in ``central_nexus``.
+    Spoke Frontier landing stamps are a separate ADR-0043 path.
+    """
+    return (
+        region_type == "central_nexus"
+        and NEXUS_GATEWAY_PLAZA_SECTOR_LO
+        <= sector_number
+        <= NEXUS_GATEWAY_PLAZA_SECTOR_HI
+    )
+
 #: WO-BANG-ONEWAY-RATE: GLOSSARY.md's canonical one-way-warp fraction
 #: target (~5%). Every BangConfig construction site below pins this
 #: EXPLICITLY rather than relying on bang's own CLI default (also 5% per
@@ -1901,6 +1923,11 @@ class BangImportService:
                 sector_kwargs["defenses"] = ss.defenses
             if ss.controlling_faction is not None:
                 sector_kwargs["controlling_faction"] = ss.controlling_faction
+            # Phase 12.5b: Nexus Capital + Gateway Plaza cluster (2251–2500).
+            if _should_stamp_nexus_protected(
+                region_plan.region_type, ss.sector_number
+            ):
+                sector_kwargs["is_nexus_protected"] = True
             sector = Sector(**sector_kwargs)
             session.add(sector)
             await session.flush()
@@ -2086,9 +2113,10 @@ class BangImportService:
             attachment.nexus_landing_sector_id = landing_uuid
             attachment.nexus_landing_sector_number = landing_number
 
-            # Mark the chosen Gateway Plaza sector protected + record it on the
-            # Region. is_nexus_protected drives the Sentinel breach response;
-            # Region.nexus_warp_sector is the canonical pointer (ADR-0043).
+            # ADR-0043 spoke landing: mark the Frontier outer-reach landing
+            # sector protected (distinct from Nexus Gateway Plaza 2251–2500
+            # stamped above for central_nexus). Region.nexus_warp_sector is
+            # the canonical pointer.
             landing_sector = await session.get(Sector, landing_uuid)
             if landing_sector is not None:
                 landing_sector.is_nexus_protected = True  # type: ignore[assignment]
