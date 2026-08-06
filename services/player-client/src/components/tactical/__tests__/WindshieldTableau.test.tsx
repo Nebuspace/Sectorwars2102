@@ -737,6 +737,76 @@ describe('WindshieldTableau', () => {
     vi.useRealTimers();
   });
 
+  // ---- Bug fix (2026-08-06, live: "travel to planet is broke" / mid-
+  // course redirect broke). Root cause: flight.pendingApproach is never
+  // cleared after being consumed, and the resolution effect's own deps
+  // (ships/contactT/contactDocks -- the SAME traffic-clock the comment a
+  // few tests up already documents landing a stray tick mid-glide) meant
+  // it kept re-dispatching travelTo() with the SAME still-pending request
+  // on every unrelated contactT tick, fighting the glide already underway.
+  // Reproduces WITHOUT stubbing rAF (unlike the two contactT-independent
+  // tests above that sidestep this exact race) -- a real ships array keeps
+  // the traffic-clock ticking the whole glide through, which is precisely
+  // the condition that used to redrive travelTo() and land off-target.
+  it('a single approach() request is not re-dispatched by unrelated contactT/ships re-renders mid-glide (was: retriggered travelTo every tick, drifting off target)', async () => {
+    await mount({ ships: [TEST_SHIP] });
+    vi.useFakeTimers();
+    const planetBtn = container.querySelector('.pl') as HTMLButtonElement;
+    const targetLeft = parseFloat(planetBtn.style.left);
+    const targetTop = parseFloat(planetBtn.style.top);
+
+    await act(async () => { flightCapture!.approach('planet-real-1'); });
+
+    // Advance through the WHOLE orient->accelerate->coast->settle sequence
+    // in small steps -- each step gives the contactT traffic-clock (and
+    // therefore the pendingApproach effect's deps) a chance to fire again.
+    // Pre-fix, any one of these re-fires would call travelTo() again with
+    // the same still-pending request, resetting the in-flight commit.
+    for (let i = 0; i < 12; i += 1) {
+      await act(async () => { vi.advanceTimersByTime(700); });
+    }
+
+    const ship = container.querySelector('.shipmk') as HTMLElement;
+    expect(ship.className).not.toContain('travel-');
+    expect(parseFloat(ship.style.left)).toBeCloseTo(targetLeft, 1);
+    expect(parseFloat(ship.style.top)).toBeCloseTo(targetTop, 1);
+    expect(Number.isNaN(parseFloat(ship.style.left))).toBe(false);
+    expect(Number.isNaN(parseFloat(ship.style.top))).toBe(false);
+    vi.useRealTimers();
+  });
+
+  // ---- Same bug, mid-course-redirect symptom: interrupting an in-flight
+  // glide with a NEW approach() request must retarget exactly once, not
+  // get re-driven by the ongoing contactT ticks on top of the redirect.
+  it('mid-course redirect settles at the NEW target with no NaN, even with contactT ticking throughout (was: broke)', async () => {
+    await mount({ ships: [TEST_SHIP] });
+    vi.useFakeTimers();
+    const [planetBtn, procBtn] = Array.from(container.querySelectorAll('.pl, .obj')) as HTMLButtonElement[];
+    const firstTarget = { left: parseFloat(planetBtn.style.left), top: parseFloat(planetBtn.style.top) };
+
+    await act(async () => { flightCapture!.approach('planet-real-1'); });
+    // Get into an in-flight phase before redirecting.
+    await act(async () => { vi.advanceTimersByTime(1000); });
+    let ship = container.querySelector('.shipmk') as HTMLElement;
+    expect(ship.className).toContain('travel-accelerating');
+
+    // Redirect mid-flight to a different object.
+    const stationBtn = container.querySelector('.obj') as HTMLButtonElement;
+    const newTarget = { left: parseFloat(stationBtn.style.left), top: parseFloat(stationBtn.style.top) };
+    await act(async () => { flightCapture!.approach('station-1'); });
+
+    for (let i = 0; i < 12; i += 1) {
+      await act(async () => { vi.advanceTimersByTime(700); });
+    }
+
+    ship = container.querySelector('.shipmk') as HTMLElement;
+    expect(Number.isNaN(parseFloat(ship.style.left))).toBe(false);
+    expect(Number.isNaN(parseFloat(ship.style.top))).toBe(false);
+    // Settles at the NEW target, not the interrupted original one.
+    expect(parseFloat(ship.style.left)).not.toBeCloseTo(firstTarget.left, 1);
+    vi.useRealTimers();
+  });
+
   // ---- FIX B (Max live-playtest): ship heading is aspect-corrected to the
   // REAL measured band px dims (this file's own mocked containerRef rect,
   // 800x400 -> bandAspect=0.5), not the raw %-space angle.

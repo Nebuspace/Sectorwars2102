@@ -876,8 +876,21 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
   // context (GameDashboard.tsx -> PlanetPortPair's onApproach ->
   // flight.approach(id)); resolve it against the fetched system data and
   // run the SAME glide a direct band click performs — reuse, don't fork.
+  //
+  // Bug fix (2026-08-06, live: "travel to planet is broke" / mid-course
+  // redirect broke): flight.pendingApproach is never cleared after being
+  // consumed -- it stays set until the NEXT approach() call overwrites it
+  // with a fresh object. This effect's own deps (ships/contactT/contactDocks
+  // update on nearly every tick) mean it was re-firing travelTo() with the
+  // SAME still-pending request on every unrelated tick, fighting the glide
+  // already in progress (re-entering the mid-course-redirect branch against
+  // itself repeatedly). Track the request's own `seq` and only dispatch
+  // once per distinct approach() call.
+  const handledApproachSeqRef = useRef<number | null>(null);
   useEffect(() => {
     if (!flight.pendingApproach || !system) return;
+    if (flight.pendingApproach.seq === handledApproachSeqRef.current) return;
+    handledApproachSeqRef.current = flight.pendingApproach.seq;
     const { objectId } = flight.pendingApproach;
     const bodyMatch = system.bodies.find((b) => b.real && b.planet_id === objectId);
     if (bodyMatch) {
