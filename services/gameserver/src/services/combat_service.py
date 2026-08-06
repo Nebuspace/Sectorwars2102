@@ -2640,7 +2640,16 @@ class CombatService:
         port_owner = station.owner[0] if station.owner else None
         if port_owner and port_owner.id == attacker.id:
             return {"success": False, "message": "Cannot attack your own port"}
-        
+
+        # Friendly-fire prevention: same-team cannot attack a teammate's port
+        # (residual after WO-FIX-FRIENDLY-FIRE-LOCK-PARTIAL-COVERAGE / PR #233,
+        # which covered planet / drones / warp-gate but not attack_port).
+        if port_owner and self._is_same_team(attacker.id, port_owner.id):
+            return {
+                "success": False,
+                "message": "Friendly-fire prevention: you cannot attack a teammate's port",
+            }
+
         # Check if attacker has enough turns
         turn_cost = 3  # Higher cost for attacking ports
         # Lazy ADR-0004 regen before the affordability check / spend.

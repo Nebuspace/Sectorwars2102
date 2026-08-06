@@ -14,6 +14,7 @@ from src.models.planet import Planet as PlanetModel
 from src.models.sector import Sector as SectorModel
 from src.models.ship import Ship as ShipModel
 from src.models.ship import ShipStatus, ShipType
+from src.models.station import Station as StationModel
 from src.models.warp_gate import WarpGate, WarpGateBeacon, WarpGateStatus
 from src.services.combat_service import CombatService
 
@@ -21,6 +22,7 @@ from src.services.combat_service import CombatService
 FRIENDLY_FIRE_PLANET = "Friendly-fire prevention: you cannot attack a teammate's planet"
 FRIENDLY_FIRE_DRONES = "Friendly-fire prevention: you cannot attack a teammate's drones"
 FRIENDLY_FIRE_GATE = "Friendly-fire prevention: you cannot attack a teammate's warp gate"
+FRIENDLY_FIRE_PORT = "Friendly-fire prevention: you cannot attack a teammate's port"
 
 
 def _make_ship(*, sector_id=1):
@@ -140,11 +142,12 @@ class _StubQuery:
 
 class _FakeCombatDb:
     def __init__(
-        self, *, players, sector=None, planet=None, drones=None, gate=None, beacon=None,
+        self, *, players, sector=None, planet=None, station=None, drones=None, gate=None, beacon=None,
     ):
         self._players = {p.id: p for p in players}
         self._sector = sector
         self._planet = planet
+        self._station = station
         self._drones = drones or []
         self._gate = gate
         self._beacon = beacon
@@ -160,6 +163,8 @@ class _FakeCombatDb:
             return _StubQuery(first=self._sector, all_=[])
         if model is PlanetModel:
             return _StubQuery(first=self._planet, all_=[])
+        if model is StationModel:
+            return _StubQuery(first=self._station, all_=[])
         if model is combat_service_module.Drone:
             return _StubQuery(first=None, all_=self._drones)
         if model is WarpGate:
@@ -279,4 +284,28 @@ class TestAttackWarpGateFriendlyFire:
         assert result["success"] is False
         assert result["message"] == FRIENDLY_FIRE_GATE
         assert attacker.turns == turns_before
+        assert db.commits == 0
+
+
+class TestAttackPortFriendlyFire:
+    def test_same_team_port_blocked_zero_state_change(self):
+        team = uuid.uuid4()
+        sector = types.SimpleNamespace(id=uuid.uuid4(), sector_id=1, region_id=None, last_combat=None)
+        attacker = _make_player(ship=_make_ship(), team_id=team)
+        owner = _make_player(ship=_make_ship(), team_id=team)
+        station = types.SimpleNamespace(
+            id=uuid.uuid4(),
+            sector_id=1,
+            owner=[owner],
+        )
+        db = _FakeCombatDb(players=[attacker, owner], sector=sector, station=station)
+        cs = CombatService(db)
+        turns_before = attacker.turns
+
+        result = cs.attack_port(attacker_id=attacker.id, station_id=station.id)
+
+        assert result["success"] is False
+        assert result["message"] == FRIENDLY_FIRE_PORT
+        assert attacker.turns == turns_before
+        assert db.added == []
         assert db.commits == 0
