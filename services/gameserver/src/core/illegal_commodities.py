@@ -17,21 +17,16 @@ returns on any faction it does not recognise.
 
 Design brief: ``audit/design-briefs/black-market.md`` §2 (the metadata table).
 
-NO-CANON flags (file in ``sw2102-docs/DECISIONS.md`` Pending — built against the
-listed defaults so nothing blocks):
-* **[OPEN-2]** ``SLAVES`` inclusion — present here as a value but **disabled by a
-  feature flag that has no enable path** (see ``SLAVES_ENABLED`` below). Theme
-  call for Max: keep / rename (e.g. ``BONDSERVANTS``) / cut.
-* **[OPEN-4]** ``base_price`` for the no-legal-market items. The values below are
-  invented defaults grounded in current code where a reference exists:
-  - ``WEAPONS`` 2000, ``CONTRABAND_SUBSTANCES`` 1500, ``SLAVES`` 2500 — fixed
-    "Federation seizure-value" placeholders (FEATURES leaves these abstract);
-    pure literals, reference no legal commodity.
-  - ``STOLEN_GOODS`` — a legal-commodity mid reference, derived at import time
-    from ``commodity_economy.base_price("luxury_goods")`` (SoT, WO-ARCH-RES-2I-C)
-    rather than the drift-prone literal 100 it used to be.
-  - ``RESTRICTED_TECH`` — the ``exotic_technology`` reference, likewise derived
-    from ``commodity_economy.base_price("exotic_technology")``.
+Balance numbers ratified in ``sw2102-docs/DECISIONS.md``
+``black-market-kernel-balance-numbers`` (✅ Ruled 2026-08-02) — including
+``SLAVES`` present-but-flag-OFF, seizure-value base prices, and fine/suspect
+tiers. Catalog values below match that ruling:
+* ``SLAVES`` — enum value present, ``SLAVES_ENABLED = False`` (no enable path;
+  theming rename/cut remains a later product call, not an open balance Pending).
+* Seizure-value literals — ``WEAPONS`` 2000, ``CONTRABAND_SUBSTANCES`` 1500,
+  ``SLAVES`` 2500.
+* ``STOLEN_GOODS`` / ``RESTRICTED_TECH`` — derived at import from
+  ``commodity_economy.base_price("luxury_goods"|"exotic_technology")`` (SoT).
 """
 
 from __future__ import annotations
@@ -47,11 +42,12 @@ from src.core.commodity_economy import base_price as _commodity_base_price
 class IllegalSeverity(str, enum.Enum):
     """How harshly the law treats a given contraband category.
 
-    The service maps these to a fine multiplier (brief [OPEN-6] default:
-    LIGHT 2× / MODERATE 3× / SEVERE 4× cargo value) and to the heat outcome
-    (brief [OPEN-7]: LIGHT/MODERATE -> ``Player.is_suspect``; SEVERE ->
-    ``Player.is_wanted``). This module only *declares* the tier per commodity;
-    it does not apply the consequence (single-writer: the service owns the txn).
+    The service maps these to a fine multiplier (DECISIONS
+    black-market-kernel-balance-numbers: LIGHT 2× / MODERATE 3× / SEVERE 4×
+    cargo value) and to the heat outcome (LIGHT/MODERATE -> ``Player.is_suspect``;
+    SEVERE -> ``Player.is_wanted``). This module only *declares* the tier per
+    commodity; it does not apply the consequence (single-writer: the service
+    owns the txn).
     """
 
     LIGHT = "LIGHT"
@@ -72,7 +68,7 @@ class IllegalCommodity(str, enum.Enum):
     STOLEN_GOODS = "STOLEN_GOODS"
     RESTRICTED_TECH = "RESTRICTED_TECH"
     CONTRABAND_SUBSTANCES = "CONTRABAND_SUBSTANCES"
-    # [OPEN-2] disabled stub — present but never enabled (see SLAVES_ENABLED).
+    # Ratified present-but-flag-OFF stub (see SLAVES_ENABLED).
     SLAVES = "SLAVES"
 
 
@@ -82,8 +78,8 @@ class IllegalCommodity(str, enum.Enum):
 # admin toggle that activates SLAVES: ``ENABLED_COMMODITIES`` unconditionally
 # excludes it, and the catalog / buy / sell paths must reject it on its own
 # merits. To ever enable it, a human must edit this line in source review —
-# which is the explicit gate Max asked for ([OPEN-2] is a *theme* decision, not a
-# runtime flag flip). Do not add an enable path; the reviewer asserts its absence.
+# which is the explicit gate Max asked for (theme keep/rename/cut is a product
+# call, not a runtime flag flip). Do not add an enable path; the reviewer asserts its absence.
 # SLAVES: intentionally disabled + omitted from public canon by design (2026-06-22).
 SLAVES_ENABLED: bool = False
 
