@@ -360,6 +360,46 @@ class TestAccept:
         assert acceptor.credits == 480
         assert db.flush_calls == 1
 
+    def test_hostility_seam_blocks_player_issuer_accept(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Proves _acceptor_hostile_to_issuer is consulted on PLAYER-issuer
+        accepts (WO-BUILD-CONTRACT-ACCEPTOR-PAIRWISE-HOSTILITY-CHECK)."""
+        issuer = _player()
+        c = _contract(
+            issuer_type=ContractIssuerType.PLAYER,
+            issuer_id=issuer.id,
+            payment=Decimal("1000.00"),
+            acceptance_fee_pct=Decimal("2.0"),
+        )
+        acceptor = _player(credits=500)
+        db = _FakeSession(contracts=[c], players=[acceptor, issuer])
+        monkeypatch.setattr(
+            contract_service, "_acceptor_hostile_to_issuer", lambda db, a, i: True,
+        )
+        with pytest.raises(contract_service.ContractError, match="hostility"):
+            contract_service.accept(db, c.id, acceptor.id, now=_NOW)
+        assert acceptor.credits == 500  # feeless — rejected before charge
+        assert c.status == ContractStatus.POSTED
+
+    def test_hostility_seam_skipped_for_npc_issuer(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """NPC contracts never consult pairwise player hostility."""
+        c = _contract(payment=Decimal("1000.00"), acceptance_fee_pct=Decimal("2.0"))
+        acceptor = _player(credits=500)
+        db = _FakeSession(contracts=[c], players=[acceptor])
+        called = {"n": 0}
+
+        def _spy(db, a, i):
+            called["n"] += 1
+            return True
+
+        monkeypatch.setattr(contract_service, "_acceptor_hostile_to_issuer", _spy)
+        result = contract_service.accept(db, c.id, acceptor.id, now=_NOW)
+        assert called["n"] == 0
+        assert result["acceptance_fee_charged"] == 20.0
+
     @pytest.mark.parametrize("payment,expected_fee", [(1, 0.02), (100, 2.00), (101, 2.02)])
     def test_fee_math_edge_cases(self, payment: int, expected_fee: float) -> None:
         c = _contract(payment=Decimal(str(payment)), acceptance_fee_pct=Decimal("2.0"))
