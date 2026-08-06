@@ -730,6 +730,34 @@ def _lock_player(db: Session, player_id) -> Player:
     return player
 
 
+def _realize_construction_fee(db: Session, station: Station, fee: int) -> None:
+    """Route a collected shipyard fee through the canon TradeDock fee
+    distribution (defense_fund / operating_fund / owner-treasury) instead of
+    crediting the owner treasury at 100%.
+
+    Canon: FEATURES/economy/docking-slips.md:127 — priority-bump revenue is
+    split per the standard TradeDock fee distribution. Mirrors
+    docking_service._realize_fee: lazy-import realize_port_revenue (avoids a
+    service-layer import cycle), re-locks the station (caller already holds
+    the station lock via advance()), and falls back to a direct treasury
+    credit if the revenue hook is unavailable or raises so a live money path
+    can never break.
+    """
+    try:
+        from src.services.port_ownership_service import realize_port_revenue
+
+        realize_port_revenue(db, station, int(fee))
+    except Exception:
+        logger.warning(
+            "realize_port_revenue failed for station=%s fee=%s; "
+            "falling back to direct treasury credit",
+            getattr(station, "id", None),
+            fee,
+            exc_info=True,
+        )
+        station.treasury_balance = (station.treasury_balance or 0) + int(fee)
+
+
 def _require_tradedock(station: Station) -> Dict[str, int]:
     tier = getattr(station, "tradedock_tier", None)
     pools = SLIP_POOLS.get(tier)
@@ -1340,10 +1368,11 @@ def purchase_priority_bump(
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """Buy a priority-bump tier (FEATURES/economy/docking-slips.md:118-127):
-    the fee is a flat fraction of `total_cost`, banked into the station
-    treasury like every other construction payment; the tier's `weight` is
-    added to `priority_bumps_count`, which `_sorted_queue` sorts DESC —
-    outranking unbumped and lower-tier peers but never a higher tier (see
+    the fee is a flat fraction of `total_cost`, routed through the standard
+    TradeDock fee distribution (`_realize_construction_fee` →
+    realize_port_revenue 40/30/30); the tier's `weight` is added to
+    `priority_bumps_count`, which `_sorted_queue` sorts DESC — outranking
+    unbumped and lower-tier peers but never a higher tier (see
     PRIORITY_BUMP_TIERS + the module docstring's DOCUMENTED
     INTERPRETATIONS). Only meaningful pre-promotion: once a reservation
     holds a slip it is no longer competing for queue position.
@@ -1381,7 +1410,7 @@ def purchase_priority_bump(
         )
 
     player.credits -= fee
-    station.treasury_balance = (station.treasury_balance or 0) + fee
+    _realize_construction_fee(db, station, fee)
     reservation.priority_bumps_count = (reservation.priority_bumps_count or 0) + spec["weight"]
     reservation.updated_at = now
     db.flush()

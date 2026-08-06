@@ -181,9 +181,16 @@ class TestPurchasePriorityBumpFees:
         assert reservation.priority_bumps_count == expected_weight
         assert reservation.state == "queued"  # never promoted here -- slots are full
 
-    def test_conservation_debit_equals_credit(self):
-        """The fee that leaves the player's credits is EXACTLY the fee that
-        lands in the station treasury -- no leak, no double-charge."""
+    def test_routes_fee_through_tradedock_split_helper(self, monkeypatch):
+        """Canon docking-slips.md:127 — priority-bump revenue uses the
+        standard TradeDock fee distribution, not a 100% treasury dump."""
+        realized: list[tuple[Any, int]] = []
+
+        def _capture(db: Any, station: Any, fee: int) -> None:
+            realized.append((station, fee))
+
+        monkeypatch.setattr(cs, "_realize_construction_fee", _capture)
+
         player = _player(credits=100_000)
         station = _station(treasury_balance=5_000)
         reservation = _reservation(station, player)
@@ -193,9 +200,9 @@ class TestPurchasePriorityBumpFees:
         cs.purchase_priority_bump(db, reservation, player, "bump_5", now=_NOW)
 
         assert player.credits == 100_000 - 10_000
-        assert station.treasury_balance == 5_000 + 10_000
-        # Full conservation across the two ledgers touched.
-        assert (100_000 - player.credits) == (station.treasury_balance - 5_000)
+        assert realized == [(station, 10_000)]
+        # Helper owns distribution — treasury is untouched by the purchase path.
+        assert station.treasury_balance == 5_000
 
     def test_stacked_bumps_accumulate_weight_and_fee(self):
         player = _player(credits=100_000)
@@ -370,3 +377,39 @@ class TestQueueReorder:
         assert payload["priority_bumps_count"] == 5
         assert payload["queue_position"] == 1
         assert payload["queue_length"] == 2
+
+
+class TestRealizeConstructionFee:
+    def test_delegates_to_realize_port_revenue(self, monkeypatch):
+        calls: list[tuple[Any, Any, int]] = []
+
+        def _fake_realize(db: Any, station: Any, gross: int, now: Any = None) -> dict:
+            calls.append((db, station, gross))
+            return {"gross": gross}
+
+        monkeypatch.setattr(
+            "src.services.port_ownership_service.realize_port_revenue",
+            _fake_realize,
+        )
+        station = _station()
+        db = _FakeSession(stations=[station])
+
+        cs._realize_construction_fee(db, station, 7_500)
+
+        assert calls == [(db, station, 7_500)]
+        assert station.treasury_balance == 0  # split hook owns the credit
+
+    def test_falls_back_to_treasury_when_hook_raises(self, monkeypatch):
+        def _boom(*_a: Any, **_k: Any) -> None:
+            raise RuntimeError("revenue hook unavailable")
+
+        monkeypatch.setattr(
+            "src.services.port_ownership_service.realize_port_revenue",
+            _boom,
+        )
+        station = _station(treasury_balance=100)
+        db = _FakeSession(stations=[station])
+
+        cs._realize_construction_fee(db, station, 250)
+
+        assert station.treasury_balance == 350
