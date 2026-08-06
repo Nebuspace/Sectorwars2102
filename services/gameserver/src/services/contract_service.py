@@ -207,15 +207,36 @@ def _is_valid_commodity(db: Session, commodity_type: str) -> bool:
 def _is_player_blocklisted(db: Session, issuer_player_id: uuid.UUID) -> bool:
     """[NO-CANON] contracts.md:245 requires "caller not blocklisted" at
     POST time (a platform-level posting gate on the issuer themselves --
-    distinct from :368's ACCEPT-time "acceptor has active hostility with
-    issuer" pairwise check, which is a separate, unbuilt gap in `accept()`
-    out of THIS WO's scope). No blocklist/suspension model exists ANYWHERE
-    in this codebase (verified: no Blocklist/BlockedPlayer model, no
-    block_list column). This is a documented NO-OP SEAM, not a silently
-    invented mechanism -- always returns False (never blocks) until a real
-    blocklist model exists for a future WO to wire here. Exercised by a
-    monkeypatch-to-True test to prove the seam is actually consulted, not
-    decorative."""
+    distinct from the ACCEPT-time pairwise hostility check in
+    :func:`_acceptor_hostile_to_issuer`). No blocklist/suspension model
+    exists ANYWHERE in this codebase (verified: no Blocklist/BlockedPlayer
+    model, no block_list column). This is a documented NO-OP SEAM, not a
+    silently invented mechanism -- always returns False (never blocks)
+    until a real blocklist model exists for a future WO to wire here.
+    Exercised by a monkeypatch-to-True test to prove the seam is actually
+    consulted, not decorative."""
+    return False
+
+
+def _acceptor_hostile_to_issuer(
+    db: Session, acceptor_player_id: uuid.UUID, issuer_player_id: uuid.UUID,
+) -> bool:
+    """contracts.md Anti-griefing: "Contracts cannot be accepted from
+    players the acceptor has active hostility with (negative
+    direct-relationship reputation between the two parties)."
+
+    WO-BUILD-CONTRACT-ACCEPTOR-PAIRWISE-HOSTILITY-CHECK verify-first:
+    there is NO player↔player relationship / standing model in this
+    codebase. ``emergent_reputation_service`` "direct" means a
+    non-cascade faction delta, not a pairwise player standing (audit
+    misread). Faction ``Reputation.is_hostile`` is player↔faction only.
+
+    Documented NO-OP SEAM (mirrors ``_is_player_blocklisted``): always
+    returns False until a real pairwise standing lands. Call site is
+    wired in ``accept()`` for PLAYER-issuer contracts so the gate is
+    exercised (monkeypatch-to-True test), not decorative. NPC issuers
+    skip this check — hostility is player↔player only.
+    """
     return False
 
 
@@ -262,6 +283,15 @@ def accept(
         )
     if contract.issuer_type == ContractIssuerType.PLAYER and contract.issuer_id == acceptor_player_id:
         raise ContractError("Cannot accept your own contract")
+    if (
+        contract.issuer_type == ContractIssuerType.PLAYER
+        and contract.issuer_id is not None
+        and _acceptor_hostile_to_issuer(db, acceptor_player_id, contract.issuer_id)
+    ):
+        raise ContractError(
+            "hostility: cannot accept a contract from a player you have "
+            "active hostility with"
+        )
     if contract.deadline is not None and now >= contract.deadline:
         raise ContractConflictError("expired: this contract's deadline has already passed")
 
