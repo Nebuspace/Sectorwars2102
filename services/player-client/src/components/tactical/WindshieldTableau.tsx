@@ -59,6 +59,7 @@ import {
   TRAVEL_MOVE_MS,
   TRAVEL_ORIENT_MS,
   TRAVEL_REDIRECT_TURN_MS,
+  TRAVEL_REDIRECT_PAINT_MS,
   TRAVEL_SETTLE_MS,
   chooseWarpArrivalAnchor,
   clampPct,
@@ -761,22 +762,27 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
       setLocalBurn(false);
       setTravelPhase('redirect-turn');
       setHeading(arcHeading);
-      // Retarget the running glide onto the arc waypoint — browser continues
-      // from the live interpolated position (momentum preserved).
-      setShipPos(waypoint);
-      shipPosRef.current = waypoint;
-
+      // Do NOT setShipPos(waypoint) in this same synchronous turn as the click.
+      // Paint redirect-turn heading/RCS first; then retarget the running glide
+      // onto the arc waypoint; only then burn to the final destination. A sync
+      // waypoint write can coalesce with the burn retarget and teleport.
       const timers = travelTimersRef.current;
       timers.push(setTimeout(() => {
-        setTravelPhase('accelerating');
-        setLocalBurn(true);
-        setHeading(prograde);
-        setShipPos(target);
-        shipPosRef.current = target;
-        travelOriginRef.current = waypoint;
-        armArrivalProfile(prograde);
-        commitIspBurn(target, objectId);
-      }, TRAVEL_REDIRECT_TURN_MS));
+        // Retarget the running glide onto the arc waypoint — browser continues
+        // from the live interpolated position (momentum preserved).
+        setShipPos(waypoint);
+        shipPosRef.current = waypoint;
+        timers.push(setTimeout(() => {
+          setTravelPhase('accelerating');
+          setLocalBurn(true);
+          setHeading(prograde);
+          setShipPos(target);
+          shipPosRef.current = target;
+          travelOriginRef.current = waypoint;
+          armArrivalProfile(prograde);
+          commitIspBurn(target, objectId);
+        }, TRAVEL_REDIRECT_TURN_MS));
+      }, TRAVEL_REDIRECT_PAINT_MS));
       return;
     }
 

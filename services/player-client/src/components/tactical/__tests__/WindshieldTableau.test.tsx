@@ -1259,14 +1259,21 @@ describe('WindshieldTableau', () => {
     expect(ship.className).not.toContain('travel-orienting'); // must NOT park
     expect(ship.querySelectorAll('.ssv-rcs')).toHaveLength(2);
     expect(flightCapture?.isFlying).toBe(true);
+    // Paint frame: redirect-turn commits BEFORE the arc-waypoint left/top write.
+    expect(ship.style.left).toBe(leftDuring);
+    await act(async () => { vi.advanceTimersByTime(32); });
+    ship = container.querySelector('.shipmk') as HTMLElement;
     // Position retargets to an arc waypoint / new path — not snapped idle.
     expect(ship.style.left).not.toBe(leftDuring);
+    const leftAtWaypoint = ship.style.left;
 
     await act(async () => { vi.advanceTimersByTime(1600); });
     ship = container.querySelector('.shipmk') as HTMLElement;
     expect(ship.className).toContain('travel-accelerating');
     expect(ship.className).toContain('burning');
     expect(flightCapture?.targetId).toBe('station-1');
+    // Burn retarget is a distinct step after the waypoint paint — not coalesced.
+    expect(ship.style.left).not.toBe(leftAtWaypoint);
 
     await act(async () => { vi.advanceTimersByTime(6400 + 800); });
     ship = container.querySelector('.shipmk') as HTMLElement;
@@ -1279,6 +1286,47 @@ describe('WindshieldTableau', () => {
       parseFloat(ship.style.left) - parseFloat(planetBtn.style.left),
       parseFloat(ship.style.top) - parseFloat(planetBtn.style.top),
     )).toBeGreaterThan(1);
+  });
+
+  it('rapid double mid-course redirect paints waypoint before final target (no teleport coalesce)', async () => {
+    await mount();
+    vi.useFakeTimers();
+    const stationBtn = container.querySelector('.obj') as HTMLButtonElement;
+    const planetBtn = container.querySelector('.pl') as HTMLButtonElement;
+
+    await act(async () => { flightCapture!.approach('planet-real-1'); });
+    await act(async () => { vi.advanceTimersByTime(1000); }); // accelerating toward planet
+
+    // Two redirects back-to-back with no frame yield between them (Max repro).
+    await act(async () => {
+      flightCapture!.approach('station-1');
+      flightCapture!.approach('planet-real-1');
+    });
+
+    let ship = container.querySelector('.shipmk') as HTMLElement;
+    expect(ship.className).toContain('travel-redirect-turn');
+    const leftAtRedirectStart = ship.style.left;
+
+    // Intermediate paint: arc waypoint committed, still redirect-turn — NOT final dest.
+    await act(async () => { vi.advanceTimersByTime(32); });
+    ship = container.querySelector('.shipmk') as HTMLElement;
+    expect(ship.className).toContain('travel-redirect-turn');
+    const leftAtWaypoint = ship.style.left;
+    expect(leftAtWaypoint).not.toBe(leftAtRedirectStart);
+    expect(parseFloat(leftAtWaypoint)).not.toBeCloseTo(parseFloat(planetBtn.style.left), 0);
+    expect(parseFloat(leftAtWaypoint)).not.toBeCloseTo(parseFloat(stationBtn.style.left), 0);
+
+    await act(async () => { vi.advanceTimersByTime(1600); });
+    ship = container.querySelector('.shipmk') as HTMLElement;
+    expect(ship.className).toContain('travel-accelerating');
+    expect(flightCapture?.targetId).toBe('planet-real-1');
+    const leftAtBurn = ship.style.left;
+    expect(leftAtBurn).not.toBe(leftAtWaypoint);
+
+    await act(async () => { vi.advanceTimersByTime(6400 + 800); });
+    ship = container.querySelector('.shipmk') as HTMLElement;
+    expect(ship.className).not.toContain('travel-');
+    expect(parseFloat(ship.style.left)).toBeCloseTo(parseFloat(planetBtn.style.left), 0);
   });
 
   it('flight.allStop() flips and burns to a stop instead of freezing momentum', async () => {
