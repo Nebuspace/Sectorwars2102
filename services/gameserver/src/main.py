@@ -158,6 +158,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as e:
         logger.warning(f"Medal catalog seed skipped: {e}")
 
+    # Tech-tree DAG reachability (CRT-MASTER §K0). Pure catalog invariant —
+    # must fail the boot hard if a catalog edit introduces a cycle/orphan.
+    # Also runs at tech_tree import; this call keeps the guard visible next to
+    # the other catalog seed steps and logs an explicit OK line.
+    from src.services import tech_tree as _tech_tree
+
+    _tech_tree.assert_dag_reachable()
+    logger.info("Tech-tree DAG reachability check passed")
+
     # Resource registry seed (WO-ARCH-RES-1-KERNEL). The `resources` table was
     # vestigial (no seeder ever populated it); GET /api/resources now serves
     # this catalog. Idempotent upsert, same pattern as ships/medals.
