@@ -3021,7 +3021,167 @@ class CombatService:
             "turns_remaining": attacker.turns,
         }
 
-    def _resolve_warp_gate_combat(self, attacker: Player, gate: Any) -> Dict[str, Any]:
+
+    def attack_warp_beacon(self, attacker_id: uuid.UUID, beacon_id: uuid.UUID) -> Dict[str, Any]:
+        """Attack a Phase-1 DEPLOYED warp-gate beacon (WO-BUILD-WARPGATE-
+        BEACON-FOCUS-ATTACK-PATH, warp-gates.md Beacon row). Focus/
+        HARMONIZING+ACTIVE remain on attack_warp_gate.
+
+        Beacon sits in the SOURCE sector at 5,000 HP with the same 48h
+        invulnerability window / 75-turn cost / salvage yields as the
+        gate path. Lock order: BEACON then PLAYER (mirrors gate-then-
+        player). On kill the beacon row is deleted (CASCADE cleans
+        construction sites); there is no tunnel to collapse yet.
+        """
+        from src.models.warp_gate import WarpGate, WarpGateBeacon, WarpGateBeaconStatus
+
+        beacon = (
+            self.db.query(WarpGateBeacon)
+            .filter(WarpGateBeacon.id == beacon_id)
+            .with_for_update()
+            .first()
+        )
+        if not beacon:
+            return {"success": False, "message": "Warp gate beacon not found"}
+        if beacon.status != WarpGateBeaconStatus.DEPLOYED:
+            return {"success": False, "message": "This beacon cannot be attacked"}
+
+        # If Phase 3 already started, the attackable structure is the gate.
+        existing_gate = (
+            self.db.query(WarpGate).filter(WarpGate.beacon_id == beacon.id).first()
+        )
+        if existing_gate is not None:
+            return {
+                "success": False,
+                "message": "This beacon already has a gate — attack the gate instead",
+            }
+
+        if beacon.player_id == attacker_id:
+            return {"success": False, "message": "Cannot attack your own warp gate beacon"}
+        if beacon.player_id is not None and self._is_same_team(attacker_id, beacon.player_id):
+            return {
+                "success": False,
+                "message": "Friendly-fire prevention: you cannot attack a teammate's warp gate beacon",
+            }
+
+        attacker = (
+            self.db.query(Player)
+            .filter(Player.id == attacker_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if not attacker:
+            return {"success": False, "message": "Player not found"}
+        if not attacker.current_ship:
+            return {"success": False, "message": "No active ship selected"}
+
+        # Beacon structure physically sits in the SOURCE sector.
+        if attacker.current_sector_id != beacon.source_sector_id:
+            return {
+                "success": False,
+                "message": "You must be in the beacon's sector to attack it",
+            }
+
+        now = datetime.now(timezone.utc)
+        invuln_until = beacon.created_at + timedelta(hours=self.GATE_INVULNERABILITY_HOURS)
+        if now < invuln_until:
+            return {
+                "success": False,
+                "message": (
+                    "ERR_GATE_INVULNERABLE: this beacon is still within its "
+                    "48-hour invulnerability window"
+                ),
+            }
+
+        if attacker.is_docked or attacker.is_landed:
+            return {"success": False, "message": "Cannot attack while docked at a port or landed on a planet"}
+
+        turn_cost = self.GATE_ATTACK_TURN_COST
+        _regen_turns(self.db, attacker)
+        if attacker.turns < turn_cost:
+            return {"success": False, "message": "Not enough turns to attack a warp gate"}
+
+        combat_result = self._resolve_warp_gate_combat(
+            attacker, beacon, structure_label="warp gate beacon"
+        )
+        spend_turns(attacker, turn_cost)
+
+        destroyed = combat_result["destroyed"]
+        salvage_granted: Dict[str, int] = {}
+        target_sector_id = beacon.source_sector_id
+
+        if destroyed:
+            from src.services.warp_gate_service import _refund_cargo
+
+            owner_id = beacon.player_id
+
+            self.db.flush()
+            ship = (
+                self.db.query(Ship)
+                .filter(Ship.id == attacker.current_ship_id, Ship.owner_id == attacker.id)
+                .populate_existing()
+                .with_for_update()
+                .first()
+            )
+            if ship is not None:
+                _refund_cargo(ship, self.GATE_SALVAGE_YIELD)
+                salvage_granted = dict(self.GATE_SALVAGE_YIELD)
+
+            try:
+                self.db.delete(beacon)
+                self.db.flush()
+            except (StaleDataError, ObjectDeletedError):
+                self.db.rollback()
+                return {
+                    "success": False,
+                    "message": "ERR_GATE_ALREADY_DESTROYED: this warp gate beacon was destroyed by another attack first",
+                    "destroyed": True,
+                    "gate_hp_remaining": 0,
+                    "salvage_granted": {},
+                }
+
+            owner = self.db.query(Player).filter(Player.id == owner_id).first()
+            if owner is not None:
+                try:
+                    from src.models.faction import Faction
+                    from src.services.faction_service import (
+                        apply_faction_rep_delta,
+                        dominant_reputation_faction_id,
+                    )
+
+                    owner_faction_id = dominant_reputation_faction_id(self.db, owner.id)
+                    if owner_faction_id is not None:
+                        owner_faction = (
+                            self.db.query(Faction).filter(Faction.id == owner_faction_id).first()
+                        )
+                        if owner_faction is not None:
+                            apply_faction_rep_delta(
+                                self.db, attacker.id, owner_faction.faction_type,
+                                self.GATE_OWNER_FACTION_REP_PENALTY,
+                                "destroyed_warp_gate_beacon",
+                            )
+                except Exception as e:
+                    logger.error(
+                        "Failed owner-faction reputation hook after beacon destruction: %s", e
+                    )
+
+        self.db.commit()
+
+        if destroyed:
+            _emit_warp_gate_destroyed(beacon_id, target_sector_id, attacker.username)
+
+        return {
+            "success": True,
+            "message": combat_result["message"],
+            "destroyed": destroyed,
+            "gate_hp_remaining": combat_result["gate_hp_remaining"],
+            "salvage_granted": salvage_granted,
+            "turns_consumed": turn_cost,
+            "turns_remaining": attacker.turns,
+        }
+
+    def _resolve_warp_gate_combat(self, attacker: Player, gate: Any, structure_label: str = "warp gate") -> Dict[str, Any]:
         """Resolve a single attack-pass against a warp gate's HP pool,
         reusing the standard weapon damage stack (_apply_weapon_damage,
         combat-resolver.md) rather than reinventing planet-style hit-chance
@@ -3081,8 +3241,11 @@ class CombatService:
 
         hit_amount = hit["hull_damage"] + hit["shield_damage"]
         message = (
-            "The warp gate is destroyed!" if destroyed
-            else f"Your attack deals {hit_amount:.0f} damage to the warp gate ({gate.hp} HP remaining)"
+            f"The {structure_label} is destroyed!" if destroyed
+            else (
+                f"Your attack deals {hit_amount:.0f} damage to the "
+                f"{structure_label} ({gate.hp} HP remaining)"
+            )
         )
 
         return {
