@@ -1428,11 +1428,8 @@ class CombatService:
         for NPC kills. Two reputation hooks apply: killing a Federation
         Marshal Interdictor crashes the attacker's Terran Federation
         reputation by -250 per kill (police-forces.md, canon-numeric).
-        Killing a Sentinel crashes Galactic Concord standing by the same
-        -250 magnitude — canon states the standing loss but gives no
-        numeric value, so this mirrors the Marshal penalty as a flagged
-        NO-CANON placeholder pending Max's ruling (see SENTINEL_KILL_
-        CONCORD_PENALTY below).
+        Killing a Sentinel crashes Galactic Concord standing by -200
+        (police-forces.md § Nexus Sentinel Corps).
         """
         attacker = self.db.query(Player).filter(Player.id == attacker_id).populate_existing().with_for_update().first()
         if not attacker:
@@ -1832,18 +1829,11 @@ class CombatService:
                     elif dead_npc.faction_code == "galactic_concord":
                         from src.models.faction import FactionType
                         from src.services.faction_service import apply_faction_rep_delta
-                        # Sentinel kills crash Galactic Concord standing
-                        # (police-forces.md). The CONCORD FactionType enum
-                        # value now exists, so the hook is wired here.
-                        #
-                        # ⚠️ NO-CANON NUMBER — FLAG FOR MAX: canon states the
-                        # standing loss but gives NO numeric magnitude. We
-                        # mirror the Federation marshal-kill −250 scale as a
-                        # defensible placeholder. The Sentinels are the Nexus
-                        # hub-invariant enforcers (a stronger body than the
-                        # Federation Police), so the true value may warrant a
-                        # HARSHER penalty than −250 once Max sets canon.
-                        SENTINEL_KILL_CONCORD_PENALTY = -250  # NO-CANON, flagged
+                        # Sentinel kills crash Galactic Concord standing by
+                        # −200 (police-forces.md § Nexus Sentinel Corps).
+                        # Requires the Concord Faction row (seeded via
+                        # create_default_factions / _ensure_concord_faction).
+                        SENTINEL_KILL_CONCORD_PENALTY = -200
                         apply_faction_rep_delta(
                             self.db,
                             attacker.id,
@@ -1853,8 +1843,7 @@ class CombatService:
                         )
                         logger.info(
                             "Sentinel kill by player %s (%s) — Galactic Concord "
-                            "standing %+d applied (NO-CANON magnitude, mirrors "
-                            "Marshal −250; flagged for Max)",
+                            "standing %+d applied",
                             attacker.id, dead_npc.display_name,
                             SENTINEL_KILL_CONCORD_PENALTY,
                         )
