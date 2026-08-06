@@ -28,8 +28,8 @@ realtime.md:22):
    priority-delivery push per FINDINGS.md 2026-06-12). Delivers to the
    recipient AND echoes to the sender; a nonexistent recipient is rejected,
    an offline-but-real recipient is steered to the persistent mailbox
-   instead. Frame shape (target_user_id key, echo semantics) is NO-CANON —
-   kept minimal, flagged.
+   instead. Frame shape (target_user_id key, echo semantics) is canon in
+   OPERATIONS/realtime.md § Private DM wire frame (drafted 2026-08-06).
 
 Sections (1)-(2) use a FRESH ConnectionManager() instance (mirrors
 test_ws_eviction_race.py / test_ws_room_hop.py) for registry-internals
