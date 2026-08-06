@@ -119,6 +119,17 @@ from src.models.station import Station, StationStatus
 from src.services.contract_bulk import deliver as deliver
 from src.services.contract_bulk import walk_away_bulk_procurement as walk_away_bulk_procurement
 from src.services.contract_dispute import DISPUTE_FILING_WINDOW_HOURS as DISPUTE_FILING_WINDOW_HOURS
+
+# Cap per-tick gather size for the three expiry sweeps. Live heimdall
+# (2026-08-06) had 520k+ EXPIRED+HELD dispute-window rows; loading them
+# all via `.all()` left the outer sweep transaction idle past Postgres's
+# idle_in_transaction_session_timeout (15s on stage) before the first
+# candidate ran — the connection died, `begin_nested()` failed, and the
+# WHOLE merged tick (including `_bulk_expire_remaining_posted_contracts`
+# that clears past-deadline NPC POSTED rows) aborted every cycle.
+# Oldest-deadline-first + LIMIT drains the backlog across ticks without
+# ever holding an idle open txn across a giant Python-side materialization.
+CONTRACT_EXPIRY_CANDIDATE_BATCH = 200
 from src.services.contract_dispute import _ei3_both_parties_dispute as _ei3_both_parties_dispute
 from src.services.contract_dispute import _ei3_evidence_trail_incomplete as _ei3_evidence_trail_incomplete
 from src.services.contract_dispute import _ei3_high_value as _ei3_high_value
@@ -795,12 +806,14 @@ def sweep_expired_contracts(db: Session, now: Optional[datetime] = None) -> Dict
     return {"expired": expired_with_refund + bulk_result}
 
 
-def _gather_sweep_expired_contracts_candidates(db: Session, now: datetime) -> List[Contract]:
-    """WO-CONTRACT-57 (axis-2): upfront `.all()` gather of `sweep_expired_
+def _gather_sweep_expired_contracts_candidates(
+    db: Session, now: datetime, *, limit: int = CONTRACT_EXPIRY_CANDIDATE_BATCH,
+) -> List[Contract]:
+    """WO-CONTRACT-57 (axis-2): upfront gather of `sweep_expired_
     contracts`' per-candidate set (player-issued, escrow-HELD, deadline-
     passed POSTED rows) -- replaces the original `while True: .first()`
     shape (re-querying server-side every iteration) so `run_contract_
-    expiry_sweeps` can see the FULL candidate set, and compute the
+    expiry_sweeps` can see the candidate set, and compute the
     cross-sweep player-id union, BEFORE any candidate is processed. Safe
     per `sweep_expired_accepted_contracts`'s own precedent (WO-STORE-
     EXPIRY-CLAIMABLE): the raced-away-row protection never actually
@@ -808,7 +821,11 @@ def _gather_sweep_expired_contracts_candidates(db: Session, now: datetime) -> Li
     (`rowcount == 0` -> skip, in `_process_one_sweep_expired_contracts_
     candidate`) independently excludes a row whose real DB status moved
     on between this gather and that candidate's own turn, identical in
-    effect, just discovered at a different step."""
+    effect, just discovered at a different step.
+
+    WO-FIX-CONTRACT-SWEEP-IDLE-IN-TRANSACTION-DEADLOCK: `limit` caps the
+    gather (oldest deadline first) so a multi-hundred-thousand-row backlog
+    cannot idle-timeout the outer tick before bulk POSTED expiry runs."""
     return (
         db.query(Contract)
         .filter(
@@ -817,6 +834,8 @@ def _gather_sweep_expired_contracts_candidates(db: Session, now: datetime) -> Li
             Contract.issuer_type == ContractIssuerType.PLAYER,
             Contract.escrow_state == ContractEscrowState.HELD,
         )
+        .order_by(Contract.deadline.asc())
+        .limit(limit)
         .all()
     )
 
@@ -1213,18 +1232,27 @@ def sweep_expired_accepted_contracts(
     return {"expired": expired}
 
 
-def _gather_sweep_expired_accepted_contracts_candidates(db: Session, now: datetime) -> List[Contract]:
-    """WO-CONTRACT-57 (axis-2): the upfront `.all()` gather -- unchanged
+def _gather_sweep_expired_accepted_contracts_candidates(
+    db: Session, now: datetime, *, limit: int = CONTRACT_EXPIRY_CANDIDATE_BATCH,
+) -> List[Contract]:
+    """WO-CONTRACT-57 (axis-2): the upfront gather -- unchanged filter
     from `sweep_expired_accepted_contracts`' own pre-WO-CONTRACT-57 shape
     (WO-STORE-EXPIRY-CLAIMABLE already gathered upfront for this sweep;
-    see that function's own docstring for why `.all()` is safe here).
-    Extracted only so `run_contract_expiry_sweeps` can call it directly."""
+    see that function's own docstring for why an upfront gather is safe
+    here). Extracted only so `run_contract_expiry_sweeps` can call it
+    directly.
+
+    WO-FIX-CONTRACT-SWEEP-IDLE-IN-TRANSACTION-DEADLOCK: `limit` caps the
+    gather (oldest deadline first); see `_gather_sweep_expired_contracts_
+    candidates`."""
     return (
         db.query(Contract)
         .filter(
             Contract.status == ContractStatus.ACCEPTED,
             Contract.deadline < now,
         )
+        .order_by(Contract.deadline.asc())
+        .limit(limit)
         .all()
     )
 
@@ -1598,10 +1626,17 @@ def sweep_expired_dispute_window(db: Session, now: Optional[datetime] = None) ->
     return {"refunded": refunded}
 
 
-def _gather_sweep_expired_dispute_window_candidates(db: Session, now: datetime) -> List[Contract]:
-    """WO-CONTRACT-57 (axis-2): the upfront `.all()` gather -- unchanged
+def _gather_sweep_expired_dispute_window_candidates(
+    db: Session, now: datetime, *, limit: int = CONTRACT_EXPIRY_CANDIDATE_BATCH,
+) -> List[Contract]:
+    """WO-CONTRACT-57 (axis-2): the upfront gather -- unchanged filter
     from `sweep_expired_dispute_window`'s own pre-WO-CONTRACT-57 shape.
-    Extracted only so `run_contract_expiry_sweeps` can call it directly."""
+    Extracted only so `run_contract_expiry_sweeps` can call it directly.
+
+    WO-FIX-CONTRACT-SWEEP-IDLE-IN-TRANSACTION-DEADLOCK: this gather is the
+    load-bearing one — live stage held 520k+ EXPIRED+HELD rows past the
+    dispute window. Unbounded `.all()` idle-killed the outer tick every
+    cycle. `limit` + oldest-deadline-first drains across ticks."""
     window_cutoff = now - timedelta(hours=DISPUTE_FILING_WINDOW_HOURS)
     return (
         db.query(Contract)
@@ -1610,6 +1645,8 @@ def _gather_sweep_expired_dispute_window_candidates(db: Session, now: datetime) 
             Contract.escrow_state == ContractEscrowState.HELD,
             Contract.deadline < window_cutoff,
         )
+        .order_by(Contract.deadline.asc())
+        .limit(limit)
         .all()
     )
 
@@ -1810,6 +1847,12 @@ def run_contract_expiry_sweeps(
     needs_lock = sorted((t for t in tagged if t[0] is not None), key=lambda t: t[0])
     merged = no_lock + needs_lock
 
+    # Drain past-deadline NPC / non-HELD POSTED immediately. Live heimdall
+    # (2026-08-06) had 15,710 such rows and 0 player-held-escrow candidates —
+    # this bulk UPDATE is the only path that clears them. It must not wait
+    # behind the dispute-window candidate loop (520k+ EXPIRED+HELD).
+    bulk_result = _bulk_expire_remaining_posted_contracts(db, now)
+
     expired_with_refund = 0
     accepted_expired = 0
     refunded = 0
@@ -1824,10 +1867,6 @@ def run_contract_expiry_sweeps(
             if _process_one_sweep_expired_dispute_window_candidate(db, candidate):
                 refunded += 1
 
-    # The bulk path never touches a Player row -- no ordering concern,
-    # untouched, run once at the end same as sweep_expired_contracts'
-    # own standalone shape.
-    bulk_result = _bulk_expire_remaining_posted_contracts(db, now)
     db.flush()
 
     posted_result = {"expired": expired_with_refund + bulk_result}
