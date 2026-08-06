@@ -102,6 +102,12 @@ const heldCommodityOnShip = async (commodity: string): Promise<number> => {
 
 const shortId = (id: string) => `#${id.slice(0, 8)}`;
 
+/** Board row still accept-able: posted + deadline not yet passed (client clock). */
+const isOpenBoardContract = (contract: ContractDTO, nowMs: number): boolean => {
+  if (contract.status && contract.status !== 'posted') return false;
+  return !fmtCountdown(contract.deadline, nowMs).expired;
+};
+
 // PLAYER_POST_MIN_DEADLINE_HOURS (contract_escrow_core.py:127) — canon floor,
 // mirrored client-side so the form fails fast instead of round-tripping.
 const MIN_DEADLINE_HOURS = 1;
@@ -285,6 +291,19 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
     const mineHas = mine ? [...mine.posted, ...mine.accepted].some((c) => c.deadline) : false;
     return boardHas || mineHas;
   }, [board, mine]);
+
+  // Open board = still accept-able. Past-deadline POSTED rows can linger from
+  // the API when the expiry sweep lags — never count or offer Accept on them.
+  const openBoard = useMemo(() => {
+    if (!board) return null;
+    const seen = new Set<string>();
+    return board.filter((c) => {
+      if (!isOpenBoardContract(c, nowMs)) return false;
+      if (seen.has(c.id)) return false;
+      seen.add(c.id);
+      return true;
+    });
+  }, [board, nowMs]);
 
   useEffect(() => {
     if (!hasCountdowns) return;
@@ -688,7 +707,9 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
     return `${origin} → ${dest}`;
   };
 
-  const renderBoardRow = (contract: ContractDTO) => (
+  const renderBoardRow = (contract: ContractDTO) => {
+    const expired = fmtCountdown(contract.deadline, nowMs).expired;
+    return (
     <div className="cb-row" key={contract.id}>
       <div className="cb-row-main">
         <span className="cb-commodity">
@@ -715,12 +736,19 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
         {renderCountdown(contract.deadline)}
       </div>
       <div className="cb-row-actions">
-        <button className="action-button primary" onClick={() => handleAccept(contract)} disabled={Boolean(busyAction)}>
-          {busyAction === `accept-${contract.id}` ? 'Accepting...' : '✅ Accept'}
-        </button>
+        {expired ? (
+          <span className="cb-status-note" aria-label="Contract expired — accept unavailable">
+            Expired
+          </span>
+        ) : (
+          <button className="action-button primary" onClick={() => handleAccept(contract)} disabled={Boolean(busyAction)}>
+            {busyAction === `accept-${contract.id}` ? 'Accepting...' : '✅ Accept'}
+          </button>
+        )}
       </div>
     </div>
-  );
+    );
+  };
 
   // Fallback for statuses that carry no acceptor/issuer action in this
   // build (P4, WO-CONTRACT-5-CLIENT-SURFACE) — in_progress/partial_
@@ -970,7 +998,9 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
     <div className="cb-tab-content">
       <div className="cb-toolbar">
         <span className="cb-toolbar-count">
-          {board ? `${board.length} contract${board.length === 1 ? '' : 's'} posted` : ''}
+          {openBoard
+            ? `${openBoard.length} contract${openBoard.length === 1 ? '' : 's'} posted`
+            : ''}
         </span>
         <button className="action-button" onClick={fetchBoard} disabled={boardLoading}>
           🔄 Refresh
@@ -999,10 +1029,10 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
             </button>
           </div>
         )}
-        {board && board.length === 0 && (
+        {openBoard && openBoard.length === 0 && (
           <p className="section-description">No contracts posted at this station right now. Check back later.</p>
         )}
-        {board && board.map(renderBoardRow)}
+        {openBoard && openBoard.map(renderBoardRow)}
       </div>
     </div>
   );
