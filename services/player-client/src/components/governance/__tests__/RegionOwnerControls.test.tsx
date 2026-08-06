@@ -237,7 +237,7 @@ describe('RegionOwnerControls', () => {
     expect(unexpectedErrors(consoleErrorSpy)).toHaveLength(0);
   });
 
-  it('GOVERNANCE click navigates to /game/governance', async () => {
+  it('does not render the retired GOVERNANCE full-console button', async () => {
     mockGetMyRegion.mockRejectedValueOnce(new Error('Not Found'));
 
     await act(async () => {
@@ -245,12 +245,8 @@ describe('RegionOwnerControls', () => {
     });
     await flush();
 
-    const btn = container.querySelector('.hud-region-governance-btn') as HTMLButtonElement;
-    await act(async () => {
-      btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-
-    expect(mockNavigate).toHaveBeenCalledWith('/game/governance');
+    expect(container.querySelector('.hud-region-governance-btn')).toBeNull();
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 
   it('INVITE CONTROL / TRADEDOCK CONSTRUCTION open their portal panels', async () => {

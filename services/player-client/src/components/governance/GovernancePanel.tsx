@@ -10,6 +10,17 @@ import PolicyCard from './PolicyCard';
 import ProposePolicyForm from './ProposePolicyForm';
 import './governance-panel.css';
 
+/**
+ * GovernancePanel — full REGIONAL GOVERNANCE console (elections/policies/
+ * treaties). Post-UI5-retirement, /game/governance redirects to the cockpit
+ * dashboard (App.tsx RedirectToGame) — this page is NOT mounted on any live
+ * route.
+ *
+ * NOT YET REMOUNTED (flagged, not silently orphaned): kept as
+ * canon-scaffolding for a future re-route WO, mirroring AnnunciatorMini.tsx.
+ * Live governance surface today is StatusBar GovSummaryTab (read-only).
+ */
+
 /* REGIONAL GOVERNANCE console shell (Law 3) -- module-level so the monitor
    frame keeps its identity across loading/error/empty/tab states and never
    remounts mid-session (mirrors TeamManager's CrewShell). */

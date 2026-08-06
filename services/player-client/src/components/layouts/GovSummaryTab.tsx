@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { useGame } from '../../contexts/GameContext';
 import { governanceAPI } from '../../services/api';
 import type { Election, MembershipStatus } from '../../types/governance';
@@ -17,10 +16,10 @@ import EmptyState from '../common/EmptyState';
  * only the player's own citizenship status + next election at a glance,
  * reusing the SAME wire shapes GovernancePanel.tsx already established
  * (governanceAPI.getMyMembership / listElections, snake_case field names
- * per types/governance.ts's member-facing convention), and links out to
- * /game/governance for anything that mutates state (vote, propose,
- * register candidacy) — a dead-end today, matching TeamSummaryTab's
- * /game/team link, since neither destination is routed.
+ * per types/governance.ts's member-facing convention). Full-console
+ * mutation links to /game/governance were removed (route redirects to
+ * dashboard post-UI5); GovernancePanel.tsx remains unmounted scaffolding
+ * until a re-route WO.
  */
 
 const formatMembershipType = (type: string | null): string => {
@@ -114,11 +113,7 @@ const GovSummaryTab: React.FC = () => {
         icon="🏛️"
         title="Not Yet a Citizen"
         message="You are not currently a member of this region's voter roll."
-      >
-        <Link to="/game/governance" className="sb-gov-link">
-          View Regional Governance →
-        </Link>
-      </EmptyState>
+      />
     );
   }
 
@@ -143,9 +138,6 @@ const GovSummaryTab: React.FC = () => {
           </span>
         </div>
       </div>
-      <Link to="/game/governance" className="sb-gov-link">
-        Manage Governance →
-      </Link>
     </div>
   );
 };
