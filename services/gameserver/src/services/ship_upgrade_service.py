@@ -271,6 +271,37 @@ class ShipUpgradeService:
             # Flat evasion points folded into _calculate_ship_defense.
             "effects": {"stealth_evasion_bonus": 15},
         },
+        # Weapon-profile mounts (combat.md planned catalog + ship-systems.md §2.6):
+        # these switch WEAPON_TYPES profile only — NEVER raw attack_rating /
+        # weapon_damage. Magnitudes live on CombatService.WEAPON_TYPES (NO-CANON).
+        # Costs [NO-CANON — launch values; flag for bless].
+        "autocannon_mount": {
+            "name": "Autocannon Mount",
+            "description": "Kinetic autocannon hardpoint — hull-focused projectile profile",
+            "cost": 35000,
+            "compatible_ships": [
+                ShipType.DEFENDER, ShipType.CARRIER, ShipType.CARGO_HAULER, ShipType.LIGHT_FREIGHTER,
+            ],
+            "effects": {"weapon_type": "autocannon"},
+        },
+        "particle_projector": {
+            "name": "Particle Projector",
+            "description": "Particle-beam hardpoint — shield-stripping energy profile",
+            "cost": 42000,
+            "compatible_ships": [
+                ShipType.SCOUT_SHIP, ShipType.DEFENDER, ShipType.WARP_JUMPER, ShipType.FAST_COURIER,
+            ],
+            "effects": {"weapon_type": "particle"},
+        },
+        "torpedo_bay": {
+            "name": "Torpedo Bay",
+            "description": "Heavy torpedo magazine — high-yield hull breaker, poor vs shields",
+            "cost": 55000,
+            "compatible_ships": [
+                ShipType.CARRIER, ShipType.DEFENDER, ShipType.WARP_JUMPER,
+            ],
+            "effects": {"weapon_type": "torpedo"},
+        },
     }
 
     # ========================================================================
