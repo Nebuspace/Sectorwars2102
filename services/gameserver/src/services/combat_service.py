@@ -666,11 +666,42 @@ class CombatService:
     MINEFIELD_MAX_BONUS_DAMAGE = 9
 
     # Weapon type effectiveness against different defenses
+    # Magnitudes for autocannon / particle / torpedo are NO-CANON launch
+    # values (flag for Max) — drafted to sit consistently with the four
+    # shipped profiles (laser/plasma/missile/emp) without inventing a fifth
+    # "raw firepower" axis. ship-systems.md §2.6 still forbids weapon_damage
+    # modules; these profiles are selectable via tactical equipment mounts
+    # that set ``weapon_type`` only (see ShipUpgradeService.EQUIPMENT_DEFINITIONS).
     WEAPON_TYPES = {
         "laser": {"base_damage": 1.0, "shield_effectiveness": 0.8, "hull_effectiveness": 1.0, "description": "Standard energy weapon"},
         "plasma": {"base_damage": 1.2, "shield_effectiveness": 1.2, "hull_effectiveness": 0.9, "description": "High-energy plasma bolts"},
         "missile": {"base_damage": 1.5, "shield_effectiveness": 0.6, "hull_effectiveness": 1.5, "description": "Physical projectile, bypasses some shields"},
         "emp": {"base_damage": 0.5, "shield_effectiveness": 2.0, "hull_effectiveness": 0.3, "description": "Electromagnetic pulse, devastating to shields"},
+        # NO-CANON (flag for Max): kinetic mid-tier — weaker vs shields, stronger vs hull
+        # than laser; sits between laser and missile. ships.md cites kinetic/autocannon
+        # as a planned damage family.
+        "autocannon": {
+            "base_damage": 1.1,
+            "shield_effectiveness": 0.5,
+            "hull_effectiveness": 1.3,
+            "description": "Kinetic autocannon — hull-focused projectile stream",
+        },
+        # NO-CANON (flag for Max): advanced energy — stronger vs shields than plasma,
+        # modest hull. Fills the "particle" planned catalog slot.
+        "particle": {
+            "base_damage": 1.3,
+            "shield_effectiveness": 1.4,
+            "hull_effectiveness": 1.1,
+            "description": "Particle projector — shield-stripping energy beam",
+        },
+        # NO-CANON (flag for Max): heavy ordnance — higher base than missile, even
+        # weaker vs shields; siege / capital-adjacent profile.
+        "torpedo": {
+            "base_damage": 1.8,
+            "shield_effectiveness": 0.4,
+            "hull_effectiveness": 1.8,
+            "description": "Torpedo — high-yield hull breaker, poor against shields",
+        },
     }
 
     # Default weapon type by ship type
@@ -784,6 +815,29 @@ class CombatService:
     def __init__(self, db: Session):
         self.db = db
         self.ship_service = ShipService(db)
+
+    def _weapon_key_for_ship(self, ship) -> str:
+        """Resolve the WEAPON_TYPES key for a ship.
+
+        Preference order:
+        1. Tactical equipment mount ``weapon_type`` (autocannon/particle/torpedo
+           mounts — profile switch only, never raw firepower; ship-systems.md §2.6).
+        2. Hull default from ``SHIP_DEFAULT_WEAPONS``.
+        3. ``laser`` fallback.
+
+        ``weapon_mode: tractor`` is a separate non-damage combat face and is
+        NOT looked up here (handled in ``_resolve_ship_combat``).
+        """
+        if ship is None:
+            return "laser"
+        try:
+            effects = ShipUpgradeService.get_combined_effects(ship)
+            wt = effects.get("weapon_type")
+            if isinstance(wt, str) and wt in self.WEAPON_TYPES:
+                return wt
+        except Exception as e:
+            logger.error("Weapon-type equipment read failed (using hull default): %s", e)
+        return self.SHIP_DEFAULT_WEAPONS.get(getattr(ship, "type", None), "laser")
 
     def _is_same_team(self, player_a_id: uuid.UUID, player_b_id: uuid.UUID) -> bool:
         """True iff both players share a non-null ``team_id``.
@@ -2998,7 +3052,7 @@ class CombatService:
         field names, not stubbed with a hardcoded 0 -- a future Upgrades
         WO that adds real columns lights this up with zero changes here."""
         attacker_ship = attacker.current_ship
-        weapon_key = self.SHIP_DEFAULT_WEAPONS.get(attacker_ship.type, "laser") if attacker_ship else "laser"
+        weapon_key = self._weapon_key_for_ship(attacker_ship) if attacker_ship else "laser"
         weapon = self.WEAPON_TYPES[weapon_key]
 
         attacker_power = self._calculate_attack_power(attacker_ship, attacker.attack_drones or 0)
@@ -3663,7 +3717,7 @@ class CombatService:
                     # Successful hit
                     # Determine if attacking drones or ship
                     # Determine attacker weapon type
-                    atk_weapon_name = self.SHIP_DEFAULT_WEAPONS.get(attacker_ship.type, "laser")
+                    atk_weapon_name = self._weapon_key_for_ship(attacker_ship)
                     atk_weapon = self.WEAPON_TYPES[atk_weapon_name]
 
                     if defender_drones > 0:
@@ -3775,7 +3829,7 @@ class CombatService:
                     # Successful hit
                     # Determine if attacking drones or ship
                     # Determine defender weapon type
-                    def_weapon_name = self.SHIP_DEFAULT_WEAPONS.get(defender_ship.type, "laser")
+                    def_weapon_name = self._weapon_key_for_ship(defender_ship)
                     def_weapon = self.WEAPON_TYPES[def_weapon_name]
 
                     if attacker_drones > 0:
