@@ -240,6 +240,26 @@ describe('ContractBoardVenue', () => {
     expect(findButton('Accept')).toBeTruthy();
   });
 
+  it('hides past-deadline board rows from the open count and does not offer Accept (WO-FIX-CONTRACT-BOARD-EXPIRED-ACCEPT-CTA)', async () => {
+    const expired = {
+      ...CONTRACT_POSTED,
+      id: 'contract-expired',
+      deadline: new Date(Date.now() - 3600_000).toISOString(),
+    };
+    mockGetBoard.mockResolvedValueOnce([expired, CONTRACT_POSTED]);
+    mockGetMine.mockResolvedValueOnce(EMPTY_MINE);
+
+    await act(async () => {
+      root.render(<ContractBoardVenue {...VENUE_PROPS} />);
+    });
+    await flush();
+
+    expect(container.textContent || '').toMatch(/1 contract posted/);
+    expect(findButton('Accept')).toBeTruthy();
+    // Expired row filtered out of the open board — no "Expired" CTA placeholder either.
+    expect(container.textContent || '').not.toMatch(/EXPIRED/);
+  });
+
   it('accepting a board contract charges the fee, feeds the new balance to onCreditsSet, and the contract surfaces under My Contracts > Accepted', async () => {
     mockGetBoard.mockResolvedValueOnce([CONTRACT_POSTED]); // initial board
     mockGetMine.mockResolvedValueOnce(EMPTY_MINE); // initial mine

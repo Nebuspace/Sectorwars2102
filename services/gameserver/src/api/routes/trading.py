@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -1720,11 +1720,19 @@ async def dock_at_station(
             from src.models.contract import Contract, ContractStatus
 
             with db.begin_nested():
+                # Match GET /contracts/board: status=POSTED, still before
+                # deadline, visible at this station (issuer OR posting_stations).
+                # Past-deadline POSTED rows (sweep lag) must not narrate as open.
+                now = datetime.now(UTC)
                 open_contract_count = (
                     db.query(Contract)
                     .filter(
-                        Contract.destination_station_id == station.id,
                         Contract.status == ContractStatus.POSTED,
+                        or_(Contract.deadline.is_(None), Contract.deadline > now),
+                        or_(
+                            Contract.issuer_id == station.id,
+                            Contract.posting_stations.any(station.id),
+                        ),
                     )
                     .count()
                 )
