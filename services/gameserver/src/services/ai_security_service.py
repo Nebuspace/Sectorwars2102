@@ -261,8 +261,9 @@ class AISecurityService:
         """
         violations = []
 
-        # Update player profile
-        profile = self.get_or_create_player_profile(player_id, seed_from=seed_from)
+        # Update player profile (mutation-only -- seeds/refreshes self.player_profiles;
+        # every method below reads that dict, not a return value here).
+        self.get_or_create_player_profile(player_id, seed_from=seed_from)
 
         # Check if player is blocked
         if self.is_player_blocked(player_id):
