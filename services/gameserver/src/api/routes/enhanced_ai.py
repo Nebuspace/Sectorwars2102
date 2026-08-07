@@ -797,10 +797,13 @@ async def cleanup_ai_data(
     """
     try:
         ai_service = EnhancedAIService(db)
-        
-        # Only allow for admin users (implement admin check here)
-        # For now, any authenticated user can trigger cleanup for their own data
-        
+
+        # SECURITY / honesty: section banner + OpenAPI say "Admin only", but
+        # auth is plain `validate_ai_access` (any AI-eligible player). The call
+        # below is GLOBAL DELETE (ai_conversation_logs / ai_cross_system_knowledge /
+        # ai_security_audit_log) — not scoped to the caller. Do NOT "fix" the
+        # gate here without Max OK — Pending DECISION
+        # `enhanced-ai-cleanup-admin-gate` (HIGH / safety-list). Diagnose-only.
         deleted_count = await ai_service.cleanup_expired_data()
         
         await db.commit()
