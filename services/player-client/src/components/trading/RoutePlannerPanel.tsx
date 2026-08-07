@@ -44,8 +44,9 @@ const getShipCargoCapacity = (currentShip: any): number => {
  * route optimizer (route_optimizer.py), NOT the ARIA /ai/optimize-route
  * surface aiTradingService already exposes elsewhere.
  *
- * Mounted as a collapsible section inside TradingInterface so it never
- * pushes the primary buy/sell grid below the fold (Scroll Law) when closed.
+ * Mounted as a collapsible section *below* TradingInterface's buy/sell desk
+ * (Scroll Law): primary trade controls clear the fold first; this planner is
+ * secondary chrome whether collapsed or expanded.
  */
 const RoutePlannerPanel: React.FC = () => {
   const { playerState, currentShip } = useGame();
