@@ -106,6 +106,8 @@ export interface Station {
   type: string;
   status: string;
   sector_id: number;
+  /** From GET /sectors/{id}/stations — null when NPC/unowned. */
+  owner_id?: string | null;
   owner?: any;
   services: Record<string, any>;
   faction_affiliation?: string;
