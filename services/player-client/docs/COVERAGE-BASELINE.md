@@ -26,6 +26,7 @@ Staged for hub queue — not built in this WO:
 5. **WO-TESTCOV-PLAYER-SPACEDOCK-SHELL** — SpaceDock / GamblingVenue — **SHIPPED** (merged via #288; menu/slots controls + slots spin POST)
 6. **WO-TESTCOV-PLAYER-AUTH-FORMS** — LoginForm / RegisterForm — **SHIPPED** (merged via #289; MFA prompt seam + register validation; AuthContext mocked)
 7. **WO-TESTCOV-PLAYER-ARMORY** — ArmoryVenue / SpaceDock armory purchase — **SHIPPED** (merged via #290; catalog Buy gates + POST `/api/v1/armory/purchase`)
-8. **WO-TESTCOV-PLAYER-HAGGLE-DESK-DEPTH** — HaggleDesk open/offer/accept/counter/reject — **SHIPPED** (PR pending; complements taxInclusiveTotal suite)
+8. **WO-TESTCOV-PLAYER-HAGGLE-DESK-DEPTH** — HaggleDesk open/offer/accept/counter/reject — **SHIPPED** (merged via #291; complements taxInclusiveTotal suite)
+9. **WO-TESTCOV-PLAYER-SHIPYARD-PURCHASE** — ShipyardVenue confirm + SpaceDock ships/purchase — **SHIPPED** (PR pending; POST `/api/v1/ships/purchase`)
 
 Auth forms coverage is test-only (hub GO 2026-08-07T21:28:00Z) — does not touch auth/MFA logic.
