@@ -233,7 +233,12 @@ async def deploy_drone(
     current_player: Player = Depends(get_current_player),
     db: AsyncSession = Depends(get_async_session)
 ):
-    """Deploy a drone to a sector."""
+    """Deploy a drone to a sector.
+
+    DEPRECATED (ADR-0094 endpoint-canonicalization) — no known frontend caller;
+    use POST /drones/deploy (batch) instead, which is the canonical Player UI
+    endpoint.
+    """
     # Verify drone ownership
     drone = await db.get(Drone, drone_id)
     if not drone or drone.player_id != current_player.id:
