@@ -39,7 +39,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.pirate_holding import PirateHolding, PirateHoldingTier
-from src.models.pirate_kill_log import PirateKillLog
+from src.models.pirate_kill_log import PirateKillDisposition, PirateKillLog
 from src.models.region import Region, RegionStatus
 from src.models.sector import Sector
 from src.models.station import Station
@@ -1150,6 +1150,115 @@ def update_cleansed_state_for_region(
     return state
 
 
+# ---------------------------------------------------------------------------
+# Raid/capture combat-lock kernel (ADR-0060 G-F2/G-V1). DORMANT — no live
+# caller. No player-facing raid/capture entry point exists anywhere in the
+# codebase at HEAD (verify-first confirmed, orchestrator-ruled 2026-08-07).
+# Awaits WO-PIRATE-ECO-3-ATTEMPT-CAPTURE to wire a real raid-initiation
+# route (see queue-sectorwars.md). Ships now as a fully-tested, correct
+# kernel — mirrors this codebase's established dormant-kernel pattern (e.g.
+# structures.py's CRT-spine kernels, planet_grid.py's K1b2 terraform-grid
+# kernel) rather than leaving the raid/capture math unbuilt until a caller
+# exists.
+# ---------------------------------------------------------------------------
+
+def acquire_combat_lock(db: Session, holding: PirateHolding, engaging_player: Any) -> None:
+    """G-F2 raid-lock acquisition (ADR-0060 :30-46). DORMANT, see module-
+    section note above.
+
+    If ``holding.combat_lock_held_by`` is None, the engaging player takes
+    the lock and their CURRENT team membership (``engaging_player.team.
+    members``, i.e. ``Team.members`` — this codebase's Player<->Team
+    relationship; canon's pseudocode says ``team.member_ids``) is snapshotted
+    into ``combat_lock_team_snapshot`` at this instant (:44, "frozen at
+    first engagement"). A player with no team snapshots an empty list, not
+    None — ``can_engage``'s ``player_id in (..., *snapshot)`` check still
+    resolves correctly (holder always matches on the first branch).
+
+    No-op (returns without touching the row) when the lock is already held
+    by a player on the same ALREADY-SNAPSHOTTED team — mirrors
+    ``can_engage``'s own predicate so acquire and check never disagree.
+    Does NOT flush by itself, matching this module's stated Sync-Session
+    convention (docstring at top of file) — the caller flushes/commits.
+    """
+    if holding.combat_lock_held_by is not None:
+        # Already locked -- whether by this same player/team-mate (a no-op
+        # re-engagement) or an unrelated player (acquisition simply fails),
+        # neither case mutates the row. can_engage() is the gate a caller
+        # uses to distinguish the two before calling this at all.
+        return
+
+    team = getattr(engaging_player, "team", None)
+    member_ids = [m.id for m in team.members] if team is not None else []
+
+    holding.combat_lock_held_by = engaging_player.id
+    holding.combat_lock_team_snapshot = member_ids
+
+
+def can_engage(holding: PirateHolding, player_id: uuid.UUID) -> bool:
+    """G-F2's exact predicate (ADR-0060 :35-42): True when no lock is held,
+    or when ``player_id`` is the lock-holder or was captured in the frozen
+    team snapshot at acquisition time. A player who joins the team AFTER
+    the snapshot was taken is NOT in it and this correctly returns False
+    for them — closing the late-join exploit G-F2 exists to close."""
+    if holding.combat_lock_held_by is None:
+        return True
+    snapshot = holding.combat_lock_team_snapshot or []
+    return player_id == holding.combat_lock_held_by or player_id in snapshot
+
+
+def release_combat_lock(db: Session, holding: PirateHolding) -> None:
+    """Clears both raid-lock columns (:46, "clears when the lock releases
+    -- combat ends, raid completes, or timeout fires"). Does NOT flush by
+    itself -- caller flushes/commits, matching this module's convention."""
+    holding.combat_lock_held_by = None
+    holding.combat_lock_team_snapshot = None
+
+
+def capture_holding(
+    db: Session,
+    holding: PirateHolding,
+    capturer_player: Any,
+    kill_log_entry_kwargs: Dict[str, Any],
+) -> PirateKillLog:
+    """G-V1 kill-log atomicity with capture (ADR-0060 :48-52). DORMANT, see
+    module-section note above.
+
+    Inserts a ``PirateKillLog`` row (``disposition=CAPTURED``) and mutates
+    ``holding.owner_team_id`` / ``holding.captured_at`` / releases the
+    combat lock, all inside ONE savepoint -- mirrors this file's own
+    established multi-write-atomicity idiom (npc_spawn_service.py's
+    PirateKillLog feeder, ``with db.begin_nested(): ... db.flush()``) rather
+    than inventing a new transaction pattern. A flush failure inside the
+    savepoint rolls back only this capture, never the caller's open unit of
+    work.
+
+    ``kill_log_entry_kwargs`` supplies the row's remaining fields
+    (region_id, region_id_snapshot, holding_id, tier, kill_weight,
+    attacker_player_id, attacker_team_id) -- left to the caller rather than
+    re-derived here, since ECO-3's real raid-resolution call site is the
+    one with the actual combat context (kill_weight per TIER_WEIGHT,
+    attacker identity, etc.), not this dormant kernel.
+    """
+    with db.begin_nested():
+        kill_log = PirateKillLog(
+            disposition=PirateKillDisposition.CAPTURED,
+            **kill_log_entry_kwargs,
+        )
+        db.add(kill_log)
+
+        team = getattr(capturer_player, "team", None)
+        holding.owner_team_id = team.id if team is not None else getattr(
+            capturer_player, "team_id", None
+        )
+        holding.captured_at = datetime.now(timezone.utc)
+        release_combat_lock(db, holding)
+
+        db.flush()
+
+    return kill_log
+
+
 __all__ = [
     "TIER_WEIGHT",
     "CAP_MULTIPLIER",
@@ -1192,4 +1301,9 @@ __all__ = [
     "CLEANSED_MEDAL_TOP_N",
     "top_attackers_by_kill_weight",
     "update_cleansed_state_for_region",
+    # ADR-0060 raid/capture kernel -- DORMANT, no live caller yet.
+    "acquire_combat_lock",
+    "can_engage",
+    "release_combat_lock",
+    "capture_holding",
 ]

@@ -11,10 +11,24 @@ HEAD):
 
 - ``outlaw_base_id`` FK — the OutlawBase/NPCBarracks lodging tables don't
   exist yet (see npc_character.py's module docstring, same deferral).
-- ``owner_team_id`` / ``captured_at`` / ``combat_lock_*`` /
-  ``special_formation_id`` / ``interior_sector_ids`` / ``parent_holding_id`` /
-  ``composition`` — all raid/capture/spawn-algorithm state per
-  pirate-holding-raid.md; nothing in this WO's scope writes or reads them.
+- ``interior_sector_ids`` / ``parent_holding_id`` / ``composition`` — spawn-
+  algorithm state per pirate-holding-raid.md; nothing in this WO's scope
+  writes or reads them.
+
+ADR-0060 (Group A pirate-ecosystem/holdings hardening, G-F2/G-V1/R-F1) adds
+the raid/capture kernel's columns — ``combat_lock_held_by``,
+``combat_lock_team_snapshot``, ``owner_team_id``, ``captured_at``,
+``evolution_clock_started_at`` — plus ``formation_id`` (needed by R-F1's
+Stronghold-formation CHECK constraint, itself no-code-change per canon's
+G-D1). These are a DORMANT KERNEL: fully wired at the model + service layer
+(see ``pirate_ecosystem_service.acquire_combat_lock`` /
+``can_engage`` / ``release_combat_lock`` / ``capture_holding``), zero live
+callers — no player-facing raid/capture entry point exists anywhere in the
+codebase yet (verify-first confirmed, orchestrator-ruled 2026-08-07). Awaits
+WO-PIRATE-ECO-3-ATTEMPT-CAPTURE to wire a real raid-initiation route. This
+mirrors the established dormant-kernel pattern elsewhere in this codebase
+(see e.g. structures.py's CRT-spine kernels, planet_grid.py's K1b2
+terraform-grid kernel).
 
 Divergences from canon, on purpose, documented:
 
@@ -46,7 +60,7 @@ from sqlalchemy import (
     Index,
     func,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy import Integer
 
 from src.core.database import Base
@@ -80,6 +94,14 @@ class PirateHolding(Base):
             "current_strength >= 0.0 AND current_strength <= 1.0",
             name="valid_pirate_holding_current_strength",
         ),
+        # ADR-0060 R-F1, verbatim. Enforced at insert + update time; the two
+        # existing tier-promotion paths (capture-evolution and worldgen
+        # pre-seed) already set formation_id in the same statement, so the
+        # constraint is defensive per the ADR's own framing.
+        CheckConstraint(
+            "tier != 'STRONGHOLD' OR formation_id IS NOT NULL",
+            name="pirate_holdings_stronghold_requires_formation",
+        ),
         Index("ix_pirate_holdings_region_owner", "region_id", "owner_player_id"),
     )
 
@@ -108,6 +130,45 @@ class PirateHolding(Base):
 
     current_strength = Column(Float, nullable=False, default=1.0)
     last_damage_at = Column(DateTime(timezone=True), nullable=True)
+
+    # R-F1's CHECK-constraint dependency. Deferred-then-added: ADR-0060's
+    # module docstring above formerly listed this as a raid-lane omission;
+    # R-F1's constraint text names it directly, so it ships here rather than
+    # staying absent while the constraint referenced a nonexistent column.
+    formation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("special_formations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    # --- ADR-0060 raid/capture kernel (G-F2/G-V1) — DORMANT, see module
+    # docstring. Nullable; NULL == "no active raid" / "not captured". ---
+
+    combat_lock_held_by = Column(
+        UUID(as_uuid=True),
+        ForeignKey("players.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # Frozen at first team-mate engagement (G-F2 snapshot semantics) — NOT
+    # live team membership, closing the late-join exploit the ADR names.
+    combat_lock_team_snapshot = Column(ARRAY(UUID(as_uuid=True)), nullable=True)
+
+    # Non-NULL == team-captured (mirrors owner_player_id's player-capture
+    # marker above; the two are mutually exclusive at the raid-service
+    # layer, not enforced by a DB constraint — ADR-0060 doesn't specify one).
+    owner_team_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("teams.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    captured_at = Column(DateTime(timezone=True), nullable=True)
+
+    # G-I1 evolution-clock reset threshold (>=5% single-event citadel
+    # damage). Dormant alongside the rest of this kernel — no live writer
+    # until the raid/capture entry point (ECO-3) exists.
+    evolution_clock_started_at = Column(DateTime(timezone=True), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(
