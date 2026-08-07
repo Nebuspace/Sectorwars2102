@@ -1,7 +1,8 @@
 /* =============================================================================
    ROUTE PLANNER PANEL — collapsible Route Planner section inside the
-   Trading Interface (WO-SB-RO2 Lane C). Collapsed by default so it never
-   pushes the primary buy/sell grid below the fold (Scroll Law).
+   Trading Interface (WO-SB-RO2 Lane C). Collapsed by default. TradingInterface
+   mounts this BELOW the buy/sell desk so the primary trade grid clears the
+   fold at 1440×900 (Scroll Law) whether the planner is open or closed.
 ============================================================================= */
 
 .route-planner-panel {
