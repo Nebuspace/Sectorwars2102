@@ -1107,6 +1107,16 @@ class MovementService:
         if nexus_gate_rejection is not None:
             return nexus_gate_rejection
 
+        # ADR-0054 X-D1: suspended-region stakeholder-gated ingress. Runs
+        # immediately after the Nexus subscription gate, same rationale —
+        # every movement path (player-gate / direct-warp / natural-tunnel)
+        # funnels through this one call site before any of the three
+        # branches below can execute a move. See
+        # _check_region_ingress_gate's docstring for the full rule.
+        region_ingress_rejection = self._check_region_ingress_gate(player, destination_sector_id)
+        if region_ingress_rejection is not None:
+            return region_ingress_rejection
+
         # Tractor tow (WO-AF; ships.md:354-357): if THIS ship is actively towing
         # another, the hauler pays its full move cost PLUS a tow surcharge. The
         # surcharge is size-based on warps/tunnels (the cached surcharge_per_move:
@@ -1332,6 +1342,78 @@ class MovementService:
                 "turn_cost": 0,
             }
         return None
+
+    def _check_region_ingress_gate(
+        self, player: Player, destination_sector_id: int,
+    ) -> Optional[Dict[str, Any]]:
+        """ADR-0054 X-D1 / SYSTEMS/region-lifecycle.md -- while a region is
+        ``suspended`` or ``grace``, cross-region traversal LANDING in it is
+        stakeholder-gated: allowed for the region's owner, allowed for a
+        stakeholder (owns a planet/station/captured holding/warp-gate
+        endpoint in the region, or has a ship currently sitting in one of
+        its sectors — see ``region_lifecycle_service.is_region_
+        stakeholder``), rejected otherwise with
+        ``ERR_REGION_NEW_RESIDENTS_BLOCKED``. Outbound (leaving a
+        suspended/grace region) is always allowed — this only fires when
+        the destination region is the one gated, never the origin.
+
+        Fires only on genuine CROSS-region ingress: an in-region move
+        (origin region == destination region) is never gated here, even if
+        that region happens to be suspended/grace — same-region movement
+        isn't "new commitments," it's a resident continuing to play in
+        their own region.
+
+        Post-takeover-commit case (ADR-0054's third allowed case, "a
+        takeover claimant after the takeover transaction commits"): NOT
+        special-cased here. A takeover flips ``Region.status`` to ACTIVE
+        as part of the SAME committed transaction, so by the time any
+        traversal request reaches this check (necessarily a later, separate
+        request) the destination region's status already reads ACTIVE and
+        this gate never fires for it — the case resolves itself via the
+        existing ``status not in (SUSPENDED, GRACE)`` early-return below,
+        exactly as the ADR's own text anticipates ("this case may already
+        resolve itself naturally").
+
+        Returns a rejection dict (matching every other early-exit in
+        ``move_player_to_sector``) if the player must be blocked, else
+        ``None`` to let the move proceed unchanged.
+        """
+        from src.models.region import Region, RegionStatus
+        from src.services.region_lifecycle_service import (
+            ERR_REGION_NEW_RESIDENTS_BLOCKED,
+            is_region_stakeholder,
+        )
+
+        destination_sector = self.db.query(Sector).filter(
+            Sector.sector_id == destination_sector_id
+        ).first()
+        if destination_sector is None or destination_sector.region_id is None:
+            return None  # unknown/unattributed destination -- nothing to gate
+
+        destination_region = self.db.query(Region).filter(
+            Region.id == destination_sector.region_id
+        ).first()
+        if destination_region is None:
+            return None
+
+        if destination_region.status not in (RegionStatus.SUSPENDED, RegionStatus.GRACE):
+            return None  # not in the gated window -- no check at all
+
+        if player.current_region_id == destination_region.id:
+            return None  # in-region move, not cross-region ingress
+
+        if destination_region.owner_id is not None and destination_region.owner_id == player.user_id:
+            return None  # the region's own owner is always allowed in
+
+        if is_region_stakeholder(self.db, player.id, destination_region.id):
+            return None
+
+        return {
+            "success": False,
+            "message": ERR_REGION_NEW_RESIDENTS_BLOCKED,
+            "error": ERR_REGION_NEW_RESIDENTS_BLOCKED,
+            "turn_cost": 0,
+        }
 
     def get_available_moves(self, player_id: uuid.UUID) -> Dict[str, Any]:
         """
