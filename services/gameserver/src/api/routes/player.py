@@ -123,8 +123,8 @@ class FormationInvestigateResponse(BaseModel):
     formation: FormationInvestigateDetailResponse
     reward: FormationInvestigateRewardResponse
     credits_remaining: int
-    # FLAG: the reward magnitude is [NO-CANON] — proposed, pending Max's ruling.
-    reward_is_no_canon: bool = True
+    # False once DECISIONS.md anomaly-investigate-reward ratified (Max 2026-06-22).
+    reward_is_no_canon: bool = False
 
 
 def _mining_laser_level(ship) -> int | None:
@@ -593,7 +593,8 @@ async def investigate_formation_route(
     404 if the formation does not exist or has not yet been discovered (identity
     is withheld pre-discovery, so both collapse to "not found"). 409 if it has
     already been investigated (the reward is one-time). On success: marks the
-    formation investigated, grants the [NO-CANON] rarity-scaled credit reward, and
+    formation investigated, grants the rarity-scaled credit reward
+    (DECISIONS.md anomaly-investigate-reward), and
     returns the formation details + reward payload.
     """
     from src.services.special_formation_service import (

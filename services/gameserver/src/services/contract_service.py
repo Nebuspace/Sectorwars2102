@@ -28,15 +28,11 @@ sibling module, `contract_bulk.py` (see WO-CONTRACT-REFACTOR-SPLIT below
 for why; this module re-exports both by name, unchanged for callers), see
 that module's own docstring and `sweep_expired_accepted_contracts`'s own
 "[KNOWN GAP]" note below for the one deliberately-unbuilt piece (an
-in_progress-status deadline sweep). Nothing in this codebase yet
-GENERATES or POSTS a bulk_procurement row (contract_generator.py's own
-WO-CONTRACT-3-NPCGEN-TYPES build produced express_delivery/hazardous_
-transport only; `post_player_contract` below still hardcodes
-cargo_delivery) -- `deliver`/`walk_away_bulk_procurement` are built and
-DB-free-tested against hand-constructed fixtures, function-only until a
-future WO wires a real posting/generation path to them, matching this
-module's own established `resolve_dispute`-style "function only"
-precedent.
+in_progress-status deadline sweep). Player-posted `bulk_procurement` is
+live via `post_player_contract` + `PostContractRequest` (cargo_delivery |
+bulk_procurement allowlist — NPC-only types stay generator-gated). The
+retired pro-rata `deliver`/`walk_away_bulk_procurement` helpers in
+`contract_bulk.py` remain unwired (locker path superseded them).
 
 WO-CONTRACT-REFACTOR-SPLIT: this module was split (pure move, zero
 behavior change) once it grew past this project's 1500-line Python
@@ -123,6 +119,17 @@ from src.models.station import Station, StationStatus
 from src.services.contract_bulk import deliver as deliver
 from src.services.contract_bulk import walk_away_bulk_procurement as walk_away_bulk_procurement
 from src.services.contract_dispute import DISPUTE_FILING_WINDOW_HOURS as DISPUTE_FILING_WINDOW_HOURS
+
+# Cap per-tick gather size for the three expiry sweeps. Live heimdall
+# (2026-08-06) had 520k+ EXPIRED+HELD dispute-window rows; loading them
+# all via `.all()` left the outer sweep transaction idle past Postgres's
+# idle_in_transaction_session_timeout (15s on stage) before the first
+# candidate ran — the connection died, `begin_nested()` failed, and the
+# WHOLE merged tick (including `_bulk_expire_remaining_posted_contracts`
+# that clears past-deadline NPC POSTED rows) aborted every cycle.
+# Oldest-deadline-first + LIMIT drains the backlog across ticks without
+# ever holding an idle open txn across a giant Python-side materialization.
+CONTRACT_EXPIRY_CANDIDATE_BATCH = 200
 from src.services.contract_dispute import _ei3_both_parties_dispute as _ei3_both_parties_dispute
 from src.services.contract_dispute import _ei3_evidence_trail_incomplete as _ei3_evidence_trail_incomplete
 from src.services.contract_dispute import _ei3_high_value as _ei3_high_value
@@ -200,15 +207,36 @@ def _is_valid_commodity(db: Session, commodity_type: str) -> bool:
 def _is_player_blocklisted(db: Session, issuer_player_id: uuid.UUID) -> bool:
     """[NO-CANON] contracts.md:245 requires "caller not blocklisted" at
     POST time (a platform-level posting gate on the issuer themselves --
-    distinct from :368's ACCEPT-time "acceptor has active hostility with
-    issuer" pairwise check, which is a separate, unbuilt gap in `accept()`
-    out of THIS WO's scope). No blocklist/suspension model exists ANYWHERE
-    in this codebase (verified: no Blocklist/BlockedPlayer model, no
-    block_list column). This is a documented NO-OP SEAM, not a silently
-    invented mechanism -- always returns False (never blocks) until a real
-    blocklist model exists for a future WO to wire here. Exercised by a
-    monkeypatch-to-True test to prove the seam is actually consulted, not
-    decorative."""
+    distinct from the ACCEPT-time pairwise hostility check in
+    :func:`_acceptor_hostile_to_issuer`). No blocklist/suspension model
+    exists ANYWHERE in this codebase (verified: no Blocklist/BlockedPlayer
+    model, no block_list column). This is a documented NO-OP SEAM, not a
+    silently invented mechanism -- always returns False (never blocks)
+    until a real blocklist model exists for a future WO to wire here.
+    Exercised by a monkeypatch-to-True test to prove the seam is actually
+    consulted, not decorative."""
+    return False
+
+
+def _acceptor_hostile_to_issuer(
+    db: Session, acceptor_player_id: uuid.UUID, issuer_player_id: uuid.UUID,
+) -> bool:
+    """contracts.md Anti-griefing: "Contracts cannot be accepted from
+    players the acceptor has active hostility with (negative
+    direct-relationship reputation between the two parties)."
+
+    WO-BUILD-CONTRACT-ACCEPTOR-PAIRWISE-HOSTILITY-CHECK verify-first:
+    there is NO player↔player relationship / standing model in this
+    codebase. ``emergent_reputation_service`` "direct" means a
+    non-cascade faction delta, not a pairwise player standing (audit
+    misread). Faction ``Reputation.is_hostile`` is player↔faction only.
+
+    Documented NO-OP SEAM (mirrors ``_is_player_blocklisted``): always
+    returns False until a real pairwise standing lands. Call site is
+    wired in ``accept()`` for PLAYER-issuer contracts so the gate is
+    exercised (monkeypatch-to-True test), not decorative. NPC issuers
+    skip this check — hostility is player↔player only.
+    """
     return False
 
 
@@ -255,6 +283,15 @@ def accept(
         )
     if contract.issuer_type == ContractIssuerType.PLAYER and contract.issuer_id == acceptor_player_id:
         raise ContractError("Cannot accept your own contract")
+    if (
+        contract.issuer_type == ContractIssuerType.PLAYER
+        and contract.issuer_id is not None
+        and _acceptor_hostile_to_issuer(db, acceptor_player_id, contract.issuer_id)
+    ):
+        raise ContractError(
+            "hostility: cannot accept a contract from a player you have "
+            "active hostility with"
+        )
     if contract.deadline is not None and now >= contract.deadline:
         raise ContractConflictError("expired: this contract's deadline has already passed")
 
@@ -799,12 +836,14 @@ def sweep_expired_contracts(db: Session, now: Optional[datetime] = None) -> Dict
     return {"expired": expired_with_refund + bulk_result}
 
 
-def _gather_sweep_expired_contracts_candidates(db: Session, now: datetime) -> List[Contract]:
-    """WO-CONTRACT-57 (axis-2): upfront `.all()` gather of `sweep_expired_
+def _gather_sweep_expired_contracts_candidates(
+    db: Session, now: datetime, *, limit: int = CONTRACT_EXPIRY_CANDIDATE_BATCH,
+) -> List[Contract]:
+    """WO-CONTRACT-57 (axis-2): upfront gather of `sweep_expired_
     contracts`' per-candidate set (player-issued, escrow-HELD, deadline-
     passed POSTED rows) -- replaces the original `while True: .first()`
     shape (re-querying server-side every iteration) so `run_contract_
-    expiry_sweeps` can see the FULL candidate set, and compute the
+    expiry_sweeps` can see the candidate set, and compute the
     cross-sweep player-id union, BEFORE any candidate is processed. Safe
     per `sweep_expired_accepted_contracts`'s own precedent (WO-STORE-
     EXPIRY-CLAIMABLE): the raced-away-row protection never actually
@@ -812,7 +851,11 @@ def _gather_sweep_expired_contracts_candidates(db: Session, now: datetime) -> Li
     (`rowcount == 0` -> skip, in `_process_one_sweep_expired_contracts_
     candidate`) independently excludes a row whose real DB status moved
     on between this gather and that candidate's own turn, identical in
-    effect, just discovered at a different step."""
+    effect, just discovered at a different step.
+
+    WO-FIX-CONTRACT-SWEEP-IDLE-IN-TRANSACTION-DEADLOCK: `limit` caps the
+    gather (oldest deadline first) so a multi-hundred-thousand-row backlog
+    cannot idle-timeout the outer tick before bulk POSTED expiry runs."""
     return (
         db.query(Contract)
         .filter(
@@ -821,6 +864,8 @@ def _gather_sweep_expired_contracts_candidates(db: Session, now: datetime) -> Li
             Contract.issuer_type == ContractIssuerType.PLAYER,
             Contract.escrow_state == ContractEscrowState.HELD,
         )
+        .order_by(Contract.deadline.asc())
+        .limit(limit)
         .all()
     )
 
@@ -1217,18 +1262,27 @@ def sweep_expired_accepted_contracts(
     return {"expired": expired}
 
 
-def _gather_sweep_expired_accepted_contracts_candidates(db: Session, now: datetime) -> List[Contract]:
-    """WO-CONTRACT-57 (axis-2): the upfront `.all()` gather -- unchanged
+def _gather_sweep_expired_accepted_contracts_candidates(
+    db: Session, now: datetime, *, limit: int = CONTRACT_EXPIRY_CANDIDATE_BATCH,
+) -> List[Contract]:
+    """WO-CONTRACT-57 (axis-2): the upfront gather -- unchanged filter
     from `sweep_expired_accepted_contracts`' own pre-WO-CONTRACT-57 shape
     (WO-STORE-EXPIRY-CLAIMABLE already gathered upfront for this sweep;
-    see that function's own docstring for why `.all()` is safe here).
-    Extracted only so `run_contract_expiry_sweeps` can call it directly."""
+    see that function's own docstring for why an upfront gather is safe
+    here). Extracted only so `run_contract_expiry_sweeps` can call it
+    directly.
+
+    WO-FIX-CONTRACT-SWEEP-IDLE-IN-TRANSACTION-DEADLOCK: `limit` caps the
+    gather (oldest deadline first); see `_gather_sweep_expired_contracts_
+    candidates`."""
     return (
         db.query(Contract)
         .filter(
             Contract.status == ContractStatus.ACCEPTED,
             Contract.deadline < now,
         )
+        .order_by(Contract.deadline.asc())
+        .limit(limit)
         .all()
     )
 
@@ -1602,10 +1656,17 @@ def sweep_expired_dispute_window(db: Session, now: Optional[datetime] = None) ->
     return {"refunded": refunded}
 
 
-def _gather_sweep_expired_dispute_window_candidates(db: Session, now: datetime) -> List[Contract]:
-    """WO-CONTRACT-57 (axis-2): the upfront `.all()` gather -- unchanged
+def _gather_sweep_expired_dispute_window_candidates(
+    db: Session, now: datetime, *, limit: int = CONTRACT_EXPIRY_CANDIDATE_BATCH,
+) -> List[Contract]:
+    """WO-CONTRACT-57 (axis-2): the upfront gather -- unchanged filter
     from `sweep_expired_dispute_window`'s own pre-WO-CONTRACT-57 shape.
-    Extracted only so `run_contract_expiry_sweeps` can call it directly."""
+    Extracted only so `run_contract_expiry_sweeps` can call it directly.
+
+    WO-FIX-CONTRACT-SWEEP-IDLE-IN-TRANSACTION-DEADLOCK: this gather is the
+    load-bearing one — live stage held 520k+ EXPIRED+HELD rows past the
+    dispute window. Unbounded `.all()` idle-killed the outer tick every
+    cycle. `limit` + oldest-deadline-first drains across ticks."""
     window_cutoff = now - timedelta(hours=DISPUTE_FILING_WINDOW_HOURS)
     return (
         db.query(Contract)
@@ -1614,6 +1675,8 @@ def _gather_sweep_expired_dispute_window_candidates(db: Session, now: datetime) 
             Contract.escrow_state == ContractEscrowState.HELD,
             Contract.deadline < window_cutoff,
         )
+        .order_by(Contract.deadline.asc())
+        .limit(limit)
         .all()
     )
 
@@ -1814,6 +1877,12 @@ def run_contract_expiry_sweeps(
     needs_lock = sorted((t for t in tagged if t[0] is not None), key=lambda t: t[0])
     merged = no_lock + needs_lock
 
+    # Drain past-deadline NPC / non-HELD POSTED immediately. Live heimdall
+    # (2026-08-06) had 15,710 such rows and 0 player-held-escrow candidates —
+    # this bulk UPDATE is the only path that clears them. It must not wait
+    # behind the dispute-window candidate loop (520k+ EXPIRED+HELD).
+    bulk_result = _bulk_expire_remaining_posted_contracts(db, now)
+
     expired_with_refund = 0
     accepted_expired = 0
     refunded = 0
@@ -1828,10 +1897,6 @@ def run_contract_expiry_sweeps(
             if _process_one_sweep_expired_dispute_window_candidate(db, candidate):
                 refunded += 1
 
-    # The bulk path never touches a Player row -- no ordering concern,
-    # untouched, run once at the end same as sweep_expired_contracts'
-    # own standalone shape.
-    bulk_result = _bulk_expire_remaining_posted_contracts(db, now)
     db.flush()
 
     posted_result = {"expired": expired_with_refund + bulk_result}

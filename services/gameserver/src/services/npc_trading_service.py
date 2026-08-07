@@ -485,6 +485,7 @@ def _record_transaction(
         station_buy_price=market_price.buy_price,
         station_sell_price=market_price.sell_price,
         station_quantity=market_price.quantity,
+        region_id_snapshot=getattr(station, "region_id", None),
         timestamp=datetime.now(UTC),
     ))
 

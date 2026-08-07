@@ -96,11 +96,11 @@ def check_friendly_port(db: Session, player_id, station: Station):
     port" gate (ship-insurance.md:48 "Buying insurance ... requires at least
     NEUTRAL reputation with the controlling faction").
 
-    NO-CANON: a station with no controlling faction (no faction_affiliation,
+    NO-CANON→RULED: a station with no controlling faction (no faction_affiliation,
     or a name that doesn't resolve to a seeded Faction row) has no faction to
-    be unfriendly with, so it always passes. Canon's "friendly port" language
-    presumes an affiliated station and is silent on unaffiliated ones —
-    flagged to DECISIONS.
+    be unfriendly with, so it always passes. DECISION
+    `insurance-factionless-port-gate` (2026-08-07): ratify always-friendly-by-design
+    for unaffiliated ports — this pass is intentional, not a gap.
     """
     faction = _station_controlling_faction(db, station)
     if faction is None:
@@ -992,11 +992,13 @@ def _maintenance_status(ship: Ship, condition: float, station: Station = None) -
             "failure_pct": round(band["failure"] * 100),
             "failure_tier": band["failure_tier"],
         },
-        # Honesty: the combat-effectiveness band is consumed in combat, and the
-        # speed band is now consumed in the move-cost path (WO-MAINTBANDS). The
-        # fuel modifier has no consuming surface — movement costs turns, not fuel
-        # — so it stays unconsumed by design, not oversight.
-        "applied_effects": ["combat", "speed"],
+        # Honesty: the combat-effectiveness band is consumed in combat, the
+        # speed band in the move-cost path (WO-MAINTBANDS), and the per-jump
+        # failure%/failure_tier roll on successful jumps
+        # (WO-BUILD-HULL-FAILURE-TIER-DICE-ROLL). The fuel modifier has no
+        # consuming surface — movement costs turns, not fuel — so it stays
+        # unconsumed by design, not oversight.
+        "applied_effects": ["combat", "speed", "hull_failure_roll"],
         "repair_options": options,
     }
 
@@ -1097,6 +1099,7 @@ async def repair_ship_maintenance(
     m["last_maintenance"] = datetime.now(timezone.utc).isoformat()
     m["repair_needed"] = False
     m["failure_status"] = "NONE"
+    m.pop("sensors_offline", None)
     ship.maintenance = m
     flag_modified(ship, "maintenance")
     db.commit()

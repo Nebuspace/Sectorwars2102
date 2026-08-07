@@ -25,12 +25,10 @@ reached directly by bulk; `deliver()` itself transitions straight to
 COMPLETED on the final partial). FUNCTION ONLY -- nothing yet GENERATES or
 POSTS a bulk_procurement row anywhere in this codebase
 (contract_generator.py's own WO-CONTRACT-3-NPCGEN-TYPES build produced
-express_delivery/hazardous_transport only; `post_player_contract`,
-contract_service.py, still hardcodes cargo_delivery) -- these two
-functions are built and DB-free-tested against hand-constructed fixtures,
-matching this codebase's own established `resolve_dispute`-style "function
-only" precedent (contract_dispute.py) until a future WO wires a real
-posting/generation path to them.
+express_delivery/hazardous_transport only) -- player posting of
+bulk_procurement is live via `post_player_contract` + the route
+allowlist. These two RETIRED functions stay for fixture/history only
+until a cleanup WO deletes them.
 
 [VERIFY-FIRST FINDING, premise correction] the WO-3b dispatch's own brief
 proposed a NEW `acceptance_fee_charged_at` column so the 2% acceptance fee

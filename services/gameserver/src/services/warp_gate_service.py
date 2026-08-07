@@ -2640,11 +2640,9 @@ def transfer_gate(
 
 
 # --- Region-termination cascade (ADR-0052 SK38 / ADR-0050, WO-GWQ-GATE-CASCADE) --
-# KERNEL ONLY -- no caller anywhere in src/ yet. The region-lifecycle epic
-# (structures.py's `_is_border_contested` docstring: "Depends on
-# region-lifecycle, which is unbuilt") is what will eventually invoke this
-# once a real region-cleanup orchestrator exists. Exercised directly by
-# tests/unit/test_gate_region_cascade.py in the meantime.
+# Called from region_lifecycle_service.dispatch_terminated_cleanup when a
+# TERMINATED region past scheduled_hard_delete_at is processed. Also
+# exercised directly by tests/unit/test_gate_region_cascade.py.
 
 # ADR-0052 SK38 / warp-gates.md "Region-termination cascade": 50% of the
 # construction-cost snapshot, as exact integer halving (no float rounding
@@ -2699,9 +2697,9 @@ def _notify_gate_cascade_destroyed(
 
 def cascade_region_gate_teardown(db: Session, region_id) -> Dict[str, Any]:
     """ADR-0052 SK38 / ADR-0050 / warp-gates.md "Region-termination cascade":
-    called BY the future region-lifecycle cleanup orchestrator once a region
-    enters cleanup. Tears down every player-built warp gate with an endpoint
-    sector in `region_id`:
+    called by ``region_lifecycle_service.dispatch_terminated_cleanup`` when a
+    TERMINATED region past ``scheduled_hard_delete_at`` is processed. Tears
+    down every player-built warp gate with an endpoint sector in `region_id`:
 
       1. Both endpoints severed atomically. The traversable connection IS
          the linked WarpTunnel row (movement_service._has_player_gate reads

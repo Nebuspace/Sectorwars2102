@@ -81,12 +81,13 @@ class _FakeResult:
 
 
 class _FakeQuery:
-    def __init__(self, rows: List[Any], criteria: Optional[List[Any]] = None) -> None:
+    def __init__(self, rows: List[Any], criteria: Optional[List[Any]] = None, limit: Optional[int] = None) -> None:
         self._rows = rows
         self._criteria = criteria or []
+        self._limit = limit
 
     def filter(self, *conditions: Any) -> "_FakeQuery":
-        return _FakeQuery(self._rows, self._criteria + list(conditions))
+        return _FakeQuery(self._rows, self._criteria + list(conditions), self._limit)
 
     def with_for_update(self) -> "_FakeQuery":
         # WO-ECON-CONTRACT-MONEY-HARDEN: no-op passthrough. A single-
@@ -107,6 +108,14 @@ class _FakeQuery:
         # passthrough in mack's project memory.
         return self
 
+    def order_by(self, *args: Any) -> "_FakeQuery":
+        # WO-FIX-CONTRACT-SWEEP-IDLE-IN-TRANSACTION-DEADLOCK: gather
+        # chains .order_by(deadline.asc()).limit(N) — no-op passthrough.
+        return self
+
+    def limit(self, n: int) -> "_FakeQuery":
+        return _FakeQuery(self._rows, self._criteria, n)
+
     def first(self) -> Any:
         for row in self._rows:
             if all(_match(row, c) for c in self._criteria):
@@ -118,7 +127,10 @@ class _FakeQuery:
         # contracts gathers its candidates upfront now (the expiry_gate
         # deferral fix -- see that function's own docstring for why a
         # repeated fresh .first() would infinite-loop on a deferred row).
-        return [row for row in self._rows if all(_match(row, c) for c in self._criteria)]
+        rows = [row for row in self._rows if all(_match(row, c) for c in self._criteria)]
+        if self._limit is not None:
+            return rows[: self._limit]
+        return rows
 
     def count(self) -> int:
         return sum(1 for row in self._rows if all(_match(row, c) for c in self._criteria))
@@ -347,6 +359,46 @@ class TestAccept:
         assert c.accepted_at == _NOW
         assert acceptor.credits == 480
         assert db.flush_calls == 1
+
+    def test_hostility_seam_blocks_player_issuer_accept(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Proves _acceptor_hostile_to_issuer is consulted on PLAYER-issuer
+        accepts (WO-BUILD-CONTRACT-ACCEPTOR-PAIRWISE-HOSTILITY-CHECK)."""
+        issuer = _player()
+        c = _contract(
+            issuer_type=ContractIssuerType.PLAYER,
+            issuer_id=issuer.id,
+            payment=Decimal("1000.00"),
+            acceptance_fee_pct=Decimal("2.0"),
+        )
+        acceptor = _player(credits=500)
+        db = _FakeSession(contracts=[c], players=[acceptor, issuer])
+        monkeypatch.setattr(
+            contract_service, "_acceptor_hostile_to_issuer", lambda db, a, i: True,
+        )
+        with pytest.raises(contract_service.ContractError, match="hostility"):
+            contract_service.accept(db, c.id, acceptor.id, now=_NOW)
+        assert acceptor.credits == 500  # feeless — rejected before charge
+        assert c.status == ContractStatus.POSTED
+
+    def test_hostility_seam_skipped_for_npc_issuer(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """NPC contracts never consult pairwise player hostility."""
+        c = _contract(payment=Decimal("1000.00"), acceptance_fee_pct=Decimal("2.0"))
+        acceptor = _player(credits=500)
+        db = _FakeSession(contracts=[c], players=[acceptor])
+        called = {"n": 0}
+
+        def _spy(db, a, i):
+            called["n"] += 1
+            return True
+
+        monkeypatch.setattr(contract_service, "_acceptor_hostile_to_issuer", _spy)
+        result = contract_service.accept(db, c.id, acceptor.id, now=_NOW)
+        assert called["n"] == 0
+        assert result["acceptance_fee_charged"] == 20.0
 
     @pytest.mark.parametrize("payment,expected_fee", [(1, 0.02), (100, 2.00), (101, 2.02)])
     def test_fee_math_edge_cases(self, payment: int, expected_fee: float) -> None:
@@ -1488,6 +1540,21 @@ class TestSweepExpiredContracts:
         assert posted_future.status == ContractStatus.POSTED
         assert posted_exact.status == ContractStatus.POSTED
         assert accepted_past.status == ContractStatus.ACCEPTED  # untouched -- not posted
+
+    def test_dispute_window_gather_respects_batch_limit(self) -> None:
+        """WO-FIX-CONTRACT-SWEEP-IDLE-IN-TRANSACTION-DEADLOCK: never materialize
+        the full EXPIRED+HELD backlog in one tick."""
+        rows = [
+            _contract(
+                status=ContractStatus.EXPIRED,
+                escrow_state=ContractEscrowState.HELD,
+                deadline=_NOW - timedelta(hours=50 + i),
+            )
+            for i in range(5)
+        ]
+        db = _FakeSession(contracts=rows)
+        got = contract_service._gather_sweep_expired_dispute_window_candidates(db, _NOW, limit=2)
+        assert len(got) == 2
 
     def test_sweeps_express_and_hazardous_types_identically_to_cargo(self) -> None:
         """WO-CONTRACT-3-NPCGEN-TYPES: this sweep filters purely on

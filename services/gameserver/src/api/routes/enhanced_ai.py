@@ -27,14 +27,10 @@ from src.core.database import get_async_session
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
 from src.services.enhanced_ai_service import (
-    EnhancedAIService, AISystemType, CrossSystemRecommendation,
-    ConversationContext, RecommendationPriority, RiskAssessment
+    EnhancedAIService, AISystemType
 )
 from src.services.ai_security_service import AISecurityService, get_security_service
 from src.services.aria_data_index_service import ARIADataIndexService
-from src.models.enhanced_ai_models import AIComprehensiveAssistant, SecurityLevel
-from src.utils.validation import validate_uuid
-from src.middleware.rate_limit import RateLimitMiddleware
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ai", tags=["Enhanced AI"])
@@ -801,10 +797,13 @@ async def cleanup_ai_data(
     """
     try:
         ai_service = EnhancedAIService(db)
-        
-        # Only allow for admin users (implement admin check here)
-        # For now, any authenticated user can trigger cleanup for their own data
-        
+
+        # SECURITY / honesty: section banner + OpenAPI say "Admin only", but
+        # auth is plain `validate_ai_access` (any AI-eligible player). The call
+        # below is GLOBAL DELETE (ai_conversation_logs / ai_cross_system_knowledge /
+        # ai_security_audit_log) — not scoped to the caller. Do NOT "fix" the
+        # gate here without Max OK — Pending DECISION
+        # `enhanced-ai-cleanup-admin-gate` (HIGH / safety-list). Diagnose-only.
         deleted_count = await ai_service.cleanup_expired_data()
         
         await db.commit()

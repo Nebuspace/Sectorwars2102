@@ -1,6 +1,6 @@
 from datetime import datetime
-from typing import List, Optional
-from pydantic import BaseModel, EmailStr, Field, UUID4, ConfigDict
+from typing import Optional
+from pydantic import BaseModel, Field, UUID4, ConfigDict
 
 
 # Shared properties

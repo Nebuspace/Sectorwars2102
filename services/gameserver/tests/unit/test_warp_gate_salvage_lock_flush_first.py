@@ -150,6 +150,16 @@ class _FakeQuery:
     def all(self) -> List[Any]:
         return self._matching()
 
+    def scalar(self) -> Any:
+        # CombatService._is_same_team uses query(Player.team_id).filter(...).scalar().
+        matches = self._matching()
+        if not matches:
+            return None
+        row = matches[0]
+        if self._entity == "Player.team_id":
+            return getattr(row, "team_id", None)
+        return row
+
 
 class _HybridSession:
     """Player/WarpGate/WarpGateBeacon/WarpTunnel routed to a DB-free
@@ -177,6 +187,8 @@ class _HybridSession:
             return self.ship_session.query(head)
         if head is Player:
             return _FakeQuery(self.players, session=self, entity="Player")
+        if head is Player.team_id:
+            return _FakeQuery(self.players, session=self, entity="Player.team_id")
         if head is WarpGate:
             return _FakeQuery(self.gates, session=self, entity="WarpGate")
         if head is WarpGateBeacon:

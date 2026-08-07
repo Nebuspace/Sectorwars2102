@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from src.core.commodity_economy import COMMODITY_BASE_PRICES
-from src.models.market_transaction import MarketTransaction, MarketPrice, PriceHistory
+from src.models.market_transaction import MarketPrice, PriceHistory
 from src.models.station import Station
 from src.utils.error_handling import generate_error_id
 

@@ -209,16 +209,17 @@ def create_default_factions(db: Session, max_retries: int = 3) -> None:
     aggression, and diplomacy stance follow faction-lore.md /
     factions-and-teams.md per faction.
 
-    Roster scope (8 rows): the six allyable factions canon marks as seeded —
+    Roster scope (9 rows): the six allyable factions canon marks as seeded —
     Terran Federation (FEDERATION), Mercantile Guild (MERCHANTS), Frontier
     Coalition (INDEPENDENTS), Astral Mining Consortium (MINING, per ADR-0033),
     Nova Scientific Institute (EXPLORERS), Fringe Alliance (OUTLAWS) — plus
-    Shadow Syndicate (SYNDICATE, WO-PULL-FACTION-ROSTER-SEED) and the
-    hostile-only Pirates (PIRATES).
+    Shadow Syndicate (SYNDICATE, WO-PULL-FACTION-ROSTER-SEED), the
+    hostile-only Pirates (PIRATES), and Galactic Concord (CONCORD —
+    police-forces.md § Faction registration: operator-managed hub authority;
+    not player-allyable, but the Faction row is canon to seed so Sentinel-kill
+    rep deltas land).
 
     Deliberately NOT seeded (canon, not an oversight):
-      - Galactic Concord (CONCORD): police-forces.md "📐 Design-only,
-        operator-managed; not in the standard NPC-faction list".
       - The Cabal: 📐 Design-only and not present in the FactionType enum.
       - FactionType.MILITARY: not a canonical roster faction (no faction-lore
         entry); a legacy enum value retained per the model comment.
@@ -341,6 +342,19 @@ def create_default_factions(db: Session, max_retries: int = 3) -> None:
             "diplomacy_stance": "hostile",
             "color_primary": "#CC0000",
             "color_secondary": "#000000",
+        },
+        {
+            "name": "Galactic Concord",
+            "faction_type": FactionType.CONCORD,
+            "description": (
+                "Operator-managed hub authority that staffs the Nexus "
+                "Sentinel Corps. Not a player-targetable allyable faction — "
+                "negative standing only (no positive reputation triggers)."
+            ),
+            "aggression_level": 5,
+            "diplomacy_stance": "neutral",
+            "color_primary": "#4A5568",
+            "color_secondary": "#E2E8F0",
         },
     ]
 

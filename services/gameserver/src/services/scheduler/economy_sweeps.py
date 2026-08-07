@@ -43,6 +43,9 @@ from src.services.scheduler._common import (
     _WANTED_CLEAR_LOCK_KEY,
     _WANTED_CLEAR_STATE_KEY,
     WANTED_CLEAR_SWEEP_SECONDS,
+    _PHASE14_ATTACHMENT_RETRY_LOCK_KEY,
+    _PHASE14_ATTACHMENT_RETRY_STATE_KEY,
+    PHASE14_ATTACHMENT_RETRY_SWEEP_SECONDS,
     _sweep_due_and_advance,
     canonical_day_number,
 )
@@ -769,6 +772,46 @@ def _run_bounty_expire_sweep_sync() -> Dict[str, int]:
         logger.exception("Bounty expire sweep failed")
         db.rollback()
         return {"expired": 0, "total_refunded": 0}
+    finally:
+        db.close()
+
+
+def _run_phase14_attachment_retry_sweep_sync() -> Tuple[int, List[Dict[str, Any]]]:
+    """ADR-0050 SK22 — Phase 14 (Nexus cross-region attachment) exponential-
+    backoff retry sweep. Thin session/lock/due-check wrapper — the pure,
+    testable logic is ``region_attachment_service.sweep_due_retries``
+    (mirrors ``_run_bounty_expire_sweep_sync`` wrapping
+    ``BountyService.expire_due_bounties`` exactly). Lock acquired first,
+    only a successful acquirer proceeds to the due-check.
+
+    Returns ``(retried_count, events)`` — ``events`` are broadcast on the
+    event loop by the caller (ops alert to admins + ARIA narration personal
+    frame to the region owner), same discipline as the beacon-expiry sweep.
+    """
+    from src.core.database import SessionLocal
+    from src.services.region_attachment_service import sweep_due_retries
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _PHASE14_ATTACHMENT_RETRY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            logger.info("NPC scheduler: Phase-14 attachment retry sweep — lock busy, skipped")
+            return 0, []
+        if not _sweep_due_and_advance(
+            db, _PHASE14_ATTACHMENT_RETRY_STATE_KEY,
+            PHASE14_ATTACHMENT_RETRY_SWEEP_SECONDS, datetime.now(UTC),
+        ):
+            return 0, []
+        result = sweep_due_retries(db, now=datetime.now(UTC))
+        db.commit()
+        return result["retried"], result["events"]
+    except Exception:
+        logger.exception("Phase-14 attachment retry sweep failed")
+        db.rollback()
+        return 0, []
     finally:
         db.close()
 

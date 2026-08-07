@@ -1232,9 +1232,8 @@ async def handle_websocket_message(user_id: str, message_data: Dict[str, Any]):
             # push per FINDINGS.md 2026-06-12). This is live-only chat: if
             # the recipient isn't connected right now, nothing is stored —
             # the sender is pointed at the persistent mailbox instead.
-            # Payload key / echo semantics are NO-CANON (no wire-format spec
-            # exists for this room yet); kept minimal, flagged to the
-            # Orchestrator.
+            # Wire frame (`target_user_id` + echo-to-sender) is now canon in
+            # OPERATIONS/realtime.md § Private DM wire frame (2026-08-06).
             target_user_id = str(message_data.get("target_user_id") or "").strip()
             if not target_user_id or target_user_id == user_id:
                 await connection_manager.send_personal_message(user_id, {

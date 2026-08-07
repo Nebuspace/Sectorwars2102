@@ -468,10 +468,17 @@ def _run_governance_sweep_sync() -> Dict[str, Any]:
     ``region_anchor_missing`` events. Re-injection is deferred. Self-gated
     once per canonical day via ``anchor_repair_service.run_daily_scan_gated``.
 
+    Phase 9 runs the station defense-underfunding cascade (ADR-0093 §3 /
+    WO-FIX-STATION-DEFENSE-AUTO-DOWNGRADE-CASCADE): once per canonical day,
+    player-owned stations with fee ``defense_pct < 0.35`` accumulate a streak
+    (day 1 warn / day 3 one-tier drop / day 7 force none) via
+    ``station_security_service.run_defense_underfunding_cascade_gated``.
+
     Returns {auto_created, opened, tallied, enacted, rejected,
     regions_recomputed, treaties_expired, treasury_checked,
     treasury_mismatched, advanced_to_grace, advanced_to_terminated,
-    cleanup_eligible, anchors_scanned, anchors_missing, events}.
+    cleanup_eligible, anchors_scanned, anchors_missing,
+    defense_underfund_checked, defense_underfund_dropped, events}.
     """
     from src.core.database import SessionLocal
     from src.models.region import (
@@ -499,6 +506,7 @@ def _run_governance_sweep_sync() -> Dict[str, Any]:
               "treasury_checked": 0, "treasury_mismatched": 0,
               "advanced_to_grace": 0, "advanced_to_terminated": 0,
               "cleanup_eligible": 0, "anchors_scanned": 0, "anchors_missing": 0,
+              "defense_underfund_checked": 0, "defense_underfund_dropped": 0,
               "events": []}
     now = datetime.utcnow()
 
@@ -1011,6 +1019,24 @@ def _run_governance_sweep_sync() -> Dict[str, Any]:
             db.commit()
         except Exception:
             logger.exception("Governance sweep: anchor-repair scan phase failed")
+            db.rollback()
+
+        # --- Phase 9: station defense underfunding cascade (ADR-0093 §3)
+        # Self-gated once per canonical day. A failure here must NEVER break
+        # the governance sweep proper.
+        try:
+            from src.services import station_security_service as sts
+
+            under = sts.run_defense_underfunding_cascade_gated(db)
+            result["defense_underfund_checked"] = under.get("stations_checked", 0)
+            result["defense_underfund_dropped"] = (
+                int(under.get("tier_dropped", 0)) + int(under.get("forced_none", 0))
+            )
+            db.commit()
+        except Exception:
+            logger.exception(
+                "Governance sweep: defense-underfunding cascade phase failed"
+            )
             db.rollback()
 
         # Final commit closes out any open (no-op) transaction so the advisory

@@ -23,19 +23,21 @@ evolution_tick's own Python-side type filtering
 matching -- see _eval_clause's docstring.
 """
 
+import random
 import uuid
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
 import pytest
 
 from src.models.pirate_holding import PirateHolding, PirateHoldingTier
-from src.models.pirate_kill_log import PirateKillLog, PirateKillDisposition
+from src.models.pirate_kill_log import PirateKillDisposition, PirateKillLog
 from src.models.region import Region, RegionStatus
 from src.models.sector import Sector
 from src.models.special_formation import SpecialFormation, SpecialFormationType
+from src.models.zone import Zone, ZoneType
 from src.services import pirate_ecosystem_service as pes
-
 
 # ---------------------------------------------------------------------------
 # Deterministic scripted RNG
@@ -116,6 +118,17 @@ def _sectors(region_id, count, start=100):
         )
         for i in range(count)
     ]
+
+
+def _zone(*, region_id, zone_type, start_sector=1, end_sector=9999):
+    return Zone(
+        id=uuid.uuid4(),
+        region_id=region_id,
+        name=f"{zone_type.value}-zone",
+        zone_type=zone_type,
+        start_sector=start_sector,
+        end_sector=end_sector,
+    )
 
 
 def _formation(*, region_id, anchor_sector_id, formation_type, interior_sector_ids=None):
@@ -253,13 +266,11 @@ class _FakeQuery:
             if self._limit is not None:
                 ordered = ordered[: self._limit]
             return [(k, v) for k, v in ordered]
-        if (
-            len(self._entities) == 1
-            and hasattr(self._entities[0], "key")
-            and hasattr(self._entities[0], "class_")
+        if all(
+            hasattr(e, "key") and hasattr(e, "class_") for e in self._entities
         ):
-            key = self._entities[0].key
-            return [(getattr(r, key),) for r in matched]
+            keys = [e.key for e in self._entities]
+            return [tuple(getattr(r, k) for k in keys) for r in matched]
         return matched
 
     def first(self):
@@ -279,7 +290,7 @@ class _FakeQuery:
 
 class _FakeSession:
     def __init__(self, *, holdings=None, sectors=None, stations=None, regions=None,
-                 kill_logs=None, formations=None):
+                 kill_logs=None, formations=None, zones=None):
         self._by_table = {
             "pirate_holdings": list(holdings or []),
             "sectors": list(sectors or []),
@@ -287,6 +298,7 @@ class _FakeSession:
             "regions": list(regions or []),
             "pirate_kill_log": list(kill_logs or []),
             "special_formations": list(formations or []),
+            "zones": list(zones or []),
         }
         self.flush_count = 0
 
@@ -395,6 +407,149 @@ class TestCleansedRegionSeedFallback:
         assert calls, "a region with zero parent holdings must route through seed_spawn_camp"
         assert holding is not None
         assert holding.tier == PirateHoldingTier.CAMP
+
+
+# ---------------------------------------------------------------------------
+# daughter_spawn_weight / zone-affinity anchor-site selection (ADR-0060 G-I2)
+# ---------------------------------------------------------------------------
+
+class TestDaughterSpawnZoneWeight:
+    def test_weight_table_matches_the_adr(self):
+        # Native zone -> 1.0, adjacent (one ladder step) -> 0.5,
+        # distant (two ladder steps, or EXPANSE) -> 0.25.
+        assert pes.daughter_spawn_weight(ZoneType.BORDER, ZoneType.BORDER) == 1.0
+        assert pes.daughter_spawn_weight(ZoneType.BORDER, ZoneType.FEDERATION) == 0.5
+        assert pes.daughter_spawn_weight(ZoneType.BORDER, ZoneType.FRONTIER) == 0.5
+        assert pes.daughter_spawn_weight(ZoneType.FEDERATION, ZoneType.FRONTIER) == 0.25
+        assert pes.daughter_spawn_weight(ZoneType.FRONTIER, ZoneType.FEDERATION) == 0.25
+        # EXPANSE is off the ladder entirely -- distant from everything.
+        assert pes.daughter_spawn_weight(ZoneType.BORDER, ZoneType.EXPANSE) == 0.25
+        # Unzoned (nullable Sector.zone_id) on either side -- no affinity signal.
+        assert pes.daughter_spawn_weight(None, ZoneType.BORDER) == 0.25
+        assert pes.daughter_spawn_weight(ZoneType.BORDER, None) == 0.25
+        assert pes.daughter_spawn_weight(None, None) == 0.25
+
+    def test_spawn_daughter_holding_prefers_native_zone_statistically(self):
+        # Border-anchored parent; three eligible anchor candidates: one in
+        # the parent's own Border zone (native, weight 1.0), one Frontier
+        # (adjacent, weight 0.5), one Federation (also adjacent to Border on
+        # the ladder, weight 0.5). Exercises the exact production wiring
+        # spawn_daughter_holding uses (_zone_types_by_sector_id ->
+        # daughter_spawn_weight -> _weighted_choice) directly, bypassing the
+        # unrelated SPAWN_DISTRIBUTION "skip" roll and population-cap check
+        # that full spawn_daughter_holding also performs -- those are
+        # covered by TestSpawnDaughterHoldingCapBoundary /
+        # TestCleansedRegionSeedFallback above and would only add
+        # unrelated variance to a test about anchor-site weighting.
+        region = _region(total_sectors=300)
+        parent_zone = _zone(region_id=region.id, zone_type=ZoneType.BORDER,
+                             start_sector=1, end_sector=10)
+        native_zone = _zone(region_id=region.id, zone_type=ZoneType.BORDER,
+                             start_sector=11, end_sector=20)
+        adjacent_zone = _zone(region_id=region.id, zone_type=ZoneType.FRONTIER,
+                               start_sector=21, end_sector=30)
+        also_adjacent_zone = _zone(region_id=region.id, zone_type=ZoneType.FEDERATION,
+                                    start_sector=31, end_sector=40)
+
+        parent_sector = Sector(
+            id=uuid.uuid4(), sector_id=1, sector_number=0, name="parent-anchor",
+            region_id=region.id, cluster_id=uuid.uuid4(), zone_id=parent_zone.id,
+        )
+        native_sector = Sector(
+            id=uuid.uuid4(), sector_id=101, sector_number=1, name="native",
+            region_id=region.id, cluster_id=uuid.uuid4(), zone_id=native_zone.id,
+        )
+        adjacent_sector = Sector(
+            id=uuid.uuid4(), sector_id=102, sector_number=2, name="adjacent",
+            region_id=region.id, cluster_id=uuid.uuid4(), zone_id=adjacent_zone.id,
+        )
+        also_adjacent_sector = Sector(
+            id=uuid.uuid4(), sector_id=103, sector_number=3, name="also-adjacent",
+            region_id=region.id, cluster_id=uuid.uuid4(), zone_id=also_adjacent_zone.id,
+        )
+
+        parent = _holding(region_id=region.id, sector_id=1, tier=PirateHoldingTier.OUTPOST)
+        eligible = [101, 102, 103]
+
+        db = _FakeSession(
+            holdings=[parent],
+            sectors=[parent_sector, native_sector, adjacent_sector, also_adjacent_sector],
+            zones=[parent_zone, native_zone, adjacent_zone, also_adjacent_zone],
+        )
+        zone_types = pes._zone_types_by_sector_id(db, eligible + [parent.sector_id])
+        assert zone_types[parent.sector_id] == ZoneType.BORDER
+        parent_zone_type = zone_types[parent.sector_id]
+        weights = [pes.daughter_spawn_weight(parent_zone_type, zone_types[sid]) for sid in eligible]
+        assert weights == [1.0, 0.5, 0.5]
+
+        trials = 4000
+        rng = random.Random("gi2:zone-affinity")
+        picks = Counter(pes._weighted_choice(eligible, weights, rng=rng) for _ in range(trials))
+
+        native_picks = picks[101]
+        adjacent_picks = picks[102]
+        also_adjacent_picks = picks[103]
+
+        # Expected weight ratio native:adjacent:adjacent = 1.0 : 0.5 : 0.5,
+        # i.e. native ~50%, each adjacent candidate ~25% of picks. Statistical
+        # (not exact-count) assertion with a generous tolerance band to
+        # avoid seed-fragility -- the point is native clearly beats each
+        # adjacent candidate, the two adjacent candidates land close to each
+        # other, and every candidate still gets picked sometimes (a WEIGHT,
+        # not a hard zone restriction -- matches the ADR's "spill into
+        # Frontier (or Federation, at quarter rate)" language, not a wall).
+        assert native_picks > adjacent_picks * 1.5, (
+            f"native ({native_picks}) should clearly outweigh the adjacent "
+            f"Frontier candidate ({adjacent_picks}) at trials={trials}"
+        )
+        assert native_picks > also_adjacent_picks * 1.5, (
+            f"native ({native_picks}) should clearly outweigh the adjacent "
+            f"Federation candidate ({also_adjacent_picks}) at trials={trials}"
+        )
+        assert adjacent_picks > 0 and also_adjacent_picks > 0, (
+            "zone-affinity is a WEIGHT not a hard restriction -- adjacent "
+            "zones must still get picked sometimes"
+        )
+        # Both adjacent candidates share the same 0.5 weight -- roughly even.
+        assert abs(adjacent_picks - also_adjacent_picks) < 0.25 * trials
+
+    def test_spawn_daughter_holding_wires_zone_weighting_end_to_end(self):
+        # A thinner end-to-end smoke check (through the public function,
+        # deterministic RNG) that the weighted anchor pick is actually wired
+        # in, not just available as an unused helper. STRONGHOLD parent
+        # tier has a 0.0 "skip" probability (SPAWN_DISTRIBUTION) so a
+        # deterministic first-choice rng always produces a daughter.
+        region = _region(total_sectors=300)
+        parent_zone = _zone(region_id=region.id, zone_type=ZoneType.BORDER)
+        native_zone = _zone(region_id=region.id, zone_type=ZoneType.BORDER)
+        distant_zone = _zone(region_id=region.id, zone_type=ZoneType.FEDERATION)
+        parent_sector = Sector(
+            id=uuid.uuid4(), sector_id=1, sector_number=0, name="parent-anchor",
+            region_id=region.id, cluster_id=uuid.uuid4(), zone_id=parent_zone.id,
+        )
+        native_sector = Sector(
+            id=uuid.uuid4(), sector_id=101, sector_number=1, name="native",
+            region_id=region.id, cluster_id=uuid.uuid4(), zone_id=native_zone.id,
+        )
+        distant_sector = Sector(
+            id=uuid.uuid4(), sector_id=102, sector_number=2, name="distant",
+            region_id=region.id, cluster_id=uuid.uuid4(), zone_id=distant_zone.id,
+        )
+        parent = _holding(region_id=region.id, sector_id=1, tier=PirateHoldingTier.STRONGHOLD)
+        db = _FakeSession(
+            holdings=[parent],
+            sectors=[parent_sector, native_sector, distant_sector],
+            zones=[parent_zone, native_zone, distant_zone],
+        )
+        # _ScriptedRng.choices() always returns population[0] -- eligible's
+        # ORDER (not the weights) decides the pick here, so this only proves
+        # the wiring runs without error and returns a sector zone_types
+        # resolved for; the statistical preference itself is proven above.
+        holding = pes.spawn_daughter_holding(db, region, rng=_ScriptedRng())
+        assert holding is not None
+        # _ScriptedRng.choices() always returns population[0] -- eligible is
+        # built from Sector.sector_id order, so this pins to 101.
+        assert holding.sector_id == 101
 
 
 # ---------------------------------------------------------------------------
@@ -785,8 +940,14 @@ class TestRegionPirateGrowthTelemetry:
         result = pes.run_weekly_tick(db, region, now=now, rng=_ScriptedRng())
 
         assert result["action"] == "growth"
-        assert len(calls) == 1
-        region_id, payload = calls[0]
+        # Each individual spawn this tick ALSO fires its own daughter_spawned
+        # event (ADR-0060 R-I1, additive alongside the aggregate -- same
+        # "specific + aggregate are additive, not mutually exclusive" pattern
+        # as the seed-fallback case below) -- isolate the aggregate event
+        # specifically rather than asserting total call count.
+        growth_calls = [(rid, p) for rid, p in calls if p["type"] == "region_pirate_growth"]
+        assert len(growth_calls) == 1
+        region_id, payload = growth_calls[0]
         assert region_id == region.id
         assert payload["type"] == "region_pirate_growth"
         assert payload["region_id"] == str(region.id)
@@ -795,6 +956,8 @@ class TestRegionPirateGrowthTelemetry:
         assert payload["sites_spawned"] == result["spawned"]
         assert payload["target_population"] == result["target"]
         assert payload["current_population"] == result["current"]
+        daughter_spawned_calls = [p for _rid, p in calls if p["type"] == "daughter_spawned"]
+        assert len(daughter_spawned_calls) == len(result["spawned"])
 
     def test_no_growth_action_emits_exactly_once(self, monkeypatch):
         calls = _capture_broadcasts(monkeypatch)
@@ -1020,6 +1183,106 @@ class TestRegionCleansedTelemetry:
         pes.update_cleansed_state_for_region(db, region, now=now)
 
         assert calls == []
+
+
+class TestDaughterSpawnedTelemetry:
+    def test_spawn_daughter_holding_emits_daughter_spawned_with_zones(self, monkeypatch):
+        calls = _capture_broadcasts(monkeypatch)
+        region = _region(total_sectors=300)
+        parent_zone = _zone(region_id=region.id, zone_type=ZoneType.BORDER)
+        native_zone = _zone(region_id=region.id, zone_type=ZoneType.BORDER)
+        parent_sector = Sector(
+            id=uuid.uuid4(), sector_id=1, sector_number=0, name="parent-anchor",
+            region_id=region.id, cluster_id=uuid.uuid4(), zone_id=parent_zone.id,
+        )
+        native_sector = Sector(
+            id=uuid.uuid4(), sector_id=101, sector_number=1, name="native",
+            region_id=region.id, cluster_id=uuid.uuid4(), zone_id=native_zone.id,
+        )
+        parent = _holding(region_id=region.id, sector_id=1, tier=PirateHoldingTier.STRONGHOLD)
+        db = _FakeSession(
+            holdings=[parent],
+            sectors=[parent_sector, native_sector],
+            zones=[parent_zone, native_zone],
+        )
+        now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+
+        daughter = pes.spawn_daughter_holding(db, region, now=now, rng=_ScriptedRng())
+
+        assert daughter is not None
+        assert len(calls) == 1
+        region_id, payload = calls[0]
+        assert region_id == daughter.region_id
+        assert payload["type"] == "daughter_spawned"
+        assert payload["region_id"] == str(region.id)
+        assert payload["parent_holding_id"] == str(parent.id)
+        assert payload["daughter_holding_id"] == str(daughter.id)
+        assert payload["parent_zone"] == "BORDER"
+        assert payload["daughter_zone"] == "BORDER"
+
+    def test_no_daughter_spawned_when_at_population_cap(self, monkeypatch):
+        calls = _capture_broadcasts(monkeypatch)
+        region = _region(total_sectors=300)  # cap = 18
+        # Pre-seed the region already sitting exactly at the cap (18 Camps,
+        # mirrors TestSpawnDaughterHoldingCapBoundary's own fixture) -- the
+        # cap check refuses BEFORE any holding row (or event) is created.
+        holdings = [_holding(region_id=region.id, sector_id=100 + i) for i in range(18)]
+        db = _FakeSession(holdings=holdings, sectors=_sectors(region.id, 25))
+
+        result = pes.spawn_daughter_holding(db, region, now=datetime.now(timezone.utc), rng=_ScriptedRng())
+
+        assert result is None
+        assert calls == []
+
+    def test_unzoned_sectors_emit_none_for_zone_fields(self, monkeypatch):
+        calls = _capture_broadcasts(monkeypatch)
+        region = _region(total_sectors=300)
+        parent = _holding(region_id=region.id, sector_id=1, tier=PirateHoldingTier.STRONGHOLD)
+        # Sector rows exist (incl. the parent's own anchor) but carry no
+        # zone_id -- every candidate resolves to ZoneType None, not merely
+        # "missing from the sector table".
+        parent_sector = Sector(
+            id=uuid.uuid4(), sector_id=1, sector_number=0, name="parent-anchor",
+            region_id=region.id, cluster_id=uuid.uuid4(), zone_id=None,
+        )
+        db = _FakeSession(
+            holdings=[parent],
+            sectors=[parent_sector] + _sectors(region.id, 3, start=100),
+        )
+
+        daughter = pes.spawn_daughter_holding(db, region, now=datetime.now(timezone.utc), rng=_ScriptedRng())
+
+        assert daughter is not None
+        assert len(calls) == 1
+        _region_id, payload = calls[0]
+        assert payload["parent_zone"] is None
+        assert payload["daughter_zone"] is None
+
+
+class TestFleetDestroyedEventDormant:
+    def test_emit_helper_builds_expected_payload_shape(self, monkeypatch):
+        """DORMANT -- no live caller anywhere in this codebase (see
+        _emit_fleet_destroyed_event's own docstring); this test exercises
+        the emit helper directly, the same way the raid/capture kernel's own
+        dormant functions are unit-tested ahead of a real call site."""
+        calls = _capture_broadcasts(monkeypatch)
+        region = _region(total_sectors=300)
+        holding = _holding(region_id=region.id, sector_id=42)
+        attacker_a, attacker_b = uuid.uuid4(), uuid.uuid4()
+        now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+
+        pes._emit_fleet_destroyed_event(
+            holding, fleet_size_destroyed=6, by_player_ids=[attacker_a, attacker_b], now=now,
+        )
+
+        assert len(calls) == 1
+        region_id, payload = calls[0]
+        assert region_id == holding.region_id
+        assert payload["type"] == "fleet_destroyed"
+        assert payload["region_id"] == str(holding.region_id)
+        assert payload["holding_id"] == str(holding.id)
+        assert payload["fleet_size_destroyed"] == 6
+        assert payload["by_player_ids"] == [str(attacker_a), str(attacker_b)]
 
 
 class TestTelemetryTransportNeverPropagates:

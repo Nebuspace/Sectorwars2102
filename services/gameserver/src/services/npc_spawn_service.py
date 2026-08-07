@@ -199,8 +199,9 @@ KIA_RESPAWN_COOLDOWN_HOURS = 7 * 24
 
 # ADR-0063 N-D2: respawn-permitted archetypes return as the SAME
 # identity after a 15-minute cooldown (career and reputation persist).
-# Canon grants this to "most named pirates, some trader archetypes";
-# v1 grants it to pirates — traders join in the trader slice.
+# DECISION `npc-respawn-cooldown-archetype-scope` (2026-08-07): narrow
+# canon to HOSTILE_RAIDER-only — this frozenset is the ratified scope
+# (not a temporary v1 subset awaiting trader expansion).
 RESPAWN_COOLDOWN_MINUTES = 15
 RESPAWN_PERMITTED_ARCHETYPES = frozenset({NPCArchetype.HOSTILE_RAIDER})
 
@@ -510,9 +511,6 @@ def _ensure_federation_faction(db: Session) -> Faction:
     guarantees at least the Federation row exists when police spawn. An
     existing FEDERATION-typed row (however named) is left untouched.
 
-    The Galactic Concord (Sentinel force) is NOT seeded: its CONCORD
-    FactionType is Design-only (police-forces.md "Faction registration")
-    and adding the enum value is out of scope for this slice.
     """
     faction = (
         db.query(Faction)
@@ -532,6 +530,40 @@ def _ensure_federation_faction(db: Session) -> Faction:
         db.add(faction)
         db.flush()
         logger.info("Seeded Terran Federation faction row (%s)", faction.id)
+    return faction
+
+
+def _ensure_concord_faction(db: Session) -> Faction:
+    """Get-or-create the Galactic Concord faction row, idempotent by
+    faction_type.
+
+    Canon (police-forces.md § Faction registration): the Concord ``Faction``
+    row itself is canon to seed — operator-managed, not a player-targetable
+    allyable faction. The Sentinel-kill reputation hook (−200) needs this
+    row or ``apply_faction_rep_delta`` silently drops the delta.
+    """
+    faction = (
+        db.query(Faction)
+        .filter(Faction.faction_type == FactionType.CONCORD)
+        .first()
+    )
+    if faction is None:
+        faction = Faction(
+            name="Galactic Concord",
+            faction_type=FactionType.CONCORD,
+            description=(
+                "Operator-managed hub authority that staffs the Nexus "
+                "Sentinel Corps. Not a player-targetable allyable faction — "
+                "negative standing only (no positive reputation triggers)."
+            ),
+            aggression_level=5,
+            diplomacy_stance="neutral",
+            color_primary="#4A5568",
+            color_secondary="#E2E8F0",
+        )
+        db.add(faction)
+        db.flush()
+        logger.info("Seeded Galactic Concord faction row (%s)", faction.id)
     return faction
 
 
@@ -605,10 +637,10 @@ def materialize_from_bang(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
         )
         return stats
 
-    # The Marshal-kill reputation hook (combat_service) targets the
-    # Terran Federation faction row — guarantee it exists before any
-    # LAW_ENFORCEMENT NPC can be spawned (and therefore killed).
+    # Marshal-kill → Federation; Sentinel-kill → Concord. Guarantee both
+    # rows exist before any LAW_ENFORCEMENT NPC can be spawned (and killed).
     _ensure_federation_faction(db)
+    _ensure_concord_faction(db)
 
     # One spec fetch per distinct hull across all spawnable kinds.
     hull_types = {cfg.ship_type for cfg in KIND_CONFIG.values()}
@@ -1404,6 +1436,7 @@ def handle_npc_ship_destroyed(
                 with db.begin_nested():
                     db.add(PirateKillLog(
                         region_id=holding.region_id,
+                        region_id_snapshot=holding.region_id,
                         holding_id=holding.id,
                         tier=holding.tier,
                         kill_weight=tier_kill_weight.get(holding.tier, 1),
@@ -1439,6 +1472,7 @@ def handle_npc_ship_destroyed(
             killed_by_player_id=killed_by_player_id,
             sector_id=sector_id,
             home_region_id=npc.home_region_id,
+            region_id_snapshot=npc.home_region_id,
             combat_log_id=combat_log_id,
             destruction_cause=destruction_cause,
             killed_at=now,

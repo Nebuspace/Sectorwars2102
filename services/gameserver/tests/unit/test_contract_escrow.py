@@ -77,12 +77,15 @@ class _FakeResult:
 
 
 class _FakeQuery:
-    def __init__(self, rows: List[Any], criteria: Optional[List[Any]] = None) -> None:
+    def __init__(
+        self, rows: List[Any], criteria: Optional[List[Any]] = None, limit: Optional[int] = None,
+    ) -> None:
         self._rows = rows
         self._criteria = criteria or []
+        self._limit = limit
 
     def filter(self, *conditions: Any) -> "_FakeQuery":
-        return _FakeQuery(self._rows, self._criteria + list(conditions))
+        return _FakeQuery(self._rows, self._criteria + list(conditions), self._limit)
 
     def with_for_update(self) -> "_FakeQuery":
         # WO-ECON-CONTRACT-MONEY-HARDEN: no-op passthrough -- see
@@ -101,6 +104,14 @@ class _FakeQuery:
         # the query chain from AttributeError-ing.
         return self
 
+    def order_by(self, *args: Any) -> "_FakeQuery":
+        # WO-FIX-CONTRACT-SWEEP-IDLE-IN-TRANSACTION-DEADLOCK: gather
+        # chains .order_by(deadline.asc()).limit(N) — no-op passthrough.
+        return self
+
+    def limit(self, n: int) -> "_FakeQuery":
+        return _FakeQuery(self._rows, self._criteria, n)
+
     def first(self) -> Any:
         for row in self._rows:
             if all(_match(row, c) for c in self._criteria):
@@ -108,10 +119,13 @@ class _FakeQuery:
         return None
 
     def all(self) -> List[Any]:
-        return [row for row in self._rows if all(_match(row, c) for c in self._criteria)]
+        rows = [row for row in self._rows if all(_match(row, c) for c in self._criteria)]
+        if self._limit is not None:
+            return rows[: self._limit]
+        return rows
 
     def count(self) -> int:
-        return len(self.all())
+        return len([row for row in self._rows if all(_match(row, c) for c in self._criteria)])
 
 
 class _FakeSession:
