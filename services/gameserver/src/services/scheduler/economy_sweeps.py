@@ -1178,6 +1178,71 @@ def _run_reclaim_flag_sweep_sync() -> Dict[str, int]:
         db.close()
 
 
+def _run_gc_lapse_sweep_sync() -> Dict[str, int]:
+    """ADR-0054 X-D3 -- flip ``players.is_galactic_citizen`` False once a GC
+    lapse window (``gc_lapsed_at``) has run 7+ wall-clock days with no
+    re-subscription. Mirrors ``_run_reclaim_flag_sweep_sync``'s discipline
+    (own SessionLocal, xact advisory lock claimed-then-released before the
+    write pass, single commit for the marker-only write).
+
+    ``gc_lapsed_at`` is the durable per-player anchor (paypal_service.
+    _handle_subscription_cancelled sets it; _activate_galactic_citizenship /
+    _handle_subscription_renewed clear it on re-subscription) so this sweep is
+    idempotent and restart-safe: a candidate row is one where
+    ``gc_lapsed_at IS NOT NULL AND gc_lapsed_at <= now() - 7d AND
+    is_galactic_citizen = TRUE``. Flipping the flag also clears
+    ``gc_lapsed_at`` (the lapse has now COMPLETED -- the standard 30-day
+    abandonment cascade takes over for foreign-region assets from here, per
+    the ADR's stated fallthrough; this sweep does not itself touch any asset
+    row) so a re-run never re-flips an already-lapsed player.
+
+    Returns {"lapsed": n_flipped}."""
+    from src.core.database import SessionLocal
+    from src.services.scheduler._common import _GC_LAPSE_LOCK_KEY, GC_LAPSE_DAYS
+
+    result = {"lapsed": 0}
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _GC_LAPSE_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return result
+        db.commit()
+
+        cutoff = datetime.now(UTC) - timedelta(days=GC_LAPSE_DAYS)
+        rows = db.execute(
+            text(
+                """
+                UPDATE players
+                SET is_galactic_citizen = FALSE, gc_lapsed_at = NULL
+                WHERE gc_lapsed_at IS NOT NULL
+                  AND gc_lapsed_at <= :cutoff
+                  AND is_galactic_citizen = TRUE
+                RETURNING id
+                """
+            ),
+            {"cutoff": cutoff},
+        ).fetchall()
+        db.commit()
+        result["lapsed"] = len(rows)
+
+        if result["lapsed"]:
+            logger.info(
+                "GC-lapse sweep: flipped %d player(s) past the 7-day liquidation "
+                "window to non-citizen",
+                result["lapsed"],
+            )
+        return result
+    except Exception:
+        logger.exception("GC-lapse sweep failed")
+        db.rollback()
+        return result
+    finally:
+        db.close()
+
+
 def _run_price_recompute_flush_sync() -> int:
     """Settle every station flagged pending_price_recomputation (WO-DBB-EC4,
     ADR-0051 SK30) — the deferred half of the per-station 1s price-recompute

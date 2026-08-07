@@ -29,7 +29,7 @@ from src.auth.signup_rate_limit import register_rate_limit, exchange_rate_limit
 router = APIRouter()
 
 
-async def _track_player_login(db: Session, user_id) -> Optional[Dict[str, Any]]:
+async def _track_player_login(db: Session, user_id) -> Dict[str, Optional[Dict[str, Any]]]:
     """Record a player-login activity event (best-effort).
 
     Maps the authenticated User to its Player row (only players have game
@@ -38,20 +38,23 @@ async def _track_player_login(db: Session, user_id) -> Optional[Dict[str, Any]]:
     we await it directly. Fully DEFENSIVE — any failure (no Redis, no Player,
     service error) is swallowed so activity tracking can never break login.
 
-    Returns the ``welcome_back()`` outcome dict (WO-PUX-WBACK-SURFACE) so the
-    caller can surface it on the login response, or ``None`` when there is
-    nothing to surface: no matching Player (admin/non-player user), or the
-    bonus evaluation itself failed. A downstream, unrelated failure (e.g. the
+    Returns ``{"welcome_back": ..., "gc_lapse_notice": ...}`` (WO-PUX-WBACK-
+    SURFACE, extended by ADR-0054 X-D3) so the caller can surface both on the
+    login response. Either value is ``None`` when there is nothing to
+    surface: no matching Player (admin/non-player user), the welcome-back
+    evaluation itself failed, or (for gc_lapse_notice) the player is not
+    currently in a GC-lapse window. A downstream, unrelated failure (e.g. the
     activity-service call below) does NOT null out an outcome that already
     committed successfully — the bonus was actually granted in the DB either
     way, so the response should reflect that.
     """
     welcome_back_outcome: Optional[Dict[str, Any]] = None
+    gc_lapse_notice: Optional[Dict[str, Any]] = None
     try:
         from src.models.player import Player
         player = db.query(Player).filter(Player.user_id == user_id).first()
         if player is None:
-            return None  # admin or non-player user — nothing to track
+            return {"welcome_back": None, "gc_lapse_notice": None}  # admin/non-player — nothing to track
 
         # WO-F4 — returning-player welcome-back turn bonus (retention.md). This
         # is the SINGLE shared login chokepoint for the password/JSON login
@@ -81,6 +84,25 @@ async def _track_player_login(db: Session, user_id) -> Optional[Dict[str, Any]]:
             except Exception:
                 pass
 
+        # ADR-0054 X-D3 — GC-lapse 7-day liquidation-window notice, delivered
+        # via this SAME shared login chokepoint (matches WO-PUX-WBACK-SURFACE
+        # precedent above rather than inventing a new ARIA-notification
+        # mechanism). Fully DEFENSIVE — never breaks login.
+        try:
+            if player.gc_lapsed_at is not None:
+                gc_lapse_notice = {
+                    "message": (
+                        "Your Galactic Citizen subscription is lapsed. You have "
+                        "7 days to withdraw assets from regions outside your "
+                        "home region. After that, captured holdings, "
+                        "foreign-region planet safes, and station ownerships "
+                        "enter the standard 30-day abandonment cascade."
+                    ),
+                    "gc_lapsed_at": player.gc_lapsed_at.isoformat(),
+                }
+        except Exception:
+            logger.warning("gc-lapse login notice failed (non-fatal)", exc_info=True)
+
         from src.services.player_activity_service import get_player_activity_service
         activity_service = await get_player_activity_service()
         # db is the routes' sync Session; track_login accepts sync Session
@@ -90,7 +112,7 @@ async def _track_player_login(db: Session, user_id) -> Optional[Dict[str, Any]]:
         await activity_service.track_login(str(player.id), db=db)
     except Exception:
         logger.warning("player-login activity tracking failed (non-fatal)", exc_info=True)
-    return welcome_back_outcome
+    return {"welcome_back": welcome_back_outcome, "gc_lapse_notice": gc_lapse_notice}
 
 
 async def _track_player_logout(db: Session, user_id) -> None:
@@ -190,14 +212,15 @@ async def login(
     access_token, refresh_token = create_tokens(user.id, db)
 
     # Best-effort player-activity login tracking (no-op for admins)
-    welcome_back_outcome = await _track_player_login(db, user.id)
+    login_notices = await _track_player_login(db, user.id)
 
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer",
         "user_id": str(user.id),
-        "welcome_back": welcome_back_outcome
+        "welcome_back": login_notices.get("welcome_back"),
+        "gc_lapse_notice": login_notices.get("gc_lapse_notice"),
     }
 
 
@@ -252,14 +275,15 @@ async def login_json(
     access_token, refresh_token = create_tokens(user.id, db)
 
     # Best-effort player-activity login tracking (no-op for admins)
-    welcome_back_outcome = await _track_player_login(db, user.id)
+    login_notices = await _track_player_login(db, user.id)
 
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer",
         "user_id": str(user.id),
-        "welcome_back": welcome_back_outcome
+        "welcome_back": login_notices.get("welcome_back"),
+        "gc_lapse_notice": login_notices.get("gc_lapse_notice"),
     }
 
 @router.options("/login/json")
@@ -356,7 +380,7 @@ async def login_direct(
     access_token, refresh_token = create_tokens(user.id, db)
 
     # Best-effort player-activity login tracking (no-op for admins)
-    welcome_back_outcome = await _track_player_login(db, user.id)
+    login_notices = await _track_player_login(db, user.id)
 
     return {
         "access_token": access_token,
@@ -365,7 +389,8 @@ async def login_direct(
         "user_id": str(user.id),
         "requires_mfa": False,
         "mfa_enabled": mfa_enabled,
-        "welcome_back": welcome_back_outcome
+        "welcome_back": login_notices.get("welcome_back"),
+        "gc_lapse_notice": login_notices.get("gc_lapse_notice"),
     }
 
 
@@ -395,14 +420,15 @@ async def player_login(
     access_token, refresh_token = create_tokens(user.id, db)
 
     # Best-effort player-activity login tracking
-    welcome_back_outcome = await _track_player_login(db, user.id)
+    login_notices = await _track_player_login(db, user.id)
 
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer",
         "user_id": str(user.id),
-        "welcome_back": welcome_back_outcome
+        "welcome_back": login_notices.get("welcome_back"),
+        "gc_lapse_notice": login_notices.get("gc_lapse_notice"),
     }
 
 
@@ -432,14 +458,15 @@ async def player_login_json(
     access_token, refresh_token = create_tokens(user.id, db)
 
     # Best-effort player-activity login tracking
-    welcome_back_outcome = await _track_player_login(db, user.id)
+    login_notices = await _track_player_login(db, user.id)
 
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer",
         "user_id": str(user.id),
-        "welcome_back": welcome_back_outcome
+        "welcome_back": login_notices.get("welcome_back"),
+        "gc_lapse_notice": login_notices.get("gc_lapse_notice"),
     }
 
 @router.options("/player/login/json")
