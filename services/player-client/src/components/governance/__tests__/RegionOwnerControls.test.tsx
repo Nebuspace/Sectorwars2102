@@ -6,8 +6,9 @@
  * self-contained component did NOT change any gate: every conditional here
  * is traced 1:1 against the original block (GameDashboard.tsx :2466-2537,
  * :3630-3665) —
- *   - GOVERNANCE renders iff `currentSector.region_id` is truthy (ownership
- *     independent — every player with a region sees it)
+ *   - GOVERNANCE full-console button retired (WO-CLEANUP-TEAMMANAGER-
+ *     GOVERNANCEPANEL-DEAD-ROUTES) — /game/governance RedirectToGame's;
+ *     assert absent in every case
  *   - the multi-region `<select>` picker renders iff NOT an owner yet AND
  *     `ownedRegionChoices.length > 0` (the ERR_AMBIGUOUS_REGION_OWNER path)
  *   - INVITE CONTROL / TRADEDOCK CONSTRUCTION render iff `isRegionOwner`
@@ -111,7 +112,7 @@ describe('RegionOwnerControls', () => {
     consoleErrorSpy.mockRestore();
   });
 
-  it('owner: shows GOVERNANCE + INVITE CONTROL + TRADEDOCK CONSTRUCTION, no picker', async () => {
+  it('owner: shows INVITE CONTROL + TRADEDOCK CONSTRUCTION, no picker, no retired GOVERNANCE btn', async () => {
     mockGetMyRegion.mockResolvedValueOnce({ id: 'owned-region-1', display_name: 'Owned Region' });
 
     await act(async () => {
@@ -119,14 +120,14 @@ describe('RegionOwnerControls', () => {
     });
     await flush();
 
-    expect(container.querySelector('.hud-region-governance-btn')).not.toBeNull();
+    expect(container.querySelector('.hud-region-governance-btn')).toBeNull();
     expect(container.querySelector('.hud-region-invite-btn')).not.toBeNull();
     expect(container.querySelector('.hud-region-tradedock-btn')).not.toBeNull();
     expect(container.querySelector('.hud-region-owner-picker')).toBeNull();
     expect(unexpectedErrors(consoleErrorSpy)).toHaveLength(0);
   });
 
-  it('non-owner (404, no choices): shows GOVERNANCE only, no owner buttons/picker, no error line', async () => {
+  it('non-owner (404, no choices): no owner buttons/picker/GOVERNANCE, no error line', async () => {
     mockGetMyRegion.mockRejectedValueOnce(new Error('Not Found'));
 
     await act(async () => {
@@ -134,7 +135,7 @@ describe('RegionOwnerControls', () => {
     });
     await flush();
 
-    expect(container.querySelector('.hud-region-governance-btn')).not.toBeNull();
+    expect(container.querySelector('.hud-region-governance-btn')).toBeNull();
     expect(container.querySelector('.hud-region-invite-btn')).toBeNull();
     expect(container.querySelector('.hud-region-tradedock-btn')).toBeNull();
     expect(container.querySelector('.hud-region-owner-picker')).toBeNull();
@@ -159,8 +160,7 @@ describe('RegionOwnerControls', () => {
       root.render(<RegionOwnerControls />);
     });
 
-    // Still in-flight: loading line shown, owner-derived controls withheld
-    // (GOVERNANCE is independent of the probe and can render immediately).
+    // Still in-flight: loading line shown, owner-derived controls withheld.
     expect(container.querySelector('.hud-region-probe-status')?.textContent).toBe(
       'Loading region status…'
     );
@@ -189,8 +189,8 @@ describe('RegionOwnerControls', () => {
     expect(container.querySelector('.hud-region-probe-error')?.textContent).toBe(
       'Region status unavailable — try again shortly.'
     );
-    // GOVERNANCE is unaffected (not owner-gated); owner-derived controls stay hidden.
-    expect(container.querySelector('.hud-region-governance-btn')).not.toBeNull();
+    // Retired GOVERNANCE btn stays gone; owner-derived controls stay hidden.
+    expect(container.querySelector('.hud-region-governance-btn')).toBeNull();
     expect(container.querySelector('.hud-region-invite-btn')).toBeNull();
     expect(unexpectedErrors(consoleErrorSpy)).toHaveLength(0);
   });
@@ -222,7 +222,7 @@ describe('RegionOwnerControls', () => {
     expect(unexpectedErrors(consoleErrorSpy)).toHaveLength(0);
   });
 
-  it('GOVERNANCE hides when currentSector has no region_id, independent of ownership', async () => {
+  it('retired GOVERNANCE btn stays absent when currentSector has no region_id', async () => {
     mockCurrentSector = { region_id: null };
     mockGetMyRegion.mockResolvedValueOnce({ id: 'owned-region-1', display_name: 'Owned Region' });
 
@@ -237,7 +237,7 @@ describe('RegionOwnerControls', () => {
     expect(unexpectedErrors(consoleErrorSpy)).toHaveLength(0);
   });
 
-  it('GOVERNANCE click navigates to /game/governance', async () => {
+  it('does not render the retired GOVERNANCE full-console button', async () => {
     mockGetMyRegion.mockRejectedValueOnce(new Error('Not Found'));
 
     await act(async () => {
@@ -245,12 +245,8 @@ describe('RegionOwnerControls', () => {
     });
     await flush();
 
-    const btn = container.querySelector('.hud-region-governance-btn') as HTMLButtonElement;
-    await act(async () => {
-      btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-
-    expect(mockNavigate).toHaveBeenCalledWith('/game/governance');
+    expect(container.querySelector('.hud-region-governance-btn')).toBeNull();
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 
   it('INVITE CONTROL / TRADEDOCK CONSTRUCTION open their portal panels', async () => {

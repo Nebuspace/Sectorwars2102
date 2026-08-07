@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { useGame } from '../../contexts/GameContext';
 import { teamAPI } from '../../services/api';
 import type { Team, TeamApiResponse, TeamPermissionsApiResponse } from '../../types/team';
@@ -17,9 +16,9 @@ import EmptyState from '../common/EmptyState';
  * ColoniesRosterTab.tsx used for PlanetManager: this shows only the
  * player's OWN team identity/rating/role, reusing the SAME wire mapper
  * shape TeamManager.tsx already established (teamAPI.getTeam /
- * getPermissions, snake_case -> camelCase at the boundary), and links out
- * to /game/team for anything that mutates state (invite, kick, promote,
- * leave, treasury, chat).
+ * getPermissions, snake_case -> camelCase at the boundary). Full-console
+ * mutation links to /game/team were removed (route redirects to dashboard
+ * post-UI5); TeamManager.tsx remains unmounted scaffolding until a re-route WO.
  */
 
 const RECRUITMENT_TO_UI: Record<string, Team['recruitmentStatus']> = {
@@ -116,11 +115,7 @@ const TeamSummaryTab: React.FC = () => {
         icon="👥"
         title="No Team"
         message="You are not currently a member of any team."
-      >
-        <Link to="/game/team" className="sb-crew-link">
-          Create or Join a Team →
-        </Link>
-      </EmptyState>
+      />
     );
   }
 
@@ -155,9 +150,6 @@ const TeamSummaryTab: React.FC = () => {
           <span className="sb-identity-v">{team.tradeRating.toFixed(1)}</span>
         </div>
       </div>
-      <Link to="/game/team" className="sb-crew-link">
-        Manage Crew →
-      </Link>
     </div>
   );
 };

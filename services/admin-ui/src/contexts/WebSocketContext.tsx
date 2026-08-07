@@ -61,7 +61,6 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           setIsConnected(true);
           setReconnectAttempt(websocketService.getReconnectAttempt());
           setMaxReconnectAttempts(websocketService.getMaxReconnectAttempts());
-          console.log('WebSocket connected successfully');
         })
         .catch(error => {
           console.warn('WebSocket connection unavailable:', error);

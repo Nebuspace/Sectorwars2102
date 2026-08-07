@@ -884,8 +884,7 @@ const PlayerAnalytics: React.FC = () => {
             <BulkOperationPanel
               selectedPlayers={state.selectedPlayers.map(id => state.players.find(p => p.id === id)!).filter(Boolean)}
               onClose={() => setState(prev => ({ ...prev, showBulkOperations: false, selectedPlayers: [] }))}
-              onComplete={(operation, results) => {
-                console.log(`Bulk operation ${operation} completed:`, results);
+              onComplete={(_operation, _results) => {
                 // Refresh the player data after bulk operation
                 fetchPlayerData();
                 // Clear selection after operation

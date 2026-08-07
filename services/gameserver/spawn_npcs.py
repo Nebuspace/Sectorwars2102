@@ -20,7 +20,6 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import src.models  # register all mappers
 from src.core.database import SessionLocal
 from src.models.galaxy import Galaxy
 from src.services.npc_spawn_service import bootstrap_galaxy

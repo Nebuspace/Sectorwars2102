@@ -182,6 +182,10 @@ services:
       # ruled GO 2026-07-10). Default stays false -- prod-static intent
       # preserved; each environment opts in via its own env (stage sets true).
       - NPC_SCHEDULER_ENABLED=${NPC_SCHEDULER_ENABLED:-false}
+      # Genesis device formation wall-clock hours (code default 48).
+      # Forward so staged fast-test overrides (e.g. 0.03) reach the container
+      # on a clean stack — FINDINGS / WO-FIX-GENESIS-FORMATION-HOURS-COMPOSE-DRIFT.
+      - GENESIS_FORMATION_HOURS=${GENESIS_FORMATION_HOURS:-48}
       # Duration compression for dev (1.0 in prod): construction days,
       # grace windows, slip tenures, takeover months all scale by this
       - GAME_TIME_SCALE=${GAME_TIME_SCALE:-1.0}

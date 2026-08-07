@@ -59,14 +59,12 @@ const AITradingDashboard: React.FC = () => {
 
   // WebSocket event handlers
   const handleModelUpdate = useCallback((data: any) => {
-    console.log('AI model update:', data);
     setModels(prev => prev.map(model => 
       model.id === data.modelId ? { ...model, ...data } : model
     ));
   }, []);
 
   const handlePredictionUpdate = useCallback((data: any) => {
-    console.log('Prediction update:', data);
     // Update metrics with new prediction data
     if (metrics) {
       setMetrics({
@@ -269,8 +267,9 @@ const AITradingDashboard: React.FC = () => {
               <div className="info-card" style={{ marginTop: '12px' }}>
                 <p>
                   No AI model registry exists server-side — GET /api/v1/admin/ai/models
-                  returns an empty list, and start/stop/train actions respond 501.
-                  This tab does not invent Start / Stop / Retrain controls.
+                  returns an empty list, and start/stop/train POST actions were
+                  removed (no registry to act on). This tab does not invent
+                  Start / Stop / Retrain controls.
                 </p>
               </div>
             ) : (
@@ -316,7 +315,7 @@ const AITradingDashboard: React.FC = () => {
                       borderRadius: '6px', color: '#fbbf24', fontSize: '0.78rem', lineHeight: 1.4
                     }}
                   >
-                    Start / Stop / Retrain unavailable: POST /api/v1/admin/ai/models/:id/start|stop|train returns 501 (no model registry). Stats above are read-only.
+                    Start / Stop / Retrain unavailable: POST /api/v1/admin/ai/models/:id/:action was removed (no model registry). Stats above are read-only.
                   </div>
                 </div>
               ))}

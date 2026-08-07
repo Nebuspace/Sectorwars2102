@@ -114,6 +114,14 @@ export const TRAVEL_HALT_BRAKE_MS = 1600;
 export const TRAVEL_HALT_COAST_FRAC = 0.38;
 /** Mid-course redirect: RCS turn while the path arcs onto the new bearing. */
 export const TRAVEL_REDIRECT_TURN_MS = 1600;
+/**
+ * One-frame deferral before committing the arc-waypoint `left`/`top` on a
+ * mid-course redirect. Lets React paint `redirect-turn` (heading/RCS) at the
+ * still-running live glide end-target first; a synchronous waypoint write in
+ * the same click turn can coalesce with the later burn retarget and read as a
+ * teleport (WO-FIX-TRAVELTO-REDIRECT-POSITION-JUMP-ORDERING).
+ */
+export const TRAVEL_REDIRECT_PAINT_MS = 32;
 
 export type TravelPhase =
   | 'idle'

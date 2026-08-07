@@ -31,7 +31,6 @@ export const RouteOptimizationDisplay: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
 
   const handleRouteUpdate = useCallback((data: any) => {
-    console.log('Route optimization update received:', data);
     setActiveRoutes(prev => {
       const updated = [...prev];
       const index = updated.findIndex(r => r.id === data.id);
@@ -46,7 +45,6 @@ export const RouteOptimizationDisplay: React.FC = () => {
   }, []);
 
   const handleStatsUpdate = useCallback((data: any) => {
-    console.log('Route stats update received:', data);
     setRouteStats(data);
   }, []);
 

@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useNavigate } from 'react-router-dom';
 import { useGame } from '../../contexts/GameContext';
 import { regionOwnerAPI } from '../../services/api';
 import RegionInvitePanel from './RegionInvitePanel';
@@ -24,8 +23,6 @@ import RegionTradeDockPanel from './RegionTradeDockPanel';
  */
 const RegionOwnerControls: React.FC = () => {
   const { currentSector } = useGame();
-  const navigate = useNavigate();
-
   // Region-owner invite control (WO-IL4). There is no ownership flag on
   // PlayerState, so probe GET /api/v1/regions/my-region once on mount: 200 =>
   // this player owns a region (trigger + panel render); 404 => not an owner
@@ -123,16 +120,10 @@ const RegionOwnerControls: React.FC = () => {
           {probeError}
         </div>
       )}
-      {currentSector?.region_id && (
-        <button
-          type="button"
-          className="hud-region-governance-btn"
-          onClick={() => navigate('/game/governance')}
-          title="Open regional governance — elections, policies, treaties"
-        >
-          ◆ GOVERNANCE
-        </button>
-      )}
+      {/* GOVERNANCE full-console button removed (WO-CLEANUP-TEAMMANAGER-
+          GOVERNANCEPANEL-DEAD-ROUTES): /game/governance RedirectToGame's
+          to dashboard. Live surface = StatusBar GovSummaryTab; full
+          GovernancePanel.tsx kept as unmounted scaffolding. */}
       {!loading && !isRegionOwner && ownedRegionChoices.length > 0 && (
         <select
           className="hud-region-owner-picker"

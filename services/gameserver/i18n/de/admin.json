@@ -1,0 +1,182 @@
+{
+  "bang": {
+    "page": {
+      "title": "Bang-Galaxie",
+      "subtitle": "Galaxien über die sw2102-bang-Engine generieren, in der Vorschau anzeigen und verwalten.",
+      "tabForm": "Generieren",
+      "tabHistory": "Verlauf"
+    },
+    "overview": {
+      "title": "Aktuelle Galaxie",
+      "noGalaxy": "Es wurde noch keine Galaxie generiert.",
+      "bangVersion": "Bang-Version",
+      "bangSeed": "Seed",
+      "diameter": "Durchmesser",
+      "islandPercent": "Insel-Sektoren",
+      "clusterCount": "Cluster",
+      "addRegion": "Spielergesteuerte Region hinzufügen",
+      "versionMismatchWarning": "Die aktive Galaxie wurde von bang {{galaxyVersion}} generiert, aber der Gameserver führt jetzt bang {{serverVersion}} aus. Regenerieren Sie zur Aktualisierung."
+    },
+    "addRegion": {
+      "title": "Spielergesteuerte Region hinzufügen",
+      "description": "Generiert eine zusätzliche spielergesteuerte Region und fügt sie in die bestehende Galaxie ein. Die neue Region ist über einen neuen Sprungpunkt mit dem Zentralen Nexus verbunden; vorhandene Sektoren bleiben unverändert.",
+      "seed": "Seed",
+      "sectors": "Sektoren (100–1000)",
+      "submit": "Region hinzufügen",
+      "busy": "Generierung läuft…",
+      "cancel": "Abbrechen"
+    },
+    "form": {
+      "title": "Generierungsparameter",
+      "common": {
+        "section": "Allgemein",
+        "seed": "Seed",
+        "seedHelp": "Deterministischer 64-Bit-Integer. Derselbe Seed + dieselben Parameter erzeugen eine identische Galaxie.",
+        "copySeed": "Kopieren",
+        "regenerateSeed": "Neu generieren",
+        "regionType": "Regiontyp",
+        "regionPlayerOwned": "Spielergesteuert",
+        "regionTerranSpace": "Terran-Raum",
+        "regionCentralNexus": "Zentraler Nexus",
+        "sectors": "Gesamtsektoren",
+        "galaxyName": "Galaxiename (optional)",
+        "galaxyNamePlaceholder": "SectorWars-Galaxie"
+      },
+      "advanced": {
+        "section": "Erweitert",
+        "expand": "Erweiterte Optionen anzeigen",
+        "collapse": "Erweiterte Optionen ausblenden",
+        "federationPercent": "Föderations-%",
+        "borderPercent": "Grenz-%",
+        "frontierPercent": "Grenzland-%",
+        "zoneSumWarning": "Die Zonen-Prozentsätze sollten 100 ergeben. Aktuelle Summe: {{total}}%.",
+        "portPercent": "Hafen-Dichte %",
+        "planetPercent": "Planet-Dichte %",
+        "nebulaPercent": "Nebel-Dichte %"
+      },
+      "expert": {
+        "section": "Experte (Entwickler-Optionen)",
+        "toggle": "Entwickler-Optionen anzeigen",
+        "maxWarps": "Max. Sprungpunkte pro Sektor",
+        "oneWayWarpPercent": "Einweg-Sprungpunkt %",
+        "validatorStrictness": "Validator-Strenge",
+        "strictnessLenient": "Nachsichtig (nur Warnung)",
+        "strictnessStandard": "Standard",
+        "strictnessStrict": "Streng (scheitert bei TOPOLOGY_RESCUE)",
+        "stardockEnabled": "StarDock Spezialort",
+        "rawConfigJson": "Raw --config-json Einfügungsfeld (überschreibt alle Felder oben)",
+        "rawConfigJsonHelp": "Geben Sie ein JSON-Objekt ein. Leer = verwenden Sie die Formularfelder."
+      },
+      "actions": {
+        "preview": "Vorschau",
+        "previewing": "Vorschau wird generiert...",
+        "commit": "Generierung bestätigen",
+        "committing": "Galaxie wird generiert...",
+        "reset": "Auf Standardwerte zurücksetzen"
+      },
+      "preview": {
+        "title": "Vorschau-Statistiken",
+        "diameter": "Durchmesser",
+        "clusterCount": "Cluster",
+        "totalSectors": "Sektoren",
+        "islandPercent": "Insel %",
+        "validatorPasses": "Validierungsdurchgänge",
+        "warningsByCategory": "Warnungen",
+        "maxWarpsHistogram": "Max-Warps-Histogramm",
+        "formationCounts": "Formationen nach Typ",
+        "noPreview": "Führen Sie eine Vorschau aus, um die Statistiken hier anzuzeigen.",
+        "previewFailed": "Vorschau fehlgeschlagen: {{error}}"
+      },
+      "errors": {
+        "missingSeed": "Seed ist erforderlich.",
+        "missingSectors": "Sektor-Anzahl ist erforderlich.",
+        "invalidJson": "Raw-Config-JSON ist nicht gültig: {{error}}",
+        "submitFailed": "Generierung konnte nicht gestartet werden: {{error}}"
+      }
+    },
+    "history": {
+      "title": "Generierungsverlauf",
+      "empty": "Bisher keine Generierungen. Führen Sie eine Generierung aus, um sie hier zu sehen.",
+      "columns": {
+        "date": "Datum",
+        "admin": "Administrator",
+        "seed": "Seed",
+        "bangVersion": "Bang-Ver.",
+        "regions": "Regionen",
+        "warnings": "Warnungen",
+        "duration": "Dauer",
+        "status": "Status",
+        "actions": "Aktionen"
+      },
+      "actions": {
+        "regenerate": "Neu generieren",
+        "viewLog": "Protokoll anzeigen",
+        "viewDetail": "Detail anzeigen"
+      },
+      "status": {
+        "PENDING": "Ausstehend",
+        "RUNNING": "Läuft",
+        "COMPLETE": "Abgeschlossen",
+        "FAILED": "Fehlgeschlagen"
+      },
+      "pagination": {
+        "prev": "Vorherige",
+        "next": "Nächste",
+        "page": "Seite {{page}}",
+        "loading": "Wird geladen..."
+      },
+      "loadFailed": "Verlauf konnte nicht geladen werden: {{error}}"
+    },
+    "log": {
+      "title": "Generierungsprotokoll",
+      "subtitle": "Live-Stderr von sw2102-bang. Farbcodiert nach Warnungskategorie.",
+      "empty": "Warten auf Protokollausgabe...",
+      "autoScroll": "Automatischer Bildlauf",
+      "pause": "Pausieren",
+      "resume": "Fortsetzen",
+      "copy": "Diagnoseinformationen kopieren",
+      "copied": "Kopiert!",
+      "connecting": "Verbindung wird hergestellt...",
+      "streaming": "Wird gestreamt",
+      "closed": "Geschlossen",
+      "error": "Stream-Fehler: {{error}}",
+      "status": {
+        "PENDING": "Ausstehend",
+        "RUNNING": "Läuft",
+        "COMPLETE": "Abgeschlossen",
+        "FAILED": "Fehlgeschlagen"
+      }
+    },
+    "wipe": {
+      "title": "Galaxie löschen",
+      "warning": "Dies wird die Galaxie \"{{galaxyName}}\" und alle sie enthaltenden Sektoren, Planeten, Stationen, Schiffe und Spielerfortschritte dauerhaft löschen. Es gibt keine Wiederherstellung.",
+      "prompt": "Geben Sie den Galaxienamen genau ein, um zu bestätigen:",
+      "placeholder": "{{galaxyName}}",
+      "mismatch": "Der eingegebene Name stimmt nicht überein.",
+      "cancel": "Abbrechen",
+      "confirm": "Galaxie löschen",
+      "wiping": "Wird gelöscht...",
+      "success": "Galaxie gelöscht.",
+      "failure": "Galaxie konnte nicht gelöscht werden: {{error}}"
+    },
+    "errors": {
+      "unknown": "{{code}}: {{message}}",
+      "isolatedSector": "Ein isolierter Sektor wurde gefunden ({{code}}). Versuchen Sie einen anderen Seed.",
+      "maxWarpsExceeded": "Ein Sektor überschreitet die maximale Sprungpunkt-Obergrenze ({{code}}).",
+      "oneWayWarpUnreachable": "Ein Einweg-Sprungpunkt führt zu einem unerreichbaren Sektor ({{code}}).",
+      "fragmented": "Die generierte Galaxie ist zu fragmentiert zum Spielen. Versuchen Sie einen anderen Seed.",
+      "duplicateSectorNumber": "Bang hat eine doppelte Sektornummer generiert ({{code}}). Melden Sie einen Bang-Fehler.",
+      "commodityCoverage": "Nicht jede Ware ist in der gesamten Galaxie kaufbar und verkäuflich ({{code}}).",
+      "priceRangeOutOfBand": "Ein Stationspreis liegt außerhalb des kanonischen Bereichs ({{code}}).",
+      "stationDensityLow": "Die Stationsdichte liegt unter dem konfigurierten Ziel ({{code}}).",
+      "formationCountMismatch": "Die Spezialformations-Anzahlen weichen vom Ziel ab ({{code}}).",
+      "planetWithoutHost": "Ein Planet wurde in einem Sektor ohne Host platziert ({{code}}).",
+      "nebulaOverlap": "Die Nebelabdeckung überlappt mit einer anderen Formation ({{code}}).",
+      "emissionUndertarget": "Die Emissionsrate liegt unter dem Ziel ({{code}}).",
+      "emissionOvertarget": "Die Emissionsrate liegt über dem Ziel ({{code}}).",
+      "heuristicFallback": "Bang ist auf eine heuristische Platzierung zurückgefallen ({{code}}).",
+      "topologyRescue": "Bang hat die Topologie-Rettung ausgeführt, um das Diagramm zu reparieren ({{code}}).",
+      "bubbleFallback": "Bang ist auf die Blasensaat-Methode zurückgefallen ({{code}})."
+    }
+  }
+}
