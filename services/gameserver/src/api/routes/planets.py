@@ -1755,7 +1755,17 @@ async def construct_defense_building(
     player: Player = Depends(get_current_player),
     db: Session = Depends(get_db)
 ):
-    """Construct a defense building on a planet."""
+    """Construct a defense building on a planet.
+
+    DEPRECATED (ADR-0094 endpoint-canonicalization) — overlaps
+    POST /planets/{planet_id}/grid/place, which is the canonical route:
+    it sources defense kinds (TURRET_NETWORK/ORBITAL_PLATFORM/SCANNER_ARRAY)
+    from the same unified building_catalog this route's CitadelService call
+    does not consult, and additionally enforces the research gate and
+    per-planet material costs this route skips. Still has a live frontend
+    caller (player-client GameContext.tsx) — not yet safe to remove; migrate
+    that caller to grid/place before deleting this route.
+    """
     from src.services.citadel_service import CitadelService
     try:
         pid = UUID(planet_id)
