@@ -22,8 +22,9 @@ Staged for hub queue — not built in this WO:
 1. **WO-TESTCOV-PLAYER-TRADE-DESK** — `src/components/trade/PlayerTradeDesk.tsx` — **SHIPPED** (merged via #283; vitest 5 cases: initiate/accept/offer/error/settled)
 2. **WO-TESTCOV-PLAYER-API-CLIENT** — `src/services/api.ts` + `apiClient.ts` — **SHIPPED** (merged via #284; apiClient refresh/JWT + apiRequest error-shaping + trade/combat/grey wrappers)
 3. **WO-TESTCOV-PLAYER-MODULE-GRID** — ModuleGrid / Insurance / Maintenance — **SHIPPED** (merged via #285; 9 vitest cases)
-4. **WO-TESTCOV-PLAYER-TRADING-INTERFACE-DEPTH** — TradingInterface buy/sell depth — **SHIPPED** (PR pending; mount + buy-quote + sell-confirm)
+4. **WO-TESTCOV-PLAYER-TRADING-INTERFACE-DEPTH** — TradingInterface buy/sell depth — **SHIPPED** (merged via #287; mount + buy-quote + sell-confirm)
 5. **WO-TESTCOV-PLAYER-SPACEDOCK-SHELL** — SpaceDock / GamblingVenue — **SHIPPED** (merged via #288; menu/slots controls + slots spin POST)
-6. **WO-TESTCOV-PLAYER-AUTH-FORMS** — LoginForm / RegisterForm — **SHIPPED** (PR pending; MFA prompt seam + register validation; AuthContext mocked)
+6. **WO-TESTCOV-PLAYER-AUTH-FORMS** — LoginForm / RegisterForm — **SHIPPED** (merged via #289; MFA prompt seam + register validation; AuthContext mocked)
+7. **WO-TESTCOV-PLAYER-ARMORY** — ArmoryVenue / SpaceDock armory purchase — **SHIPPED** (PR pending; catalog Buy gates + POST `/api/v1/armory/purchase`)
 
 Auth forms coverage is test-only (hub GO 2026-08-07T21:28:00Z) — does not touch auth/MFA logic.
