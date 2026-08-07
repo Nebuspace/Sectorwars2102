@@ -30,7 +30,7 @@ const LOADOUT: ArmoryLoadout = {
 describe('ArmoryVenue', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;
-  let purchaseArmoryItem: ReturnType<typeof vi.fn>;
+  let purchaseArmoryItem: (item: ArmoryCatalogItem, quantity: number) => void;
   let onBack: () => void;
   let setArmoryQuantities: React.Dispatch<React.SetStateAction<Record<string, number>>>;
 
@@ -63,7 +63,7 @@ describe('ArmoryVenue', () => {
   };
 
   beforeEach(() => {
-    purchaseArmoryItem = vi.fn();
+    purchaseArmoryItem = vi.fn<(item: ArmoryCatalogItem, quantity: number) => void>();
     onBack = vi.fn<() => void>();
     setArmoryQuantities = vi.fn();
     container = document.createElement('div');
