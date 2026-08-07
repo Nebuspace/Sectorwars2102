@@ -16,6 +16,18 @@ import { ResourceSharing } from './ResourceSharing';
 import { TeamChat } from './TeamChat';
 import './team-manager.css';
 
+/**
+ * TeamManager — full CREW MANIFEST console (invite/kick/promote/treasury/
+ * chat). Post-UI5-retirement, /game/team redirects to the cockpit dashboard
+ * (App.tsx RedirectToGame) — this page is NOT mounted on any live route.
+ *
+ * NOT YET REMOUNTED (flagged, not silently orphaned): kept as
+ * canon-scaffolding for a future re-route WO, mirroring AnnunciatorMini.tsx.
+ * Live crew surface today is StatusBar TeamSummaryTab (read-only summary).
+ * Child modules (ResourceSharing / TeamChat / MissionPlanner) stay exported
+ * for their own unit tests and a future mount.
+ */
+
 /* CREW MANIFEST console shell (Law 3) — module-level so the monitor frame
    keeps its identity across loading/error/no-team/team branches and never
    remounts mid-session. */

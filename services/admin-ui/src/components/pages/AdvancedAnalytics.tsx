@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import PageHeader from '../ui/PageHeader';
 import { CustomReportBuilder } from '../analytics/CustomReportBuilder';
 import { PredictiveAnalytics } from '../analytics/PredictiveAnalytics';
@@ -21,21 +21,6 @@ export const AdvancedAnalytics: React.FC = () => {
   const [selectedReport, setSelectedReport] = useState<ReportResult | null>(null);
   const [exportFormat, setExportFormat] = useState<'csv' | 'json'>('csv');
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
-
-  // Load saved templates from localStorage on mount
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem(SAVED_TEMPLATES_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          console.log(`Loaded ${parsed.length} saved report templates from localStorage`);
-        }
-      }
-    } catch (e) {
-      console.warn('Failed to load saved templates:', e);
-    }
-  }, []);
 
   const handleSaveTemplate = useCallback((template: any) => {
     try {
