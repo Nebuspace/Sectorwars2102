@@ -216,9 +216,9 @@ const ServicesVenue: React.FC<ServicesVenueProps> = ({
             <div className="service-card">
               <div className="service-icon">📈</div>
               <h3>Ship Upgrades</h3>
-              <p>{shipData ? `Refit ${shipData.name}: hull, shield, cargo & equipment` : 'Hull, shield, and cargo refits'}</p>
+              <p>{shipData ? `Fit modules on ${shipData.name}` : 'Fit modules into your hull\'s slot grid'}</p>
               <div className="service-status">
-                Spend credits to raise ship subsystem levels or fit specialist equipment.
+                Install or salvage specialist equipment modules (slot grid).
               </div>
               <div className="service-action">
                 <button
@@ -234,10 +234,10 @@ const ServicesVenue: React.FC<ServicesVenueProps> = ({
             <div className="service-card unavailable">
               <div className="service-icon">📈</div>
               <h3>Ship Upgrades</h3>
-              <p>Hull, shield, and cargo refits</p>
+              <p>Module fitting for your hull</p>
               <div className="service-unavailable-note">
-                Upgrade bays are not operational at this station. New hulls
-                can be commissioned at the Shipyard.
+                Upgrade bays are not operational at this station. Module
+                fitting may still be available at the Shipyard.
               </div>
               <div className="service-action">
                 <span className="service-unavailable-badge">NOT AVAILABLE</span>

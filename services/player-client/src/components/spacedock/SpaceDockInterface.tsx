@@ -405,17 +405,21 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       id: 'trading',
       name: 'Trading Hub',
       icon: '🏪',
-      description: 'Premium commodity trading with bulk discounts and special goods',
+      description: 'Buy and sell commodities at this station\'s market desk',
       available: true,
-      services: ['Bulk Discounts', 'Special Commodities', 'No Transaction Fees']
+      services: ['Buy & Sell', 'Market Quotes', 'Route Planner']
     },
     {
       id: 'shipyard',
       name: 'Shipyard',
       icon: '🛠️',
-      description: 'Build custom ships from resources or purchase pre-fabricated vessels',
+      description: tradedockTier
+        ? 'Purchase vessels, open construction slips, and fit modules'
+        : 'Purchase pre-fabricated vessels and fit modules to your hull',
       available: Boolean(stationServices.ship_dealer),
-      services: ['Custom Ship Building', 'Dock Slip Rental', 'Ship Customization']
+      services: tradedockTier
+        ? ['Ship Catalog', 'Construction Slips', 'Ship Customization']
+        : ['Ship Catalog', 'Ship Customization']
     },
     // Construction only exists at TradeDock stations (tier A or B) —
     // it is omitted entirely everywhere else rather than shown as unavailable
@@ -451,9 +455,9 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       id: 'genesis',
       name: 'Genesis Store',
       icon: '🌍',
-      description: 'Acquire Genesis Devices - the key to creating new worlds',
+      description: 'Purchase Genesis Devices for seeding new worlds',
       available: Boolean(stationServices.genesis_dealer),
-      services: ['Genesis Devices', 'World Creation', 'Terraforming Tech']
+      services: ['Genesis Devices']
     },
     {
       id: 'armory',
