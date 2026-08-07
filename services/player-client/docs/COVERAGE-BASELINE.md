@@ -36,6 +36,7 @@ Staged for hub queue — not built in this WO:
 15. **WO-TESTCOV-PLAYER-GAMBLING-BLACKJACK** — Stellar Blackjack DEAL + blackjack/deal POST — **SHIPPED** (merged via #298; POST `/api/v1/gambling/blackjack/deal`)
 16. **WO-TESTCOV-PLAYER-CONSTRUCTION-RESERVE** — ConstructionVenue Reserve Slip deposit POST — **SHIPPED** (merged via #299; POST `/api/v1/construction/reservations`)
 17. **WO-TESTCOV-PLAYER-CONSTRUCTION-MILESTONE** — ConstructionVenue Pay milestone POST — **SHIPPED** (merged via #300; POST `/api/v1/construction/reservations/:id/pay-milestone`)
-18. **WO-TESTCOV-PLAYER-CONSTRUCTION-RENT** — ConstructionVenue Pay Rent POST — **SHIPPED** (PR pending; POST `/api/v1/construction/reservations/:id/pay-rent`)
+18. **WO-TESTCOV-PLAYER-CONSTRUCTION-RENT** — ConstructionVenue Pay Rent POST — **SHIPPED** (merged via #301; POST `/api/v1/construction/reservations/:id/pay-rent`)
+19. **WO-TESTCOV-PLAYER-TERRAFORMING-START** — TerraformingPanel Start POST — **SHIPPED** (PR pending; POST `/api/v1/planets/:id/terraforming/start`)
 
 SpaceDock gambling money POSTs (slots/dice/lottery/blackjack) are covered. Auth forms coverage is test-only (hub GO 2026-08-07T21:28:00Z) — does not touch auth/MFA logic.
