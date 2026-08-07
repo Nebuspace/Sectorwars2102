@@ -96,46 +96,8 @@ const ShipyardVenue: React.FC<ShipyardVenueProps> = ({
       </div>
       <div className="venue-content-area">
         <div className="shipyard-sections">
-          <div className="shipyard-section">
-            <h3>🏗️ Construction Slips</h3>
-            {tradedockTier ? (
-              <>
-                <p className="section-description">
-                  This Tier-{tradedockTier} TradeDock runs full construction slips. Ship orders and build tracking live in the Construction venue.
-                </p>
-                <button className="action-button" onClick={onOpenConstruction}>
-                  Open Construction Venue
-                </button>
-              </>
-            ) : (
-              <>
-                <p className="section-description">
-                  This facility isn&apos;t a TradeDock — construction slips only run at a Tier A/B TradeDock station.
-                </p>
-                <button className="action-button" disabled>Reserve Dock Slip</button>
-              </>
-            )}
-          </div>
-
-          {/* WO-SM-5 (reachability gate-fix): the slot-grid module UI lives here
-              in the ACTIVE Shipyard venue (the venue card already advertises
-              "Ship Customization"). It was previously mounted only in the legacy
-              .service-card "Ship Upgrades" overlay, which the venue-card hub no
-              longer renders — so the grid was unreachable in the live UI. */}
-          {shipId && (
-            <div className="shipyard-section">
-              <h3>🔧 Ship Customization</h3>
-              <p className="section-description">
-                Fit modules into your hull's slot grid — supercharged slots, class locks, and salvage on removal.
-              </p>
-              <ModuleGridInterface
-                ship={{ id: shipId }}
-                playerCredits={displayCredits}
-                onChanged={() => { refreshPlayerState(); fetchShipData(); }}
-              />
-            </div>
-          )}
-
+          {/* Scroll Law: Purchase CTAs clear the fold before the tall module
+              bay / construction chrome. Catalog first; customization last. */}
           <div className="shipyard-section">
             <h3>🚀 Ship Catalog</h3>
             <p className="section-description">Browse and purchase pre-fabricated vessels</p>
@@ -217,6 +179,43 @@ const ShipyardVenue: React.FC<ShipyardVenueProps> = ({
               </div>
             )}
           </div>
+
+          <div className="shipyard-section">
+            <h3>🏗️ Construction Slips</h3>
+            {tradedockTier ? (
+              <>
+                <p className="section-description">
+                  This Tier-{tradedockTier} TradeDock runs full construction slips. Ship orders and build tracking live in the Construction venue.
+                </p>
+                <button className="action-button" onClick={onOpenConstruction}>
+                  Open Construction Venue
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="section-description">
+                  This facility isn&apos;t a TradeDock — construction slips only run at a Tier A/B TradeDock station.
+                </p>
+                <button className="action-button" disabled>Reserve Dock Slip</button>
+              </>
+            )}
+          </div>
+
+          {/* WO-SM-5: module grid stays reachable here; placed after catalog
+              so Purchase CTAs aren't buried under the tall bay (Scroll Law). */}
+          {shipId && (
+            <div className="shipyard-section">
+              <h3>🔧 Ship Customization</h3>
+              <p className="section-description">
+                Fit modules into your hull's slot grid — supercharged slots, class locks, and salvage on removal.
+              </p>
+              <ModuleGridInterface
+                ship={{ id: shipId }}
+                playerCredits={displayCredits}
+                onChanged={() => { refreshPlayerState(); fetchShipData(); }}
+              />
+            </div>
+          )}
         </div>
 
         {confirmShip && (

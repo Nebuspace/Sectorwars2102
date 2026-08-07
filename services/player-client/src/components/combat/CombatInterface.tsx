@@ -1,10 +1,10 @@
 /**
  * CombatInterface Component
  *
- * Main combat engagement interface for ship-to-ship and ship-to-planet
- * combat. Combat resolves synchronously on the backend (a single engage
- * call resolves the whole fight), so this interface shows the resolved
- * outcome with a full round-by-round combat log replay.
+ * Main combat engagement interface for ship-to-ship, ship-to-planet, and
+ * ship-to-port combat. Combat resolves synchronously on the backend (a
+ * single engage call resolves the whole fight), so this interface shows
+ * the resolved outcome with a full round-by-round combat log replay.
  */
 
 import React, { useState, useCallback } from 'react';
@@ -256,17 +256,53 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
         : `${planet.type} — unclaimed`
     }));
 
-  // Port assault is intentionally not yet authorized (player_combat.py), so
-  // stations are shown as targets but NOT engageable — a disabled note instead
-  // of an ENGAGE that would hard-error. (Was: every station fired a 400.)
-  const stationTargets: TargetOption[] = stationsInSector.map(station => ({
-    id: station.id,
-    name: station.name,
-    type: 'port' as const,
-    subtype: station.type,
-    engageable: false,
-    note: 'ASSAULT NOT AUTHORIZED'
-  }));
+  // Port assault is LIVE: player_combat engage targetType=="port" →
+  // combat_service.attack_port (WO attack-port-build). Capture remains
+  // kernel-unreachable; the server still rejects unowned / own /
+  // teammate / docked-or-landed cases with a clear message. Mirror that
+  // honesty in the target list so ENGAGE reaches the live route instead
+  // of a stale "NOT AUTHORIZED" hard-block.
+  const stationTargets: TargetOption[] = stationsInSector.map(station => {
+    const directOwnerId = (station as { owner_id?: string | null }).owner_id;
+    let ownerId: string | null =
+      typeof directOwnerId === 'string' && directOwnerId.length > 0 ? directOwnerId : null;
+    if (!ownerId && Array.isArray(station.owner) && station.owner[0]) {
+      const nested = String((station.owner[0] as { id?: string }).id ?? '');
+      ownerId = nested || null;
+    } else if (!ownerId && station.owner && typeof station.owner === 'object' && !Array.isArray(station.owner)) {
+      const nested = String((station.owner as { id?: string }).id ?? '');
+      ownerId = nested || null;
+    }
+    const isOwn =
+      !!ownerId && !!playerState?.id && String(ownerId) === String(playerState.id);
+    if (isOwn) {
+      return {
+        id: station.id,
+        name: station.name,
+        type: 'port' as const,
+        subtype: `${station.type} — yours`,
+        engageable: false,
+        note: 'YOUR PORT',
+      };
+    }
+    if (!ownerId) {
+      return {
+        id: station.id,
+        name: station.name,
+        type: 'port' as const,
+        subtype: `${station.type} — unowned`,
+        engageable: false,
+        note: 'UNOWNED — NO ASSAULT',
+      };
+    }
+    return {
+      id: station.id,
+      name: station.name,
+      type: 'port' as const,
+      subtype: station.type,
+      engageable: true,
+    };
+  });
 
   const renderTargetGroup = (
     title: string,

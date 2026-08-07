@@ -1169,8 +1169,7 @@ export default function LandingPage({ onLogin, onRegister }: LandingPageProps) {
         <div className="landing-wrap landing-footer-row">
           <span>SECTOR WARS 2102 · A living space-trading universe</span>
           <span>
-            ARIA CORE <span className="landing-footer-online">● ONLINE</span> ·{' '}
-            <a href="#">Docs</a> · <a href="#">Community</a>
+            ARIA CORE <span className="landing-footer-online">● ONLINE</span>
           </span>
         </div>
       </footer>
