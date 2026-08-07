@@ -138,6 +138,22 @@ def emergency_relocate(
         from src.services.movement_service import MovementService
         MovementService(db)._update_player_presence(player, old_sector_id, destination_sector_id)
 
+        # WO-K2b (mirrors slipdrive_service.complete_charge): this is still a
+        # border crossing, ruled deliberately (orchestrator, 2026-08-03) --
+        # detection keys on crossing into tighter security with contraband
+        # aboard, never on the mechanism or the motive, and "it was an
+        # emergency" would just become the smuggler's preferred crossing.
+        # Flush-only -- the route owns the commit here.
+        if ship is not None:
+            from src.services.contraband_service import scan_in_transit_best_effort
+            scan_in_transit_best_effort(
+                db,
+                player=player,
+                ship_id=ship.id,
+                origin_sector_id=old_sector_id,
+                destination_sector_id=destination_sector_id,
+            )
+
     player.gc_relocation_used_at = datetime.now(timezone.utc)
 
     db.flush()

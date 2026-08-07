@@ -114,6 +114,9 @@ ALL_STATIC_KEYS = {
     # lock so two gameserver instances booting simultaneously can't both
     # replay the same bounded catch-up batch at once.
     "_LOOP_CRASH_CATCHUP_LOCK_KEY": sched._LOOP_CRASH_CATCHUP_LOCK_KEY,
+    # ADR-0054 X-D3 gc-lapse-window — 7-day liquidation sweep, own lock so
+    # two gameserver instances can't double-finalize the same lapsed GC.
+    "_GC_LAPSE_LOCK_KEY": sched._GC_LAPSE_LOCK_KEY,
 }
 
 # Every {"key": <bare Name>} lock-acquisition site, keyed by its enclosing
@@ -181,6 +184,8 @@ EXPECTED_NAME_SITE_MAP = {
     "_run_abandonment_archive_sweep_sync": "_ABANDONMENT_ARCHIVE_LOCK_KEY",
     # ADR-0050 SK22 — Phase-14 (Nexus cross-region attachment) retry sweep.
     "_run_phase14_attachment_retry_sweep_sync": "_PHASE14_ATTACHMENT_RETRY_LOCK_KEY",
+    # ADR-0054 X-D3 gc-lapse-window — 7-day liquidation sweep.
+    "_run_gc_lapse_sweep_sync": "_GC_LAPSE_LOCK_KEY",
 }
 
 # 29 bare-Name sites + 1 Call-form site (bootstrap_region_sync) = the true
@@ -315,7 +320,9 @@ def test_all_static_keys_pairwise_distinct():
         seen[value] = name
     assert not dupes, f"colliding lock keys: {dupes}"
     assert len(values) == len(set(values))
-    assert len(ALL_STATIC_KEYS) == 32  # 1 global + 2 legacy + 27 new sweep-type keys + 1 (WO-P4-play-beacon-kernel) + 1 (P9-realtime-npc-crash-watermark)
+    # 1 global + 2 legacy + 27 new sweep-type keys + 1 (WO-P4-play-beacon-kernel)
+    # + 1 (P9-realtime-npc-crash-watermark) + 1 (ADR-0054 X-D3 gc-lapse-window)
+    assert len(ALL_STATIC_KEYS) == 33
 
 
 def test_all_static_keys_nonnegative_and_63bit_safe():
