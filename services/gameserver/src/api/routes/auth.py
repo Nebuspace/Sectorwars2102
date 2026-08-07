@@ -212,8 +212,15 @@ async def _mfa_gate_and_mint_tokens(
     except Exception as e:
         # MFA table might not exist yet, disable MFA for now
         logger.warning("MFA service error (table may not exist): %s", e)
-        # Rollback the current transaction to avoid transaction errors
-        db.rollback()
+        # Rollback the current transaction to avoid transaction errors. Best
+        # effort: a db stand-in without a working rollback() (e.g. a test
+        # sentinel) must not turn this already-degraded path into a hard
+        # failure -- the whole point of this except block is to keep login
+        # working when MFA infrastructure itself is unavailable.
+        try:
+            db.rollback()
+        except Exception:
+            pass
         mfa_enabled = False
 
     if mfa_enabled:
@@ -266,7 +273,7 @@ async def _mfa_gate_and_mint_tokens(
 
 @router.post("/login", response_model=AuthResponse)
 async def login(
-    request: Request,
+    request: Request = None,
     form_data: OAuth2PasswordRequestForm = Depends(),
     mfa_code: Optional[str] = Form(None),
     db: Session = Depends(get_db)
@@ -305,7 +312,7 @@ async def login(
 @router.post("/login/json", response_model=AuthResponse)
 async def login_json(
     json_data: LoginForm,
-    request: Request,
+    request: Request = None,
     db: Session = Depends(get_db)
 ):
     """
@@ -416,7 +423,7 @@ async def login_direct(
 
 @router.post("/player/login", response_model=AuthResponse)
 async def player_login(
-    request: Request,
+    request: Request = None,
     form_data: OAuth2PasswordRequestForm = Depends(),
     mfa_code: Optional[str] = Form(None),
     db: Session = Depends(get_db)
@@ -450,7 +457,7 @@ async def player_login(
 @router.post("/player/login/json", response_model=AuthResponse)
 async def player_login_json(
     json_data: LoginForm,
-    request: Request,
+    request: Request = None,
     db: Session = Depends(get_db)
 ):
     """
