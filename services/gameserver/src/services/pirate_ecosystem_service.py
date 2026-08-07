@@ -30,9 +30,9 @@ from __future__ import annotations
 import logging
 import math
 import random
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
-import uuid
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -43,6 +43,7 @@ from src.models.pirate_kill_log import PirateKillDisposition, PirateKillLog
 from src.models.region import Region, RegionStatus
 from src.models.sector import Sector
 from src.models.station import Station
+from src.models.zone import Zone, ZoneType
 
 logger = logging.getLogger(__name__)
 
@@ -467,6 +468,99 @@ def _eligible_region_sectors(db: Session, region_id: uuid.UUID) -> List[int]:
 
 
 # ---------------------------------------------------------------------------
+# Zone-affinity weighting (ADR-0060 G-I2, pirate-ecosystem.md:182-224)
+# ---------------------------------------------------------------------------
+
+# ZoneType forms a single linear tier ladder for region-local zones
+# (zone.py:16-19 -- "Player Regions: Federation/Border/Frontier, three zones
+# in thirds"; ADR-0060 G-I2's own worked example: "Camps from a Border
+# Outpost prefer Border sectors but can spill into Frontier (or Federation,
+# at quarter rate)"). EXPANSE is the Central Nexus mega-zone (zone.py:17),
+# structurally disjoint from the Federation/Border/Frontier region-local
+# thirds pirate holdings live in -- it has no defined ladder position and is
+# adjacent to nothing.
+_ZONE_LADDER: List[ZoneType] = [ZoneType.FEDERATION, ZoneType.BORDER, ZoneType.FRONTIER]
+
+
+def _adjacent_zone_types(zone_type: ZoneType) -> set:
+    """One step either side of ``_ZONE_LADDER``. EXPANSE (not on the ladder)
+    returns an empty set."""
+    if zone_type not in _ZONE_LADDER:
+        return set()
+    idx = _ZONE_LADDER.index(zone_type)
+    neighbors = set()
+    if idx > 0:
+        neighbors.add(_ZONE_LADDER[idx - 1])
+    if idx < len(_ZONE_LADDER) - 1:
+        neighbors.add(_ZONE_LADDER[idx + 1])
+    return neighbors
+
+
+def daughter_spawn_weight(
+    parent_zone_type: Optional[ZoneType], candidate_zone_type: Optional[ZoneType]
+) -> float:
+    """ADR-0060 G-I2: daughter-spawn site-selection weight by zone affinity.
+
+    ```
+    def daughter_spawn_weight(parent_holding, candidate_sector):
+        if candidate_sector.zone == parent_holding.zone:
+            return 1.0    # native zone
+        if candidate_sector.zone in adjacent_zones(parent_holding.zone):
+            return 0.5    # adjacent
+        return 0.25       # distant
+    ```
+
+    [NO-CANON, resolved pragmatically]: the ADR's pseudocode signature takes
+    ``(parent_holding, candidate_sector)`` and reads ``.zone`` straight off
+    each -- but ``PirateHolding`` has no ``.zone`` (it only stores the
+    GLOBAL ``sector_id`` integer, no relationship to ``Sector``/``Zone``;
+    see pirate_holding.py's own divergence note) and ``Sector.zone_id`` is
+    nullable, so a candidate or the parent's anchor sector may carry no zone
+    at all. This takes the already-resolved ``ZoneType`` (or ``None``)
+    directly -- the caller resolves ``PirateHolding.sector_id`` /
+    candidate ``sector_id`` to a ``ZoneType`` via ``_zone_types_by_sector_id``
+    first. A ``None`` on either side (unzoned sector) is treated as
+    "distant" (0.25) -- there's no affinity signal to prefer it over any
+    other unzoned/differently-zoned candidate.
+    """
+    if parent_zone_type is None or candidate_zone_type is None:
+        return 0.25
+    if candidate_zone_type == parent_zone_type:
+        return 1.0
+    if candidate_zone_type in _adjacent_zone_types(parent_zone_type):
+        return 0.5
+    return 0.25
+
+
+def _zone_types_by_sector_id(
+    db: Session, sector_ids: List[int]
+) -> Dict[int, Optional[ZoneType]]:
+    """Bulk ``ZoneType`` lookup keyed by the GLOBAL ``sectors.sector_id``
+    integer (mirrors ``_eligible_region_sectors``' int-keyed convention).
+    Two single-table scalar-column queries (``Sector.zone_id`` then
+    ``Zone.zone_type``) rather than a SQL join, matching this module's
+    existing pattern of extracting plain columns via ``db.query(Column)``.
+    A sector with no ``zone_id`` (nullable) maps to ``None``."""
+    if not sector_ids:
+        return {}
+    sector_rows = (
+        db.query(Sector.sector_id, Sector.zone_id)
+        .filter(Sector.sector_id.in_(sector_ids))
+        .all()
+    )
+    zone_ids = {zid for (_sid, zid) in sector_rows if zid is not None}
+    zone_type_by_id: Dict[Any, ZoneType] = {}
+    if zone_ids:
+        zone_type_by_id = dict(
+            db.query(Zone.id, Zone.zone_type).filter(Zone.id.in_(zone_ids)).all()
+        )
+    return {
+        sid: (zone_type_by_id.get(zid) if zid is not None else None)
+        for sid, zid in sector_rows
+    }
+
+
+# ---------------------------------------------------------------------------
 # Realtime telemetry (pirate-ecosystem.md:413-423). WO-PIRATE-ECO-2 lane C --
 # fills the seam lane A left marked. ARIA reads these events to compose
 # player-facing narration (:422). NOT wired this wave: `region_suppression_high`
@@ -602,14 +696,19 @@ def spawn_daughter_holding(
     cap AFTER the daughter tier is chosen -- the only semantically coherent
     order -- rather than before.
 
-    [NO-CANON, deferred -- flagged for DECISIONS]: zone-affinity radius
-    weighting (:182-224), the roving_fleet_camp warp-reachability check
-    (:205-209, structurally inapplicable anyway -- PirateHoldingTier has no
-    ROVING_FLEET_CAMP member), and the avoid_starter_cluster /
-    avoid_phase11_anchors / prefer_low_patrol_density site-selection
-    refinements are NOT implemented -- this picks UNIFORMLY at random among
-    find_eligible_sectors' output (holding/station exclusion only).
-    parent_holding_id lineage and the composition roll are also deferred,
+    Zone-affinity weighting (ADR-0060 G-I2, :182-224) is implemented via
+    ``daughter_spawn_weight`` / ``_zone_types_by_sector_id`` -- the anchor
+    sector is a weighted pick among ``find_eligible_sectors``' output, not a
+    uniform one: 1.0 for the parent's own zone, 0.5 for an adjacent zone
+    (one step on the Federation/Border/Frontier ladder), 0.25 for anything
+    else (including unzoned sectors on either side).
+
+    [NO-CANON, deferred -- flagged for DECISIONS]: the roving_fleet_camp
+    warp-reachability check (:205-209, structurally inapplicable anyway --
+    PirateHoldingTier has no ROVING_FLEET_CAMP member), and the
+    avoid_starter_cluster / avoid_phase11_anchors / prefer_low_patrol_density
+    site-selection refinements are NOT implemented. parent_holding_id lineage
+    and the composition roll are also deferred,
     same as ECO-1's own documented PirateHolding-model omissions (no
     parent_holding_id/composition columns) -- NPC-roster materialization for
     a new holding's garrison is Lane B / npc_scheduler territory, explicitly
@@ -649,8 +748,12 @@ def spawn_daughter_holding(
     if not eligible:
         return None
 
-    picker = rng if rng is not None else random
-    anchor_sector_id = picker.choice(eligible)
+    zone_types = _zone_types_by_sector_id(db, eligible + [parent.sector_id])
+    parent_zone_type = zone_types.get(parent.sector_id)
+    weights = [
+        daughter_spawn_weight(parent_zone_type, zone_types.get(sid)) for sid in eligible
+    ]
+    anchor_sector_id = _weighted_choice(eligible, weights, rng=rng)
 
     holding = PirateHolding(
         region_id=region.id,

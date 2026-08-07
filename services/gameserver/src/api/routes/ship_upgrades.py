@@ -96,11 +96,11 @@ def check_friendly_port(db: Session, player_id, station: Station):
     port" gate (ship-insurance.md:48 "Buying insurance ... requires at least
     NEUTRAL reputation with the controlling faction").
 
-    NO-CANON: a station with no controlling faction (no faction_affiliation,
+    NO-CANON→RULED: a station with no controlling faction (no faction_affiliation,
     or a name that doesn't resolve to a seeded Faction row) has no faction to
-    be unfriendly with, so it always passes. Canon's "friendly port" language
-    presumes an affiliated station and is silent on unaffiliated ones —
-    flagged to DECISIONS.
+    be unfriendly with, so it always passes. DECISION
+    `insurance-factionless-port-gate` (2026-08-07): ratify always-friendly-by-design
+    for unaffiliated ports — this pass is intentional, not a gap.
     """
     faction = _station_controlling_faction(db, station)
     if faction is None:

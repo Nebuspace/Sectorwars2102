@@ -199,8 +199,9 @@ KIA_RESPAWN_COOLDOWN_HOURS = 7 * 24
 
 # ADR-0063 N-D2: respawn-permitted archetypes return as the SAME
 # identity after a 15-minute cooldown (career and reputation persist).
-# Canon grants this to "most named pirates, some trader archetypes";
-# v1 grants it to pirates — traders join in the trader slice.
+# DECISION `npc-respawn-cooldown-archetype-scope` (2026-08-07): narrow
+# canon to HOSTILE_RAIDER-only — this frozenset is the ratified scope
+# (not a temporary v1 subset awaiting trader expansion).
 RESPAWN_COOLDOWN_MINUTES = 15
 RESPAWN_PERMITTED_ARCHETYPES = frozenset({NPCArchetype.HOSTILE_RAIDER})
 
