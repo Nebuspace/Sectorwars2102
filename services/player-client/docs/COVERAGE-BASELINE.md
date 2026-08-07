@@ -28,6 +28,7 @@ Staged for hub queue — not built in this WO:
 7. **WO-TESTCOV-PLAYER-ARMORY** — ArmoryVenue / SpaceDock armory purchase — **SHIPPED** (merged via #290; catalog Buy gates + POST `/api/v1/armory/purchase`)
 8. **WO-TESTCOV-PLAYER-HAGGLE-DESK-DEPTH** — HaggleDesk open/offer/accept/counter/reject — **SHIPPED** (merged via #291; complements taxInclusiveTotal suite)
 9. **WO-TESTCOV-PLAYER-SHIPYARD-PURCHASE** — ShipyardVenue confirm + SpaceDock ships/purchase — **SHIPPED** (merged via #292; POST `/api/v1/ships/purchase`)
-10. **WO-TESTCOV-PLAYER-SHIP-REPAIR** — ServicesVenue Full Repair + SpaceDock repair POST — **SHIPPED** (PR pending; POST `/api/v1/player/ships/:id/repair`)
+10. **WO-TESTCOV-PLAYER-SHIP-REPAIR** — ServicesVenue Full Repair + SpaceDock repair POST — **SHIPPED** (merged via #293; POST `/api/v1/player/ships/:id/repair`)
+11. **WO-TESTCOV-PLAYER-MINING-LICENSE** — MiningVenue + mining license/laser POSTs — **SHIPPED** (PR pending; POST `/api/v1/mining/license` + `/laser-upgrade`)
 
 Auth forms coverage is test-only (hub GO 2026-08-07T21:28:00Z) — does not touch auth/MFA logic.
