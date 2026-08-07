@@ -1758,13 +1758,17 @@ async def construct_defense_building(
     """Construct a defense building on a planet.
 
     DEPRECATED (ADR-0094 endpoint-canonicalization) — overlaps
-    POST /planets/{planet_id}/grid/place, which is the canonical route:
-    it sources defense kinds (TURRET_NETWORK/ORBITAL_PLATFORM/SCANNER_ARRAY)
-    from the same unified building_catalog this route's CitadelService call
-    does not consult, and additionally enforces the research gate and
-    per-planet material costs this route skips. Still has a live frontend
-    caller (player-client GameContext.tsx) — not yet safe to remove; migrate
-    that caller to grid/place before deleting this route.
+    POST /planets/{planet_id}/grid/place, which is the canonical route: it
+    sources defense kinds (TURRET_NETWORK/ORBITAL_PLATFORM/SCANNER_ARRAY) from
+    the same unified building_catalog this route's CitadelService call does not
+    consult. CitadelService.build_defense_building enforces its OWN research
+    gate (CRT WO-K0-3) and, as of SEC-DEFBUILD-MATERIALS, its own per-planet
+    material charge — parity restored via two independent implementations
+    rather than a shared call, since the two catalogs' cost/level/tier shapes
+    differ enough that delegating would change this route's response
+    contract (player-client GameContext.tsx is still a live caller). Still not
+    safe to remove; migrate that caller to grid/place before deleting this
+    route.
     """
     from src.services.citadel_service import CitadelService
     try:
