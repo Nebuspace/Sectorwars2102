@@ -39,13 +39,13 @@ describe('ConstructionVenue — reserve slip money path', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;
   let fetchMock: ReturnType<typeof vi.fn>;
-  let onCreditsDelta: ReturnType<typeof vi.fn>;
-  let onCreditsSet: ReturnType<typeof vi.fn>;
+  let onCreditsDelta: (delta: number) => void;
+  let onCreditsSet: (value: number) => void;
 
   beforeEach(() => {
     localStorage.setItem('accessToken', 'tok-test');
-    onCreditsDelta = vi.fn();
-    onCreditsSet = vi.fn();
+    onCreditsDelta = vi.fn<(delta: number) => void>();
+    onCreditsSet = vi.fn<(value: number) => void>();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
