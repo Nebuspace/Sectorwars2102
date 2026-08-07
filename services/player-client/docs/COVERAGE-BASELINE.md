@@ -19,7 +19,7 @@ Suite: all green under coverage run. This is a **visibility** baseline, not a CI
 
 Staged for hub queue — not built in this WO:
 
-1. **WO-TESTCOV-PLAYER-TRADE-DESK** — `src/components/trade/PlayerTradeDesk.tsx` (~5% lines)
+1. **WO-TESTCOV-PLAYER-TRADE-DESK** — `src/components/trade/PlayerTradeDesk.tsx` — **SHIPPED** (PR pending; vitest 5 cases: initiate/accept/offer/error/settled)
 2. **WO-TESTCOV-PLAYER-API-CLIENT** — `src/services/api.ts` (~14%) + `apiClient.ts` (~21%)
 3. **WO-TESTCOV-PLAYER-MODULE-GRID** — `ModuleGridInterface.tsx` (~8.5%), Insurance/Maintenance managers (~6–11%)
 4. **WO-TESTCOV-PLAYER-TRADING-INTERFACE-DEPTH** — `TradingInterface.tsx` (~46%) — deepen money-path branches
