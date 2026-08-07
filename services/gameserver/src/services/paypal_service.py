@@ -9,7 +9,7 @@ import httpx
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 from pydantic import BaseModel, Field
@@ -21,6 +21,7 @@ from src.models.region import Region
 from src.models.player import Player
 from src.models.user import User
 from src.models.processed_webhook_event import ProcessedWebhookEvent
+from src.services.scheduler._common import region_lock_key
 
 import logging
 
@@ -567,6 +568,27 @@ class PayPalService:
         subscription_id: str
     ):
         """Activate regional ownership for user"""
+        # ADR-0050 SK18: DB-level advisory lock keyed on the region, serializing
+        # this provisioning/takeover critical section against any concurrent
+        # webhook delivery or admin force-action touching the SAME region.
+        # A brand-new region has no Region.id yet at this point (the row
+        # hasn't been created), so the lock is keyed on region_name -- the
+        # one identifier stable across both the create and the ownership-
+        # transfer branches below, so two concurrent calls for the SAME
+        # region_name (e.g. two webhook retries, or a webhook racing an
+        # admin takeover) always serialize on the identical key. Blocking
+        # acquire (pg_advisory_xact_lock, not the _try_ variant): a
+        # concurrent provisioning attempt for the same region is a
+        # legitimate contention case that must wait its turn, not fail
+        # outright. Acquired AFTER the webhook idempotency insert (see
+        # handle_subscription_webhook) -- same ordering as every existing
+        # region_lock_key call site: dedupe first, then serialize the
+        # mutation. Released automatically at commit/rollback.
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"),
+            {"key": region_lock_key(region_name)},
+        )
+
         # Create or update region
         result = await session.execute(
             select(Region).where(Region.name == region_name)

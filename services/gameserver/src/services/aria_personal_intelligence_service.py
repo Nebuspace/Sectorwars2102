@@ -15,7 +15,6 @@ OWASP Security Implementation:
 
 import json
 import hashlib
-import hmac
 import heapq
 import math
 from typing import Dict, List, Any, Optional, Tuple, Set
@@ -32,10 +31,9 @@ from sqlalchemy import select, and_, func
 from sqlalchemy.orm import Session
 
 from src.models.player import Player
-from src.models.sector import Sector, sector_warps
+from src.models.sector import sector_warps
 from src.models.station import Station
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
-from src.models.market_transaction import MarketTransaction
 from src.models.aria_personal_intelligence import (
     ARIAPersonalMemory, ARIAMarketIntelligence, ARIAExplorationMap,
     ARIAQuantumCache, ARIASecurityLog,
@@ -47,7 +45,6 @@ from src.models.aria_personal_intelligence import (
 # ADR-0038). No longer imported here; see models/aria_personal_intelligence.py's
 # own deprecation note on the class.
 from src.core.config import settings
-from src.core.security import get_password_hash
 from src.core.game_time import scaled_elapsed
 
 logger = logging.getLogger(__name__)
@@ -800,7 +797,6 @@ class ARIAPersonalIntelligenceService:
         buy_resource/sell_resource's "must be docked" + "must be in the
         same sector" checks).
         """
-        from src.models.player import Player
 
         stmt = select(Player).where(Player.id == player_id)
         result = await db.execute(stmt)
@@ -820,7 +816,6 @@ class ARIAPersonalIntelligenceService:
         callers (WO-ARIA-MARKET-OBS) -- same Player.is_docked +
         current_sector_id-vs-station.sector_id check, same bug-fix
         rationale as the async version above."""
-        from src.models.player import Player
 
         player = db.query(Player).filter(Player.id == player_id).first()
         if player is None or not player.is_docked:
@@ -1500,11 +1495,12 @@ class ARIAPersonalIntelligenceService:
     # quantum-calculation cache read/write pair) removed 2026-08-04 —
     # zero callers anywhere in the codebase (grep-confirmed). The table
     # (ARIAQuantumCache) is still live via the repurposed observation-log
-    # aggregate cache (_cache_aggregates_sync / its read counterpart just
-    # above), which is the ONLY production-reachable writer today and
-    # always stores dummy quantum_states/expected_value/confidence_interval
-    # values — those columns remain permanently zeroed by design under the
-    # current repurposing, not because anything here still populates them.
+    # aggregate cache (_cache_aggregates_sync / its read counterpart).
+    # NOT NULL columns quantum_states / expected_value / confidence_interval
+    # are filled with empty/zero placeholders on INSERT only — the read path
+    # returns entry.ghost_results (the real recommendation bundle) and never
+    # serializes those legacy columns to any API response
+    # (WO-CLEANUP-ARIA-INTELLIGENCE-DUMMY-DATA-VERIFY).
     
     # =============================================================================
     # CONSCIOUSNESS & RELATIONSHIP TRACKING
@@ -1611,7 +1607,6 @@ class ARIAPersonalIntelligenceService:
         Decay relationship score based on days of inactivity.
         -1 point per day inactive, minimum 0.
         """
-        from src.models.player import Player
 
         stmt = select(Player).where(Player.id == player_id)
         result = await db.execute(stmt)
@@ -1851,7 +1846,6 @@ class ARIAPersonalIntelligenceService:
         dispatch report for the full proof and a dedicated falsifying test.
         The threshold NUMBERS themselves (10/30/75/150) are unchanged.
         """
-        from src.models.player import Player
 
         stmt = select(Player).where(Player.id == player_id)
         result = await db.execute(stmt)
@@ -2009,7 +2003,6 @@ class ARIAPersonalIntelligenceService:
 
         Returns a list of 1-3 recommendation strings (in English).
         """
-        from src.models.player import Player
 
         stmt = select(Player).where(Player.id == player_id)
         result = await db.execute(stmt)
@@ -2172,7 +2165,6 @@ class ARIAPersonalIntelligenceService:
         interaction count, memory breakdown, next-level requirements, and
         progress percentage toward the next tier.
         """
-        from src.models.player import Player
 
         stmt = select(Player).where(Player.id == player_id)
         result = await db.execute(stmt)
@@ -2332,6 +2324,18 @@ class ARIAPersonalIntelligenceService:
                 else:
                     outcome = ObservationOutcome.loss
 
+            region_snap = trade_result.get("region_id_snapshot")
+            if region_snap is None:
+                try:
+                    from src.models.station import Station
+                    st = (
+                        db.query(Station)
+                        .filter(Station.id == trade_result["source_station_id"])
+                        .first()
+                    )
+                    region_snap = getattr(st, "region_id", None) if st else None
+                except Exception:
+                    region_snap = None
             observation = ARIATradingObservation(
                 player_id=player_id,
                 trade_id=trade_result.get("trade_id"),
@@ -2341,6 +2345,7 @@ class ARIAPersonalIntelligenceService:
                 dest_station_id=trade_result.get("dest_station_id"),
                 source_sector_id=trade_result.get("source_sector_id"),
                 dest_sector_id=trade_result.get("dest_sector_id"),
+                region_id_snapshot=region_snap,
                 quantity=trade_result["quantity"],
                 unit_price=trade_result["unit_price"],
                 total_credits=trade_result["total_credits"],
@@ -2593,10 +2598,10 @@ class ARIAPersonalIntelligenceService:
                 commodity=self._AGGREGATE_CACHE_SCOPE_COMMODITY,
                 station_id=None,
                 sector_id=None,
-                quantum_states=[],  # unused for this repurposed cache use
+                quantum_states=[],  # NOT NULL placeholder — never returned to clients
                 ghost_results=bundle,
-                expected_value=0.0,  # unused for this repurposed cache use
-                confidence_interval=[0, 0],  # unused for this repurposed cache use
+                expected_value=0.0,  # NOT NULL placeholder — never returned to clients
+                confidence_interval=[0, 0],  # NOT NULL placeholder — never returned to clients
                 expires_at=expires_at,
             ))
 

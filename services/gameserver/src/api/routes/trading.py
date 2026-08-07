@@ -1,11 +1,11 @@
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -19,7 +19,7 @@ from src.models.ship import Ship, ShipStatus, effective_cargo_capacity
 from src.models.station import Station
 from src.models.user import User
 from src.services import docking_service, station_security_service
-from src.services.medal_service import MedalService, check_and_award_trade_medals
+from src.services.medal_service import check_and_award_trade_medals
 from src.services.ranking_service import RankingService
 from src.services.trading_service import (
     TradingService,
@@ -794,6 +794,7 @@ async def buy_resource(
             # stations. These only RECORD context; they do not change the charge.
             owner_tariff_rate=tariff_rate_eff,
             port_owner_id=station.owner_id,
+            region_id_snapshot=getattr(station, "region_id", None),
             timestamp=datetime.now(UTC)
         )
         db.add(transaction)
@@ -1112,6 +1113,7 @@ async def sell_resource(
             # stations. These only RECORD context; they do not change the payout.
             owner_tariff_rate=tariff_rate_eff,
             port_owner_id=station.owner_id,
+            region_id_snapshot=getattr(station, "region_id", None),
             timestamp=datetime.now(UTC)
         )
         db.add(transaction)
@@ -1718,11 +1720,19 @@ async def dock_at_station(
             from src.models.contract import Contract, ContractStatus
 
             with db.begin_nested():
+                # Match GET /contracts/board: status=POSTED, still before
+                # deadline, visible at this station (issuer OR posting_stations).
+                # Past-deadline POSTED rows (sweep lag) must not narrate as open.
+                now = datetime.now(UTC)
                 open_contract_count = (
                     db.query(Contract)
                     .filter(
-                        Contract.destination_station_id == station.id,
                         Contract.status == ContractStatus.POSTED,
+                        or_(Contract.deadline.is_(None), Contract.deadline > now),
+                        or_(
+                            Contract.issuer_id == station.id,
+                            Contract.posting_stations.any(station.id),
+                        ),
                     )
                     .count()
                 )

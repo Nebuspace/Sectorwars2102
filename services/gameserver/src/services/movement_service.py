@@ -19,8 +19,6 @@ from src.models.player_warp_knowledge import (
     WarpRevealedVia,
 )
 from src.models.team_member import TeamMember
-from src.models.combat import CombatResult
-from src.models.combat_log import CombatLog
 from src.models.drone import Drone, DroneStatus
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -571,6 +569,71 @@ class MovementService:
             except Exception:
                 pass
 
+    def _roll_hull_condition_failure(self, player: Player, result: Dict[str, Any]) -> None:
+        """Per-jump hull-condition band failure (WO-BUILD-HULL-FAILURE-TIER-DICE-ROLL).
+
+        Distinct from ``_roll_mechanical_failure`` (MAINTENANCE_SYSTEM upgrade
+        degrade at 2%/jump). This roll consumes the performance-band
+        ``failure`` / ``failure_tier`` values and applies FailureType effects
+        (MINOR sensors offline / MAJOR immobilized / CATASTROPHIC destroy-or-1%).
+
+        Best-effort: never strand an already-committed move. Catastrophic
+        destruction commits via ShipService.destroy_ship (cause=hull_failure).
+        """
+        try:
+            ship = player.current_ship
+            if not ship:
+                return
+
+            from src.services.maintenance_service import apply_hull_condition_failure_roll
+            outcome = apply_hull_condition_failure_roll(ship)
+            if not outcome:
+                return
+
+            if outcome.get("needs_destroy"):
+                from src.services.ship_service import ShipService
+                ShipService(self.db).destroy_ship(ship, cause="hull_failure")
+                self.db.commit()
+                result["hull_failure"] = {
+                    "failure_type": outcome.get("failure_type"),
+                    "effect": "destroyed",
+                    "message": (
+                        "Catastrophic hull failure — the ship was destroyed. "
+                        "If you ejected, you are in an Escape Pod."
+                    ),
+                }
+                return
+
+            self.db.commit()
+            effect = outcome.get("effect")
+            ftype = outcome.get("failure_type")
+            messages = {
+                "sensors_offline": (
+                    f"Minor systems failure ({ftype}): sensors offline until repaired"
+                ),
+                "immobilized": (
+                    f"Major systems failure ({ftype}): ship immobilized until repaired "
+                    "at a shipyard"
+                ),
+                "hull_critical": (
+                    f"Catastrophic hull failure ({ftype}): hull integrity critical "
+                    f"({outcome.get('condition')}%) — seek emergency repair"
+                ),
+            }
+            result["hull_failure"] = {
+                "failure_type": ftype,
+                "effect": effect,
+                "condition": outcome.get("condition"),
+                "message": messages.get(effect, f"Hull failure: {ftype}"),
+            }
+        except Exception as e:
+            logger.error("Hull-condition failure roll failed during movement: %s", e)
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
+
+
     # Scanner-array detection model (WO-AY). After a SUCCESSFUL move, a
     # best-effort sweep finds planets within the scanner_array's
     # detection_range_sectors (JUMPS) of the destination that have an
@@ -974,6 +1037,17 @@ class MovementService:
         if not player.current_ship:
             return {"success": False, "message": "No active ship selected", "turn_cost": 0}
 
+        # Hull-condition MAJOR failure immobilizes until shipyard repair
+        # (WO-BUILD-HULL-FAILURE-TIER-DICE-ROLL / ships.md Failure types).
+        from src.services.maintenance_service import ship_is_immobilized
+        if ship_is_immobilized(player.current_ship):
+            return {
+                "success": False,
+                "message": "Ship immobilized by major systems failure — repair at a shipyard before moving",
+                "turn_cost": 0,
+                "error_code": "SHIP_IMMOBILIZED",
+            }
+
         # A Warp Jumper harmonizing into a gate focus is frozen in place
         # (ADR-0029 / ADR-0036). Reject movement before any turn charge so a
         # mid-build hull can't fly off mid-harmonization. 0 turn cost.
@@ -1092,6 +1166,8 @@ class MovementService:
             # WO-AY: a successful gate jump is a real arrival — sweep for
             # scanner-array detections (best-effort; only on real success).
             if result.get("success"):
+                self._roll_mechanical_failure(player, result)
+                self._roll_hull_condition_failure(player, result)
                 self._sweep_scanner_detection(player, destination_sector_id)
                 # WO-K2: a player-built gate is still a border crossing — customs
                 # scan the hold. Wired on ALL THREE success paths so a smuggler
@@ -1126,6 +1202,7 @@ class MovementService:
             # mechanical failure (best-effort; only fires on a real move success).
             if result.get("success"):
                 self._roll_mechanical_failure(player, result)
+                self._roll_hull_condition_failure(player, result)
                 # WO-AY: same success path — sweep for scanner-array detections.
                 self._sweep_scanner_detection(player, destination_sector_id)
                 # WO-K2: customs scan on a direct warp (see the gate branch).
@@ -1165,6 +1242,7 @@ class MovementService:
             # mechanical failure (best-effort; only fires on a real move success).
             if result.get("success"):
                 self._roll_mechanical_failure(player, result)
+                self._roll_hull_condition_failure(player, result)
                 # WO-AY: same success path — sweep for scanner-array detections.
                 self._sweep_scanner_detection(player, destination_sector_id)
                 # WO-K2: customs scan on a natural warp tunnel (see the gate branch).
@@ -2623,7 +2701,8 @@ class MovementService:
         # method's single commit below.
         try:
             from src.services.special_formation_service import flip_formation_discovery
-            flip_formation_discovery(self.db, player, destination_sector)
+            with self.db.begin_nested():
+                flip_formation_discovery(self.db, player, destination_sector)
         except Exception as e:
             logger.error("Special-formation discovery hook failed during movement: %s", e)
 
@@ -2636,7 +2715,8 @@ class MovementService:
         # column meaningful for ordinary movement too. Best-effort, flush-only.
         try:
             from src.services.discovery_service import mark_sector_discovered
-            mark_sector_discovered(self.db, destination_sector, player.id)
+            with self.db.begin_nested():
+                mark_sector_discovered(self.db, destination_sector, player.id)
         except Exception as e:
             logger.error("Sector first-discoverer hook failed during movement: %s", e)
 
@@ -2645,9 +2725,14 @@ class MovementService:
         # record — one row per (player, sector) — so its DISTINCT-sector count
         # for this player IS the player's sectors_visited statistic. We dispatch
         # here, AFTER the visit row is added/incremented but BEFORE this method's
-        # single commit, so the medal-award SAVEPOINT folds into the same commit
-        # exactly like the combat medal hook. Best-effort: a medal hiccup must
-        # never strand the move (mirrors the ARIA hooks above). The medals-lane
+        # single commit. ``_count_unique_sectors_visited`` flushes the pending
+        # visit row first, then the actual award is wrapped in its own
+        # begin_nested() SAVEPOINT (2026-08-05, WO-FIX-MOVEMENT-HOOK-SAVEPOINTS
+        # — a prior version of this comment claimed the savepoint "folds into
+        # the same commit" but no savepoint actually wrapped this call; that
+        # was a documentation/implementation mismatch, fixed here alongside
+        # the missing savepoint itself). Best-effort: a medal hiccup must
+        # never strand the move (mirrors the ARIA hook above). The medals-lane
         # hook is idempotent (UNIQUE(player_id, medal_id) + threshold gating), so
         # it no-ops on every move except the one that first crosses 500 sectors —
         # never re-awards.
@@ -2661,11 +2746,12 @@ class MovementService:
             # AWARD-BATCH, exploration domain, verify-first: no separate
             # discovery-vs-visit distinction exists in the schema).
             unique_sectors = self._count_unique_sectors_visited(player.id)
-            _dispatch_exploration_medals(
-                self.db,
-                player,
-                {"sectors_visited": unique_sectors, "sectors_discovered": unique_sectors},
-            )
+            with self.db.begin_nested():
+                _dispatch_exploration_medals(
+                    self.db,
+                    player,
+                    {"sectors_visited": unique_sectors, "sectors_discovered": unique_sectors},
+                )
         except Exception as e:
             logger.error("Exploration medal dispatch hook failed during movement: %s", e)
 

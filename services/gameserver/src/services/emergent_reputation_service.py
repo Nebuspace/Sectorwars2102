@@ -352,7 +352,7 @@ class EmergentAction:
 # an existing rep change are present. NO-CANON / 📐-dependent actions are
 # OMITTED (and reported), not guessed.
 #
-# Currently wired-to-a-site:  KILL_PIRATE_NPC.
+# Currently wired-to-a-site:  KILL_PIRATE_NPC, KILL_CABAL_NPC.
 # Present-but-unwired (defined so the dispatcher is the single tuning point the
 # moment their trigger sites land WITHOUT an existing rep hook):
 #   BUY_INSURANCE_BASIC / STANDARD / PREMIUM (MG) — one-time per hull.
@@ -370,6 +370,15 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
     # unconditional base +5 and does NOT guess the conditional uplift.
     "KILL_PIRATE_NPC": EmergentAction(
         name="KILL_PIRATE_NPC",
+        deltas=[FactionDelta(FactionType.FEDERATION, 5)],
+        doc_source="factions-and-teams.md TF: Kill a Pirate or Cabal NPC (+5)",
+    ),
+    # Same TF table row as KILL_PIRATE_NPC — Cabal is the parallel hostile-only
+    # antagonist. Separate action name so the trigger table stays auditable;
+    # magnitude identical. Wired at combat_service kill resolver when
+    # dead_npc.faction_code == "cabal" (Cabal spawn itself is still Design-only).
+    "KILL_CABAL_NPC": EmergentAction(
+        name="KILL_CABAL_NPC",
         deltas=[FactionDelta(FactionType.FEDERATION, 5)],
         doc_source="factions-and-teams.md TF: Kill a Pirate or Cabal NPC (+5)",
     ),

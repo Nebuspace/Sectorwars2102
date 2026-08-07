@@ -46,7 +46,9 @@ Field provenance (do not invent — every value below traces to a source):
     precious_metals) is False.
   * icon defaults to the canonical slug (same as `name`) — no glyph/asset
     key has been designed yet; a future UI pass can repoint icon without a
-    schema change. Not a design decision, a placeholder.
+    schema change. Accepted interim (not a schema-avoidance dodge): the
+    column is the right shape; values stay slug-identity until a UI glyph
+    catalog exists (WO-CLEANUP-RESOURCE-REGISTRY-SEEDER-PLACEHOLDER).
 
 precious_metals (WO-RES-PRECIOUS-METALS-SEED): seeded as rare_material
 (CATEGORY_RARE) with COMMODITY_BASE_PRICES pricing. mining.md lists it as a

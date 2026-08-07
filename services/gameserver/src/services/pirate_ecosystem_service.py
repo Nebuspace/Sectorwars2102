@@ -30,19 +30,20 @@ from __future__ import annotations
 import logging
 import math
 import random
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
-import uuid
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.pirate_holding import PirateHolding, PirateHoldingTier
-from src.models.pirate_kill_log import PirateKillLog
+from src.models.pirate_kill_log import PirateKillDisposition, PirateKillLog
 from src.models.region import Region, RegionStatus
 from src.models.sector import Sector
 from src.models.station import Station
+from src.models.zone import Zone, ZoneType
 
 logger = logging.getLogger(__name__)
 
@@ -467,6 +468,99 @@ def _eligible_region_sectors(db: Session, region_id: uuid.UUID) -> List[int]:
 
 
 # ---------------------------------------------------------------------------
+# Zone-affinity weighting (ADR-0060 G-I2, pirate-ecosystem.md:182-224)
+# ---------------------------------------------------------------------------
+
+# ZoneType forms a single linear tier ladder for region-local zones
+# (zone.py:16-19 -- "Player Regions: Federation/Border/Frontier, three zones
+# in thirds"; ADR-0060 G-I2's own worked example: "Camps from a Border
+# Outpost prefer Border sectors but can spill into Frontier (or Federation,
+# at quarter rate)"). EXPANSE is the Central Nexus mega-zone (zone.py:17),
+# structurally disjoint from the Federation/Border/Frontier region-local
+# thirds pirate holdings live in -- it has no defined ladder position and is
+# adjacent to nothing.
+_ZONE_LADDER: List[ZoneType] = [ZoneType.FEDERATION, ZoneType.BORDER, ZoneType.FRONTIER]
+
+
+def _adjacent_zone_types(zone_type: ZoneType) -> set:
+    """One step either side of ``_ZONE_LADDER``. EXPANSE (not on the ladder)
+    returns an empty set."""
+    if zone_type not in _ZONE_LADDER:
+        return set()
+    idx = _ZONE_LADDER.index(zone_type)
+    neighbors = set()
+    if idx > 0:
+        neighbors.add(_ZONE_LADDER[idx - 1])
+    if idx < len(_ZONE_LADDER) - 1:
+        neighbors.add(_ZONE_LADDER[idx + 1])
+    return neighbors
+
+
+def daughter_spawn_weight(
+    parent_zone_type: Optional[ZoneType], candidate_zone_type: Optional[ZoneType]
+) -> float:
+    """ADR-0060 G-I2: daughter-spawn site-selection weight by zone affinity.
+
+    ```
+    def daughter_spawn_weight(parent_holding, candidate_sector):
+        if candidate_sector.zone == parent_holding.zone:
+            return 1.0    # native zone
+        if candidate_sector.zone in adjacent_zones(parent_holding.zone):
+            return 0.5    # adjacent
+        return 0.25       # distant
+    ```
+
+    [NO-CANON, resolved pragmatically]: the ADR's pseudocode signature takes
+    ``(parent_holding, candidate_sector)`` and reads ``.zone`` straight off
+    each -- but ``PirateHolding`` has no ``.zone`` (it only stores the
+    GLOBAL ``sector_id`` integer, no relationship to ``Sector``/``Zone``;
+    see pirate_holding.py's own divergence note) and ``Sector.zone_id`` is
+    nullable, so a candidate or the parent's anchor sector may carry no zone
+    at all. This takes the already-resolved ``ZoneType`` (or ``None``)
+    directly -- the caller resolves ``PirateHolding.sector_id`` /
+    candidate ``sector_id`` to a ``ZoneType`` via ``_zone_types_by_sector_id``
+    first. A ``None`` on either side (unzoned sector) is treated as
+    "distant" (0.25) -- there's no affinity signal to prefer it over any
+    other unzoned/differently-zoned candidate.
+    """
+    if parent_zone_type is None or candidate_zone_type is None:
+        return 0.25
+    if candidate_zone_type == parent_zone_type:
+        return 1.0
+    if candidate_zone_type in _adjacent_zone_types(parent_zone_type):
+        return 0.5
+    return 0.25
+
+
+def _zone_types_by_sector_id(
+    db: Session, sector_ids: List[int]
+) -> Dict[int, Optional[ZoneType]]:
+    """Bulk ``ZoneType`` lookup keyed by the GLOBAL ``sectors.sector_id``
+    integer (mirrors ``_eligible_region_sectors``' int-keyed convention).
+    Two single-table scalar-column queries (``Sector.zone_id`` then
+    ``Zone.zone_type``) rather than a SQL join, matching this module's
+    existing pattern of extracting plain columns via ``db.query(Column)``.
+    A sector with no ``zone_id`` (nullable) maps to ``None``."""
+    if not sector_ids:
+        return {}
+    sector_rows = (
+        db.query(Sector.sector_id, Sector.zone_id)
+        .filter(Sector.sector_id.in_(sector_ids))
+        .all()
+    )
+    zone_ids = {zid for (_sid, zid) in sector_rows if zid is not None}
+    zone_type_by_id: Dict[Any, ZoneType] = {}
+    if zone_ids:
+        zone_type_by_id = dict(
+            db.query(Zone.id, Zone.zone_type).filter(Zone.id.in_(zone_ids)).all()
+        )
+    return {
+        sid: (zone_type_by_id.get(zid) if zid is not None else None)
+        for sid, zid in sector_rows
+    }
+
+
+# ---------------------------------------------------------------------------
 # Realtime telemetry (pirate-ecosystem.md:413-423). WO-PIRATE-ECO-2 lane C --
 # fills the seam lane A left marked. ARIA reads these events to compose
 # player-facing narration (:422). NOT wired this wave: `region_suppression_high`
@@ -567,6 +661,66 @@ def _emit_holding_evolved_event(
     })
 
 
+def _emit_daughter_spawned_event(
+    parent: PirateHolding,
+    daughter: PirateHolding,
+    *,
+    parent_zone_type: Optional[ZoneType] = None,
+    daughter_zone_type: Optional[ZoneType] = None,
+    now: Optional[datetime] = None,
+) -> None:
+    """`pirate.daughter_spawned` (ADR-0060 R-I1) -- parent/daughter holding
+    ids and the zone each sits in (G-I2's zone-affinity weighting result),
+    for ops/ARIA visibility into where the network is expanding. Zone types
+    are the already-resolved ``ZoneType`` (or ``None`` for an unzoned
+    sector) the caller already computed via ``_zone_types_by_sector_id`` --
+    mirrors ``daughter_spawn_weight``'s own resolved-enum contract rather
+    than re-querying here.
+
+    [NO-CANON]: the R-I1 table names the event ``pirate.daughter_spawned``
+    (with a ``pirate.`` prefix); this module's existing shipped events
+    (``holding_evolved``, ``region_cleansed``, etc.) all use an UNPREFIXED
+    ``type`` -- follows that established, already-live convention rather
+    than introducing the only prefixed type in this file's taxonomy."""
+    _broadcast_pirate_event(daughter.region_id, {
+        "type": "daughter_spawned",
+        "region_id": str(daughter.region_id),
+        "parent_holding_id": str(parent.id),
+        "daughter_holding_id": str(daughter.id),
+        "parent_zone": parent_zone_type.value if parent_zone_type is not None else None,
+        "daughter_zone": daughter_zone_type.value if daughter_zone_type is not None else None,
+        "timestamp": _iso(_now(now)),
+    })
+
+
+def _emit_fleet_destroyed_event(
+    holding: PirateHolding,
+    *,
+    fleet_size_destroyed: int,
+    by_player_ids: List[uuid.UUID],
+    now: Optional[datetime] = None,
+) -> None:
+    """`pirate.fleet_destroyed` (ADR-0060 R-I1). DORMANT -- built per the
+    established dormant-emit-helper convention (mirrors the raid/capture
+    kernel below), but with NO call site anywhere in this codebase: there is
+    no fleet/garrison-vs-holding combat mechanic at all yet (verify-first
+    grep of pirate_ecosystem_service.py + combat_service.py turned up zero
+    "fleet" concept tied to a PirateHolding -- only an unrelated
+    ``roving_fleet_camp`` NO-CANON deferral note in
+    ``spawn_daughter_holding``'s own docstring). Awaits whatever future WO
+    builds holding-garrison combat resolution; kept here, tested, and ready
+    the same way the combat-lock/capture kernel shipped ahead of its own
+    caller."""
+    _broadcast_pirate_event(holding.region_id, {
+        "type": "fleet_destroyed",
+        "region_id": str(holding.region_id),
+        "holding_id": str(holding.id),
+        "fleet_size_destroyed": fleet_size_destroyed,
+        "by_player_ids": [str(p) for p in by_player_ids],
+        "timestamp": _iso(_now(now)),
+    })
+
+
 def _emit_evolution_suppressed_event(
     holding: PirateHolding, *, reason: str, now: Optional[datetime] = None,
 ) -> None:
@@ -602,14 +756,19 @@ def spawn_daughter_holding(
     cap AFTER the daughter tier is chosen -- the only semantically coherent
     order -- rather than before.
 
-    [NO-CANON, deferred -- flagged for DECISIONS]: zone-affinity radius
-    weighting (:182-224), the roving_fleet_camp warp-reachability check
-    (:205-209, structurally inapplicable anyway -- PirateHoldingTier has no
-    ROVING_FLEET_CAMP member), and the avoid_starter_cluster /
-    avoid_phase11_anchors / prefer_low_patrol_density site-selection
-    refinements are NOT implemented -- this picks UNIFORMLY at random among
-    find_eligible_sectors' output (holding/station exclusion only).
-    parent_holding_id lineage and the composition roll are also deferred,
+    Zone-affinity weighting (ADR-0060 G-I2, :182-224) is implemented via
+    ``daughter_spawn_weight`` / ``_zone_types_by_sector_id`` -- the anchor
+    sector is a weighted pick among ``find_eligible_sectors``' output, not a
+    uniform one: 1.0 for the parent's own zone, 0.5 for an adjacent zone
+    (one step on the Federation/Border/Frontier ladder), 0.25 for anything
+    else (including unzoned sectors on either side).
+
+    [NO-CANON, deferred -- flagged for DECISIONS]: the roving_fleet_camp
+    warp-reachability check (:205-209, structurally inapplicable anyway --
+    PirateHoldingTier has no ROVING_FLEET_CAMP member), and the
+    avoid_starter_cluster / avoid_phase11_anchors / prefer_low_patrol_density
+    site-selection refinements are NOT implemented. parent_holding_id lineage
+    and the composition roll are also deferred,
     same as ECO-1's own documented PirateHolding-model omissions (no
     parent_holding_id/composition columns) -- NPC-roster materialization for
     a new holding's garrison is Lane B / npc_scheduler territory, explicitly
@@ -649,8 +808,12 @@ def spawn_daughter_holding(
     if not eligible:
         return None
 
-    picker = rng if rng is not None else random
-    anchor_sector_id = picker.choice(eligible)
+    zone_types = _zone_types_by_sector_id(db, eligible + [parent.sector_id])
+    parent_zone_type = zone_types.get(parent.sector_id)
+    weights = [
+        daughter_spawn_weight(parent_zone_type, zone_types.get(sid)) for sid in eligible
+    ]
+    anchor_sector_id = _weighted_choice(eligible, weights, rng=rng)
 
     holding = PirateHolding(
         region_id=region.id,
@@ -661,6 +824,12 @@ def spawn_daughter_holding(
     )
     db.add(holding)
     db.flush()
+    _emit_daughter_spawned_event(
+        parent, holding,
+        parent_zone_type=parent_zone_type,
+        daughter_zone_type=zone_types.get(anchor_sector_id),
+        now=now,
+    )
     return holding
 
 
@@ -1047,6 +1216,174 @@ def update_cleansed_state_for_region(
     return state
 
 
+# ---------------------------------------------------------------------------
+# Raid/capture combat-lock kernel (ADR-0060 G-F2/G-V1). DORMANT — no live
+# caller. No player-facing raid/capture entry point exists anywhere in the
+# codebase at HEAD (verify-first confirmed, orchestrator-ruled 2026-08-07).
+# Awaits WO-PIRATE-ECO-3-ATTEMPT-CAPTURE to wire a real raid-initiation
+# route (see queue-sectorwars.md). Ships now as a fully-tested, correct
+# kernel — mirrors this codebase's established dormant-kernel pattern (e.g.
+# structures.py's CRT-spine kernels, planet_grid.py's K1b2 terraform-grid
+# kernel) rather than leaving the raid/capture math unbuilt until a caller
+# exists.
+# ---------------------------------------------------------------------------
+
+def acquire_combat_lock(db: Session, holding: PirateHolding, engaging_player: Any) -> None:
+    """G-F2 raid-lock acquisition (ADR-0060 :30-46). DORMANT, see module-
+    section note above.
+
+    If ``holding.combat_lock_held_by`` is None, the engaging player takes
+    the lock and their CURRENT team membership (``engaging_player.team.
+    members``, i.e. ``Team.members`` — this codebase's Player<->Team
+    relationship; canon's pseudocode says ``team.member_ids``) is snapshotted
+    into ``combat_lock_team_snapshot`` at this instant (:44, "frozen at
+    first engagement"). A player with no team snapshots an empty list, not
+    None — ``can_engage``'s ``player_id in (..., *snapshot)`` check still
+    resolves correctly (holder always matches on the first branch).
+
+    No-op (returns without touching the row) when the lock is already held
+    by a player on the same ALREADY-SNAPSHOTTED team — mirrors
+    ``can_engage``'s own predicate so acquire and check never disagree.
+    Does NOT flush by itself, matching this module's stated Sync-Session
+    convention (docstring at top of file) — the caller flushes/commits.
+    """
+    if holding.combat_lock_held_by is not None:
+        # Already locked -- whether by this same player/team-mate (a no-op
+        # re-engagement) or an unrelated player (acquisition simply fails),
+        # neither case mutates the row. can_engage() is the gate a caller
+        # uses to distinguish the two before calling this at all.
+        return
+
+    team = getattr(engaging_player, "team", None)
+    member_ids = [m.id for m in team.members] if team is not None else []
+
+    holding.combat_lock_held_by = engaging_player.id
+    holding.combat_lock_team_snapshot = member_ids
+
+
+def can_engage(holding: PirateHolding, player_id: uuid.UUID) -> bool:
+    """G-F2's exact predicate (ADR-0060 :35-42): True when no lock is held,
+    or when ``player_id`` is the lock-holder or was captured in the frozen
+    team snapshot at acquisition time. A player who joins the team AFTER
+    the snapshot was taken is NOT in it and this correctly returns False
+    for them — closing the late-join exploit G-F2 exists to close."""
+    if holding.combat_lock_held_by is None:
+        return True
+    snapshot = holding.combat_lock_team_snapshot or []
+    return player_id == holding.combat_lock_held_by or player_id in snapshot
+
+
+def release_combat_lock(db: Session, holding: PirateHolding) -> None:
+    """Clears both raid-lock columns (:46, "clears when the lock releases
+    -- combat ends, raid completes, or timeout fires"). Does NOT flush by
+    itself -- caller flushes/commits, matching this module's convention."""
+    holding.combat_lock_held_by = None
+    holding.combat_lock_team_snapshot = None
+
+
+def maybe_reset_evolution_clock(
+    holding: PirateHolding, damage_amount: float, citadel_max_hp: float,
+    *, now: Optional[datetime] = None,
+) -> bool:
+    """G-I1 evolution-clock reset threshold (ADR-0060 :76-86). DORMANT, see
+    module-section note above -- writes ``evolution_clock_started_at``,
+    which has no reader yet either (the LIVE evolution clock,
+    ``evolution_tick``, still anchors on ``last_damage_at``/``created_at``
+    per that function's own :288-296 citation; reconciling the two clock
+    columns is ECO-3/raid-wiring territory, not this dormant kernel's call).
+
+    Canon's pseudocode (:81-84) reads ``holding.citadel.max_hp`` directly,
+    but no ``citadel`` relationship/model exists on ``PirateHolding`` at
+    HEAD (verify-first grepped ``src/models/`` -- nothing) -- takes
+    ``citadel_max_hp`` as a plain parameter instead, matching this module's
+    established "pure function, caller supplies the resolved values" idiom
+    (e.g. ``daughter_spawn_weight`` taking resolved ``ZoneType`` rather than
+    re-deriving it). Only single-combat-event damage >= 5% of max HP resets
+    the clock (:78, "trivial scratches no longer reset the timer") -- a
+    sub-threshold hit is a no-op, returned as ``False`` so a future caller
+    can distinguish "reset" from "no-op" without re-reading the column.
+
+    Does NOT flush by itself, matching this module's Sync-Session
+    convention -- the (currently nonexistent) caller flushes/commits.
+    """
+    if citadel_max_hp <= 0:
+        return False  # defensive -- no meaningful threshold against a 0/negative max HP
+    if damage_amount >= 0.05 * citadel_max_hp:
+        holding.evolution_clock_started_at = _now(now)
+        return True
+    return False
+
+
+def _emit_holding_captured_event(
+    holding: PirateHolding, kill_log: PirateKillLog, capturer_player: Any,
+    *, now: Optional[datetime] = None,
+) -> None:
+    """`pirate.holding_captured` (ADR-0060 R-I1). Fires inside the DORMANT
+    ``capture_holding`` kernel, see module-section note above -- built and
+    called from there so the kernel is a complete, self-consistent unit the
+    moment ECO-3 wires a live raid-initiation route, matching this file's
+    own "ships now as a fully-tested, correct kernel" philosophy rather than
+    leaving telemetry as a follow-up gap. ``capturer_team_id`` mirrors
+    ``capture_holding``'s own team-resolution fallback (``.team.id`` else
+    the bare ``.team_id`` attribute) so the two never disagree."""
+    team = getattr(capturer_player, "team", None)
+    team_id = team.id if team is not None else getattr(capturer_player, "team_id", None)
+    _broadcast_pirate_event(holding.region_id, {
+        "type": "holding_captured",
+        "region_id": str(holding.region_id),
+        "holding_id": str(holding.id),
+        "tier": holding.tier.value,
+        "captured_by_player_id": str(getattr(capturer_player, "id", None)),
+        "captured_by_team_id": str(team_id) if team_id is not None else None,
+        "timestamp": _iso(_now(now)),
+    })
+
+
+def capture_holding(
+    db: Session,
+    holding: PirateHolding,
+    capturer_player: Any,
+    kill_log_entry_kwargs: Dict[str, Any],
+) -> PirateKillLog:
+    """G-V1 kill-log atomicity with capture (ADR-0060 :48-52). DORMANT, see
+    module-section note above.
+
+    Inserts a ``PirateKillLog`` row (``disposition=CAPTURED``) and mutates
+    ``holding.owner_team_id`` / ``holding.captured_at`` / releases the
+    combat lock, all inside ONE savepoint -- mirrors this file's own
+    established multi-write-atomicity idiom (npc_spawn_service.py's
+    PirateKillLog feeder, ``with db.begin_nested(): ... db.flush()``) rather
+    than inventing a new transaction pattern. A flush failure inside the
+    savepoint rolls back only this capture, never the caller's open unit of
+    work.
+
+    ``kill_log_entry_kwargs`` supplies the row's remaining fields
+    (region_id, region_id_snapshot, holding_id, tier, kill_weight,
+    attacker_player_id, attacker_team_id) -- left to the caller rather than
+    re-derived here, since ECO-3's real raid-resolution call site is the
+    one with the actual combat context (kill_weight per TIER_WEIGHT,
+    attacker identity, etc.), not this dormant kernel.
+    """
+    with db.begin_nested():
+        kill_log = PirateKillLog(
+            disposition=PirateKillDisposition.CAPTURED,
+            **kill_log_entry_kwargs,
+        )
+        db.add(kill_log)
+
+        team = getattr(capturer_player, "team", None)
+        holding.owner_team_id = team.id if team is not None else getattr(
+            capturer_player, "team_id", None
+        )
+        holding.captured_at = datetime.now(timezone.utc)
+        release_combat_lock(db, holding)
+
+        db.flush()
+
+    _emit_holding_captured_event(holding, kill_log, capturer_player)
+    return kill_log
+
+
 __all__ = [
     "TIER_WEIGHT",
     "CAP_MULTIPLIER",
@@ -1089,4 +1426,10 @@ __all__ = [
     "CLEANSED_MEDAL_TOP_N",
     "top_attackers_by_kill_weight",
     "update_cleansed_state_for_region",
+    # ADR-0060 raid/capture kernel -- DORMANT, no live caller yet.
+    "acquire_combat_lock",
+    "can_engage",
+    "release_combat_lock",
+    "capture_holding",
+    "maybe_reset_evolution_clock",
 ]

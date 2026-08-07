@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from src.core.database import get_db
 from src.auth.admin_scopes import COMBAT_INTERVENE, PLAYERS_VIEW
-from src.auth.dependencies import get_current_user, require_scope
+from src.auth.dependencies import require_scope
 from src.models.user import User
 from src.models.fleet import Fleet, FleetBattle, FleetBattleCasualty, FleetStatus
 from src.services.fleet_service import FleetService

@@ -15,7 +15,7 @@ from src.core.database import get_async_session
 from src.models.user import User
 from src.models.player import Player
 from src.models.region import Region
-from src.services.paypal_service import paypal_service, PayPalWebhookEvent, SubscriptionTier
+from src.services.paypal_service import paypal_service, PayPalWebhookEvent
 
 import logging
 

@@ -338,6 +338,9 @@ class NPCDeathLog(Base):
         ForeignKey("regions.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # ADR-0050 SK24 — non-FK copy so audit survives region hard-delete
+    # (home_region_id SET NULLs; this column keeps the UUID).
+    region_id_snapshot = Column(UUID(as_uuid=True), nullable=True)
     combat_log_id = Column(
         UUID(as_uuid=True),
         ForeignKey("combat_logs.id", ondelete="SET NULL"),

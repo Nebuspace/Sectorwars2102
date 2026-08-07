@@ -10,7 +10,7 @@ from typing import Dict, Any, Optional, List
 from uuid import UUID
 from datetime import datetime, timedelta, UTC
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, func, text
+from sqlalchemy import and_, text
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.exc import OperationalError
 import logging
@@ -19,9 +19,7 @@ from src.core.game_time import canonical_hours_since
 from src.services.structures import _via_settle_guard
 from src.models.player import Player
 from src.models.planet import Planet, PlanetType, player_planets
-from src.models.sector import Sector
 from src.models.ship import Ship, effective_cargo_capacity
-from src.models.genesis_device import GenesisDevice, GenesisStatus, PlanetFormation
 
 logger = logging.getLogger(__name__)
 
@@ -283,6 +281,10 @@ SPECIALIZATION_BONUSES = {
 # production. NOTE: the SINK for research points (what they unlock) is an open
 # design decision — see DECISIONS colony-research-points-sink.
 RESEARCH_POINTS_PER_LAB_LEVEL_PER_DAY = 25
+
+# Commodity production base (SYSTEMS/planetary-production-tick.md:55):
+# 10 units / colonist / day per allocated commodity before building bonuses.
+PRODUCTION_BASE_RATE_PER_COLONIST_PER_DAY = 10
 
 # T1.5-1 PER-PLANET RP BACKSTOP (CRT-4 / CRT-T15-MASTER §2.3) — defense-in-depth.
 # The per-empire flywheel governor (research_service.governed_rp at the sweep) is
@@ -1551,96 +1553,11 @@ class PlanetaryService:
             "creditsSpent": cost
         }
         
-    def deploy_genesis_device(
-        self,
-        player_id: UUID,
-        sector_id: UUID,
-        planet_name: str,
-        planet_type: str
-    ) -> Dict[str, Any]:
-        """Deploy a genesis device to create a new planet."""
-        # Check if player has genesis devices
-        player = self.db.query(Player).filter(Player.id == player_id).first()
-        if not player:
-            raise ValueError("Player not found")
-            
-        if player.genesis_devices <= 0:
-            raise ValueError("No genesis devices available")
-            
-        # Verify sector exists
-        sector = self.db.query(Sector).filter(Sector.id == sector_id).first()
-        if not sector:
-            raise ValueError("Sector not found")
-            
-        # Check if sector already has maximum planets (let's say 5)
-        existing_planets = self.db.query(func.count(Planet.id)).filter(
-            Planet.sector_id == sector_id
-        ).scalar()
-        
-        if existing_planets >= 5:
-            raise ValueError("Sector already has maximum number of planets")
-            
-        # Create genesis device deployment
-        genesis = GenesisDevice(
-            player_id=player_id,
-            sector_id=sector_id,
-            genesis_type=planet_type,
-            status=GenesisStatus.DEPLOYED,
-            deployed_at=datetime.utcnow()
-        )
-        
-        # Deployment takes 24 hours
-        deployment_time = 24 * 3600  # seconds
-        completion_time = datetime.utcnow() + timedelta(seconds=deployment_time)
-        
-        # Create planet formation record
-        formation = PlanetFormation(
-            genesis_device_id=genesis.id,
-            sector_id=sector_id,
-            planet_name=planet_name,
-            planet_type=planet_type,
-            started_at=datetime.utcnow(),
-            completion_at=completion_time
-        )
-        
-        # Deduct genesis device
-        player.genesis_devices -= 1
-        
-        # Create the planet immediately for gameplay purposes
-        planet = Planet(
-            name=planet_name,
-            sector_id=sector_id,
-            planet_type=planet_type,
-            colonists=100,  # Start with 100 colonists
-            max_colonists=1000,  # L1-scale default per ADR-0035
-            fuel_ore=100,
-            organics=100,
-            equipment=100,
-            drones=0
-        )
-        
-        self.db.add(genesis)
-        self.db.add(formation)
-        self.db.add(planet)
-        self.db.commit()
-        self.db.refresh(planet)
-        
-        # Add planet to player's planets
-        self.db.execute(
-            player_planets.insert().values(
-                player_id=player_id,
-                planet_id=planet.id
-            )
-        )
-        self.db.commit()
-        
-        return {
-            "success": True,
-            "planetId": str(planet.id),
-            "deploymentTime": deployment_time,
-            "genesisDevicesRemaining": player.genesis_devices
-        }
-        
+    # Genesis deploy lives solely on GenesisService.deploy_genesis_device
+    # (POST /planets/genesis/deploy). The prior PlanetaryService.deploy_genesis_device
+    # dual-path created planets with NULL sector_uuid/region_id and escaped ADR-0088
+    # spacing/anti-monopoly gates — removed 2026-08-05 (WO-FIX-GENESIS-LEGACY-…).
+
     def set_specialization(
         self,
         planet_id: UUID,
@@ -2625,7 +2542,7 @@ class PlanetaryService:
 
     def _calculate_production_rates(self, planet: Planet) -> Dict[str, float]:
         """Calculate production rates based on allocations, buildings, habitability, and siege state."""
-        base_rate = 10  # Base production per colonist per day
+        base_rate = PRODUCTION_BASE_RATE_PER_COLONIST_PER_DAY
 
         # Get building levels
         factory_level = planet.factory_level or 0
