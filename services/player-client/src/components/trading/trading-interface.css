@@ -1747,6 +1747,18 @@
 /* The console venue header already labels the terminal — drop the internal
    gradient title bar that repeats it and pushes the grid below the fold. */
 .screen-hud-content .trading-interface > .trading-header { display: none; }
+/* Route planner lives below the desk (DOM order) — keep its collapsed
+   chrome compact so it never competes with the buy/sell grid for fold. */
+.screen-hud-content .route-planner-panel {
+  margin: 4px 10px 0;
+  border-radius: 6px;
+}
+.screen-hud-content .route-planner-header {
+  padding: 6px 10px;
+}
+.screen-hud-content .route-planner-header h3 {
+  font-size: 0.9rem;
+}
 .screen-hud-content .trading-interface > .trading-content {
   padding: 8px 10px;
   gap: 6px;
