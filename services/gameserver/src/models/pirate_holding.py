@@ -30,6 +30,22 @@ mirrors the established dormant-kernel pattern elsewhere in this codebase
 (see e.g. structures.py's CRT-spine kernels, planet_grid.py's K1b2
 terraform-grid kernel).
 
+ADR-0060 G-V2 (abandoned-holding re-seeding race guard, "explicit
+``combat_lock_held_by IS NULL`` predicate ... The OutlawBase/NPCBarracks
+conversion path runs only when no active combat is in progress"): NOT
+implemented, on purpose -- verify-first grep (2026-08-06, this WO) of the
+whole ``services/gameserver/src`` tree found NO OutlawBase/NPCBarracks
+conversion path, and no re-seeding/abandoned-holding mechanism of ANY kind,
+live or dormant. Only ``npc_character.py``'s own module docstring and
+``npc_tick_loops.py``'s scheduler note reference OutlawBase/NPCBarracks, both
+saying the lodging tables are "deferred to the lodging slice" -- there is no
+query, service function, or scheduler sweep this WO could add a
+``combat_lock_held_by IS NULL`` predicate TO. G-V2 has no buildable kernel
+yet; it is blocked on the lodging slice landing first (the tables + the
+re-seed mechanism itself), not merely dormant-for-a-caller like the
+raid/capture kernel above. Flagged for DECISIONS/BACKLOG rather than
+inventing a re-seed mechanism this WO has no canon basis to design.
+
 Divergences from canon, on purpose, documented:
 
 - Enum members follow this codebase's UPPERCASE name==value convention (see

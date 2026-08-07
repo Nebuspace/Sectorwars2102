@@ -940,8 +940,14 @@ class TestRegionPirateGrowthTelemetry:
         result = pes.run_weekly_tick(db, region, now=now, rng=_ScriptedRng())
 
         assert result["action"] == "growth"
-        assert len(calls) == 1
-        region_id, payload = calls[0]
+        # Each individual spawn this tick ALSO fires its own daughter_spawned
+        # event (ADR-0060 R-I1, additive alongside the aggregate -- same
+        # "specific + aggregate are additive, not mutually exclusive" pattern
+        # as the seed-fallback case below) -- isolate the aggregate event
+        # specifically rather than asserting total call count.
+        growth_calls = [(rid, p) for rid, p in calls if p["type"] == "region_pirate_growth"]
+        assert len(growth_calls) == 1
+        region_id, payload = growth_calls[0]
         assert region_id == region.id
         assert payload["type"] == "region_pirate_growth"
         assert payload["region_id"] == str(region.id)
@@ -950,6 +956,8 @@ class TestRegionPirateGrowthTelemetry:
         assert payload["sites_spawned"] == result["spawned"]
         assert payload["target_population"] == result["target"]
         assert payload["current_population"] == result["current"]
+        daughter_spawned_calls = [p for _rid, p in calls if p["type"] == "daughter_spawned"]
+        assert len(daughter_spawned_calls) == len(result["spawned"])
 
     def test_no_growth_action_emits_exactly_once(self, monkeypatch):
         calls = _capture_broadcasts(monkeypatch)
@@ -1175,6 +1183,106 @@ class TestRegionCleansedTelemetry:
         pes.update_cleansed_state_for_region(db, region, now=now)
 
         assert calls == []
+
+
+class TestDaughterSpawnedTelemetry:
+    def test_spawn_daughter_holding_emits_daughter_spawned_with_zones(self, monkeypatch):
+        calls = _capture_broadcasts(monkeypatch)
+        region = _region(total_sectors=300)
+        parent_zone = _zone(region_id=region.id, zone_type=ZoneType.BORDER)
+        native_zone = _zone(region_id=region.id, zone_type=ZoneType.BORDER)
+        parent_sector = Sector(
+            id=uuid.uuid4(), sector_id=1, sector_number=0, name="parent-anchor",
+            region_id=region.id, cluster_id=uuid.uuid4(), zone_id=parent_zone.id,
+        )
+        native_sector = Sector(
+            id=uuid.uuid4(), sector_id=101, sector_number=1, name="native",
+            region_id=region.id, cluster_id=uuid.uuid4(), zone_id=native_zone.id,
+        )
+        parent = _holding(region_id=region.id, sector_id=1, tier=PirateHoldingTier.STRONGHOLD)
+        db = _FakeSession(
+            holdings=[parent],
+            sectors=[parent_sector, native_sector],
+            zones=[parent_zone, native_zone],
+        )
+        now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+
+        daughter = pes.spawn_daughter_holding(db, region, now=now, rng=_ScriptedRng())
+
+        assert daughter is not None
+        assert len(calls) == 1
+        region_id, payload = calls[0]
+        assert region_id == daughter.region_id
+        assert payload["type"] == "daughter_spawned"
+        assert payload["region_id"] == str(region.id)
+        assert payload["parent_holding_id"] == str(parent.id)
+        assert payload["daughter_holding_id"] == str(daughter.id)
+        assert payload["parent_zone"] == "BORDER"
+        assert payload["daughter_zone"] == "BORDER"
+
+    def test_no_daughter_spawned_when_at_population_cap(self, monkeypatch):
+        calls = _capture_broadcasts(monkeypatch)
+        region = _region(total_sectors=300)  # cap = 18
+        # Pre-seed the region already sitting exactly at the cap (18 Camps,
+        # mirrors TestSpawnDaughterHoldingCapBoundary's own fixture) -- the
+        # cap check refuses BEFORE any holding row (or event) is created.
+        holdings = [_holding(region_id=region.id, sector_id=100 + i) for i in range(18)]
+        db = _FakeSession(holdings=holdings, sectors=_sectors(region.id, 25))
+
+        result = pes.spawn_daughter_holding(db, region, now=datetime.now(timezone.utc), rng=_ScriptedRng())
+
+        assert result is None
+        assert calls == []
+
+    def test_unzoned_sectors_emit_none_for_zone_fields(self, monkeypatch):
+        calls = _capture_broadcasts(monkeypatch)
+        region = _region(total_sectors=300)
+        parent = _holding(region_id=region.id, sector_id=1, tier=PirateHoldingTier.STRONGHOLD)
+        # Sector rows exist (incl. the parent's own anchor) but carry no
+        # zone_id -- every candidate resolves to ZoneType None, not merely
+        # "missing from the sector table".
+        parent_sector = Sector(
+            id=uuid.uuid4(), sector_id=1, sector_number=0, name="parent-anchor",
+            region_id=region.id, cluster_id=uuid.uuid4(), zone_id=None,
+        )
+        db = _FakeSession(
+            holdings=[parent],
+            sectors=[parent_sector] + _sectors(region.id, 3, start=100),
+        )
+
+        daughter = pes.spawn_daughter_holding(db, region, now=datetime.now(timezone.utc), rng=_ScriptedRng())
+
+        assert daughter is not None
+        assert len(calls) == 1
+        _region_id, payload = calls[0]
+        assert payload["parent_zone"] is None
+        assert payload["daughter_zone"] is None
+
+
+class TestFleetDestroyedEventDormant:
+    def test_emit_helper_builds_expected_payload_shape(self, monkeypatch):
+        """DORMANT -- no live caller anywhere in this codebase (see
+        _emit_fleet_destroyed_event's own docstring); this test exercises
+        the emit helper directly, the same way the raid/capture kernel's own
+        dormant functions are unit-tested ahead of a real call site."""
+        calls = _capture_broadcasts(monkeypatch)
+        region = _region(total_sectors=300)
+        holding = _holding(region_id=region.id, sector_id=42)
+        attacker_a, attacker_b = uuid.uuid4(), uuid.uuid4()
+        now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+
+        pes._emit_fleet_destroyed_event(
+            holding, fleet_size_destroyed=6, by_player_ids=[attacker_a, attacker_b], now=now,
+        )
+
+        assert len(calls) == 1
+        region_id, payload = calls[0]
+        assert region_id == holding.region_id
+        assert payload["type"] == "fleet_destroyed"
+        assert payload["region_id"] == str(holding.region_id)
+        assert payload["holding_id"] == str(holding.id)
+        assert payload["fleet_size_destroyed"] == 6
+        assert payload["by_player_ids"] == [str(attacker_a), str(attacker_b)]
 
 
 class TestTelemetryTransportNeverPropagates:
