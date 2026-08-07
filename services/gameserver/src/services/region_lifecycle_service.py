@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from src.models.planet import Planet
 from src.models.region import Region, RegionStatus
+from src.services.realtime_outbox import RealtimeOutbox
 from src.services.region_termination_cascade_service import (
     dispatch_station_termination,
     process_planet_termination,
@@ -139,8 +140,18 @@ def dispatch_terminated_cleanup(db: Session, now: Optional[datetime] = None) -> 
     implementation can stamp the region marker once and stop re-dispatch.
 
     Flush-only -- caller owns the commit, per this codebase's
-    route-owns-commit convention (mirrors both cascade functions below it)."""
+    route-owns-commit convention (mirrors both cascade functions below it).
+
+    ADR-0054 X-V1: accumulates realtime events (currently ``process_planet_
+    termination``'s ``region.planet_terminated`` notice) in a per-call
+    ``RealtimeOutbox`` rather than emitting them directly, and returns it
+    to the caller as ``result["_outbox"]`` -- this function does NOT own
+    the commit (Phase 7 of the governance sweep does, one call up via
+    ``_run_region_lifecycle_advance_gated``), so it cannot safely flush
+    here. The caller must call ``result["_outbox"].flush()`` after ITS
+    ``db.commit()`` succeeds, and must NOT call it on the rollback path."""
     now = now or datetime.now(UTC)
+    outbox = RealtimeOutbox()
     eligible = (
         db.query(Region)
         .filter(
@@ -154,7 +165,7 @@ def dispatch_terminated_cleanup(db: Session, now: Optional[datetime] = None) -> 
     for region in eligible:
         planets = db.query(Planet).filter(Planet.region_id == region.id).all()
         for planet in planets:
-            process_planet_termination(db, planet, now=now)
+            process_planet_termination(db, planet, now=now, outbox=outbox)
         dispatch_station_termination(db, region.id)
         cascade_region_gate_teardown(db, region.id)
         # Intentionally leave cleanup_completed_at NULL until station
@@ -165,4 +176,4 @@ def dispatch_terminated_cleanup(db: Session, now: Optional[datetime] = None) -> 
             "station termination still discovery-only)",
             region.id, len(planets),
         )
-    return {"cleanup_eligible": len(eligible)}
+    return {"cleanup_eligible": len(eligible), "_outbox": outbox}
