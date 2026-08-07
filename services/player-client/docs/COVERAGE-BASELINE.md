@@ -21,8 +21,8 @@ Staged for hub queue — not built in this WO:
 
 1. **WO-TESTCOV-PLAYER-TRADE-DESK** — `src/components/trade/PlayerTradeDesk.tsx` — **SHIPPED** (merged via #283; vitest 5 cases: initiate/accept/offer/error/settled)
 2. **WO-TESTCOV-PLAYER-API-CLIENT** — `src/services/api.ts` + `apiClient.ts` — **SHIPPED** (merged via #284; apiClient refresh/JWT + apiRequest error-shaping + trade/combat/grey wrappers)
-3. **WO-TESTCOV-PLAYER-MODULE-GRID** — ModuleGrid / Insurance / Maintenance — **SHIPPED** (PR pending; 9 vitest cases)
-4. **WO-TESTCOV-PLAYER-TRADING-INTERFACE-DEPTH** — `TradingInterface.tsx` (~46%) — deepen money-path branches
+3. **WO-TESTCOV-PLAYER-MODULE-GRID** — ModuleGrid / Insurance / Maintenance — **SHIPPED** (merged via #285; 9 vitest cases)
+4. **WO-TESTCOV-PLAYER-TRADING-INTERFACE-DEPTH** — TradingInterface buy/sell depth — **SHIPPED** (PR pending; mount + buy-quote + sell-confirm)
 5. **WO-TESTCOV-PLAYER-SPACEDOCK-SHELL** — `SpaceDockInterface.tsx` (~31%), GamblingVenue (~5%)
 
 Zero-coverage auth forms (`LoginForm` / `RegisterForm` / …) exist but sit next to the MFA safety list — leave for an explicit auth-test WO after the MFA fix lands, not this batch.
