@@ -549,6 +549,24 @@ class BountyService:
         if placer_id == target_id:
             return {"success": False, "message": "Cannot place a bounty on yourself"}
 
+        # ADR-0055 S-V3 / bounty-and-reputation.md "Bounty uniqueness": one
+        # active bounty per (placer, target) pair. A single placer cannot
+        # stack a second active bounty on the same target while their first
+        # is still outstanding; DISTINCT placers each having their own
+        # active bounty on the same target is intentional (ADR-0054 X-V2
+        # stacking-pressure design) and is NOT blocked here. "Active" ==
+        # "still present in the target's JSONB bounty list" — cancel_bounty/
+        # collect_bounty/expire_due_bounties all REMOVE an entry the moment
+        # it resolves (no separate resolved/cancelled/expired marker), so a
+        # plain membership check is sufficient and matches every other
+        # invalidation path in this file.
+        existing_bounties = self._get_bounties(target)
+        if any(str(b.get("placed_by")) == str(placer_id) for b in existing_bounties):
+            return {
+                "success": False,
+                "message": "You already have an active bounty on this target",
+            }
+
         fee = int(amount * (BOUNTY_PLACEMENT_FEE if fee_pct is None else fee_pct))
         total_cost = amount + fee
 
