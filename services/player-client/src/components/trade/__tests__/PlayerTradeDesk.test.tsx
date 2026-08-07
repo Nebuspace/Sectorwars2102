@@ -45,13 +45,13 @@ function openSession(overrides: Record<string, unknown> = {}) {
 describe('PlayerTradeDesk', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;
-  let onClose: ReturnType<typeof vi.fn>;
+  let onClose: () => void;
 
   beforeEach(() => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
-    onClose = vi.fn();
+    onClose = vi.fn<() => void>();
     vi.clearAllMocks();
   });
 
