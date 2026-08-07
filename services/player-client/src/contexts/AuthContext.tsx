@@ -20,11 +20,23 @@ export interface WelcomeBackOutcome {
   days_inactive: number;
 }
 
+// WO-FIX-MFA-BYPASS-LOGIN-ROUTES: a 200 response with requires_mfa: true (and
+// no tokens) means the account has MFA enabled and the login is mid-flow, not
+// failed. login() throws this typed error so a consumer (LoginForm) can
+// distinguish "show the MFA-code prompt" from "the credentials were wrong"
+// and retry login() with mfaCode populated.
+export class MFARequiredError extends Error {
+  constructor() {
+    super('MFA code required');
+    this.name = 'MFARequiredError';
+  }
+}
+
 interface AuthContextType {
   user: User | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (username: string, password: string) => Promise<void>;
+  login: (username: string, password: string, mfaCode?: string) => Promise<void>;
   register: (username: string, email: string, password: string) => Promise<void>;
   loginWithOAuth: (provider: string) => void;
   registerWithOAuth: (provider: string) => void;
@@ -53,6 +65,9 @@ interface AuthResponse {
   refresh_token: string;
   user_id: string;
   welcome_back?: WelcomeBackOutcome | null;
+  // WO-FIX-MFA-BYPASS-LOGIN-ROUTES: present (true) with empty tokens when the
+  // account has MFA enabled and no/invalid mfa_code was supplied.
+  requires_mfa?: boolean;
   [key: string]: any;
 }
 
@@ -179,76 +194,70 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }: AuthProv
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Run only on mount - apiUrl is stable via ref, authCheckPerformed prevents duplicates
   
-  const login = async (username: string, password: string) => {
+  const login = async (username: string, password: string, mfaCode?: string) => {
     setIsLoading(true);
 
     try {
       // Try standard JSON endpoint
+      let response: { data: AuthResponse };
       try {
-        const response = await axios.post<AuthResponse>(`${apiUrl}/api/v1/auth/login/json`, {
+        response = await axios.post<AuthResponse>(`${apiUrl}/api/v1/auth/login/json`, {
           username,
           password,
+          // WO-FIX-MFA-BYPASS-LOGIN-ROUTES: only sent on the MFA-retry call —
+          // the schema field is optional and a first-pass login has none yet.
+          ...(mfaCode ? { mfa_code: mfaCode } : {}),
         }, {
           headers: {
             'Content-Type': 'application/json',
             'Accept': 'application/json'
           }
         });
-
-        const { access_token, refresh_token } = response.data;
-        // Store user ID for future reference
-        localStorage.setItem('userId', response.data.user_id);
-
-        // Store tokens in localStorage
-        localStorage.setItem('accessToken', access_token);
-        localStorage.setItem('refreshToken', refresh_token);
-
-        // Set authorization header
-        axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
-
-        noteWelcomeBack(response.data.welcome_back);
-
-        // Get user data
-        const userResponse = await axios.get<User>(`${apiUrl}/api/v1/auth/me`);
-        setUser(userResponse.data);
-        return;
       } catch (jsonError) {
         // If JSON login fails, try form-based login as fallback
-
-        // Create form data
         const formData = new FormData();
         formData.append('username', username);
         formData.append('password', password);
-
-        try {
-          const response = await axios.post<AuthResponse>(`${apiUrl}/api/v1/auth/login`, formData, {
-            headers: {
-              'Content-Type': 'multipart/form-data',
-            },
-          });
-
-          const { access_token, refresh_token } = response.data;
-          // Store user ID for future reference
-          localStorage.setItem('userId', response.data.user_id);
-
-          // Store tokens in localStorage
-          localStorage.setItem('accessToken', access_token);
-          localStorage.setItem('refreshToken', refresh_token);
-
-          // Set authorization header
-          axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
-
-          noteWelcomeBack(response.data.welcome_back);
-
-          // Get user data
-          const userResponse = await axios.get<User>(`${apiUrl}/api/v1/auth/me`);
-          setUser(userResponse.data);
-        } catch (formError) {
-          throw formError;
+        if (mfaCode) {
+          formData.append('mfa_code', mfaCode);
         }
+
+        response = await axios.post<AuthResponse>(`${apiUrl}/api/v1/auth/login`, formData, {
+          headers: {
+            'Content-Type': 'multipart/form-data',
+          },
+        });
       }
+
+      // WO-FIX-MFA-BYPASS-LOGIN-ROUTES: a 200 with requires_mfa: true carries
+      // NO tokens — the account has MFA enabled and this login is mid-flow,
+      // not failed and not complete. Surface it as a typed error so the
+      // caller can show the code-entry step and retry with mfaCode populated
+      // instead of silently "succeeding" into an unauthenticated state.
+      if (response.data.requires_mfa) {
+        throw new MFARequiredError();
+      }
+
+      const { access_token, refresh_token } = response.data;
+      // Store user ID for future reference
+      localStorage.setItem('userId', response.data.user_id);
+
+      // Store tokens in localStorage
+      localStorage.setItem('accessToken', access_token);
+      localStorage.setItem('refreshToken', refresh_token);
+
+      // Set authorization header
+      axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
+
+      noteWelcomeBack(response.data.welcome_back);
+
+      // Get user data
+      const userResponse = await axios.get<User>(`${apiUrl}/api/v1/auth/me`);
+      setUser(userResponse.data);
     } catch (error) {
-      console.error('All login attempts failed:', error);
+      if (!(error instanceof MFARequiredError)) {
+        console.error('All login attempts failed:', error);
+      }
       throw error;
     } finally {
       setIsLoading(false);

@@ -2,7 +2,7 @@ import os
 import re
 import logging
 from typing import Any, Dict, Optional
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Body
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Body, Form
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
@@ -181,14 +181,105 @@ def _validate_oauth_authorization_url(provider: str, url: str) -> str:
     return url
 
 
+async def _mfa_gate_and_mint_tokens(
+    db: Session,
+    user: User,
+    mfa_code: Optional[str],
+    request: Optional[Request],
+) -> Dict[str, Any]:
+    """MFA-gate then mint tokens for an ALREADY-authenticated user.
+
+    WO-FIX-MFA-BYPASS-LOGIN-ROUTES: extracted verbatim from ``login_direct``
+    (the one login route that enforced MFA correctly) so every login route
+    shares the exact same enforcement sequence — check
+    ``MFAService.is_mfa_enabled``, short-circuit with ``requires_mfa: True``
+    and no tokens if a code wasn't supplied, verify the supplied code before
+    minting — instead of three independent copies that can silently drift
+    apart (which is exactly how the bypass happened). Callers do their own
+    authenticate_admin/authenticate_player + "incorrect username or password"
+    401 BEFORE calling this — this only covers the MFA + token-mint half, so
+    each caller's pre-existing wrong-credentials error shape (headers
+    included) is untouched by this refactor.
+
+    MFA enforcement itself stays POLICY-UNCHANGED (Max ruling,
+    WO-FIX-MFA-BYPASS-LOGIN-ROUTES): MFA remains opt-in per-account via
+    ``MFAService.is_mfa_enabled`` — this closes an enforcement-consistency
+    gap, it does not make MFA mandatory.
+    """
+    try:
+        mfa_service = MFAService(db)
+        mfa_enabled = mfa_service.is_mfa_enabled(str(user.id))
+    except Exception as e:
+        # MFA table might not exist yet, disable MFA for now
+        logger.warning("MFA service error (table may not exist): %s", e)
+        # Rollback the current transaction to avoid transaction errors
+        db.rollback()
+        mfa_enabled = False
+
+    if mfa_enabled:
+        # MFA is enabled, check if code was provided
+        if not mfa_code:
+            # Return response indicating MFA is required
+            return {
+                "access_token": "",
+                "refresh_token": "",
+                "token_type": "bearer",
+                "user_id": str(user.id),
+                "requires_mfa": True,
+                "mfa_enabled": True,
+            }
+
+        # Verify MFA code
+        ip_address = request.client.host if request and request.client else None
+        user_agent = request.headers.get("user-agent") if request else None
+
+        mfa_valid = mfa_service.verify_code(
+            str(user.id),
+            mfa_code,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+
+        if not mfa_valid:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid MFA code",
+            )
+
+    # Authentication successful (with or without MFA)
+    access_token, refresh_token = create_tokens(user.id, db)
+
+    # Best-effort player-activity login tracking (no-op for admins)
+    login_notices = await _track_player_login(db, user.id)
+
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "user_id": str(user.id),
+        "requires_mfa": False,
+        "mfa_enabled": mfa_enabled,
+        "welcome_back": login_notices.get("welcome_back"),
+        "gc_lapse_notice": login_notices.get("gc_lapse_notice"),
+    }
+
+
 @router.post("/login", response_model=AuthResponse)
 async def login(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
+    mfa_code: Optional[str] = Form(None),
     db: Session = Depends(get_db)
 ):
     """
     Authenticate admin user with username and password using form data.
     Returns JWT tokens for API access.
+
+    WO-FIX-MFA-BYPASS-LOGIN-ROUTES: an optional ``mfa_code`` form field is now
+    accepted alongside the standard OAuth2PasswordRequestForm fields — when the
+    account has MFA enabled, a missing/invalid code returns
+    ``requires_mfa: true`` with no tokens (or 401s on an invalid code) exactly
+    like ``/login/direct`` already does; this route just enforces it too.
     """
     # Get credentials from form data
     username = form_data.username
@@ -200,7 +291,7 @@ async def login(
         # Try player authentication
         from src.services.user_service import authenticate_player
         user = authenticate_player(db, username, password)
-        
+
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -208,40 +299,33 @@ async def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Create new tokens
-    access_token, refresh_token = create_tokens(user.id, db)
-
-    # Best-effort player-activity login tracking (no-op for admins)
-    login_notices = await _track_player_login(db, user.id)
-
-    return {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": "bearer",
-        "user_id": str(user.id),
-        "welcome_back": login_notices.get("welcome_back"),
-        "gc_lapse_notice": login_notices.get("gc_lapse_notice"),
-    }
+    return await _mfa_gate_and_mint_tokens(db, user, mfa_code, request)
 
 
 @router.post("/login/json", response_model=AuthResponse)
 async def login_json(
     json_data: LoginForm,
+    request: Request,
     db: Session = Depends(get_db)
 ):
     """
     Authenticate admin user with username and password using JSON.
     Returns JWT tokens for API access.
+
+    WO-FIX-MFA-BYPASS-LOGIN-ROUTES: ``LoginForm`` already carries an optional
+    ``mfa_code`` field (previously only read by ``/login/direct``) — this route
+    now enforces it too via the shared ``_mfa_gate_and_mint_tokens`` helper.
     """
     # Get credentials from JSON data
     username = json_data.username
     password = json_data.password
-    
+    mfa_code = json_data.mfa_code
+
     # Optional debug logging - only for development/testing
     if settings.DEBUG:
         import logging
         logging.debug(f"Login attempt for username: {username}")
-        
+
         # Check if the admin credentials exist in the database for debugging
         admin_user = db.query(User).filter(User.username == username, User.is_admin == True).first()
         if admin_user and settings.DEBUG:
@@ -253,14 +337,14 @@ async def login_json(
                 logging.debug("Admin user exists but no credentials record found")
         elif settings.DEBUG:
             logging.debug(f"Admin user '{username}' not found in database")
-    
+
     # Try to authenticate as admin first, then as player
     user = authenticate_admin(db, username, password)
     if not user:
         # Try player authentication
         from src.services.user_service import authenticate_player
         user = authenticate_player(db, username, password)
-        
+
     if not user:
         if settings.DEBUG:
             import logging
@@ -271,20 +355,7 @@ async def login_json(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Create new tokens
-    access_token, refresh_token = create_tokens(user.id, db)
-
-    # Best-effort player-activity login tracking (no-op for admins)
-    login_notices = await _track_player_login(db, user.id)
-
-    return {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": "bearer",
-        "user_id": str(user.id),
-        "welcome_back": login_notices.get("welcome_back"),
-        "gc_lapse_notice": login_notices.get("gc_lapse_notice"),
-    }
+    return await _mfa_gate_and_mint_tokens(db, user, mfa_code, request)
 
 @router.options("/login/json")
 async def options_login_json():
@@ -321,87 +392,44 @@ async def login_direct(
     username = json_data.username
     password = json_data.password
     mfa_code = json_data.mfa_code
-    
+
     # Try to authenticate as admin first, then as player
     user = authenticate_admin(db, username, password)
     if not user:
         # Try player authentication
         from src.services.user_service import authenticate_player
         user = authenticate_player(db, username, password)
-        
+
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
         )
 
-    # Check if MFA is enabled for this user
-    try:
-        mfa_service = MFAService(db)
-        mfa_enabled = mfa_service.is_mfa_enabled(str(user.id))
-    except Exception as e:
-        # MFA table might not exist yet, disable MFA for now
-        logger.warning("MFA service error (table may not exist): %s", e)
-        # Rollback the current transaction to avoid transaction errors
-        db.rollback()
-        mfa_enabled = False
-    
-    if mfa_enabled:
-        # MFA is enabled, check if code was provided
-        if not mfa_code:
-            # Return response indicating MFA is required
-            return {
-                "access_token": "",
-                "refresh_token": "",
-                "token_type": "bearer",
-                "user_id": str(user.id),
-                "requires_mfa": True,
-                "mfa_enabled": True
-            }
-        
-        # Verify MFA code
-        ip_address = request.client.host if request.client else None
-        user_agent = request.headers.get("user-agent")
-        
-        mfa_valid = mfa_service.verify_code(
-            str(user.id), 
-            mfa_code,
-            ip_address=ip_address,
-            user_agent=user_agent
-        )
-        
-        if not mfa_valid:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid MFA code",
-            )
-
-    # Authentication successful (with or without MFA)
-    access_token, refresh_token = create_tokens(user.id, db)
-
-    # Best-effort player-activity login tracking (no-op for admins)
-    login_notices = await _track_player_login(db, user.id)
-
-    return {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": "bearer",
-        "user_id": str(user.id),
-        "requires_mfa": False,
-        "mfa_enabled": mfa_enabled,
-        "welcome_back": login_notices.get("welcome_back"),
-        "gc_lapse_notice": login_notices.get("gc_lapse_notice"),
-    }
+    # WO-FIX-MFA-BYPASS-LOGIN-ROUTES: this endpoint's own MFA-check/verify/mint
+    # sequence was extracted verbatim into _mfa_gate_and_mint_tokens (this was
+    # the ONE route that already got it right — every other login route now
+    # shares this exact same helper instead of drifting copies). No behavior
+    # change to this route.
+    return await _mfa_gate_and_mint_tokens(db, user, mfa_code, request)
 
 
 @router.post("/player/login", response_model=AuthResponse)
 async def player_login(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
+    mfa_code: Optional[str] = Form(None),
     db: Session = Depends(get_db)
 ):
     """
     Authenticate player user with username and password using form data.
     Returns JWT tokens for API access.
+
+    WO-FIX-MFA-BYPASS-LOGIN-ROUTES: no live product caller found (grepped for
+    "player/login" across services/ and e2e_tests/ — only e2e_tests/utils/
+    auth.utils.ts uses it). Wired through the shared MFA helper anyway for
+    enforcement consistency rather than left as a second silent gap; not
+    removed (out of scope for this WO).
     """
     # Get credentials from form data
     username = form_data.username
@@ -416,34 +444,26 @@ async def player_login(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Create new tokens
-    access_token, refresh_token = create_tokens(user.id, db)
-
-    # Best-effort player-activity login tracking
-    login_notices = await _track_player_login(db, user.id)
-
-    return {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": "bearer",
-        "user_id": str(user.id),
-        "welcome_back": login_notices.get("welcome_back"),
-        "gc_lapse_notice": login_notices.get("gc_lapse_notice"),
-    }
+    return await _mfa_gate_and_mint_tokens(db, user, mfa_code, request)
 
 
 @router.post("/player/login/json", response_model=AuthResponse)
 async def player_login_json(
     json_data: LoginForm,
+    request: Request,
     db: Session = Depends(get_db)
 ):
     """
     Authenticate player user with username and password using JSON.
     Returns JWT tokens for API access.
+
+    WO-FIX-MFA-BYPASS-LOGIN-ROUTES: same dead-code status / same-consistency
+    rationale as player_login above.
     """
     # Get credentials from JSON data
     username = json_data.username
     password = json_data.password
+    mfa_code = json_data.mfa_code
 
     # Authenticate user
     user = authenticate_player(db, username, password)
@@ -454,20 +474,7 @@ async def player_login_json(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Create new tokens
-    access_token, refresh_token = create_tokens(user.id, db)
-
-    # Best-effort player-activity login tracking
-    login_notices = await _track_player_login(db, user.id)
-
-    return {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": "bearer",
-        "user_id": str(user.id),
-        "welcome_back": login_notices.get("welcome_back"),
-        "gc_lapse_notice": login_notices.get("gc_lapse_notice"),
-    }
+    return await _mfa_gate_and_mint_tokens(db, user, mfa_code, request)
 
 @router.options("/player/login/json")
 async def options_player_login_json():
