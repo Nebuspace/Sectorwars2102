@@ -33,6 +33,7 @@ Staged for hub queue — not built in this WO:
 12. **WO-TESTCOV-PLAYER-GENESIS-PURCHASE** — Genesis Acquire → purchase POST — **SHIPPED** (merged via #295; POST `/api/v1/player/genesis/purchase`; complements price-read suite)
 13. **WO-TESTCOV-PLAYER-GAMBLING-DICE** — Nebula Dice ROLL + dice/roll POST — **SHIPPED** (merged via #296; POST `/api/v1/gambling/dice/roll`)
 14. **WO-TESTCOV-PLAYER-GAMBLING-LOTTERY** — Sector Lottery buy-ticket POST — **SHIPPED** (merged via #297; POST `/api/v1/gambling/lottery/buy-ticket`)
-15. **WO-TESTCOV-PLAYER-GAMBLING-BLACKJACK** — Stellar Blackjack DEAL + blackjack/deal POST — **SHIPPED** (PR pending; POST `/api/v1/gambling/blackjack/deal`)
+15. **WO-TESTCOV-PLAYER-GAMBLING-BLACKJACK** — Stellar Blackjack DEAL + blackjack/deal POST — **SHIPPED** (merged via #298; POST `/api/v1/gambling/blackjack/deal`)
+16. **WO-TESTCOV-PLAYER-CONSTRUCTION-RESERVE** — ConstructionVenue Reserve Slip deposit POST — **SHIPPED** (PR pending; POST `/api/v1/construction/reservations`)
 
-SpaceDock gambling money POSTs (slots/dice/lottery/blackjack) are now covered. Auth forms coverage is test-only (hub GO 2026-08-07T21:28:00Z) — does not touch auth/MFA logic.
+SpaceDock gambling money POSTs (slots/dice/lottery/blackjack) are covered. Auth forms coverage is test-only (hub GO 2026-08-07T21:28:00Z) — does not touch auth/MFA logic.
