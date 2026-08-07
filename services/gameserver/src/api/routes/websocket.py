@@ -36,10 +36,10 @@ WS_RATE_WINDOW = 1.0  # seconds
 # Sustained-violation escalation (WO-RT-BUS-HARDENING). Canon (SYSTEMS/
 # realtime-bus.md:230) mandates "Sustained violations escalate to a forced
 # disconnect with close code 4002" but does not define "sustained"
-# numerically. NO-CANON: proposed threshold below, flagged to the
-# Orchestrator — 3 rate-limit violations within a 10s rolling window.
+# numerically. NO-CANON numbers below — Pending DECISION
+# `ws-violation-escalation-threshold` (do not retune without Max ruling).
 _ws_violations: Dict[str, list] = defaultdict(list)
-WS_VIOLATION_ESCALATION_THRESHOLD = 3  # NO-CANON
+WS_VIOLATION_ESCALATION_THRESHOLD = 3  # NO-CANON — see DECISION above
 WS_VIOLATION_ESCALATION_WINDOW = 10.0  # seconds, NO-CANON
 
 
