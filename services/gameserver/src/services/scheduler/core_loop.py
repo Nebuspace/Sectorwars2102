@@ -40,6 +40,7 @@ from src.services.scheduler._common import (
     PORT_OPERATING_COST_CHECK_SECONDS,
     STATION_RECOVERY_CHECK_SECONDS,
     RECLAIM_FLAG_CHECK_SECONDS,
+    GC_LAPSE_CHECK_SECONDS,
     SUSTAINED_REP_DRIP_CHECK_SECONDS,
     PRICE_RECOMPUTE_FLUSH_SECONDS,
     PRICE_ALERT_SWEEP_SECONDS,
@@ -84,6 +85,7 @@ from src.services.scheduler.economy_sweeps import (
     _run_port_operating_costs_sync,
     _run_station_recovery_sync,
     _run_reclaim_flag_sweep_sync,
+    _run_gc_lapse_sweep_sync,
     _run_price_recompute_flush_sync,
     _run_price_alert_sweep_sync,
     _run_price_history_sweep_sync,
@@ -717,6 +719,25 @@ async def _npc_scheduler_main_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: reclaim-flag sweep crashed (loop continues)")
+
+        # GC-lapse 7-day liquidation-window sweep (ADR-0054 X-D3). Flips
+        # players.is_galactic_citizen False once gc_lapsed_at has run 7+
+        # wall-clock days with no re-subscription. Own session, own advisory
+        # lock -- same discipline as the reclaim-flag sweep above; the durable
+        # per-player anchor (gc_lapsed_at) makes it idempotent/restart-safe.
+        if elapsed % GC_LAPSE_CHECK_SECONDS == 0:
+            try:
+                gc_lapse = await asyncio.to_thread(_run_gc_lapse_sweep_sync)
+                if gc_lapse.get("lapsed"):
+                    logger.info(
+                        "NPC scheduler: GC-lapse sweep — flipped %d player(s) "
+                        "past the 7-day liquidation window",
+                        gc_lapse.get("lapsed", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: GC-lapse sweep crashed (loop continues)")
 
         # Sustained-reputation-drip sweep (factions-and-teams.md:229-230,
         # WO-PROG-SUSTAINED-DRIPS) — a player sustaining Heroic+ personal

@@ -62,6 +62,7 @@ from src.api.routes.ranking import router as ranking_router
 from src.api.routes.quantum import router as quantum_router
 from src.api.routes.refining import router as refining_router
 from src.api.routes.recovery import router as recovery_router
+from src.api.routes.gc_lapse import router as gc_lapse_router
 from src.api.routes.expeditions import router as expeditions_router
 from src.api.routes.warp_gates import router as warp_gates_router
 from src.api.routes.nav import router as nav_router
@@ -179,6 +180,9 @@ api_router.include_router(refining_router, tags=["refining"])
 # 24h cooldown) + Warp Jumper Slipdrive (quantum_jump_capable hulls, charge +
 # fuel-scaled escape) (router carries its own /recovery prefix)
 api_router.include_router(recovery_router, tags=["recovery"])
+# ADR-0054 X-D3 -- GC-lapse 7-day liquidation window self-service (router
+# carries its own /players prefix, matching the ADR's literal path)
+api_router.include_router(gc_lapse_router, tags=["gc-lapse"])
 # Ground-expedition risk-roll engine (ADR-0091 §1/§3, "at-launch expedition
 # model") -- router carries its own /expeditions prefix.
 api_router.include_router(expeditions_router, tags=["expeditions"])
