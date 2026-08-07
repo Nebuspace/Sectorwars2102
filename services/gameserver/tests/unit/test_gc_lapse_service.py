@@ -24,7 +24,7 @@ def _make_player(*, gc_lapsed_at, gc_relocation_used_at, home_region_id):
         is_landed=False,
         current_port_id="port-1",
         current_planet_id=None,
-        current_ship=SimpleNamespace(sector_id=100),
+        current_ship=SimpleNamespace(id=uuid.uuid4(), sector_id=100),
     )
 
 
@@ -46,9 +46,10 @@ def _make_db(player, planet=None, station=None):
     return db
 
 
+@patch("src.services.contraband_service.scan_in_transit_best_effort", return_value=None)
 @patch("src.services.docking_service.release", return_value=True)
 @patch("src.services.movement_service.MovementService")
-def test_happy_path_consumes_the_grant_and_moves_the_player(mock_movement, mock_release):
+def test_happy_path_consumes_the_grant_and_moves_the_player(mock_movement, mock_release, mock_scan):
     home_region = uuid.uuid4()
     foreign_region = uuid.uuid4()
     player = _make_player(gc_lapsed_at="2026-08-01", gc_relocation_used_at=None, home_region_id=home_region)
@@ -64,6 +65,15 @@ def test_happy_path_consumes_the_grant_and_moves_the_player(mock_movement, mock_
     assert player.gc_relocation_used_at is not None
     mock_release.assert_called_once()
     mock_movement.return_value._update_player_presence.assert_called_once()
+    # WO-K2b: this is still a border crossing (mirrors slipdrive/quantum) --
+    # the emergency bypass must not skip the customs scan.
+    mock_scan.assert_called_once_with(
+        db,
+        player=player,
+        ship_id=player.current_ship.id,
+        origin_sector_id=100,
+        destination_sector_id=500,
+    )
 
 
 def test_not_lapsed_rejected():
