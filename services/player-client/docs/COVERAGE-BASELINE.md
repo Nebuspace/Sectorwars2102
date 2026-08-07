@@ -41,6 +41,7 @@ Staged for hub queue — not built in this WO:
 20. **WO-TESTCOV-PLAYER-CITADEL-UPGRADE** — CitadelManager Upgrade POST — **SHIPPED** (merged via #303; POST `/api/v1/planets/:id/citadel/upgrade`)
 21. **WO-TESTCOV-PLAYER-PORT-OFFICE-OFFER** — PortOfficeVenue File Sealed Offer — **SHIPPED** (merged via #304; placeOffer escrow money path)
 22. **WO-TESTCOV-PLAYER-TERRAFORMING-CANCEL** — TerraformingPanel Cancel Project POST — **SHIPPED** (merged via #305; POST `/api/v1/planets/:id/terraforming/cancel`)
-23. **WO-TESTCOV-PLAYER-PORT-OFFICE-WITHDRAW** — PortOfficeVenue vault Withdraw — **SHIPPED** (PR pending; withdrawTreasury money path)
+23. **WO-TESTCOV-PLAYER-PORT-OFFICE-WITHDRAW** — PortOfficeVenue vault Withdraw — **SHIPPED** (merged via #306; withdrawTreasury money path)
+24. **WO-TESTCOV-PLAYER-GATEWRIGHT-DEPLOY** — GatewrightPanel CONFIRM DEPLOY — **SHIPPED** (PR pending; POST `/api/v1/warp-gates/deploy-beacon`)
 
 SpaceDock gambling money POSTs (slots/dice/lottery/blackjack) are covered. Auth forms coverage is test-only (hub GO 2026-08-07T21:28:00Z) — does not touch auth/MFA logic.
