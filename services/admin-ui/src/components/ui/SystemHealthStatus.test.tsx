@@ -83,7 +83,9 @@ describe('SystemHealthStatus', () => {
     const user = userEvent.setup();
 
     render(<SystemHealthStatus />);
-    await waitFor(() => expect(screen.getByText('System Status')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByTitle('Click to expand/collapse system details')).toBeInTheDocument()
+    );
 
     expect(screen.queryByText('Player Connections:')).not.toBeInTheDocument();
     await user.click(screen.getByTitle('Click to expand/collapse system details'));
