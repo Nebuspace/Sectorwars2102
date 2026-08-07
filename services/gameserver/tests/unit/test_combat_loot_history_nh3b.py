@@ -348,7 +348,7 @@ def test_pvp_leg_persists_capped_actual_not_pre_cap_request(monkeypatch):
     # and prove it fires strictly AFTER the transfer has already landed.
     destruction_calls = []
 
-    def _fake_destroy(player, destroyer, cause):
+    def _fake_destroy(player, destroyer, cause, outbox=None):
         destruction_calls.append((player, destroyer, cause))
 
     monkeypatch.setattr(cs, "_handle_ship_destruction", _fake_destroy)

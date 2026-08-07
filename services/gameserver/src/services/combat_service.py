@@ -24,6 +24,7 @@ from src.services.ranking_service import RankingService
 from src.services.ship_upgrade_service import ShipUpgradeService
 from src.services.turn_service import spend_turns
 from src.core.game_time import canonical_hours_since
+from src.services.realtime_outbox import RealtimeOutbox
 
 logger = logging.getLogger(__name__)
 
@@ -1113,13 +1114,14 @@ class CombatService:
         # zeroes the loser's wallet, so a mutual-destruction double-fire (both
         # branches true) and a multi-round resolution can never double-transfer,
         # and a victim carrying 0 is a no-op.
+        outbox = RealtimeOutbox()
         if combat_result["defender_ship_destroyed"]:
             self._transfer_quantum_wallet(victor=attacker, victim=defender)
-            self._handle_ship_destruction(defender, attacker, "combat")
+            self._handle_ship_destruction(defender, attacker, "combat", outbox=outbox)
 
         if combat_result["attacker_ship_destroyed"]:
             self._transfer_quantum_wallet(victor=defender, victim=attacker)
-            self._handle_ship_destruction(attacker, defender, "combat")
+            self._handle_ship_destruction(attacker, defender, "combat", outbox=outbox)
 
         _track_flawless_combat_streak(self.db, defender, combat_result["defender_ship_destroyed"])
         _track_flawless_combat_streak(self.db, attacker, combat_result["attacker_ship_destroyed"])
@@ -1377,6 +1379,7 @@ class CombatService:
 
         # Commit changes
         self.db.commit()
+        outbox.flush()
 
         # Defensive team notification (WO-RT-TEAM-DEFENSE / factions-and-
         # teams.md "Combat advantages: Defensive notifications when any
@@ -1931,8 +1934,9 @@ class CombatService:
                 },
             )
 
+        outbox = RealtimeOutbox()
         if combat_result["attacker_ship_destroyed"]:
-            self._handle_ship_destruction(attacker, None, "combat")
+            self._handle_ship_destruction(attacker, None, "combat", outbox=outbox)
 
         _track_flawless_combat_streak(self.db, attacker, combat_result["attacker_ship_destroyed"])
 
@@ -1982,6 +1986,7 @@ class CombatService:
 
         # Commit changes
         self.db.commit()
+        outbox.flush()
 
         # Granular phase WS events (WO-DBB-RT3 / combat-resolver.md "Events
         # emitted"): combat_started → combat_round(s) → combat_resolved. The
@@ -2335,8 +2340,9 @@ class CombatService:
             ))
 
         # Apply combat effects to the attacker's ship
+        outbox = RealtimeOutbox()
         if combat_result["attacker_ship_destroyed"]:
-            self._handle_ship_destruction(attacker, None, "drone_combat")
+            self._handle_ship_destruction(attacker, None, "drone_combat", outbox=outbox)
 
         _track_flawless_combat_streak(self.db, attacker, combat_result["attacker_ship_destroyed"])
 
@@ -2403,6 +2409,7 @@ class CombatService:
 
         # Commit changes
         self.db.commit()
+        outbox.flush()
 
         return {
             "success": True,
@@ -2504,8 +2511,9 @@ class CombatService:
         self.db.add(combat_log)
         
         # Apply combat effects
+        outbox = RealtimeOutbox()
         if combat_result["attacker_ship_destroyed"]:
-            self._handle_ship_destruction(attacker, None, "planet_defense")
+            self._handle_ship_destruction(attacker, None, "planet_defense", outbox=outbox)
 
         _track_flawless_combat_streak(self.db, attacker, combat_result["attacker_ship_destroyed"])
 
@@ -2583,6 +2591,7 @@ class CombatService:
 
         # Commit changes
         self.db.commit()
+        outbox.flush()
 
         return {
             "success": True,
@@ -2684,8 +2693,9 @@ class CombatService:
         self.db.add(combat_log)
         
         # Apply combat effects
+        outbox = RealtimeOutbox()
         if combat_result["attacker_ship_destroyed"]:
-            self._handle_ship_destruction(attacker, None, "port_defense")
+            self._handle_ship_destruction(attacker, None, "port_defense", outbox=outbox)
 
         _track_flawless_combat_streak(self.db, attacker, combat_result["attacker_ship_destroyed"])
 
@@ -2732,7 +2742,8 @@ class CombatService:
 
         # Commit changes
         self.db.commit()
-        
+        outbox.flush()
+
         return {
             "success": True,
             "message": combat_result["message"],
@@ -5410,11 +5421,26 @@ class CombatService:
             logger.error("ECM equipment read failed (continuing without): %s", e)
             return hit_chance
     
-    def _handle_ship_destruction(self, player: Player, destroyer: Optional[Player], cause: str) -> None:
-        """Handle a player's ship being destroyed."""
+    def _handle_ship_destruction(
+        self,
+        player: Player,
+        destroyer: Optional[Player],
+        cause: str,
+        outbox: Optional[RealtimeOutbox] = None,
+    ) -> None:
+        """Handle a player's ship being destroyed.
+
+        ``outbox`` (ADR-0054 X-V1 transactional outbox, ADR-0055 Group D):
+        optional and backward-compatible -- when a caller passes a live
+        ``RealtimeOutbox``, a ``ship.destroyed`` sector-broadcast event is
+        queued for delivery only after the CALLER's own commit succeeds
+        (the caller owns construction + flush(); this method only queues).
+        ``None`` (the default) is a no-op, matching every other caller/path
+        that has not been wired to the outbox pattern yet.
+        """
         if not player.current_ship:
             return
-        
+
         # Check if ship is indestructible (like Escape Pod)
         if self.ship_service.is_ship_indestructible(player.current_ship):
             logger.info(f"Ship {player.current_ship.name} is indestructible, cannot be destroyed")
@@ -5431,8 +5457,25 @@ class CombatService:
             destroyer=destroyer,
             cause=cause
         )
-        
+
         logger.info(f"Player {player.id} ship destroyed, ejected to {escape_pod.name}")
+
+        # ADR-0055 Group D: queue the ship.destroyed sector-broadcast (best-
+        # effort -- queue_sector is a no-op if sector_id is None; delivery
+        # is deferred to the caller's own post-commit outbox.flush()).
+        if outbox is not None:
+            outbox.queue_sector(
+                "ship.destroyed",
+                {
+                    "ship_id": str(destroyed_ship.id),
+                    "ship_name": destroyed_ship.name,
+                    "sector_id": destroyed_ship.sector_id,
+                    "cause": cause,
+                    "original_owner_id": str(player.id),
+                    "killing_blow_pilot_id": str(destroyer.id) if destroyer is not None else None,
+                },
+                destroyed_ship.sector_id,
+            )
 
         # WO-F21 (spawn half): the lost cargo — everything NOT rescued to the
         # escape pod by destroy_ship — drops as a salvageable CargoWreck. Read
