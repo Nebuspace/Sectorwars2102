@@ -30,6 +30,7 @@ Staged for hub queue — not built in this WO:
 9. **WO-TESTCOV-PLAYER-SHIPYARD-PURCHASE** — ShipyardVenue confirm + SpaceDock ships/purchase — **SHIPPED** (merged via #292; POST `/api/v1/ships/purchase`)
 10. **WO-TESTCOV-PLAYER-SHIP-REPAIR** — ServicesVenue Full Repair + SpaceDock repair POST — **SHIPPED** (merged via #293; POST `/api/v1/player/ships/:id/repair`)
 11. **WO-TESTCOV-PLAYER-MINING-LICENSE** — MiningVenue + mining license/laser POSTs — **SHIPPED** (merged via #294; POST `/api/v1/mining/license` + `/laser-upgrade`)
-12. **WO-TESTCOV-PLAYER-GENESIS-PURCHASE** — Genesis Acquire → purchase POST — **SHIPPED** (PR pending; POST `/api/v1/player/genesis/purchase`; complements price-read suite)
+12. **WO-TESTCOV-PLAYER-GENESIS-PURCHASE** — Genesis Acquire → purchase POST — **SHIPPED** (merged via #295; POST `/api/v1/player/genesis/purchase`; complements price-read suite)
+13. **WO-TESTCOV-PLAYER-GAMBLING-DICE** — Nebula Dice ROLL + dice/roll POST — **SHIPPED** (PR pending; POST `/api/v1/gambling/dice/roll`)
 
 Auth forms coverage is test-only (hub GO 2026-08-07T21:28:00Z) — does not touch auth/MFA logic.
