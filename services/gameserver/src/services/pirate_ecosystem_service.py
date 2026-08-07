@@ -661,6 +661,66 @@ def _emit_holding_evolved_event(
     })
 
 
+def _emit_daughter_spawned_event(
+    parent: PirateHolding,
+    daughter: PirateHolding,
+    *,
+    parent_zone_type: Optional[ZoneType] = None,
+    daughter_zone_type: Optional[ZoneType] = None,
+    now: Optional[datetime] = None,
+) -> None:
+    """`pirate.daughter_spawned` (ADR-0060 R-I1) -- parent/daughter holding
+    ids and the zone each sits in (G-I2's zone-affinity weighting result),
+    for ops/ARIA visibility into where the network is expanding. Zone types
+    are the already-resolved ``ZoneType`` (or ``None`` for an unzoned
+    sector) the caller already computed via ``_zone_types_by_sector_id`` --
+    mirrors ``daughter_spawn_weight``'s own resolved-enum contract rather
+    than re-querying here.
+
+    [NO-CANON]: the R-I1 table names the event ``pirate.daughter_spawned``
+    (with a ``pirate.`` prefix); this module's existing shipped events
+    (``holding_evolved``, ``region_cleansed``, etc.) all use an UNPREFIXED
+    ``type`` -- follows that established, already-live convention rather
+    than introducing the only prefixed type in this file's taxonomy."""
+    _broadcast_pirate_event(daughter.region_id, {
+        "type": "daughter_spawned",
+        "region_id": str(daughter.region_id),
+        "parent_holding_id": str(parent.id),
+        "daughter_holding_id": str(daughter.id),
+        "parent_zone": parent_zone_type.value if parent_zone_type is not None else None,
+        "daughter_zone": daughter_zone_type.value if daughter_zone_type is not None else None,
+        "timestamp": _iso(_now(now)),
+    })
+
+
+def _emit_fleet_destroyed_event(
+    holding: PirateHolding,
+    *,
+    fleet_size_destroyed: int,
+    by_player_ids: List[uuid.UUID],
+    now: Optional[datetime] = None,
+) -> None:
+    """`pirate.fleet_destroyed` (ADR-0060 R-I1). DORMANT -- built per the
+    established dormant-emit-helper convention (mirrors the raid/capture
+    kernel below), but with NO call site anywhere in this codebase: there is
+    no fleet/garrison-vs-holding combat mechanic at all yet (verify-first
+    grep of pirate_ecosystem_service.py + combat_service.py turned up zero
+    "fleet" concept tied to a PirateHolding -- only an unrelated
+    ``roving_fleet_camp`` NO-CANON deferral note in
+    ``spawn_daughter_holding``'s own docstring). Awaits whatever future WO
+    builds holding-garrison combat resolution; kept here, tested, and ready
+    the same way the combat-lock/capture kernel shipped ahead of its own
+    caller."""
+    _broadcast_pirate_event(holding.region_id, {
+        "type": "fleet_destroyed",
+        "region_id": str(holding.region_id),
+        "holding_id": str(holding.id),
+        "fleet_size_destroyed": fleet_size_destroyed,
+        "by_player_ids": [str(p) for p in by_player_ids],
+        "timestamp": _iso(_now(now)),
+    })
+
+
 def _emit_evolution_suppressed_event(
     holding: PirateHolding, *, reason: str, now: Optional[datetime] = None,
 ) -> None:
@@ -764,6 +824,12 @@ def spawn_daughter_holding(
     )
     db.add(holding)
     db.flush()
+    _emit_daughter_spawned_event(
+        parent, holding,
+        parent_zone_type=parent_zone_type,
+        daughter_zone_type=zone_types.get(anchor_sector_id),
+        now=now,
+    )
     return holding
 
 
@@ -1215,6 +1281,64 @@ def release_combat_lock(db: Session, holding: PirateHolding) -> None:
     holding.combat_lock_team_snapshot = None
 
 
+def maybe_reset_evolution_clock(
+    holding: PirateHolding, damage_amount: float, citadel_max_hp: float,
+    *, now: Optional[datetime] = None,
+) -> bool:
+    """G-I1 evolution-clock reset threshold (ADR-0060 :76-86). DORMANT, see
+    module-section note above -- writes ``evolution_clock_started_at``,
+    which has no reader yet either (the LIVE evolution clock,
+    ``evolution_tick``, still anchors on ``last_damage_at``/``created_at``
+    per that function's own :288-296 citation; reconciling the two clock
+    columns is ECO-3/raid-wiring territory, not this dormant kernel's call).
+
+    Canon's pseudocode (:81-84) reads ``holding.citadel.max_hp`` directly,
+    but no ``citadel`` relationship/model exists on ``PirateHolding`` at
+    HEAD (verify-first grepped ``src/models/`` -- nothing) -- takes
+    ``citadel_max_hp`` as a plain parameter instead, matching this module's
+    established "pure function, caller supplies the resolved values" idiom
+    (e.g. ``daughter_spawn_weight`` taking resolved ``ZoneType`` rather than
+    re-deriving it). Only single-combat-event damage >= 5% of max HP resets
+    the clock (:78, "trivial scratches no longer reset the timer") -- a
+    sub-threshold hit is a no-op, returned as ``False`` so a future caller
+    can distinguish "reset" from "no-op" without re-reading the column.
+
+    Does NOT flush by itself, matching this module's Sync-Session
+    convention -- the (currently nonexistent) caller flushes/commits.
+    """
+    if citadel_max_hp <= 0:
+        return False  # defensive -- no meaningful threshold against a 0/negative max HP
+    if damage_amount >= 0.05 * citadel_max_hp:
+        holding.evolution_clock_started_at = _now(now)
+        return True
+    return False
+
+
+def _emit_holding_captured_event(
+    holding: PirateHolding, kill_log: PirateKillLog, capturer_player: Any,
+    *, now: Optional[datetime] = None,
+) -> None:
+    """`pirate.holding_captured` (ADR-0060 R-I1). Fires inside the DORMANT
+    ``capture_holding`` kernel, see module-section note above -- built and
+    called from there so the kernel is a complete, self-consistent unit the
+    moment ECO-3 wires a live raid-initiation route, matching this file's
+    own "ships now as a fully-tested, correct kernel" philosophy rather than
+    leaving telemetry as a follow-up gap. ``capturer_team_id`` mirrors
+    ``capture_holding``'s own team-resolution fallback (``.team.id`` else
+    the bare ``.team_id`` attribute) so the two never disagree."""
+    team = getattr(capturer_player, "team", None)
+    team_id = team.id if team is not None else getattr(capturer_player, "team_id", None)
+    _broadcast_pirate_event(holding.region_id, {
+        "type": "holding_captured",
+        "region_id": str(holding.region_id),
+        "holding_id": str(holding.id),
+        "tier": holding.tier.value,
+        "captured_by_player_id": str(getattr(capturer_player, "id", None)),
+        "captured_by_team_id": str(team_id) if team_id is not None else None,
+        "timestamp": _iso(_now(now)),
+    })
+
+
 def capture_holding(
     db: Session,
     holding: PirateHolding,
@@ -1256,6 +1380,7 @@ def capture_holding(
 
         db.flush()
 
+    _emit_holding_captured_event(holding, kill_log, capturer_player)
     return kill_log
 
 
@@ -1306,4 +1431,5 @@ __all__ = [
     "can_engage",
     "release_combat_lock",
     "capture_holding",
+    "maybe_reset_evolution_clock",
 ]

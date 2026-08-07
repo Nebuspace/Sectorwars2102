@@ -18,7 +18,7 @@ fixtures... interchangeably").
 
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from src.models.pirate_holding import PirateHolding, PirateHoldingTier
@@ -286,3 +286,123 @@ class TestCaptureHolding:
         )
 
         assert holding.owner_team_id == team_id
+
+    def test_capture_emits_holding_captured_exactly_once(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            pes, "_broadcast_pirate_event",
+            lambda region_id, payload: calls.append((region_id, payload)),
+        )
+        holder_id = uuid.uuid4()
+        holding = _holding(
+            combat_lock_held_by=holder_id, combat_lock_team_snapshot=[holder_id],
+        )
+        db = _FakeSession()
+        team = _team()
+        capturer = _player(team=team)
+
+        pes.capture_holding(
+            db, holding, capturer,
+            kill_log_entry_kwargs=dict(
+                region_id=holding.region_id,
+                region_id_snapshot=holding.region_id,
+                holding_id=holding.id,
+                tier=holding.tier,
+                kill_weight=10,
+                attacker_player_id=capturer.id,
+                attacker_team_id=team.id,
+            ),
+        )
+
+        assert len(calls) == 1
+        region_id, payload = calls[0]
+        assert region_id == holding.region_id
+        assert payload["type"] == "holding_captured"
+        assert payload["region_id"] == str(holding.region_id)
+        assert payload["holding_id"] == str(holding.id)
+        assert payload["tier"] == holding.tier.value
+        assert payload["captured_by_player_id"] == str(capturer.id)
+        assert payload["captured_by_team_id"] == str(team.id)
+
+    def test_capture_emits_bare_team_id_when_no_team_relationship(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            pes, "_broadcast_pirate_event",
+            lambda region_id, payload: calls.append((region_id, payload)),
+        )
+        holding = _holding(combat_lock_held_by=uuid.uuid4())
+        db = _FakeSession()
+        team_id = uuid.uuid4()
+        capturer = SimpleNamespace(id=uuid.uuid4(), team=None, team_id=team_id)
+
+        pes.capture_holding(
+            db, holding, capturer,
+            kill_log_entry_kwargs=dict(
+                region_id=holding.region_id,
+                region_id_snapshot=holding.region_id,
+                holding_id=holding.id,
+                tier=holding.tier,
+                kill_weight=10,
+                attacker_player_id=capturer.id,
+                attacker_team_id=team_id,
+            ),
+        )
+
+        assert len(calls) == 1
+        _region_id, payload = calls[0]
+        assert payload["captured_by_team_id"] == str(team_id)
+
+
+# ---------------------------------------------------------------------------
+# maybe_reset_evolution_clock (ADR-0060 G-I1) -- DORMANT, no live caller (see
+# the function's own docstring: no damage-vs-holding combat path exists yet,
+# and evolution_tick's own LIVE clock still anchors on last_damage_at, not
+# this column).
+# ---------------------------------------------------------------------------
+
+class TestMaybeResetEvolutionClock:
+    def test_damage_at_exact_five_percent_threshold_resets(self):
+        holding = _holding(evolution_clock_started_at=None)
+        now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+
+        result = pes.maybe_reset_evolution_clock(holding, 5.0, 100.0, now=now)
+
+        assert result is True
+        assert holding.evolution_clock_started_at == now
+
+    def test_damage_above_threshold_resets(self):
+        holding = _holding(evolution_clock_started_at=None)
+        now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+
+        result = pes.maybe_reset_evolution_clock(holding, 50.0, 100.0, now=now)
+
+        assert result is True
+        assert holding.evolution_clock_started_at == now
+
+    def test_trivial_scratch_below_threshold_does_not_reset(self):
+        """The ADR's own example: a 1-hull-point scratch must not drop the
+        clock (:86, 'a 1-hull-point scratch on day 29 no longer drops the
+        clock to day 0')."""
+        holding = _holding(evolution_clock_started_at=None)
+
+        result = pes.maybe_reset_evolution_clock(holding, 1.0, 100.0)
+
+        assert result is False
+        assert holding.evolution_clock_started_at is None
+
+    def test_below_threshold_does_not_clobber_an_existing_clock_start(self):
+        existing = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        holding = _holding(evolution_clock_started_at=existing)
+
+        result = pes.maybe_reset_evolution_clock(holding, 4.99, 100.0)
+
+        assert result is False
+        assert holding.evolution_clock_started_at == existing
+
+    def test_zero_max_hp_is_defensive_noop(self):
+        holding = _holding(evolution_clock_started_at=None)
+
+        result = pes.maybe_reset_evolution_clock(holding, 10.0, 0.0)
+
+        assert result is False
+        assert holding.evolution_clock_started_at is None
