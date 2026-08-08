@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
 import apiClient from '../services/apiClient';
-import { sectorAPI } from '../services/api';
+import { sectorAPI, messageAPI } from '../services/api';
 import websocketService from '../services/websocket';
 import { ariaFeed } from '../components/mfd/ariaFeedStore';
 
@@ -1601,8 +1601,12 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user) return;
 
     try {
-      const response = await api.get('/api/v1/messages/inbox');
-      const data = response.data as { messages: PlayerMessage[]; unread_count: number };
+      // WO-WIRE-MESSAGE-API-INBOX — messageAPI.getInbox returns the body
+      // directly (not axios `{ data }`).
+      const data = (await messageAPI.getInbox()) as {
+        messages: PlayerMessage[];
+        unread_count: number;
+      };
       setInboxMessages(data.messages || []);
       setUnreadMessageCount(data.unread_count || 0);
       // Server count is authoritative again — drop the local decrement guard
@@ -1625,13 +1629,12 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post('/api/v1/messages/send', {
-        recipient_id: recipientId,
-        subject: subject || null,
+      return (await messageAPI.sendMessage(
+        recipientId,
         content,
-        reply_to_id: replyToId || null
-      });
-      return response.data as { message_id: string; sent_at: string };
+        subject ?? undefined,
+        replyToId,
+      )) as { message_id: string; sent_at: string };
     } catch (error: any) {
       console.error('Error sending player message:', error);
       throw error;
@@ -1652,7 +1655,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       inboxMessages.some(msg => msg.id === messageId && !msg.is_read);
 
     try {
-      await api.put(`/api/v1/messages/${messageId}/read`);
+      await messageAPI.markAsRead(messageId);
       setInboxMessages(prev => prev.map(msg =>
         msg.id === messageId && !msg.is_read
           ? { ...msg, is_read: true, read_at: new Date().toISOString() }
