@@ -383,8 +383,11 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
         doc_source="factions-and-teams.md TF: Kill a Pirate or Cabal NPC (+5)",
     ),
     # Mercantile Guild insurance hooks (factions-and-teams.md MG table) —
-    # canon-numbered, one-time per hull. Registered for table-completeness;
-    # NOT wired by this WO (no caller invokes them yet → no double-fire).
+    # canon-numbered, one-time per hull. Wired at ship_upgrades.py's ship-
+    # insurance purchase route (INSURANCE_REP_ACTION dict, ~line 178) inside
+    # the same locked txn as the policy write; a per-hull awarded-tier ledger
+    # (ship.insurance.mg_rep_awarded) prevents double-firing on repurchase.
+    # Verified 2026-08-08 — "not wired" here was stale.
     "BUY_INSURANCE_BASIC": EmergentAction(
         name="BUY_INSURANCE_BASIC",
         deltas=[FactionDelta(FactionType.MERCHANTS, 2)],
