@@ -413,13 +413,3 @@ class MultilingualAIService:
             logger.error(f"Failed to get localized game messages: {e}")
             # Return keys as fallback
             return {key: key for key in message_keys}
-
-
-# Service factory function
-def get_multilingual_ai_service(
-    db: Session,
-    ai_service: AIDialogueService,
-    translation_service: TranslationService
-) -> MultilingualAIService:
-    """Get multilingual AI service instance"""
-    return MultilingualAIService(db, ai_service, translation_service)
