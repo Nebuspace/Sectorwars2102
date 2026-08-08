@@ -1349,6 +1349,18 @@ export interface MyBeacon {
 export const beaconAPI = {
   mine: (page = 1, limit = 20): Promise<{ beacons: MyBeacon[]; total?: number }> =>
     apiRequest(`/api/v1/beacons/mine?page=${page}&limit=${limit}`),
+
+  /** Deploy a message beacon at sector_id (POST /api/v1/beacons/deploy). */
+  deploy: (body: { sector_id: number; message: string; read_once?: boolean }) =>
+    apiRequest('/api/v1/beacons/deploy', {
+      method: 'POST',
+      body: JSON.stringify({
+        sector_id: body.sector_id,
+        message: body.message,
+        read_once: body.read_once ?? false,
+      }),
+    }),
+
   read: (beaconId: string) => apiRequest(`/api/v1/beacons/${beaconId}/read`),
   salvage: (beaconId: string) => apiRequest(`/api/v1/beacons/${beaconId}/salvage`, { method: 'POST' }),
   recharge: (beaconId: string) => apiRequest(`/api/v1/beacons/${beaconId}/recharge`, { method: 'POST' }),
