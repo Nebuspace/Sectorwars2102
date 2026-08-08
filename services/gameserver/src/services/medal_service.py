@@ -16,10 +16,12 @@ This module exposes:
 * :func:`check_and_award_combat_medals` — FROZEN dispatcher hook the combat lane
   calls: ``(db, killer_player, context)``. Defensive: never raises into combat.
 * Analogous trade / exploration dispatchers.
-* :class:`MedalService` — preserves the legacy method surface
-  (``get_player_medals``, ``check_combat_medals``, ``check_trading_medals``,
-  ``check_exploration_medals``) now backed by the relational tables, so existing
-  callers in ``combat_service``, ``trading.py`` and ``ranking.py`` keep working.
+* :class:`MedalService` — preserves the legacy ``get_player_medals`` method,
+  now backed by the relational tables, so existing callers in
+  ``ranking.py``/``medals.py`` keep working. The per-category legacy check
+  methods (``check_combat_medals``/``check_trading_medals``/
+  ``check_exploration_medals``) were retired — every real award path routes
+  through the module-level ``check_and_award_*`` dispatchers above instead.
 
 Legacy JSONB readers: this module no longer writes ``Player.settings['medals']``.
 Any code that *reads* that JSONB will simply see no medals; the only known
@@ -1330,78 +1332,6 @@ class MedalService:
             logger.error(f"Error retrieving medals for player {player_id}: {e}")
             return {"success": False, "error": str(e)}
 
-    # ── Award convenience (legacy-compatible) ───────────────────────
-    def check_combat_medals(
-        self,
-        player_id: uuid.UUID,
-        combat_victories: int,
-        rank_upset_levels: int = 0,
-    ) -> List[str]:
-        """Legacy signature preserved (combat_service calls this).
-
-        Backed by the relational award path. Returns newly-awarded medal ids.
-        """
-        try:
-            awarded = _evaluate_and_award(
-                self.db, player_id, "combat_victories", combat_victories,
-                source_event_key="combat.victory", awarded_via="combat",
-            )
-            if rank_upset_levels >= 5:
-                awarded += _evaluate_and_award(
-                    self.db, player_id, "rank_upset", rank_upset_levels,
-                    source_event_key="combat.rank_upset", awarded_via="combat",
-                )
-            return awarded
-        except Exception as e:
-            logger.error(f"Error checking combat medals for player {player_id}: {e}")
-            return []
-
-    def check_trading_medals(
-        self,
-        player_id: uuid.UUID,
-        total_trades: int,
-        lifetime_credits: int,
-    ) -> List[str]:
-        """Legacy signature preserved (trading.py calls this)."""
-        try:
-            awarded = _evaluate_and_award(
-                self.db, player_id, "total_trades", total_trades,
-                source_event_key="trade.completed", awarded_via="trade",
-            )
-            awarded += _evaluate_and_award(
-                self.db, player_id, "lifetime_credits", lifetime_credits,
-                source_event_key="trade.completed", awarded_via="trade",
-            )
-            return awarded
-        except Exception as e:
-            logger.error(f"Error checking trading medals for player {player_id}: {e}")
-            return []
-
-    def check_exploration_medals(
-        self,
-        player_id: uuid.UUID,
-        sectors_visited: int,
-        planets_created: int,
-        planets_colonized: int,
-    ) -> List[str]:
-        """Legacy signature preserved."""
-        try:
-            awarded = _evaluate_and_award(
-                self.db, player_id, "sectors_visited", sectors_visited,
-                source_event_key="exploration", awarded_via="exploration",
-            )
-            awarded += _evaluate_and_award(
-                self.db, player_id, "planets_created", planets_created,
-                source_event_key="exploration", awarded_via="exploration",
-            )
-            awarded += _evaluate_and_award(
-                self.db, player_id, "planets_colonized", planets_colonized,
-                source_event_key="exploration", awarded_via="exploration",
-            )
-            return awarded
-        except Exception as e:
-            logger.error(f"Error checking exploration medals for player {player_id}: {e}")
-            return []
 
     # ── Admin ────────────────────────────────────────────────────────
     def admin_grant(
