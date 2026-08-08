@@ -215,6 +215,27 @@ export const planetaryAPI = {
     apiRequest(`/api/v1/planets/${planetId}/siege-status`)
 };
 
+/** Station-protection tractor lock (Guarantee #2) — player responses. */
+export const stationSecurityAPI = {
+  getTractorLock: (stationId: string): Promise<{
+    locked: boolean;
+    reason?: string;
+    tractor_strength?: string;
+    break_attempts?: number;
+    break_attempt_cost?: string;
+  }> => apiRequest(`/api/v1/station-security/stations/${stationId}/tractor-lock`),
+
+  breakTractorLock: (stationId: string) =>
+    apiRequest(`/api/v1/station-security/stations/${stationId}/tractor-lock/break`, {
+      method: 'POST',
+    }),
+
+  surrenderTractorLock: (stationId: string) =>
+    apiRequest(`/api/v1/station-security/stations/${stationId}/tractor-lock/surrender`, {
+      method: 'POST',
+    }),
+};
+
 // Team Management APIs
 export const teamAPI = {
   // Team operations

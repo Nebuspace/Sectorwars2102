@@ -185,6 +185,15 @@ export interface StationSlips {
   occupants_bumpable_count: number;
 }
 
+/** Payload from undock 403 ERR_STATION_TRACTOR_LOCK (station-protection Guarantee #2). */
+export interface TractorLockInfo {
+  station_id: string;
+  ship_id: string;
+  tractor_strength: string;
+  reason: string;
+  break_attempt_cost: string;
+}
+
 // --- Quantum drive (Warp Jumper) ---
 export interface QuantumStatus {
   quantum_shards: number;
@@ -335,6 +344,9 @@ interface GameContextType {
   undockFromStation: () => Promise<any>;
   getStationSlips: (stationId: string) => Promise<StationSlips | null>;
   bumpDockOccupant: (stationId: string, occupantPlayerId: string) => Promise<any>;
+  /** Set when undock returns ERR_STATION_TRACTOR_LOCK (WO-WIRE-TRACTOR-LOCK-SURRENDER-UI). */
+  tractorLock: TractorLockInfo | null;
+  clearTractorLock: () => void;
   marketInfo: MarketInfo | null;
   getMarketInfo: (stationId: string) => Promise<void>;
   buyResource: (stationId: string, resourceType: string, quantity: number) => Promise<any>;
@@ -474,6 +486,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   
   // Market
   const [marketInfo, setMarketInfo] = useState<MarketInfo | null>(null);
+  // Station anti-theft tractor lock (undock 403 ERR_STATION_TRACTOR_LOCK)
+  const [tractorLock, setTractorLock] = useState<TractorLockInfo | null>(null);
 
   // Player-to-player hails (COMMS mailbox)
   const [inboxMessages, setInboxMessages] = useState<PlayerMessage[]>([]);
@@ -893,15 +907,38 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       const response = await api.post('/api/v1/trading/undock');
 
       // Update player state after undocking
+      setTractorLock(null);
       await refreshPlayerState();
 
       return response.data;
     } catch (error: any) {
       console.error('Error undocking from station:', error);
-      setError(error.response?.data?.message || 'Failed to undock from station');
+      const detail = error.response?.data?.detail;
+      if (
+        detail &&
+        typeof detail === 'object' &&
+        detail.error === 'ERR_STATION_TRACTOR_LOCK'
+      ) {
+        setTractorLock({
+          station_id: String(detail.station_id ?? ''),
+          ship_id: String(detail.ship_id ?? ''),
+          tractor_strength: String(detail.tractor_strength ?? ''),
+          reason: String(detail.reason ?? ''),
+          break_attempt_cost: String(detail.break_attempt_cost ?? ''),
+        });
+        setError('Tractor lock engaged — choose Break free or Surrender.');
+      } else {
+        setError(
+          (typeof detail === 'string' ? detail : null) ||
+            error.response?.data?.message ||
+            'Failed to undock from station'
+        );
+      }
       throw error;
     }
   };
+
+  const clearTractorLock = () => setTractorLock(null);
 
   // Get market info for a port
   // Note: This intentionally does NOT set global isLoading to avoid re-render cascades
@@ -1830,6 +1867,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     undockFromStation,
     getStationSlips,
     bumpDockOccupant,
+    tractorLock,
+    clearTractorLock,
     marketInfo,
     getMarketInfo,
     buyResource,
