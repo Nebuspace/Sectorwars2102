@@ -395,6 +395,20 @@ class TestWantedTriggerWiring:
         # Not the timer-based trigger -- wanted_until stays untouched (None).
         assert thief.wanted_until is None
 
+    def test_report_stolen_returns_server_authoritative_retract_grace_deadline(self):
+        """WR10: the client must never duplicate STOLEN_RETRACT_GRACE (24h)
+        itself -- the deadline is server-computed and returned so a ticker
+        can render a countdown without hardcoding the grace duration."""
+        owner = _owner()
+        ship = _ship(owner=owner, pilot_id=None)
+        db = _FakeSession()
+
+        result = report_stolen(db, ship=ship, owner=owner, recovery_mode="no_bounty")
+
+        reported_at = datetime.fromisoformat(result["stolen_reported_at"])
+        deadline = datetime.fromisoformat(result["retract_grace_expires_at"])
+        assert deadline - reported_at == svc.STOLEN_RETRACT_GRACE
+
     def test_report_stolen_with_no_current_pilot_does_not_query_or_flip_anyone(self):
         owner = _owner()
         ship = _ship(owner=owner, pilot_id=None)
