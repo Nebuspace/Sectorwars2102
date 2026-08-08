@@ -21,11 +21,13 @@ import type { Election } from '../../../types/governance';
 
 const mockCastElectionVote = vi.fn();
 const mockRegisterCandidacy = vi.fn();
+const mockGetElectionResults = vi.fn();
 
 vi.mock('../../../services/api', () => ({
   governanceAPI: {
     castElectionVote: (...a: unknown[]) => mockCastElectionVote(...a),
     registerCandidacy: (...a: unknown[]) => mockRegisterCandidacy(...a),
+    getElectionResults: (...a: unknown[]) => mockGetElectionResults(...a),
   },
 }));
 
@@ -182,5 +184,43 @@ describe('ElectionCard', () => {
 
     expect(container.querySelector('.gov-nominate-form')).toBeNull();
     expect(container.textContent).toContain('You are registered as a candidate.');
+  });
+
+  it('fetches GET …/results when COMPLETED embed is empty (WO-WIRE-ELECTION-RESULTS-API)', async () => {
+    mockGetElectionResults.mockResolvedValue({
+      results: {
+        tallies: { 'player-a': 12, 'player-b': 3 },
+        total_weight: 15,
+        winner: 'player-a',
+        voided: false,
+        position: 'governor',
+        tallied_at: '2026-08-01T00:00:00Z',
+      },
+    });
+
+    const completed: Election = {
+      ...ACTIVE_ELECTION,
+      status: 'completed',
+      results: null,
+    };
+
+    await act(async () => {
+      root.render(
+        <ElectionCard
+          election={completed}
+          regionId="region-1"
+          currentPlayerId="player-c"
+          canVote={true}
+          isCitizen={true}
+          onChanged={() => {}}
+        />
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockGetElectionResults).toHaveBeenCalledWith('region-1', 'election-1');
+    expect(container.textContent).toContain('player-a'.slice(0, 8));
+    expect(container.querySelector('.gov-result-winner')).toBeTruthy();
   });
 });
