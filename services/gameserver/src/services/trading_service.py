@@ -233,6 +233,120 @@ def compute_region_tariff_multiplier(db: Session, station) -> Tuple[float, float
         return 1.0, 0.0
 
 
+# ----------------------------------------------------------------------
+# Region tax (WO-BUILD-REGION-TAX-RATE-WIRING / WO-BUILD-REGION-TAX-REVENUE-
+# SHARE-PAYOUT) — distinct from the region TARIFF above and from
+# Station.tax_rate. Region.tax_rate (CHECK 0.05-0.25, DECIMAL(5,4)) is a
+# governance-set levy on every taxable trade IN the region, independent of
+# whether the traded station itself has an owner (station tax is an owner
+# lever that goes dark for unowned stations; region tax does not — it is
+# the region GOVERNMENT's levy, not a station owner's). Unlike the station
+# tax's 40/30/30 defense/owner/operating split (port_ownership_service.
+# realize_port_revenue), region tax has a simpler two-way split: 50% to the
+# region OWNER (DECISIONS.md region-tax-revenue-share, ratified 2026-08-07,
+# first-cut default subject to a future balance-tuning pass) via the
+# Central Nexus Bank / wallet, 50% into Region.treasury_balance. This is
+# DISTINCT from regional_governance_service.compute_treasury_adjustment /
+# POLICY_TREASURY_KEY, which is a manual, policy-driven treasury spend —
+# region tax collection is automatic and per-trade.
+REGION_TAX_OWNER_SHARE = 0.5
+
+
+def compute_region_tax_rate(station) -> float:
+    """Effective Region.tax_rate for `station`'s region (0.0 if the station
+    sits outside any region). Applies regardless of station ownership —
+    region tax is a governance levy, not an owner lever."""
+    region = getattr(station, "region", None)
+    if region is None:
+        return 0.0
+    return float(region.tax_rate or 0.0)
+
+
+def realize_region_tax(db: Session, station, tax_amount: int) -> Dict[str, Any]:
+    """Realize a collected Region.tax_rate charge: credit Region.treasury_
+    balance with a RegionalTreasuryEntry ledger row (ADR-0059 N-I4,
+    CAUSE_TAX_COLLECTION), and pay the ratified REGION_TAX_OWNER_SHARE cut
+    to Region.owner_id's Player wallet (online) or Central Nexus Bank
+    (offline) via central_bank_service.credit_wallet_or_bank.
+
+    No-op (all-zero result) if tax_amount <= 0 or the station has no region.
+    An unclaimed region (owner_id is None) — or any failure resolving/
+    paying the owner (no linked Player row, DB hiccup) — routes the FULL
+    tax_amount to the treasury instead of erroring; the owner cut is folded
+    in, never dropped. No commit; caller owns the transaction (mirrors
+    realize_port_revenue)."""
+    result: Dict[str, Any] = {
+        "region_tax": 0, "owner_share": 0, "treasury_share": 0,
+        "owner_payout_dest": None,
+    }
+    if tax_amount <= 0:
+        return result
+    region = getattr(station, "region", None)
+    if region is None and getattr(station, "region_id", None) is not None:
+        from src.models.region import Region
+        region = db.query(Region).filter(Region.id == station.region_id).first()
+    if region is None:
+        return result
+
+    from src.models.region import Region, RegionalTreasuryEntry
+    region = (
+        db.query(Region)
+        .filter(Region.id == region.id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    if region is None:
+        return result
+
+    owner_share = int(tax_amount * REGION_TAX_OWNER_SHARE) if region.owner_id is not None else 0
+    treasury_share = tax_amount - owner_share
+
+    owner_payout_dest = None
+    if owner_share > 0:
+        try:
+            from src.models.user import User
+            owner_user = db.query(User).filter(User.id == region.owner_id).first()
+            owner_player = getattr(owner_user, "player", None) if owner_user else None
+            if owner_player is None:
+                raise ValueError("region owner has no linked Player row")
+            from src.services import central_bank_service
+            owner_payout_dest = central_bank_service.credit_wallet_or_bank(
+                db, owner_player, owner_share,
+                entry_type="region_tax_revenue_share",
+                source=f"region:{region.id}",
+                notes=f"{int(REGION_TAX_OWNER_SHARE * 100)}% region-tax revenue share (station {station.id})",
+            )
+        except Exception:
+            logger.warning(
+                "region tax owner payout failed; folding owner share into treasury",
+                exc_info=True,
+            )
+            treasury_share += owner_share
+            owner_share = 0
+
+    before = int(region.treasury_balance or 0)
+    after = before + treasury_share
+    region.treasury_balance = after
+    db.add(RegionalTreasuryEntry(
+        region_id=region.id,
+        before_balance=before,
+        after_balance=after,
+        delta=treasury_share,
+        cause_type=RegionalTreasuryEntry.CAUSE_TAX_COLLECTION,
+        cause_id=station.id,
+        reason=f"Region tax collected via station {station.id}",
+    ))
+
+    result.update(
+        region_tax=tax_amount,
+        owner_share=owner_share,
+        treasury_share=treasury_share,
+        owner_payout_dest=owner_payout_dest,
+    )
+    return result
+
+
 def _buyer_is_station_owner_or_team(db: Session, player, station) -> bool:
     """E-F1 same-owner/team test: the lever is skipped when the buyer owns the
     station, or is on the team that owns it. Station ownership is single-owner
