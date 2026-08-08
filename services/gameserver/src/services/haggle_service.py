@@ -741,6 +741,25 @@ class HaggleService:
                 "(a prior offer was rejected)"
             )
 
+        # Round-reset exploit guard: a session that is still IN-PROGRESS (status
+        # "open") has not been closed, so the point-7 cooldown never fired — but
+        # unconditionally overwriting it with a fresh round-1 session let a player
+        # binary-search the acceptance threshold for free by re-opening mid-session
+        # instead of submitting an offer. Re-opening an in-progress session just
+        # RESUMES it at its current round/band rather than resetting progress.
+        existing = state["sessions"].get(key)
+        if existing and existing.get("status") == "open":
+            personality = tp.normalize_personality(station.trader_personality)
+            fair = float(existing["fair_price"])
+            band_mult = float(existing["band_multiplier"])
+            round_index = int(existing["round"])
+            band = _compute_band(fair, side, round_index, band_mult, commodity)
+            # quantity may legitimately change between opens (still same round/band).
+            existing["quantity"] = int(quantity)
+            state["sessions"][key] = existing
+            _save_haggle_state(player, state)
+            return self._card(existing, band, personality)
+
         # Re-entry cooldown after a non-reject close.
         cd = state["cooldowns"].get(key)
         if cd:
