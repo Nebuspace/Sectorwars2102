@@ -84,6 +84,10 @@ const ElectionCard: React.FC<ElectionCardProps> = ({
   const [nominating, setNominating] = useState(false);
   const [nominateError, setNominateError] = useState<string | null>(null);
   const [justRegistered, setJustRegistered] = useState(false);
+  // WO-WIRE-ELECTION-RESULTS-API — list payloads sometimes omit results;
+  // fetch GET …/results when COMPLETED and the embed is empty.
+  const [fetchedResults, setFetchedResults] = useState<Election['results']>(null);
+  const [resultsLoading, setResultsLoading] = useState(false);
 
   useEffect(() => {
     if (election.status !== 'pending') return undefined;
@@ -91,6 +95,34 @@ const ElectionCard: React.FC<ElectionCardProps> = ({
     return () => window.clearInterval(id);
   }, [election.status]);
 
+  useEffect(() => {
+    if (election.status !== 'completed') {
+      setFetchedResults(null);
+      return undefined;
+    }
+    if (election.results) {
+      setFetchedResults(null);
+      return undefined;
+    }
+    let cancelled = false;
+    setResultsLoading(true);
+    governanceAPI
+      .getElectionResults(regionId, election.id)
+      .then((data: { results?: Election['results'] }) => {
+        if (!cancelled) setFetchedResults(data?.results ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setFetchedResults(null);
+      })
+      .finally(() => {
+        if (!cancelled) setResultsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [election.status, election.id, election.results, regionId]);
+
+  const results = election.results ?? fetchedResults;
   const isAlreadyCandidate = useMemo(() => {
     if (justRegistered) return true;
     if (!currentPlayerId) return false;
@@ -253,28 +285,29 @@ const ElectionCard: React.FC<ElectionCardProps> = ({
       )}
 
       {election.status === 'completed' && (
-        <div className="gov-election-results">
-          {!election.results && <p className="gov-muted">Results pending.</p>}
-          {election.results && election.results.inconclusive && (
+        <div className="gov-election-results" data-testid="gov-election-results">
+          {resultsLoading && <p className="gov-muted">Loading results…</p>}
+          {!resultsLoading && !results && <p className="gov-muted">Results pending.</p>}
+          {results && results.inconclusive && (
             <p className="gov-ineligible-note">INCONCLUSIVE — no votes were cast.</p>
           )}
-          {election.results && !election.results.inconclusive && election.results.voided && (
+          {results && !results.inconclusive && results.voided && (
             <p className="gov-ineligible-note">
               VOIDED — no candidate cleared the required supermajority.
             </p>
           )}
-          {election.results && (
+          {results && (
             <ul className="gov-results-list">
-              {Object.entries(election.results.tallies)
+              {Object.entries(results.tallies)
                 .sort(([, a], [, b]) => b - a)
                 .map(([cid, weight]) => (
                   <li
                     key={cid}
-                    className={cid === election.results?.winner ? 'gov-result-winner' : ''}
+                    className={cid === results.winner ? 'gov-result-winner' : ''}
                   >
                     <span>
                       {cid === currentPlayerId ? <strong>YOU</strong> : cid.slice(0, 8)}
-                      {cid === election.results?.winner ? ' 🏆' : ''}
+                      {cid === results.winner ? ' 🏆' : ''}
                     </span>
                     <span>{weight.toLocaleString()}</span>
                   </li>
