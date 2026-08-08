@@ -104,6 +104,8 @@ function buildMockGameValue(mode: ShellMode): NonNullable<React.ContextType<type
     undockFromStation: asyncNoop,
     getStationSlips: async () => null,
     bumpDockOccupant: asyncNoop,
+    tractorLock: null,
+    clearTractorLock: noop,
     marketInfo: null,
     getMarketInfo: asyncNoop,
     buyResource: asyncNoop,
