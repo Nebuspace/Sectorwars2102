@@ -1387,35 +1387,26 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Defense telemetry — GET /planets/{id}/defenses (no ownership required;
-  // useful for scouting). Returns {shieldGenerator: {level, maxLevel, name,
-  // strength, currentShields, regenPerHour, nextUpgrade: {level, name,
-  // strength, regenPerHour, cost} | null}, defenseLevel, damageReduction,
-  // turrets, fighters}.
+  // Defense telemetry — WO-WIRE-PLANETARY-DEFENSE-INFO: planetaryAPI.getDefenses.
   const getPlanetDefenseInfo = async (planetId: string) => {
     if (!user) throw new Error('Not authenticated');
 
     try {
-      const response = await api.get(`/api/v1/planets/${planetId}/defenses`);
-      return response.data;
+      return await planetaryAPI.getDefenses(planetId);
     } catch (error: any) {
       console.error('Error getting planet defense info:', error);
       throw error;
     }
   };
 
-  // Upgrade the planet's shield generator by one level — POST
-  // /planets/{id}/shields/upgrade. Returns {shieldGenerator: {level, name,
-  // strength, regenPerHour, maxLevel}, creditsCost, creditsRemaining,
-  // nextUpgradeCost}; errors arrive as 400 detail strings.
+  // Upgrade the planet's shield generator — planetaryAPI.upgradeShields.
   const upgradeShields = async (planetId: string) => {
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/shields/upgrade`);
-      // Upgrade deducts player credits
+      const data = await planetaryAPI.upgradeShields(planetId);
       await refreshPlayerState();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error upgrading shields:', error);
       throw error;

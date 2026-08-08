@@ -211,6 +211,15 @@ export const planetaryAPI = {
       body: JSON.stringify({ specialization })
     }),
 
+  // Defense telemetry — GET /planets/{id}/defenses (scouting-friendly; no
+  // ownership required). Distinct from updateDefenses (PUT) / getDefensePricing.
+  getDefenses: (planetId: string) =>
+    apiRequest(`/api/v1/planets/${planetId}/defenses`),
+
+  // Upgrade the planet's shield generator by one level.
+  upgradeShields: (planetId: string) =>
+    apiRequest(`/api/v1/planets/${planetId}/shields/upgrade`, { method: 'POST' }),
+
   getSiegeStatus: (planetId: string) =>
     apiRequest(`/api/v1/planets/${planetId}/siege-status`)
 };
