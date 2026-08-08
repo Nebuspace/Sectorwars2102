@@ -17,10 +17,11 @@
  * Inbox + composer logic (message list, unread-driven refetch, send/reply,
  * recipient sourcing) is ported from the retiring components/comms/
  * CommsMailbox.tsx HAILS mode — same GameContext binding
- * (inboxMessages/refreshInbox/sendPlayerMessage/markMessageRead), same two
+ * (inboxMessages/refreshInbox/sendPlayerMessage/markMessageRead/deletePlayerMessage), same two
  * recipient sources: HAIL a sector contact (player_id required — NPCs and
  * live-WS-only contacts without a snapshot entry don't get a HAIL button)
  * or REPLY to an inbox message. No manual recipient entry in v1.
+ * WO-WIRE-MESSAGE-DELETE: expanded hails expose PURGE → deletePlayerMessage.
  */
 
 import React from 'react';
@@ -65,6 +66,7 @@ const CommsCrewPage: React.FC = () => {
     refreshInbox,
     sendPlayerMessage,
     markMessageRead,
+    deletePlayerMessage,
   } = useGame();
   const { isConnected, sectorPlayers, newMessageSignal } = useWebSocket();
   const { user } = useAuth();
@@ -127,6 +129,7 @@ const CommsCrewPage: React.FC = () => {
   const [isSending, setIsSending] = React.useState(false);
   const [sendError, setSendError] = React.useState<string | null>(null);
   const [sendNotice, setSendNotice] = React.useState<string | null>(null);
+  const [deletingId, setDeletingId] = React.useState<string | null>(null);
 
   // Initial inbox fetch once auth has hydrated, then again on every live
   // new_message notification — the unread badge stays current without a
@@ -202,6 +205,21 @@ const CommsCrewPage: React.FC = () => {
     setSendNotice(null);
   };
 
+  const handleDelete = async (msg: PlayerMessage) => {
+    if (deletingId) return;
+    setDeletingId(msg.id);
+    setSendError(null);
+    try {
+      await deletePlayerMessage(msg.id);
+      if (expandedId === msg.id) setExpandedId(null);
+      if (compose?.replyToId === msg.id) clearCompose();
+    } catch (err: unknown) {
+      setSendError(err instanceof Error ? err.message : 'Failed to purge transmission');
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   const handleSend = async () => {
     if (!compose || !composeContent.trim() || isSending) return;
 
@@ -268,9 +286,20 @@ const CommsCrewPage: React.FC = () => {
                 {expandedId === msg.id && (
                   <div className="mfd-page-comms-hail-body">
                     <p className="mfd-page-comms-hail-content">{msg.content}</p>
-                    <button className="mfd-page-comms-reply-btn" onClick={() => startReply(msg)}>
-                      ↩ REPLY
-                    </button>
+                    <div className="mfd-page-comms-hail-actions">
+                      <button className="mfd-page-comms-reply-btn" onClick={() => startReply(msg)}>
+                        ↩ REPLY
+                      </button>
+                      <button
+                        className="mfd-page-comms-delete-btn"
+                        data-testid="comms-purge-hail"
+                        disabled={deletingId === msg.id}
+                        onClick={() => handleDelete(msg)}
+                        title="Purge this transmission from your inbox"
+                      >
+                        {deletingId === msg.id ? 'PURGING…' : '✕ PURGE'}
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
