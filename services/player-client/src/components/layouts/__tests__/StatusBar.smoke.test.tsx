@@ -81,6 +81,7 @@ vi.mock('../../../contexts/WebSocketContext', () => ({
 }));
 
 const mockGetReputation = vi.fn();
+const mockGetFactions = vi.fn();
 const mockGetRank = vi.fn();
 const mockGetProgress = vi.fn();
 const mockGetMedals = vi.fn();
@@ -92,6 +93,8 @@ const mockBeaconMine = vi.fn();
 vi.mock('../../../services/api', () => ({
   factionAPI: {
     getReputation: (...a: unknown[]) => mockGetReputation(...a),
+    // WO-WIRE-FACTION-CATALOG — ReputationPage parallel-fetches catalog.
+    getFactions: (...a: unknown[]) => mockGetFactions(...a),
   },
   rankingAPI: {
     getRank: (...a: unknown[]) => mockGetRank(...a),
@@ -159,6 +162,7 @@ const FULL_PROGRESS = {
 };
 
 mockGetReputation.mockResolvedValue([]);
+mockGetFactions.mockResolvedValue([]);
 mockGetRank.mockResolvedValue(FULL_RANK);
 mockGetProgress.mockResolvedValue(FULL_PROGRESS);
 mockGetMedals.mockResolvedValue({ earned: [], available: [] });

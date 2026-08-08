@@ -112,8 +112,12 @@ const ReputationPage: React.FC = () => {
     let cancelled = false;
     Promise.all([
       factionAPI.getReputation() as Promise<FactionReputationRow[]>,
-      // Catalog is best-effort — standings still render if it fails.
-      factionAPI.getFactions().catch(() => [] as FactionCatalogEntry[]) as Promise<FactionCatalogEntry[]>,
+      // Catalog is best-effort — standings still render if it fails OR if a
+      // partial test mock only stubs getReputation (StatusBar dossier smoke).
+      (typeof factionAPI.getFactions === 'function'
+        ? factionAPI.getFactions()
+        : Promise.resolve([])
+      ).catch(() => [] as FactionCatalogEntry[]) as Promise<FactionCatalogEntry[]>,
     ])
       .then(([repData, catalog]) => {
         if (cancelled) return;
