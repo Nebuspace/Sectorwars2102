@@ -12,6 +12,7 @@ from typing import Dict, Any
 from sqlalchemy.orm import Session
 
 from src.models.player import Player
+from src.services.trading_service import _PERSONAL_REP_TIER_MULTIPLIERS
 from src.services.wanted_service import recompute_is_wanted
 
 logger = logging.getLogger(__name__)
@@ -117,21 +118,22 @@ class PersonalReputationService:
         score = player.personal_reputation
         tier, color = self._get_tier_for_score(score)
 
-        # Gameplay effects based on alignment
+        # Gameplay effects based on alignment. The price effect is derived
+        # from _PERSONAL_REP_TIER_MULTIPLIERS -- the same table
+        # compute_player_price_multiplier() actually charges -- so this
+        # display never drifts from what the player is really paying (was
+        # previously a separately hand-maintained ladder that had drifted:
+        # e.g. Suspicious showed "no effect" while actually paying +5%).
         effects = {}
-        if score <= -500:
-            effects["station_price_increase"] = 20  # 20% markup at lawful stations
+        personal_mult = _PERSONAL_REP_TIER_MULTIPLIERS.get(tier, 1.0)
+        if personal_mult > 1.0:
+            effects["station_price_increase"] = round((personal_mult - 1.0) * 100)
+        elif personal_mult < 1.0:
+            effects["station_price_discount"] = round((1.0 - personal_mult) * 100)
+        if tier in ("Criminal", "Villain"):
             effects["bounty_hunter_aggro"] = True
-        elif score <= -250:
-            effects["station_price_increase"] = 10
-        elif score >= 500:
-            effects["station_price_discount"] = 10  # 10% discount at lawful stations
+        if tier in ("Heroic", "Legendary"):
             effects["faction_standing_bonus"] = 5
-        elif score >= 250:
-            effects["station_price_discount"] = 5
-            effects["faction_standing_bonus"] = 5
-        elif score >= 1:
-            effects["station_price_discount"] = 5
 
         return {
             "success": True,
