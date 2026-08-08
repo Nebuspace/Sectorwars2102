@@ -19,6 +19,28 @@
      other five rendered transparent. Promoted to :root so every modal has a
      solid backing (WO-COCKPIT-TABBED). */
   --surface-primary: #141a24;
+  /* Sibling tokens from the retired .colony-specialization palette
+     (WO-RETIRE-COLONY-SPECIALIZATION-MODAL). Same bug class as
+     --surface-primary / --accent-primary: other planetary/*.css files
+     reference these bare; they were only ever defined under the deleted
+     modal scope, so deleting the file without promoting them fails
+     check:tokens. Values copied verbatim from colony-specialization.css. */
+  --bg-primary: #0a0d12;
+  --bg-secondary: #11151c;
+  --surface-secondary: #1a2230;
+  --surface-tertiary: #232c3b;
+  --border-primary: #2a3647;
+  --border-secondary: #1f2735;
+  --text-primary: #e6edf3;
+  --text-secondary: #9fb2c4;
+  --text-tertiary: #6c7d90;
+  --accent-secondary: #7dd3fc;
+  --success-color: #34c759;
+  --warning-color: #f5a623;
+  --error-color: #ff453a;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
   --hover-bg: #334155;
   /* Same bug class as --surface-primary above (QUEUE-CSSVAR-DEFECT): was only
      ever defined scoped to .colony-specialization, so every OTHER planetary/
@@ -26,13 +48,11 @@
      defense-configuration, genesis-deployment, planet-manager,
      production-dashboard, siege-status-monitor -- 61 usage sites across 8
      files) rendered its hover/selected border-color as nothing/invisible.
-     Value #00d9ff copied verbatim from the ONLY real declaration
-     (colony-specialization.css's own `.colony-specialization { --accent-primary: #00d9ff }`),
+     Value #00d9ff copied verbatim from the former
+     colony-specialization.css `.colony-specialization { --accent-primary: #00d9ff }`
+     (file retired with WO-RETIRE-COLONY-SPECIALIZATION-MODAL),
      corroborated by 3 of the 6 existing var(--accent-primary, <fallback>)
-     guards elsewhere already landing on this exact value. Promoted to :root;
-     the local declaration in colony-specialization.css is left in place
-     (same value, harmless local reinforcement -- matches how --surface-primary
-     was handled). */
+     guards elsewhere already landing on this exact value. Promoted to :root. */
   --accent-primary: #00d9ff;
   /* Referenced (bare, no fallback) by teams/mission-planner.css,
      teams/team-manager.css, teams/team-chat.css, teams/resource-sharing.css
