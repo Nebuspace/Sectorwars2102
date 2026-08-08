@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { beaconAPI, type MyBeacon } from '../../services/api';
+import { useGame } from '../../contexts/GameContext';
 import EmptyState from '../common/EmptyState';
 
 /**
@@ -8,10 +9,13 @@ import EmptyState from '../common/EmptyState';
  * the player has deployed across the universe, with read counts and
  * salvage / expire links"). Same "compact roster in a fixed-size dropdown"
  * shape as ColoniesRosterTab/GovSummaryTab, but this one carries mutating
- * actions (read/salvage/recharge/report) since the dropdown is the ONLY
+ * actions (deploy/read/salvage/recharge/report) since the dropdown is the ONLY
  * place a deployer manages beacons they aren't currently standing next to
  * — there is no separate full-page destination to link out to (unlike
  * Colonies/Governance, which hand off to a real console).
+ *
+ * WO-WIRE-MESSAGE-BEACON-DEPLOY: deploy form POSTs /beacons/deploy at the
+ * player's current sector (5 turns + 500cr + 1 equipment).
  *
  * Read/salvage/report all require the ACTING player to be physically in
  * the beacon's sector server-side (message_beacon_service.read/salvage/
@@ -30,12 +34,24 @@ type RowBusy = 'read' | 'salvage' | 'recharge' | 'report' | null;
 const formatState = (state: string): string => state.replace(/_/g, ' ');
 
 const MyBeaconsTab: React.FC = () => {
+  const { playerState, currentSector, refreshPlayerState } = useGame();
   const [beacons, setBeacons] = useState<MyBeacon[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<RowBusy>(null);
   const [rowMessages, setRowMessages] = useState<Record<string, string>>({});
   const [expandedMessage, setExpandedMessage] = useState<Record<string, string>>({});
+
+  const [deployMessage, setDeployMessage] = useState('');
+  const [deployReadOnce, setDeployReadOnce] = useState(false);
+  const [deployBusy, setDeployBusy] = useState(false);
+  const [deployFeedback, setDeployFeedback] = useState<string | null>(null);
+
+  const sectorId =
+    currentSector?.sector_id ??
+    currentSector?.id ??
+    playerState?.current_sector_id ??
+    null;
 
   const load = useCallback(() => {
     let cancelled = false;
@@ -58,6 +74,32 @@ const MyBeaconsTab: React.FC = () => {
 
   const setRowMessage = (id: string, msg: string) =>
     setRowMessages((prev) => ({ ...prev, [id]: msg }));
+
+  const handleDeploy = async () => {
+    if (sectorId == null || !deployMessage.trim() || deployBusy) return;
+    setDeployBusy(true);
+    setDeployFeedback(null);
+    try {
+      await beaconAPI.deploy({
+        sector_id: Number(sectorId),
+        message: deployMessage.trim(),
+        read_once: deployReadOnce,
+      });
+      setDeployMessage('');
+      setDeployReadOnce(false);
+      setDeployFeedback('Beacon deployed.');
+      load();
+      try {
+        await refreshPlayerState();
+      } catch {
+        /* deploy already succeeded */
+      }
+    } catch (err) {
+      setDeployFeedback(err instanceof Error ? err.message : 'Deploy failed');
+    } finally {
+      setDeployBusy(false);
+    }
+  };
 
   const runAction = async (beacon: MyBeacon, action: RowBusy) => {
     if (!action) return;
@@ -111,6 +153,51 @@ const MyBeaconsTab: React.FC = () => {
     }
   };
 
+  const deployForm = (
+    <div className="sb-beacons-deploy" data-testid="beacon-deploy-form">
+      <div className="sb-beacons-deploy-title">
+        Deploy here{sectorId != null ? ` · sector ${sectorId}` : ''}
+      </div>
+      <textarea
+        className="sb-beacons-deploy-message"
+        data-testid="beacon-deploy-message"
+        maxLength={500}
+        rows={2}
+        placeholder="Message (≤500 chars) — costs 5 turns, ₡500, 1 equipment"
+        value={deployMessage}
+        onChange={(e) => setDeployMessage(e.target.value)}
+        disabled={deployBusy || sectorId == null}
+        aria-label="Beacon message"
+      />
+      <div className="sb-beacons-deploy-row">
+        <label className="sb-beacons-deploy-once">
+          <input
+            type="checkbox"
+            data-testid="beacon-deploy-read-once"
+            checked={deployReadOnce}
+            onChange={(e) => setDeployReadOnce(e.target.checked)}
+            disabled={deployBusy}
+          />
+          Read-once
+        </label>
+        <button
+          type="button"
+          className="sb-beacons-deploy-btn"
+          data-testid="beacon-deploy-submit"
+          disabled={deployBusy || sectorId == null || !deployMessage.trim()}
+          onClick={handleDeploy}
+        >
+          {deployBusy ? 'Deploying…' : 'Deploy'}
+        </button>
+      </div>
+      {deployFeedback && (
+        <div className="sb-beacons-row-message" role="status" data-testid="beacon-deploy-feedback">
+          {deployFeedback}
+        </div>
+      )}
+    </div>
+  );
+
   if (error) {
     return <div className="sb-beacons-error" role="alert">{error}</div>;
   }
@@ -125,16 +212,20 @@ const MyBeaconsTab: React.FC = () => {
 
   if (beacons.length === 0) {
     return (
-      <EmptyState
-        icon="📡"
-        title="No Beacons Deployed"
-        message="Deploy a message beacon from your ship to leave a note in this sector for other travelers."
-      />
+      <div className="sb-beacons-empty-with-deploy">
+        {deployForm}
+        <EmptyState
+          icon="📡"
+          title="No Beacons Deployed"
+          message="Leave a note in this sector for other travelers (form above)."
+        />
+      </div>
     );
   }
 
   return (
     <div className="sb-beacons-roster">
+      {deployForm}
       <ul className="sb-beacons-list">
         {beacons.map((b) => {
           const isBusy = busyId === b.id;
