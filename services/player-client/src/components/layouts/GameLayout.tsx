@@ -17,6 +17,7 @@ import MedalUnviewedSplash from '../ranking/MedalUnviewedSplash';
 import TractorLockPrompt from '../station/TractorLockPrompt';
 import TowConsentPanel from '../station/TowConsentPanel';
 import CarrierHangarPanel from '../station/CarrierHangarPanel';
+import RecoveryConsolePanel from '../station/RecoveryConsolePanel';
 import PriorityHailConsumer from '../comms/PriorityHailConsumer';
 import WelcomeBackToast from '../auth/WelcomeBackToast';
 import GcLapsePanel from '../auth/GcLapsePanel';
@@ -405,6 +406,8 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
       <TowConsentPanel />
       {/* Carrier hangar consent (WO-WIRE-CARRIER-HANGAR-UI): status + Accept/Undock. */}
       <CarrierHangarPanel />
+      {/* Stranding recovery desk (WO-WIRE-RECOVERY-CONSOLE): distress / slipdrive / escape pod. */}
+      <RecoveryConsolePanel />
       {/* Priority-driven hail surfaces (WO-B6): the in-game notification toast
           stack (normal/high messages + other WS toasts) and the urgent
           action-interrupting modal — per messaging.md "Priority levels". */}

@@ -1486,3 +1486,46 @@ export const towAPI = {
   detach: () => apiRequest('/api/v1/tow/detach', { method: 'POST' }),
 };
 
+/** Stranding recovery console (WO-WIRE-RECOVERY-CONSOLE). */
+export type RecoveryDistressStatus = {
+  available: boolean;
+  cooldown_until?: string | null;
+  last_used_at?: string | null;
+};
+
+export type RecoverySlipdriveStatus = {
+  charging: boolean;
+  charge_deadline?: string | null;
+  ready: boolean;
+  cancelled_by_movement?: boolean;
+};
+
+export type RecoveryStatus = {
+  distress_beacon: RecoveryDistressStatus;
+  slipdrive: RecoverySlipdriveStatus;
+};
+
+export const recoveryAPI = {
+  getStatus: (): Promise<RecoveryStatus> => apiRequest('/api/v1/recovery/status'),
+  fireDistressBeacon: () =>
+    apiRequest('/api/v1/recovery/distress-beacon', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  beginSlipdrive: () =>
+    apiRequest('/api/v1/recovery/slipdrive/begin', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  completeSlipdrive: () =>
+    apiRequest('/api/v1/recovery/slipdrive/complete', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  escapePod: () =>
+    apiRequest('/api/v1/recovery/escape-pod', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+};
+
