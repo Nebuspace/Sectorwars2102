@@ -150,13 +150,16 @@ def compute_player_price_multiplier(db: Session, player, station) -> float:
 # ----------------------------------------------------------------------
 # Region tariff + station lever (ADR-0062 E-D3 tail factors, E-F1/E-F2)
 # ----------------------------------------------------------------------
-# These complete the canonical 6-factor stack. E-D3 order:
-#   base x (rep layers) x (1+region_tax) x (1+region_tariff) x (1+station_lever)
-# The rep layers + first-login are compute_player_price_multiplier (above);
-# rank discount + the region/station tax are applied in routes/trading.py.
-# These two helpers add the region COMMERCE tariff and the station MARKETING
-# lever. Both express "what the player PAYS" (> 1.0 = worse deal); the routes
-# divide them back out on a SELL, exactly like the rep multiplier.
+# These complete the canonical unit-price stack (rank, rep x2, tariff, lever
+# -- see market-pricing.md's "Player-facing price modifiers"). Region TAX is
+# NOT part of this stack -- it's a flat treasury levy applied to the
+# transaction TOTAL, after the unit price is clamped to the commodity band
+# (routes/trading.py's compute_buy_totals/compute_sell_totals). The rep
+# layers + first-login are compute_player_price_multiplier (above); rank
+# discount is applied in routes/trading.py alongside these two helpers, which
+# add the region COMMERCE tariff and the station MARKETING lever. Both
+# express "what the player PAYS" (> 1.0 = worse deal); the routes divide them
+# back out on a SELL, exactly like the rep multiplier.
 #
 # STORAGE (no migration — alembic head is stranded): the tariff lives in the
 # Region's existing trade_bonuses JSONB under the "tariff_rate" key; the lever
