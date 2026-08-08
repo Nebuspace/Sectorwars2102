@@ -61,10 +61,12 @@ UTC = timezone.utc
 #     - declining_session_length / early_logout_streak  ← PlayerSession
 #       (populated on every login/logout; needs DECLINING_MIN_SESSIONS=5
 #       completed sessions to accumulate before it can trip)
-#   STILL DORMANT (no production call site writes trade events at all —
-#   PlayerActivityService.track_activity, which would populate this table for
-#   trade_buy/trade_sell, has zero callers; the trading services never invoke
-#   it — a genuinely separate, larger follow-up than the session mirror):
+#   STILL DORMANT (trading.py now calls track_activity() for trade_buy/
+#   trade_sell as of WO-WIRE-RETENTION-TRADE-ACTIVITY, but track_activity's
+#   trade path only updates the Redis session counters/event list — unlike
+#   the login/logout path, it never inserts a SQL PlayerActivity row. This
+#   SELECT (activity_type IN trade_buy/trade_sell) still always returns
+#   empty; a genuinely separate, larger follow-up than the session mirror):
 #     - economic_loss_streak                            ← PlayerActivity (empty)
 #   This is flagged for DECISIONS.md. WO-G18's Region.active_players_30d
 #   recompute now gets partial (login/logout-boundary) PlayerActivity rows
