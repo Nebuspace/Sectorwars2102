@@ -1111,7 +1111,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Update planet production allocation (colonist headcounts).
+  // Update planet production allocation — WO-WIRE-PLANETARY-ALLOCATE:
+  // planetaryAPI.allocateColonists (same URL; body is response payload).
   // PUT /allocate returns {success, allocations: {fuel, organics, equipment,
   // unused}, productionRates: {fuel, organics, equipment, colonists}}.
   // No global isLoading/error churn: the allocation sliders persist on a
@@ -1125,8 +1126,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user) throw new Error('Not authenticated');
 
     try {
-      const response = await api.put(`/api/v1/planets/${planetId}/allocate`, allocations);
-      return response.data;
+      return await planetaryAPI.allocateColonists(planetId, allocations);
     } catch (error: any) {
       console.error('Error updating planet allocation:', error);
       throw error;
