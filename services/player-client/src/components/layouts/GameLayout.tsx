@@ -16,6 +16,7 @@ import MedalToast from '../ranking/MedalToast';
 import MedalUnviewedSplash from '../ranking/MedalUnviewedSplash';
 import TractorLockPrompt from '../station/TractorLockPrompt';
 import TowConsentPanel from '../station/TowConsentPanel';
+import CarrierHangarPanel from '../station/CarrierHangarPanel';
 import PriorityHailConsumer from '../comms/PriorityHailConsumer';
 import WelcomeBackToast from '../auth/WelcomeBackToast';
 import GcLapsePanel from '../auth/GcLapsePanel';
@@ -402,6 +403,8 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
       <TractorLockPrompt />
       {/* Tractor tow consent (WO-WIRE-TOW-CONSENT-UI): status poll + Accept/Cancel/Detach. */}
       <TowConsentPanel />
+      {/* Carrier hangar consent (WO-WIRE-CARRIER-HANGAR-UI): status + Accept/Undock. */}
+      <CarrierHangarPanel />
       {/* Priority-driven hail surfaces (WO-B6): the in-game notification toast
           stack (normal/high messages + other WS toasts) and the urgent
           action-interrupting modal — per messaging.md "Priority levels". */}
