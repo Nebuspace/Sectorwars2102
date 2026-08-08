@@ -501,20 +501,6 @@ class RankingService:
 
         return result
 
-    def check_and_promote(self, player_id: uuid.UUID) -> Dict[str, Any]:
-        """Check if a player qualifies for promotion and promote if so.
-
-        Public wrapper that fetches the player by ID.
-        """
-        player = self.db.query(Player).filter(Player.id == player_id).first()
-        if not player:
-            return {"promoted": False, "message": "Player not found"}
-
-        result = self._check_and_promote(player)
-        if result["promoted"]:
-            self.db.flush()
-        return result
-
     def _check_and_promote(self, player: Player) -> Dict[str, Any]:
         """Internal promotion check that operates on a loaded Player object.
 
