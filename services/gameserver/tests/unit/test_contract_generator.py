@@ -13,7 +13,7 @@ import inspect
 import operator
 import uuid
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from types import SimpleNamespace
 from typing import Any, List, Optional
 
@@ -776,7 +776,16 @@ class TestNpcInsurancePoolReserve:
         assert len(db.added) == 1
         c = db.added[0]
         assert c.insurance_pool_reserve > 0
-        assert c.insurance_pool_reserve == (c.payment * Decimal("0.10")).quantize(Decimal("1"))
+        # ROUND_HALF_UP must match write_contract_generation_batch's own
+        # quantize call -- the ambient decimal-context default is
+        # ROUND_HALF_EVEN, which disagrees with ROUND_HALF_UP at an exact
+        # .5 boundary. pick_deadline_hours() is unseeded randomness feeding
+        # the urgency_factor that determines payment, so this only flaked
+        # when a run's random deadline happened to land payment*0.10 on
+        # such a boundary (e.g. Decimal('253') vs Decimal('252')).
+        assert c.insurance_pool_reserve == (c.payment * Decimal("0.10")).quantize(
+            Decimal("1"), rounding=ROUND_HALF_UP,
+        )
 
     def test_npc_contract_escrow_amount_stays_zero(self) -> None:
         """The reserve fix must not disturb escrow_amount, which
