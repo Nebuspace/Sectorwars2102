@@ -419,6 +419,8 @@ interface GameContextType {
     replyToId?: string | null
   ) => Promise<{ message_id: string; sent_at: string }>;
   markMessageRead: (messageId: string) => Promise<void>;
+  /** Soft-delete a hail from the local inbox (DELETE /messages/{id}). */
+  deletePlayerMessage: (messageId: string) => Promise<void>;
 
   // Quantum drive (Warp Jumper) — status is auto-refreshed alongside player
   // state whenever the active ship is a WARP_JUMPER, null otherwise
@@ -1671,6 +1673,29 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  // WO-WIRE-MESSAGE-DELETE — remove a hail from the inbox after server DELETE.
+  const deletePlayerMessage = async (messageId: string): Promise<void> => {
+    if (!user) throw new Error('Not authenticated');
+
+    const victim = inboxMessages.find((msg) => msg.id === messageId);
+    const wasUnread =
+      Boolean(victim) &&
+      !victim!.is_read &&
+      !locallyReadIds.current.has(messageId);
+
+    try {
+      await messageAPI.deleteMessage(messageId);
+      setInboxMessages((prev) => prev.filter((msg) => msg.id !== messageId));
+      locallyReadIds.current.delete(messageId);
+      if (wasUnread) {
+        setUnreadMessageCount((prev) => Math.max(0, prev - 1));
+      }
+    } catch (error: any) {
+      console.error('Error deleting message:', error);
+      throw error;
+    }
+  };
+
   // --- Quantum drive (Warp Jumper): scan / jump / charge refinement ---
   // These follow the Port Office mold: no global isLoading/error churn — the
   // Quantum Drive console surfaces failures inline. Status is a lightweight
@@ -1952,6 +1977,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     refreshInbox,
     sendPlayerMessage,
     markMessageRead,
+    deletePlayerMessage,
 
     // Quantum drive (Warp Jumper)
     quantumStatus,
