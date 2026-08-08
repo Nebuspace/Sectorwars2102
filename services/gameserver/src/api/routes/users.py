@@ -89,7 +89,7 @@ async def create_admin_user(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_scope(PLAYERS_VIEW))
 ):
-    """RETIRED (Max 2026-07-17 / ADR-0058): admin-hood is grant-only.
+    """RETIRED (human 2026-07-17 / ADR-0058): admin-hood is grant-only.
 
     Use ``POST /api/v1/admin/scopes/grant`` (requires ``admin.scopes.grant``).
     """

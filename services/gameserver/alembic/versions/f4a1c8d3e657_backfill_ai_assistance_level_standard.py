@@ -1,6 +1,6 @@
 """Backfill player_trading_profiles.ai_assistance_level 'medium' -> 'standard'.
 
-4-level ARIA assistance vocab ratified 2026-08-04 (Max, per ADR-0068):
+4-level ARIA assistance vocab ratified 2026-08-04 (human, per ADR-0068):
 minimal/quiet/standard/full, replacing the 3-value minimal/medium/full.
 'medium' is renamed to 'standard' with identical semantics -- this is a
 data-only, WHERE-guarded, idempotent backfill (no DDL), mirroring the

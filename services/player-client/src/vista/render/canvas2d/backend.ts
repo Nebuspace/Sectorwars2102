@@ -6907,7 +6907,7 @@ function drawLavaSea(
     jyArr.push(wt + f * f * wh);
   }
 
-  // Max connection radius — roughly a quarter of the band span.
+  // human connection radius — roughly a quarter of the band span.
   const RADIUS = Math.min(w * 0.30, wh * 0.55);
 
   for (let i = 0; i < N; i++) {

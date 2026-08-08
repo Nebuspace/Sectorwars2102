@@ -6,8 +6,8 @@ this exact pattern for `contract_insurance.py`/`contract_dispute.py`).
 Pure move for the two new functions themselves; zero behavior change from
 how they were first written.
 
-RETIRED (WO-CONTRACT-4-BULK, Max-ruled 2026-07-17): this module's own
-pro-rata direct-delivery model is SUPERSEDED, not deleted. Max chose the
+RETIRED (WO-CONTRACT-4-BULK, human-ruled 2026-07-17): this module's own
+pro-rata direct-delivery model is SUPERSEDED, not deleted. human chose the
 STATION-LOCKER fulfillment path instead (deposit_cargo -> complete(),
 storage_service.py -- already built for cargo_delivery, extended to
 bulk_procurement by WO-4) for every bulk_procurement contract going
@@ -232,7 +232,7 @@ def deliver(
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """RETIRED (WO-CONTRACT-4-BULK) -- dormant, not wired to any route;
-    Max chose the station-locker fulfillment path instead (see this
+    human chose the station-locker fulfillment path instead (see this
     module's own docstring). Kept function-only for now.
 
     Bulk-procurement partial delivery -- contracts.md:130: "Partial
@@ -375,7 +375,7 @@ def walk_away_bulk_procurement(
     db: Session, contract_id: uuid.UUID, player_id: uuid.UUID, now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """RETIRED (WO-CONTRACT-4-BULK) -- dormant, not wired to any route;
-    Max chose the station-locker fulfillment path instead, where a bulk
+    human chose the station-locker fulfillment path instead, where a bulk
     contract's abandon() goes through contract_service.abandon()'s own
     now-bulk-aware dispatch (dynamic penalty + EXPIRED, not this
     function's "returns to posted, no penalty" model) -- see this

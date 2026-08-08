@@ -1929,7 +1929,7 @@ class TestBulkProcurementFullLifecycleConservation:
         paid to the issuer -- punitive-sink convention). Locker ->
         CLAIMABLE via the SAME tick's sweep_expired_lockers (acceptor
         keeps the 3 already-deposited units -- a cargo asset, outside
-        this credit-conservation accounting, per Max's own two-mechanics-
+        this credit-conservation accounting, per human's own two-mechanics-
         decoupling ruling). Issuer refunded FULL escrow (1000cr) via the
         SEPARATE, later sweep_expired_dispute_window pass, undisputed."""
         now = datetime.now(UTC)

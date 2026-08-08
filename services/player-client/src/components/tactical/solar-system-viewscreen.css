@@ -101,7 +101,7 @@
   text-shadow: 0 0 10px rgba(0, 217, 255, 0.7);
   padding-right: 18px; /* clear the ✕ tab, on every wrapped line too */
   margin-bottom: 0.25rem;
-  /* WO-TABLEAU-TUNE (Max #25): a real station/planet name (e.g. "TRADE HUB
+  /* WO-TABLEAU-TUNE (human #25): a real station/planet name (e.g. "TRADE HUB
      CAPELWORKS") routinely exceeds the ~20-char single-line budget this
      232px-wide card leaves at 0.85rem bold monospace, so the previous
      nowrap+ellipsis clamp silently cut real names off mid-word. The demo's
@@ -176,7 +176,7 @@
 }
 @keyframes ssv-halt-flash { 50% { filter: brightness(.45); } }
 
-/* FIX C revise (Max correction: right-click must be MENU-mediated, not
+/* FIX C revise (human correction: right-click must be MENU-mediated, not
    direct-travel) — a small floating "Travel To" menu, same HUD-glass
    language as .ssv-popup (rgba/border/backdrop-filter) but sized for a
    single action button instead of an info card. Its own .ssv-popup-action
@@ -246,7 +246,7 @@
 }
 
 /* PURE-CSS starfield — fixed, zero JS/randomness, so a resize only rescales
-   the layer instead of re-rolling star positions (Max addendum #2,
+   the layer instead of re-rolling star positions (human addendum #2,
    live-playtest #8: stars used to jump on every browser resize because the
    canvas painter re-randomized them per render). Demo-verbatim, first child
    of the scene (RATIFIED.html L51-55). */
@@ -562,7 +562,7 @@
 .ssv-tableau .other .pltag { font-size: .62em; color: #7FA3C0; }
 .ssv-tableau .other:hover { color: #CFE8FA; }
 
-/* Moon child-orbits (Max refinement 5a): system-level bodies stay FIXED but
+/* Moon child-orbits (human refinement 5a): system-level bodies stay FIXED but
    a planet's own moons keep slow, local, parent-anchored motion. A rotating
    0x0 wrapper centered on the planet + a dot translated out by the orbit
    radius — pure CSS, so it dies for free under reduced-motion below.
@@ -577,7 +577,7 @@
 .ssv-tableau .moon-orbit.ccw { animation-direction: reverse; }
 .ssv-tableau .moon-dot {
   /* Slightly dim + a soft (not point-source) glow — reads as a nearby moon
-     catching starlight, not a bright background star (Max addendum #9).
+     catching starlight, not a bright background star (human addendum #9).
      width/height default here is a fallback only — WindshieldTableau.tsx
      always sets an inline width/height from windshieldTableauLayout.ts's
      per-moon `sizeEm` (MOON_DOT_MIN_EM..MOON_DOT_MAX_EM), so moons within
@@ -659,15 +659,15 @@
   align-self: center;
 }
 
-/* SCROLL-LAW EXCEPTION (Max ruling, T1-B): the SOLAR SYSTEM object list
-   is a secondary sensor readout, not the panel's primary action — Max
+/* SCROLL-LAW EXCEPTION (human ruling, T1-B): the SOLAR SYSTEM object list
+   is a secondary sensor readout, not the panel's primary action — human
    explicitly ruled it should SCROLL WITHIN ITSELF when long rather than
    cap the object count. `.mbody` (cockpit-shell.css) already carries a
    base `overflow-y:auto` shared by every monitor; this reaffirms it
    scoped + documented for THIS panel specifically, so a future Scroll-Law
    audit reads the ruling here instead of "fixing" it by truncating the
    list or forcing the document to scroll. Do not remove without a fresh
-   Max ruling.
+   human ruling.
    ============================================================ */
 .system-monitor .mbody {
   overflow-y: auto;

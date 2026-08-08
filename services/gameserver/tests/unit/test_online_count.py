@@ -403,7 +403,7 @@ async def test_presence_zero_is_reported_as_presence_not_mistaken_for_down(monke
 # ">=5.0.1,<9.0.0"}` was already in pyproject.toml and absorbed the aioredis
 # 2.x codebase, so this needed zero new dependencies. `aioredis` itself is
 # still pinned in pyproject.toml/poetry.lock, unused -- pruning it needs a
-# Max-blessed lockfile regen, captured as a follow-up, not done here.
+# human-blessed lockfile regen, captured as a follow-up, not done here.
 #
 # The tests below prove the REAL import chain now succeeds, unfaked: no
 # `sys.modules` injection, the actual `redis_service.py` file is really

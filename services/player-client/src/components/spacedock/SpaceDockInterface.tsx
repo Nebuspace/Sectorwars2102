@@ -635,7 +635,7 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
         return prev.filter(n => n !== num);
       }
       if (prev.length >= 4) {
-        return prev; // Max 4 numbers
+        return prev; // human 4 numbers
       }
       return [...prev, num];
     });

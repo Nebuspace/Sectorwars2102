@@ -668,7 +668,7 @@ export const terraformAPI = {
 
 // Citadel Research APIs (CRT-T1.5-9 / CRT-4 — the empire R&D notification cockpit).
 //
-// Player-facing brand: "Citadel Research" (Max-ruled). These read the now-live
+// Player-facing brand: "Citadel Research" (human-ruled). These read the now-live
 // governed-flywheel economy (the governor + contract sink + faucet copay) and
 // surface the generated, perishable Research-Directive OFFERS. The offers are
 // PUSHED by the server (contract_offer WS frame) and reacted to here — this is a

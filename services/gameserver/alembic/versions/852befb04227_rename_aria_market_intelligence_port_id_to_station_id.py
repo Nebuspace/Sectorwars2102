@@ -15,7 +15,7 @@ ProgrammingError: column "station_id" does not exist. This is what broke
 the orchestrator's sweep leg 8 (every dock 500s).
 
 NON-DESTRUCTIVE BUT NOT STRICTLY ADDITIVE: this is a column RENAME, not an
-ADD -- flagged per the coordination-protocol's migration discipline (Max
+ADD -- flagged per the coordination-protocol's migration discipline (human
 sign-off requested in the implementer's STATUS for this WO). Zero rows on
 stage today, but written as if data existed (a real ALTER TABLE ... RENAME
 COLUMN, not a drop+recreate) since a rename is the correct operation

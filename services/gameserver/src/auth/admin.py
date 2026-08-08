@@ -55,7 +55,7 @@ def create_default_admin(db: Session, max_retries: int = 3) -> None:
     which is an EXISTS(active grant) expression — using that on a fresh
     deploy before grants exist caused a re-INSERT / IntegrityError boot-loop).
     Minting inserts the 3 META_SCOPES grants in the SAME transaction as the
-    user + credentials (Max 2026-07-17: boot-bootstrap grants, don't just set
+    user + credentials (human 2026-07-17: boot-bootstrap grants, don't just set
     the flag).
     """
     retry_count = 0

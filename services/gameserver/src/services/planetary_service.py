@@ -48,7 +48,7 @@ SIEGE_RESOURCE_THEFT_FRACTION = 0.15
 # rates DOWN by the same fraction (the extra cost is paid out of output), applied
 # exactly like SIEGE_PRODUCTION_PENALTY's siege_multiplier just below it.
 #
-# Ratified 2026-08-04 (Max): mutually exclusive with the population-decline
+# Ratified 2026-08-04 (human): mutually exclusive with the population-decline
 # band, not stacked. HABITABILITY_GROWTH_THRESHOLD = 20 already declines
 # population below hab 20; this output penalty applies ONLY across the
 # marginal band [20, 30) — a hab<20 world gets population decline alone, no
@@ -344,7 +344,7 @@ SECONDS_PER_DAY = 86400.0
 # target band above. See WO-PL3-v2 report.
 SURPLUS_PIONEER_RATE_PER_DAY = 0.0005  # NO-CANON: pioneers/colonist/day (faucet)
 
-# Habitability ZERO-CROSSING for natural population growth (WO-AH, Max-ruled:
+# Habitability ZERO-CROSSING for natural population growth (WO-AH, human-ruled:
 # "growth is a function of habitability — ABOVE a threshold → GROW, BELOW it →
 # DECLINE"). CANON anchor: FEATURES/planets/colonization.md line 95 — "BARREN and
 # ICE planets have negative natural growth … the colony shrinks" — and the same
@@ -656,7 +656,7 @@ class PlanetaryService:
         growth"): colonist_rate = colonists × 0.01 × (habitability_score/100),
         pro-rated here by elapsed wall-clock time.
 
-        Habitability ZERO-CROSSING (WO-AH, Max-ruled): growth is a function of
+        Habitability ZERO-CROSSING (WO-AH, human-ruled): growth is a function of
         habitability with a crossing point at HABITABILITY_GROWTH_THRESHOLD.
         At/above the threshold the colony GROWS on the unchanged canon formula
         (habitable worlds behave exactly as before). Below it the colony

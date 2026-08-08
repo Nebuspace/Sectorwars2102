@@ -92,7 +92,7 @@ NS = "windshield-tableau"
 ORBIT_AU_MIN = 0.2
 ORBIT_AU_MAX = 0.95
 
-# windshieldTableauLayout.ts's X_SECONDARY_WIGGLE_FRACTION — Max's ruling:
+# windshieldTableauLayout.ts's X_SECONDARY_WIGGLE_FRACTION — human's ruling:
 # "primarily vertical + secondary horizontal, but must NEVER zero out the
 # horizontal spread."
 X_SECONDARY_WIGGLE_FRACTION = 0.15

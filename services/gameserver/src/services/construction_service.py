@@ -1503,7 +1503,7 @@ def claim(
 
     TradeDock-class reservations (ship_type == "TRADEDOCK_CONSTRUCTION",
     region-funded construction — Task B-3) are a different completion
-    entirely per Max's ruling (batch-1 #3a, 2026-07-10, resolving the
+    entirely per human's ruling (batch-1 #3a, 2026-07-10, resolving the
     formerly-KNOWN-GAP left by WO-TD-RGF-1): claiming finalizes the TARGET
     STATION IN PLACE — grants/upgrades its tradedock_tier — and returns the
     Station. No Ship is ever created for this reservation class; there is no

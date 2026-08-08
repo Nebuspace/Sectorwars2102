@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # enabling a farm loop. The band matches the canon "≈ 5–15%" wording; the cap
 # is deliberately low (one weak-NPC kill yields little, and even a fat-hull
 # kill cannot exceed the ceiling), so repeatedly grinding weak NPCs hits a
-# hard credit ceiling per encounter. Tune once Max sets canon.
+# hard credit ceiling per encounter. Tune once human sets canon.
 NPC_KILL_LOOT_MINT_MIN_PCT = 0.05  # NO-CANON, flagged — lifecycle.md "≈ 5%"
 NPC_KILL_LOOT_MINT_MAX_PCT = 0.15  # NO-CANON, flagged — lifecycle.md "≈ 15%"
 NPC_KILL_LOOT_MINT_CAP = 5000      # NO-CANON, flagged — per-encounter ceiling
@@ -65,7 +65,7 @@ NPC_KILL_LOOT_MINT_CAP = 5000      # NO-CANON, flagged — per-encounter ceiling
 # Smuggler/Black-Marketeer-titled TRADER kill rolls the 5%/1-2 row; a
 # RESEARCHER-archetype kill (currently unspawned, so this row is inert
 # until a future npc_spawn_service WO) rolls the 15%/1-3 row; every other
-# NPC never drops. If Max prefers dedicated QUANTUM_SMUGGLER /
+# NPC never drops. If human prefers dedicated QUANTUM_SMUGGLER /
 # ROGUE_SCIENTIST spawn kinds instead, that is a follow-up
 # npc_spawn_service WO, not a rename here. Destroyed-gate drops
 # (quantum-resources.md's third salvage row) stay 0% — no gate-destruction
@@ -319,7 +319,7 @@ def _emit_teammate_under_attack(attacker: Player, defender: Player, sector_id: O
     send never blocks, and swallow every failure (no loop, no socket, a quiet
     client).
 
-    NO-CANON (flag for Max): canon confirms the notification exists but not
+    NO-CANON (flag for human): canon confirms the notification exists but not
     its frame shape — kept deliberately small, just enough for a client
     toast ("<defender> is under attack in sector <N>")."""
     if not defender.team_id:
@@ -358,7 +358,7 @@ def _emit_warp_gate_destroyed(gate_id: uuid.UUID, sector_id: Optional[int], atta
     not be able to touch the already-landed transaction).
 
     Broadcasts to the gate's SOURCE sector (where the beacon/gate
-    structure physically exists) -- NO-CANON (flag for Max): canon
+    structure physically exists) -- NO-CANON (flag for human): canon
     doesn't specify whether both endpoints should hear this, only that
     "subscribed players see the route disappear"; the source sector is
     where the structure players would actually be looking at lives.
@@ -577,7 +577,7 @@ class CombatService:
     # effects" (SYSTEMS/bang-import-pipeline.md:188/479). So the WIRING — a
     # per-sector damage multiplier read from the sector's type — IS canon.
     #
-    # NO-CANON (flag for Max): canon describes a NEBULA's effect only
+    # NO-CANON (flag for human): canon describes a NEBULA's effect only
     # qualitatively — Crimson gives a "Mild combat advantage (heat-glow
     # concealment)" (FEATURES/galaxy/quantum-resources.md:37) — but states NO
     # numeric damage multiplier, and the per-color secondary effects are not
@@ -601,7 +601,7 @@ class CombatService:
     # CombatType.SECTOR_DEFENSE.value — making that enum member live rather
     # than a dead tag.
     #
-    # NO-CANON (flag for Max): canon gives the magnitude but not the exact
+    # NO-CANON (flag for human): canon gives the magnitude but not the exact
     # term it modifies. Recommended application point: each defending
     # drone's per-round return-fire hit (the value that actually reaches the
     # attacker's ship), not drone.defense_power — filed to DECISIONS.
@@ -617,7 +617,7 @@ class CombatService:
     # siege state; no expiry machinery needed, since lifting the siege
     # already clears under_siege/siege_attacker_id.
     #
-    # NO-CANON (flag for Max): defense.md gives the mechanic but no
+    # NO-CANON (flag for human): defense.md gives the mechanic but no
     # magnitude. 0.5 is a deliberately simple binary penalty (matches
     # planetary_service's own binary isVulnerable flag at morale<=0) — the
     # morale-graduated-scaling alternative was considered and rejected for
@@ -668,7 +668,7 @@ class CombatService:
 
     # Weapon type effectiveness against different defenses
     # Magnitudes for autocannon / particle / torpedo are NO-CANON launch
-    # values (flag for Max) — drafted to sit consistently with the four
+    # values (flag for human) — drafted to sit consistently with the four
     # shipped profiles (laser/plasma/missile/emp) without inventing a fifth
     # "raw firepower" axis. ship-systems.md §2.6 still forbids weapon_damage
     # modules; these profiles are selectable via tactical equipment mounts
@@ -678,7 +678,7 @@ class CombatService:
         "plasma": {"base_damage": 1.2, "shield_effectiveness": 1.2, "hull_effectiveness": 0.9, "description": "High-energy plasma bolts"},
         "missile": {"base_damage": 1.5, "shield_effectiveness": 0.6, "hull_effectiveness": 1.5, "description": "Physical projectile, bypasses some shields"},
         "emp": {"base_damage": 0.5, "shield_effectiveness": 2.0, "hull_effectiveness": 0.3, "description": "Electromagnetic pulse, devastating to shields"},
-        # NO-CANON (flag for Max): kinetic mid-tier — weaker vs shields, stronger vs hull
+        # NO-CANON (flag for human): kinetic mid-tier — weaker vs shields, stronger vs hull
         # than laser; sits between laser and missile. ships.md cites kinetic/autocannon
         # as a planned damage family.
         "autocannon": {
@@ -687,7 +687,7 @@ class CombatService:
             "hull_effectiveness": 1.3,
             "description": "Kinetic autocannon — hull-focused projectile stream",
         },
-        # NO-CANON (flag for Max): advanced energy — stronger vs shields than plasma,
+        # NO-CANON (flag for human): advanced energy — stronger vs shields than plasma,
         # modest hull. Fills the "particle" planned catalog slot.
         "particle": {
             "base_damage": 1.3,
@@ -695,7 +695,7 @@ class CombatService:
             "hull_effectiveness": 1.1,
             "description": "Particle projector — shield-stripping energy beam",
         },
-        # NO-CANON (flag for Max): heavy ordnance — higher base than missile, even
+        # NO-CANON (flag for human): heavy ordnance — higher base than missile, even
         # weaker vs shields; siege / capital-adjacent profile.
         "torpedo": {
             "base_damage": 1.8,
@@ -736,7 +736,7 @@ class CombatService:
     ESCAPE_HULL_WEIGHT = 0.30
     ESCAPE_EDGE_WEIGHT = 0.10
     ESCAPE_PURSUER_WEIGHT = 0.10
-    # NO-CANON (flag for Max): the sector-edge metric normaliser + the pursuer-class factor table.
+    # NO-CANON (flag for human): the sector-edge metric normaliser + the pursuer-class factor table.
     ESCAPE_EDGE_NORM = 3   # this many active outbound warp-tunnel exits = full edge-proximity (1.0)
     DEFAULT_PURSUER_CLASS_FACTOR = 0.3
     PURSUER_CLASS_FACTOR = {
@@ -764,7 +764,7 @@ class CombatService:
     # _charge_cargo/_refund_cargo helpers already use elsewhere in this
     # gate lineage (ore/equipment/lumen_crystals).
     GATE_SALVAGE_YIELD = {"ore": 500, "equipment": 250, "lumen_crystals": 10}
-    # NO-CANON (flag for Max): warp-gates.md states "reputation loss with
+    # NO-CANON (flag for human): warp-gates.md states "reputation loss with
     # the owner's faction/team" qualitatively but gives no magnitude. -25
     # mirrors this file's own existing infrastructure-assault penalty scale
     # (attacked_chartered_planet is -50 PERSONAL rep for assaulting a
@@ -777,7 +777,7 @@ class CombatService:
     # calculated, not per-combat-action deltas); flagged as a canon gap,
     # not silently built as a guess.
     GATE_OWNER_FACTION_REP_PENALTY = -25
-    # NO-CANON (flag for Max): canon specifies gate HP pools (5,000 /
+    # NO-CANON (flag for human): canon specifies gate HP pools (5,000 /
     # 10,000) and turret counts once upgraded (10/25/50) but no explicit
     # per-attack damage magnitude for the gate-vs-attacker exchange itself.
     # Reuses _calculate_attack_power unscaled (the SAME base-attack figure
@@ -786,7 +786,7 @@ class CombatService:
     # multi-attack siege target by design (mirrors this file's own
     # multi-attack_planet-call planet-siege precedent), not a one-shot
     # kill. If this reads as too grindy against a 10,000-HP active gate,
-    # that is a magnitude call for Max/DECISIONS, not something to guess
+    # that is a magnitude call for human/DECISIONS, not something to guess
     # bigger here.
 
     # --- Between-battle shield regeneration (WO-SR1) ---------------------
@@ -799,7 +799,7 @@ class CombatService:
     #
     # NO-CANON: combat.md:97 marks between-battle shield regen as deferred
     # (📐, "no scheduler") and gives NO cadence, rate unit, or first-credit
-    # bound. Conservative interpretations, flagged for Max:
+    # bound. Conservative interpretations, flagged for human:
     #   * RATE UNIT — shield_recharge_rate is read as shield-points PER
     #     CANONICAL HOUR, mirroring the market stock-regen convention
     #     (production_rate = units per canonical hour, trading_service).
@@ -808,7 +808,7 @@ class CombatService:
     #     doesn't full-regen in one jump and a legacy/absent anchor can't credit
     #     unbounded; bounded above by max_shields regardless. NB: at high
     #     GAME_TIME_SCALE this caps a long-idle ship's regen window (24 canonical
-    #     hrs ≈ 10 wall-min at scale 144) — NO-CANON tuning, flag for Max if
+    #     hrs ≈ 10 wall-min at scale 144) — NO-CANON tuning, flag for human if
     #     between-battle regen feels too slow on dev.
     SHIELD_REGEN_ANCHOR_KEY = "shields_last_regen"  # NO-CANON (JSONB anchor name)
     SHIELD_REGEN_MAX_CREDIT_HOURS = 24.0             # NO-CANON (per-credit-window cap)
@@ -1349,7 +1349,7 @@ class CombatService:
         # from piloting a reported-stolen ship — NOT from attack-innocent /
         # escape-pod / rep-threshold (those are police *engagement-spawn*
         # triggers, a distinct concept). Setting the flags off combat signals
-        # would canonize an invented rule, so the SET is withheld pending Max's
+        # would canonize an invented rule, so the SET is withheld pending human's
         # ruling + a column-name reconciliation (is_suspect/is_wanted vs canon
         # suspect_status/suspect_until/wanted_status + auto-clear timer). The
         # columns + the ranking-lane DISPLAY wiring remain in place so the rail
@@ -1619,7 +1619,7 @@ class CombatService:
                             "NPC-kill loot faucet: minted %d cr (%.1f%% of hull "
                             "value %d, capped at %d) to player %s for destroying "
                             "NPC ship %s (NO-CANON band/cap, lifecycle.md §1.2; "
-                            "flagged for Max)",
+                            "flagged for human)",
                             minted_loot, loot_pct * 100, hull_value,
                             NPC_KILL_LOOT_MINT_CAP, attacker.id, npc_ship.id,
                         )
@@ -1676,7 +1676,7 @@ class CombatService:
                         logger.error("Failed innocent-trader reputation hook: %s", e)
                     # DEFERRED (canon conflict) — see the PvP-path note above and
                     # DECISIONS.md "combat-suspect-wanted-triggers". The Suspect/
-                    # Wanted SET off combat signals is withheld pending Max's
+                    # Wanted SET off combat signals is withheld pending human's
                     # ruling; the rep penalty above is canon and stays.
                 elif looted_npc.archetype == _Arch.TRADER:
                     # Notorious / unscrupulous trader (notoriety ≥ threshold) —
@@ -1693,7 +1693,7 @@ class CombatService:
                     # above), so a notorious trader can be killed — and thus
                     # rewarded — exactly once.
                     #
-                    # Ratified 2026-08-04 (Max): +100, mirroring the −100
+                    # Ratified 2026-08-04 (human): +100, mirroring the −100
                     # attack_innocent penalty symmetrically. ADR-0074 §10
                     # specified the positive incentive but gave no magnitude;
                     # this is the canon value, not a placeholder.
@@ -1710,7 +1710,7 @@ class CombatService:
                         logger.info(
                             "Notorious-trader kill by player %s (%s, notoriety=%s) "
                             "— personal rep %+d applied (NO-CANON magnitude, "
-                            "ADR-0074 §10; flagged for Max)",
+                            "ADR-0074 §10; flagged for human)",
                             attacker.id, looted_npc.name,
                             looted_npc.notoriety, NOTORIOUS_TRADER_KILL_REWARD,
                         )
@@ -2034,7 +2034,7 @@ class CombatService:
 
     def npc_attack_player(self, npc_ship_id: uuid.UUID, defender_id: uuid.UUID) -> Dict[str, Any]:
         """Resolve an NPC-INITIATED attack against a player (WO-CMB-NPC-
-        INITIATED-1, Max ruling 2026-07-10) — the symmetric mirror of
+        INITIATED-1, human ruling 2026-07-10) — the symmetric mirror of
         ``attack_npc_ship``: there the PLAYER is the attacker and the NPC
         ship is the defender; here the NPC ship is the attacker and the
         PLAYER is the defender.
@@ -2543,7 +2543,7 @@ class CombatService:
             from src.services.structures import settle
             settle(planet, db=self.db)
             self._transfer_planet_ownership(planet, attacker)
-            # Capture rewards (DECISIONS planet-assault-reward-model, Max
+            # Capture rewards (DECISIONS planet-assault-reward-model, human
             # 2026-06-20): resources-to-captor (primary), ARIA memory (always),
             # faction neg-rep (faction-owned only), find-planet bounty (if any).
             # Fires EXACTLY ONCE per capture: attack_planet resolves combat in a
@@ -3243,7 +3243,7 @@ class CombatService:
         return_fire: Optional[Dict[str, Any]] = None
         turret_count = int(getattr(gate, "turret_count", 0) or 0)
         if turret_count > 0 and attacker_ship is not None:
-            # NO-CANON (flag for Max): canon doesn't specify turrets'
+            # NO-CANON (flag for human): canon doesn't specify turrets'
             # weapon type or per-turret damage. "laser" mirrors the
             # conservative fallback default every unmapped ship type
             # already gets; 3 damage/turret mirrors _calculate_attack_
@@ -3736,7 +3736,7 @@ class CombatService:
         NPC fights with its ship alone (no rank damage bonus, no player-owned
         defense drones).
 
-        WO-CMB-NPC-INITIATED-1 (Max ruling, 2026-07-10): attacker is now
+        WO-CMB-NPC-INITIATED-1 (human ruling, 2026-07-10): attacker is now
         symmetric — None for an NPC-INITIATED attack, with attacker_ship the
         NPC-controlled Ship. The NPC fights with its ship alone (no rank
         damage bonus, no medal bonus, no player-owned attack drones) — the
@@ -4844,7 +4844,7 @@ class CombatService:
                             port_owner: Optional[Player]) -> Dict[str, Any]:
         """Resolve combat between an attacking ship+drone-swarm and a station.
 
-        WO-BP-a — STATION-DEFENSE KERNEL (gated). Max: "stations are really
+        WO-BP-a — STATION-DEFENSE KERNEL (gated). human: "stations are really
         really powerful" = DEFENSE + DETERRENCE, NOT capture. A station is a
         FORMIDABLE fixed installation: a huge regenerating shield_pool over a
         deep hull_armor, plus STRONG defensive fire and dedicated point-defense
@@ -4856,7 +4856,7 @@ class CombatService:
         columns / no migration); ``.get`` defaults match the additive JSONB
         default in models/station.py so legacy rows are equally formidable.
 
-        GATING: ``port_captured`` is still *computed* (so a future, Max-blessed
+        GATING: ``port_captured`` is still *computed* (so a future, human-blessed
         takeover design can build on a true value rather than a hard-coded
         lie), but capture requires grinding ``hull_armor`` (default 5000) to
         zero, and a per-round damage CEILING (150) combined with the 8-round
@@ -5003,7 +5003,7 @@ class CombatService:
 
             # Capture requires the hull ground fully to zero — mathematically
             # unreachable within the round limit given the per-round ceiling.
-            # Computed (so a future Max-blessed takeover can build on a true
+            # Computed (so a future human-blessed takeover can build on a true
             # value), never tripped here; the caller (attack_port) is disabled.
             if hull_armor <= 0:
                 port_captured = True
@@ -5292,7 +5292,7 @@ class CombatService:
         # orbital platforms contribute MITIGATION + ARMOUR (shield HP) here rather
         # than raw burst damage. The full off-scale orbital combat model (500-1500
         # burst, ship-class multipliers, 2-sector range phase, platform health,
-        # EMP suppression) is a larger, separately-scoped redesign left for Max.
+        # EMP suppression) is a larger, separately-scoped redesign left for human.
         #
         #   turret_network    -> +3% damage reduction each (cap +18% over the band)
         #   orbital_platform   -> +6% damage reduction each (cap +18%)
@@ -5586,11 +5586,11 @@ class CombatService:
     # canon-named keys (laser/plasma/missile/emp) plus 'autocannon' (canon's
     # "kinetic (autocannon, future)" family) verbatim. 'particle' and
     # 'torpedo' are NO-CANON tactical-mount profiles (combat_service.py
-    # WEAPON_TYPES, flagged for Max) with no entry in ships.md's band table;
+    # WEAPON_TYPES, flagged for human) with no entry in ships.md's band table;
     # mapped here by flavor-text similarity rather than left unhandled:
     # 'particle' ("shield-stripping energy beam") -> plasma's band (advanced
     # energy weapon), 'torpedo' ("high-yield hull breaker") -> missile's band
-    # (explosive, mostly destroys cargo). Flagged for Max alongside the
+    # (explosive, mostly destroys cargo). Flagged for human alongside the
     # WEAPON_TYPES entries themselves.
     _CARGO_RECOVERY_BANDS: Dict[str, tuple] = {
         "emp": (0.80, 1.00),
@@ -5889,7 +5889,7 @@ class CombatService:
     ) -> None:
         """Deliver the rewards for a successful planet capture (fires ONCE).
 
-        Per the Max ruling (DECISIONS planet-assault-reward-model, 2026-06-20):
+        Per the human ruling (DECISIONS planet-assault-reward-model, 2026-06-20):
           (a) RESOURCES (PRIMARY): the planet's stored + producing resources
               transfer to the captor (NOT razed). Stored stockpiles already
               transfer implicitly with ownership (they are columns on the planet

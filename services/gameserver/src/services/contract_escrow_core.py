@@ -284,7 +284,7 @@ def _load_two_players_for_update(
 
 
 def _settle_dispute_escrow(contract: Any, issuer: Optional[Any], acceptor: Any, nominal: int) -> int:
-    """WO-CONTRACT-2b-HOLD-ESCROW (Max ruling C, R1) -- REPLACES `_bounded_
+    """WO-CONTRACT-2b-HOLD-ESCROW (human ruling C, R1) -- REPLACES `_bounded_
     transfer` (deleted; see this function's own git history for the prior
     implementation and the mack-CRITICAL bounded-never-mint fix it
     originally shipped, which this function preserves and generalizes).

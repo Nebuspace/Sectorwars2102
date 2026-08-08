@@ -201,7 +201,7 @@ async def _mfa_gate_and_mint_tokens(
     each caller's pre-existing wrong-credentials error shape (headers
     included) is untouched by this refactor.
 
-    MFA enforcement itself stays POLICY-UNCHANGED (Max ruling,
+    MFA enforcement itself stays POLICY-UNCHANGED (human ruling,
     WO-FIX-MFA-BYPASS-LOGIN-ROUTES): MFA remains opt-in per-account via
     ``MFAService.is_mfa_enabled`` — this closes an enforcement-consistency
     gap, it does not make MFA mandatory.

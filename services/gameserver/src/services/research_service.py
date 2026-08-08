@@ -210,8 +210,8 @@ RP_TO_CREDIT_RATE = 10  # credits refunded per 1 banked RP (canon)
 # exactly the raw banked RP — byte-identical to today across an empire of any size
 # (acceptance §2.7.1). Ship the RULED finite base AND keep the off value reachable
 # via the constant so the lever is reversible.
-GOV_BASE_SOFT_CAP = 1500.0          # per-empire RP/day where the taper begins (Max-ruled, empire-anchored)
-GOV_TAPER = 0.5                     # excess-compression strength (Max-ruled)
+GOV_BASE_SOFT_CAP = 1500.0          # per-empire RP/day where the taper begins (human-ruled, empire-anchored)
+GOV_TAPER = 0.5                     # excess-compression strength (human-ruled)
 GOV_DOCTRINE_LIFT = 0.0             # RP/day the cap rises per Doctrine point — 0 in T1.5 (no Doctrine; lit T2)
 GOV_CAPSTONE_LIFT = 150.0           # RP/day the cap rises per capstone-activated world (Orch default, ON)
 GOV_SOFT_CAP_OFF = math.inf         # the reproduce-exactly off value: governed_rp(raw, inf) == raw
@@ -257,7 +257,7 @@ def _empire_soft_cap(db: Session, owner_id: Any) -> float:
 
     ``GOV_BASE_SOFT_CAP`` is the empire-anchored threshold; ``GOV_CAPSTONE_LIFT`` raises
     it per capstone-activated world (reads ``structures.terraform_meta.confirmed_biome``,
-    the SAME flag the decay-rescope reads, §4.4 — written by the Max-gated CRT-3 WO).
+    the SAME flag the decay-rescope reads, §4.4 — written by the human-gated CRT-3 WO).
     Until CRT-3 ships ``confirmed_biome``, ``capstoned_worlds == 0`` so the capstone-lift
     contributes nothing — and with ``GOV_BASE_SOFT_CAP`` set to the off value (inf) the
     whole expression collapses to inf, reproducing today. Doctrine-lift is 0 in T1.5.
@@ -397,7 +397,7 @@ def _maybe_stage_governor_status(player: Player, led: Dict[str, Any], soft_cap: 
 #
 # REPRODUCE-EXACTLY OFF-SWITCH: FAUCET_CREDIT_COPAY = 0.0 → copay == 0 → no debit,
 # behaviour byte-identical to today (acceptance §3.6.2).
-FAUCET_CREDIT_COPAY = 0.10          # × governed_rp × RP_TO_CREDIT_RATE cr/day (Max-RULED, WO-COPAY/#9: raised 0.05→0.10 so the idle-whale floor clears −3k — idle net +1,060−4,471 ≈ −3,411/day, inside the [−8k,−3k] gate band)
+FAUCET_CREDIT_COPAY = 0.10          # × governed_rp × RP_TO_CREDIT_RATE cr/day (human-RULED, WO-COPAY/#9: raised 0.05→0.10 so the idle-whale floor clears −3k — idle net +1,060−4,471 ≈ −3,411/day, inside the [−8k,−3k] gate band)
 
 
 def faucet_copay(governed_rp_banked: int) -> int:
@@ -711,7 +711,7 @@ def sweep_research_faucet(db: Session, planet: Planet, *, _via_settle: bool = Fa
     The CALLER commits (per-planet commit/rollback isolation in the sweep loop).
 
     ``_via_settle`` (CRT spine, WO-K1a): True from structures.settle() step 5 (the re-home target).
-    The scheduler's chained call (:1758) stays False until the Max-gated cutover removes it in the
+    The scheduler's chained call (:1758) stays False until the human-gated cutover removes it in the
     SAME edit that flips the scheduler to settle(); guarded so a post-cutover stray trips loudly.
     """
     _via_settle_guard("sweep_research_faucet", _via_settle)
@@ -913,7 +913,7 @@ def sweep_research_faucet(db: Session, planet: Planet, *, _via_settle: bool = Fa
 # ===========================================================================
 
 # The kernel contract set (Overclock + Rush only; Stabilize/Expedition deferred
-# to T1.5-6 / T2 on the same pipeline). All magnitudes [NO-CANON]; Max-ruled
+# to T1.5-6 / T2 on the same pipeline). All magnitudes [NO-CANON]; human-ruled
 # defaults below. There is no OFF-SWITCH constant here: an empire that buys no
 # contract spends nothing — "contracts off ≡ no spend" IS the reproduce-exactly
 # baseline (an empty contracts[] is byte-identical to today).
@@ -937,7 +937,7 @@ STABILIZE_INSTAB_REDUCTION = 10.0   # instability points removed when a Stabiliz
 CONTRACT_KINDS: Dict[str, Dict[str, Any]] = {
     "overclock": {
         "rp_cost": 300,             # the GATE (recoverable; governs pacing)
-        "cr_cost": 50000,           # the SINK (Max-ruled — tune up as the glut inflates)
+        "cr_cost": 50000,           # the SINK (human-ruled — tune up as the glut inflates)
         "duration_days": 3,         # the effect lasts 3 canonical days, then reverts
         "magnitude": 0.15,          # +15% production on one planet
         "instant": False,
@@ -945,7 +945,7 @@ CONTRACT_KINDS: Dict[str, Dict[str, Any]] = {
     },
     "rush": {
         "rp_cost": 200,             # the GATE
-        "cr_cost": 30000,           # the SINK (Max-ruled)
+        "cr_cost": 30000,           # the SINK (human-ruled)
         "duration_days": 0,         # instant — collapses one live build/terraform timer
         "magnitude": 1.0,
         "instant": True,
@@ -953,7 +953,7 @@ CONTRACT_KINDS: Dict[str, Dict[str, Any]] = {
     },
     "stabilize": {
         "rp_cost": 150,             # the GATE (recoverable; governs pacing — spec line ~609)
-        "cr_cost": 20000,           # the SINK (Max-ruled — the credit<->instability touch-point)
+        "cr_cost": 20000,           # the SINK (human-ruled — the credit<->instability touch-point)
         "duration_days": 0,         # instant — the instability bleed applies on settle (same tick)
         "magnitude": STABILIZE_INSTAB_REDUCTION,   # -10 instability on the target planet (frozen contract #1)
         "instant": True,

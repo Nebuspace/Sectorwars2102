@@ -9,7 +9,7 @@ access-control list (FEATURES/planets/colonization.md "Landing rights").
 Additive only: a single nullable column on the planets table. NULL ⇒ public
 (anyone may land), so every existing planet keeps its current open-landing
 behavior with no backfill. Enforced at land-time only (no eviction); the
-separate ``tax_rate`` axis is intentionally untouched (Max-gated).
+separate ``tax_rate`` axis is intentionally untouched (human-gated).
 
 Revision ID: d1a4f8c2e706
 Revises: c9f2e7a41d83

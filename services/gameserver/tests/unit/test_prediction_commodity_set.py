@@ -22,7 +22,7 @@ class TestCommoditySetDerivation:
         assert MarketPredictionEngine.COMMODITIES == list(COMMODITY_BASE_PRICES.keys())
 
     def test_commodities_includes_precious_metals(self):
-        """Provisional inclusion — auto-tracks Max's pending precious_metals
+        """Provisional inclusion — auto-tracks human's pending precious_metals
         ruling (see DECISIONS); today COMMODITY_BASE_PRICES carries it."""
         assert "precious_metals" in MarketPredictionEngine.COMMODITIES
 

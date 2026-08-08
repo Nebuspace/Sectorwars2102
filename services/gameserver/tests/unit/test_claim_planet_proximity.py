@@ -1,5 +1,5 @@
 """WO-CLAIM-PROXIMITY: planet claim gets the SAME server-side proximity gate
-dock/land already enforce (Max, 2026-07-17: "a claim that lands is a
+dock/land already enforce (human, 2026-07-17: "a claim that lands is a
 landing" -- claim_planet auto-lands the player on success).
 
 test_dock_land_proximity.py already proves assert_dock_land_proximity /

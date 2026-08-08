@@ -861,14 +861,14 @@ class FirstLoginService:
             ship_specs_text = f"""
 Ship Type: {claimed_ship_display}
 Base Cost: {ship_specs.get('base_cost', 0):,} credits
-Max Cargo: {ship_specs.get('max_cargo', 0)} units
+human Cargo: {ship_specs.get('max_cargo', 0)} units
 Speed: {ship_specs.get('speed', 0)} sectors/turn
-Max Shields: {ship_specs.get('max_shields', 0)} points
+human Shields: {ship_specs.get('max_shields', 0)} points
 Hull Points: {ship_specs.get('hull_points', 0)}
 Attack Rating: {ship_specs.get('attack_rating', 0)}/10
 Defense Rating: {ship_specs.get('defense_rating', 0)}/10
 Evasion: {ship_specs.get('evasion', 0)}%
-Max Drones: {ship_specs.get('max_drones', 0)}
+human Drones: {ship_specs.get('max_drones', 0)}
 Scanner Range: {ship_specs.get('scanner_range', 0)} sectors
 Warp Capable: {'Yes' if ship_specs.get('warp_compatible', False) else 'No'}
 Description: {ship_specs.get('description', 'N/A')}

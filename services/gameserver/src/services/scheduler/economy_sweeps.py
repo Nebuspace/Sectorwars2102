@@ -243,7 +243,7 @@ def _run_idle_income_sweep_sync() -> Dict[str, int]:
 
 def _run_daily_stipend_sweep_sync() -> Dict[str, int]:
     """Credit each ACTIVE-TODAY player their PER-FACTION guild stipend, once per
-    UTC day (Max's final per-faction ruling 2026-06-20).
+    UTC day (human's final per-faction ruling 2026-06-20).
 
     The reputation stipend used to ride the weekly economy faucet (paid to every
     active player on the citizen-perk cadence). It is now DAILY and gated on the
