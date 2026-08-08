@@ -1,0 +1,98 @@
+.carrier-hangar-rail {
+  position: fixed;
+  right: 1rem;
+  bottom: 8.2rem;
+  z-index: 1090;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.35rem;
+}
+
+.carrier-hangar-rail button,
+.carrier-hangar-actions button,
+.carrier-hangar-pending button {
+  cursor: pointer;
+  padding: 0.35rem 0.7rem;
+  border-radius: 4px;
+  border: 1px solid rgba(180, 220, 140, 0.45);
+  background: rgba(18, 32, 14, 0.92);
+  color: #e4f5d0;
+  font: inherit;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.carrier-hangar-cap {
+  font-size: 0.72rem;
+  opacity: 0.85;
+  color: #cfe9b8;
+}
+
+.carrier-hangar-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 1235;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding: 1.25rem;
+  pointer-events: none;
+}
+
+.carrier-hangar-card {
+  pointer-events: auto;
+  max-width: 380px;
+  width: min(92vw, 380px);
+  padding: 0.9rem 1rem;
+  border: 1px solid rgba(180, 220, 140, 0.55);
+  border-radius: 8px;
+  background: linear-gradient(160deg, rgba(16, 32, 12, 0.97), rgba(8, 14, 8, 0.98));
+  color: #e4f5d0;
+  box-shadow: 0 0 20px rgba(100, 160, 60, 0.22);
+}
+
+.carrier-hangar-card h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.carrier-hangar-block p {
+  margin: 0 0 0.65rem;
+  font-size: 0.85rem;
+  opacity: 0.92;
+}
+
+.carrier-hangar-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.carrier-hangar-pending {
+  list-style: none;
+  margin: 0 0 0.65rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 10rem;
+  overflow-y: auto;
+}
+
+.carrier-hangar-pending li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+}
+
+.carrier-hangar-feedback {
+  margin: 0.55rem 0 0;
+  font-size: 0.8rem;
+  color: #c6ef9a;
+}

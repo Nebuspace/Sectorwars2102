@@ -653,6 +653,23 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
         }
 
 
+        case 'hostile_detected': {
+          // Long-Range Scanner Array pickup (citadel_service DEFENSE_BUILDINGS
+          // "scanner_array") — a hostile ship moved within detection range of
+          // an owned planet's sector (movement_service._dispatch_hostile_detected
+          // → websocket_service.send_hostile_detected). Toast only, matching
+          // teammate_under_attack's heads-up-not-interrupt convention.
+          const detectedSectorId = message.sector_id;
+          addNotification({
+            title: 'Hostile Detected',
+            content: detectedSectorId !== undefined && detectedSectorId !== null
+              ? `A hostile ship was detected in sector ${detectedSectorId}`
+              : 'A hostile ship was detected near your planet',
+            level: 'warning'
+          });
+          break;
+        }
+
         case 'new_message': {
           // Player-to-player hail (message_service → notification_service).
           // The backend resolves the canon delivery surfaces by priority

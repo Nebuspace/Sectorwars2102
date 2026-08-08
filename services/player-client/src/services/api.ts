@@ -1409,6 +1409,46 @@ export const gcLapseAPI = {
     }),
 };
 
+/** Carrier ship-hangar consent (WO-WIRE-CARRIER-HANGAR-UI / WO-AE). */
+export type HangarStatus = {
+  hangared_on: { carrier_id: string; carrier_name?: string | null } | null;
+  pending_outgoing: {
+    carrier_id: string;
+    ship_id?: string;
+    size_units?: number;
+    requested_at?: string;
+    request_state?: string;
+  } | null;
+  owned_carrier: {
+    carrier_id: string;
+    capacity_units: number;
+    used_units: number;
+    docked: Array<Record<string, unknown>>;
+  } | null;
+};
+
+export const hangarAPI = {
+  getStatus: (): Promise<HangarStatus> => apiRequest('/api/v1/hangar/status'),
+  getHangar: (carrierId: string) => apiRequest(`/api/v1/hangar/${carrierId}`),
+  requestDock: (carrierId: string, shipId?: string) =>
+    apiRequest(`/api/v1/hangar/${carrierId}/dock-request`, {
+      method: 'POST',
+      body: JSON.stringify(shipId ? { ship_id: shipId } : {}),
+    }),
+  accept: (carrierId: string, shipId: string) =>
+    apiRequest(`/api/v1/hangar/${carrierId}/accept`, {
+      method: 'POST',
+      body: JSON.stringify({ ship_id: shipId }),
+    }),
+  cancel: (carrierId: string, shipId: string) =>
+    apiRequest(`/api/v1/hangar/${carrierId}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ ship_id: shipId }),
+    }),
+  undock: () => apiRequest('/api/v1/hangar/undock', { method: 'POST' }),
+  disembark: () => apiRequest('/api/v1/hangar/disembark', { method: 'POST' }),
+};
+
 /** Tractor Beam tow consent (WO-WIRE-TOW-CONSENT-UI / ADR-0067). */
 export type TowPending = {
   hauler_id: string;
