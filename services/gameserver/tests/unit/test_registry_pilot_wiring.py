@@ -114,9 +114,12 @@ class TestEveryCurrentShipIdWriteSitePairsWithSyncCurrentPilot:
         "services/first_login_service.py": (1, 1),
         # docking_service.py -- stolen-ship impound-and-eject (station-
         # protection arrest surrender flow); ship_registry_service.py --
-        # abandonment's owner-pointer clear (ship-registry.md "Abandonment").
+        # abandonment's owner-pointer clear (ship-registry.md "Abandonment")
+        # plus eject_ship's dangling-pointer-clear branch, eject_ship's
+        # escape-pod success path, and board_ship's success path (WO-BUILD-
+        # SHIP-EJECT-BOARD-REGISTRY-STATES).
         "services/docking_service.py": (1, 1),
-        "services/ship_registry_service.py": (1, 1),
+        "services/ship_registry_service.py": (4, 4),
         # ship_service.py DEFINES sync_current_pilot -- the def line itself
         # matches the sync-call regex, so 1 real call there = 2 raw matches.
         "services/ship_service.py": (1, 2),

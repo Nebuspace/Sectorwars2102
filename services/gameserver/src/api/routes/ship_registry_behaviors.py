@@ -24,11 +24,14 @@ from src.core.database import get_db
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
 from src.models.ship import Ship
+from src.services.station_security_service import StationSecurityError
 from src.services.ship_registry_service import (
     ShipRegistryError,
     abandon_ship,
     approve_transfer_claim,
+    board_ship,
     claim_abandoned_ship,
+    eject_ship,
     file_transfer_claim,
     report_stolen,
     retract_stolen_report,
@@ -37,6 +40,10 @@ from src.services.ship_registry_service import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ships", tags=["ship-registry"])
+# Canon's eject route is POST /api/v1/players/me/eject -- a distinct prefix
+# from the rest of this file's /ships/* routes, so it needs its own router
+# (matches the existing /players-prefixed precedent in gc_lapse.py).
+player_router = APIRouter(prefix="/players", tags=["ship-registry"])
 
 # ERR_* codes that mean "the request is well-formed but conflicts with
 # current game state" -> 409, distinct from validation (422) or not-found
@@ -57,6 +64,13 @@ _CONFLICT_CODES = {
     "ERR_NOT_ELIGIBLE_FOR_TRANSFER",
     "ERR_INSUFFICIENT_CREDITS",
     "ERR_NO_PENDING_TRANSFER",
+    "ERR_NO_CURRENT_SHIP",
+    "ERR_ALREADY_IN_ESCAPE_POD",
+    "ERR_INSUFFICIENT_TURNS",
+    "ERR_SHIP_DESTROYED",
+    "ERR_SHIP_HARMONIZING",
+    "ERR_ALREADY_PILOTING",
+    "ERR_SHIP_LOCKED",
 }
 
 
@@ -75,6 +89,21 @@ def _get_locked_ship(db: Session, ship_id) -> Ship:
     if ship is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ship not found.")
     return ship
+
+
+def _get_locked_player(db: Session, player_id) -> Player:
+    """Resource-before-player lock ordering: callers lock the ship row (via
+    ``_get_locked_ship``) before this, never after."""
+    locked = (
+        db.query(Player)
+        .filter(Player.id == player_id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    if locked is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Player not found.")
+    return locked
 
 
 class ReportStolenRequest(BaseModel):
@@ -223,4 +252,67 @@ async def approve_transfer_claim_route(
 
     db.commit()
     logger.info("Ship %s transfer claim approved by owner %s", ship_id, player.id)
+    return result
+
+
+@player_router.post("/me/eject")
+async def eject_ship_route(
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Voluntarily eject from the currently-piloted ship (ship-registry.md
+    "Eject and board"). No ship_id -- always acts on the caller's own
+    current ship."""
+    locked_player = _get_locked_player(db, player.id)
+
+    try:
+        result = eject_ship(db, player=locked_player)
+    except ShipRegistryError as exc:
+        db.rollback()
+        _raise_for(exc)
+        return  # pragma: no cover -- _raise_for always raises
+
+    db.commit()
+    logger.info(
+        "Player %s ejected from ship %s (turns_spent=%s)",
+        player.id, result["ejected_ship_id"], result["turns_spent"],
+    )
+    return result
+
+
+class BoardShipRequest(BaseModel):
+    pin: str | None = None  # required unless the caller is the registered owner
+
+
+@router.post("/{ship_id}/board")
+async def board_ship_route(
+    ship_id: str,
+    request: BoardShipRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Board ``ship_id`` (ship-registry.md "Eject and board" + "Hatch pin
+    lock"). Works for both a stranger's ship (pin required unless you're the
+    registered owner) and one of your own parked ships -- for the common
+    "switch between my own ships" case, POST /ships/{id}/set-active remains
+    the existing frontend-wired path with no turn cost; this route is the
+    canon-named general case, including turn-cost accounting."""
+    ship = _get_locked_ship(db, ship_id)
+    locked_player = _get_locked_player(db, player.id)
+
+    try:
+        result = board_ship(db, ship=ship, boarder=locked_player, pin=request.pin)
+    except ShipRegistryError as exc:
+        db.rollback()
+        _raise_for(exc)
+        return  # pragma: no cover -- _raise_for always raises
+    except StationSecurityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+    db.commit()
+    logger.info(
+        "Ship %s boarded by %s (state=%s, turns_spent=%s, now_wanted=%s)",
+        ship_id, player.id, result["state"], result["turns_spent"], result["now_wanted"],
+    )
     return result
