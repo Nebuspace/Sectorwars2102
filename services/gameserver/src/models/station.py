@@ -431,7 +431,6 @@ class Station(Base):
     # Relationships
     owner = relationship("Player", secondary=player_stations, back_populates="stations")
     sector = relationship("Sector", foreign_keys=[sector_uuid], back_populates="stations")
-    market = relationship("Market", back_populates="station", uselist=False, cascade="all, delete-orphan")
     region = relationship("Region", back_populates="stations")
     
     def __repr__(self):
