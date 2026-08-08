@@ -1,7 +1,8 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
 import apiClient from '../services/apiClient';
-import { sectorAPI, messageAPI, planetaryAPI, citadelAPI } from '../services/api';import websocketService from '../services/websocket';
+import { sectorAPI, messageAPI, planetaryAPI, citadelAPI } from '../services/api';
+import websocketService from '../services/websocket';
 import { ariaFeed } from '../components/mfd/ariaFeedStore';
 
 // Types for game state
@@ -1311,35 +1312,32 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Deposit credits into the citadel safe — POST /planets/{id}/citadel/deposit
-  // {amount}. Server gating (CitadelService.deposit_to_safe): planet must be
-  // owned, citadel_level >= 1, player must hold the credits, and the safe
-  // balance may not exceed CITADEL_LEVELS[level].safe_storage. Returns
-  // {credits_deposited, safe_balance, safe_capacity, player_credits, message}.
+  // Deposit credits into the citadel safe — WO-WIRE-CITADEL-SAFE-CREDITS:
+  // citadelAPI.deposit (same URL; body is response payload directly).
+  // Server gating (CitadelService.deposit_to_safe): planet must be owned,
+  // citadel_level >= 1, player must hold the credits, and the safe balance
+  // may not exceed CITADEL_LEVELS[level].safe_storage.
   const depositToSafe = async (planetId: string, amount: number) => {
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/citadel/deposit`, { amount });
-      // Deposit debits the player's credit balance
+      const data = await citadelAPI.deposit(planetId, amount);
       await refreshPlayerState();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error depositing to citadel safe:', error);
       throw error;
     }
   };
 
-  // Withdraw credits from the citadel safe — POST /planets/{id}/citadel/withdraw
-  // {amount}. Returns {credits_withdrawn, safe_balance, player_credits, message}.
+  // Withdraw credits from the citadel safe — citadelAPI.withdraw (same URL).
   const withdrawFromSafe = async (planetId: string, amount: number) => {
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/citadel/withdraw`, { amount });
-      // Withdrawal credits the player's balance
+      const data = await citadelAPI.withdraw(planetId, amount);
       await refreshPlayerState();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error withdrawing from citadel safe:', error);
       throw error;
