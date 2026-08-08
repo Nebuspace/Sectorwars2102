@@ -10,6 +10,7 @@ const getModules = vi.fn();
 const installModule = vi.fn();
 const removeModule = vi.fn();
 const setCosmetic = vi.fn();
+const getCosmetics = vi.fn();
 
 vi.mock('../../../services/api', () => ({
   shipUpgradeAPI: {
@@ -17,6 +18,7 @@ vi.mock('../../../services/api', () => ({
     installModule: (...a: unknown[]) => installModule(...a),
     removeModule: (...a: unknown[]) => removeModule(...a),
     setCosmetic: (...a: unknown[]) => setCosmetic(...a),
+    getCosmetics: (...a: unknown[]) => getCosmetics(...a),
   },
 }));
 
@@ -38,6 +40,29 @@ const EMPTY_MODULES = {
     ],
   },
   installed: {},
+  cosmetics: {},
+  is_galactic_citizen: true,
+};
+
+/** Mirrors server CITIZEN_COSMETICS shape from GET /ships/{id}/cosmetics. */
+const SERVER_COSMETICS = {
+  success: true,
+  catalog: {
+    frame: {
+      label: 'Citizen Hull Frame',
+      values: ['citizen_aurora', 'citizen_obsidian'],
+    },
+    slot_glow: {
+      label: 'Aurora Slot-Glow',
+      values: ['citizen_hue'],
+    },
+    crest: {
+      label: 'Citizen Crest',
+      values: ['citizen_sigil'],
+    },
+  },
+  applied: {},
+  is_galactic_citizen: true,
 };
 
 describe('ModuleGridInterface', () => {
@@ -49,6 +74,8 @@ describe('ModuleGridInterface', () => {
     installModule.mockReset();
     removeModule.mockReset();
     setCosmetic.mockReset();
+    getCosmetics.mockReset();
+    getCosmetics.mockResolvedValue(SERVER_COSMETICS);
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -77,6 +104,19 @@ describe('ModuleGridInterface', () => {
     expect(container.textContent).toMatch(/Module Bay/);
     expect(container.textContent).toMatch(/Scout One/);
     expect(getModules).toHaveBeenCalledWith('ship-1');
+    expect(getCosmetics).toHaveBeenCalledWith('ship-1');
+  });
+
+  it('renders cosmetic catalog labels from GET /cosmetics (not a client mirror)', async () => {
+    getModules.mockResolvedValue(EMPTY_MODULES);
+    await act(async () => {
+      root.render(<ModuleGridInterface ship={{ id: 'ship-1' }} playerCredits={100000} />);
+      await flush();
+    });
+    expect(container.textContent).toMatch(/Citizen Hull Frame/);
+    expect(container.textContent).toMatch(/Aurora Slot-Glow/);
+    expect(container.textContent).toMatch(/Citizen Crest/);
+    expect(container.textContent).toMatch(/aurora/);
   });
 
   it('surfaces load errors with a Retry control', async () => {
