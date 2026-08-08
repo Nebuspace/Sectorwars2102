@@ -1267,14 +1267,14 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Cancel an in-progress citadel upgrade — POST /planets/{id}/citadel/cancel.
-  // Refunds 50% of the credits paid (CitadelService.cancel_upgrade).
+  // Cancel an in-progress citadel upgrade — WO-WIRE-CITADEL-CANCEL-UPGRADE:
+  // citadelAPI.cancelUpgrade (same URL; still refresh player state).
   const cancelCitadelUpgrade = async (planetId: string) => {
     if (!user || !playerState) throw new Error('Not authenticated');
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/citadel/cancel`);
+      const data = await citadelAPI.cancelUpgrade(planetId);
       await refreshPlayerState();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error cancelling citadel upgrade:', error);
       throw error;
