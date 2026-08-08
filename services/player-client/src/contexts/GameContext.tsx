@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
 import apiClient from '../services/apiClient';
-import { sectorAPI, messageAPI } from '../services/api';
+import { sectorAPI, messageAPI, citadelAPI } from '../services/api';
 import websocketService from '../services/websocket';
 import { ariaFeed } from '../components/mfd/ariaFeedStore';
 
@@ -1374,13 +1374,12 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   // Toggle auto-deposit of production into the protected safe (opt-in, default
-  // OFF). POST /planets/{id}/citadel/auto-deposit {enabled}. Owner-only,
-  // requires citadel_level >= 1. Returns { success: true, auto_deposit: bool }.
+  // OFF). WO-WIRE-CITADEL-AUTO-DEPOSIT-API — citadelAPI.setAutoDeposit (same
+  // URL as before; body is the response payload directly).
   const setCitadelAutoDeposit = async (planetId: string, enabled: boolean) => {
     if (!user || !playerState) throw new Error('Not authenticated');
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/citadel/auto-deposit`, { enabled });
-      return response.data;
+      return await citadelAPI.setAutoDeposit(planetId, enabled);
     } catch (error: any) {
       console.error('Error setting citadel auto-deposit:', error);
       throw error;
