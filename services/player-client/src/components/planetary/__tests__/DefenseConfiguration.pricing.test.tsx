@@ -19,7 +19,7 @@ import type { Planet } from '../../../types/planetary';
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const { mockGetDefensePricing, mockUpdateDefenses, mockRefreshPlayerState, mockPlayerState } = vi.hoisted(() => ({
-  mockGetDefensePricing: vi.fn(async () => ({ turrets: 380, shields: 900, fighters: 5000 })),
+  mockGetDefensePricing: vi.fn(async () => ({ turrets: 380, fighters: 5000 })),
   mockUpdateDefenses: vi.fn(async () => ({
     success: true,
     defenses: { turrets: 10, shields: 0, drones: 0 },
@@ -102,7 +102,6 @@ describe('DefenseConfiguration — server-authoritative pricing', () => {
 
     expect(mockGetDefensePricing).toHaveBeenCalledWith('planet-1');
     expect(container.textContent).toContain('380 cr / unit');
-    expect(container.textContent).toContain('900 cr / unit');
     expect(container.textContent).toContain('5,000 cr / unit');
 
     // Bump turrets (index 0) from 0 -> 10: change cost = 10 * 380 = 3,800.
@@ -117,7 +116,7 @@ describe('DefenseConfiguration — server-authoritative pricing', () => {
       saveBtn!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await flush();
-    expect(mockUpdateDefenses).toHaveBeenCalledWith('planet-1', { turrets: 10, shields: 0, fighters: 0 });
+    expect(mockUpdateDefenses).toHaveBeenCalledWith('planet-1', { turrets: 10, fighters: 0 });
   });
 
   it('degrades gracefully when the pricing fetch fails -- no crash, clear message, Save blocked', async () => {

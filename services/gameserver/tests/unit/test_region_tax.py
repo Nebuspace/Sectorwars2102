@@ -25,6 +25,7 @@ from src.models.user import User
 from src.services.trading_service import (
     REGION_TAX_OWNER_SHARE,
     compute_region_tax_rate,
+    fallback_credit_region_tax,
     realize_region_tax,
 )
 
@@ -218,3 +219,43 @@ class TestRealizeRegionTax:
         assert result["owner_share"] == 0
         assert result["treasury_share"] == 100
         assert region.treasury_balance == 100
+
+
+class TestFallbackCreditRegionTax:
+    """WO-FIX-REGION-TAX-FALLBACK-MISROUTES-STATION-TREASURY — when
+    realize_region_tax raises, the route fallback must credit the region
+    treasury, never station.treasury_balance (station-owner private purse)."""
+
+    def test_forced_realize_failure_does_not_credit_station_owner(self):
+        region = _region(tax_rate=0.10, owner_id=uuid.uuid4(), treasury_balance=200)
+        station = _station(region=region)
+        station.treasury_balance = 1_000  # owner's private purse — must stay put
+        db = FakeSession({Region: [region]})
+
+        # Mimic trading.py buy/sell except path: realize raises → fallback.
+        with patch(
+            "src.services.trading_service.realize_region_tax",
+            side_effect=RuntimeError("forced realize failure"),
+        ):
+            import src.services.trading_service as trading_svc
+            try:
+                trading_svc.realize_region_tax(db, station, 75)
+                raise AssertionError("realize_region_tax should have raised")
+            except RuntimeError:
+                credited = fallback_credit_region_tax(db, station, 75)
+
+        assert credited == 75
+        assert region.treasury_balance == 275
+        assert station.treasury_balance == 1_000
+        assert any(isinstance(obj, RegionalTreasuryEntry) for obj in db.added)
+
+    def test_no_region_drops_credits_rather_than_station_treasury(self):
+        station = _station(region=None)
+        station.treasury_balance = 50
+        db = FakeSession({})
+
+        credited = fallback_credit_region_tax(db, station, 40)
+
+        assert credited == 0
+        assert station.treasury_balance == 50
+        assert db.added == []

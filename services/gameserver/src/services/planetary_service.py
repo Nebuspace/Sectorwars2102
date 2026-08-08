@@ -1488,14 +1488,25 @@ class PlanetaryService:
         # citadel- and planet-type-scaled per-unit price (defense_unit_price),
         # not a flat rate. Mirrors the client DefenseConfiguration cost so the
         # UI's affordability gate is honest. Without this, defenses are free.
+        #
+        # WO-FIX-DEFENSE-SHIELDS-CITADEL-PREREQ-BYPASS: `shields` is intentionally
+        # NOT priced/written here. `planet.defense_shields` is the SHIELD GENERATOR
+        # LEVEL — the real, time-gated, credit+equipment-priced ladder tracked by
+        # upgrade_shield_generator()/_settle_shield_upgrade() (SHIELD_GENERATOR_LEVELS
+        # above, ~2.6M cr cumulative) and read by citadel_service's L4/L5 citadel
+        # prerequisite gate and combat_service's shield-HP/damage-reduction calc.
+        # This cheap per-unit purchase path (base 1,000cr, uncapped) used to ALSO
+        # write the same column, letting a player satisfy an expensive citadel
+        # prerequisite (and gain real combat shield HP) for ~6,000cr instead of the
+        # real ladder's cost — a ~400x bypass. The `shields` request field is kept
+        # (harmlessly ignored) for backward compatibility with older clients; real
+        # shield-generator progression is exclusively through
+        # POST /planets/{id}/shields/upgrade.
         new_turrets = max(0, turrets) if turrets is not None else planet.defense_turrets
-        new_shields = max(0, shields) if shields is not None else planet.defense_shields
         new_fighters = max(0, fighters) if fighters is not None else planet.defense_fighters
         cost = (
             defense_unit_price("turrets", planet.citadel_level, planet.type)
             * max(0, new_turrets - (planet.defense_turrets or 0))
-            + defense_unit_price("shields", planet.citadel_level, planet.type)
-            * max(0, new_shields - (planet.defense_shields or 0))
             + defense_unit_price("fighters", planet.citadel_level, planet.type)
             * max(0, new_fighters - (planet.defense_fighters or 0))
         )
@@ -1518,10 +1529,10 @@ class PlanetaryService:
         # Update defenses if provided.
         # Note: the Planet model has no defense_drones column; deployed
         # fighters (defense_fighters) are the drone-equivalent here.
+        # `shields` is deliberately NOT applied here — see the pricing comment
+        # above (WO-FIX-DEFENSE-SHIELDS-CITADEL-PREREQ-BYPASS).
         if turrets is not None:
             planet.defense_turrets = new_turrets
-        if shields is not None:
-            planet.defense_shields = new_shields
         if fighters is not None:
             planet.defense_fighters = new_fighters
 

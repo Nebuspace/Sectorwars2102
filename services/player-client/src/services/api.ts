@@ -170,7 +170,9 @@ export const planetaryAPI = {
   // (ADR-0076 citadel/planet-type scaling), so the client's cost preview
   // can never drift from what Save will actually charge. Read-only,
   // owner-gated (403 for a planet you don't own).
-  getDefensePricing: (planetId: string): Promise<{ turrets: number; shields: number; fighters: number }> =>
+  // 'shields' is intentionally not part of the pricing response — see
+  // WO-FIX-DEFENSE-SHIELDS-CITADEL-PREREQ-BYPASS (DefenseConfiguration.tsx).
+  getDefensePricing: (planetId: string): Promise<{ turrets: number; fighters: number }> =>
     apiRequest(`/api/v1/planets/${planetId}/defenses/pricing`),
 
   // planetType is rolled server-side from the device tier (ADR-0014); it is
