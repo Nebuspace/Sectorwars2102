@@ -51,6 +51,7 @@ let mockUnreadCount = 0;
 const mockRefreshInbox = vi.fn();
 const mockSendPlayerMessage = vi.fn();
 const mockMarkMessageRead = vi.fn();
+const mockDeletePlayerMessage = vi.fn();
 
 vi.mock('../../../contexts/GameContext', () => ({
   useGame: () => ({
@@ -61,6 +62,7 @@ vi.mock('../../../contexts/GameContext', () => ({
     refreshInbox: mockRefreshInbox,
     sendPlayerMessage: mockSendPlayerMessage,
     markMessageRead: mockMarkMessageRead,
+    deletePlayerMessage: mockDeletePlayerMessage,
   }),
 }));
 
@@ -88,7 +90,9 @@ describe('CommsCrewPage — MFD-B COMM', () => {
     mockRefreshInbox.mockReset();
     mockSendPlayerMessage.mockReset();
     mockMarkMessageRead.mockReset();
+    mockDeletePlayerMessage.mockReset();
     mockMarkMessageRead.mockResolvedValue(undefined);
+    mockDeletePlayerMessage.mockResolvedValue(undefined);
     mockInboxMessages = [];
     mockUnreadCount = 0;
     mockSectorPlayers = [];
@@ -158,6 +162,14 @@ describe('CommsCrewPage — MFD-B COMM', () => {
       'Rendezvous at Sector 5.'
     );
     expect(mockMarkMessageRead).toHaveBeenCalledWith('msg-1');
+  });
+
+  it('PURGE on an expanded hail calls deletePlayerMessage', async () => {
+    mockInboxMessages = [makeMessage()];
+    await mount();
+    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
+    await click(container.querySelector('[data-testid="comms-purge-hail"]')!);
+    expect(mockDeletePlayerMessage).toHaveBeenCalledWith('msg-1');
   });
 
   it('shows the honest empty state with no transmissions', async () => {
