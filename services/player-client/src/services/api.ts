@@ -1408,3 +1408,41 @@ export const gcLapseAPI = {
       body: JSON.stringify({ asset_type: assetType, asset_id: assetId }),
     }),
 };
+
+/** Tractor Beam tow consent (WO-WIRE-TOW-CONSENT-UI / ADR-0067). */
+export type TowPending = {
+  hauler_id: string;
+  towed_ship_id?: string | null;
+  towed_size?: string | null;
+  surcharge_per_move?: number | null;
+  requested_at?: string | null;
+  request_state?: string;
+};
+
+export type TowStatus = {
+  towing: Record<string, unknown> | null;
+  being_towed_by: { hauler_id: string; surcharge_per_move?: number | null } | null;
+  pending_outgoing: TowPending | null;
+  pending_incoming: TowPending | null;
+};
+
+export const towAPI = {
+  getStatus: (): Promise<TowStatus> => apiRequest('/api/v1/tow/status'),
+  request: (targetShipId: string) =>
+    apiRequest('/api/v1/tow/request', {
+      method: 'POST',
+      body: JSON.stringify({ target_ship_id: targetShipId }),
+    }),
+  accept: (haulerId: string) =>
+    apiRequest('/api/v1/tow/accept', {
+      method: 'POST',
+      body: JSON.stringify({ hauler_id: haulerId }),
+    }),
+  cancel: (haulerId: string) =>
+    apiRequest('/api/v1/tow/cancel', {
+      method: 'POST',
+      body: JSON.stringify({ hauler_id: haulerId }),
+    }),
+  detach: () => apiRequest('/api/v1/tow/detach', { method: 'POST' }),
+};
+
