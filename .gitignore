@@ -97,6 +97,9 @@ generated-icon.png
 services/admin-ui/dist/
 services/player-client/dist/
 
+# Vitest coverage output (WO-TESTCOV-PLAYER-CLIENT — regenerable via npm run test:coverage)
+services/player-client/coverage/
+
 # Proof / scratch artifacts from build-and-prove runs (WO-SW-PRIMARY-TREE-HYGIENE).
 # Kept on disk deliberately — these are evidence from past WOs, not garbage — but
 # ignored so "primary tree dirty" is a checkable defect again for multi-seat work.
