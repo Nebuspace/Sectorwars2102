@@ -623,6 +623,9 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           });
           break;
           
+        // Server WS path emits `combat_update` (websocket_service.send_combat_update).
+        // `combat_event` is a legacy/redis alias — accept both so live updates aren't dropped.
+        case 'combat_update':
         case 'combat_event':
           addNotification({
             title: 'Combat Activity',
