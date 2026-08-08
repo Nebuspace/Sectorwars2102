@@ -5,6 +5,7 @@ import { AuditLogViewer } from '../security/AuditLogViewer';
 import { MFASetup } from '../auth/MFASetup';
 import { useAuth } from '../../contexts/AuthContext';
 import { api } from '../../utils/auth';
+import { useSystemAlerts } from '../../contexts/WebSocketContext';
 import './security-dashboard.css';
 
 // Shape of GET /api/v1/admin/security/report
@@ -91,6 +92,12 @@ export const SecurityDashboard: React.FC = () => {
     setOverviewError(failures.length > 0 ? `Failed to load ${failures.join('; ')}` : null);
     setLoading(false);
   };
+
+  // Live updates: complements the 30s poll above with an immediate refresh on
+  // alert/performance/security events, so a new high-priority alert doesn't
+  // sit for up to 30s. fetchSecurityOverview closes over no component state
+  // (only calls setters), so passing it directly is safe here.
+  useSystemAlerts(fetchSecurityOverview, fetchSecurityOverview, fetchSecurityOverview);
 
   const getSeverityClass = (severity: string) => {
     return `severity-${severity}`;
