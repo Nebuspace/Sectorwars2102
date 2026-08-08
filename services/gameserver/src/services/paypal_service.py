@@ -440,10 +440,16 @@ class PayPalService:
             )
             player = result.scalar_one_or_none()
             if player:
-                player.is_galactic_citizen = False
+                # ADR-0054 X-D3 -- GC-lapse 7-day liquidation window: cancellation
+                # no longer instantly revokes citizenship. Stamp the lapse anchor;
+                # is_galactic_citizen stays True through the grace window (every
+                # other GC-perk gate reads only that flag) and the scheduler sweep
+                # (economy_sweeps._run_gc_lapse_sweep_sync) flips it False once the
+                # window elapses with no re-subscription.
+                player.gc_lapsed_at = datetime.now(timezone.utc)
                 if hasattr(player.user, 'paypal_subscription_id'):
                     player.user.paypal_subscription_id = None
-                logger.info(f"Removed galactic citizenship for player {player.id}")
+                logger.info(f"GC lapse window opened for player {player.id}")
     
     async def _handle_subscription_suspended(self, session: AsyncSession, resource: Dict[str, Any]):
         """Handle subscription suspension"""
@@ -519,6 +525,10 @@ class PayPalService:
 
         if player:
             player.is_galactic_citizen = True
+            # ADR-0054 X-D3 -- a fresh/renewed subscription clears any in-flight
+            # GC-lapse window and renews the one-time emergency-relocation grant.
+            player.gc_lapsed_at = None
+            player.gc_relocation_used_at = None
             if player.user is not None:
                 user = player.user
                 user.paypal_subscription_id = subscription_id
@@ -554,6 +564,10 @@ class PayPalService:
             return
 
         player.is_galactic_citizen = True
+        # ADR-0054 X-D3 -- a renewal clears any in-flight GC-lapse window and
+        # renews the one-time emergency-relocation grant.
+        player.gc_lapsed_at = None
+        player.gc_relocation_used_at = None
         if player.user is not None:
             user = player.user
             user.subscription_status = "active"

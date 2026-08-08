@@ -66,7 +66,13 @@ class BuildingUpgradeRequest(BaseModel):
 
 
 class DefenseUpdateRequest(BaseModel):
-    """Defense update request."""
+    """Defense update request.
+
+    `shields` is accepted-but-ignored (WO-FIX-DEFENSE-SHIELDS-CITADEL-PREREQ-
+    BYPASS): kept only so older clients don't 422; PlanetaryService.update_defenses
+    no longer prices or writes it. Shield-generator level is exclusively upgraded
+    via POST /planets/{id}/shields/upgrade.
+    """
     turrets: Optional[int] = Field(None, ge=0)
     shields: Optional[int] = Field(None, ge=0)
     fighters: Optional[int] = Field(None, ge=0)
@@ -1697,6 +1703,11 @@ async def get_defense_pricing(
     not-owned are both denied identically (403) so existence isn't leaked
     through the status code, matching the ownership check's own semantics.
     The response exposes ONLY unit_type -> price, nothing else.
+
+    "shields" is intentionally NOT included here (WO-FIX-DEFENSE-SHIELDS-
+    CITADEL-PREREQ-BYPASS): update_defenses no longer accepts a cheap per-unit
+    shield purchase -- planet.defense_shields is the shield-generator LEVEL,
+    priced exclusively via POST /planets/{id}/shields/upgrade.
     """
     from src.models.planet import player_planets
     try:
@@ -1719,7 +1730,6 @@ async def get_defense_pricing(
 
     return {
         "turrets": defense_unit_price("turrets", planet.citadel_level, planet.type),
-        "shields": defense_unit_price("shields", planet.citadel_level, planet.type),
         "fighters": defense_unit_price("fighters", planet.citadel_level, planet.type),
     }
 
@@ -1755,7 +1765,21 @@ async def construct_defense_building(
     player: Player = Depends(get_current_player),
     db: Session = Depends(get_db)
 ):
-    """Construct a defense building on a planet."""
+    """Construct a defense building on a planet.
+
+    DEPRECATED (ADR-0094 endpoint-canonicalization) — overlaps
+    POST /planets/{planet_id}/grid/place, which is the canonical route: it
+    sources defense kinds (TURRET_NETWORK/ORBITAL_PLATFORM/SCANNER_ARRAY) from
+    the same unified building_catalog this route's CitadelService call does not
+    consult. CitadelService.build_defense_building enforces its OWN research
+    gate (CRT WO-K0-3) and, as of SEC-DEFBUILD-MATERIALS, its own per-planet
+    material charge — parity restored via two independent implementations
+    rather than a shared call, since the two catalogs' cost/level/tier shapes
+    differ enough that delegating would change this route's response
+    contract (player-client GameContext.tsx is still a live caller). Still not
+    safe to remove; migrate that caller to grid/place before deleting this
+    route.
+    """
     from src.services.citadel_service import CitadelService
     try:
         pid = UUID(planet_id)

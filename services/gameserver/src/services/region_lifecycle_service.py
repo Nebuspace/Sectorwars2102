@@ -18,14 +18,22 @@ the caller (economy_governance_sweeps._run_region_lifecycle_advance_gated,
 Phase 7 of the daily governance sweep) owns the commit.
 """
 import logging
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Dict, Optional
 
-from sqlalchemy import update
+from sqlalchemy import exists, or_, update
 from sqlalchemy.orm import Session
 
+from src.models.pirate_holding import PirateHolding
 from src.models.planet import Planet
+from src.models.player import Player
 from src.models.region import Region, RegionStatus
+from src.models.sector import Sector
+from src.models.ship import Ship
+from src.models.station import Station
+from src.models.warp_gate import WarpGate, WarpGateBeacon
+from src.services.realtime_outbox import RealtimeOutbox
 from src.services.region_termination_cascade_service import (
     dispatch_station_termination,
     process_planet_termination,
@@ -33,6 +41,13 @@ from src.services.region_termination_cascade_service import (
 from src.services.warp_gate_service import cascade_region_gate_teardown
 
 logger = logging.getLogger(__name__)
+
+# ADR-0054 X-D1 -- suspended-region stakeholder-ingress error contract
+# (region-lifecycle.md's "The rule keeps stakeholders connected to their
+# assets" paragraph; movement_service surfaces this verbatim, mirroring
+# ERR_GALACTIC_CITIZEN_REQUIRED's own string-as-code convention on the
+# sibling ADR-0043 Nexus-subscription gate).
+ERR_REGION_NEW_RESIDENTS_BLOCKED = "ERR_REGION_NEW_RESIDENTS_BLOCKED"
 
 # region-lifecycle.md:59 / :764 -- 7 days elapsed since Region.suspended_at,
 # payment unrecovered.
@@ -139,8 +154,18 @@ def dispatch_terminated_cleanup(db: Session, now: Optional[datetime] = None) -> 
     implementation can stamp the region marker once and stop re-dispatch.
 
     Flush-only -- caller owns the commit, per this codebase's
-    route-owns-commit convention (mirrors both cascade functions below it)."""
+    route-owns-commit convention (mirrors both cascade functions below it).
+
+    ADR-0054 X-V1: accumulates realtime events (currently ``process_planet_
+    termination``'s ``region.planet_terminated`` notice) in a per-call
+    ``RealtimeOutbox`` rather than emitting them directly, and returns it
+    to the caller as ``result["_outbox"]`` -- this function does NOT own
+    the commit (Phase 7 of the governance sweep does, one call up via
+    ``_run_region_lifecycle_advance_gated``), so it cannot safely flush
+    here. The caller must call ``result["_outbox"].flush()`` after ITS
+    ``db.commit()`` succeeds, and must NOT call it on the rollback path."""
     now = now or datetime.now(UTC)
+    outbox = RealtimeOutbox()
     eligible = (
         db.query(Region)
         .filter(
@@ -154,7 +179,7 @@ def dispatch_terminated_cleanup(db: Session, now: Optional[datetime] = None) -> 
     for region in eligible:
         planets = db.query(Planet).filter(Planet.region_id == region.id).all()
         for planet in planets:
-            process_planet_termination(db, planet, now=now)
+            process_planet_termination(db, planet, now=now, outbox=outbox)
         dispatch_station_termination(db, region.id)
         cascade_region_gate_teardown(db, region.id)
         # Intentionally leave cleanup_completed_at NULL until station
@@ -165,4 +190,91 @@ def dispatch_terminated_cleanup(db: Session, now: Optional[datetime] = None) -> 
             "station termination still discovery-only)",
             region.id, len(planets),
         )
-    return {"cleanup_eligible": len(eligible)}
+    return {"cleanup_eligible": len(eligible), "_outbox": outbox}
+
+
+def is_region_stakeholder(db: Session, player_id: uuid.UUID, region_id: uuid.UUID) -> bool:
+    """ADR-0054 X-D1 -- one query covering every asset class that makes a
+    player a "stakeholder" of ``region_id``: owns a planet, owns a station,
+    controls a captured pirate holding (individually OR via their team --
+    ``PirateHolding.owner_team_id`` is a TEAM FK, not a player FK, so a
+    teammate's capture counts too), owns a player-built warp-gate endpoint
+    anchored in the region, or has a registered ship currently sitting in
+    one of the region's sectors.
+
+    Ship/WarpGate don't carry ``region_id`` directly (unlike Planet/
+    Station/PirateHolding, which do) -- they're keyed by the human-readable
+    Integer ``sector_id`` (Ship.sector_id / WarpGateBeacon.source_sector_id
+    /destination_sector_id), so those two arms correlate through ``Sector.
+    region_id`` instead.
+
+    Implemented as up to five short-circuiting, individually-indexed EXISTS
+    checks (each is exactly the "one query per ownership type, indexed by
+    player_id" region-lifecycle.md describes) rather than one mega-SELECT
+    OR-ing five correlated subqueries together -- the ADR's "one SQL
+    query" framing is about avoiding an N+1 loop over the player's assets,
+    not mandating a single monolithic statement, and short-circuiting on
+    the common case (a stakeholder usually owns exactly one asset type)
+    means most calls fire ONE query, not five.
+
+    Region ownership and the post-takeover-commit case are handled by the
+    CALLER (movement_service._check_region_ingress_gate), not here --
+    ``Region.owner_id`` isn't an asset-ownership row this query touches,
+    and a just-committed takeover has already flipped ``Region.status`` to
+    ACTIVE by the time any traversal check runs, so the gate never reaches
+    this function for that case in the first place.
+    """
+    if (
+        db.query(exists().where(
+            Planet.owner_id == player_id, Planet.region_id == region_id,
+        )).scalar()
+    ):
+        return True
+
+    if (
+        db.query(exists().where(
+            Station.owner_id == player_id, Station.region_id == region_id,
+        )).scalar()
+    ):
+        return True
+
+    player = db.query(Player).filter(Player.id == player_id).first()
+    team_id = player.team_id if player is not None else None
+    holding_conditions = [PirateHolding.owner_player_id == player_id]
+    if team_id is not None:
+        holding_conditions.append(PirateHolding.owner_team_id == team_id)
+    if (
+        db.query(exists().where(
+            or_(*holding_conditions), PirateHolding.region_id == region_id,
+        )).scalar()
+    ):
+        return True
+
+    if (
+        db.query(exists().where(
+            WarpGate.player_id == player_id,
+            WarpGate.beacon_id == WarpGateBeacon.id,
+            or_(
+                exists().where(
+                    Sector.sector_id == WarpGateBeacon.source_sector_id,
+                    Sector.region_id == region_id,
+                ),
+                exists().where(
+                    Sector.sector_id == WarpGateBeacon.destination_sector_id,
+                    Sector.region_id == region_id,
+                ),
+            ),
+        )).scalar()
+    ):
+        return True
+
+    if (
+        db.query(exists().where(
+            or_(Ship.owner_id == player_id, Ship.registered_owner_id == player_id),
+            Sector.sector_id == Ship.sector_id,
+            Sector.region_id == region_id,
+        )).scalar()
+    ):
+        return True
+
+    return False

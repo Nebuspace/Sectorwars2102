@@ -98,8 +98,8 @@ class TestDefensePricingRoute:
         assert resp.status_code == 200
         body = resp.json()
         assert body["turrets"] == defense_unit_price("turrets", citadel_level, planet_type)
-        assert body["shields"] == defense_unit_price("shields", citadel_level, planet_type)
         assert body["fighters"] == defense_unit_price("fighters", citadel_level, planet_type)
+        assert "shields" not in body  # WO-FIX-DEFENSE-SHIELDS-CITADEL-PREREQ-BYPASS
 
     def test_pricing_response_exposes_only_unit_type_to_price(self, pricing_client):
         """No citadel_level / planet_type / other-player data -- ONLY the
@@ -112,7 +112,7 @@ class TestDefensePricingRoute:
         resp = pricing_client.get(PRICING_URL.format(planet_id=str(planet.id)))
 
         assert resp.status_code == 200
-        assert set(resp.json().keys()) == {"turrets", "shields", "fighters"}
+        assert set(resp.json().keys()) == {"turrets", "fighters"}
 
     def test_pricing_denies_non_owner_with_403(self, pricing_client):
         """The ownership join+filter finds nothing for this caller (either the

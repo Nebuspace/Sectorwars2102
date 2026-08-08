@@ -753,3 +753,63 @@ class TestGatherComputeWriteSplit:
         assert c.commodity_type == "ore"
         assert c.quantity == 100
         assert c.deadline == _NOW + timedelta(hours=3.0)
+
+
+class TestNpcInsurancePoolReserve:
+    """WO-FIX-NPC-CONTRACT-INSURANCE-ALWAYS-WORTHLESS: prior to this WO,
+    write_contract_generation_batch left insurance_pool_reserve at the
+    Contract column's bare `default=0` for every NPC contract, so any
+    acceptor who bought insurance on one paid a real premium for a claim
+    offset that was structurally always `min(n, 0) == 0`
+    (apply_claim_offset in contract_insurance.py is bounded by this
+    column). Fixed by funding the reserve at generation time at the same
+    10%-of-payment ratio contracts.md's own worked POST example uses
+    (payment=500, insurance_pool_reserve=50)."""
+
+    def test_npc_contract_gets_a_nonzero_insurance_pool_reserve(self) -> None:
+        db, origin, destination = _one_hop_pair()
+
+        inputs = contract_generator.gather_contract_generation_inputs(db, stations=[origin, destination])
+        batch = contract_generator.compute_contract_generation_batch(inputs)
+        contract_generator.write_contract_generation_batch(db, batch, now=_NOW)
+
+        assert len(db.added) == 1
+        c = db.added[0]
+        assert c.insurance_pool_reserve > 0
+        assert c.insurance_pool_reserve == (c.payment * Decimal("0.10")).quantize(Decimal("1"))
+
+    def test_npc_contract_escrow_amount_stays_zero(self) -> None:
+        """The reserve fix must not disturb escrow_amount, which
+        contracts.md pins at 0 for NPC-issued contracts (a separate
+        column tracking player-issuer-funded escrow -- orthogonal to the
+        insurance pool)."""
+        db, origin, destination = _one_hop_pair()
+
+        inputs = contract_generator.gather_contract_generation_inputs(db, stations=[origin, destination])
+        batch = contract_generator.compute_contract_generation_batch(inputs)
+        contract_generator.write_contract_generation_batch(db, batch, now=_NOW)
+
+        assert db.added[0].escrow_amount == Decimal("0")
+
+    def test_npc_contract_insurance_claim_offset_is_now_real_not_always_zero(self) -> None:
+        """The actual bug this WO closes: apply_claim_offset is bounded
+        by `contract.insurance_pool_reserve` -- pre-fix that column was
+        always 0 for an NPC contract, so `min(nominal, 0) == 0` no matter
+        what tier an acceptor bought. Sets a HAZARD tier on a generated
+        NPC contract and proves the offset now draws a real, non-zero
+        amount from the pool this WO funds."""
+        from src.models.contract import ContractInsuranceCoverageTier
+        from src.services import contract_insurance
+
+        db, origin, destination = _one_hop_pair()
+        inputs = contract_generator.gather_contract_generation_inputs(db, stations=[origin, destination])
+        batch = contract_generator.compute_contract_generation_batch(inputs)
+        contract_generator.write_contract_generation_batch(db, batch, now=_NOW)
+
+        contract = db.added[0]
+        contract.insurance_coverage_tier = ContractInsuranceCoverageTier.HAZARD
+
+        offset = contract_insurance.apply_claim_offset(contract, penalty=contract.payment)
+
+        assert offset["pool_draw"] > 0
+        assert offset["acceptor_debit"] < contract.payment

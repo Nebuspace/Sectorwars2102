@@ -26,7 +26,9 @@ from src.services.trading_service import (
     clamp_to_commodity_band,
     compute_player_price_multiplier,
     compute_region_tariff_multiplier,
+    compute_region_tax_rate,
     compute_station_lever_multiplier,
+    realize_region_tax,
 )
 from src.services.turn_service import regenerate_turns, spend_turns
 
@@ -698,6 +700,14 @@ async def buy_resource(
     tax_amount = _buy_totals["tax_amount"]
     total_with_tax = _buy_totals["total_with_tax"]
 
+    # WO-BUILD-REGION-TAX-RATE-WIRING: Region.tax_rate is a SEPARATE levy from
+    # the station tax above (governance-set, applies regardless of station
+    # ownership) — charged on top of total_cost, realized via realize_region_tax
+    # (50/50 owner/treasury split, WO-BUILD-REGION-TAX-REVENUE-SHARE-PAYOUT).
+    region_tax_rate = compute_region_tax_rate(station)
+    region_tax_amount = int(total_cost * region_tax_rate)
+    total_with_tax += region_tax_amount
+
     # Check if player has enough credits (goods + station trade tax)
     if current_player.credits < total_with_tax:
         raise HTTPException(
@@ -737,6 +747,16 @@ async def buy_resource(
                     exc_info=True,
                 )
                 station.treasury_balance = (station.treasury_balance or 0) + tax_amount
+
+        if region_tax_amount > 0:
+            try:
+                realize_region_tax(db, station, region_tax_amount)
+            except Exception:
+                logger.warning(
+                    "realize_region_tax failed (buy); falling back to station treasury",
+                    exc_info=True,
+                )
+                station.treasury_balance = (station.treasury_balance or 0) + region_tax_amount
 
         # Update ship cargo (using proper structure)
         if not current_ship.cargo:
@@ -1039,6 +1059,12 @@ async def sell_resource(
     tax_amount = _sell_totals["tax_amount"]
     net_earnings = _sell_totals["net_earnings"]
 
+    # WO-BUILD-REGION-TAX-RATE-WIRING: Region.tax_rate withheld from sale
+    # proceeds on top of the station tax above — see the buy-path comment.
+    region_tax_rate = compute_region_tax_rate(station)
+    region_tax_amount = int(total_earnings * region_tax_rate)
+    net_earnings -= region_tax_amount
+
     # Execute the trade
     try:
         # Update player credits (net of tax); the withheld tax is realized to
@@ -1057,6 +1083,16 @@ async def sell_resource(
                     exc_info=True,
                 )
                 station.treasury_balance = (station.treasury_balance or 0) + tax_amount
+
+        if region_tax_amount > 0:
+            try:
+                realize_region_tax(db, station, region_tax_amount)
+            except Exception:
+                logger.warning(
+                    "realize_region_tax failed (sell); falling back to station treasury",
+                    exc_info=True,
+                )
+                station.treasury_balance = (station.treasury_balance or 0) + region_tax_amount
 
         # Update ship cargo (using proper structure)
         if not current_ship.cargo:

@@ -464,6 +464,21 @@ RECLAIM_FLAG_CHECK_SECONDS = int(
     os.environ.get("RECLAIM_FLAG_CHECK_SECONDS", str(55 * 60))
 )
 
+# GC-lapse 7-day liquidation-window sweep cadence (ADR-0054 X-D3). Flips
+# players.is_galactic_citizen False for any player whose gc_lapsed_at is more
+# than 7 wall-clock days old (a re-subscription during the window already
+# cleared gc_lapsed_at via paypal_service, so this sweep never touches an
+# actively-renewed player). Same COARSE elapsed pre-filter discipline as the
+# reclaim-flag sweep: the durable per-player anchor (gc_lapsed_at) is what
+# makes this restart-safe and idempotent, not the counter. Offset to 58m to
+# avoid the other coarse-probe wakes.
+GC_LAPSE_CHECK_SECONDS = int(
+    os.environ.get("GC_LAPSE_CHECK_SECONDS", str(58 * 60))
+)
+
+# ADR-0054 X-D3 ratified number -- the 7-day liquidation-window length.
+GC_LAPSE_DAYS = 7
+
 # Sustained-reputation-drip sweep cadence (factions-and-teams.md:229-230,
 # WO-PROG-SUSTAINED-DRIPS). Like the port-cost / station-recovery / reclaim-
 # flag sweeps, the cadence is a COARSE elapsed pre-filter (so we don't take
@@ -765,6 +780,7 @@ _SUSTAINED_DRIP_LOCK_KEY = _mnemonic_lock_key("SDRP")
 _PORT_OPERATING_COSTS_LOCK_KEY = _mnemonic_lock_key("PORT")
 _STATION_RECOVERY_LOCK_KEY = _mnemonic_lock_key("STRC")
 _RECLAIM_FLAG_LOCK_KEY = _mnemonic_lock_key("RCLM")
+_GC_LAPSE_LOCK_KEY = _mnemonic_lock_key("GCLP")
 _PRICE_HISTORY_LOCK_KEY = _mnemonic_lock_key("PXHS")
 _ROUTE_RUNS_RETENTION_LOCK_KEY = _mnemonic_lock_key("RTRT")
 _ORPHAN_SCHEDULE_REPAIR_LOCK_KEY = _mnemonic_lock_key("ORPH")

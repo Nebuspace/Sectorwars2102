@@ -15,17 +15,18 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
+from src.core import commodity_economy
 from src.models.player import Player
-from src.models.ship import Ship, ShipType, effective_cargo_capacity
 from src.models.player_trade import (
+    PlayerTradeablePrice,
     PlayerTradeLog,
     PlayerTradeSession,
     PlayerTradeSessionStatus,
-    PlayerTradeablePrice,
 )
+from src.models.ship import Ship, ShipSpecification, ShipType, effective_cargo_capacity
 from src.models.ship_registry import RegistryEventType
-from src.services.ship_registry_service import append_registry_event
 from src.services import player_trade_antirmt as antirmt
+from src.services.ship_registry_service import append_registry_event
 
 logger = logging.getLogger(__name__)
 
@@ -877,18 +878,29 @@ class PlayerTradeService:
         )
         if row is not None:
             return int(row.unit_value_cr)
-        # Hard fallbacks matching seed / ADR-0082 bands. Hulls use ship:<TYPE>.
-        defaults = {
-            "credits": 1,
-            "ore": 15,
-            "fuel_ore": 15,
-            "organics": 18,
-            "equipment": 35,
-            "precious_metals": 120,
-        }
         if asset_key.startswith("ship:"):
-            return 5000
-        return int(defaults.get(asset_key, 10))
+            return self._hull_base_cost(asset_key[len("ship:"):])
+        if asset_key == "credits":
+            return 1
+        # Falls through to the single canonical commodity-price source
+        # (ADR-0082 base bands) rather than a flat magic number; unknown
+        # commodities return 0, matching commodity_economy.base_price().
+        return commodity_economy.base_price(asset_key)
+
+    def _hull_base_cost(self, ship_type_value: str) -> int:
+        """Real shipyard base_cost for a ship type (ShipSpecification), not a flat guess."""
+        try:
+            ship_type = ShipType(ship_type_value)
+        except ValueError:
+            return 0
+        spec = (
+            self.db.query(ShipSpecification)
+            .filter(ShipSpecification.type == ship_type)
+            .first()
+        )
+        if spec is None or spec.base_cost is None:
+            return 0
+        return int(spec.base_cost)
 
     def _appraise(
         self,

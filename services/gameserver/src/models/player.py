@@ -201,6 +201,20 @@ class Player(Base):
     home_region_id = Column(UUID(as_uuid=True), ForeignKey("regions.id"), nullable=True)
     current_region_id = Column(UUID(as_uuid=True), ForeignKey("regions.id"), nullable=True)
     is_galactic_citizen = Column(Boolean, nullable=False, default=False)
+    # ADR-0054 X-D3 — GC-lapse 7-day liquidation window. Set the moment the
+    # PayPal webhook reports the GC subscription cancelled (paypal_service.
+    # _handle_subscription_cancelled); NULL means "not currently lapsing".
+    # `is_galactic_citizen` intentionally STAYS True through the 7-day grace
+    # (every other GC-perk gate in the codebase reads only that flag) — the
+    # sweep in scheduler/economy_sweeps.py flips it False once the window
+    # elapses with no re-subscription. Cleared (set back to NULL) the moment
+    # the player re-subscribes/renews (paypal_service._activate_galactic_
+    # citizenship / _handle_subscription_renewed), which also resets the
+    # one-time gc-emergency-relocation grant for the next lapse cycle.
+    gc_lapsed_at = Column(DateTime(timezone=True), nullable=True)
+    # One-time GC-bypass emergency relocation (ADR-0054 X-D3), consumed once
+    # per lapse cycle; cleared alongside gc_lapsed_at on re-subscription.
+    gc_relocation_used_at = Column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     user = relationship("User", back_populates="player")
