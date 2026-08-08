@@ -895,6 +895,26 @@ async def buy_resource(
             total_value=total_cost,
         )
 
+        # WO-WIRE-RETENTION-TRADE-ACTIVITY: PlayerActivityService.track_activity
+        # had zero production callers (retention_service.py's own
+        # "STILL DORMANT" note) — the economic_loss_streak at-risk signal and
+        # the Redis session trades_count/trade_volume counters never populated
+        # for any trade. Best-effort, mirrors every other post-trade hook above.
+        try:
+            from src.services.player_activity_service import (
+                ActivityEventType,
+                get_player_activity_service,
+            )
+            activity_service = await get_player_activity_service()
+            await activity_service.track_activity(
+                str(current_player.id),
+                ActivityEventType.TRADE_BUY,
+                {"total_value": total_cost, "commodity": trade_request.resource_type,
+                 "quantity": trade_request.quantity, "station_id": str(station.id)},
+            )
+        except Exception:
+            logger.warning("activity tracking failed (buy trade)", exc_info=True)
+
         db.commit()
 
         # Real-time market broadcast (post-commit, batched, defensive).
@@ -1274,6 +1294,23 @@ async def sell_resource(
                     dispatch_narration_push(current_player, narration_line)
         except Exception:
             logger.warning("ARIA narration hook failed (P-F1)", exc_info=True)
+
+        # WO-WIRE-RETENTION-TRADE-ACTIVITY: see the buy-path hook above for
+        # the full rationale — same wire, sell side.
+        try:
+            from src.services.player_activity_service import (
+                ActivityEventType,
+                get_player_activity_service,
+            )
+            activity_service = await get_player_activity_service()
+            await activity_service.track_activity(
+                str(current_player.id),
+                ActivityEventType.TRADE_SELL,
+                {"total_value": total_earnings, "commodity": trade_request.resource_type,
+                 "quantity": trade_request.quantity, "station_id": str(station.id)},
+            )
+        except Exception:
+            logger.warning("activity tracking failed (sell trade)", exc_info=True)
 
         db.commit()
 
