@@ -470,6 +470,15 @@
   color: rgba(220, 235, 255, 0.85);
 }
 
+.mfd-page-faction-type,
+.mfd-page-faction-territory {
+  flex-shrink: 0;
+  font-size: 0.55rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(220, 235, 255, 0.55);
+}
+
 .mfd-page-faction-level {
   flex-shrink: 0;
   font-size: 0.58rem;
