@@ -643,7 +643,7 @@ async def buy_resource(
     # charges players). Charging buy_price here created a same-station
     # buy-low/sell-high arbitrage loop.
     #
-    # Canon (trading.md#price-stacking-order, Max-blessed): the full per-unit
+    # Canon (trading.md#price-stacking-order, human-blessed): the full per-unit
     # stack is rank discount × faction-rep × personal-rep × first-login × region
     # tariff × station lever, then the commodity hard [min, max] band as the
     # FINAL clamp. compute_effective_unit_price is the single source of truth for
@@ -1036,7 +1036,7 @@ async def sell_resource(
     # pays players). Paying out sell_price here was the other half of the
     # same-station arbitrage loop.
     #
-    # Canon (trading.md#price-stacking-order, Max-blessed): the full per-unit
+    # Canon (trading.md#price-stacking-order, human-blessed): the full per-unit
     # payout stack flips the relationship direction (a favoured trader is paid
     # MORE) — rank bonus, then divide by player-rep/tariff/lever, then the
     # commodity hard band as the FINAL clamp. compute_effective_unit_price owns

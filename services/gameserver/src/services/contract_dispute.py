@@ -381,14 +381,14 @@ def file_dispute(
     reason/metadata stamped into `dispute_notes` when any fire — not as
     a gate. Lands in the Tier-2 admin queue for `resolve_dispute`.
 
-    WO-CONTRACT-2b-HOLD-ESCROW (Max R, option C): "ESCROW" IN EVERY
+    WO-CONTRACT-2b-HOLD-ESCROW (human R, option C): "ESCROW" IN EVERY
     SETTLEMENT BELOW IS NOW REAL AGAIN. Previously this codebase's own
     `sweep_expired_accepted_contracts` refunded a PLAYER-issuer's escrow
     IMMEDIATELY at expiry, so any dispute filed afterward could only draw
     an issuer-funded payout from whatever the issuer's CURRENT wallet
     happened to still hold (`_bounded_transfer`, now deleted) -- hollow if
     they'd already spent it, an ordinary non-adversarial sequence, not an
-    attack. Max ruled this out: escrow now stays `HELD` through the entire
+    attack. human ruled this out: escrow now stays `HELD` through the entire
     48h dispute window; every "escrow -> X" settlement below draws from
     the REAL, held `contract.escrow_amount` via `_settle_dispute_escrow`
     (contract_escrow_core.py -- see its own docstring for the whole-credit
@@ -614,7 +614,7 @@ def resolve_dispute(
     exception with ZERO mutation, never a half-applied settlement sitting
     in the session waiting to be accidentally flushed later.
 
-    WO-CONTRACT-2b-HOLD-ESCROW (Max R, option C): see `file_dispute`'s own
+    WO-CONTRACT-2b-HOLD-ESCROW (human R, option C): see `file_dispute`'s own
     docstring for the full escrow-model change -- it applies IDENTICALLY
     here. Every "Escrow -> X" settlement below draws from the REAL, HELD
     `contract.escrow_amount` via `_settle_dispute_escrow` (contract_

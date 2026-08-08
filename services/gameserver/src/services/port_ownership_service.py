@@ -316,14 +316,15 @@ SECONDS_PER_DAY = 24 * 3600.0
 # operator's penalty. Streak + grant-once flag live in the EXISTING
 # station.ownership JSONB sub-ledger (no schema change), settled inside the same
 # lazy monthly tick (accrue_operating_costs) that tracks insolvency_months.
-#   FAIR_TARIFF_MAX        — the "low tariff" ceiling (canon: tariff <= 4%).
+#   FAIR_TARIFF_MAX        — the "low tariff" ceiling. Must sit ABOVE MIN_TAX_RATE
+#     (0.05) or the bonus is unreachable: tax_rate is clamped to [0.05, 0.25].
 #   FAIR_OPS_MONTHS        — consecutive low-tariff months that earn the bonus.
 #   FAIR_OPS_REPUTATION    — one-time positive personal-reputation grant.
 # A tick whose CURRENT tariff exceeds FAIR_TARIFF_MAX resets the streak to 0
 # (historical per-month rates are not snapshotted — the current rate is the only
 # tariff signal at tick time, exactly as insolvency reads current state).
 # ---------------------------------------------------------------------------
-FAIR_TARIFF_MAX = 0.04                # tariff ceiling for a "fair-operation" month
+FAIR_TARIFF_MAX = 0.06                # tariff ceiling for a "fair-operation" month
 FAIR_OPS_MONTHS = 6                   # consecutive low-tariff months -> bonus
 FAIR_OPS_REPUTATION = 50             # one-time positive personal-reputation grant
 

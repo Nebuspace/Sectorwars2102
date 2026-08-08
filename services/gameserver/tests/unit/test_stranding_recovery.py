@@ -776,7 +776,7 @@ class TestConcurrentRace:
             slipdrive_service.begin_charge(db, player.id, now=t0 + timedelta(seconds=1))
 
 
-# --- Plus: 0-hop self-match (NO-CANON, Max-gated -- see DECISIONS) ----------- #
+# --- Plus: 0-hop self-match (NO-CANON, human-gated -- see DECISIONS) ----------- #
 #
 # Both tools' BFS checks `matches(start_pk)` before ever touching the graph
 # (see `_bfs_nearest` in each service): firing the beacon FROM a fedspace

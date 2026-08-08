@@ -1,7 +1,7 @@
 """Region-invite redeem-at-signup primitives (WO-IL6, MAX-GATED auth surface).
 
 Design brief: audit/design-briefs/invite-link-onramp.md §4.6-8 + the 2026-06-20
-Review corrections + Max rulings (D5 = the 60-day account-age vote gate, IL5,
+Review corrections + human rulings (D5 = the 60-day account-age vote gate, IL5,
 which is already BUILT + wired in regional_governance_service.py:56,1213).
 
 WHY THIS MODULE EXISTS — the async/sync barrier
@@ -39,7 +39,7 @@ blocks signup. The caller gets a structured outcome and falls through to the
 existing Terran-Space default placement plus a human-readable notice.
 
 NO AUTONOMOUS DEPLOY: this is the AUTH carve-out. Built, py_compiled, unit-tested
-— but the diff is routed for Max sign-off before any deploy.
+— but the diff is routed for human sign-off before any deploy.
 """
 
 import hashlib

@@ -1268,7 +1268,7 @@ class MovementService:
         self, player: Player, destination_sector_id: int,
     ) -> Optional[Dict[str, Any]]:
         """
-        Auth fix (b), Max-approved 2026-07-10: ADR-0043 / SYSTEMS/region-
+        Auth fix (b), human-approved 2026-07-10: ADR-0043 / SYSTEMS/region-
         lifecycle.md:655 — "The Galactic Citizen subscription gate is
         enforced at traversal, not at the warp's existence: every region
         carries the warp regardless of subscription tier, and the cross-
@@ -1301,7 +1301,7 @@ class MovementService:
         allowed" for its own, different gate — the closest textual analog
         available, and the only directionally-safe reading. Flagged for
         DECISIONS in case an intentional bidirectional (or Nexus-side) gate
-        is what Max actually wants.
+        is what human actually wants.
 
         [NO-CANON] Scope, flagged not silently resolved: this gates the
         TRAVERSAL endpoint only, per the WO's explicit scope. It does NOT
@@ -1655,7 +1655,7 @@ class MovementService:
     # turn_cost, can_afford} for every neighbor at ZERO cost -- this action
     # is the PAID enrichment above that baseline, never a duplicate of it.
     #
-    # THE SCALING LADDER (Max-approved 2026-07-10 off a 3-rail investigation
+    # THE SCALING LADDER (human-approved 2026-07-10 off a 3-rail investigation
     # -- WO-PROG-SECTOR-SCAN-1). Every magnitude below is [NO-CANON],
     # flagged for DECISIONS: canon confirms the feature and its 2-turn cost
     # only, not these tiers/thresholds.
@@ -1703,7 +1703,7 @@ class MovementService:
     #   (the tree is designed to grow by appending rows -- zero migration
     #   risk) WITHOUT reusing the reserved survey node.
     #
-    # Stateless + ephemeral by design (Max-approved): a passive-fill
+    # Stateless + ephemeral by design (human-approved): a passive-fill
     # enhancement, not a permanent per-player discovery -- no persistence
     # table; the payload is computed fresh on every call and never stored.
     # Fuzzy-disclosure discipline is a HARD constraint (mirrors the quantum
@@ -3091,7 +3091,7 @@ class MovementService:
                 # once here is the correct shape, not just a safe one.
                 self._maybe_dispatch_police_engagement(player, sector)
 
-        # WO-CMB-NPC-INITIATED-1 lane C (Max ruling, 2026-07-10) — pirate
+        # WO-CMB-NPC-INITIATED-1 lane C (human ruling, 2026-07-10) — pirate
         # trigger. VERIFY-FIRST found this leg's police_patrol_ships block
         # (immediately above) is the SAME deferral this WO closes: its own
         # comment says auto-firing combat here would override the

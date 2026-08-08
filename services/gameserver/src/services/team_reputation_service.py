@@ -20,7 +20,7 @@ NOT built here -- flagged as an explicit follow-up, not silently implied.
 [RULED 2026-08-04 — DECISIONS.md team-reputation-calculation-method-canonical]:
 ``TeamReputation.calculation_method`` is the sole source of truth.
 ``Team.reputation_calculation_method`` is deprecated (retained for additive-
-schema safety; no DROP without Max GO). This service reads/writes only
+schema safety; no DROP without human GO). This service reads/writes only
 ``TeamReputation.calculation_method`` and never touches the Team duplicate.
 
 Sync Session throughout; every function flushes, never commits -- the

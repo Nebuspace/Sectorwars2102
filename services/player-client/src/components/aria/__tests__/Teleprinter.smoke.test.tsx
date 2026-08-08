@@ -2,7 +2,7 @@
 /**
  * Teleprinter — live-mount console-error smoke (WO-UI1-TELEPRINTER sub-part
  * a; extended by WO-UI1-CHROME-COMPLETE for the grammar wiring; REVISED by
- * WO-UI-MAX-BATCH-1 REVISE, Max #22-24, for the two-independent-toggle
+ * WO-UI-MAX-BATCH-1 REVISE, human #22-24, for the two-independent-toggle
  * rebuild). Mirrors StatusBar.smoke.test.tsx's seam (jsdom + react-dom/
  * client createRoot + act(), no RTL in this project).
  *
@@ -596,8 +596,8 @@ describe('Teleprinter — live-mount smoke', () => {
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
-  // ── TWO INDEPENDENT BINARY TOGGLES (WO-UI-MAX-BATCH-1 REVISE, Max #22-24
-  // — Max live-playtested the shipped single 3-state cycle and RETRACTED
+  // ── TWO INDEPENDENT BINARY TOGGLES (WO-UI-MAX-BATCH-1 REVISE, human #22-24
+  // — human live-playtested the shipped single 3-state cycle and RETRACTED
   // it, back to the artifact's own two-toggle model). ─────────────────────
   describe('two independent toggles — PANEL/TICKER and LOG/HIDE', () => {
     it('ticker (default) renders the persistent control row: .glyph + .tline + .telerow[.tin + XMIT + PANEL toggle + LOG toggle], both toggles default-labeled + aria-pressed=false', async () => {
@@ -734,7 +734,7 @@ describe('Teleprinter — live-mount smoke', () => {
       expect(errorSpy).not.toHaveBeenCalled();
     });
 
-    // ── No focus-instance-swap machinery (WO-UI-MAX-BATCH-1 REVISE — Max
+    // ── No focus-instance-swap machinery (WO-UI-MAX-BATCH-1 REVISE — human
     // #22-24: "no focus-instance-swap issue, the buttons persist"). The
     // retired single-3-state-toggle design needed displayToggleRefs/
     // focusToggleOnModeChangeRef because ITS one shared control rendered as

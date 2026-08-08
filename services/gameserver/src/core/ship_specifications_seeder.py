@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 # the combat resolver as fractions of incoming damage absorbed, clamped to
 # [0.0, 0.9].
 #
-# Ratified: DECISIONS.md hull-combat-mitigation-table (Max 2026-06-22) —
+# Ratified: DECISIONS.md hull-combat-mitigation-table (human 2026-06-22) —
 # 0.00–0.20 scale; Defender 0.10, Carrier + NPC Marshal 0.15, NPC Sentinel 0.20;
 # light/fast hulls at or near 0.00. Values below match that ruling.
 #

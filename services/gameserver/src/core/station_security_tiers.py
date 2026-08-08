@@ -29,7 +29,7 @@ Ordinary CLASS_1-11 NPC ports (in ANY region, including the thousands of
 background ports inside Terran Space/Central Nexus that aren't a named
 anchor): canon states only "Player-owned stations default to Basic" and
 is silent here — WO-STN-SEC-1's original report shipped a uniform "basic"
-floor. **Ratified 2026-08-04 (Max):** replaced with a per-class gradient,
+floor. **Ratified 2026-08-04 (human):** replaced with a per-class gradient,
 matching the docking-slips precedent's own class-banding
 (docking-slips.md § Per-station-class slip counts: 0-2 / 3-6 / 7-10 / 11).
 Higher station classes carry higher default security. Premium stays

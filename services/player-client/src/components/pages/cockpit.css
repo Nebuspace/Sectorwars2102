@@ -99,7 +99,7 @@
   box-shadow: none;
 }
 
-/* Corner cluster over the landed vista holding LIFT OFF (Max + Orchestrator
+/* Corner cluster over the landed vista holding LIFT OFF (human + Orchestrator
    placement decision). Anchored top-right at 3.4rem (y≈54), sitting ABOVE
    the owner HUD chip (top:5.5rem / y≈88 — see .hud-overlay.top-right[data-
    hud-chip="owner"] below). .cockpit-windshield is position:relative. */

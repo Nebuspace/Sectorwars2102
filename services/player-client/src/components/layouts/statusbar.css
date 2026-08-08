@@ -645,7 +645,7 @@
    leaving the winner dependent on CSS bundle/load order. The compound form
    deterministically outranks it regardless.
 
-   WO-UI-STATUSBAR-VITALS value hierarchy (Max playtest #27): CREDITS +
+   WO-UI-STATUSBAR-VITALS value hierarchy (human playtest #27): CREDITS +
    TURNS are the PRIMARY vitals -- bumped one size step above the secondary
    tier (drones/mines/LINK, unchanged below) so they read as the headline
    numbers rather than smaller than the mine count. 1.02rem is ~1.16x
@@ -727,7 +727,7 @@
    .game-container { font-size: calc(clamp(10px,1.05vw,15px) *
    var(--uiscale)) }`), which is why it read LARGER than credits/turns'
    own fixed-rem values at some viewport widths and was the literal
-   complaint (Max playtest #27: "smaller than the number of mines"). Given
+   complaint (human playtest #27: "smaller than the number of mines"). Given
    an explicit rem matching the OTHER established vital-value rules
    (`.vit.sb-credits`, `.sb-turns-count`, `.sb-v`, `.sb-drone` — all
    rem-based, none vw-drifting) rather than resized: 0.88rem reproduces the

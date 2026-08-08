@@ -4,14 +4,14 @@ WO-P6-aria-data-index-registry Lane C (MAX-RULED rename, follow-up to
 26ea004450dc): 26ea004450dc's Lane C left aria_personal_memories.memory_type
 untouched because two of the three literals actually written
 ("combat"/"exploration") didn't byte-match any `aria_data_streams` registry
-key. Max has since ruled: rename the write-site literals to their canon
+key. human has since ruled: rename the write-site literals to their canon
 registry keys rather than leave the mismatch standing. Of the three:
 
   * "combat"      -> "threat.combat"   (registry key exists, ARIAPersonalMemory
                                           -backed -- clean rename)
   * "exploration" -> "nav.sector_visit" (registry key exists but is NOT
                                           ARIAPersonalMemory-backed in the
-                                          registry -- renamed anyway per Max's
+                                          registry -- renamed anyway per human's
                                           ruling since this write site,
                                           record_exploration_memory, is DEAD
                                           CODE, 0 callers; a purely cosmetic

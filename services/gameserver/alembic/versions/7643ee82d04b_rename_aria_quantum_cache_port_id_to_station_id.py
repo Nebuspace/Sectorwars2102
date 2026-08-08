@@ -16,7 +16,7 @@ always declared it station_id — zero model changes needed here, the model
 is the correct side.
 
 NON-DESTRUCTIVE BUT NOT STRICTLY ADDITIVE: this is a column RENAME, not an
-ADD — same flag as 852befb04227, Max sign-off requested in the
+ADD — same flag as 852befb04227, human sign-off requested in the
 implementer's STATUS for this WO. Zero rows on stage today, but written as
 if data existed (a real ALTER TABLE ... RENAME COLUMN, not a drop+
 recreate).

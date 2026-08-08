@@ -5,7 +5,7 @@ invite-link path of region-citizenship-onramp (DECISIONS.md:473-475).
 
 A region OWNER mints a high-entropy invite ``code``; a new player who starts
 the game via that code is placed in ``region_id`` and made an instant voting
-citizen there (the Max-gated signup-wiring half lives in WO-IL6, not here).
+citizen there (the human-gated signup-wiring half lives in WO-IL6, not here).
 
 This module is **additive, auth-free infrastructure** (WO-IL1):
 
@@ -20,7 +20,7 @@ This module is **additive, auth-free infrastructure** (WO-IL1):
   - ``RegionInviteRedemption`` — an append-only audit trail of who redeemed
     what, with hashed IP / device-fingerprint columns that feed the future
     multi-account clustering (ADR-0056). The redemption ROW is written inside
-    the Max-gated redeem path; the model + table are buildable now.
+    the human-gated redeem path; the model + table are buildable now.
 
 Conventions mirror models/region.py exactly: ``Base`` from
 ``src.core.database``; ``UUID(as_uuid=True)`` PK with Python-side
@@ -60,7 +60,7 @@ class RegionInvite(Base):
     """A region-owner-minted, expiring, revocable invite code.
 
     Redeeming a valid code places a new player in ``region_id`` and grants
-    instant citizenship there (WO-IL6, Max-gated). One-time by default
+    instant citizenship there (WO-IL6, human-gated). One-time by default
     (``max_uses=1``); ``expires_at`` is mandatory (no infinitely-reusable link).
     """
     __tablename__ = "region_invites"
@@ -155,7 +155,7 @@ class RegionInvite(Base):
 class RegionInviteRedemption(Base):
     """Append-only audit trail of invite redemptions.
 
-    One row per successful redeem (written inside the Max-gated redeem path,
+    One row per successful redeem (written inside the human-gated redeem path,
     WO-IL6). ``redeemed_by_player_id`` is nullable because the player row is
     created in the same transaction; rows from before that wiring lands carry
     NULL. The hashed IP / device-fingerprint columns feed the future ADR-0056

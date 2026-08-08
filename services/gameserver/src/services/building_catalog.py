@@ -190,7 +190,7 @@ BUILDING_CATALOG: Dict[str, Dict[str, Any]] = {
         "effect": {"kind": "ct1_defense", "ct1_kind": "scanner_array"},
         "signature": False, "prereqs": [],
     },
-    # The two K0-cashed design-only buildings (magnitudes already Max-blessed in K0).
+    # The two K0-cashed design-only buildings (magnitudes already human-blessed in K0).
     "RAIL_GUN": {
         "kind": "RAIL_GUN", "domain": "defense", "name": "Rail Gun Battery",
         "footprint": [1, 1], "max_level": 1,

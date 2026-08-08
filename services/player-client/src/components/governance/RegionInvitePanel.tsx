@@ -125,7 +125,7 @@ const effectiveStatus = (invite: RegionInvite, nowMs: number): InviteStatus => {
 };
 
 // Build the shareable join URL from the code. The /join route is the IL6
-// signup-wiring target (Max-gated, not yet live), so the link is forward-looking
+// signup-wiring target (human-gated, not yet live), so the link is forward-looking
 // — labelled as such in the UI. Host comes from the running origin.
 const joinUrlFor = (code: string): string => {
   const origin =

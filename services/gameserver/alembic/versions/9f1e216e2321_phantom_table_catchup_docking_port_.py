@@ -51,7 +51,7 @@ makes this migration a no-op wherever a table already exists (every
 create_all-healed DB, including heimdral/dev/stage) and a genuine create/
 drop everywhere else (a fresh alembic-only build, including the CI gate).
 This migration must COEXIST with startup create_all -- removing create_all-
-at-startup is a separate, Max-design-gated item tracked elsewhere; this
+at-startup is a separate, human-design-gated item tracked elsewhere; this
 migration does not touch main.py or start.sh.
 
 Revision ID: 9f1e216e2321

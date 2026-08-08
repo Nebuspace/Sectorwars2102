@@ -1,5 +1,5 @@
 """WO-ARIA-CHAT-LLM -- LLM provider chain into ARIA's chat path, BUILT DARK
-behind ARIA_LLM_CHAT_ENABLED (default False, zero spend until Max flips it).
+behind ARIA_LLM_CHAT_ENABLED (default False, zero spend until human flips it).
 
 Mocked provider ONLY -- zero real API calls, zero spend, ever, on this Mac.
 Tests target the new orchestration seams directly (EnhancedAIService.
@@ -557,7 +557,7 @@ class TestModeAndLedgerSeamSurfaced:
     @pytest.mark.asyncio
     async def test_route_surfaces_mode_and_inert_ledger_entry(self):
         """The seam is present and inert: ledger_entry is always None
-        today (Max's GO amendment) regardless of which mode answered."""
+        today (human's GO amendment) regardless of which mode answered."""
         from src.api.routes.enhanced_ai import ConversationRequest, chat_with_ai
         from src.services.ai_security_service import AISecurityService
 

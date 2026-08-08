@@ -66,7 +66,7 @@ class FormationAlreadyInvestigatedError(Exception):
 
 
 # --- Investigation reward calibration ----------------------------------------
-# Ratified: DECISIONS.md anomaly-investigate-reward (Max 2026-06-22) —
+# Ratified: DECISIONS.md anomaly-investigate-reward (human 2026-06-22) —
 # one-time credits by rarity: 250 (common) / 500 (uncommon) / 1,000 (rare);
 # default for any unmapped formation type is 250.
 INVESTIGATE_REWARD_NO_CANON = False

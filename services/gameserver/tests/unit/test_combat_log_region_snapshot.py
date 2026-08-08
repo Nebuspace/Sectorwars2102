@@ -107,7 +107,7 @@ class TestEveryConstructorSiteCarriesSnapshot:
         """WO-CMB-CLOG-SNAP-1 audit found exactly 5 CombatLog(...) call
         sites in combat_service.py at HEAD (attack_player, attack_npc_ship,
         attack_sector_drones, attack_planet, attack_port). WO-CMB-NPC-
-        INITIATED-1 (Max ruling, 2026-07-10) deliberately added a 6th --
+        INITIATED-1 (human ruling, 2026-07-10) deliberately added a 6th --
         npc_attack_player, the symmetric NPC-initiated-attack mirror of
         attack_npc_ship -- and it carries region_id_snapshot= (see the
         test below), so this pin is bumped 5 -> 6 as its own reviewed

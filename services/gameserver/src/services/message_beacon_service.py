@@ -82,7 +82,7 @@ TRUST_AUTOFLAG_THRESHOLD = 0.2
 # ── Admin-confirmed abuse → deployer trust dock (message-beacons.md:120) ──
 # [NO-CANON launch magnitude] — matches AISecurityService's default /
 # RATE_LIMIT_EXCEEDED / INAPPROPRIATE_CONTENT class (0.1). Suspension /
-# time-ban stays Max-gated: this path docks trust + bumps violation_count
+# time-ban stays human-gated: this path docks trust + bumps violation_count
 # only; it never sets aria_blocked_until.
 TRUST_DOCK_CONFIRMED_ABUSE = 0.1
 
@@ -119,7 +119,7 @@ EXPIRY_CHOICES: Dict[str, Optional[timedelta]] = {
     "30d": timedelta(days=30),
 }
 
-# ── Charge-cell lifecycle (WO-BEACON-LIFECYCLE, Max-ratified numbers) ──────
+# ── Charge-cell lifecycle (WO-BEACON-LIFECYCLE, human-ratified numbers) ──────
 # Every deploy/recharge grants exactly one fixed cell -- no player choice.
 # `charge_expires_at` marks the FADING->DARK boundary; the REPURPOSED
 # `expiry` column (see the model's own docstring) is the separate, later
@@ -896,7 +896,7 @@ def confirm_abuse(db: Session, beacon_id: uuid.UUID) -> Dict[str, Any]:
     increments ``aria_violation_count`` (warn ladder counter), deletes the
     beacon row + rebuilds sector denorm so re-confirm 404s (idempotent
     without a new column). Does **not** set ``aria_blocked_until`` —
-    suspension/time-ban remains Max-gated. FLUSH-ONLY.
+    suspension/time-ban remains human-gated. FLUSH-ONLY.
     """
     peek = _load_beacon(db, beacon_id)
     region_id, sector_id = peek.region_id, peek.sector_id

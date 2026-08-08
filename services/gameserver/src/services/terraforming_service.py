@@ -222,7 +222,7 @@ class TerraformingService:
         # K1b-2: mirror the terraform investment onto the structures grid as a rig BUNDLE (additive —
         # the grid is terraform-owned state; the legacy habitability_score path above stays the
         # AUTHORITATIVE driver of habitability). The placed rigs feed the settle() step-2 SHADOW
-        # grid-habitability log (Max-gated ADR-0002 amendment). Fully defensive: a grid-placement
+        # grid-habitability log (human-gated ADR-0002 amendment). Fully defensive: a grid-placement
         # hiccup must never break the terraform start (credits/resources already validated above).
         try:
             from src.services import structures as _struct
