@@ -594,6 +594,19 @@ export const shipRegistryAPI = {
 
   approveTransferClaim: (shipId: string) =>
     apiRequest(`/api/v1/ships/${shipId}/transfer-claim/approve`, { method: 'POST' }),
+
+  /** Voluntarily eject from the caller's own currently-piloted ship (no
+   * ship_id -- always acts on the current ship) into a reused escape pod. */
+  eject: () =>
+    apiRequest('/api/v1/players/me/eject', { method: 'POST' }),
+
+  /** Board `shipId` -- free/no-pin for the registered owner, otherwise
+   * requires the ship's hatch_pin_code. */
+  board: (shipId: string, pin?: string | null) =>
+    apiRequest(`/api/v1/ships/${shipId}/board`, {
+      method: 'POST',
+      body: JSON.stringify(pin ? { pin } : {}),
+    }),
 };
 
 // Ranking & Reputation APIs
