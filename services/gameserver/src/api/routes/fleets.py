@@ -273,6 +273,44 @@ async def get_team_battles(
     ]
 
 
+@router.get("/battles/{battle_id}")
+async def get_battle_status(
+    battle_id: UUID,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db)
+):
+    """Get the detailed current status of a single fleet battle (phase,
+    remaining ships, cumulative damage, casualties per side)."""
+    # Verify player is involved in the battle
+    battle = db.query(FleetBattle).filter(FleetBattle.id == battle_id).first()
+    if not battle:
+        raise HTTPException(status_code=404, detail="Battle not found")
+
+    from src.models.fleet import FleetMember
+    attacker = battle.attacker_fleet
+    defender = battle.defender_fleet
+
+    player_in_attacker = attacker and db.query(FleetMember).filter(
+        FleetMember.fleet_id == attacker.id,
+        FleetMember.player_id == player.id
+    ).first() is not None
+
+    player_in_defender = defender and db.query(FleetMember).filter(
+        FleetMember.fleet_id == defender.id,
+        FleetMember.player_id == player.id
+    ).first() is not None
+
+    if not (player_in_attacker or player_in_defender):
+        raise HTTPException(status_code=403, detail="You have no ships in this battle")
+
+    service = FleetService(db)
+
+    try:
+        return service.get_battle_status(battle_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @router.post("/battles/{battle_id}/simulate-round")
 async def simulate_battle_round(
     battle_id: UUID,
