@@ -1,6 +1,6 @@
 import uuid
 from typing import TYPE_CHECKING
-from sqlalchemy import Boolean, Column, DateTime, String, func, TIMESTAMP, exists, and_
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, func, TIMESTAMP, exists, and_
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import relationship
@@ -35,6 +35,10 @@ class User(Base):
     subscription_status = Column(String(50), nullable=True)  # active, suspended, cancelled
     subscription_started_at = Column(TIMESTAMP, nullable=True)
     subscription_expires_at = Column(TIMESTAMP, nullable=True)
+    # Consecutive failed recurring-payment count. Incremented by
+    # paypal_service._handle_payment_failed, reset to 0 by any successful
+    # payment/renewal. NULL on legacy rows = "no failures recorded".
+    payment_failure_count = Column(Integer, nullable=True, default=0)
 
     # Relationships
     oauth_accounts = relationship("OAuthAccount", back_populates="user", cascade="all, delete-orphan")

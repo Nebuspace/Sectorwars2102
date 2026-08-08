@@ -33,6 +33,24 @@ logger = logging.getLogger(__name__)
 WEBHOOK_BYPASS_ENV = "PAYPAL_SKIP_WEBHOOK_VALIDATION"
 
 
+# Consecutive failed recurring payments tolerated before access is suspended.
+#
+# Counting FAILURES rather than elapsed days: PayPal's own retry schedule is
+# what generates BILLING.SUBSCRIPTION.PAYMENT.FAILED events, and this file has
+# no per-subscription billing-cycle clock to measure a time window against —
+# ``subscription_expires_at`` advances only on SUCCESS, so a day-based window
+# would need a scheduler sweep this WO deliberately does not add. Three failures
+# maps to roughly PayPal's default retry sequence (initial attempt plus two
+# retries, ~a week), so a transient card decline that clears on retry never
+# costs the player access, while a genuinely dead payment method stops granting
+# free access indefinitely.
+#
+# FIRST-CUT TUNABLE — provisional, not precision-final. Same convention as this
+# repo's other provisional balance numbers; revisit once real failure telemetry
+# exists.
+PAYMENT_FAILURE_SUSPEND_THRESHOLD = 3
+
+
 class BypassFlagInProductionError(RuntimeError):
     """Raised at import time if a webhook-validation bypass flag is enabled while
     the service is running in production. PayPal webhook signature verification is
@@ -466,36 +484,114 @@ class PayPalService:
             logger.info(f"Suspended region {region.name} due to payment suspension")
     
     async def _handle_payment_failed(self, session: AsyncSession, resource: Dict[str, Any]):
-        """Handle payment failure"""
-        subscription_id = resource.get("billing_agreement_id")
+        """Handle a failed recurring payment.
+
+        Increments the subscriber's consecutive-failure counter and, once it
+        reaches ``PAYMENT_FAILURE_SUSPEND_THRESHOLD``, suspends *access only*.
+        Deliberately does NOT cancel the PayPal subscription, issue a refund, or
+        touch how payments are charged — the provider keeps retrying on its own
+        schedule, and a later success fully restores access (see
+        ``_restore_after_successful_payment``).
+        """
+        subscription_id = resource.get("billing_agreement_id") or resource.get("id")
         if not subscription_id:
             return
-        
-        # Log payment failure and potentially suspend after multiple failures.
+
         logger.warning("Payment failed for subscription %s", _sub_ref(subscription_id))  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
-        
-        # You could implement a failure counter and suspend after X failures
-        # For now, just log the event
-    
-    async def _handle_payment_completed(self, session: AsyncSession, resource: Dict[str, Any]):
-        """Handle successful payment"""
-        subscription_id = resource.get("billing_agreement_id")
-        if not subscription_id:
-            return
-        
-        amount = resource.get("amount", {}).get("total", "0.00")
-        logger.info("Payment completed for subscription %s: $%s", _sub_ref(subscription_id), amount)  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
-        
-        # Ensure region/citizenship remains active
+
+        # Region-owner subscription first, mirroring the lookup order used by
+        # _handle_subscription_cancelled (a subscription id belongs to exactly
+        # one of the two).
         result = await session.execute(
             select(Region).where(Region.paypal_subscription_id == subscription_id)
         )
         region = result.scalar_one_or_none()
-        
-        if region and region.status == "suspended":
-            region.status = "active"
-            logger.info(f"Reactivated region {region.name} after successful payment")
-    
+
+        if region is not None:
+            region.payment_failure_count = (region.payment_failure_count or 0) + 1
+            at_threshold = region.payment_failure_count >= PAYMENT_FAILURE_SUSPEND_THRESHOLD
+            if at_threshold and region.status != "suspended":
+                region.status = "suspended"
+                region.subscription_status = "suspended"
+                logger.warning(
+                    "Suspended region %s after %s consecutive payment failures",
+                    region.name, region.payment_failure_count,
+                )
+            return
+
+        result = await session.execute(
+            select(Player).options(selectinload(Player.user))
+            .join(User).where(User.paypal_subscription_id == subscription_id)
+        )
+        player = result.scalar_one_or_none()
+        if player is None or player.user is None:
+            logger.info(
+                "Payment failure for subscription %s matched no subscriber",
+                _sub_ref(subscription_id),  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
+            )
+            return
+
+        user = player.user
+        user.payment_failure_count = (user.payment_failure_count or 0) + 1
+        if user.payment_failure_count >= PAYMENT_FAILURE_SUSPEND_THRESHOLD:
+            # Access denial only: the citizenship flag every GC-perk gate reads
+            # is dropped and the status string records why. Reversed in full by
+            # the next successful payment.
+            player.is_galactic_citizen = False
+            user.subscription_status = "suspended"
+            logger.warning(
+                "Suspended galactic citizenship for player %s after %s consecutive payment failures",
+                player.id, user.payment_failure_count,
+            )
+
+    async def _restore_after_successful_payment(self, session: AsyncSession, subscription_id: str):
+        """Reset the consecutive-failure counter and undo a failure suspension.
+
+        Called from every successful-payment path. Restoration is unconditional
+        on the counter so a subscriber suspended by failures regains access the
+        instant one payment clears.
+        """
+        result = await session.execute(
+            select(Region).where(Region.paypal_subscription_id == subscription_id)
+        )
+        region = result.scalar_one_or_none()
+
+        if region is not None:
+            region.payment_failure_count = 0
+            if region.status == "suspended":
+                region.status = "active"
+                region.subscription_status = "active"
+                logger.info("Reactivated region %s after successful payment", region.name)
+            return
+
+        result = await session.execute(
+            select(Player).options(selectinload(Player.user))
+            .join(User).where(User.paypal_subscription_id == subscription_id)
+        )
+        player = result.scalar_one_or_none()
+        if player is None or player.user is None:
+            return
+
+        user = player.user
+        user.payment_failure_count = 0
+        if user.subscription_status == "suspended":
+            player.is_galactic_citizen = True
+            user.subscription_status = "active"
+            logger.info(
+                "Restored galactic citizenship for player %s after successful payment", player.id
+            )
+
+    async def _handle_payment_completed(self, session: AsyncSession, resource: Dict[str, Any]):
+        """Handle successful payment"""
+        subscription_id = resource.get("billing_agreement_id") or resource.get("id")
+        if not subscription_id:
+            return
+
+        amount = resource.get("amount", {}).get("total", "0.00")
+        logger.info("Payment completed for subscription %s: $%s", _sub_ref(subscription_id), amount)  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
+
+        await self._restore_after_successful_payment(session, subscription_id)
+
     @staticmethod
     def _next_expiry(resource: Dict[str, Any]) -> datetime:
         """Compute the new subscription expiry from a PayPal subscription resource.
@@ -534,6 +630,7 @@ class PayPalService:
                 user.paypal_subscription_id = subscription_id
                 user.subscription_tier = SubscriptionTier.GALACTIC_CITIZEN.value
                 user.subscription_status = "active"
+                user.payment_failure_count = 0
                 if user.subscription_started_at is None:
                     user.subscription_started_at = datetime.now(timezone.utc).replace(tzinfo=None)
                 user.subscription_expires_at = self._next_expiry(resource)
@@ -572,6 +669,10 @@ class PayPalService:
             user = player.user
             user.subscription_status = "active"
             user.subscription_expires_at = self._next_expiry(resource)
+            # A successful renewal clears any consecutive-failure streak, so a
+            # subscriber who recovers before the suspension threshold starts
+            # clean rather than accumulating failures across billing cycles.
+            user.payment_failure_count = 0
         logger.info("Renewed galactic citizenship for player %s", player.id)
     
     async def _activate_regional_ownership(
