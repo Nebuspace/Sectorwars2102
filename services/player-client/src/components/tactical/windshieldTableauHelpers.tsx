@@ -77,7 +77,7 @@ export const DOCK_APPROACH_STANDOFF_EM = 3.5;
  *  em, the same canonical-%-space convention DOCK_RANGE_EM uses) a ship
  *  contact must be before TACTICAL TARGET's menu offers ENGAGE instead of
  *  APPROACH. PLACEHOLDER — a small multiple of DOCK_RANGE_EM as a sensible
- *  starting number; a Max-tunable dial once playtested, same convention as
+ *  starting number; a human-tunable dial once playtested, same convention as
  *  DOCK_LAND_PROXIMITY_RANGE_EM.
  *
  *  WO-API-A1: POST /combat/engage is now SERVER-authoritative on this same
@@ -273,7 +273,7 @@ export function stationApproachPoint(
   };
 }
 
-/** FIX C revise (Max: right-click must be MENU-mediated, not direct-travel —
+/** FIX C revise (human: right-click must be MENU-mediated, not direct-travel —
  *  corrects the earlier direct-travel cut): a small floating menu, sized for
  *  a single "Travel To" action button, not the 232px info card `.ssv-popup`
  *  is sized for. */
@@ -318,7 +318,7 @@ export const STATION_FOOTPRINT_EM_HEIGHT_MAX = 5;
  *  comment cites the same convention). */
 export const DEFAULT_REM_PX = 16;
 
-/** canonical-%-space (Max ruling): the client computes every ISP %-space
+/** canonical-%-space (human ruling): the client computes every ISP %-space
  *  POSITION from this FIXED reference band — identical to the server's own
  *  SectorLayout geometry by construction, at every real viewport/uiscale —
  *  never from `bandBox` (this component's own live `getBoundingClientRect`/

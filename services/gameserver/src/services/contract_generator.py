@@ -148,7 +148,7 @@ HAZARDOUS_TRANSPORT_FEDERATION_REP_PENALTY = -30
 # number canon never gives -- per this WO's own "do not invent a new
 # pricing scheme, mirror the siblings" instruction.
 BULK_PROCUREMENT_TYPE_MULTIPLIER = Decimal("1.0")
-# BULK_PROCUREMENT_PENALTY_MULTIPLIER -- WO-4's Max ruling (design brief
+# BULK_PROCUREMENT_PENALTY_MULTIPLIER -- WO-4's human ruling (design brief
 # audit/design-briefs/wo4-bulk-design-2026-07-17.md): the walk-away
 # penalty helper's degenerate case (a bulk contract with no locker
 # deposits) reads the STATIC `contract.penalty` column directly and
@@ -158,7 +158,7 @@ BULK_PROCUREMENT_TYPE_MULTIPLIER = Decimal("1.0")
 # multiplier cargo_delivery uses by default).
 BULK_PROCUREMENT_PENALTY_MULTIPLIER = Decimal("1.0")
 #
-# BULK_PROCUREMENT_DEFICIT_THRESHOLD classification -- Max-ruled correction
+# BULK_PROCUREMENT_DEFICIT_THRESHOLD classification -- human-ruled correction
 # (2026-07-17): a bulk_procurement job means a station is SHORT on a
 # commodity and wants players to gather + deliver a restock (contracts.md
 # :130 -- "Gather N units... from anywhere"), NOT a station that already
@@ -169,7 +169,7 @@ BULK_PROCUREMENT_PENALTY_MULTIPLIER = Decimal("1.0")
 # every candidate reaching classification at >= MIN_CONTRACT_QUANTITY, so
 # pinning the deficit threshold AT MIN_CONTRACT_QUANTITY would be
 # unreachable dead code (my original draft's `> MAX_CONTRACT_QUANTITY`
-# surplus check was reachable but pointed the wrong direction -- Max
+# surplus check was reachable but pointed the wrong direction -- human
 # caught the inversion). Pinned instead at 2x the floor (`MIN_CONTRACT_
 # QUANTITY * 2` = 40, reachable, and a narrow low-end band -- [20, 40) out
 # of the full range above 20 -- so a genuinely-thin origin is a MINORITY
@@ -727,7 +727,7 @@ def compute_contract_generation_batch(inputs: GenerationInputs) -> GenerationBat
             # always yields hazardous_transport (contracts.md:140 -- "issued
             # by criminal NPCs at black-market terminals" is a property of
             # WHO is issuing, not a random roll); otherwise, WO-CONTRACT-4-
-            # BULK (Max-corrected direction): an origin whose live stock
+            # BULK (human-corrected direction): an origin whose live stock
             # (`available`, BEFORE the quantity cap below) is genuinely thin
             # is RECLASSIFIED bulk_procurement -- a station-short-on-stock
             # restock job, not a surplus-to-move-out one (see BULK_

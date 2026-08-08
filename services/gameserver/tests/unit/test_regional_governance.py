@@ -849,7 +849,7 @@ class TestGrantRegionCitizenshipPrimitive:
 
 
 class TestAccountAgeVoteGate:
-    """WO-IL5 / ADR-0056 N-V3 / Max-D5: a citizen cannot VOTE until their account
+    """WO-IL5 / ADR-0056 N-V3 / human-D5: a citizen cannot VOTE until their account
     is ≥ 60 days old. Citizenship/presence is granted immediately; only the
     franchise waits. Migration-backfilled citizens (old accounts) must still pass.
     """

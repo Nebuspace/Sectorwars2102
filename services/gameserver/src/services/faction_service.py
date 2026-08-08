@@ -177,7 +177,7 @@ def adjust_sector_influence(
     warp-gate-build paths, mirroring ``apply_faction_rep_delta``).
 
     The READ-side taxonomy / patrol-spawn effects (ADR-0021) are deliberately
-    NOT computed here (Max-gated) — this only maintains the canonical stored
+    NOT computed here (human-gated) — this only maintains the canonical stored
     influence value. ``patrol_spawn_weight`` is left at its model default and is
     untouched until the read-side lands.
 

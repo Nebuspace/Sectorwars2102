@@ -18,19 +18,19 @@ window, reject at the cap. It is applied as a ``Depends(...)`` on POST /register
 and POST /exchange so the cap is enforced at the route, independent of whichever
 global middleware is mounted.
 
-PROPOSED NUMBERS (NO-CANON — flag for Max, brief D-style):
+PROPOSED NUMBERS (NO-CANON — flag for human, brief D-style):
   * /register : 5 attempts / 5 minutes / IP  (conservative; allows a couple of
                 422 retries for a fat-fingered form, blocks swarm registration).
   * /exchange : 30 attempts / 5 minutes / IP  (the SPA exchanges its OAuth code
                 once immediately; a higher bound tolerates retries/refreshes but
                 still caps abuse of the one-time-code endpoint).
 These mirror (and slightly relax for human retry) the dead stack-1 register rule
-(3/5min). Adjust per Max's ruling — they are module constants, one edit each.
+(3/5min). Adjust per human's ruling — they are module constants, one edit each.
 
 CAVEATS (carried forward, not hidden):
   * In-process + per-worker (same caveat the OAuth state store and the websocket
     limiter already carry — `oauth.py:15-17`). For multi-instance production this
-    should move to Redis; that is a deploy-topology decision for Max, out of this
+    should move to Redis; that is a deploy-topology decision for human, out of this
     WO's scope. Documented here so it is not mistaken for a complete solution.
   * Client IP is read from the same trusted-proxy chain the rest of the app uses
     (request.client.host, with X-Forwarded-For honored only behind the trusted
@@ -47,7 +47,7 @@ from fastapi import HTTPException, Request, status
 
 logger = logging.getLogger(__name__)
 
-# --- PROPOSED caps (NO-CANON; flag for Max) ---------------------------------
+# --- PROPOSED caps (NO-CANON; flag for human) ---------------------------------
 REGISTER_MAX_ATTEMPTS = 5
 REGISTER_WINDOW_SECONDS = 300  # 5 minutes
 
@@ -61,7 +61,7 @@ _buckets: Dict[str, Dict[str, Deque[float]]] = defaultdict(lambda: defaultdict(d
 
 
 def _client_key(request: Request) -> str:
-    """Best-effort per-client key. Key order (Max-ruled 2026-06-20):
+    """Best-effort per-client key. Key order (human-ruled 2026-06-20):
     ``cf-connecting-ip`` → ``X-Forwarded-For`` first hop → socket peer.
 
     The stack sits behind Cloudflare → nginx in every non-local env. Cloudflare

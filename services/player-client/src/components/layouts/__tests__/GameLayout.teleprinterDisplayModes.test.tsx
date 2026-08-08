@@ -2,7 +2,7 @@
 /**
  * GameLayout — teleprinter PANEL toggle → MFD-B fold stitch
  * (WO-UI1-CHROME-COMPLETE item 2/3; REVISED by WO-UI-MAX-BATCH-1 REVISE,
- * Max #22-24, for the two-independent-toggle rebuild).
+ * human #22-24, for the two-independent-toggle rebuild).
  *
  * Pins the structural fact the fold is FOR: GameLayout renders EXACTLY the
  * unfolded MFDScreen pair (`sidebar-a` + `sidebar-b`) while the teleprinter
@@ -13,7 +13,7 @@
  * pins `.game-container.tp-panel` tracking the same boolean — that class
  * still exists purely for the fold hook (no live CSS rule reads it), and
  * the band-shrink it never drove is confirmed still absent (game-layout.
- * css's own PANEL BAND CORRECTION comment, Max's ruling — `.band` never
+ * css's own PANEL BAND CORRECTION comment, human's ruling — `.band` never
  * reacts to PANEL at all). LOG (`transcriptOpen`, the independent toggle)
  * does NOT fold MFD-B — proven separately below.
  *

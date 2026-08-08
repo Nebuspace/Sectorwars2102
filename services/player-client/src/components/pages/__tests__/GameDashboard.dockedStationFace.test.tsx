@@ -237,7 +237,7 @@ describe('GameDashboard — docked renders a station face, not the cockpit scene
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
-  it('undock: WindshieldTableau\'s fresh flight-mode mount is seeded with the just-left station (WO-UI2-WINDSHIELD-TABLEAU, Max refinement 5b — "undock emerges at the host")', async () => {
+  it('undock: WindshieldTableau\'s fresh flight-mode mount is seeded with the just-left station (WO-UI2-WINDSHIELD-TABLEAU, human refinement 5b — "undock emerges at the host")', async () => {
     windshieldTableauMock.mockClear();
     gameState = makeGameState({
       playerState: { ...makeGameState().playerState, is_docked: true, current_port_id: 'station-1' },

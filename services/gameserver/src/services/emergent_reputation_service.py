@@ -926,7 +926,7 @@ def apply_emergent_action(
 
 
 # ---------------------------------------------------------------------------
-# Planet-capture faction penalty (DECISIONS planet-assault-reward-model, Max
+# Planet-capture faction penalty (DECISIONS planet-assault-reward-model, human
 # 2026-06-20 conditional (c)).
 #
 # Capturing a FACTION-OWNED planet earns the captor NEGATIVE reputation with
@@ -941,7 +941,7 @@ def apply_emergent_action(
 # MAGNITUDE IS NO-CANON: −50 is PROPOSED, mirroring the canon
 # ``attacked_chartered_planet`` personal-rep penalty (−50). The factions canon
 # (factions-and-teams.md reputation-triggers / ADR-0032) does NOT list a
-# capture-a-faction-planet trigger, so this number is flagged for Max and is
+# capture-a-faction-planet trigger, so this number is flagged for human and is
 # the smallest sensible intervention until canon lands.
 #
 # WIRING REALITY: the Planet model has no faction-owner field (planets are owned

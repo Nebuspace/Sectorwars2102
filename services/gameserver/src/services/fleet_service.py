@@ -508,7 +508,7 @@ class FleetService:
     # is docked at a friendly station, at a rate proportional to station class."
     # It is explicitly marked 📐 design-only and gives NO credit cost and NO
     # per-class numbers. The values below are a SENSIBLE KERNEL, not canon, and
-    # must be reconciled with a Max ruling (see report → DECISIONS Pending
+    # must be reconciled with a human ruling (see report → DECISIONS Pending
     # "fleet-station-resupply cost+rate"). They are intentionally named so a
     # future canon swap is a one-line change.
     SUPPLY_MAX = 100                      # Fleet.supply_level upper bound (model: 0-100)
@@ -839,7 +839,7 @@ class FleetService:
         combat JSONB, modified by the firing fleet's formation/supply
         multiplier and the outer coordination bonus (ADR-0061 S-I3). Morale
         was removed from the damage stack (WO-BS, reverts WO-AS — combat-morale
-        coupling retired per Max). Ships whose hull drops to 0 are destroyed.
+        coupling retired per human). Ships whose hull drops to 0 are destroyed.
         Ships below 30% hull may retreat.
 
         Returns a dict with round results including damage dealt,
@@ -1070,7 +1070,7 @@ class FleetService:
         # FULLY INERT (WO-BS2, reverts WO-AS): the per-round supply-driven morale
         # decrement was removed (WO-BS), and as of WO-BS2 EVERY remaining combat
         # morale write/read is gone too — the flagship -30, the post-battle -20,
-        # and the < 20 morale-collapse battle-end check. Max ruled Fleet.morale
+        # and the < 20 morale-collapse battle-end check. human ruled Fleet.morale
         # has NO gameplay value at all: it participates in neither combat DAMAGE
         # nor battle DURATION. The combat path now writes/reads Fleet.morale
         # NOWHERE. The Fleet.morale COLUMN is kept (non-destructive, no migration)
@@ -1254,7 +1254,7 @@ class FleetService:
           - standard:   no modifier
 
         MORALE IS NOT APPLIED ANYWHERE in combat. The combat-morale coupling was
-        retired per Max (WO-BS, reverts WO-AS; ADR-0061 S-I3 morale clause
+        retired per human (WO-BS, reverts WO-AS; ADR-0061 S-I3 morale clause
         retired) — fleet combat damage no longer depends on Fleet.morale. The
         supply penalty below is a separate fleet-tactics.md factor and is
         unaffected by that removal.
@@ -1308,7 +1308,7 @@ class FleetService:
                   × scout_first_shot          # +10% if Scout role on round 1
                   × variance
         MORALE WAS REMOVED from this stack (WO-BS, reverts WO-AS; ADR-0061 S-I3
-        morale clause retired per Max): combat damage no longer depends on
+        morale clause retired per human): combat damage no longer depends on
         Fleet.morale, so damage is identical at morale 100 / 50 / 0.
         """
         attack_rating = self._get_ship_combat_stat(ship, "attack_rating", 1)
@@ -1318,7 +1318,7 @@ class FleetService:
         # Static coordination bonus (outer attack multiplier, ADR-0061 S-I3).
         # Read the cached value off the live fleet; clamp defensively. Morale is
         # NO LONGER a factor here (WO-BS, reverts WO-AS — combat-morale coupling
-        # retired per Max): damage is independent of Fleet.morale.
+        # retired per human): damage is independent of Fleet.morale.
         coordination_bonus = 0.0
         if fleet is not None:
             coordination_bonus = max(0.0, fleet.coordination_bonus or 0.0)
@@ -1357,7 +1357,7 @@ class FleetService:
             fleet = member.fleet
             # Formation (+ supply) defense multiplier ONLY. Morale was removed
             # from the defense math (WO-BS, reverts WO-AS — combat-morale
-            # coupling retired per Max): incoming damage no longer depends on
+            # coupling retired per human): incoming damage no longer depends on
             # Fleet.morale.
             defense_bonus = self._calculate_formation_bonus(fleet)["defense"]
             # Higher defense = less damage taken. Guard against a 0 multiplier so
@@ -1523,7 +1523,7 @@ class FleetService:
                 battle.defender_ships_retreated = (battle.defender_ships_retreated or 0) + 1
 
         # Flagship destruction: the former one-shot -30 to Fleet.morale on
-        # flagship loss is REMOVED (WO-BS2, reverts WO-AS). Max ruled Fleet.morale
+        # flagship loss is REMOVED (WO-BS2, reverts WO-AS). human ruled Fleet.morale
         # has NO gameplay value at all — neither combat DAMAGE (cut in WO-BS) nor
         # battle DURATION (this WO). Combat now writes Fleet.morale NOWHERE. The
         # Fleet.morale COLUMN is intentionally kept (non-destructive, no migration)
@@ -1578,7 +1578,7 @@ class FleetService:
                 # so it reads the dead hull's LEFTOVER cargo["contents"] — i.e. the
                 # unrescued remainder after the 10% pod transfer — and drops the
                 # FULL remaining cargo as one wreck (no partial-recovery roll; the
-                # recovery-band/damage_type decision is PARKED behind Max — see the
+                # recovery-band/damage_type decision is PARKED behind human — see the
                 # deep-dive escalation, combat_service.py:3949). CombatService(db)
                 # construction is cheap (stores db + a ShipService) and it never
                 # commits — the wreck is staged via begin_nested + flush; the
@@ -1898,7 +1898,7 @@ class FleetService:
 
         # Morale-collapse battle-end check REMOVED (WO-BS2, reverts WO-AS). The
         # former ``if (attacker.morale or 100) < 20 or (defender.morale ...) < 20``
-        # gated battle DURATION on Fleet.morale. Max ruled Fleet.morale fully
+        # gated battle DURATION on Fleet.morale. human ruled Fleet.morale fully
         # inert — it no longer participates in combat damage OR duration — so this
         # condition is gone. Termination is now guaranteed entirely by the
         # morale-independent end conditions below: (1) side annihilation handled
@@ -2169,7 +2169,7 @@ class FleetService:
         self._apply_battle_loot(battle, attacker, defender)
 
         # Update fleet statuses. The former post-battle -20 to Fleet.morale is
-        # REMOVED (WO-BS2, reverts WO-AS). Max ruled Fleet.morale fully inert —
+        # REMOVED (WO-BS2, reverts WO-AS). human ruled Fleet.morale fully inert —
         # it participates in neither combat damage nor battle duration — so the
         # combat path writes Fleet.morale NOWHERE. The column is kept
         # (non-destructive, no migration) but is cosmetic only (admin display).

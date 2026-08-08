@@ -316,7 +316,7 @@ async def claim_ship(
     reservations spawn the ship at the TradeDock's sector with the
     reservation's custom name. TradeDock-class reservations (region-funded
     construction, Task B-3) finalize the TARGET STATION in place instead —
-    Max's ruling (batch-1 #3a) — no Ship is ever created for those."""
+    human's ruling (batch-1 #3a) — no Ship is ever created for those."""
     reservation = _get_owned_reservation_or_404(db, reservation_id, current_player)
     station = _get_station_or_404(db, str(reservation.station_id))
     _require_docked_at(current_player, station, "claim your ship")

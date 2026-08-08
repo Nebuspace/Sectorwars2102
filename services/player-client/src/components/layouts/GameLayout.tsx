@@ -215,7 +215,7 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
   const { playerState, isLoading, isRefreshing, refreshPlayerState } = useGame();
 
   // ── Teleprinter display toggles (WO-UI1-CHROME-COMPLETE; WO-UI-MAX-
-  // BATCH-1 REVISE — Max #22-24 retracted the shipped single 3-state cycle
+  // BATCH-1 REVISE — human #22-24 retracted the shipped single 3-state cycle
   // back to the artifact's own TWO INDEPENDENT BINARY TOGGLES) ───────────
   // Owned here (not inside Teleprinter), same rationale as before: PANEL
   // still drives which MFD-A config the sidebar renders (the MFD-B→MFD-A

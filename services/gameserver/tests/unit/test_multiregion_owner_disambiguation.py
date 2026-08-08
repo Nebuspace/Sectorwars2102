@@ -1,7 +1,7 @@
 """WO-DRIFT-admin-gov-multiregion-owner-500 -- /my-region/* 500'd
 (unhandled MultipleResultsFound) for any user owning 2+ regions, because
 get_user_region's ``Region.owner_id == user_id`` lookup assumed at most one
-row. Max-ruled fix shape: an explicit ``region_id`` query param on the
+row. human-ruled fix shape: an explicit ``region_id`` query param on the
 /my-region/* surface.
 
   - region_id given + owned by caller       -> 200, that region

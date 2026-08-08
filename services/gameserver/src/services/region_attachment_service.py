@@ -3,7 +3,7 @@ trigger.
 
 Scope note: this module builds ONLY the SK22 retry/refund mechanism —
 NOT the broader "owner relocation flow" (transport-to-new-region, first
-login placement), which is separately held pending a Max ruling on
+login placement), which is separately held pending a human ruling on
 ADR-0050's heavy remainder.
 
 Canon (sw2102-docs/ADR/0050-batch3-provisioning-lifecycle-hardening.md

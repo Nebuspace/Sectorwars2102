@@ -2,7 +2,7 @@
 /**
  * StatusBar — ship-type readout beside the name (WO-HUD-SHIPTYPE).
  *
- * Max (live-playtest, 2026-07-19): regrouped the StatusBar's top-left
+ * human (live-playtest, 2026-07-19): regrouped the StatusBar's top-left
  * readouts into IDENTITY (name + the ship the player is CURRENTLY flying)
  * and LOCATION (region + sector, LocationDropdown.tsx's own concern).
  * Mirrors StatusBar.lowTurns.test.tsx's mutable-mock-per-test seam (jsdom +

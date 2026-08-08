@@ -78,7 +78,7 @@ class IllegalCommodity(str, enum.Enum):
 # admin toggle that activates SLAVES: ``ENABLED_COMMODITIES`` unconditionally
 # excludes it, and the catalog / buy / sell paths must reject it on its own
 # merits. To ever enable it, a human must edit this line in source review —
-# which is the explicit gate Max asked for (theme keep/rename/cut is a product
+# which is the explicit gate human asked for (theme keep/rename/cut is a product
 # call, not a runtime flag flip). Do not add an enable path; the reviewer asserts its absence.
 # SLAVES: intentionally disabled + omitted from public canon by design (2026-06-22).
 SLAVES_ENABLED: bool = False

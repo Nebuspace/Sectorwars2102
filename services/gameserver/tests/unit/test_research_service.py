@@ -319,7 +319,7 @@ def test_sweep_is_idempotent_no_double_refund():
 
 def test_sweep_steady_state_drains_rp_pays_faucet_copay():
     # A player who has already been swept (swept_at present) gets RP credited,
-    # not a *refund* — but the T1.5-1 faucet copay (Max-RULED, WO-COPAY/#9)
+    # not a *refund* — but the T1.5-1 faucet copay (human-RULED, WO-COPAY/#9)
     # DOES debit credits on every governed-RP crediting, steady state included
     # (research_service.py:889 calls _apply_faucet_copay unconditionally).
     # Derive the expected debit from the module constants (never a hardcoded

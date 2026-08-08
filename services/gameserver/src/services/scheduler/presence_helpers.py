@@ -932,7 +932,7 @@ def _heal_candidates_query(db: Session):
     since it pattern-matches entity-tuple SHAPES without ever invoking real
     SQLAlchemy column coercion.
 
-    2026-07-16 crash fix (Max, live host): ``Player.username`` is a plain
+    2026-07-16 crash fix (human, live host): ``Player.username`` is a plain
     Python ``@property`` (nickname-or-``User.username`` fallback) -- NOT a
     mapped Column -- so it cannot appear in a ``.query(...)`` column list;
     real SQLAlchemy raises ``ArgumentError`` here (confirmed live -- every
@@ -976,7 +976,7 @@ def _heal_candidates_query(db: Session):
 
 
 def _heal_missing_or_poseless_presence_sync(db: Session, cutoff: datetime) -> "tuple[int, int]":
-    """P0-FIX-SWEEP-HEAL (Max two-seat repro, 2026-07-16): reconciles MISSING
+    """P0-FIX-SWEEP-HEAL (human two-seat repro, 2026-07-16): reconciles MISSING
     or pose-less HUMAN presence entries from ``Player.current_sector_id``.
     ``_run_presence_sweep_sync``'s own removal loop only prunes entries that
     already EXIST. A presence entry can go missing entirely (live repro: a

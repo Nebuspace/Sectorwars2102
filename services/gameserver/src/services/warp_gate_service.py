@@ -1324,7 +1324,7 @@ def advance_gate(db: Session, gate: WarpGate, now: Optional[datetime] = None) ->
     # over the gate's DESTINATION sector by +5%. The destination is where the
     # gate plants a permanent foothold; the tunnel's destination_sector_id is
     # already a sectors.id UUID (the influence table's FK target). WRITE half
-    # only — read-side taxonomy / patrol-spawn effects are Max-gated and not
+    # only — read-side taxonomy / patrol-spawn effects are human-gated and not
     # invoked. Best-effort / flush-only (this function does not commit — the
     # calling route owns the transaction); a hiccup never breaks gate
     # completion. Same once-only activation point as the emergent hook above.

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
  * LocationDropdown — icon-only trigger + clean region name (WO-HUD-SHIPTYPE,
- * sector-move + dropdown clean-name amendment, Max ruled 2026-07-19).
+ * sector-move + dropdown clean-name amendment, human ruled 2026-07-19).
  *
  * With region+sector both relocated to the windshield's `.locrow` glass
  * chip (GameDashboard.tsx, proven in GameDashboard.locrowGlassRetirement.

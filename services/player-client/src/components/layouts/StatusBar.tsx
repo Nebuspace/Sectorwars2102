@@ -43,7 +43,7 @@ import './statusbar.css';
  *   [👤 name ▾ dossier] · [◉ location ▾] · grow · vitals + REP badge ·
  *   [⚙] · [⏻]
  *
- * WO-HUD-SHIPTYPE (Max, live-playtest): the dynamic ship TYPE (via
+ * WO-HUD-SHIPTYPE (human, live-playtest): the dynamic ship TYPE (via
  * formatShipType()) now renders as a static [🚀] chip beside the name --
  * IDENTITY (who + what they're flying). Row order is otherwise unchanged.
  * (An earlier pass of this WO also regrouped LocationDropdown's collapsed
@@ -52,7 +52,7 @@ import './statusbar.css';
  * label (GameDashboard.tsx), not LocationDropdown's `region_name`, which
  * carries the raw dev-seeded name including its galaxy-id prefix; grouping
  * sector into THAT label would have surfaced the ugly string in the top
- * bar. The sector->locrow move Max actually wants is a separate follow-up,
+ * bar. The sector->locrow move human actually wants is a separate follow-up,
  * pending confirmation -- LocationDropdown.tsx is untouched by this WO.)
  * Ship NAMING is out of scope (a separate design brief) -- type only.
  *

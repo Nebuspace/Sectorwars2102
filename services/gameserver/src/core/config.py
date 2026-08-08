@@ -112,7 +112,7 @@ class Settings(BaseSettings):
     ANTHROPIC_MODEL: str = os.environ.get("ANTHROPIC_MODEL", "claude-3-sonnet-20240229")
     AI_DIALOGUE_ENABLED: bool = os.environ.get("AI_DIALOGUE_ENABLED", "true").lower() == "true"
 
-    # ARIA LLM-backed chat (WO-ARIA-CHAT-LLM). BUILT DARK per Max's GO:
+    # ARIA LLM-backed chat (WO-ARIA-CHAT-LLM). BUILT DARK per human's GO:
     # defaults false, so ARIA's chat path stays byte-identical to the
     # existing keyword/template engine until this is explicitly flipped —
     # zero spend, zero behavior change, until then.
@@ -127,7 +127,7 @@ class Settings(BaseSettings):
     # sub-setting of it. Per this WO's own mission ("never LLM chat on
     # regex-only defense"), operational go-live MUST flip this ALONGSIDE
     # (or before) ARIA_LLM_CHAT_ENABLED -- flagged prominently for the
-    # orchestrator/Max, since two independent flags both defaulting off
+    # orchestrator/human, since two independent flags both defaulting off
     # creates exactly the gap the WO exists to close if only one is ever
     # flipped. Layers 1/2/4 (NFKC, envelope, pattern-list) are NOT gated
     # by this flag -- they are cheap, local, and always on.

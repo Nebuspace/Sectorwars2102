@@ -1373,7 +1373,7 @@ async def create_policy_proposal_for_member(
 # Brief: audit/design-briefs/invite-link-onramp.md §4.2.
 #
 # AUTH-FREE infrastructure: these endpoints manage invite CODES; they do NOT
-# create accounts (that is WO-IL6, Max-gated). Every endpoint is owner-scoped:
+# create accounts (that is WO-IL6, human-gated). Every endpoint is owner-scoped:
 # ownership of THIS region_id is re-checked SERVER-SIDE on every call via the
 # NEW region_id-keyed RegionInviteService.owns_region (NOT the single-region
 # verify_region_owner above). The client-supplied region_id is never trusted —

@@ -13,7 +13,7 @@ Verification before drop (WO-FM):
     model, ``FactionMission``, is deleted in the same WO).
   - NO foreign key anywhere references ``faction_missions.id`` (its own single
     FK points OUTWARD at ``factions.id`` only).
-  - The table holds 1 vestigial row, which this drop removes (Max-blessed
+  - The table holds 1 vestigial row, which this drop removes (human-blessed
     destructive drop per DECISION #3).
 
 The drop is destructive but reversible: ``downgrade()`` recreates the table
@@ -41,7 +41,7 @@ def upgrade() -> None:
     # Drop the vestigial faction-mission table. The model + all routes/service
     # helpers that touched it are removed in the same WO, and no FK references
     # it, so the drop is self-contained. The single vestigial row is removed
-    # with the table (Max-blessed per DECISION #3).
+    # with the table (human-blessed per DECISION #3).
     op.drop_index(op.f('ix_faction_missions_faction_id'), table_name='faction_missions')
     op.drop_table('faction_missions')
 

@@ -350,7 +350,7 @@ class ShipUpgradeService:
     #
     # This is the Phase-A KERNEL: the catalog (this dict) + _apply_module_effects
     # (bake-on-install). install/remove/routes + the Phase-2 destructive cutover
-    # are SEPARATE WOs (SM-3 / Max-gated). During coexistence both legacy upgrades
+    # are SEPARATE WOs (SM-3 / human-gated). During coexistence both legacy upgrades
     # and modules write the SAME baked stat columns — see _apply_module_effects for
     # the zero-double-count contract.
     # ========================================================================
@@ -358,16 +358,16 @@ class ShipUpgradeService:
     # §4.1 supercharge multiplier (flat) — a module installed in a supercharged
     # slot has its effects multiplied by this. Snapshotted as `super_at_install`
     # on the slot record so a later slot-layout re-tune never silently re-buffs a
-    # fielded ship. [NO-CANON — Max-blessed launch value.]
+    # fielded ship. [NO-CANON — human-blessed launch value.]
     SUPERCHARGE_MULT = 1.6
 
     # §4.2 stacking cap — FLAT best-3 per effect: of all same-effect contributions
     # only the 3 LARGEST count (summed); the rest contribute 0. The dumb cap that
     # prevents the god-ship; the smooth geometric DR curve is the Phase-B swap-in.
-    # [NO-CANON — Max-blessed launch value.]
+    # [NO-CANON — human-blessed launch value.]
     MODULE_STACK_BEST_N = 3
 
-    # §5.3 tier curve (NO-CANON, co-tuned + Max-blessed): a module's effect scales
+    # §5.3 tier curve (NO-CANON, co-tuned + human-blessed): a module's effect scales
     # SUB-LINEARLY with tier (so breadth-by-count survives as a real alternative to
     # depth-in-a-super-slot) while cost scales faster. tier is 1-based (Mk I = 1).
     #   tier_effect = base_effect × MODULE_TIER_EFFECT_MULT ** (tier - 1)
@@ -379,7 +379,7 @@ class ShipUpgradeService:
     # §6.x SALVAGE — removing an installed module refunds this FRACTION of its
     # (tier-scaled) catalog cost; the rest is the salvage haircut (you don't get
     # the full price back for pulling a module). int-truncated on credit-back.
-    # [NO-CANON — Max-blessed launch value; flagged for a DECISIONS.md ruling on
+    # [NO-CANON — human-blessed launch value; flagged for a DECISIONS.md ruling on
     # the exact refund fraction.]
     SALVAGE_FRACTION = 0.25
 

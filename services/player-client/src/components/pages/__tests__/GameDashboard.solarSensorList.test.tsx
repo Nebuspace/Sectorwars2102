@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
  * GameDashboard — SOLAR SYSTEM[SYSTEM] sensor-list additions
- * (WO-UI-MAX-BATCH-1 items 8-9, Max #10/#13/#16, revised by Max #21):
+ * (WO-UI-MAX-BATCH-1 items 8-9, human #10/#13/#16, revised by human #21):
  *
  *   9. STAR + decorative-body rows (dim, no action) fetched from the real
  *      GET /sectors/{id}/contents endpoint WindshieldTableau.tsx already
@@ -298,7 +298,7 @@ describe('GameDashboard — SOLAR SYSTEM[SYSTEM] sensor-list rows (WO-UI-MAX-BAT
     expect(solar.textContent).toContain('BARREN');
   });
 
-  it('a long decorative-body list renders every row uncapped — the panel scrolls internally instead of truncating (Max ruling, T1-B)', async () => {
+  it('a long decorative-body list renders every row uncapped — the panel scrolls internally instead of truncating (human ruling, T1-B)', async () => {
     const manyBodies = Array.from({ length: 40 }, (_, i) => ({
       slot: i, kind: i % 2 === 0 ? 'BARREN' : 'ICE', real: false,
     }));
@@ -406,6 +406,6 @@ describe('solar-system-viewscreen.css — SOLAR SYSTEM Scroll-Law exception (T1-
     expect(match![1]).toMatch(/overflow-y\s*:\s*auto/);
 
     expect(css).toMatch(/SCROLL-LAW EXCEPTION/i);
-    expect(css).toMatch(/Max ruling/);
+    expect(css).toMatch(/human ruling/);
   });
 });

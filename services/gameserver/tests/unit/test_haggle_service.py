@@ -192,7 +192,7 @@ def test_sell_accept_never_below_posted_price():
 
 
 # ── FIX 2: per-player haggle memory prunes at a UNIFORM 90 days ────────────────
-# Max ruling (DECISIONS.md haggling-personality-reconciliation, 2026-06-20):
+# human ruling (DECISIONS.md haggling-personality-reconciliation, 2026-06-20):
 # memory = 90 days uniform, regardless of the per-archetype memory_duration_days.
 def test_memory_prune_uniform_90_days_ignores_archetype_window():
     from datetime import timedelta
@@ -246,7 +246,7 @@ def test_archetype_for_station_class():
 # ── jsonb-schema archetype defaults ───────────────────────────────────────────
 def test_archetype_defaults_match_jsonb_schema():
     # memory_duration_days values are FEATURES/economy/haggling.md's per-
-    # archetype table (Max DECISION #4, 2026-06-22) — Federation=14,
+    # archetype table (human DECISION #4, 2026-06-22) — Federation=14,
     # Black Market=90, confirmed identical in DATA_MODELS/jsonb-schema.md's
     # own archetype-defaults table (both docs and trader_personalities.py's
     # _ARCHETYPE_DEFAULTS agree; no reconcile note needed). Previously pinned

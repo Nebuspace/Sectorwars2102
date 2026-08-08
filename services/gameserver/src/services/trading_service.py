@@ -552,7 +552,7 @@ COMMODITY_PRICE_RANGES: Dict[str, Dict[str, int]] = get_commodity_price_ranges()
 def clamp_to_commodity_band(commodity_name: str, price: int) -> int:
     """Clamp a final per-unit price to the commodity's hard [min, max] band.
 
-    Canon (trading.md#price-stacking-order, blessed by Max 2026-06-14): the
+    Canon (trading.md#price-stacking-order, blessed by human 2026-06-14): the
     commodity-specific [min, max] range is the ABSOLUTE floor/ceiling on the
     final per-unit price — it is the LAST step, applied AFTER every multiplicative
     modifier (faction reputation × personal reputation × military rank ×
