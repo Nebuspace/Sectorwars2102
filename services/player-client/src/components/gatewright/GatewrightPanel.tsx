@@ -209,6 +209,8 @@ const GatewrightPanel: React.FC<GatewrightPanelProps> = ({ onClose }) => {
   // --- Anchor flow (D3): two-step arm -> commit, per beacon ---
   const [armedAnchorId, setArmedAnchorId] = useState<string | null>(null);
   const [anchorBusyId, setAnchorBusyId] = useState<string | null>(null);
+  // WO-WIRE-PRIVATE-WARP-GATE-BUILD — initial tunnel access mode at anchor.
+  const [anchorAccessMode, setAnchorAccessMode] = useState<'PUBLIC' | 'PRIVATE' | 'WHITELIST'>('PUBLIC');
 
   // --- Cancel flow (D1): inline confirm, per project ---
   const [armedCancelId, setArmedCancelId] = useState<string | null>(null);
@@ -427,8 +429,12 @@ const GatewrightPanel: React.FC<GatewrightPanelProps> = ({ onClose }) => {
       return next;
     });
     try {
-      await apiClient.post('/api/v1/warp-gates/anchor-focus', { beacon_id: beaconId });
+      await apiClient.post('/api/v1/warp-gates/anchor-focus', {
+        beacon_id: beaconId,
+        access_mode: anchorAccessMode,
+      });
       setArmedAnchorId(null);
+      setAnchorAccessMode('PUBLIC');
       await refreshAll();
     } catch (e) {
       setProjectErrors((prev) => ({
@@ -845,12 +851,30 @@ const GatewrightPanel: React.FC<GatewrightPanelProps> = ({ onClose }) => {
                 onClick={() => {
                   setArmedAnchorId(project.beacon_id);
                   setArmedCancelId(null);
+                  setAnchorAccessMode('PUBLIC');
                 }}
               >
                 ANCHOR FOCUS
               </button>
             ) : (
-              <div className="gw-confirm-row">
+              <div className="gw-confirm-block">
+                <label className="gw-access-mode" htmlFor={`gw-access-${project.beacon_id}`}>
+                  Initial access
+                  <select
+                    id={`gw-access-${project.beacon_id}`}
+                    data-testid="gw-anchor-access-mode"
+                    value={anchorAccessMode}
+                    disabled={busy}
+                    onChange={(e) =>
+                      setAnchorAccessMode(e.target.value as 'PUBLIC' | 'PRIVATE' | 'WHITELIST')
+                    }
+                  >
+                    <option value="PUBLIC">Public (tollable)</option>
+                    <option value="PRIVATE">Private (owner only)</option>
+                    <option value="WHITELIST">Whitelist (configure after)</option>
+                  </select>
+                </label>
+                <div className="gw-confirm-row">
                 <button
                   type="button"
                   className="gw-btn commit"
@@ -867,6 +891,7 @@ const GatewrightPanel: React.FC<GatewrightPanelProps> = ({ onClose }) => {
                 >
                   STAND DOWN
                 </button>
+                </div>
               </div>
             )}
           </div>

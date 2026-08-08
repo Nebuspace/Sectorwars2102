@@ -882,11 +882,25 @@ def _warp_jumper_construction_cost(db: Session) -> int:
     return base + PHASE1_CREDITS + PHASE3_CREDITS
 
 
-def anchor_focus(db: Session, player: Player, beacon_id: str) -> Dict[str, Any]:
+def anchor_focus(
+    db: Session, player: Player, beacon_id: str,
+    access_mode: str = ACCESS_MODE_PUBLIC,
+) -> Dict[str, Any]:
     """Phase 3 Step A — draw the fully-staged, cured Phase-3 construction site
     (ADR-0078), charge turns/credits, freeze the Warp Jumper in HARMONIZING,
-    create the gate + FORMING tunnel rows."""
+    create the gate + FORMING tunnel rows.
+
+    ``access_mode`` (WO-WIRE-PRIVATE-WARP-GATE-BUILD) selects the initial
+    PUBLIC / PRIVATE / WHITELIST / TEAM_ONLY / ALLIANCE mode on the new
+    tunnel. Defaults to PUBLIC (legacy callers unchanged)."""
     now = datetime.now(UTC)
+    mode = (access_mode or ACCESS_MODE_PUBLIC).strip().upper()
+    if mode not in ACCESS_MODES:
+        raise WarpGateError(
+            400,
+            f"Unknown access mode {access_mode!r} — expected one of "
+            f"{sorted(ACCESS_MODES)}",
+        )
     try:
         beacon_uuid = uuid.UUID(str(beacon_id))
     except (ValueError, AttributeError, TypeError):
@@ -1040,6 +1054,8 @@ def anchor_focus(db: Session, player: Player, beacon_id: str) -> Dict[str, Any]:
     # The tunnel row exists NOW in FORMING (canon names the pre-active state
     # INITIALIZING; the WarpTunnelStatus enum has no such value — FORMING is
     # the closest shipped semantic, flagged in the run report).
+    # WO-WIRE-PRIVATE-WARP-GATE-BUILD: honor access_mode at creation so
+    # is_public is not hard-coded True (private/whitelist matrix row).
     tunnel = WarpTunnel(
         name=f"{source.name} Gate to {destination.name}",
         origin_sector_id=source.id,
@@ -1050,7 +1066,8 @@ def anchor_focus(db: Session, player: Player, beacon_id: str) -> Dict[str, Any]:
         stability=1.0,
         turn_cost=0,
         energy_cost=0,
-        is_public=True,
+        is_public=mode in _PUBLIC_MODES,
+        access_requirements={"mode": mode, "whitelist": [], "allies": []},
         created_by_player_id=player.id,
         properties={
             "length": 0.0,
@@ -1284,15 +1301,14 @@ def advance_gate(db: Session, gate: WarpGate, now: Optional[datetime] = None) ->
 
     # WO-CD-2 — emergent FACTION rep for building a PUBLIC toll warp gate
     # (CONCRETE-CANON, factions-and-teams.md anti-symmetric matrix: "Build a
-    # public toll warp gate | MG +30 | FC +5 | NS +5"; TF/AM/FA/SS/PI 0). This
-    # is the single, once-only gate-completion point — the function returns
-    # early on every failure / already-completed path above, so reaching here
-    # means a real first-time activation (idempotent). Gated on the tunnel being
-    # PUBLIC; the private/whitelist matrix row is PARKED (no private-gate build
-    # path exists yet — is_public is always True at creation). Flush-only
-    # (caller owns the commit), defensive — a rep hiccup never breaks gate
-    # completion. The private/whitelist build path, when it lands, should fire a
-    # BUILD_PRIVATE_WARP_GATE action (not registered — its row is parked).
+    # public toll warp gate | MG +30 | FC +5 | NS +5"; TF/AM/FA/SS/PI 0).
+    # WO-WIRE-PRIVATE-WARP-GATE-BUILD — private/whitelist row fires
+    # BUILD_PRIVATE_WARP_GATE when the tunnel is not public. This is the
+    # single, once-only gate-completion point — the function returns early
+    # on every failure / already-completed path above, so reaching here
+    # means a real first-time activation (idempotent). Flush-only (caller
+    # owns the commit), defensive — a rep hiccup never breaks gate
+    # completion.
     try:
         from src.services.emergent_reputation_service import apply_emergent_action
 
@@ -1306,16 +1322,20 @@ def advance_gate(db: Session, gate: WarpGate, now: Optional[datetime] = None) ->
             if built_tunnel is not None:
                 tunnel_is_public = bool(built_tunnel.is_public)
 
-        if tunnel_is_public:
-            builder = db.query(Player).filter(Player.id == gate.player_id).first()
-            if builder is not None:
-                apply_emergent_action(
-                    db, builder, "BUILD_PUBLIC_WARP_GATE",
-                    {"gate_id": str(gate.id)},
-                )
+        builder = db.query(Player).filter(Player.id == gate.player_id).first()
+        if builder is not None:
+            action = (
+                "BUILD_PUBLIC_WARP_GATE"
+                if tunnel_is_public
+                else "BUILD_PRIVATE_WARP_GATE"
+            )
+            apply_emergent_action(
+                db, builder, action,
+                {"gate_id": str(gate.id)},
+            )
     except Exception:
         logger.warning(
-            "emergent public-gate faction rep failed for gate %s", gate.id,
+            "emergent gate-build faction rep failed for gate %s", gate.id,
             exc_info=True,
         )
 
