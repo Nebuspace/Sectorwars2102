@@ -638,6 +638,11 @@ export const citadelAPI = {
   upgrade: (planetId: string) =>
     apiRequest(`/api/v1/planets/${planetId}/citadel/upgrade`, { method: 'POST' }),
 
+  // Cancel an in-progress citadel upgrade — refunds 50% of credits paid
+  // (CitadelService.cancel_upgrade). Owner-only.
+  cancelUpgrade: (planetId: string) =>
+    apiRequest(`/api/v1/planets/${planetId}/citadel/cancel`, { method: 'POST' }),
+
   deposit: (planetId: string, amount: number) =>
     apiRequest(`/api/v1/planets/${planetId}/citadel/deposit`, {
       method: 'POST',
