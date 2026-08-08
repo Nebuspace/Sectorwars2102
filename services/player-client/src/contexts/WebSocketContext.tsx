@@ -954,7 +954,7 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           // send_failed is consumed by sendFailedHandler above — it's a
           // client-local synthetic event (websocket.ts's own send()), not
           // an unhandled server frame.)
-          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'aria_narration', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'reputation_changed', 'team_reputation_changed', 'npc_combat_initiated', 'bounty_updated', 'send_failed'].includes(message.type)) {
+          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'aria_narration', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'reputation_changed', 'team_reputation_changed', 'npc_combat_initiated', 'bounty_updated', 'turn_pool_updated', 'send_failed'].includes(message.type)) {
             console.warn('WebSocket: Unhandled message type:', message.type);
           }
       }

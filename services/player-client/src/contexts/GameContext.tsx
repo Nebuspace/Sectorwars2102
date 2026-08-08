@@ -1738,6 +1738,32 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     return unsubscribe;
   }, [user]);
+
+  // Authoritative turn-pool push (WO-WIRE-WS-TURN-POOL-UNCONSUMED). Server
+  // already emits turn_pool_updated on lazy regen / welcome_back; patch HUD
+  // turns in place — no toast (WelcomeBackToast.wsNoOp), no full refetch.
+  useEffect(() => {
+    if (!user) return;
+
+    const unsubscribe = websocketService.onTurnPoolUpdated((message) => {
+      if (typeof message.turns !== 'number') return;
+      const me = playerIdRef.current;
+      if (message.player_id && me && String(message.player_id) !== me) return;
+      setPlayerState((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          turns: message.turns as number,
+          ...(typeof message.max_turns === 'number'
+            ? { max_turns: message.max_turns }
+            : {}),
+        };
+      });
+    });
+
+    return unsubscribe;
+  }, [user]);
+
   // Hyperspace echo scan along a bearing (spends turns; far band spends a shard)
   const quantumScan = async (payload: QuantumBearing): Promise<QuantumScanResult> => {
     if (!user || !playerState) throw new Error('Not authenticated');
