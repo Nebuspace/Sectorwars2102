@@ -13,6 +13,7 @@ const mockRead = vi.fn();
 const mockSalvage = vi.fn();
 const mockRecharge = vi.fn();
 const mockReport = vi.fn();
+const mockDeploy = vi.fn();
 
 vi.mock('../../services/api', () => ({
   beaconAPI: {
@@ -21,7 +22,16 @@ vi.mock('../../services/api', () => ({
     salvage: (...a: unknown[]) => mockSalvage(...a),
     recharge: (...a: unknown[]) => mockRecharge(...a),
     report: (...a: unknown[]) => mockReport(...a),
+    deploy: (...a: unknown[]) => mockDeploy(...a),
   },
+}));
+
+vi.mock('../../contexts/GameContext', () => ({
+  useGame: () => ({
+    playerState: { current_sector_id: 42 },
+    currentSector: { id: 42, sector_id: 42 },
+    refreshPlayerState: vi.fn().mockResolvedValue(undefined),
+  }),
 }));
 
 import MyBeaconsTab from './MyBeaconsTab';
@@ -49,6 +59,7 @@ describe('MyBeaconsTab', () => {
     mockSalvage.mockReset();
     mockRecharge.mockReset();
     mockReport.mockReset();
+    mockDeploy.mockReset();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -77,6 +88,40 @@ describe('MyBeaconsTab', () => {
     await mount();
 
     expect(container.textContent).toContain('No Beacons Deployed');
+    expect(container.querySelector('[data-testid="beacon-deploy-form"]')).not.toBeNull();
+  });
+
+  it('Deploy wires to beaconAPI.deploy for the current sector (WO-WIRE-MESSAGE-BEACON-DEPLOY)', async () => {
+    mockMine.mockResolvedValue({ beacons: [] });
+    mockDeploy.mockResolvedValue({ id: 'new-beacon' });
+    mockMine.mockResolvedValueOnce({ beacons: [] }).mockResolvedValue({ beacons: [BEACON_A] });
+    await mount();
+
+    const textarea = container.querySelector(
+      '[data-testid="beacon-deploy-message"]'
+    ) as HTMLTextAreaElement;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        'value'
+      )!.set!;
+      setter.call(textarea, 'Leave a note');
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    await act(async () => {
+      (container.querySelector('[data-testid="beacon-deploy-submit"]') as HTMLButtonElement).click();
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockDeploy).toHaveBeenCalledWith({
+      sector_id: 42,
+      message: 'Leave a note',
+      read_once: false,
+    });
   });
 
   it('renders a deployed beacon row with sector, preview, and read count', async () => {

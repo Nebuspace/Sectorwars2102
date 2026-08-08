@@ -12,6 +12,7 @@ import { InputValidator, SecurityAudit } from '../../utils/security/inputValidat
 import { formatShipType } from '../../utils/formatters';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import { useEmbedded } from '../cockpit/EmbeddedContext';
+import ShipRegistryPanel from './ShipRegistryPanel';
 import './ship-selector.css';
 
 interface ShipSelectorProps {
@@ -381,6 +382,13 @@ export const ShipSelector: React.FC<ShipSelectorProps> = ({
           </button>
         )}
       </div>
+      {selectedShipId && (
+        <ShipRegistryPanel
+          shipId={selectedShipId}
+          shipName={gameShips.find((s) => s.id === selectedShipId)?.name}
+          portId={playerState?.is_docked ? playerState.current_port_id ?? null : null}
+        />
+      )}
     </div>
     </HangarShell>
   );

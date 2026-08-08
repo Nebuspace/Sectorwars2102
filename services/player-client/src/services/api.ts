@@ -542,6 +542,41 @@ export const shipAPI = {
     shipUpgradeAPI.purchaseUpgrade(shipId, upgradeType)
 };
 
+/** Ship registry behaviors (SYSTEMS/ship-registry.md) — stolen / abandon / claim / transfer. */
+export const shipRegistryAPI = {
+  reportStolen: (shipId: string, recoveryMode?: 'with_bounty' | 'no_bounty' | null) =>
+    apiRequest(`/api/v1/ships/${shipId}/report-stolen`, {
+      method: 'POST',
+      body: JSON.stringify(
+        recoveryMode ? { recovery_mode: recoveryMode } : {}
+      ),
+    }),
+
+  retractStolenReport: (shipId: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/retract-stolen-report`, { method: 'POST' }),
+
+  abandon: (shipId: string, portId: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/abandon`, {
+      method: 'POST',
+      body: JSON.stringify({ port_id: portId }),
+    }),
+
+  claim: (shipId: string, portId: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/claim`, {
+      method: 'POST',
+      body: JSON.stringify({ port_id: portId }),
+    }),
+
+  fileTransferClaim: (shipId: string, portId: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/transfer-claim`, {
+      method: 'POST',
+      body: JSON.stringify({ port_id: portId }),
+    }),
+
+  approveTransferClaim: (shipId: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/transfer-claim/approve`, { method: 'POST' }),
+};
+
 // Ranking & Reputation APIs
 export const rankingAPI = {
   getRank: () =>
@@ -1305,6 +1340,18 @@ export interface MyBeacon {
 export const beaconAPI = {
   mine: (page = 1, limit = 20): Promise<{ beacons: MyBeacon[]; total?: number }> =>
     apiRequest(`/api/v1/beacons/mine?page=${page}&limit=${limit}`),
+
+  /** Deploy a message beacon at sector_id (POST /api/v1/beacons/deploy). */
+  deploy: (body: { sector_id: number; message: string; read_once?: boolean }) =>
+    apiRequest('/api/v1/beacons/deploy', {
+      method: 'POST',
+      body: JSON.stringify({
+        sector_id: body.sector_id,
+        message: body.message,
+        read_once: body.read_once ?? false,
+      }),
+    }),
+
   read: (beaconId: string) => apiRequest(`/api/v1/beacons/${beaconId}/read`),
   salvage: (beaconId: string) => apiRequest(`/api/v1/beacons/${beaconId}/salvage`, { method: 'POST' }),
   recharge: (beaconId: string) => apiRequest(`/api/v1/beacons/${beaconId}/recharge`, { method: 'POST' }),
@@ -1338,4 +1385,26 @@ export const gameAPI = {
   storage: storageAPI,
   trade: tradeAPI,
   beacon: beaconAPI,
+};
+
+/** ADR-0054 X-D3 — GC-lapse 7-day liquidation window self-service. */
+export const gcLapseAPI = {
+  getStatus: (): Promise<{
+    lapsed: boolean;
+    gc_lapsed_at: string | null;
+    relocation_available: boolean;
+    foreign_holdings: Array<{
+      asset_type: 'planet' | 'station' | string;
+      asset_id: string;
+      name: string;
+      region_id: string | null;
+      sector_id: number;
+    }>;
+  }> => apiRequest('/api/v1/players/me/gc-lapse-status'),
+
+  emergencyRelocate: (assetType: 'planet' | 'station' | string, assetId: string) =>
+    apiRequest('/api/v1/players/me/gc-emergency-relocation', {
+      method: 'POST',
+      body: JSON.stringify({ asset_type: assetType, asset_id: assetId }),
+    }),
 };
