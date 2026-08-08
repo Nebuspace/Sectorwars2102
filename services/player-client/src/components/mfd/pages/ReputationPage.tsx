@@ -6,7 +6,10 @@
  * factionAPI.getReputation() (GET /api/v1/factions/reputation —
  * ReputationResponse[], one row per faction: faction_id, faction_name,
  * current_value, current_level, title, trade_modifier, port_access_level,
- * combat_response). The list patches LIVE from two WebSocket frames
+ * combat_response). WO-WIRE-FACTION-CATALOG: also fetches getFactions()
+ * (GET /api/v1/factions/) and merges territory_count + faction_type onto
+ * each standing row so the catalog wrapper is live. The list patches LIVE
+ * from two WebSocket frames
  * (WebSocketContext.reputationEventSignal / lastReputationChanged /
  * lastTeamReputationChanged), no refetch:
  *   - reputation_changed      — the player's OWN standing with a faction
@@ -78,10 +81,20 @@ interface FactionReputationRow {
   trade_modifier: number;
   port_access_level: number;
   combat_response: string;
+  // From GET /factions/ catalog (WO-WIRE-FACTION-CATALOG) — absent if the
+  // catalog fetch failed; standing rows still render without it.
+  territory_count?: number;
   // Patched in from a team_reputation_changed frame — absent until one
   // arrives for this faction.
   teamValue?: number;
   teamLevel?: string;
+}
+
+interface FactionCatalogEntry {
+  id: string;
+  name?: string;
+  faction_type?: string;
+  territory_count?: number;
 }
 
 const formatLevel = (level: string): string => level.replace(/_/g, ' ');
@@ -97,11 +110,29 @@ const ReputationPage: React.FC = () => {
 
   React.useEffect(() => {
     let cancelled = false;
-    factionAPI
-      .getReputation()
-      .then((data: any) => {
+    Promise.all([
+      factionAPI.getReputation() as Promise<FactionReputationRow[]>,
+      // Catalog is best-effort — standings still render if it fails.
+      factionAPI.getFactions().catch(() => [] as FactionCatalogEntry[]) as Promise<FactionCatalogEntry[]>,
+    ])
+      .then(([repData, catalog]) => {
         if (cancelled) return;
-        setRows(Array.isArray(data) ? data : []);
+        const byId = new Map(
+          (Array.isArray(catalog) ? catalog : []).map((f) => [String(f.id), f]),
+        );
+        const rowsRaw = Array.isArray(repData) ? repData : [];
+        setRows(
+          rowsRaw.map((row) => {
+            const cat = byId.get(String(row.faction_id));
+            if (!cat) return row;
+            return {
+              ...row,
+              faction_type: cat.faction_type || row.faction_type,
+              territory_count:
+                typeof cat.territory_count === 'number' ? cat.territory_count : row.territory_count,
+            };
+          }),
+        );
         setLoadError(null);
       })
       .catch((e: any) => {
@@ -180,6 +211,19 @@ const ReputationPage: React.FC = () => {
                 {rows.map((row) => (
                   <li key={row.faction_id} className="mfd-page-faction-row">
                     <span className="mfd-page-faction-name">{row.faction_name}</span>
+                    {row.faction_type && (
+                      <span className="mfd-page-faction-type" title="Faction type from catalog">
+                        {formatLevel(row.faction_type)}
+                      </span>
+                    )}
+                    {typeof row.territory_count === 'number' && (
+                      <span
+                        className="mfd-page-faction-territory"
+                        title="Sectors claimed by this faction"
+                      >
+                        {row.territory_count} sect
+                      </span>
+                    )}
                     <span className="mfd-page-faction-level">{formatLevel(row.current_level)}</span>
                     <span
                       className={`mfd-page-faction-value${row.current_value < 0 ? ' negative' : ''}`}
