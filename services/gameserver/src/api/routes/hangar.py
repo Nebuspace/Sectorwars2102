@@ -28,7 +28,7 @@ from src.auth.dependencies import get_current_player
 from src.core.database import get_db
 from src.models.player import Player
 from src.models.ship import Ship
-from src.services.hangar_service import HangarService, HangarError
+from src.services.hangar_service import HangarService, HangarError, REQUEST_PENDING
 from src.services.turn_service import regenerate_turns, spend_turns
 
 logger = logging.getLogger(__name__)
@@ -255,6 +255,72 @@ async def disembark(
     db.commit()
     result["turn_cost"] = turn_cost
     return result
+
+
+@router.get("/status")
+async def hangar_status(
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Self hangar involvement for UI (WO-WIRE-CARRIER-HANGAR-UI).
+
+    Must be declared before GET /{carrier_id} so ``status`` is not parsed as a UUID.
+    """
+    if player.current_ship_id is None:
+        return {
+            "hangared_on": None,
+            "pending_outgoing": None,
+            "owned_carrier": None,
+        }
+
+    svc = HangarService(db)
+    my_ship = db.query(Ship).filter(Ship.id == player.current_ship_id).first()
+
+    hangared_on = None
+    carrier = svc.find_carrier_for_docked_ship(player.current_ship_id)
+    if carrier is not None:
+        hangared_on = {
+            "carrier_id": str(carrier.id),
+            "carrier_name": getattr(carrier, "name", None),
+        }
+
+    pending_outgoing = None
+    carriers = (
+        db.query(Ship)
+        .filter(Ship.hangar.isnot(None), Ship.is_destroyed.is_(False))
+        .all()
+    )
+    for c in carriers:
+        entry = svc._entry_for_ship(c.hangar or {}, player.current_ship_id, REQUEST_PENDING)
+        if entry is not None:
+            pending_outgoing = {
+                "carrier_id": str(c.id),
+                "ship_id": entry.get("ship_id"),
+                "size_units": entry.get("size_units"),
+                "requested_at": entry.get("requested_at"),
+                "request_state": entry.get("request_state"),
+            }
+            break
+
+    owned_carrier = None
+    if my_ship is not None and my_ship.owner_id == player.id:
+        try:
+            svc._require_carrier(my_ship)
+            hangar = my_ship.hangar or HangarService.empty_hangar()
+            owned_carrier = {
+                "carrier_id": str(my_ship.id),
+                "capacity_units": hangar.get("capacity_units", 0),
+                "used_units": svc.used_units(hangar),
+                "docked": hangar.get("docked", []),
+            }
+        except HangarError:
+            owned_carrier = None
+
+    return {
+        "hangared_on": hangared_on,
+        "pending_outgoing": pending_outgoing,
+        "owned_carrier": owned_carrier,
+    }
 
 
 @router.get("/{carrier_id}")
