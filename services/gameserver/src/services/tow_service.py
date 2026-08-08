@@ -180,6 +180,29 @@ class TowService:
                 return hauler
         return self._scan_legacy_locked(sid, haulers)
 
+    def find_pending_hauler_for_target(self, ship_id: uuid.UUID) -> Optional[Ship]:
+        """Return the hauler whose PENDING tow request targets ``ship_id``, or
+        None. Expired pending rows are cleared and treated as absent
+        (WO-WIRE-TOW-CONSENT-UI — consent Accept needs this on GET /tow/status)."""
+        sid = str(ship_id)
+        haulers = (
+            self.db.query(Ship)
+            .filter(Ship.tow_state.isnot(None), Ship.is_destroyed.is_(False))
+            .all()
+        )
+        for hauler in haulers:
+            ts = hauler.tow_state or {}
+            if ts.get("request_state") != REQUEST_PENDING:
+                continue
+            if ts.get("towed_ship_id") != sid:
+                continue
+            if self._expiry_passed(ts):
+                hauler.tow_state = None
+                flag_modified(hauler, "tow_state")
+                continue
+            return hauler
+        return None
+
     @staticmethod
     def _scan_legacy_locked(sid: str, haulers) -> Optional[Ship]:
         """Defensive: treat a tow_state with a towed_ship_id but NO request_state

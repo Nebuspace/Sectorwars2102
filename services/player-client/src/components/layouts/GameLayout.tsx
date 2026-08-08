@@ -15,6 +15,7 @@ import { subscribeTeleprinterPanelRequest } from '../../services/teleprinterBus'
 import MedalToast from '../ranking/MedalToast';
 import MedalUnviewedSplash from '../ranking/MedalUnviewedSplash';
 import TractorLockPrompt from '../station/TractorLockPrompt';
+import TowConsentPanel from '../station/TowConsentPanel';
 import CarrierHangarPanel from '../station/CarrierHangarPanel';
 import PriorityHailConsumer from '../comms/PriorityHailConsumer';
 import WelcomeBackToast from '../auth/WelcomeBackToast';
@@ -400,6 +401,8 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
       {/* Station anti-theft tractor lock (WO-WIRE-TRACTOR-LOCK-SURRENDER-UI):
           Break free / Surrender when undock returns ERR_STATION_TRACTOR_LOCK. */}
       <TractorLockPrompt />
+      {/* Tractor tow consent (WO-WIRE-TOW-CONSENT-UI): status poll + Accept/Cancel/Detach. */}
+      <TowConsentPanel />
       {/* Carrier hangar consent (WO-WIRE-CARRIER-HANGAR-UI): status + Accept/Undock. */}
       <CarrierHangarPanel />
       {/* Priority-driven hail surfaces (WO-B6): the in-game notification toast
