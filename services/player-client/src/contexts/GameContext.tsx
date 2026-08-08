@@ -1339,25 +1339,22 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   // Move a commodity planet-stockpile -> protected citadel safe.
-  // POST /planets/{id}/citadel/deposit-commodity {commodity, amount}.
+  // WO-WIRE-CITADEL-COMMODITY-SAFE: citadelAPI.depositCommodity.
   const depositCommodityToSafe = async (planetId: string, commodity: string, amount: number) => {
     if (!user || !playerState) throw new Error('Not authenticated');
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/citadel/deposit-commodity`, { commodity, amount });
-      return response.data;
+      return await citadelAPI.depositCommodity(planetId, commodity, amount);
     } catch (error: any) {
       console.error('Error depositing commodity to citadel safe:', error);
       throw error;
     }
   };
 
-  // Move a commodity safe -> planet stockpile.
-  // POST /planets/{id}/citadel/withdraw-commodity {commodity, amount}.
+  // Move a commodity safe -> planet stockpile — citadelAPI.withdrawCommodity.
   const withdrawCommodityFromSafe = async (planetId: string, commodity: string, amount: number) => {
     if (!user || !playerState) throw new Error('Not authenticated');
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/citadel/withdraw-commodity`, { commodity, amount });
-      return response.data;
+      return await citadelAPI.withdrawCommodity(planetId, commodity, amount);
     } catch (error: any) {
       console.error('Error withdrawing commodity from citadel safe:', error);
       throw error;
