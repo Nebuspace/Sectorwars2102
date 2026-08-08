@@ -209,6 +209,9 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
 
   // Shared action-in-flight guard (one action at a time, mirrors PortOfficeVenue)
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  // WO-WIRE-CONTRACTS-GET-BY-ID: live GET /contracts/{id} when a row is opened.
+  const [detailBusyId, setDetailBusyId] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
 
   // Post form state
   const [postContractType, setPostContractType] = useState<PostableContractType>('cargo_delivery');
@@ -265,6 +268,32 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
       setClaimableError(errorMessage(error, 'Could not reach the claimable-cargo ledger. Please try again.'));
     } finally {
       setClaimableLoading(false);
+    }
+  }, []);
+
+  /** WO-WIRE-CONTRACTS-GET-BY-ID — refresh one contract from GET /contracts/{id}. */
+  const refreshContractDetail = useCallback(async (contractId: string) => {
+    setDetailBusyId(contractId);
+    setDetailError(null);
+    try {
+      const data = (await contractsAPI.getContract(contractId)) as ContractDTO;
+      if (!data?.id) {
+        setDetailError('Contract detail response was empty.');
+        return;
+      }
+      setBoard((prev) =>
+        prev ? prev.map((c) => (c.id === data.id ? { ...c, ...data } : c)) : prev
+      );
+      setMine((prev) => {
+        if (!prev) return prev;
+        const upsert = (list: ContractDTO[]) =>
+          list.map((c) => (c.id === data.id ? { ...c, ...data } : c));
+        return { posted: upsert(prev.posted), accepted: upsert(prev.accepted) };
+      });
+    } catch (error) {
+      setDetailError(errorMessage(error, 'Could not load contract detail.'));
+    } finally {
+      setDetailBusyId(null);
     }
   }, []);
 
@@ -710,14 +739,22 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
   const renderBoardRow = (contract: ContractDTO) => {
     const expired = fmtCountdown(contract.deadline, nowMs).expired;
     return (
-    <div className="cb-row" key={contract.id}>
-      <div className="cb-row-main">
+    <div className="cb-row" key={contract.id} data-testid={`contract-row-${contract.id}`}>
+      <button
+        type="button"
+        className="cb-row-main cb-row-main-as-button"
+        data-testid={`contract-detail-${contract.id}`}
+        onClick={() => refreshContractDetail(contract.id)}
+        disabled={detailBusyId === contract.id}
+        title="Refresh this contract from the server"
+      >
         <span className="cb-commodity">
           <span aria-hidden="true">{getIcon(contract.commodity_type)}</span> {getLabel(contract.commodity_type)} ×{' '}
           {contract.quantity}
         </span>
         <span className="cb-route">{renderRoute(contract)}</span>
-      </div>
+        {detailBusyId === contract.id && <span className="cb-status-note">Refreshing…</span>}
+      </button>
       <div className="cb-row-terms">
         <span className="cb-payment">{formatCredits(contract.payment ?? 0)}</span>
         {contract.penalty !== null && <span className="cb-penalty">Penalty {formatCredits(contract.penalty)}</span>}
@@ -813,8 +850,15 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
   );
 
   const renderMineRow = (contract: ContractDTO, kind: MineSubTab) => (
-    <div className="cb-row" key={contract.id}>
-      <div className="cb-row-main">
+    <div className="cb-row" key={contract.id} data-testid={`contract-row-${contract.id}`}>
+      <button
+        type="button"
+        className="cb-row-main cb-row-main-as-button"
+        data-testid={`contract-detail-${contract.id}`}
+        onClick={() => refreshContractDetail(contract.id)}
+        disabled={detailBusyId === contract.id}
+        title="Refresh this contract from the server"
+      >
         <span className="cb-commodity">
           <span aria-hidden="true">{getIcon(contract.commodity_type)}</span> {getLabel(contract.commodity_type)} ×{' '}
           {contract.quantity}
@@ -823,7 +867,8 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
         <span className={`cb-status cb-status-${contract.status}`}>
           {contract.status.replace(/_/g, ' ').toUpperCase()}
         </span>
-      </div>
+        {detailBusyId === contract.id && <span className="cb-status-note">Refreshing…</span>}
+      </button>
       <div className="cb-row-terms">
         <span className="cb-payment">{formatCredits(contract.payment ?? 0)}</span>
         {renderCountdown(contract.deadline)}
@@ -1010,6 +1055,12 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
         <div className="genesis-error-message" aria-live="polite" aria-atomic="true">
           <span className="error-icon">❌</span>
           {boardActionError}
+        </div>
+      )}
+      {detailError && (
+        <div className="genesis-error-message" aria-live="polite" data-testid="contract-detail-error">
+          <span className="error-icon">❌</span>
+          {detailError}
         </div>
       )}
       {boardActionSuccess && (
