@@ -655,6 +655,20 @@ export const citadelAPI = {
       body: JSON.stringify({ amount }),
     }),
 
+  // Move commodity planet-stockpile → protected citadel safe.
+  depositCommodity: (planetId: string, commodity: string, amount: number) =>
+    apiRequest(`/api/v1/planets/${planetId}/citadel/deposit-commodity`, {
+      method: 'POST',
+      body: JSON.stringify({ commodity, amount }),
+    }),
+
+  // Move commodity protected safe → planet stockpile.
+  withdrawCommodity: (planetId: string, commodity: string, amount: number) =>
+    apiRequest(`/api/v1/planets/${planetId}/citadel/withdraw-commodity`, {
+      method: 'POST',
+      body: JSON.stringify({ commodity, amount }),
+    }),
+
   // Toggle "auto-deposit production into safe" (opt-in, default OFF). When ON,
   // each read-path settle sweeps the planet stockpile into the protected safe
   // up to the shared cr-equivalent cap. Owner-only, requires citadel_level >= 1
