@@ -683,13 +683,22 @@ class ContrabandService:
         detected = _RNG.random() < p_detect
 
         if detected:
+            # A bust confiscates the WHOLE hold (see _resolve_bust), so the
+            # fine multiplier / heat flip / rep deltas must key off the worst
+            # contraband actually seized -- not just the line being sold, or
+            # a player selling a LIGHT item while also carrying SEVERE goods
+            # would be under-penalized relative to what's actually confiscated.
+            # `commodity` stays the sold line (what the player was reported as
+            # doing); only the severity source (`meta`) changes.
+            worst = self._worst_held_meta(contents)
+            bust_meta = worst[1] if worst is not None else meta
             return self._resolve_bust(
                 player=player,
                 ship=ship,
                 station=station,
                 cargo=cargo,
                 contents=contents,
-                meta=meta,
+                meta=bust_meta,
                 commodity=resolved,
                 p_detect=p_detect,
             )
@@ -1156,9 +1165,12 @@ class ContrabandService:
         * ``reason`` labels the rep-delta and suspect-lifecycle events so the two
           sites stay distinguishable in the reputation history
           (``black_market_bust`` vs ``contraband_transit_scan``).
-        * ``meta``/``commodity`` are the SOLD line on the sell path and the WORST
-          line aboard on the transit path (``_worst_held_meta``) — either way the
-          whole hold is what gets seized.
+        * ``meta`` is always the WORST line aboard (``_worst_held_meta``) on
+          both paths — the whole hold is what gets seized, so severity must
+          key off the worst thing confiscated, not just the line being sold.
+          ``commodity`` stays the SOLD line on the sell path (what the player
+          was reported as doing) and the WORST line on the transit path
+          (there is no "line being traded" to report there).
         """
         # Confiscated value across ALL contraband (the whole hot hold is seized).
         confiscated_value = self._total_illegal_value(contents)
