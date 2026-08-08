@@ -347,6 +347,67 @@ def realize_region_tax(db: Session, station, tax_amount: int) -> Dict[str, Any]:
     return result
 
 
+def fallback_credit_region_tax(db: Session, station, tax_amount: int) -> int:
+    """Defensive fallback when ``realize_region_tax`` raises mid-trade.
+
+    Credits ``Region.treasury_balance`` only — NEVER ``Station.treasury_balance``
+    (the station owner's private treasury). Misrouting region tax there was
+    WO-FIX-REGION-TAX-FALLBACK-MISROUTES-STATION-TREASURY.
+
+    Returns the amount credited (0 if ``tax_amount <= 0`` or no region can be
+    resolved). Prefers dropping the credits over crediting the station owner.
+    No commit; caller owns the transaction. Best-effort ledger row.
+    """
+    if tax_amount <= 0:
+        return 0
+    region = getattr(station, "region", None)
+    if region is None and getattr(station, "region_id", None) is not None:
+        from src.models.region import Region
+        try:
+            region = db.query(Region).filter(Region.id == station.region_id).first()
+        except Exception:
+            logger.warning(
+                "region tax fallback: region lookup failed for station %s; "
+                "dropping %s rather than crediting station treasury",
+                getattr(station, "id", None),
+                tax_amount,
+                exc_info=True,
+            )
+            return 0
+    if region is None:
+        logger.warning(
+            "region tax fallback: no region on station %s; dropping %s "
+            "rather than crediting station treasury",
+            getattr(station, "id", None),
+            tax_amount,
+        )
+        return 0
+
+    before = int(region.treasury_balance or 0)
+    after = before + tax_amount
+    region.treasury_balance = after
+    try:
+        from src.models.region import RegionalTreasuryEntry
+        db.add(RegionalTreasuryEntry(
+            region_id=region.id,
+            before_balance=before,
+            after_balance=after,
+            delta=tax_amount,
+            cause_type=RegionalTreasuryEntry.CAUSE_TAX_COLLECTION,
+            cause_id=getattr(station, "id", None),
+            reason=(
+                f"Region tax fallback (realize_region_tax failed) "
+                f"via station {getattr(station, 'id', None)}"
+            ),
+        ))
+    except Exception:
+        logger.warning(
+            "region tax fallback ledger row failed; balance still credited",
+            exc_info=True,
+        )
+    return tax_amount
+
+
 def _buyer_is_station_owner_or_team(db: Session, player, station) -> bool:
     """E-F1 same-owner/team test: the lever is skipped when the buyer owns the
     station, or is on the team that owns it. Station ownership is single-owner
