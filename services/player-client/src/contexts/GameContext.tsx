@@ -1133,7 +1133,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Update planet defenses
+  // Update planet defenses — WO-WIRE-PLANETARY-UPDATE-DEFENSES:
+  // planetaryAPI.updateDefenses (same URL; still refresh state + explore).
   const updatePlanetDefenses = async (
     planetId: string,
     defenses: { turrets?: number; shields?: number; fighters?: number }
@@ -1143,10 +1144,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setError(null);
 
     try {
-      const response = await api.put(`/api/v1/planets/${planetId}/defenses`, defenses);
+      const data = await planetaryAPI.updateDefenses(planetId, defenses);
       await refreshPlayerState();
       await exploreCurrentLocation();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error updating planet defenses:', error);
       setError(error.response?.data?.detail || 'Failed to update defenses');
