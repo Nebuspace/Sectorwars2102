@@ -103,6 +103,7 @@ vi.mock('../../ranking/MedalToast', () => ({
     return null;
   },
 }));
+vi.mock('../../ranking/MedalUnviewedSplash', () => ({ default: () => null }));
 
 vi.mock('../../comms/PriorityHailConsumer', () => ({ default: () => null }));
 vi.mock('../../auth/WelcomeBackToast', () => ({ default: () => null }));

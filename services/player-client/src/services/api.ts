@@ -542,6 +542,13 @@ export const rankingAPI = {
     apiRequest('/api/v1/ranking/progress'),
 };
 
+/** Player medals service (distinct from rankingAPI.getMedals aggregate). */
+export const medalsAPI = {
+  /** Clear-on-view offline award queue (GET /api/v1/medals/unviewed). */
+  getUnviewed: (): Promise<{ unviewed: string[] }> =>
+    apiRequest('/api/v1/medals/unviewed'),
+};
+
 // Bounty APIs
 export const bountyAPI = {
   place: (targetId: string, amount: number) =>

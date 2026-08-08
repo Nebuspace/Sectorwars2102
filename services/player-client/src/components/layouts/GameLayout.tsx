@@ -13,6 +13,7 @@ import { SIDEBAR_A, SIDEBAR_B, SIDEBAR_A_FOLDED } from '../mfd/sidebarScreens';
 import { ariaFeed } from '../mfd/ariaFeedStore';
 import { subscribeTeleprinterPanelRequest } from '../../services/teleprinterBus';
 import MedalToast from '../ranking/MedalToast';
+import MedalUnviewedSplash from '../ranking/MedalUnviewedSplash';
 import PriorityHailConsumer from '../comms/PriorityHailConsumer';
 import WelcomeBackToast from '../auth/WelcomeBackToast';
 import NpcCombatBanner from '../combat/NpcCombatBanner';
@@ -390,6 +391,9 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
       {/* Cockpit-wide realtime medal toast: consumes the medal_awarded WS event
           so a freshly-earned decoration pops on any /game route. */}
       <MedalToast />
+      {/* Offline-earned medal splash (WO-WIRE-MEDALS-UNVIEWED-SPLASH): one-shot
+          GET /medals/unviewed on mount; clear-on-view is server-side. */}
+      <MedalUnviewedSplash />
       {/* Priority-driven hail surfaces (WO-B6): the in-game notification toast
           stack (normal/high messages + other WS toasts) and the urgent
           action-interrupting modal — per messaging.md "Priority levels". */}
