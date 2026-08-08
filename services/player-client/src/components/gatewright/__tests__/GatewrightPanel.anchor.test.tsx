@@ -142,6 +142,7 @@ describe('GatewrightPanel — anchor-focus money path', () => {
     await vi.waitFor(() => {
       expect(mockPost).toHaveBeenCalledWith('/api/v1/warp-gates/anchor-focus', {
         beacon_id: 'beacon-1',
+        access_mode: 'PUBLIC',
       });
     });
   });

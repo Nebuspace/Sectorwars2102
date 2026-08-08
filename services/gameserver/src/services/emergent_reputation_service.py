@@ -485,9 +485,8 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
     # EmergentAction.deltas list already supports a multi-faction event, and the
     # dispatcher fans out each delta (with its own throttle/cap/cascade) in one
     # transaction. Wired at gate-activation (advance_gate) ONLY for a public
-    # tunnel (WarpTunnel.is_public). The private/whitelist row (line 214) is
-    # PARKED — the private-gate build path does not exist (is_public is always
-    # True at creation), so no caller can reach it.
+    # tunnel (WarpTunnel.is_public). Private/whitelist builds fire
+    # BUILD_PRIVATE_WARP_GATE below (WO-WIRE-PRIVATE-WARP-GATE-BUILD).
     "BUILD_PUBLIC_WARP_GATE": EmergentAction(
         name="BUILD_PUBLIC_WARP_GATE",
         deltas=[
@@ -498,6 +497,23 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
         doc_source=(
             "factions-and-teams.md anti-symmetric matrix: Build a public toll "
             "warp gate (MG +30, FC +5, NS +5; TF/AM/FA/SS/PI 0)"
+        ),
+    ),
+    # WO-WIRE-PRIVATE-WARP-GATE-BUILD — matrix row "Build a private/whitelist
+    # warp gate | TF −5 | MG 0 | FC +5 | AM 0 | NS 0 | FA +5 | SS +10 | PI 0".
+    # Fired at the same advance_gate activation point when the tunnel is NOT
+    # public (PRIVATE / WHITELIST / TEAM_ONLY / ALLIANCE).
+    "BUILD_PRIVATE_WARP_GATE": EmergentAction(
+        name="BUILD_PRIVATE_WARP_GATE",
+        deltas=[
+            FactionDelta(FactionType.FEDERATION, -5),
+            FactionDelta(FactionType.INDEPENDENTS, 5),
+            FactionDelta(FactionType.OUTLAWS, 5),
+            FactionDelta(FactionType.SYNDICATE, 10),
+        ],
+        doc_source=(
+            "factions-and-teams.md anti-symmetric matrix: Build a private/"
+            "whitelist warp gate (TF −5, FC +5, FA +5, SS +10; MG/AM/NS/PI 0)"
         ),
     ),
 }
