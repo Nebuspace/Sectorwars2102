@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
 import apiClient from '../services/apiClient';
+import { sectorAPI } from '../services/api';
 import websocketService from '../services/websocket';
 import { ariaFeed } from '../components/mfd/ariaFeedStore';
 
@@ -804,19 +805,20 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         setCurrentSector(null);
       }
       
-      // Get planets in sector
+      // Get planets / stations in sector via sectorAPI wrappers
+      // (WO-WIRE-SECTOR-API-PLANETS-STATIONS — same URLs as before; body is the
+      // response payload directly, not axios `{ data }`).
       try {
-        const planetsResponse = await api.get(`/api/v1/sectors/${playerState.current_sector_id}/planets`);
-        setPlanetsInSector(planetsResponse.data.planets || []);
+        const planetsResponse = await sectorAPI.getPlanets(playerState.current_sector_id);
+        setPlanetsInSector(planetsResponse?.planets || []);
       } catch (planetsError) {
         console.warn('GameContext: Failed to load planets:', planetsError);
         setPlanetsInSector([]);
       }
-      
-      // Get stations in sector
+
       try {
-        const stationsResponse = await api.get(`/api/v1/sectors/${playerState.current_sector_id}/stations`);
-        setStationsInSector(stationsResponse.data.stations || []);
+        const stationsResponse = await sectorAPI.getStations(playerState.current_sector_id);
+        setStationsInSector(stationsResponse?.stations || []);
       } catch (stationsError) {
         console.warn('GameContext: Failed to load stations:', stationsError);
         setStationsInSector([]);
