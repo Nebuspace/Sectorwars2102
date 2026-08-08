@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { gameAPI } from '../../services/api';
+import { teamAPI, messageAPI } from '../../services/api';
+import { useGame } from '../../contexts/GameContext';
 import type { Planet, SiegePhase } from '../../types/planetary';
 import './siege-status-monitor.css';
 
@@ -84,9 +85,12 @@ export const SiegeStatusMonitor: React.FC<SiegeStatusMonitorProps> = ({
   onUpdate,
   onClose 
 }) => {
+  const { playerState } = useGame();
   const [selectedAction, setSelectedAction] = useState<string | null>(null);
   const [executing, setExecuting] = useState(false);
   const [timeRemaining, setTimeRemaining] = useState<number>(0);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionFeedback, setActionFeedback] = useState<string | null>(null);
 
   useEffect(() => {
     if (!planet.siegeDetails) return;
@@ -162,6 +166,74 @@ export const SiegeStatusMonitor: React.FC<SiegeStatusMonitorProps> = ({
       setExecuting(false);
       // In real implementation, this would call an API
     }, 2000);
+  };
+
+  /** WO-WIRE-SIEGE-ACTION-BUTTONS — hail teammates for relief. */
+  const handleEmergencyAid = async () => {
+    const teamId = playerState?.team_id;
+    if (!teamId) {
+      setActionFeedback('Join a team to request emergency aid.');
+      return;
+    }
+    setActionBusy(true);
+    setActionFeedback(null);
+    try {
+      const sector = planet.sectorName || planet.sectorId;
+      await teamAPI.sendMessage(
+        teamId,
+        `🆘 EMERGENCY AID — Colony ${planet.name} (sector ${sector}) is under siege` +
+          (planet.siegeDetails?.attackerName
+            ? ` by ${planet.siegeDetails.attackerName}`
+            : '') +
+          '. Requesting immediate relief.',
+        'high'
+      );
+      setActionFeedback('Emergency aid request sent to your team.');
+    } catch (err) {
+      setActionFeedback(
+        err instanceof Error ? err.message : 'Failed to send emergency aid request.'
+      );
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  /**
+   * WO-WIRE-SIEGE-ACTION-BUTTONS — no ownership-transfer surrender API exists
+   * (canon: sieges lift when hostiles leave). Best product wire: hail the
+   * besieger with a negotiate offer when attackerId is known.
+   */
+  const handleNegotiateSurrender = async () => {
+    const attackerId = planet.siegeDetails?.attackerId;
+    if (!attackerId) {
+      setActionFeedback(
+        'No besieger identity on record. Clear hostiles from the sector to end the siege.'
+      );
+      return;
+    }
+    const ok = window.confirm(
+      `Send a negotiation hail to ${planet.siegeDetails?.attackerName || 'the besieger'}? ` +
+        'This does not transfer the colony — ownership surrender is not automated.'
+    );
+    if (!ok) return;
+
+    setActionBusy(true);
+    setActionFeedback(null);
+    try {
+      await messageAPI.sendMessage(
+        attackerId,
+        `Colony ${planet.name} requests negotiation terms under siege. ` +
+          'Contact me to discuss; clearing your ships from the sector also lifts the siege.',
+        `Siege negotiation — ${planet.name}`
+      );
+      setActionFeedback('Negotiation hail sent to the besieger.');
+    } catch (err) {
+      setActionFeedback(
+        err instanceof Error ? err.message : 'Failed to send negotiation hail.'
+      );
+    } finally {
+      setActionBusy(false);
+    }
   };
 
   return (
@@ -347,13 +419,30 @@ export const SiegeStatusMonitor: React.FC<SiegeStatusMonitorProps> = ({
         </div>
 
         <div className="action-buttons">
-          <button className="button emergency">
+          <button
+            type="button"
+            className="button emergency"
+            data-testid="siege-emergency-aid"
+            onClick={handleEmergencyAid}
+            disabled={actionBusy}
+          >
             🆘 Request Emergency Aid
           </button>
-          <button className="button surrender">
+          <button
+            type="button"
+            className="button surrender"
+            data-testid="siege-negotiate-surrender"
+            onClick={handleNegotiateSurrender}
+            disabled={actionBusy}
+          >
             🏳️ Negotiate Surrender
           </button>
         </div>
+        {actionFeedback && (
+          <p className="siege-action-feedback" role="status" data-testid="siege-action-feedback">
+            {actionFeedback}
+          </p>
+        )}
       </div>
     </div>
   );
