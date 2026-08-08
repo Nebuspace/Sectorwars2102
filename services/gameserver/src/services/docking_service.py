@@ -822,18 +822,6 @@ def acquire_for_npc(
     return True
 
 
-def release_for_npc(db: Session, npc: NPCCharacter) -> bool:
-    """Release npc's slip, if any. Tolerates a missing row silently (never
-    acquired one, or already released). Does NOT commit."""
-    occupancy = db.query(DockingSlipOccupancy).filter(
-        DockingSlipOccupancy.npc_id == npc.id
-    ).first()
-    if occupancy is None:
-        return False
-    db.delete(occupancy)
-    return True
-
-
 def _notify_bumped(user_id, station_name: str) -> None:
     """Best-effort WebSocket notice to the evicted player.
 
