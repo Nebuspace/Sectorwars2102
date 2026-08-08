@@ -28,6 +28,7 @@ from src.services.trading_service import (
     compute_region_tariff_multiplier,
     compute_region_tax_rate,
     compute_station_lever_multiplier,
+    fallback_credit_region_tax,
     realize_region_tax,
 )
 from src.services.turn_service import regenerate_turns, spend_turns
@@ -753,10 +754,12 @@ async def buy_resource(
                 realize_region_tax(db, station, region_tax_amount)
             except Exception:
                 logger.warning(
-                    "realize_region_tax failed (buy); falling back to station treasury",
+                    "realize_region_tax failed (buy); falling back to region treasury",
                     exc_info=True,
                 )
-                station.treasury_balance = (station.treasury_balance or 0) + region_tax_amount
+                # NEVER station.treasury_balance — that is the station owner's
+                # private purse (WO-FIX-REGION-TAX-FALLBACK-MISROUTES-STATION-TREASURY).
+                fallback_credit_region_tax(db, station, region_tax_amount)
 
         # Update ship cargo (using proper structure)
         if not current_ship.cargo:
@@ -1089,10 +1092,12 @@ async def sell_resource(
                 realize_region_tax(db, station, region_tax_amount)
             except Exception:
                 logger.warning(
-                    "realize_region_tax failed (sell); falling back to station treasury",
+                    "realize_region_tax failed (sell); falling back to region treasury",
                     exc_info=True,
                 )
-                station.treasury_balance = (station.treasury_balance or 0) + region_tax_amount
+                # NEVER station.treasury_balance — that is the station owner's
+                # private purse (WO-FIX-REGION-TAX-FALLBACK-MISROUTES-STATION-TREASURY).
+                fallback_credit_region_tax(db, station, region_tax_amount)
 
         # Update ship cargo (using proper structure)
         if not current_ship.cargo:
