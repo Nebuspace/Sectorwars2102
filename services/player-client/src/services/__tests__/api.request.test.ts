@@ -12,7 +12,7 @@ vi.mock('../apiClient', () => ({
 }));
 
 import apiClient from '../apiClient';
-import { combatAPI, greyStatusAPI, tradeAPI } from '../api';
+import { combatAPI, greyStatusAPI, shipRegistryAPI, tradeAPI } from '../api';
 
 const request = apiClient.request as ReturnType<typeof vi.fn>;
 
@@ -132,5 +132,42 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     const boom = new Error('adapter exploded');
     request.mockRejectedValue(boom);
     await expect(tradeAPI.accept('s')).rejects.toBe(boom);
+  });
+
+  it('shipRegistryAPI.eject POSTs with no body and no ship_id', async () => {
+    request.mockResolvedValue({ data: { ejected_ship_id: 'ship-1', turns_spent: 1 } });
+    const out = await shipRegistryAPI.eject();
+    expect(out).toEqual({ ejected_ship_id: 'ship-1', turns_spent: 1 });
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: '/api/v1/players/me/eject',
+        method: 'POST',
+        data: undefined,
+      }),
+    );
+  });
+
+  it('shipRegistryAPI.board omits pin from the body when not supplied', async () => {
+    request.mockResolvedValue({ data: { boarded: true, state: 'owner_aboard' } });
+    await shipRegistryAPI.board('ship-2');
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: '/api/v1/ships/ship-2/board',
+        method: 'POST',
+        data: JSON.stringify({}),
+      }),
+    );
+  });
+
+  it('shipRegistryAPI.board includes the pin when supplied', async () => {
+    request.mockResolvedValue({ data: { boarded: true, state: 'borrowed' } });
+    await shipRegistryAPI.board('ship-2', 'ABC123');
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: '/api/v1/ships/ship-2/board',
+        method: 'POST',
+        data: JSON.stringify({ pin: 'ABC123' }),
+      }),
+    );
   });
 });
