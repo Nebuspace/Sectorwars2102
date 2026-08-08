@@ -29,9 +29,10 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.bounty_claim import BountyClaim, BountyClaimStatus
 from src.models.player import Player
-from src.models.ship import Ship, ShipSpecification, ShipStatus
+from src.models.ship import Ship, ShipSpecification, ShipStatus, ShipType
 from src.models.ship_registry import RegistryEventType, ShipRegistry, generate_registration_number
 from src.services.bounty_service import BountyService
+from src.services.turn_service import regenerate_turns, spend_turns
 from src.services.wanted_service import recompute_is_wanted
 
 logger = logging.getLogger(__name__)
@@ -759,4 +760,164 @@ def _complete_transfer_claim(db: Session, *, ship: Ship, via: str) -> dict:
         "fee_paid": fee_paid,
         "completed_at": now.isoformat(),
         "via": via,
+    }
+
+
+# --- Eject / board (ship-registry.md "Eject and board" + "Hatch pin lock") -
+
+# WO-BUILD-SHIP-EJECT-BOARD-REGISTRY-STATES interpretation note (no
+# ship-level "docked at port" marker exists -- only Player.is_docked/
+# current_port_id -- so canon's "both ships docked at the same port = 0
+# turns" collapses to a single check on the ACTING player): 0 turns while
+# docked at a station (the safe, planned-switch case); 1 turn in open space
+# (friction against loadout-cycling mid-fight). Cross-sector eject+board is
+# impossible by construction -- board() requires the target ship's sector to
+# match the boarder's current sector, so there is no third tier to encode.
+EJECT_BOARD_SPACE_TURN_COST = 1
+
+
+def _eject_board_turn_cost(player: Player) -> int:
+    """0 turns docked at a port, 1 turn in open space -- see the module-level
+    note above this section for the interpretation this reads off."""
+    return 0 if player.is_docked else EJECT_BOARD_SPACE_TURN_COST
+
+
+def eject_ship(db: Session, *, player: Player) -> dict:
+    """Voluntarily eject from the currently-piloted ship (ship-registry.md
+    "Eject and board"): the old ship's ``current_pilot_id`` clears and it
+    transitions to Drifting in its current sector; the player reseats onto
+    their escape pod (the single-pod-per-player invariant already
+    established by ``ShipService._ensure_escape_pod`` -- reuses an existing
+    owned pod if the player has one, otherwise creates one, exactly matching
+    canon's "briefly in escape-pod state"). Raises ``ShipRegistryError`` with
+    a stable code on any rejection. Flushes but does not commit -- the route
+    owns the commit and the player-row lock."""
+    if player.current_ship_id is None:
+        raise ShipRegistryError("ERR_NO_CURRENT_SHIP", "You are not currently piloting a ship.")
+
+    old_ship = db.query(Ship).filter(Ship.id == player.current_ship_id).with_for_update().first()
+    if old_ship is None:
+        # Dangling pointer (the row it names no longer exists) -- clear it
+        # rather than leave the invariant broken, but still reject: there is
+        # genuinely nothing to eject from. Calling the shared pilot-pointer
+        # sync helper below with new_ship=None is a documented total no-op
+        # (nothing to clear on a ship side, no Wanted change) -- called
+        # anyway to keep this file's write-site convention uniform (every
+        # current_ship_id write pairs with a sync call, per test_registry_
+        # pilot_wiring.py's structural sweep) rather than a special-cased
+        # exception.
+        from src.services.ship_service import sync_current_pilot
+        player.current_ship_id = None
+        sync_current_pilot(player, None, old_ship=None, db=db)
+        raise ShipRegistryError("ERR_NO_CURRENT_SHIP", "Your current ship could not be found.")
+    if old_ship.type == ShipType.ESCAPE_POD:
+        raise ShipRegistryError(
+            "ERR_ALREADY_IN_ESCAPE_POD",
+            "You are already in an escape pod; there is nothing to eject from.",
+        )
+
+    regenerate_turns(db, player)
+    turn_cost = _eject_board_turn_cost(player)
+    if player.turns < turn_cost:
+        raise ShipRegistryError(
+            "ERR_INSUFFICIENT_TURNS",
+            f"Not enough turns to eject. Need {turn_cost}, have {player.turns}.",
+        )
+
+    from src.services.ship_service import ShipService, sync_current_pilot
+    escape_pod = ShipService(db)._ensure_escape_pod(player, old_ship.sector_id)
+    player.current_ship_id = escape_pod.id
+    sync_current_pilot(player, escape_pod, old_ship=old_ship, db=db)
+    if turn_cost:
+        spend_turns(player, turn_cost)
+
+    db.flush()
+    return {
+        "ejected_ship_id": str(old_ship.id),
+        "ejected_ship_now_drifting": True,
+        "escape_pod_id": str(escape_pod.id),
+        "turns_spent": turn_cost,
+    }
+
+
+def board_ship(db: Session, *, ship: Ship, boarder: Player, pin: Optional[str] = None) -> dict:
+    """Board ``ship`` (ship-registry.md "Eject and board" + "Hatch pin
+    lock"). Eligibility: the registered owner always qualifies (no pin); a
+    matching ``pin`` qualifies anyone (regular Borrow). A pin-less attempt on
+    a locked, non-owned ship is rejected 409 -- canon's own stated behavior
+    for "no pin and ship still locked". The salvage-break bypass (a
+    completed break clears ``hatch_pin_code``, opening the ship to anyone in
+    the sector) stays dormant pending its own WO -- canon itself tags the
+    break operation "📐 Design-only -- not in code today" -- so this
+    function never needs to special-case it: a cleared pin already satisfies
+    ``pin_matches`` the moment that mechanic ships (``pin=""`` would not
+    match a NULL/empty ``hatch_pin_code`` here, so the future WO's own
+    eligibility write is the actual unlock, not this function).
+
+    Boarding a ``stolen_status`` ship immediately enters Wanted Status --
+    already ``sync_current_pilot``'s existing behavior via
+    ``recompute_is_wanted``, not reimplemented here. Raises
+    ``ShipRegistryError`` with a stable code on any rejection. Flushes but
+    does not commit -- the route owns the commit and the player-row lock."""
+    if ship.is_destroyed:
+        raise ShipRegistryError("ERR_SHIP_DESTROYED", "This ship has been destroyed.")
+    if ship.status == ShipStatus.HARMONIZING:
+        raise ShipRegistryError(
+            "ERR_SHIP_HARMONIZING",
+            "This ship is harmonizing into a warp gate focus and cannot be boarded.",
+        )
+    if ship.current_pilot_id == boarder.id:
+        raise ShipRegistryError("ERR_ALREADY_PILOTING", "You are already piloting this ship.")
+    if ship.sector_id != boarder.current_sector_id:
+        raise ShipRegistryError(
+            "ERR_DIFFERENT_SECTOR",
+            f"This ship is in sector {ship.sector_id}; travel there to board it.",
+        )
+
+    is_owner = ship.registered_owner_id == boarder.id
+    pin_matches = bool(pin) and bool(ship.hatch_pin_code) and pin == ship.hatch_pin_code
+    if not (is_owner or pin_matches):
+        raise ShipRegistryError(
+            "ERR_SHIP_LOCKED",
+            "This ship's hatch is locked. You need the pin (or a completed salvage break) to board it.",
+        )
+
+    regenerate_turns(db, boarder)
+    turn_cost = _eject_board_turn_cost(boarder)
+    if boarder.turns < turn_cost:
+        raise ShipRegistryError(
+            "ERR_INSUFFICIENT_TURNS",
+            f"Not enough turns to board. Need {turn_cost}, have {boarder.turns}.",
+        )
+
+    old_ship = None
+    if boarder.current_ship_id is not None and boarder.current_ship_id != ship.id:
+        old_ship = (
+            db.query(Ship).filter(Ship.id == boarder.current_ship_id).with_for_update().first()
+        )
+
+    from src.services.ship_service import sync_current_pilot
+    boarder.current_ship_id = ship.id
+    # sync_current_pilot's require_ship_access gate (detention) runs inside
+    # this call and raises StationSecurityError -- the route catches that
+    # type separately from ShipRegistryError, mirroring station_security.py.
+    sync_current_pilot(boarder, ship, old_ship=old_ship, db=db)
+    if turn_cost:
+        spend_turns(boarder, turn_cost)
+
+    db.flush()
+
+    if is_owner:
+        new_state = "owner_aboard"
+    elif ship.stolen_status:
+        new_state = "stolen_piloted"
+    else:
+        new_state = "borrowed"
+
+    return {
+        "ship_id": str(ship.id),
+        "boarded": True,
+        "state": new_state,
+        "turns_spent": turn_cost,
+        "now_wanted": bool(boarder.is_wanted),
     }
