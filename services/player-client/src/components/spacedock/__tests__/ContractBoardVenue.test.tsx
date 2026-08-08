@@ -48,6 +48,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const {
   mockGetBoard,
   mockGetMine,
+  mockGetContract,
   mockAccept,
   mockComplete,
   mockAbandon,
@@ -63,6 +64,7 @@ const {
 } = vi.hoisted(() => ({
   mockGetBoard: vi.fn(),
   mockGetMine: vi.fn(),
+  mockGetContract: vi.fn(),
   mockAccept: vi.fn(),
   mockComplete: vi.fn(),
   mockAbandon: vi.fn(),
@@ -81,7 +83,7 @@ vi.mock('../../../services/api', () => ({
   contractsAPI: {
     getBoard: mockGetBoard,
     getMine: mockGetMine,
-    getContract: vi.fn(),
+    getContract: mockGetContract,
     accept: mockAccept,
     complete: mockComplete,
     abandon: mockAbandon,
@@ -180,6 +182,7 @@ describe('ContractBoardVenue', () => {
     root = createRoot(container);
     mockGetBoard.mockReset();
     mockGetMine.mockReset();
+    mockGetContract.mockReset();
     mockAccept.mockReset();
     mockComplete.mockReset();
     mockAbandon.mockReset();
@@ -238,6 +241,34 @@ describe('ContractBoardVenue', () => {
     expect(text).toContain('50'); // quantity
     expect(text).toContain('₡2,000'); // payment, formatCredits
     expect(findButton('Accept')).toBeTruthy();
+  });
+
+  it('clicking a board row main refreshes via GET /contracts/{id} (WO-WIRE-CONTRACTS-GET-BY-ID)', async () => {
+    mockGetBoard.mockResolvedValueOnce([CONTRACT_POSTED]);
+    mockGetMine.mockResolvedValueOnce(EMPTY_MINE);
+    mockGetContract.mockResolvedValueOnce({
+      ...CONTRACT_POSTED,
+      payment: 2500,
+      status: 'posted',
+    });
+
+    await act(async () => {
+      root.render(<ContractBoardVenue {...VENUE_PROPS} />);
+    });
+    await flush();
+
+    const detail = container.querySelector(
+      `[data-testid="contract-detail-${CONTRACT_POSTED.id}"]`
+    ) as HTMLButtonElement;
+    expect(detail).toBeTruthy();
+
+    await act(async () => {
+      detail.click();
+    });
+    await flush();
+
+    expect(mockGetContract).toHaveBeenCalledWith(CONTRACT_POSTED.id);
+    expect(container.textContent || '').toContain('₡2,500');
   });
 
   it('hides past-deadline board rows from the open count and does not offer Accept (WO-FIX-CONTRACT-BOARD-EXPIRED-ACCEPT-CTA)', async () => {
