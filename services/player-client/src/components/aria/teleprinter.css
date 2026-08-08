@@ -15,7 +15,7 @@
    toggles' state deltas, and the PANEL body's own richer tabs/log/input
    (WAVE-2's own addition, absent from the artifact).
 
-   TWO INDEPENDENT BINARY TOGGLES (WO-UI-MAX-BATCH-1 REVISE, Max #22-24 —
+   TWO INDEPENDENT BINARY TOGGLES (WO-UI-MAX-BATCH-1 REVISE, human #22-24 —
    supersedes the single 3-state cycle this file used to document):
      - `bodyPanel`      — PANEL vs TICKER: which form the INPUT AREA takes.
                           Root modifier `tp-panel`/`tp-ticker`.

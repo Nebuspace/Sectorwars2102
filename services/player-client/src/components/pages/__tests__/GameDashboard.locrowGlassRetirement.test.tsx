@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
  * GameDashboard — WO-UI5-RETIREMENT+GLASS (glass-lane, WO-UI0 part-4),
- * further simplified WO-UI-MAX-BATCH-1 items 1-3 (Max #10/#13/#16).
+ * further simplified WO-UI-MAX-BATCH-1 items 1-3 (human #10/#13/#16).
  *
  * Proves the glass changes on the flight-scene windshield:
  *   1. `.locrow` top-left chips are down to a single region-flavor chip +
@@ -31,7 +31,7 @@
  * mutable autopilotState (instead of a fixed literal) so the ALL STOP
  * chip's in-transit condition can vary per test.
  *
- * WO-HUD-SHIPTYPE (sector-move, Max ruled 2026-07-19) AMENDMENT: the sector
+ * WO-HUD-SHIPTYPE (sector-move, human ruled 2026-07-19) AMENDMENT: the sector
  * NUMBER moved back down here from the status bar's LocationDropdown
  * trigger ("not in both, entirely down") -- a SECOND, UNCONDITIONAL `.loc`
  * chip ("Sector N", via sector_number-or-sector_id) now sits beside the
@@ -253,7 +253,7 @@ describe('GameDashboard — locrow + HudChip retirement + SCAN relocation (WO-UI
     // (WO-T1D-LANEB, "terran_space" -> "Terran Space", never the
     // dev-seeded region_name "The Frontier"), and -- WO-HUD-SHIPTYPE
     // sector-move -- the sector NUMBER ("Sector 100", SECTOR_HAZARD's
-    // sector_number), region chip first per Max's ruled order.
+    // sector_number), region chip first per human's ruled order.
     expect(chipText).toEqual(['Terran Space', 'Sector 100']);
     expect(chipText).not.toContain('The Frontier');
 

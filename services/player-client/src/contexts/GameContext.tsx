@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
 import apiClient from '../services/apiClient';
+import { sectorAPI, messageAPI, planetaryAPI, citadelAPI } from '../services/api';
 import websocketService from '../services/websocket';
 import { ariaFeed } from '../components/mfd/ariaFeedStore';
 
@@ -106,6 +107,8 @@ export interface Station {
   type: string;
   status: string;
   sector_id: number;
+  /** From GET /sectors/{id}/stations — null when NPC/unowned. */
+  owner_id?: string | null;
   owner?: any;
   services: Record<string, any>;
   faction_affiliation?: string;
@@ -181,6 +184,15 @@ export interface StationSlips {
   queue_length: number;
   my_queue_position: number | null;
   occupants_bumpable_count: number;
+}
+
+/** Payload from undock 403 ERR_STATION_TRACTOR_LOCK (station-protection Guarantee #2). */
+export interface TractorLockInfo {
+  station_id: string;
+  ship_id: string;
+  tractor_strength: string;
+  reason: string;
+  break_attempt_cost: string;
 }
 
 // --- Quantum drive (Warp Jumper) ---
@@ -333,6 +345,9 @@ interface GameContextType {
   undockFromStation: () => Promise<any>;
   getStationSlips: (stationId: string) => Promise<StationSlips | null>;
   bumpDockOccupant: (stationId: string, occupantPlayerId: string) => Promise<any>;
+  /** Set when undock returns ERR_STATION_TRACTOR_LOCK (WO-WIRE-TRACTOR-LOCK-SURRENDER-UI). */
+  tractorLock: TractorLockInfo | null;
+  clearTractorLock: () => void;
   marketInfo: MarketInfo | null;
   getMarketInfo: (stationId: string) => Promise<void>;
   buyResource: (stationId: string, resourceType: string, quantity: number) => Promise<any>;
@@ -404,6 +419,8 @@ interface GameContextType {
     replyToId?: string | null
   ) => Promise<{ message_id: string; sent_at: string }>;
   markMessageRead: (messageId: string) => Promise<void>;
+  /** Soft-delete a hail from the local inbox (DELETE /messages/{id}). */
+  deletePlayerMessage: (messageId: string) => Promise<void>;
 
   // Quantum drive (Warp Jumper) — status is auto-refreshed alongside player
   // state whenever the active ship is a WARP_JUMPER, null otherwise
@@ -472,6 +489,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   
   // Market
   const [marketInfo, setMarketInfo] = useState<MarketInfo | null>(null);
+  // Station anti-theft tractor lock (undock 403 ERR_STATION_TRACTOR_LOCK)
+  const [tractorLock, setTractorLock] = useState<TractorLockInfo | null>(null);
 
   // Player-to-player hails (COMMS mailbox)
   const [inboxMessages, setInboxMessages] = useState<PlayerMessage[]>([]);
@@ -788,19 +807,20 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         setCurrentSector(null);
       }
       
-      // Get planets in sector
+      // Get planets / stations in sector via sectorAPI wrappers
+      // (WO-WIRE-SECTOR-API-PLANETS-STATIONS — same URLs as before; body is the
+      // response payload directly, not axios `{ data }`).
       try {
-        const planetsResponse = await api.get(`/api/v1/sectors/${playerState.current_sector_id}/planets`);
-        setPlanetsInSector(planetsResponse.data.planets || []);
+        const planetsResponse = await sectorAPI.getPlanets(playerState.current_sector_id);
+        setPlanetsInSector(planetsResponse?.planets || []);
       } catch (planetsError) {
         console.warn('GameContext: Failed to load planets:', planetsError);
         setPlanetsInSector([]);
       }
-      
-      // Get stations in sector
+
       try {
-        const stationsResponse = await api.get(`/api/v1/sectors/${playerState.current_sector_id}/stations`);
-        setStationsInSector(stationsResponse.data.stations || []);
+        const stationsResponse = await sectorAPI.getStations(playerState.current_sector_id);
+        setStationsInSector(stationsResponse?.stations || []);
       } catch (stationsError) {
         console.warn('GameContext: Failed to load stations:', stationsError);
         setStationsInSector([]);
@@ -891,15 +911,38 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       const response = await api.post('/api/v1/trading/undock');
 
       // Update player state after undocking
+      setTractorLock(null);
       await refreshPlayerState();
 
       return response.data;
     } catch (error: any) {
       console.error('Error undocking from station:', error);
-      setError(error.response?.data?.message || 'Failed to undock from station');
+      const detail = error.response?.data?.detail;
+      if (
+        detail &&
+        typeof detail === 'object' &&
+        detail.error === 'ERR_STATION_TRACTOR_LOCK'
+      ) {
+        setTractorLock({
+          station_id: String(detail.station_id ?? ''),
+          ship_id: String(detail.ship_id ?? ''),
+          tractor_strength: String(detail.tractor_strength ?? ''),
+          reason: String(detail.reason ?? ''),
+          break_attempt_cost: String(detail.break_attempt_cost ?? ''),
+        });
+        setError('Tractor lock engaged — choose Break free or Surrender.');
+      } else {
+        setError(
+          (typeof detail === 'string' ? detail : null) ||
+            error.response?.data?.message ||
+            'Failed to undock from station'
+        );
+      }
       throw error;
     }
   };
+
+  const clearTractorLock = () => setTractorLock(null);
 
   // Get market info for a port
   // Note: This intentionally does NOT set global isLoading to avoid re-render cascades
@@ -1055,13 +1098,13 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Get planet details
+  // Get planet details — WO-WIRE-PLANETARY-GET-PLANET: planetaryAPI.getPlanet
+  // (same URL; body is the response payload directly).
   const getPlanetDetails = async (planetId: string) => {
     if (!user) return;
 
     try {
-      const response = await api.get(`/api/v1/planets/${planetId}`);
-      return response.data;
+      return await planetaryAPI.getPlanet(planetId);
     } catch (error: any) {
       console.error('Error getting planet details:', error);
       throw error;
@@ -1269,35 +1312,32 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Deposit credits into the citadel safe — POST /planets/{id}/citadel/deposit
-  // {amount}. Server gating (CitadelService.deposit_to_safe): planet must be
-  // owned, citadel_level >= 1, player must hold the credits, and the safe
-  // balance may not exceed CITADEL_LEVELS[level].safe_storage. Returns
-  // {credits_deposited, safe_balance, safe_capacity, player_credits, message}.
+  // Deposit credits into the citadel safe — WO-WIRE-CITADEL-SAFE-CREDITS:
+  // citadelAPI.deposit (same URL; body is response payload directly).
+  // Server gating (CitadelService.deposit_to_safe): planet must be owned,
+  // citadel_level >= 1, player must hold the credits, and the safe balance
+  // may not exceed CITADEL_LEVELS[level].safe_storage.
   const depositToSafe = async (planetId: string, amount: number) => {
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/citadel/deposit`, { amount });
-      // Deposit debits the player's credit balance
+      const data = await citadelAPI.deposit(planetId, amount);
       await refreshPlayerState();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error depositing to citadel safe:', error);
       throw error;
     }
   };
 
-  // Withdraw credits from the citadel safe — POST /planets/{id}/citadel/withdraw
-  // {amount}. Returns {credits_withdrawn, safe_balance, player_credits, message}.
+  // Withdraw credits from the citadel safe — citadelAPI.withdraw (same URL).
   const withdrawFromSafe = async (planetId: string, amount: number) => {
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/citadel/withdraw`, { amount });
-      // Withdrawal credits the player's balance
+      const data = await citadelAPI.withdraw(planetId, amount);
       await refreshPlayerState();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error withdrawing from citadel safe:', error);
       throw error;
@@ -1331,13 +1371,12 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   // Toggle auto-deposit of production into the protected safe (opt-in, default
-  // OFF). POST /planets/{id}/citadel/auto-deposit {enabled}. Owner-only,
-  // requires citadel_level >= 1. Returns { success: true, auto_deposit: bool }.
+  // OFF). WO-WIRE-CITADEL-AUTO-DEPOSIT-API — citadelAPI.setAutoDeposit (same
+  // URL as before; body is the response payload directly).
   const setCitadelAutoDeposit = async (planetId: string, enabled: boolean) => {
     if (!user || !playerState) throw new Error('Not authenticated');
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/citadel/auto-deposit`, { enabled });
-      return response.data;
+      return await citadelAPI.setAutoDeposit(planetId, enabled);
     } catch (error: any) {
       console.error('Error setting citadel auto-deposit:', error);
       throw error;
@@ -1560,8 +1599,12 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user) return;
 
     try {
-      const response = await api.get('/api/v1/messages/inbox');
-      const data = response.data as { messages: PlayerMessage[]; unread_count: number };
+      // WO-WIRE-MESSAGE-API-INBOX — messageAPI.getInbox returns the body
+      // directly (not axios `{ data }`).
+      const data = (await messageAPI.getInbox()) as {
+        messages: PlayerMessage[];
+        unread_count: number;
+      };
       setInboxMessages(data.messages || []);
       setUnreadMessageCount(data.unread_count || 0);
       // Server count is authoritative again — drop the local decrement guard
@@ -1584,13 +1627,12 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post('/api/v1/messages/send', {
-        recipient_id: recipientId,
-        subject: subject || null,
+      return (await messageAPI.sendMessage(
+        recipientId,
         content,
-        reply_to_id: replyToId || null
-      });
-      return response.data as { message_id: string; sent_at: string };
+        subject ?? undefined,
+        replyToId,
+      )) as { message_id: string; sent_at: string };
     } catch (error: any) {
       console.error('Error sending player message:', error);
       throw error;
@@ -1611,7 +1653,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       inboxMessages.some(msg => msg.id === messageId && !msg.is_read);
 
     try {
-      await api.put(`/api/v1/messages/${messageId}/read`);
+      await messageAPI.markAsRead(messageId);
       setInboxMessages(prev => prev.map(msg =>
         msg.id === messageId && !msg.is_read
           ? { ...msg, is_read: true, read_at: new Date().toISOString() }
@@ -1623,6 +1665,29 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       }
     } catch (error: any) {
       console.error('Error marking message read:', error);
+      throw error;
+    }
+  };
+
+  // WO-WIRE-MESSAGE-DELETE — remove a hail from the inbox after server DELETE.
+  const deletePlayerMessage = async (messageId: string): Promise<void> => {
+    if (!user) throw new Error('Not authenticated');
+
+    const victim = inboxMessages.find((msg) => msg.id === messageId);
+    const wasUnread =
+      Boolean(victim) &&
+      !victim!.is_read &&
+      !locallyReadIds.current.has(messageId);
+
+    try {
+      await messageAPI.deleteMessage(messageId);
+      setInboxMessages((prev) => prev.filter((msg) => msg.id !== messageId));
+      locallyReadIds.current.delete(messageId);
+      if (wasUnread) {
+        setUnreadMessageCount((prev) => Math.max(0, prev - 1));
+      }
+    } catch (error: any) {
+      console.error('Error deleting message:', error);
       throw error;
     }
   };
@@ -1699,6 +1764,32 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     return unsubscribe;
   }, [user]);
+
+  // Authoritative turn-pool push (WO-WIRE-WS-TURN-POOL-UNCONSUMED). Server
+  // already emits turn_pool_updated on lazy regen / welcome_back; patch HUD
+  // turns in place — no toast (WelcomeBackToast.wsNoOp), no full refetch.
+  useEffect(() => {
+    if (!user) return;
+
+    const unsubscribe = websocketService.onTurnPoolUpdated((message) => {
+      if (typeof message.turns !== 'number') return;
+      const me = playerIdRef.current;
+      if (message.player_id && me && String(message.player_id) !== me) return;
+      setPlayerState((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          turns: message.turns as number,
+          ...(typeof message.max_turns === 'number'
+            ? { max_turns: message.max_turns }
+            : {}),
+        };
+      });
+    });
+
+    return unsubscribe;
+  }, [user]);
+
   // Hyperspace echo scan along a bearing (spends turns; far band spends a shard)
   const quantumScan = async (payload: QuantumBearing): Promise<QuantumScanResult> => {
     if (!user || !playerState) throw new Error('Not authenticated');
@@ -1828,6 +1919,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     undockFromStation,
     getStationSlips,
     bumpDockOccupant,
+    tractorLock,
+    clearTractorLock,
     marketInfo,
     getMarketInfo,
     buyResource,
@@ -1880,6 +1973,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     refreshInbox,
     sendPlayerMessage,
     markMessageRead,
+    deletePlayerMessage,
 
     // Quantum drive (Warp Jumper)
     quantumStatus,

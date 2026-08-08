@@ -170,7 +170,9 @@ export const planetaryAPI = {
   // (ADR-0076 citadel/planet-type scaling), so the client's cost preview
   // can never drift from what Save will actually charge. Read-only,
   // owner-gated (403 for a planet you don't own).
-  getDefensePricing: (planetId: string): Promise<{ turrets: number; shields: number; fighters: number }> =>
+  // 'shields' is intentionally not part of the pricing response — see
+  // WO-FIX-DEFENSE-SHIELDS-CITADEL-PREREQ-BYPASS (DefenseConfiguration.tsx).
+  getDefensePricing: (planetId: string): Promise<{ turrets: number; fighters: number }> =>
     apiRequest(`/api/v1/planets/${planetId}/defenses/pricing`),
 
   // planetType is rolled server-side from the device tier (ADR-0014); it is
@@ -211,6 +213,27 @@ export const planetaryAPI = {
 
   getSiegeStatus: (planetId: string) =>
     apiRequest(`/api/v1/planets/${planetId}/siege-status`)
+};
+
+/** Station-protection tractor lock (Guarantee #2) — player responses. */
+export const stationSecurityAPI = {
+  getTractorLock: (stationId: string): Promise<{
+    locked: boolean;
+    reason?: string;
+    tractor_strength?: string;
+    break_attempts?: number;
+    break_attempt_cost?: string;
+  }> => apiRequest(`/api/v1/station-security/stations/${stationId}/tractor-lock`),
+
+  breakTractorLock: (stationId: string) =>
+    apiRequest(`/api/v1/station-security/stations/${stationId}/tractor-lock/break`, {
+      method: 'POST',
+    }),
+
+  surrenderTractorLock: (stationId: string) =>
+    apiRequest(`/api/v1/station-security/stations/${stationId}/tractor-lock/surrender`, {
+      method: 'POST',
+    }),
 };
 
 // Team Management APIs
@@ -434,11 +457,21 @@ export const factionAPI = {
 
 // Message APIs
 export const messageAPI = {
-  sendMessage: (recipientId: string, content: string, subject?: string) =>
+  sendMessage: (
+    recipientId: string,
+    content: string,
+    subject?: string,
+    replyToId?: string | null,
+  ) =>
     apiRequest('/api/v1/messages/send', {
       method: 'POST',
       // Backend MessageCreateRequest expects snake_case fields
-      body: JSON.stringify({ recipient_id: recipientId, subject, content })
+      body: JSON.stringify({
+        recipient_id: recipientId,
+        subject: subject ?? null,
+        content,
+        reply_to_id: replyToId ?? null,
+      }),
     }),
 
   getInbox: (page: number = 1, unreadOnly?: boolean) => {
@@ -519,6 +552,41 @@ export const shipAPI = {
     shipUpgradeAPI.purchaseUpgrade(shipId, upgradeType)
 };
 
+/** Ship registry behaviors (SYSTEMS/ship-registry.md) — stolen / abandon / claim / transfer. */
+export const shipRegistryAPI = {
+  reportStolen: (shipId: string, recoveryMode?: 'with_bounty' | 'no_bounty' | null) =>
+    apiRequest(`/api/v1/ships/${shipId}/report-stolen`, {
+      method: 'POST',
+      body: JSON.stringify(
+        recoveryMode ? { recovery_mode: recoveryMode } : {}
+      ),
+    }),
+
+  retractStolenReport: (shipId: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/retract-stolen-report`, { method: 'POST' }),
+
+  abandon: (shipId: string, portId: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/abandon`, {
+      method: 'POST',
+      body: JSON.stringify({ port_id: portId }),
+    }),
+
+  claim: (shipId: string, portId: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/claim`, {
+      method: 'POST',
+      body: JSON.stringify({ port_id: portId }),
+    }),
+
+  fileTransferClaim: (shipId: string, portId: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/transfer-claim`, {
+      method: 'POST',
+      body: JSON.stringify({ port_id: portId }),
+    }),
+
+  approveTransferClaim: (shipId: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/transfer-claim/approve`, { method: 'POST' }),
+};
+
 // Ranking & Reputation APIs
 export const rankingAPI = {
   getRank: () =>
@@ -538,6 +606,13 @@ export const rankingAPI = {
 
   getProgress: () =>
     apiRequest('/api/v1/ranking/progress'),
+};
+
+/** Player medals service (distinct from rankingAPI.getMedals aggregate). */
+export const medalsAPI = {
+  /** Clear-on-view offline award queue (GET /api/v1/medals/unviewed). */
+  getUnviewed: (): Promise<{ unviewed: string[] }> =>
+    apiRequest('/api/v1/medals/unviewed'),
 };
 
 // Bounty APIs
@@ -659,7 +734,7 @@ export const terraformAPI = {
 
 // Citadel Research APIs (CRT-T1.5-9 / CRT-4 — the empire R&D notification cockpit).
 //
-// Player-facing brand: "Citadel Research" (Max-ruled). These read the now-live
+// Player-facing brand: "Citadel Research" (human-ruled). These read the now-live
 // governed-flywheel economy (the governor + contract sink + faucet copay) and
 // surface the generated, perishable Research-Directive OFFERS. The offers are
 // PUSHED by the server (contract_offer WS frame) and reacted to here — this is a
@@ -717,17 +792,8 @@ export const shipUpgradeAPI = {
       body: JSON.stringify({ upgrade_type: upgradeType }),
     }),
 
-  installEquipment: (shipId: string, equipmentKey: string) =>
-    apiRequest(`/api/v1/ships/${shipId}/equipment/install`, {
-      method: 'POST',
-      body: JSON.stringify({ equipment_key: equipmentKey }),
-    }),
-
-  uninstallEquipment: (shipId: string, equipmentKey: string) =>
-    apiRequest(`/api/v1/ships/${shipId}/equipment/uninstall`, {
-      method: 'POST',
-      body: JSON.stringify({ equipment_key: equipmentKey }),
-    }),
+  // Legacy equipment install/uninstall retired (WO-RETIRE-SHIP-LEGACY-EQUIPMENT-API):
+  // superseded by module-grid installModule/removeModule below.
 
   // SHIP-MODS (WO-SM-5): module slot-grid lattice + install/remove.
   //
@@ -738,10 +804,8 @@ export const shipUpgradeAPI = {
     apiRequest(`/api/v1/ships/${shipId}/modules`),
 
   // installModule → { success, module, supercharged, cost_paid, remaining_credits,
-  //                   updated_stats, [consumer_inert] }. The deferred equipment
-  //   families (lander/mining/tractor) return success:false +
-  //   consumer_inert:true with a "not yet installable" message — surfaced as
-  //   "coming soon" in the catalog so they never reach this call.
+  //                   updated_stats, [consumer_inert] }. Mining remains deferred
+  //   (consumer_inert); lander/tractor are live (WO-WIRE-LANDER-TRACTOR-CATALOG-UNLOCK).
   //   harvester is live (residual 2): install succeeds; passive_income from _baked.
   installModule: (shipId: string, slotIndex: number, moduleClass: string, tier: number) =>
     apiRequest(`/api/v1/ships/${shipId}/modules/install`, {
@@ -1286,6 +1350,18 @@ export interface MyBeacon {
 export const beaconAPI = {
   mine: (page = 1, limit = 20): Promise<{ beacons: MyBeacon[]; total?: number }> =>
     apiRequest(`/api/v1/beacons/mine?page=${page}&limit=${limit}`),
+
+  /** Deploy a message beacon at sector_id (POST /api/v1/beacons/deploy). */
+  deploy: (body: { sector_id: number; message: string; read_once?: boolean }) =>
+    apiRequest('/api/v1/beacons/deploy', {
+      method: 'POST',
+      body: JSON.stringify({
+        sector_id: body.sector_id,
+        message: body.message,
+        read_once: body.read_once ?? false,
+      }),
+    }),
+
   read: (beaconId: string) => apiRequest(`/api/v1/beacons/${beaconId}/read`),
   salvage: (beaconId: string) => apiRequest(`/api/v1/beacons/${beaconId}/salvage`, { method: 'POST' }),
   recharge: (beaconId: string) => apiRequest(`/api/v1/beacons/${beaconId}/recharge`, { method: 'POST' }),
@@ -1320,3 +1396,146 @@ export const gameAPI = {
   trade: tradeAPI,
   beacon: beaconAPI,
 };
+
+/** ADR-0054 X-D3 — GC-lapse 7-day liquidation window self-service. */
+export const gcLapseAPI = {
+  getStatus: (): Promise<{
+    lapsed: boolean;
+    gc_lapsed_at: string | null;
+    relocation_available: boolean;
+    foreign_holdings: Array<{
+      asset_type: 'planet' | 'station' | string;
+      asset_id: string;
+      name: string;
+      region_id: string | null;
+      sector_id: number;
+    }>;
+  }> => apiRequest('/api/v1/players/me/gc-lapse-status'),
+
+  emergencyRelocate: (assetType: 'planet' | 'station' | string, assetId: string) =>
+    apiRequest('/api/v1/players/me/gc-emergency-relocation', {
+      method: 'POST',
+      body: JSON.stringify({ asset_type: assetType, asset_id: assetId }),
+    }),
+};
+
+/** Carrier ship-hangar consent (WO-WIRE-CARRIER-HANGAR-UI / WO-AE). */
+export type HangarStatus = {
+  hangared_on: { carrier_id: string; carrier_name?: string | null } | null;
+  pending_outgoing: {
+    carrier_id: string;
+    ship_id?: string;
+    size_units?: number;
+    requested_at?: string;
+    request_state?: string;
+  } | null;
+  owned_carrier: {
+    carrier_id: string;
+    capacity_units: number;
+    used_units: number;
+    docked: Array<Record<string, unknown>>;
+  } | null;
+};
+
+export const hangarAPI = {
+  getStatus: (): Promise<HangarStatus> => apiRequest('/api/v1/hangar/status'),
+  getHangar: (carrierId: string) => apiRequest(`/api/v1/hangar/${carrierId}`),
+  requestDock: (carrierId: string, shipId?: string) =>
+    apiRequest(`/api/v1/hangar/${carrierId}/dock-request`, {
+      method: 'POST',
+      body: JSON.stringify(shipId ? { ship_id: shipId } : {}),
+    }),
+  accept: (carrierId: string, shipId: string) =>
+    apiRequest(`/api/v1/hangar/${carrierId}/accept`, {
+      method: 'POST',
+      body: JSON.stringify({ ship_id: shipId }),
+    }),
+  cancel: (carrierId: string, shipId: string) =>
+    apiRequest(`/api/v1/hangar/${carrierId}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ ship_id: shipId }),
+    }),
+  undock: () => apiRequest('/api/v1/hangar/undock', { method: 'POST' }),
+  disembark: () => apiRequest('/api/v1/hangar/disembark', { method: 'POST' }),
+};
+
+/** Tractor Beam tow consent (WO-WIRE-TOW-CONSENT-UI / ADR-0067). */
+export type TowPending = {
+  hauler_id: string;
+  towed_ship_id?: string | null;
+  towed_size?: string | null;
+  surcharge_per_move?: number | null;
+  requested_at?: string | null;
+  request_state?: string;
+};
+
+export type TowStatus = {
+  towing: Record<string, unknown> | null;
+  being_towed_by: { hauler_id: string; surcharge_per_move?: number | null } | null;
+  pending_outgoing: TowPending | null;
+  pending_incoming: TowPending | null;
+};
+
+export const towAPI = {
+  getStatus: (): Promise<TowStatus> => apiRequest('/api/v1/tow/status'),
+  request: (targetShipId: string) =>
+    apiRequest('/api/v1/tow/request', {
+      method: 'POST',
+      body: JSON.stringify({ target_ship_id: targetShipId }),
+    }),
+  accept: (haulerId: string) =>
+    apiRequest('/api/v1/tow/accept', {
+      method: 'POST',
+      body: JSON.stringify({ hauler_id: haulerId }),
+    }),
+  cancel: (haulerId: string) =>
+    apiRequest('/api/v1/tow/cancel', {
+      method: 'POST',
+      body: JSON.stringify({ hauler_id: haulerId }),
+    }),
+  detach: () => apiRequest('/api/v1/tow/detach', { method: 'POST' }),
+};
+
+/** Stranding recovery console (WO-WIRE-RECOVERY-CONSOLE). */
+export type RecoveryDistressStatus = {
+  available: boolean;
+  cooldown_until?: string | null;
+  last_used_at?: string | null;
+};
+
+export type RecoverySlipdriveStatus = {
+  charging: boolean;
+  charge_deadline?: string | null;
+  ready: boolean;
+  cancelled_by_movement?: boolean;
+};
+
+export type RecoveryStatus = {
+  distress_beacon: RecoveryDistressStatus;
+  slipdrive: RecoverySlipdriveStatus;
+};
+
+export const recoveryAPI = {
+  getStatus: (): Promise<RecoveryStatus> => apiRequest('/api/v1/recovery/status'),
+  fireDistressBeacon: () =>
+    apiRequest('/api/v1/recovery/distress-beacon', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  beginSlipdrive: () =>
+    apiRequest('/api/v1/recovery/slipdrive/begin', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  completeSlipdrive: () =>
+    apiRequest('/api/v1/recovery/slipdrive/complete', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  escapePod: () =>
+    apiRequest('/api/v1/recovery/escape-pod', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+};
+

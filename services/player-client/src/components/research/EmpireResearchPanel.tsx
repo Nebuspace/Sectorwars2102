@@ -5,7 +5,7 @@ import './empire-research-panel.css';
 
 /**
  * EmpireResearchPanel — CRT-T1.5-9 / CRT-4: the player-facing capstone of the
- * governed-flywheel economy ("Citadel Research", Max-ruled name). This is the ONE
+ * governed-flywheel economy ("Citadel Research", human-ruled name). This is the ONE
  * glanceable, EMPIRE-LEVEL surface where the player sees the LOOP they regulate
  * (more labs → RP → governed → spend on directives → frontier decays → …). It is
  * notification-driven: a healthy empire needs ~0 clicks/day — the offers are

@@ -225,7 +225,7 @@ describe('GameDashboard — flying deck collapsed to 3 monitors (WO-UI2-DECK-REC
     expect(container.querySelector('.mon.comms-monitor')).toBeNull();
   });
 
-  it('SOLAR SYSTEM: SYSTEM page has a 4-tab rail (SYSTEM · SALVAGE · SIGNALS · HAZARD) and shows hazards as a terse row — no numbers on this page (WO-UI-MAX-BATCH-1 Max #21)', async () => {
+  it('SOLAR SYSTEM: SYSTEM page has a 4-tab rail (SYSTEM · SALVAGE · SIGNALS · HAZARD) and shows hazards as a terse row — no numbers on this page (WO-UI-MAX-BATCH-1 human #21)', async () => {
     await mount();
 
     const solar = container.querySelector('.mon.system-monitor')!;
@@ -344,7 +344,7 @@ describe('GameDashboard — flying deck collapsed to 3 monitors (WO-UI2-DECK-REC
   it('NAV + SOLAR SYSTEM: .mon > .mhead(.mtitle[+.hsub]) + .mbody + bottom .skrow — NAV keeps a live hsub, SOLAR SYSTEM is title-only', async () => {
     await mount();
 
-    // SOLAR SYSTEM's header dropped its sector-name sub-status (Max,
+    // SOLAR SYSTEM's header dropped its sector-name sub-status (human,
     // 2026-07-14: "title alone; the locrow already shows where you are" --
     // GameDashboard.tsx's own mhead comment). NAV's live "N CHARTED EXIT(S)"
     // hsub is unaffected by that ruling and still renders.

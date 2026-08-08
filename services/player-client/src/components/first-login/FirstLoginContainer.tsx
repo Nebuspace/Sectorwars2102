@@ -182,7 +182,7 @@ const FirstLoginContainer: React.FC = () => {
     const circumference = 2 * Math.PI * radius;
     const strokeDashoffset = circumference - (currentTrust * circumference);
 
-    // WO-PUX-TRUST-METER (Max ruling #3, 2026-07-10): the marker responds to
+    // WO-PUX-TRUST-METER (human ruling #3, 2026-07-10): the marker responds to
     // ship_claimed -- the server already serializes it correctly on both the
     // /session and /claim-ship payloads (verified; no server change needed).
     // Before a ship is claimed the threshold sits at the baseline 50%; once

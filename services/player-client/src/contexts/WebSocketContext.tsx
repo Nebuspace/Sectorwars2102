@@ -623,6 +623,9 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           });
           break;
           
+        // Server WS path emits `combat_update` (websocket_service.send_combat_update).
+        // `combat_event` is a legacy/redis alias — accept both so live updates aren't dropped.
+        case 'combat_update':
         case 'combat_event':
           addNotification({
             title: 'Combat Activity',
@@ -649,6 +652,23 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           break;
         }
 
+
+        case 'hostile_detected': {
+          // Long-Range Scanner Array pickup (citadel_service DEFENSE_BUILDINGS
+          // "scanner_array") — a hostile ship moved within detection range of
+          // an owned planet's sector (movement_service._dispatch_hostile_detected
+          // → websocket_service.send_hostile_detected). Toast only, matching
+          // teammate_under_attack's heads-up-not-interrupt convention.
+          const detectedSectorId = message.sector_id;
+          addNotification({
+            title: 'Hostile Detected',
+            content: detectedSectorId !== undefined && detectedSectorId !== null
+              ? `A hostile ship was detected in sector ${detectedSectorId}`
+              : 'A hostile ship was detected near your planet',
+            level: 'warning'
+          });
+          break;
+        }
 
         case 'new_message': {
           // Player-to-player hail (message_service → notification_service).
@@ -951,7 +971,7 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           // send_failed is consumed by sendFailedHandler above — it's a
           // client-local synthetic event (websocket.ts's own send()), not
           // an unhandled server frame.)
-          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'aria_narration', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'reputation_changed', 'team_reputation_changed', 'npc_combat_initiated', 'bounty_updated', 'send_failed'].includes(message.type)) {
+          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'aria_narration', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'reputation_changed', 'team_reputation_changed', 'npc_combat_initiated', 'bounty_updated', 'turn_pool_updated', 'send_failed'].includes(message.type)) {
             console.warn('WebSocket: Unhandled message type:', message.type);
           }
       }

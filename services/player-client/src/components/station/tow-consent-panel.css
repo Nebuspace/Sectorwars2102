@@ -1,0 +1,89 @@
+.tow-consent-rail {
+  position: fixed;
+  right: 1rem;
+  bottom: 5.5rem;
+  z-index: 1100;
+}
+
+.tow-consent-rail button,
+.tow-consent-actions button,
+.tow-consent-targets button,
+.tow-consent-block > button {
+  cursor: pointer;
+  padding: 0.35rem 0.7rem;
+  border-radius: 4px;
+  border: 1px solid rgba(120, 200, 255, 0.45);
+  background: rgba(12, 28, 44, 0.92);
+  color: #d7f0ff;
+  font: inherit;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.tow-consent-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 1240;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding: 1.25rem;
+  pointer-events: none;
+}
+
+.tow-consent-card {
+  pointer-events: auto;
+  max-width: 360px;
+  width: min(92vw, 360px);
+  padding: 0.9rem 1rem;
+  border: 1px solid rgba(120, 200, 255, 0.55);
+  border-radius: 8px;
+  background: linear-gradient(160deg, rgba(10, 28, 44, 0.97), rgba(6, 12, 20, 0.98));
+  color: #d7f0ff;
+  box-shadow: 0 0 20px rgba(40, 140, 220, 0.25);
+}
+
+.tow-consent-card h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.tow-consent-block p {
+  margin: 0 0 0.65rem;
+  font-size: 0.85rem;
+  opacity: 0.92;
+}
+
+.tow-consent-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.tow-consent-targets {
+  list-style: none;
+  margin: 0 0 0.65rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 10rem;
+  overflow-y: auto;
+}
+
+.tow-consent-targets li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+}
+
+.tow-consent-feedback {
+  margin: 0.55rem 0 0;
+  font-size: 0.8rem;
+  color: #9fd6ff;
+}

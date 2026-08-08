@@ -454,6 +454,28 @@
   background: rgba(123, 47, 255, 0.06);
 }
 
+.gw-access-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 0.4rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(200, 190, 255, 0.85);
+}
+
+.gw-access-mode select {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--gw-violet-dim);
+  border-radius: 3px;
+  background: rgba(10, 0, 20, 0.9);
+  color: #e8e0ff;
+  font-size: 0.78rem;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
 .gw-cancel-note {
   margin: 0 0 0.4rem 0;
   font-size: 0.68rem;

@@ -134,6 +134,23 @@ export interface BountyUpdatedMessage {
   system_bounties_collected?: number;
 }
 
+// Authoritative turn-pool snapshot (WO-WIRE-WS-TURN-POOL-UNCONSUMED).
+// turn_service._emit_turn_pool_update → connection_manager.send_turn_pool_update
+// (player-scoped). Canon SYSTEMS/turn-regeneration.md: {player_id, turns,
+// max_turns, bonus_multiplier}; turns_added / reason are WO extras (optional).
+// Consumers patch HUD turns without polling — do NOT toast (welcome-back
+// toast is a separate REST path; WelcomeBackToast.wsNoOp pins that).
+export interface TurnPoolUpdatedMessage {
+  type: 'turn_pool_updated';
+  player_id?: string;
+  turns?: number;
+  max_turns?: number;
+  turns_added?: number;
+  bonus_multiplier?: number;
+  reason?: string;
+  timestamp?: string;
+}
+
 // Personal per-faction reputation TIER change (faction_service
 // .update_reputation → manager.send_personal_message). Fires ONLY when
 // current_level actually crosses a boundary, never on every point delta —
@@ -448,7 +465,7 @@ class WebSocketService {
       // firing must not resurrect the dead session's socket.
       if (!this.shouldReconnect) return;
       this.reconnectAttempts++;
-      this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000); // Max 30 seconds
+      this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000); // human 30 seconds
       // openSocket() (not connect()) so the backoff counter is preserved and
       // the latest token is used.
       this.openSocket();
@@ -792,6 +809,17 @@ class WebSocketService {
     const handler = (message: WebSocketMessage) => {
       if (message.type === 'bounty_updated') {
         callback(message as BountyUpdatedMessage);
+      }
+    };
+    this.addMessageHandler(handler);
+    return () => this.removeMessageHandler(handler);
+  }
+
+  // Turn-pool authoritative push (see TurnPoolUpdatedMessage above)
+  onTurnPoolUpdated(callback: (message: TurnPoolUpdatedMessage) => void): () => void {
+    const handler = (message: WebSocketMessage) => {
+      if (message.type === 'turn_pool_updated') {
+        callback(message as TurnPoolUpdatedMessage);
       }
     };
     this.addMessageHandler(handler);

@@ -8,18 +8,21 @@ import './module-grid-interface.css';
 //
 // Renders the ship's module_slots lattice as a cols×rows grid, lets the player
 // fit/strip modules against the 3 live SHIP-MODS routes:
-//   GET  /ships/{id}/modules          → lattice + installed
+//   GET  /ships/{id}/modules          → lattice + installed (+ applied cosmetics)
 //   POST /ships/{id}/modules/install  → fit (slot_index, module_class, tier)
 //   POST /ships/{id}/modules/remove   → strip (slot_index, ~25% salvage refund)
+//   GET  /ships/{id}/cosmetics        → Citizen cosmetic catalog SSOT (WO-WIRE-GET-COSMETICS)
+//   POST /ships/{id}/cosmetics        → apply/clear a cosmetic slot
 //
 // There is NO public catalog route for module FAMILIES (the /ships/catalog
 // route serves the legacy UpgradeType hull catalog, not these modules), so the
 // installable catalog is encoded CLIENT-SIDE below, mirroring the gameserver's
 // ship_upgrade_service._MODULE_FAMILIES 1:1 (classes, base costs, hull gates,
-// the 3 deferred equipment families: lander/mining/tractor). Cost per tier is computed with the same
+// the deferred mining family; lander/tractor are live). Cost per tier is computed with the same
 // curve the server uses (base × MODULE_TIER_COST_MULT^(tier-1)) so the price
 // shown == the price the server charges; the server remains the source of truth
-// and rejects anything the client mis-derives.
+// and rejects anything the client mis-derives. Cosmetics are NOT mirrored —
+// their catalog comes from GET /cosmetics.
 // ============================================================================
 
 // --- server contract types (GET /ships/{id}/modules) ---
@@ -58,13 +61,34 @@ interface ModulesResponse {
   is_galactic_citizen?: boolean;
 }
 
-// --- Galactic-Citizen L1 cosmetic catalog (mirrors server CITIZEN_COSMETICS) ---
-// Zero-stat overlays; the server is the source of truth + gates on membership.
-const CITIZEN_COSMETIC_CATALOG: { slot: string; label: string; values: string[] }[] = [
-  { slot: 'frame', label: 'Hull Frame', values: ['citizen_aurora', 'citizen_obsidian'] },
-  { slot: 'slot_glow', label: 'Slot-Glow', values: ['citizen_hue'] },
-  { slot: 'crest', label: 'Crest', values: ['citizen_sigil'] },
-];
+// --- Galactic-Citizen L1 cosmetic catalog (from GET /ships/{id}/cosmetics) ---
+// Zero-stat overlays; catalog + membership gate live on the server.
+interface CosmeticCatalogEntry {
+  slot: string;
+  label: string;
+  values: string[];
+}
+
+type CosmeticsCatalogResponse = {
+  success?: boolean;
+  catalog?: Record<string, { label?: string; values?: string[] }>;
+  applied?: Record<string, string>;
+  is_galactic_citizen?: boolean;
+};
+
+/** Map server CITIZEN_COSMETICS-shaped catalog → picker rows. */
+const mapCosmeticsCatalog = (
+  catalog: CosmeticsCatalogResponse['catalog'],
+): CosmeticCatalogEntry[] => {
+  if (!catalog || typeof catalog !== 'object') return [];
+  return Object.entries(catalog)
+    .map(([slot, entry]) => ({
+      slot,
+      label: (entry && typeof entry.label === 'string' && entry.label) || slot,
+      values: Array.isArray(entry?.values) ? entry.values.filter((v) => typeof v === 'string') : [],
+    }))
+    .filter((row) => row.values.length > 0);
+};
 
 // --- client-side module catalog (mirrors ship_upgrade_service._MODULE_FAMILIES) ---
 interface ModuleFamily {
@@ -113,14 +137,16 @@ const MODULE_FAMILIES: ModuleFamily[] = [
   { cls: 'harvester', name: 'Quantum Harvester Module', icon: '⚡', baseCost: 50000, slotClass: null,
     compatibleShips: ['SCOUT_SHIP', 'FAST_COURIER', 'DEFENDER', 'WARP_JUMPER'],
     description: 'Harvests quantum particles for passive income.' },
-  // --- deferred equipment families: listed, install server-blocked ("coming soon") ---
-  { cls: 'lander', name: 'Planetary Lander Module', icon: '🛬', baseCost: 20000, deferred: true, slotClass: null,
+  // Live after WO-BUILD-LANDER-MINING-TRACTOR-CONSUMER-WIRING (server install +
+  // effects live). Client deferred flags flipped WO-WIRE-LANDER-TRACTOR-CATALOG-UNLOCK.
+  { cls: 'lander', name: 'Planetary Lander Module', icon: '🛬', baseCost: 20000, slotClass: null,
     compatibleShips: ['COLONY_SHIP', 'LIGHT_FREIGHTER', 'CARGO_HAULER'],
     description: 'Improves planet-landing interaction.' },
+  // mining STAYS deferred — server still consumer_inert (see ship_upgrade_service).
   { cls: 'mining', name: 'Mining Laser Module', icon: '⛏️', baseCost: 35000, deferred: true, slotClass: null,
     compatibleShips: ['CARGO_HAULER', 'COLONY_SHIP', 'DEFENDER'],
     description: 'Enables direct asteroid mining.' },
-  { cls: 'tractor', name: 'Tractor Beam Module', icon: '🧲', baseCost: 40000, deferred: true, slotClass: 'combat',
+  { cls: 'tractor', name: 'Tractor Beam Module', icon: '🧲', baseCost: 40000, slotClass: 'combat',
     compatibleShips: ['CARGO_HAULER', 'DEFENDER', 'CARRIER', 'WARP_JUMPER'],
     description: 'Dual-use tractor: combat escape-denial (no damage) + ship-tow rig.' },
 ];
@@ -146,6 +172,7 @@ type SlotAction =
 
 const ModuleGridInterface: React.FC<ModuleGridInterfaceProps> = ({ ship, playerCredits, onChanged }) => {
   const [data, setData] = useState<ModulesResponse | null>(null);
+  const [cosmeticCatalog, setCosmeticCatalog] = useState<CosmeticCatalogEntry[]>([]);
   const [credits, setCredits] = useState<number>(playerCredits ?? 0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -166,8 +193,14 @@ const ModuleGridInterface: React.FC<ModuleGridInterfaceProps> = ({ ship, playerC
     if (!ship?.id) return;
     try {
       setLoading(true);
-      const result: ModulesResponse = await shipUpgradeAPI.getModules(ship.id);
+      // Modules lattice is required; cosmetics catalog is best-effort SSOT
+      // (picker stays empty if the cosmetics GET fails — never invent values).
+      const [result, cosmeticsRes] = await Promise.all([
+        shipUpgradeAPI.getModules(ship.id) as Promise<ModulesResponse>,
+        shipUpgradeAPI.getCosmetics(ship.id).catch(() => null) as Promise<CosmeticsCatalogResponse | null>,
+      ]);
       setData(result);
+      setCosmeticCatalog(mapCosmeticsCatalog(cosmeticsRes?.catalog));
       setError(null);
     } catch (err: any) {
       setError(err.message || 'Failed to load module data');
@@ -413,32 +446,36 @@ const ModuleGridInterface: React.FC<ModuleGridInterfaceProps> = ({ ship, playerC
           {!isCitizen && <span className="mgi-cosmetics-locked">Galactic Citizen members only</span>}
         </div>
         <div className="mgi-cosmetics-rows">
-          {CITIZEN_COSMETIC_CATALOG.map((c) => (
-            <div className="mgi-cosmetic-row" key={c.slot}>
-              <span className="mgi-cosmetic-label">{c.label}</span>
-              <div className="mgi-cosmetic-options">
-                {c.values.map((v) => (
+          {cosmeticCatalog.length === 0 ? (
+            <div className="mgi-cosmetics-empty">Cosmetic catalog unavailable.</div>
+          ) : (
+            cosmeticCatalog.map((c) => (
+              <div className="mgi-cosmetic-row" key={c.slot}>
+                <span className="mgi-cosmetic-label">{c.label}</span>
+                <div className="mgi-cosmetic-options">
+                  {c.values.map((v) => (
+                    <button
+                      key={v}
+                      className={`mgi-cosmetic-opt ${cosmetics[c.slot] === v ? 'is-selected' : ''}`}
+                      disabled={!isCitizen || actionLoading}
+                      onClick={() => handleSetCosmetic(c.slot, v)}
+                      title={isCitizen ? `Apply ${v.replace(/^citizen_/, '')}` : 'Requires Galactic Citizen membership'}
+                    >
+                      {v.replace(/^citizen_/, '')}
+                    </button>
+                  ))}
                   <button
-                    key={v}
-                    className={`mgi-cosmetic-opt ${cosmetics[c.slot] === v ? 'is-selected' : ''}`}
-                    disabled={!isCitizen || actionLoading}
-                    onClick={() => handleSetCosmetic(c.slot, v)}
-                    title={isCitizen ? `Apply ${v.replace(/^citizen_/, '')}` : 'Requires Galactic Citizen membership'}
+                    className="mgi-cosmetic-opt is-clear"
+                    disabled={!isCitizen || actionLoading || !cosmetics[c.slot]}
+                    onClick={() => handleSetCosmetic(c.slot, null)}
+                    title="Clear this cosmetic"
                   >
-                    {v.replace(/^citizen_/, '')}
+                    clear
                   </button>
-                ))}
-                <button
-                  className="mgi-cosmetic-opt is-clear"
-                  disabled={!isCitizen || actionLoading || !cosmetics[c.slot]}
-                  onClick={() => handleSetCosmetic(c.slot, null)}
-                  title="Clear this cosmetic"
-                >
-                  clear
-                </button>
+                </div>
               </div>
-            </div>
-          ))}
+            ))
+          )}
         </div>
       </div>
 

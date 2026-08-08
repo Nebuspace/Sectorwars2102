@@ -714,7 +714,7 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
       // For buying: limited by credits, cargo space, and port inventory
       // (the station charges sell_price when the player buys, PLUS the
       // station tariff — divide by the tariff-inclusive unit cost so the
-      // Max button never picks a quantity the server would reject)
+      // human button never picks a quantity the server would reject)
       const taxRate = marketInfo.port.tax_rate ?? 0;
       const affordableQuantity = Math.floor(playerState.credits / (resource.sell_price * (1 + taxRate)));
       const currentCargo = getCargoUsed();
@@ -1015,8 +1015,6 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
         </div>
       )}
 
-      <RoutePlannerPanel />
-
       <div className="trading-content">
         {/* Station Selection — only when there's an actual choice (multiple
             ports in the sector). The lone-port case is just chrome that pushes
@@ -1295,6 +1293,12 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
           </div>
         )}
       </div>
+
+      {/* SCROLL LAW: route planner is secondary — mount AFTER the buy/sell
+          desk so the primary trade grid clears the fold at 1440×900 even
+          when the planner header is visible (collapsed). Previously sat
+          above `.trading-content` and ate vertical budget on every dock. */}
+      <RoutePlannerPanel />
 
       {/* Trade Modal - Rendered via Portal to escape stacking context */}
       {showConfirmDialog && selectedResource && marketInfo && createPortal(
