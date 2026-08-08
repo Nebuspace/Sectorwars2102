@@ -106,6 +106,7 @@ vi.mock('../../mfd/MFDScreen', () => ({ default: () => <div data-testid="mfd-scr
 vi.mock('../../ranking/MedalToast', () => ({ default: () => null }));
 vi.mock('../../comms/PriorityHailConsumer', () => ({ default: () => null }));
 vi.mock('../../auth/WelcomeBackToast', () => ({ default: () => null }));
+vi.mock('../../auth/GcLapsePanel', () => ({ default: () => null }));
 vi.mock('../../combat/NpcCombatBanner', () => ({ default: () => null }));
 vi.mock('../../onboarding/FirstSessionObjectives', () => ({ default: () => null }));
 

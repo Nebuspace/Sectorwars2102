@@ -1348,3 +1348,25 @@ export const gameAPI = {
   trade: tradeAPI,
   beacon: beaconAPI,
 };
+
+/** ADR-0054 X-D3 — GC-lapse 7-day liquidation window self-service. */
+export const gcLapseAPI = {
+  getStatus: (): Promise<{
+    lapsed: boolean;
+    gc_lapsed_at: string | null;
+    relocation_available: boolean;
+    foreign_holdings: Array<{
+      asset_type: 'planet' | 'station' | string;
+      asset_id: string;
+      name: string;
+      region_id: string | null;
+      sector_id: number;
+    }>;
+  }> => apiRequest('/api/v1/players/me/gc-lapse-status'),
+
+  emergencyRelocate: (assetType: 'planet' | 'station' | string, assetId: string) =>
+    apiRequest('/api/v1/players/me/gc-emergency-relocation', {
+      method: 'POST',
+      body: JSON.stringify({ asset_type: assetType, asset_id: assetId }),
+    }),
+};

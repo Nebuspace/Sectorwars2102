@@ -17,6 +17,7 @@ import MedalUnviewedSplash from '../ranking/MedalUnviewedSplash';
 import TractorLockPrompt from '../station/TractorLockPrompt';
 import PriorityHailConsumer from '../comms/PriorityHailConsumer';
 import WelcomeBackToast from '../auth/WelcomeBackToast';
+import GcLapsePanel from '../auth/GcLapsePanel';
 import NpcCombatBanner from '../combat/NpcCombatBanner';
 import FirstSessionObjectives from '../onboarding/FirstSessionObjectives';
 import { useFirstSession } from '../onboarding/useFirstSession';
@@ -403,6 +404,9 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
           action-interrupting modal — per messaging.md "Priority levels". */}
       <PriorityHailConsumer />
       <WelcomeBackToast />
+      {/* GC-lapse emergency relocation (WO-WIRE-GC-LAPSE-SELF-SERVICE): GET status
+          + POST one-time relocate to a foreign holding during the 7-day window. */}
+      <GcLapsePanel />
       {/* NPC-initiated combat alert (WO-CMB-NPC-INITIATED-1 lane D): the
           npc_combat_initiated WS event's defender-side banner. */}
       <NpcCombatBanner />

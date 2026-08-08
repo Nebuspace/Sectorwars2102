@@ -1,0 +1,78 @@
+.gc-lapse-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 1250;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.gc-lapse-card {
+  max-width: 440px;
+  width: min(92vw, 440px);
+  padding: 1.15rem 1.35rem;
+  border: 1px solid rgba(255, 180, 80, 0.65);
+  border-radius: 8px;
+  background: linear-gradient(160deg, rgba(40, 28, 12, 0.96), rgba(12, 10, 8, 0.98));
+  color: #f5e9c8;
+  box-shadow: 0 0 24px rgba(255, 160, 40, 0.3);
+}
+
+.gc-lapse-card h3 {
+  margin: 0 0 0.45rem;
+  font-size: 1.05rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.gc-lapse-body,
+.gc-lapse-empty {
+  margin: 0 0 0.75rem;
+  font-size: 0.88rem;
+  opacity: 0.9;
+}
+
+.gc-lapse-holdings {
+  list-style: none;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  max-height: 12rem;
+  overflow-y: auto;
+}
+
+.gc-lapse-holdings li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+}
+
+.gc-lapse-holdings button,
+.gc-lapse-dismiss {
+  cursor: pointer;
+  padding: 0.35rem 0.65rem;
+  border-radius: 4px;
+  border: 1px solid rgba(245, 233, 200, 0.35);
+  background: rgba(60, 45, 30, 0.9);
+  color: #f5e9c8;
+  font: inherit;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.gc-lapse-holdings button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.gc-lapse-feedback {
+  margin: 0.6rem 0 0;
+  font-size: 0.82rem;
+  color: #ffe27a;
+}
