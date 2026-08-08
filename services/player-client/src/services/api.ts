@@ -542,6 +542,41 @@ export const shipAPI = {
     shipUpgradeAPI.purchaseUpgrade(shipId, upgradeType)
 };
 
+/** Ship registry behaviors (SYSTEMS/ship-registry.md) — stolen / abandon / claim / transfer. */
+export const shipRegistryAPI = {
+  reportStolen: (shipId: string, recoveryMode?: 'with_bounty' | 'no_bounty' | null) =>
+    apiRequest(`/api/v1/ships/${shipId}/report-stolen`, {
+      method: 'POST',
+      body: JSON.stringify(
+        recoveryMode ? { recovery_mode: recoveryMode } : {}
+      ),
+    }),
+
+  retractStolenReport: (shipId: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/retract-stolen-report`, { method: 'POST' }),
+
+  abandon: (shipId: string, portId: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/abandon`, {
+      method: 'POST',
+      body: JSON.stringify({ port_id: portId }),
+    }),
+
+  claim: (shipId: string, portId: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/claim`, {
+      method: 'POST',
+      body: JSON.stringify({ port_id: portId }),
+    }),
+
+  fileTransferClaim: (shipId: string, portId: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/transfer-claim`, {
+      method: 'POST',
+      body: JSON.stringify({ port_id: portId }),
+    }),
+
+  approveTransferClaim: (shipId: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/transfer-claim/approve`, { method: 'POST' }),
+};
+
 // Ranking & Reputation APIs
 export const rankingAPI = {
   getRank: () =>
