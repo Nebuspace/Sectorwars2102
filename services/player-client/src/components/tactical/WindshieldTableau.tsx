@@ -91,7 +91,7 @@ export { distancePx, chooseWarpArrivalAnchor, REFERENCE_BAND, ENGAGE_RANGE_EM };
 /**
  * WindshieldTableau — the flight-mode windshield-band scene
  * (WO-UI2-WINDSHIELD-TABLEAU), replacing SolarSystemViewscreen's canvas
- * orrery with the ratified demo's STATIC DOM "sliver" composition (Max,
+ * orrery with the ratified demo's STATIC DOM "sliver" composition (human,
  * live-playtest #4: "a sliver of the solar system with all objects in it,
  * no rotating around the sun").
  *
@@ -186,7 +186,7 @@ export interface WindshieldTableauProps {
   onRequestDock?: (stationId: string) => void;
   selectedShipId?: string | null;
   onSelectShip?: (id: string) => void;
-  /** Max refinement (5b): "undock emerges at the host's position" — the
+  /** human refinement (5b): "undock emerges at the host's position" — the
    *  station/planet id the player just left, so the ship's FIRST frame in
    *  this fresh mount starts there instead of a generic seeded anchor.
    *  GameDashboard tracks these via a ref that survives the docked/landed
@@ -1055,9 +1055,9 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
     if (meta.kind !== 'station' && meta.kind !== 'planet') travelTo(pos, objectId);
   }, [travelTo]);
 
-  // FIX C revise (Max correction: "no longer able to right click anywhere
+  // FIX C revise (human correction: "no longer able to right click anywhere
   // and travel there" was fixed as DIRECT travel-on-right-click first, but
-  // Max wants it MENU-mediated -- right-click opens a small "Travel To"
+  // human wants it MENU-mediated -- right-click opens a small "Travel To"
   // menu at the click point and the ship does NOT move until that item is
   // explicitly chosen). preventDefault still suppresses the native browser
   // menu; only the STASHED target + the immediate travel are new. Closes
@@ -1295,7 +1295,7 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
           const sizeEm = bodySizeEm(body);
           const moons = moonOrbits(sectorId, body);
           const isReal = body.real && body.planet_id;
-          // FIX A (Max live-playtest): decorative (non-real) bodies used to
+          // FIX A (human live-playtest): decorative (non-real) bodies used to
           // show a fabricated `PROCEDURAL-${sectorId}-${idx}` designation,
           // discarding the REAL corpus name the server already generates for
           // every body slot (celestial_service.py's own generate_skeleton/

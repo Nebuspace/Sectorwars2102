@@ -5,5 +5,6 @@ export { ColonistAllocator } from './ColonistAllocator';
 export { BuildingManager } from './BuildingManager';
 export { DefenseConfiguration } from './DefenseConfiguration';
 export { GenesisDeployment } from './GenesisDeployment';
-export { ColonySpecialization } from './ColonySpecialization';
+// ColonySpecialization modal retired (WO-RETIRE-COLONY-SPECIALIZATION-MODAL);
+// SpecializationDrawer + useColonySpecialization remain the live path.
 export { SiegeStatusMonitor } from './SiegeStatusMonitor';

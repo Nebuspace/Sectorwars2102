@@ -1,0 +1,212 @@
+// @vitest-environment jsdom
+/**
+ * SpaceDockInterface — mining license + laser money path
+ * (WO-TESTCOV-PLAYER-MINING-LICENSE).
+ */
+import React, { act } from 'react';
+import { createRoot } from 'react-dom/client';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+vi.mock('../../../contexts/WebSocketContext', () => ({
+  useWebSocket: () => ({ addNotification: vi.fn(), isConnected: false }),
+}));
+
+vi.mock('../../ships', () => ({
+  InsuranceManager: () => null,
+  MaintenanceManager: () => null,
+  ModuleGridInterface: () => null,
+  TIER_LABEL: {},
+}));
+
+const STATION = {
+  id: 'station-1',
+  name: 'Trading Post',
+  type: 'TRADING',
+  sector_id: 100,
+  services: {
+    ship_dealer: true,
+    ship_repair: true,
+    ship_maintenance: true,
+    genesis_dealer: true,
+    drone_shop: true,
+    mine_dealer: true,
+  },
+  status: 'OPERATIONAL',
+};
+
+const PLAYER = {
+  id: 'player-1',
+  credits: 50_000,
+  current_port_id: 'station-1',
+  is_docked: true,
+  attack_drones: 0,
+  defense_drones: 0,
+};
+
+const updatePlayerCredits = vi.fn();
+const refreshPlayerState = vi.fn().mockResolvedValue(undefined);
+const gameState = {
+  playerState: PLAYER,
+  stationsInSector: [STATION],
+  marketInfo: null,
+  getMarketInfo: vi.fn(),
+  buyResource: vi.fn(),
+  sellResource: vi.fn(),
+  dockAtStation: vi.fn(),
+  bumpDockOccupant: vi.fn(),
+  currentShip: { id: 'ship-1', type: 'SCOUT_SHIP', name: 'Miner' },
+  isLoading: false,
+  error: null,
+  updatePlayerCredits,
+  updateShipGenesis: vi.fn(),
+  refreshPlayerState,
+  loadShips: vi.fn(),
+  getStationSlips: vi.fn().mockResolvedValue(null),
+};
+
+vi.mock('../../../contexts/GameContext', () => ({
+  useGame: () => gameState,
+}));
+
+import SpaceDockInterface from '../SpaceDockInterface';
+
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+const SHIP = {
+  id: 'ship-1',
+  name: 'Miner',
+  type: 'SCOUT_SHIP',
+  genesis_devices: 0,
+  max_genesis_devices: 0,
+  current_value: 10_000,
+  cargo_capacity: 50,
+  cargo: { used: 0 },
+  combat: { hull: 100, max_hull: 100, shields: 50, max_shields: 50 },
+};
+
+describe('SpaceDockInterface — mining license / laser', () => {
+  let container: HTMLElement;
+  let root: ReturnType<typeof createRoot>;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    localStorage.clear();
+    localStorage.setItem('accessToken', 'tok-test');
+    updatePlayerCredits.mockReset();
+    refreshPlayerState.mockClear();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    fetchMock = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes('/api/v1/player/current-ship')) {
+        return { ok: true, json: async () => SHIP };
+      }
+      if (u.includes('/api/v1/mining/license')) {
+        return {
+          ok: true,
+          json: async () => ({
+            cost_paid_cr: 1500,
+            expires_at: '2099-01-01T00:00:00Z',
+          }),
+        };
+      }
+      if (u.includes('/api/v1/mining/laser-upgrade')) {
+        return {
+          ok: true,
+          json: async () => ({
+            cost_paid: 2000,
+            new_level: 2,
+            yield_multiplier: 1.5,
+            message: 'Laser upgraded',
+            remaining_credits: 48_000,
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    vi.unstubAllGlobals();
+  });
+
+  const openMining = async () => {
+    await act(async () => {
+      root.render(<SpaceDockInterface />);
+      await flush();
+    });
+    await vi.waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some((c) => String(c[0]).includes('/api/v1/player/current-ship')),
+      ).toBe(true);
+    });
+    const card = Array.from(container.querySelectorAll('.venue-card')).find((el) =>
+      el.textContent?.includes('Astral Mining'),
+    ) as HTMLElement;
+    expect(card).toBeTruthy();
+    await act(async () => {
+      card.click();
+      await flush();
+    });
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain('Claim License');
+    });
+  };
+
+  it('posts mining/license when Purchase / Renew License is clicked', async () => {
+    await openMining();
+    const btn = Array.from(container.querySelectorAll('button.service-btn')).find((b) =>
+      b.textContent?.includes('Purchase / Renew License'),
+    ) as HTMLButtonElement;
+    await act(async () => {
+      btn.click();
+      await flush();
+    });
+
+    await vi.waitFor(() => {
+      expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/api/v1/mining/license'))).toBe(
+        true,
+      );
+    });
+    const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('/api/v1/mining/license'))!;
+    const [, init] = call;
+    expect(init?.method).toBe('POST');
+    expect(JSON.parse(init?.body as string)).toEqual({ ship_id: 'ship-1' });
+    expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer tok-test');
+    await vi.waitFor(() => {
+      expect(container.textContent).toMatch(/Claim filed/);
+    });
+  });
+
+  it('posts mining/laser-upgrade when Upgrade Mining Laser is clicked', async () => {
+    await openMining();
+    const btn = Array.from(container.querySelectorAll('button.service-btn')).find((b) =>
+      b.textContent?.includes('Upgrade Mining Laser'),
+    ) as HTMLButtonElement;
+    await act(async () => {
+      btn.click();
+      await flush();
+    });
+
+    await vi.waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some((c) => String(c[0]).includes('/api/v1/mining/laser-upgrade')),
+      ).toBe(true);
+    });
+    const call = fetchMock.mock.calls.find((c) =>
+      String(c[0]).includes('/api/v1/mining/laser-upgrade'),
+    )!;
+    const [, init] = call;
+    expect(init?.method).toBe('POST');
+    expect(JSON.parse(init?.body as string)).toEqual({ ship_id: 'ship-1' });
+  });
+});

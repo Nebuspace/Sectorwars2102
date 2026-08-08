@@ -130,7 +130,7 @@ function OldCanvas({ planetType, source, width, height }: OldCanvasProps) {
 }
 
 // ---------------------------------------------------------------------------
-// Max rAF poll iterations before marking ready anyway.
+// human rAF poll iterations before marking ready anyway.
 // ---------------------------------------------------------------------------
 const MAX_SETTLE_FRAMES = 60;
 const MIN_NONBLACK      = 20;

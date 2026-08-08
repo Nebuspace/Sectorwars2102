@@ -20,10 +20,12 @@ import { createRoot } from 'react-dom/client';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockGetReputation = vi.fn();
+const mockGetFactions = vi.fn();
 
 vi.mock('../../../services/api', () => ({
   factionAPI: {
     getReputation: (...a: unknown[]) => mockGetReputation(...a),
+    getFactions: (...a: unknown[]) => mockGetFactions(...a),
   },
 }));
 
@@ -72,6 +74,8 @@ describe('ReputationPage', () => {
 
   beforeEach(() => {
     mockGetReputation.mockReset();
+    mockGetFactions.mockReset();
+    mockGetFactions.mockResolvedValue([]);
     mockPlayerState = PLAYER_STATE;
     // No accessToken in localStorage -> WebSocketProvider's auto-connect
     // effect (`if (user && token) connect()`) stays inert -- no real socket.
@@ -127,12 +131,28 @@ describe('ReputationPage', () => {
     await mount();
 
     expect(mockGetReputation).toHaveBeenCalledTimes(1);
+    expect(mockGetFactions).toHaveBeenCalledTimes(1);
     const rows = container.querySelectorAll('.mfd-page-faction-row');
     expect(rows.length).toBe(2);
     expect(rows[0].querySelector('.mfd-page-faction-name')?.textContent).toBe('Terran Federation');
     expect(rows[0].querySelector('.mfd-page-faction-value')?.textContent).toBe('+120');
     expect(rows[1].querySelector('.mfd-page-faction-name')?.textContent).toBe('Shadow Syndicate');
     expect(rows[1].querySelector('.mfd-page-faction-value')?.textContent).toBe('-40');
+  });
+
+  it('merges territory_count from getFactions catalog onto matching standing rows', async () => {
+    mockGetReputation.mockResolvedValue([
+      makeRow({ faction_id: 'f1', faction_name: 'Terran Federation', current_value: 120 }),
+    ]);
+    mockGetFactions.mockResolvedValue([
+      { id: 'f1', name: 'Terran Federation', faction_type: 'GOVERNMENT', territory_count: 17 },
+    ]);
+
+    await mount();
+
+    const row = container.querySelector('.mfd-page-faction-row')!;
+    expect(row.querySelector('.mfd-page-faction-territory')?.textContent).toBe('17 sect');
+    expect(row.querySelector('.mfd-page-faction-type')?.textContent).toBe('GOVERNMENT');
   });
 
   it('renders a color-graded standing bar per row, clamped/normalized against the -800..+800 range', async () => {

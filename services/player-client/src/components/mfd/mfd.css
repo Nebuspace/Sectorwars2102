@@ -53,7 +53,7 @@
    neither does `.mfdcol`/`.lower` above it, so any such excess sailed
    straight through three unclipped ancestor boxes and was only ever cut off
    by `.stage`'s own `overflow: hidden` at the OUTER shell edge — exactly the
-   live symptom (Max #14): the MFD-B softkey rail clipping at the WINDOW
+   live symptom (human #14): the MFD-B softkey rail clipping at the WINDOW
    bottom while `.lower`'s own rect measured correctly inside it. Adding
    `overflow: hidden` here makes `.mfd` the FIRST clip boundary its own
    content ever meets, so any residual deficit is contained inside its own
@@ -61,7 +61,7 @@
    shell edge. Paired with `.mfd .skrow { flex-shrink: 0 }` below so `.scr`
    (not the softkey rail) is what actually absorbs a real deficit.
 
-   WO-UI-MFD-FILL (Max #26 — dead space between/under the two MFD units):
+   WO-UI-MFD-FILL (human #26 — dead space between/under the two MFD units):
    `align-self` was NOT the cause (measured: `.mfd`'s default computed
    `align-self` already resolves to `stretch`; forcing it explicitly with
    `!important` via inline style changed the rendered height by 0px, at

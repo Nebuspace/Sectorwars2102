@@ -150,7 +150,7 @@ function CameraFocus({
   return null;
 }
 
-/** Max hop segments kept in the 3D course camera window at once. */
+/** human hop segments kept in the 3D course camera window at once. */
 const COURSE_VIEW_HOPS = 4;
 
 function GalaxyScene({

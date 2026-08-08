@@ -19,6 +19,12 @@ interface DefenseType {
   maxUnits: number;
 }
 
+// WO-FIX-DEFENSE-SHIELDS-CITADEL-PREREQ-BYPASS: 'shields' is intentionally NOT
+// a slider/purchase option here anymore. planet.defenses.shields is the real
+// shield-GENERATOR level (0-SHIELD_GENERATOR_MAX_LEVEL, server-side), upgraded
+// exclusively via the dedicated shield-generator upgrade flow — it is no
+// longer a cheap per-unit purchase through this panel (the server stopped
+// pricing/writing it here to close a citadel-prerequisite bypass).
 const DEFENSE_TYPES: DefenseType[] = [
   {
     type: 'turrets',
@@ -27,14 +33,6 @@ const DEFENSE_TYPES: DefenseType[] = [
     description: 'Automated defense turrets that target incoming attackers',
     effectiveness: 'Effective against drones and small ships',
     maxUnits: 1000
-  },
-  {
-    type: 'shields',
-    name: 'Shield Generators',
-    icon: '🛡️',
-    description: 'Energy shields that protect against bombardment',
-    effectiveness: 'Reduces damage from orbital attacks',
-    maxUnits: 500
   },
   {
     type: 'drones',
@@ -55,10 +53,10 @@ const DEFENSE_TYPES: DefenseType[] = [
 
 // Maps a UI defense-slot key to the server's DefenseUpdateRequest/pricing
 // field name — 'drones' is the canon display name for the 'fighters' column.
-const serverKeyFor = (type: keyof PlanetDefenses): 'turrets' | 'shields' | 'fighters' =>
-  type === 'drones' ? 'fighters' : type;
+const serverKeyFor = (type: keyof PlanetDefenses): 'turrets' | 'fighters' =>
+  type === 'drones' ? 'fighters' : (type as 'turrets');
 
-type DefensePricing = { turrets: number; shields: number; fighters: number };
+type DefensePricing = { turrets: number; fighters: number };
 
 export const DefenseConfiguration: React.FC<DefenseConfigurationProps> = ({
   planet,
@@ -90,10 +88,9 @@ export const DefenseConfiguration: React.FC<DefenseConfigurationProps> = ({
         const valid =
           pricing &&
           typeof pricing.turrets === 'number' &&
-          typeof pricing.shields === 'number' &&
           typeof pricing.fighters === 'number';
         if (valid) {
-          setUnitPrices({ turrets: pricing.turrets, shields: pricing.shields, fighters: pricing.fighters });
+          setUnitPrices({ turrets: pricing.turrets, fighters: pricing.fighters });
         } else {
           setPricingError(true);
         }
@@ -158,19 +155,20 @@ export const DefenseConfiguration: React.FC<DefenseConfigurationProps> = ({
     });
   };
 
-  const handlePreset = (preset: 'balanced' | 'turret' | 'shield' | 'drone' | 'max') => {
+  const handlePreset = (preset: 'balanced' | 'turret' | 'drone' | 'max') => {
+    // shields is no longer preset-adjustable here (see DEFENSE_TYPES comment)
+    // — always carry the CURRENT generator level through unchanged.
     const presets = {
-      balanced: { turrets: 200, shields: 100, drones: 50 },
-      turret: { turrets: 500, shields: 50, drones: 25 },
-      shield: { turrets: 100, shields: 300, drones: 25 },
-      drone: { turrets: 100, shields: 50, drones: 100 },
-      max: { 
+      balanced: { turrets: 200, shields: defenses.shields, drones: 50 },
+      turret: { turrets: 500, shields: defenses.shields, drones: 25 },
+      drone: { turrets: 100, shields: defenses.shields, drones: 100 },
+      max: {
         turrets: Math.min(1000, defenses.turrets + 200),
-        shields: Math.min(500, defenses.shields + 100),
+        shields: defenses.shields,
         drones: Math.min(250, defenses.drones + 50)
       }
     };
-    
+
     setTempDefenses(presets[preset]);
   };
 
@@ -189,13 +187,14 @@ export const DefenseConfiguration: React.FC<DefenseConfigurationProps> = ({
       setError(null);
       setSuccessMessage(null);
 
-      // The backend's DefenseUpdateRequest accepts turrets/shields/fighters —
-      // it has no 'drones' field (sending one is silently discarded). The
-      // canon name is "drones" (defense.md); the storage column is
+      // The backend's DefenseUpdateRequest accepts turrets/fighters (and a
+      // now-ignored 'shields' field kept only for older-client compat — see
+      // WO-FIX-DEFENSE-SHIELDS-CITADEL-PREREQ-BYPASS; deliberately not sent
+      // here). It has no 'drones' field (sending one is silently discarded).
+      // The canon name is "drones" (defense.md); the storage column is
       // defense_fighters, and the response maps it back to 'drones'.
-      const payload: { turrets: number; shields: number; fighters: number } = {
+      const payload: { turrets: number; fighters: number } = {
         turrets: tempDefenses.turrets,
-        shields: tempDefenses.shields,
         fighters: tempDefenses.drones
       };
       const response = await gameAPI.planetary.updateDefenses(planet.id, payload);
@@ -320,14 +319,7 @@ export const DefenseConfiguration: React.FC<DefenseConfigurationProps> = ({
             >
               🔫 Turret Focus
             </button>
-            <button 
-              className="preset-button shield"
-              onClick={() => handlePreset('shield')}
-              title="Maximize shield protection"
-            >
-              🛡️ Shield Focus
-            </button>
-            <button 
+            <button
               className="preset-button drone"
               onClick={() => handlePreset('drone')}
               title="Emphasize drone squadrons"
@@ -432,9 +424,11 @@ export const DefenseConfiguration: React.FC<DefenseConfigurationProps> = ({
             <div className="analysis-item">
               <span className="analysis-label">vs Bombardment:</span>
               <div className="effectiveness-bar">
-                <div 
+                <div
                   className="effectiveness-fill"
-                  style={{ width: `${Math.min(100, (tempDefenses.shields / 3))}%` }}
+                  // tempDefenses.shields is the shield-GENERATOR level (0-10,
+                  // read-only here — see DEFENSE_TYPES comment), not a unit count.
+                  style={{ width: `${Math.min(100, (tempDefenses.shields / 10) * 100)}%` }}
                 />
               </div>
             </div>

@@ -124,8 +124,13 @@ vi.mock('../../../contexts/AutopilotContext', () => ({
 
 vi.mock('../../hud/Annunciator', () => ({ default: () => <div data-testid="annunciator-stub" /> }));
 vi.mock('../../ranking/MedalToast', () => ({ default: () => null }));
+vi.mock('../../ranking/MedalUnviewedSplash', () => ({ default: () => null }));
 vi.mock('../../comms/PriorityHailConsumer', () => ({ default: () => null }));
 vi.mock('../../auth/WelcomeBackToast', () => ({ default: () => null }));
+vi.mock('../../auth/GcLapsePanel', () => ({ default: () => null }));
+vi.mock('../../station/CarrierHangarPanel', () => ({ default: () => null }));
+vi.mock('../../station/TowConsentPanel', () => ({ default: () => null }));
+vi.mock('../../station/RecoveryConsolePanel', () => ({ default: () => null }));
 vi.mock('../../combat/NpcCombatBanner', () => ({ default: () => null }));
 vi.mock('../../onboarding/FirstSessionObjectives', () => ({ default: () => null }));
 

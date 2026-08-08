@@ -66,7 +66,7 @@
   gap: 0.35em;
   /* Match cockpit-shell.css `.row` vertical padding (.35em 0). !important
      on the box model so a regression of the bare colony-card rule can never
-     re-inflate this row (Max 2026-07-14: Earth Planet was 4× Earth Station). */
+     re-inflate this row (human 2026-07-14: Earth Planet was 4× Earth Station). */
   padding: 0.35em 0 !important;
   border-radius: 0 !important;
   transition: all 0.2s ease;
@@ -120,7 +120,7 @@
 }
 
 /* icon + name on line 1, quals/stats forced to line 2 via flex-wrap +
-   flex-basis:100% on `.planet-quals` below (Max: "TWO lines: top line =
+   flex-basis:100% on `.planet-quals` below (human: "TWO lines: top line =
    name, bottom line = stats"). min-width:0 lets children shrink/ellipsis
    rather than blow out the row width. */
 .planet-port-pair .planet-info,
@@ -133,12 +133,9 @@
   row-gap: 0;
   column-gap: 0.35em;
   line-height: 1.2;
-  /* HEIGHT BOMB #3: planetary/colony-specialization.css ships a bare
-     `.planet-info` card rule (padding:var(--space-md), margin-bottom:
-     var(--space-lg), font-size:.875rem). In the live cockpit that leaked
-     into PlanetPortPair's planet row only, giving NEW EARTH 16px top/bottom
-     padding + 24px bottom margin while Earth Station stayed dense. Keep this
-     sensor-list info block chromeless and inherited-size, same as station. */
+  /* HEIGHT BOMB #3 (historical): retired planetary/colony-specialization.css
+     used to ship a bare `.planet-info` card rule that leaked into this row.
+     Keep this sensor-list info block chromeless and inherited-size. */
   padding: 0 !important;
   margin: 0 !important;
   background: transparent !important;
@@ -165,7 +162,7 @@
   text-overflow: ellipsis;
 }
 
-/* Secondary stats/badges — line 2 of the card (Max #32). Each qualifier is
+/* Secondary stats/badges — line 2 of the card (human #32). Each qualifier is
    its own <span>; a leading " · " separator renders via ::before on every
    sibling but the first, so the list composes cleanly regardless of which
    qualifiers are present for a given row. flex-basis:100% is the standard
@@ -174,7 +171,7 @@
 .planet-port-pair .planet-quals {
   display: flex;
   align-items: center;
-  /* Max 2026-07-14: two lines is correct (name · stats). Force quals onto
+  /* human 2026-07-14: two lines is correct (name · stats). Force quals onto
      line 2 via flex-basis:100%, but keep leading tight so the box hugs the
      text — never a padded colony card. */
   flex: 1 1 100%;

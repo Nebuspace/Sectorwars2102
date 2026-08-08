@@ -480,6 +480,76 @@
   font-size: 0.7692em;
   color: var(--color-text-muted, #7e8ca0);
 }
+
+/* WO-WIRE-MESSAGE-BEACON-DEPLOY */
+.sb-beacons-deploy {
+  margin-bottom: 0.55rem;
+  padding: 0.45rem 0.5rem;
+  border: 1px solid rgba(0, 217, 255, 0.25);
+  border-radius: 3px;
+  background: rgba(0, 20, 30, 0.45);
+}
+
+.sb-beacons-deploy-title {
+  font-size: 0.65rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #7fdfff;
+  margin-bottom: 0.3rem;
+}
+
+.sb-beacons-deploy-message {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.3rem 0.4rem;
+  color: #e8f6ff;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(0, 217, 255, 0.3);
+  border-radius: 2px;
+}
+
+.sb-beacons-deploy-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+}
+
+.sb-beacons-deploy-once {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.7rem;
+  color: rgba(200, 230, 255, 0.85);
+}
+
+.sb-beacons-deploy-btn {
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.25rem 0.55rem;
+  color: #041018;
+  background: #00d9ff;
+  border: 0;
+  border-radius: 2px;
+}
+
+.sb-beacons-deploy-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.sb-beacons-empty-with-deploy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
 /* ── Crew (team summary) tab ─────────────────────────────────────────────── */
 .sb-crew-loading,
 .sb-crew-error {
@@ -645,7 +715,7 @@
    leaving the winner dependent on CSS bundle/load order. The compound form
    deterministically outranks it regardless.
 
-   WO-UI-STATUSBAR-VITALS value hierarchy (Max playtest #27): CREDITS +
+   WO-UI-STATUSBAR-VITALS value hierarchy (human playtest #27): CREDITS +
    TURNS are the PRIMARY vitals -- bumped one size step above the secondary
    tier (drones/mines/LINK, unchanged below) so they read as the headline
    numbers rather than smaller than the mine count. 1.02rem is ~1.16x
@@ -727,7 +797,7 @@
    .game-container { font-size: calc(clamp(10px,1.05vw,15px) *
    var(--uiscale)) }`), which is why it read LARGER than credits/turns'
    own fixed-rem values at some viewport widths and was the literal
-   complaint (Max playtest #27: "smaller than the number of mines"). Given
+   complaint (human playtest #27: "smaller than the number of mines"). Given
    an explicit rem matching the OTHER established vital-value rules
    (`.vit.sb-credits`, `.sb-turns-count`, `.sb-v`, `.sb-drone` — all
    rem-based, none vw-drifting) rather than resized: 0.88rem reproduces the

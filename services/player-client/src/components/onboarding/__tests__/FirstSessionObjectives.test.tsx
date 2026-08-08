@@ -4,7 +4,7 @@
  * WebSocketContext are both mocked to mutable, reassignable objects (mirrors
  * NpcCombatBanner.test.tsx's seam) so playerState/notifications can be driven
  * directly without exercising the real providers. Raw createRoot/act --
- * NO RTL (per the WO override; new deps are Max-gated).
+ * NO RTL (per the WO override; new deps are human-gated).
  *
  * The ARIA "orientation started/objective cleared/complete" narration lines
  * live in GameLayout.tsx's MFDAlertWiring (a single ref-diffed effect fed by

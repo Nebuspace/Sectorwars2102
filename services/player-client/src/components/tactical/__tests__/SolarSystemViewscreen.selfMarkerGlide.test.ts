@@ -2,7 +2,7 @@
 /**
  * WO-SOLAR-MOVEMENT regression guard.
  *
- * Max's live-driving report on the SolarSystemViewscreen top-down tableau:
+ * human's live-driving report on the SolarSystemViewscreen top-down tableau:
  * right-click Travel-Here reorients correctly, then the marker BLINKS to the
  * destination, sits, then "reorients backwards, fires its jet in place."
  *
@@ -23,7 +23,7 @@
  *   1. Position progresses MONOTONICALLY toward the destination across the
  *      whole leg (no single-frame jump from ~from to ~to = no "blink").
  *   2. Heading is held at the constant leg direction throughout the glide
- *      (the "reorientation" phase Max confirmed already works).
+ *      (the "reorientation" phase human confirmed already works).
  *   3. On arrival, heading freezes at that same direction and stays there
  *      for arbitrarily later timestamps (no in-place retrograde flip).
  */

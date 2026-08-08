@@ -104,6 +104,8 @@ function buildMockGameValue(mode: ShellMode): NonNullable<React.ContextType<type
     undockFromStation: asyncNoop,
     getStationSlips: async () => null,
     bumpDockOccupant: asyncNoop,
+    tractorLock: null,
+    clearTractorLock: noop,
     marketInfo: null,
     getMarketInfo: asyncNoop,
     buyResource: asyncNoop,
@@ -161,6 +163,7 @@ function buildMockGameValue(mode: ShellMode): NonNullable<React.ContextType<type
     refreshInbox: asyncNoop,
     sendPlayerMessage: async () => ({ message_id: 'lab-message', sent_at: new Date().toISOString() }),
     markMessageRead: asyncNoop,
+    deletePlayerMessage: asyncNoop,
 
     quantumStatus: null,
     refreshQuantumStatus: asyncNoop,
