@@ -303,25 +303,6 @@ def get_sector_influence(
     )
 
 
-def dominant_sector_faction(
-    db: Session,
-    sector_id: UUID,
-) -> Optional[SectorFactionInfluence]:
-    """READ the single highest-influence faction row for a sector, or ``None``.
-
-    ``None`` when the sector has no influence rows OR its strongest influence is
-    0 (genuinely Uncontrolled) — only a faction with positive influence is the
-    dominant one. Deterministic tie-break via ``get_sector_influence``.
-    """
-    rows = get_sector_influence(db, sector_id)
-    if not rows:
-        return None
-    top = rows[0]
-    if (top.influence_percentage or 0.0) <= 0.0:
-        return None
-    return top
-
-
 def sector_territory_tier(rows: List[SectorFactionInfluence]) -> str:
     """Classify a sector into the canon four-tier taxonomy from its influence
     rows (factions-and-teams.md "### Territory & influence").
