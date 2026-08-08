@@ -1,8 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
 import apiClient from '../services/apiClient';
-import { sectorAPI, messageAPI, citadelAPI } from '../services/api';
-import websocketService from '../services/websocket';
+import { sectorAPI, messageAPI, planetaryAPI, citadelAPI } from '../services/api';import websocketService from '../services/websocket';
 import { ariaFeed } from '../components/mfd/ariaFeedStore';
 
 // Types for game state
@@ -1098,13 +1097,13 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Get planet details
+  // Get planet details — WO-WIRE-PLANETARY-GET-PLANET: planetaryAPI.getPlanet
+  // (same URL; body is the response payload directly).
   const getPlanetDetails = async (planetId: string) => {
     if (!user) return;
 
     try {
-      const response = await api.get(`/api/v1/planets/${planetId}`);
-      return response.data;
+      return await planetaryAPI.getPlanet(planetId);
     } catch (error: any) {
       console.error('Error getting planet details:', error);
       throw error;
