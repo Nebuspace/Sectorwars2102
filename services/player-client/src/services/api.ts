@@ -457,11 +457,21 @@ export const factionAPI = {
 
 // Message APIs
 export const messageAPI = {
-  sendMessage: (recipientId: string, content: string, subject?: string) =>
+  sendMessage: (
+    recipientId: string,
+    content: string,
+    subject?: string,
+    replyToId?: string | null,
+  ) =>
     apiRequest('/api/v1/messages/send', {
       method: 'POST',
       // Backend MessageCreateRequest expects snake_case fields
-      body: JSON.stringify({ recipient_id: recipientId, subject, content })
+      body: JSON.stringify({
+        recipient_id: recipientId,
+        subject: subject ?? null,
+        content,
+        reply_to_id: replyToId ?? null,
+      }),
     }),
 
   getInbox: (page: number = 1, unreadOnly?: boolean) => {
