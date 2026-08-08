@@ -26,13 +26,11 @@
      defense-configuration, genesis-deployment, planet-manager,
      production-dashboard, siege-status-monitor -- 61 usage sites across 8
      files) rendered its hover/selected border-color as nothing/invisible.
-     Value #00d9ff copied verbatim from the ONLY real declaration
-     (colony-specialization.css's own `.colony-specialization { --accent-primary: #00d9ff }`),
+     Value #00d9ff copied verbatim from the former
+     colony-specialization.css `.colony-specialization { --accent-primary: #00d9ff }`
+     (file retired with WO-RETIRE-COLONY-SPECIALIZATION-MODAL),
      corroborated by 3 of the 6 existing var(--accent-primary, <fallback>)
-     guards elsewhere already landing on this exact value. Promoted to :root;
-     the local declaration in colony-specialization.css is left in place
-     (same value, harmless local reinforcement -- matches how --surface-primary
-     was handled). */
+     guards elsewhere already landing on this exact value. Promoted to :root. */
   --accent-primary: #00d9ff;
   /* Referenced (bare, no fallback) by teams/mission-planner.css,
      teams/team-manager.css, teams/team-chat.css, teams/resource-sharing.css

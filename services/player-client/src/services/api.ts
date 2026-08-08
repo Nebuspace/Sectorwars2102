@@ -747,17 +747,8 @@ export const shipUpgradeAPI = {
       body: JSON.stringify({ upgrade_type: upgradeType }),
     }),
 
-  installEquipment: (shipId: string, equipmentKey: string) =>
-    apiRequest(`/api/v1/ships/${shipId}/equipment/install`, {
-      method: 'POST',
-      body: JSON.stringify({ equipment_key: equipmentKey }),
-    }),
-
-  uninstallEquipment: (shipId: string, equipmentKey: string) =>
-    apiRequest(`/api/v1/ships/${shipId}/equipment/uninstall`, {
-      method: 'POST',
-      body: JSON.stringify({ equipment_key: equipmentKey }),
-    }),
+  // Legacy equipment install/uninstall retired (WO-RETIRE-SHIP-LEGACY-EQUIPMENT-API):
+  // superseded by module-grid installModule/removeModule below.
 
   // SHIP-MODS (WO-SM-5): module slot-grid lattice + install/remove.
   //
