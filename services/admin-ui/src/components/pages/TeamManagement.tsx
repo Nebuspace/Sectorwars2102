@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
+import { useTeamUpdates } from '../../contexts/WebSocketContext';
 import './team-management.css';
 import './team-management-override.css';
 
@@ -106,6 +107,15 @@ export const TeamManagement: React.FC = () => {
       setLoading(false);
     }
   };
+
+  // Live updates: teams have no polling interval today, so this is the only
+  // source of freshness beyond a manual reload/tab-switch. Refetches the full
+  // roster on any team/alliance/membership change -- team activity is low
+  // enough frequency that this doesn't risk request-flooding. Passed
+  // unmemoized (loadData is re-created each render and closes over
+  // selectedTeam) so the subscription always calls the current closure --
+  // a useCallback([]) here would pin the stale first-render selectedTeam.
+  useTeamUpdates(loadData, loadData, loadData);
 
   // Client-side filtering (the list endpoint has no server-side filters)
   const filteredTeams = teams.filter((team) => {
